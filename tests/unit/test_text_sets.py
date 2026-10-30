@@ -1,4 +1,4 @@
-"""Text changes (#137 part 2): what text_sets writes, refuses and reads back, against a
+"""Text changes: what text_sets writes, refuses and reads back, against a
 fake debugger whose variables are read from a fake memory."""
 
 import re
@@ -271,7 +271,7 @@ def test_a_libstdcxx_heap_string_needs_write_memory_and_its_capacity():
 
 
 def test_a_buffer_the_debugger_misreads_is_sized_by_the_debug_information():
-    # #167: LLDB reads GCC's `_M_local_buf` as `char[0]`; the set was refused as "its
+    # LLDB reads GCC's `_M_local_buf` as `char[0]`; the set was refused as "its
     # members are not laid out as libstdc++'s string's are".
     layout = {"local_buf": 16}
     fake = Fake()
@@ -413,7 +413,7 @@ def test_the_memory_command_is_lldbs_memory_write(tmp_path):
 
 
 def test_a_buffer_larger_than_its_string_is_never_written():
-    # Review of #281: a graph of a 32-byte string, a 16-byte union and `_M_local_buf` as
+    # A graph of a 32-byte string, a 16-byte union and `_M_local_buf` as
     # `char[64]` gave a 64-byte buffer, and a 40-byte text was written past the object.
     from types import SimpleNamespace
 
@@ -534,7 +534,7 @@ def test_a_libcxx_string_changes_within_its_capacity():
         change(listed(), "x" * 23, fake.interface(), listed, "std")
     fake = Fake()
     listed = libcxx(fake, b"a fairly long string that is on the heap", heap=0x9000, cap=72)
-    # `__cap_` is the allocation (72) in the alternate layout: capacity() is 71 (#164).
+    # `__cap_` is the allocation (72) in the alternate layout: capacity() is 71.
     change(listed(), "y" * 71, fake.interface(), listed, "std")
     assert fake.get(0x9000, 72) == b"y" * 71 + b"\0"
     assert fake.get(0x3008, 8) == (71).to_bytes(8, "little")
@@ -626,7 +626,7 @@ def test_libcxx_standard_layout_keeps_half_the_allocation_in_cap():
 
 
 def test_a_later_breakpoint_location_is_not_a_lines_start(tmp_path):
-    # #164 after #160: a line that stops several times per pass (a loop header) stops
+    # A line that stops several times per pass (a loop header) stops
     # past its first code at its later locations, where every place of it counts.
     from peeky.worker import DebugWorker
 
@@ -640,7 +640,7 @@ def test_a_later_breakpoint_location_is_not_a_lines_start(tmp_path):
 
 
 def test_a_crate_peeky_cannot_read_as_rustc_does_counts_as_unsafe():
-    # #164 review 4: a shebang's `"` hid an `unsafe` block from the scan.
+    # A shebang's `"` hid an `unsafe` block from the scan.
     from peeky.rust import unsafe_source
 
     def why(text, other=None):

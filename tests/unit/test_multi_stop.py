@@ -1,4 +1,4 @@
-"""A line that stops several times per pass (#157): where LLDB placed a breakpoint, the
+"""A line that stops several times per pass: where LLDB placed a breakpoint, the
 warning, each stop's place, and where rows and the evidence keep it."""
 
 import sqlite3
@@ -116,7 +116,7 @@ def test_a_line_with_several_locations_in_one_function_warns_and_names_each_stop
 
 
 def test_locations_placed_before_the_program_loaded_are_asked_again_once(tmp_path):
-    # Review of #160: before the program loads, LLDB lists each location at the module's
+    # Before the program loads, LLDB lists each location at the module's
     # address (`address = movavg[0x…], unresolved`, as `breakpoint list` prints it then),
     # which was left out, so nothing was asked again. The count holds already; the first
     # stop's pc names none of them, so they are asked again, once.
@@ -139,7 +139,7 @@ def test_locations_placed_before_the_program_loaded_are_asked_again_once(tmp_pat
 
 
 def test_where_breakpoints_are_is_asked_as_long_as_setting_them_takes(monkeypatch):
-    # #356: `breakpoint list` had 5 s, though setting the breakpoints had 15 (and a
+    # `breakpoint list` had 5 s, though setting the breakpoints had 15 (and a
     # launch's questions its whole deadline): a stall past 5 s on a loaded machine left out
     # the line's per-pass warning, and each hit's stop, without a word.
     import time
@@ -218,13 +218,13 @@ def test_the_evidence_keeps_each_hits_stop(tmp_path):
         del row["stop"], row["stops"]
     evidence.record(store, probe, language="rust")
     assert evidence.run_query(store, "wide")["columns"][:3] == ["hit", "phase", "line"]
-    # No stop labels: `queries run` leaves the empty column out (eighth evaluation, L7).
+    # No stop labels: `queries run` leaves the empty column out.
     assert "stop" not in evidence.run_query(store, "run")["columns"]
 
 
 @pytest.mark.parametrize("version", [13, 9])
 def test_an_older_store_gains_stops(tmp_path, version):
-    # Schema 14 adds captures.stop: a store of #151's schema 13, or of 9 through the chain.
+    # Schema 14 adds captures.stop: a store of schema 13, or of 9 through the chain.
     store = tmp_path / "evidence.db"
     probe = {
         "probe": {"program": "a.c", "line": 8, "capture": ["k"], "set": []},
@@ -265,7 +265,7 @@ def test_an_older_store_gains_stops(tmp_path, version):
     assert evidence.query(store, "SELECT selector, stop, instance FROM last_run")["rows"] == [
         {"selector": "k", "stop": 2, "instance": None}
     ]
-    # interventions.stop too (review 2 of #160).
+    # interventions.stop too.
     assert evidence.query(store, "SELECT COUNT(stop) AS n FROM interventions")["rows"] == [{"n": 0}]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
@@ -273,7 +273,7 @@ def test_an_older_store_gains_stops(tmp_path, version):
 
 
 def test_return_rows_keep_their_hits_stop_and_older_ones_gain_it(tmp_path):
-    # #174: a `(return)` row stored no stop (NULL), so `diff` had to infer it from the
+    # A `(return)` row stored no stop (NULL), so `diff` had to infer it from the
     # hit's observed rows. Schema 15 records it, and fills it in for earlier runs.
     store = tmp_path / "evidence.db"
     probe = {
@@ -308,7 +308,7 @@ def test_return_rows_keep_their_hits_stop_and_older_ones_gain_it(tmp_path):
 
 
 def test_an_older_return_gains_no_stop_from_rows_that_disagree(tmp_path):
-    # Review of PR #198: the upgrade took MIN(stop) of the hit's rows, so a schema-14
+    # The upgrade took MIN(stop) of the hit's rows, so a schema-14
     # hit observed at stop 1 with an after-set row at stop 2 had its return placed at
     # stop 1, a guess. A stop is taken only where every other row has one and all agree.
     store = tmp_path / "evidence.db"
@@ -348,7 +348,7 @@ def test_an_older_return_gains_no_stop_from_rows_that_disagree(tmp_path):
 
 
 # lldb-dap 18's listing of `format!("[{}]", v)` in an `#[inline(always)]` function that
-# `uses_inl` calls twice (review of #160): each copy's offset follows `[inlined] …`.
+# `uses_inl` calls twice: each copy's offset follows `[inlined] …`.
 INLINED = """1: file = '/w/src/main.rs', line = 15, exact_match = 0, locations = 6, resolved = 6, hit count = 0
   1.1: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 60 [inlined] r1::fmt_inl::h7b23c0d2657465aa at main.rs:15:5, address = 0x0000aaaaaaaa9180, resolved, hit count = 0 
   1.2: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 72 [inlined] r1::fmt_inl::h7b23c0d2657465aa + 12 at main.rs:15:5, address = 0x0000aaaaaaaa918c, resolved, hit count = 0 
@@ -360,7 +360,7 @@ INLINED = """1: file = '/w/src/main.rs', line = 15, exact_match = 0, locations =
 
 
 def test_each_inlined_copy_is_a_call_of_its_own_with_its_own_stops(tmp_path):
-    # Review of #160: each location was taken for a copy of its own, so `format!` inlined
+    # Each location was taken for a copy of its own, so `format!` inlined
     # twice stopped 3 times per call (6 for 2 calls) with no warning and no stop.
     places = {f["place"] for f in breakpoint_locations(INLINED, {1})}
     assert places == {"inlined at 0xaaaaaaaa9180", "inlined at 0xaaaaaaaa91ec"}
@@ -379,7 +379,7 @@ def test_each_inlined_copy_is_a_call_of_its_own_with_its_own_stops(tmp_path):
 
 
 def test_generic_instances_are_named_apart(tmp_path):
-    # Review of #160: two instances of `gener` each warned as `r1::gener`, alike.
+    # Two instances of `gener` each warned as `r1::gener`, alike.
     text = "".join(
         f"  1.{n}: where = r1`r1::gener::h{hashed} + {4 * n} at main.rs:8:9, "
         f"address = 0x{base + 4 * n:x}, resolved, hit count = 0\n"
@@ -407,7 +407,7 @@ def test_generic_instances_are_named_apart(tmp_path):
 
 
 def test_a_listing_from_before_load_never_labels_a_stop(tmp_path):
-    # Review 2 of #160: places listed before the program loaded kept the module's
+    # Places listed before the program loaded kept the module's
     # addresses, and were used while one matched the stop's pc. Once the program is slid,
     # a pc can equal another location's module address: here the stop is at the slid
     # first location, 0x100000ee4, which is the second's module address.
@@ -438,7 +438,7 @@ def test_a_listing_from_before_load_never_labels_a_stop(tmp_path):
 
 
 def test_a_change_says_which_stop_it_was(tmp_path):
-    # Review 2 of #160: a --set-at's record said only its line's hit (`9@2`).
+    # A --set-at's record said only its line's hit (`9@2`).
     store = tmp_path / "evidence.db"
     probe = {
         "probe": {"program": "src/main.rs", "line": 9, "capture": ["x"], "set": []},
@@ -472,7 +472,7 @@ def test_a_change_says_which_stop_it_was(tmp_path):
 
 
 def test_wide_gives_a_hit_no_stop_its_rows_disagree_on(tmp_path):
-    # Review 2 of PR #198: `queries wide` took MIN(stop) for each hit and phase, so `x`
+    # `queries wide` took MIN(stop) for each hit and phase, so `x`
     # at stop 1 and `y` at stop 2 of one hit showed as stop 1, as did a selector captured
     # twice alike at stops 1 and 2, and a hit with a row at no stop showed the other's.
     store = tmp_path / "evidence.db"

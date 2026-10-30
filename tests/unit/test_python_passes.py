@@ -1,4 +1,4 @@
-"""#182: Python locals a loop's pass has not assigned yet, read from the bytecode."""
+"""Python locals a loop's pass has not assigned yet, read from the bytecode."""
 
 import ast
 import collections
@@ -348,7 +348,7 @@ def test_the_note_names_the_loop_and_the_assignment(cases):
     # Two assignments, one on each path: both named.
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "if t > 1:  #" in text)
     assert "(lines " in stale_note(cases, "branch_before", line, "y").note
-    # Review of PR #185 (round 3): a handled exception's path assigns it too.
+    # A handled exception's path assigns it too.
     lines = CASES.splitlines()
     stop = next(n for n, text in enumerate(lines, 1) if "print(item)  # stale: x" in text)
     assert stale_pass(cases, "handled_store", stop, "x") == (stop - 2, (stop + 2, stop + 4))
@@ -396,7 +396,7 @@ def f(xs):
 @pytest.mark.parametrize(
     "extra, why",
     [
-        # Review of PR #185: the function that runs may not be the one on disk.
+        # The function that runs may not be the one on disk.
         (
             'exec(compile("\\n" * 2 + "    for t in xs:\\n        x = 1; print(t)", '
             '__file__, "exec"))\n',
@@ -419,7 +419,7 @@ def f(xs):
         ("def h():\n    return locals()\n", "locals"),
         ("def h():\n    return vars()\n", "vars"),
         ("show = dir\n", "dir"),
-        # Review of PR #185 (round 2): `vars(*args)` with no `args` is `vars()`.
+        # `vars(*args)` with no `args` is `vars()`.
         ("def h(args):\n    return vars(*args)\n", "vars"),
         ("def h(args):\n    return dir(*args)\n", "dir"),
         ("def h(o):\n    return vars(o, **{})\n", "vars"),
@@ -435,7 +435,7 @@ def f(xs):
         ("from types import FunctionType as F\n", "FunctionType"),
         ("import inspect as i\n", "inspect"),
         ("import marshal as m\n", "marshal"),
-        # Round 3: a builtin reached by a computed name.
+        # A builtin reached by a computed name.
         ("table = globals()\n", "globals"),
         ("key = '__builtins__'\n", "__builtins__"),
         ("name = 'exec'\n", "exec"),
@@ -455,7 +455,7 @@ def test_a_module_that_may_run_other_code_or_reach_frames_gets_no_note(tmp_path,
 
 
 def test_a_builtin_reached_by_its_name_leaves_the_module_unjudged(tmp_path):
-    # Review of PR #185 (round 3): `globals()["__builtins__"]` and a string gave `exec`.
+    # `globals()["__builtins__"]` and a string gave `exec`.
     from peeky.python_passes import opaque
 
     path = tmp_path / "m.py"
@@ -483,7 +483,7 @@ def test_ordinary_uses_of_those_names_leave_a_module_judged(tmp_path):
 
 
 def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, cases):
-    # Review of PR #185: a 3.11 worker read a 3.12 program's inlined comprehension (its
+    # A 3.11 worker read a 3.12 program's inlined comprehension (its
     # `LOAD_FAST_AND_CLEAR x`) as code that never reads `x`.
     import importlib.util
 
@@ -499,7 +499,7 @@ def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, case
     identity = python_passes._identity()
     same = interpreter("same", json.dumps(identity))
     other = interpreter("other", json.dumps([*identity[:4], "00000d0a"]))
-    # Round 2: one magic number spans patch versions and builds; the exact version and
+    # One magic number spans patch versions and builds; the exact version and
     # build must match too.
     build = interpreter("build", json.dumps([identity[0], identity[1] + "+", *identity[2:]]))
     magic = interpreter("magic", f"{sys.implementation.name} {importlib.util.MAGIC_NUMBER.hex()}")
@@ -521,7 +521,7 @@ def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, case
 
 
 def test_a_breakpoints_stop_is_judged_where_its_line_begins(cases):
-    # Review of PR #185: a loop body's last line also holds the jump back, after its
+    # A loop body's last line also holds the jump back, after its
     # assignment; a breakpoint never stops there, but a caller's frame may.
     from peeky.adapters import PythonAdapter
 

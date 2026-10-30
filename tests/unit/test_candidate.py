@@ -236,8 +236,8 @@ def test_a_candidate_run_records_the_source_that_ran_and_its_edit(tmp_path):
 
 
 def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
-    # Eval 5 (Python): `probe --old/--new` was refused, so a fix could not be seen
-    # before `verify`. Reviews of #109: the candidate must run the edit wherever the
+    # `probe --old/--new` was refused, so a fix could not be seen
+    # before `verify`. The candidate must run the edit wherever the
     # program reaches its own code, and find the user's files beside it.
     from peeky.cli import main
 
@@ -294,7 +294,7 @@ def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
 def test_a_python_candidates_copy_keeps_links_specials_and_the_users_bytecode(
     tmp_path, capsys, monkeypatch
 ):
-    # Review of #109: the linked __pycache__ let the edit's bytecode reach the user's
+    # The linked __pycache__ let the edit's bytecode reach the user's
     # tree; links were recreated with their old text (pointing elsewhere); a FIFO in the
     # root failed every candidate; `--at APP.py` broke imports of `app`.
     import os
@@ -344,7 +344,7 @@ def test_a_python_candidates_copy_keeps_links_specials_and_the_users_bytecode(
 
 
 def test_a_python_candidate_edits_the_named_file_and_its_hard_links(tmp_path, capsys, monkeypatch):
-    # Review of #109: with a hard link below the root (`backup/app.py`), the walk's last
+    # With a hard link below the root (`backup/app.py`), the walk's last
     # name got the edit and ran with the wrong neighbours; a write-only file was linked,
     # so the candidate wrote the user's file.
     import os
@@ -376,7 +376,7 @@ def test_a_python_candidate_edits_the_named_file_and_its_hard_links(tmp_path, ca
 
 
 def test_a_python_candidate_refuses_names_that_differ_only_by_case(tmp_path, monkeypatch):
-    # Review of #109: on a case-sensitive volume `Helper.py` and `helper.py` collapse
+    # On a case-sensitive volume `Helper.py` and `helper.py` collapse
     # into one name in a case-insensitive temporary directory.
     import os
 
@@ -416,7 +416,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     main([*probe, "--old", "acc = 0", "--new", "acc = 1"])
     result = json.loads(capsys.readouterr().out)
     assert any("nothing above was copied" in warning for warning in result["warnings"])
-    # Verification of #109: idioms no reading of the source catches still get the note.
+    # Idioms no reading of the source catches still get the note.
     for locate in (
         "conf = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / 'conf.json'",
         "HERE = Path(__file__).resolve().parent\nconf = HERE.parent / 'conf.json'",
@@ -430,7 +430,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
         main([*probe[:3], line, *probe[4:], "--old", "acc = 0", "--new", "acc = 1"])
         result = json.loads(capsys.readouterr().out)
         assert any("nothing above was copied" in w for w in result["warnings"]), locate
-    # Verification of #109: a nested --at file in a root that is not the project's (a
+    # A nested --at file in a root that is not the project's (a
     # `src/` layout) reaches above it too.
     (tmp_path / "src" / "pkg").mkdir(parents=True)
     (tmp_path / "src" / "pkg" / "app.py").write_text(
@@ -467,7 +467,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root lists any directory")
 def test_a_python_candidate_refuses_a_directory_it_cannot_list(tmp_path, capsys, monkeypatch):
-    # Verification of #109: `os.walk` skipped a directory it could not list (`--x`), so
+    # `os.walk` skipped a directory it could not list (`--x`), so
     # the candidate ran without it and its errors read as the edit's effect.
     from peeky.cli import main
 
@@ -492,7 +492,7 @@ def test_a_python_candidate_refuses_a_directory_it_cannot_list(tmp_path, capsys,
 def test_a_python_candidate_stands_in_for_a_directory_nobody_can_open(
     tmp_path, capsys, monkeypatch
 ):
-    # Verification of #109: refusing every unlistable directory refused candidates beside
+    # Refusing every unlistable directory refused candidates beside
     # another user's `pgdata` or `lost+found`, which the program cannot open either.
     from peeky.cli import main
 
@@ -516,7 +516,7 @@ def test_a_python_candidate_stands_in_for_a_directory_nobody_can_open(
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes any directory")
 def test_a_python_candidate_keeps_times_and_directory_modes(tmp_path, capsys, monkeypatch):
-    # Verification of #109: every copied file had the copy's mtime, in walk order, and
+    # Every copied file had the copy's mtime, in walk order, and
     # every directory was writable, so a freshness check or a read-only output directory
     # took another branch in the candidate.
     import time
@@ -587,7 +587,7 @@ def snapshot(top):
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys, monkeypatch):
-    # Verification of #109: `.git` and `.pytest_cache` were links to the user's, so a
+    # `.git` and `.pytest_cache` were links to the user's, so a
     # candidate's `git add` staged the edit in the user's repository, `git describe
     # --dirty` rewrote the user's index and pytest wrote the user's cache. Then objects
     # read through `alternates` had their mtimes touched by the copy's commits, a remote
@@ -637,7 +637,7 @@ def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys,
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     changed, marker, status, remotes, staged, described = (row["value"] for row in result["rows"])
-    # Verification of #109: the copy's index had the user's files' identities, so `git
+    # The copy's index had the user's files' identities, so `git
     # diff-files` called every file changed. An `includeIf "gitdir:"` cannot match the
     # copy's path: the note says the configuration differs.
     assert changed == "'app.py'" and marker == "''", result["rows"]
@@ -659,7 +659,7 @@ def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys,
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, monkeypatch):
-    # Verification of #109: an absolute `core.worktree` made the copy's `git stash` revert
+    # An absolute `core.worktree` made the copy's `git stash` revert
     # the user's uncommitted work; a `git-new-workdir` layout (links into another
     # repository's `.git`) and a `.git` linked to a worktree's `.git` file committed into
     # the user's repository; a package inside a repository had no repository and no note.
@@ -775,7 +775,7 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     candidate(bare, at="main/repair.py", line=6)
     assert (bare / "main" / ".git").read_text() == before
     assert git_in(bare / "main", "status", "--porcelain") == "?? repair.py\n"
-    # Verification of #109: worktrees naming a shared git directory with no `.git` file
+    # Worktrees naming a shared git directory with no `.git` file
     # at the root (`.bare` beside them), and a bare repository as the root itself, with a
     # worktree outside the root each time.
     for layout in ("shared", "root"):
@@ -804,7 +804,7 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
 
 
 def test_a_python_candidate_imports_the_copy_through_an_import_path(tmp_path, capsys, monkeypatch):
-    # Verification of #109: with the project's `src` on the import path (an editable
+    # With the project's `src` on the import path (an editable
     # install's `.pth`, or `PYTHONPATH`), `import shop` loaded the user's unedited module
     # (and wrote its bytecode into the user's tree).
     from peeky.cli import main
@@ -831,7 +831,7 @@ def test_a_python_candidate_imports_the_copy_through_an_import_path(tmp_path, ca
     assert code == 0, result.get("error")
     assert result["rows"][0]["value"] == "150.0", result["rows"]
     assert not (shop / "__pycache__").exists()
-    # Verification of #109: under `PYTHONSAFEPATH`, the import check replaced the first
+    # Under `PYTHONSAFEPATH`, the import check replaced the first
     # `PYTHONPATH` entry (the copy's `src`) with the script's directory: a false note.
     monkeypatch.setenv("PYTHONSAFEPATH", "1")
     code = main([*probe, "--json", "--quiet", "--old", "TAX = 0.2", "--new", "TAX = 0.6"])
@@ -839,7 +839,7 @@ def test_a_python_candidate_imports_the_copy_through_an_import_path(tmp_path, ca
     assert result["rows"][0]["value"] == "160.0", result["rows"]
     assert not any("`import shop`" in w for w in result.get("warnings", [])), result
     monkeypatch.delenv("PYTHONSAFEPATH")
-    # Verification of #109: a root typed in another case on a volume that ignores case
+    # A root typed in another case on a volume that ignores case
     # did not match the import path's spelling, so nothing was moved and the user's
     # module ran (writing its bytecode into the user's tree).
     typed = Path(str(proj).swapcase())
@@ -894,7 +894,7 @@ def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
     for mapped in ([["pkg", str(proj / "pkg")]], [["pkg", str(proj / "pkg" / "__init__.py")]]):
         root, pythonpath, _ = candidate(["/usr/lib/python3"], mapped)
         assert pythonpath == str(root), (mapped, pythonpath)
-    # Verification of #109: a package mapped to a directory of another name (`package-dir
+    # A package mapped to a directory of another name (`package-dir
     # = {pkga = "lib"}`) cannot be moved by its parent: a note, not a wrong redirect.
     root, pythonpath, warnings = candidate([], [["pkga", str(proj / "lib")]])
     assert pythonpath is None and any("`pkga`" in w for w in warnings), warnings
@@ -912,7 +912,7 @@ def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
         os.path.realpath(tmp_path / "shared"),
         str(root / "lib"),
     ], pythonpath
-    # Verification of #109: a zip on the import path crashed the standard-library check,
+    # A zip on the import path crashed the standard-library check,
     # and directories without `__init__.py` (`site/`, `json/` data) were called modules.
     (proj / "vendor").mkdir()
     (proj / "vendor" / "lib.zip").write_bytes(b"PK")
@@ -926,7 +926,7 @@ def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
 
 
 def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeypatch):
-    # Verification of #109: an import hook ahead of the path (meson-python's editable
+    # An import hook ahead of the path (meson-python's editable
     # loader) serves the user's tree whatever `PYTHONPATH` says. What each name the root
     # offers imports as is checked the way the program finds it: a hook that serves the
     # user's file is named. One that only records environment paths (scikit-build-core,
@@ -968,7 +968,7 @@ def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeyp
 
     warnings = candidate(serves=True)
     assert any("`import app` loads" in w and str(proj / "app.py") in w for w in warnings), warnings
-    # The hook may rebuild in your tree: the warning says so (review of #253).
+    # The hook may rebuild in your tree: the warning says so.
     assert any(
         w.endswith("serves it ahead of every import path, and may rebuild there") for w in warnings
     ), warnings
@@ -977,9 +977,9 @@ def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeyp
 
 
 def test_a_path_that_spells_the_root_otherwise_is_inside(tmp_path, monkeypatch):
-    # Verification of #109: one flag for "this volume ignores case" missed a
+    # One flag for "this volume ignores case" missed a
     # case-sensitive volume mounted under a case-insensitive path (`/Volumes/ve24CS`
-    # named `/Volumes/ve24cs`). The root is now found among a path's directories by its
+    # named `/Volumes/ve24cs`). The root is found among a path's directories by its
     # identity, whatever spells it (here a second name for the same directory).
     from peeky.adapters import PythonAdapter, PythonCandidate
     from peeky.build import SourceEdit
@@ -1009,7 +1009,7 @@ def test_a_path_that_spells_the_root_otherwise_is_inside(tmp_path, monkeypatch):
     not hasattr(os, "chflags") or os.geteuid() == 0, reason="needs BSD flags, not root"
 )
 def test_a_python_candidate_notes_access_the_copy_does_not_keep(tmp_path, monkeypatch):
-    # Verification of #109: the copy is the prober's with the originals' mode bits, so a
+    # The copy is the prober's with the originals' mode bits, so a
     # locked file (or another owner's, or one an ACL denies) became writable there.
     import stat as stat_module
 
@@ -1039,7 +1039,7 @@ def test_a_python_candidate_notes_access_the_copy_does_not_keep(tmp_path, monkey
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_a_python_candidate_notes_another_owner_and_a_refused_repository(tmp_path, monkeypatch):
-    # Verification of #109: as root over another user's checkout, access is the same
+    # As root over another user's checkout, access is the same
     # in both trees but the copy is root's: git refuses the user's repository
     # (`safe.directory`) and not the copy, and the note blamed a conditional include.
     from peeky import adapters
@@ -1074,7 +1074,7 @@ def test_a_python_candidate_notes_another_owner_and_a_refused_repository(tmp_pat
 
 
 def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch):
-    # Verification of #109: `pkg.bak/` (a backup with its own `__init__.py`) and an --at
+    # `pkg.bak/` (a backup with its own `__init__.py`) and an --at
     # file named `app.v2.py` gave dotted names, and `find_spec("pkg.bak")` imported and
     # ran `pkg` in the copy before the program did.
     from peeky.cli import main
@@ -1086,7 +1086,7 @@ def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch)
         (proj / package / "__init__.py").write_text("open('runs.log', 'a').write('run\\n')\n")
     (proj / "pyproject.toml").write_text("")
     # A root module named like the standard library's ran in the probes' `-c`, whose
-    # path starts with the copy's root (verification of #109).
+    # path starts with the copy's root.
     (proj / "json.py").write_text("open('runs.log', 'a').write('json\\n')\n")
     (proj / "app.v2.py").write_text(
         "import pkg\nacc = 1\nruns = len(open('runs.log').read().splitlines())\nprint(acc, runs)\n"
@@ -1100,7 +1100,7 @@ def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch)
 
 
 def test_the_import_check_keeps_within_the_launch_budget(tmp_path):
-    # Verification of #109: the interpreter probes took up to 120 s each whatever the
+    # The interpreter probes took up to 120 s each whatever the
     # launch's budget (a meson-python rebuild), so the launch always timed out.
     import time
 
@@ -1128,7 +1128,7 @@ def test_the_import_check_keeps_within_the_launch_budget(tmp_path):
 
 
 def test_a_python_candidate_refuses_an_at_file_inside_a_bare_repository(tmp_path):
-    # Verification of #109: a bare repository below the root is copied whole as a private
+    # A bare repository below the root is copied whole as a private
     # repository, never walked, so an --at file inside it was "not in the copied root".
     from peeky.adapters import PythonAdapter, PythonCandidate
     from peeky.build import SourceEdit
@@ -1159,7 +1159,7 @@ def test_a_python_candidate_refuses_an_at_file_inside_a_bare_repository(tmp_path
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(
     tmp_path, capsys, monkeypatch
 ):
-    # Verification of #109: a hard-linked twin became a symlink to the edited copy, so
+    # A hard-linked twin became a symlink to the edited copy, so
     # `python backup/app.py` resolved to the --at file's directory and imported the root's
     # `helper.py` instead of its own.
     import os
@@ -1313,7 +1313,7 @@ LONG = "".join(f"l{n};\n" for n in range(1, 11))  # l1; .. l10;
 
 
 def test_several_edits_combine_into_one_with_the_same_effect():
-    # #76: a field added at the top and a function changed further down.
+    # A field added at the top and a function changed further down.
     edit = (("l2;\n", "l2;\nfield;\n"), ("l8;", "L8;"))
     old, new = combine_edits(LONG, edit)
     assert LONG.count(old) == 1 and old.startswith("l2;") and old.endswith("l8;")
@@ -1364,7 +1364,7 @@ def test_a_probe_takes_one_edit_or_several_pairs():
 
 
 def test_a_python_candidates_copy_note_is_short_once_and_quiet(tmp_path, monkeypatch, capsys):
-    # L6: a one-file, standard-library-only script got a 70-word note on its copied root,
+    # A one-file, standard-library-only script got a 70-word note on its copied root,
     # printed twice (as progress and with the result), once even with --quiet.
     import json
 
@@ -1411,7 +1411,7 @@ def test_a_python_candidates_copy_note_is_short_once_and_quiet(tmp_path, monkeyp
 def test_a_candidate_says_which_of_its_lines_the_at_line_is_before_its_breakpoint(
     tmp_path, monkeypatch
 ):
-    # tides 5: `breakpoint tides.c:37 in the candidate verified` for `--at tides.c:40`; the
+    # `breakpoint tides.c:37 in the candidate verified` for `--at tides.c:40`; the
     # mapping came only at the end.
     source = tmp_path / "tides.c"
     source.write_text(
@@ -1457,7 +1457,7 @@ def test_a_candidate_says_which_of_its_lines_the_at_line_is_before_its_breakpoin
 
 
 def test_a_candidate_that_moves_no_line_says_so():
-    # playlist 5: "locations name the candidate's copy, since the line numbers are the
+    # "locations name the candidate's copy, since the line numbers are the
     # candidate's" for an edit that changed one line in place.
     original = "a = 1\nb = 2\nc = 3\n"
     same = {"candidate": {}}
@@ -1471,7 +1471,7 @@ def test_a_candidate_that_moves_no_line_says_so():
     both = {"candidate": {}}
     cli._bind_candidate(both, original, (("a = 1\n", "a = 1\nz = 0\n"), ("c = 3\n", "")), "p.py")
     assert both["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
-    # Review of PR #350: removing a last line that no newline ends removes no newline.
+    # Removing a last line that no newline ends removes no newline.
     unended = {"candidate": {}}
     cli._bind_candidate(unended, "a = 1\nb = 2", ("b = 2", ""), "p.py")
     assert unended["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
@@ -1486,7 +1486,7 @@ def test_a_candidate_that_moves_no_line_says_so():
 
 
 def test_a_line_an_edit_removes_at_the_files_end_is_refused():
-    # Review of PR #350: removing `b` from `a\nb` mapped line 2 to a line 2 the candidate
+    # Removing `b` from `a\nb` mapped line 2 to a line 2 the candidate
     # does not have.
     with pytest.raises(ValueError, match=r"Line 2 is inside the edit \(line 2, which the "):
         candidate_line("a\nb", ("b", ""), 2)

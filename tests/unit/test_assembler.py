@@ -1,4 +1,4 @@
-"""Inline assembly that can read a file is refused before building (#180): the
+"""Inline assembly that can read a file is refused before building: the
 assembler's `.incbin` and `.include` read a file no dependency file lists. Judged in a
 C or C++ translation unit as `-E` gives it, and in a Rust crate's `asm!`, `global_asm!`
 and `naked_asm!`; a string outside inline assembly is never judged."""
@@ -205,7 +205,7 @@ def test_judged_names_what_reads_a_file():
 
 
 def reference_c_refusal(output, cpp):
-    """`c_refusal` as it was before it was made faster (#398): it read where every line
+    """`c_refusal` as it was before it was made faster: it read where every line
     is from, and scanned for keywords with a regex that starts with a lookbehind."""
     import bisect
     import re

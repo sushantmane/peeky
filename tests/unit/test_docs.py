@@ -7,13 +7,13 @@ DOCS = Path(__file__).resolve().parents[2] / "docs"
 
 
 def test_the_agent_guide_fits_one_read():
-    # Eval 4 (C): the 20.4 KB guide came back truncated on the first read.
+    # The 20.4 KB guide came back truncated on the first read.
     assert len((DOCS / "AGENT_GUIDE.md").read_bytes()) < 20 * 1024
 
 
 def test_the_guide_links_resolve():
-    # Eighth evaluation, L23: agents given the guide, COOKBOOK and ERRORS could not
-    # follow its pointer into RUST_AGENT.md; M7: it links a page per language.
+    # The guide links a page per language, never RUST_AGENT.md: agents given only the
+    # guide, COOKBOOK and ERRORS couldn't follow a pointer there.
     guide = (DOCS / "AGENT_GUIDE.md").read_text()
     names = (
         "ERRORS.md",
@@ -24,7 +24,7 @@ def test_the_guide_links_resolve():
         assert f"]({name})" in guide
         assert (DOCS / name).is_file()
     assert "RUST_AGENT.md" not in guide
-    # #207: the first five minutes send each language to its page, which links its cookbook.
+    # The first five minutes send each language to its page, which links its cookbook.
     first = guide.split("## First 5 minutes")[1].split("\n## ")[0]
     for lang in ("python", "java", "c-cpp", "rust"):
         assert f"](lang/{lang}.md)" in first, lang
@@ -94,7 +94,7 @@ ROOT_PAGES = (
 
 
 def test_every_relative_link_in_the_docs_resolves():
-    # M7: each language page points into the cookbooks by section; #207 moved sections
+    # Each language page points into the cookbooks by section, and sections move
     # between files. Every relative link, and its anchor, must land, from the top-level
     # pages too.
     pages = [*(DOCS.parent / name for name in ROOT_PAGES), *sorted(DOCS.rglob("*.md"))]
@@ -113,8 +113,8 @@ PRIVATE_NOTES = (
 
 
 def test_the_repository_holds_no_private_notes():
-    # Before the repository went public, HISTORY.md replaced the development log, PROGRESS.md,
-    # and personal paths, usage budgets and account notes left every tracked file.
+    # HISTORY.md stands for the development log and PROGRESS.md, and no tracked file holds
+    # personal paths, usage budgets or account notes.
     import subprocess
 
     import pytest
@@ -140,7 +140,7 @@ def test_the_repository_holds_no_private_notes():
 
 
 def test_anchors_are_githubs_slugs():
-    # Review of #216: a set of slugs missed GitHub's suffixes for repeated headings
+    # A set of slugs missed GitHub's suffixes for repeated headings
     # (TESTING.md's "C investigation…" and "C++ investigation…" share one slug).
     headings = [
         "What `set` Checks",
@@ -186,7 +186,7 @@ def test_the_link_check_finds_a_missing_anchor_or_file(tmp_path):
 
 
 def test_each_language_has_a_page_and_a_cookbook_numbered_as_the_cookbook():
-    # #207: a language's own recipes are in docs/lang/<lang>-cookbook.md, each section under
+    # A language's own recipes are in docs/lang/<lang>-cookbook.md, each section under
     # the number and title of the COOKBOOK section it adds to; the page links it.
     cookbook = set(_headings(DOCS / "COOKBOOK.md"))
     for lang in LANGS:
@@ -214,7 +214,7 @@ def _contents(path):
 
 
 def test_each_contents_list_matches_the_headings():
-    # #212: the rewrites renamed and added headings; COOKBOOK's table of contents and each
+    # The rewrites renamed and added headings; COOKBOOK's table of contents and each
     # language cookbook's list name every `##` and `###` heading, in order, by its anchor.
     for path in [DOCS / "COOKBOOK.md", *sorted((DOCS / "lang").glob("*-cookbook.md"))]:
         links, shown = _contents(path)
@@ -227,7 +227,7 @@ def test_each_contents_list_matches_the_headings():
 
 
 def test_every_part_of_the_cookbooks_fits_one_read():
-    # #207: the 181 KB COOKBOOK could not be read in pieces. Each part between two headings,
+    # The 181 KB COOKBOOK could not be read in pieces. Each part between two headings,
     # and each language's summary page whole, fits one 20 KB read.
     for path in [DOCS / "COOKBOOK.md", *sorted((DOCS / "lang").glob("*.md"))]:
         parts = re.split(r"^#+ ", path.read_text(), flags=re.M)
@@ -237,7 +237,7 @@ def test_every_part_of_the_cookbooks_fits_one_read():
 
 
 def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
-    # Review of #104 (round 2): reading one global, or a misspelled name, lists every
+    # Reading one global, or a misspelled name, lists every
     # global and runs all their reprs; the docs said only "its __repr__".
     import pytest
 
@@ -260,7 +260,7 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
 
 
 def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
-    # #212: ERRORS.md's code table has a Retryable column; it must say what Peeky sends.
+    # ERRORS.md's code table has a Retryable column; it must say what Peeky sends.
     from peeky.errors import _RULES
 
     table = (DOCS / "ERRORS.md").read_text()
@@ -286,7 +286,7 @@ def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
 
 
 def test_the_docs_peeky_prints_exist():
-    # #212: a printed hint names a doc by path and anchor (`docs/lang/rust-cookbook.md#…`), by a
+    # A printed hint names a doc by path and anchor (`docs/lang/rust-cookbook.md#…`), by a
     # bare name under docs/ (`see ERRORS.md`), or a cookbook section by number (`rust-cookbook
     # 6.6`, `COOKBOOK 6.6`); each must resolve.
     source = "\n".join(
@@ -305,7 +305,7 @@ def test_the_docs_peeky_prints_exist():
         assert any(h.startswith(number + " ") for h in _headings(path)), (page, number)
 
 
-# #212: the docs are written in short sentences. A sentence here is prose outside code blocks,
+# The docs are written in short sentences. A sentence here is prose outside code blocks,
 # tables, headings and quotes, split at a full stop, colon or semicolon and at each list item;
 # inline code counts as one word. History records (evaluations, reviews, ADRs, and pages marked
 # historical) are kept as written.
@@ -357,7 +357,7 @@ def test_the_sentence_check_finds_a_long_sentence(tmp_path):
 
 
 def test_every_ssh_tunnel_the_docs_give_exits_when_its_port_is_taken():
-    # Pre-release security review: without ExitOnForwardFailure, ssh only warns when the
+    # Without ExitOnForwardFailure, ssh only warns when the
     # local port is taken, and the client sends its token to whatever process holds it.
     root = DOCS.parent
     pages = [*(root / name for name in ROOT_PAGES), *sorted(DOCS.rglob("*.md"))]
@@ -373,7 +373,7 @@ def test_every_ssh_tunnel_the_docs_give_exits_when_its_port_is_taken():
 
 
 def test_the_guide_lists_session_wait_and_program_arguments_up_front():
-    # Findings 21 and 22: the command table did not list `session wait`, and passing
+    # The command table did not list `session wait`, and passing
     # program arguments (`--`, `--arg`) was explained only for Python projects.
     from pathlib import Path
 
@@ -388,14 +388,14 @@ def test_the_guide_lists_session_wait_and_program_arguments_up_front():
     assert "[-- ARGS]" in probe, probe
     # The arguments' syntax is in the commands section, for every language.
     assert "**Program arguments:** after `--` or repeated `--arg`" in table, table
-    # Review of PR #165: exit 3 is not only a background job's.
+    # Exit 3 is not only a background job's.
     flat = " ".join(guide.split())
     assert (
         "3: not there yet (a background job still running; a session's `--to`, `--count` or "
         "`--hit` stopped first)."
     ) in flat
     assert "4: a probe change never made" in flat
-    # Finding 19: a step can land back on an `if`'s line.
+    # A step can land back on an `if`'s line.
     cookbook = " ".join((docs / "COOKBOOK.md").read_text().split())
     assert "A step can also land back on an `if`'s line after the last line of its block" in (
         cookbook

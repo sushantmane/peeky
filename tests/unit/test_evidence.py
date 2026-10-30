@@ -85,7 +85,7 @@ def test_a_recorded_probe_is_queryable_with_numbers_and_identity(store):
     latest = evidence.query(store, "SELECT DISTINCT run_id FROM last_run")["rows"]
     assert latest == [{"run_id": 2}]
     changes = evidence.query(store, "SELECT * FROM interventions")["rows"]
-    # A result without the line (a worker before #137): its after-set rows' line.
+    # A result without the line (an older worker's): its after-set rows' line.
     assert changes == [
         {
             "run_id": 2,
@@ -249,7 +249,7 @@ def test_canned_queries_answer_comparisons(store):
     evidence.record(store, result(starts=("3", "7"), output="PAGE: [10]\n"), label="two")
     diff = evidence.run_query(store, "diff")
     assert diff["rows"] == [
-        # The outputs differ too: the first row says so (sixth evaluation, finding 9).
+        # The outputs differ too: the first row says so.
         {
             "run_a": 1,
             "run_b": 2,
@@ -543,10 +543,10 @@ def test_diff_puts_the_first_real_divergence_first(store):
         (3, "words", "missing in run b"),
         (3, "in_word", "missing in run b"),
         (3, "text", "missing in run b"),
-        # Seventh evaluation, finding 9: one row per selector, saying at how many hits.
+        # One row per selector, saying at how many hits.
         (1, "text", "addresses only, at 2 hits (one row per selector: its first hit)"),
-        # Eval 5 (C): these rows showed NULL values, which read as "no value"; each
-        # now shows its selector's first hit.
+        # Each row shows its selector's first hit, not NULL values, which read as
+        # "no value".
         (1, "totals", "only in run a (one row per selector: its first hit)"),
         (1, "zeta", "only in run b (one row per selector: its first hit)"),
     ]
@@ -783,7 +783,7 @@ QUALIFIED = "qualified ({}): not evidence by itself; queries run shows why"
 @pytest.mark.parametrize(
     "language, kind, a, b, note, first, last",
     [
-        # A pointer whose address differs (review of PR #294).
+        # A pointer whose address differs.
         (
             "c",
             "const int *",
@@ -890,7 +890,7 @@ def test_comparisons_need_two_runs_that_exist(store):
 
 
 def test_values_changed_by_an_intervention_rank_before_real_differences(store):
-    # Tenth evaluation (debounce): the intervention's own rows came after 70 rows of
+    # debounce: the intervention's own rows came after 70 rows of
     # what may follow from it.
     evidence.record(store, captured([(1, "observed", "x", "1"), (2, "observed", "x", "5")]))
     evidence.record(
@@ -1005,7 +1005,7 @@ def test_diff_says_when_the_runs_stopped_at_different_lines(store):
 
 
 def test_integers_are_exact_in_num(store):
-    # Eval 3 (#75): `num` was REAL, so a long showed as 600.0 and a u64 above 2**53 lost
+    # `num` was REAL, so a long showed as 600.0 and a u64 above 2**53 lost
     # digits.
     values = ("600", "9007199254740993", "-9223372036854775808", "18446744073709551615")
     evidence.record(store, result(starts=(*values, "1.5", "10.0", "inf")))
@@ -1048,7 +1048,7 @@ def test_a_version_3_store_upgrades_num_in_capture_order(store):
         ("600", 600, "integer"),
         ("1.5", 1.5, "real"),
         ("7", 7, "integer"),
-        # Review of #82: recomputed from `value`, not carried over from the lossy REAL.
+        # Recomputed from `value`, not carried over from the lossy REAL.
         ("9007199254740993", 9007199254740993, "integer"),
         ("None", None, "null"),
     ]
@@ -1081,7 +1081,7 @@ def test_an_upgrade_blocked_by_a_read_only_directory_says_so(store):
 
 
 def test_java_object_numbers_differ_between_runs_like_addresses(store):
-    # Review of #87: JDWP numbers objects in the order the debugger first touches them,
+    # JDWP numbers objects in the order the debugger first touches them,
     # so the same object is `@143` in one run and `@144` in the next.
     a = captured([(1, "observed", "current", 'P@143 {label="a@5", next=P@161}')])
     b = captured([(1, "observed", "current", 'P@144 {label="a@5", next=P@162}')])
@@ -1109,7 +1109,7 @@ def test_java_object_numbers_differ_between_runs_like_addresses(store):
 
 
 def test_diff_puts_the_outcome_rows_before_selectors_only_one_run_captured(store):
-    # Sixth evaluation, finding 9: `only in run a` rows came before the decisive (output)
+    # `only in run a` rows came before the decisive (output)
     # and (edit) rows.
     first = captured([(1, "observed", "lo", "0"), (1, "observed", "hi", "6")])
     first["output"] = "HISTO:2,2,2,1\n"
@@ -1123,7 +1123,7 @@ def test_diff_puts_the_outcome_rows_before_selectors_only_one_run_captured(store
 
 
 def test_diff_says_when_the_runs_had_different_inputs_or_interventions(store):
-    # Eval 4 (Rust): a candidate compared with a run on other input showed only the edit,
+    # A candidate compared with a run on other input showed only the edit,
     # so the input's effect was easy to credit to the edit.
     evidence.record(store, captured([(1, "observed", "count", "2")], args=["aaabb"]))
     evidence.record(store, captured([(1, "observed", "count", "1")], args=["aaab"]))
@@ -1141,7 +1141,7 @@ def test_diff_says_when_the_runs_had_different_inputs_or_interventions(store):
 
 
 def test_object_ref_says_which_values_are_the_same_java_object(store):
-    # Eval 4 (Java): whether `best` was the list's worker or a copy took substr/instr SQL.
+    # Whether `best` was the list's worker or a copy took substr/instr SQL.
     evidence.record(
         store,
         captured(
@@ -1195,7 +1195,7 @@ def test_object_ref_says_which_values_are_the_same_java_object(store):
         # Linux: a PIE program's heap, and the stack.
         ("0x000055555556a2c0", 0x55555556A2C0),
         ("0x00007fffffffe3a8", 0x7FFFFFFFE3A8),
-        # Review of PR #277: a non-PIE x86-64 program's brk heap, below 4 GiB. Any nonzero
+        # A non-PIE x86-64 program's brk heap, below 4 GiB. Any nonzero
         # token of 1 to 16 hex digits counts, though no_addresses masks only 9 or more.
         ("0x00000000004052a0", 0x4052A0),
         ("0x4052a0", 0x4052A0),
@@ -1231,8 +1231,8 @@ def test_object_ref_says_which_values_are_the_same_java_object(store):
     ],
 )
 def test_address_reads_the_first_address_in_a_value(value, address):
-    # Eval 10 (kitty, Rust): heap addresses differ per run, so the agent matched pointers
-    # across three runs by `substr(value, -3)`.
+    # Heap addresses differ per run, so matching pointers across runs needs the address
+    # itself, not `substr(value, -3)`.
     assert evidence._address(value) == address
 
 
@@ -1280,8 +1280,8 @@ def _documented_sql(page, heading):
 
 
 def test_the_cookbooks_address_recipe_pairs_pointers_across_runs(store):
-    # Kitty (eval 10): `parse` keeps each payer as a raw pointer into `trip.friends`; `main`
-    # sorts the friends by name, so each pointer now finds whoever sits in its old slot.
+    # kitty: `parse` keeps each payer as a raw pointer into `trip.friends`; `main`
+    # sorts the friends by name, so each pointer then finds whoever sits in its old slot.
     # Each run's heap starts elsewhere, and here its last hex digits differ too.
     payers = evidence.record(
         store,
@@ -1296,7 +1296,7 @@ def test_the_cookbooks_address_recipe_pairs_pointers_across_runs(store):
                 (3, "observed", "payer @ main.rs:47", "<not shown: may point at freed memory>"),
                 (3, "observed", "payer @ main.rs:54", "0x0000000100e4d828"),
                 (3, "observed", "cents @ main.rs:49", "900"),
-                # Review of PR #277: after-set rows (synthetic) are another moment; pooled,
+                # after-set rows (synthetic) are another moment; pooled,
                 # they moved the base and doubled the joins to `cents` and `f.name`.
                 (1, "after-set", "cents @ main.rs:49", "0"),
                 (2, "after-set", "payer @ main.rs:54", "0x0000000100e4d7d8"),
@@ -1359,7 +1359,7 @@ def _pairs(store, sql, a, b):
 
 
 def test_the_address_recipe_keeps_observed_rows_only(store):
-    # Review of PR #277: the recipe pooled phases. Run a observed 0x100000000, then
+    # The recipe pooled phases. Run a observed 0x100000000, then
     # 0x100000028 after a change; run b observed 0x200000028, then 0x200000000. Pooled,
     # each run's base was its lowest of both, so the observed and after-set rows
     # cross-paired, and run a's hit 2 paired run b's hit 1.
@@ -1392,7 +1392,7 @@ def test_the_address_recipe_keeps_observed_rows_only(store):
 
 
 def test_the_address_recipe_keeps_one_stop_location_as_documented(store):
-    # Review of PR #277: a line with two breakpoint locations stops at each. Here location
+    # A line with two breakpoint locations stops at each. Here location
     # 1 sees a copy on the stack, below the heap, so pooled it became run a's base.
     stack, heap = "0x000000016fdff000", "0x0000600000c04{:03x}".format
     recorded = captured(
@@ -1423,7 +1423,7 @@ def test_the_address_recipe_keeps_one_stop_location_as_documented(store):
 
 
 def test_the_address_recipe_never_takes_a_sentinel_as_its_base(store):
-    # Review round 2 of PR #277: `0xffffffffffffffff` (MAP_FAILED, usize::MAX) reads -1, so
+    # `0xffffffffffffffff` (MAP_FAILED, usize::MAX) reads -1, so
     # MIN(address(value)) took it as each run's base and paired the two sentinel hits at
     # offset 0, while no real pointer paired. Both recipes keep address(value) > 0.
     sentinel = "0xffffffffffffffff"
@@ -1495,12 +1495,12 @@ def test_the_address_recipe_never_takes_a_sentinel_as_its_base(store):
 
 
 def test_the_evidence_view_has_language_and_output_stays_one_join_away(store):
-    # #93 (eval 4, Rust): comparing values with output needed a join, where `label`
+    # Comparing values with output needed a join, where `label`
     # was then ambiguous; Java masking needed runs.language.
     evidence.record(store, result(output="RLE:3a\n"), language="rust")
     rows = evidence.query(store, "SELECT selector, language FROM last_run")["rows"]
     assert rows[0] == {"selector": "start", "language": "rust"}
-    # Review of #97: output on every row made SELECT * repeat it per capture and hit the
+    # Output on every row made SELECT * repeat it per capture and hit the
     # result cap; it stays in runs, and an ambiguous join column says why.
     loud = result(starts=tuple(map(str, range(100))), output="x" * 200_000)
     evidence.record(store, loud, language="python")
@@ -1530,8 +1530,8 @@ def test_a_schema_4_store_gains_the_new_view_columns(store):
 
 
 def test_diff_notes_a_type_change_and_runs_of_different_source(store):
-    # Eval 5 (C): the fix changed `total` from unsigned int to long long, and the diff
-    # did not say so. Eval 5 (Python): runs of two different files compared silently.
+    # The fix changed `total` from unsigned int to long long, and the diff
+    # did not say so. Runs of two different Python files compared silently too.
     first = result(starts=("4294967294",))
     first["rows"][0]["type"] = "unsigned int"
     evidence.record(store, first, language="c")
@@ -1543,7 +1543,7 @@ def test_diff_notes_a_type_change_and_runs_of_different_source(store):
     assert rows["start"]["note"] == "type unsigned int -> long long"
     assert rows["start"]["hit"] == 1 and rows["start"]["value_b"] == "-2"
     assert "different source text" in rows["(source)"]["note"]
-    # Review of #109: a run that failed before launch has no source hash; that is not
+    # A run that failed before launch has no source hash; that is not
     # a different source.
     failed = result(starts=())
     failed["source_sha256"] = None
@@ -1553,7 +1553,7 @@ def test_diff_notes_a_type_change_and_runs_of_different_source(store):
 
 
 def test_a_run_without_set_has_no_intervention_hit(store):
-    # Eval 5 (Python): runs.set_hit said 1 for runs without --set.
+    # runs.set_hit said 1 for runs without --set.
     evidence.record(store, result())
     evidence.record(store, result(sets=(("start", "0"),)))
     rows = evidence.query(store, "SELECT sets, set_hit FROM runs ORDER BY run_id")["rows"]
@@ -1561,8 +1561,8 @@ def test_a_run_without_set_has_no_intervention_hit(store):
 
 
 def test_python_identities_and_scopes_are_stored_and_a_schema_5_store_gains_them(store):
-    # #104: whether `seen` is the same list on every call needs Python object identity.
-    # Its review: the number alone is the identity (an object keeps it when its class is
+    # Whether `seen` is the same list on every call needs Python object identity.
+    # The number alone is the identity (an object keeps it when its class is
     # reassigned), and a row says whether a module global was read.
     run = captured(
         [
@@ -1609,7 +1609,7 @@ def test_python_identities_and_scopes_are_stored_and_a_schema_5_store_gains_them
 
 
 def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(store):
-    # Review of #104 (round 2): its first build wrote schema 6 with `identity TEXT`
+    # Its first build wrote schema 6 with `identity TEXT`
     # (`list@7`) and no `scope`, and later code skipped the migration ("table captures
     # has 13 columns but 14 values").
     run = captured([(1, "observed", "seen", "['a']"), (1, "observed", "key", "'a'")])
@@ -1641,7 +1641,7 @@ def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(sto
     rows = evidence.query(
         store, "SELECT selector, identity, typeof(identity) AS kind, scope FROM last_run"
     )["rows"]
-    # #104 review (round 3): that version could read module globals without saying so.
+    # That version could read module globals without saying so.
     assert rows == [
         {"selector": "seen", "identity": 7, "kind": "integer", "scope": "unknown"},
         {"selector": "key", "identity": None, "kind": "null", "scope": "unknown"},
@@ -1662,7 +1662,7 @@ def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(sto
 
 
 def test_a_stale_rust_value_is_stored_as_stale(store):
-    # #108: a field of a moved or dropped Rust local is the bytes it left behind; the
+    # A field of a moved or dropped Rust local is the bytes it left behind; the
     # store says so in `view`, as a row's note does.
     recorded = captured([(1, "observed", "h.n", "9"), (1, "observed", "f.n", "3")])
     recorded["rows"][0]["stale"] = True
@@ -1675,7 +1675,7 @@ def test_a_stale_rust_value_is_stored_as_stale(store):
 
 
 def test_a_table_shows_short_frame_names_and_sql_compares_whole_ones(store):
-    # Eval 6, finding 16: a C++ signature doubled the table's width. The text shows the
+    # A C++ signature doubled the table's width. The text shows the
     # short name and says so; the result, and what SQL compares, stay whole.
     whole = (
         "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
@@ -1698,7 +1698,7 @@ def test_a_table_shows_short_frame_names_and_sql_compares_whole_ones(store):
 
 
 def test_the_notes_example_matches_overloads_as_sql_does(store):
-    # Review of the eval-6 fixes: with overloads the example read
+    # With overloads the example read
     # `short_function(function) = 'twice(int)'`, which matches no row.
     probe = result()
     names = ["twice(int)", "twice(std::__1::basic_string<char> const&)"]
@@ -1712,7 +1712,7 @@ def test_the_notes_example_matches_overloads_as_sql_does(store):
 
 
 def test_closures_and_instances_a_table_shows_are_found_by_instance(store):
-    # #151 review 4: the table showed `cz::main::{closure#0}` and `{closure#1}`, and its
+    # The table showed `cz::main::{closure#0}` and `{closure#1}`, and its
     # note said to use short_function(function), which gives both `cz::main::{{closure}}`.
     probe = result()
     labels = ["cz::main::{closure#0}", None, "cz::main::{closure#1}", None]
@@ -1756,7 +1756,7 @@ def test_a_schema_12_store_gains_capture_instances(store):
 
 
 def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
-    # #139 (sixth evaluation): one row per hit took three-way self-joins on captures.
+    # Without `wide`, one row per hit took three-way self-joins on captures.
     selectors = ("now", "w.start", "bins[3].hi", 'ages["al"]', "d['k']", "line")
     rows = []
     for hit, now in enumerate(("0", "1", "10"), 1):
@@ -1820,7 +1820,7 @@ def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
 
 
 def test_join_links_two_runs_by_a_selectors_value(store):
-    # #139: linking run 3 to run 4 by `v` took a correlated subquery; diff pairs by hit.
+    # Linking run 3 to run 4 by `v` took a correlated subquery; diff pairs by hit.
     first = captured(
         [
             (1, "observed", "v", "7"),
@@ -1886,7 +1886,7 @@ def test_join_links_two_runs_by_a_selectors_value(store):
 
 
 def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
-    # Review of #139 (PR #145, round 1): a C/C++ row's note (a `do` body's first line, a
+    # A C/C++ row's note (a `do` body's first line, a
     # program using setjmp) was not stored, so wide showed `k=1` plain; a stale value
     # that also had a view (`Some(40)`, active-variant) was stored with the view alone;
     # `x` and `X` were one column to SQLite (join's `a:X:1` held x's values); no_value
@@ -1939,8 +1939,8 @@ def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
         "k", "hit_a", "hit_b", "a:x", "a:X (2)", "a:h.o", "a:s", "a:gone; here", "b:x"
     ]  # fmt: skip
     assert "b:X (2)" in joined["columns"]
-    # The key's own caveat too: a value Peeky cannot vouch for pairs nothing (review of
-    # PR #209), so the hit is unmatched, and caveats_a says why.
+    # The key's own caveat too: a value Peeky cannot vouch for pairs nothing, so the
+    # hit is unmatched, and caveats_a says why.
     shown = [(row["k"], row["hit_a"], row["hit_b"], row["matched"]) for row in joined["rows"]]
     assert shown == [(None, 1, None, "only in run a"), ("1", None, 1, "only in run b")]
     row, other_row = joined["rows"]
@@ -1955,7 +1955,7 @@ def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
 
 
 def test_join_says_when_its_key_carries_addresses_and_can_mask_them(store):
-    # Review of #139 (low): `const char *name` is `0x… "apple"`, whose address differs
+    # `const char *name` is `0x… "apple"`, whose address differs
     # between runs, so nothing paired and nothing said why.
     first = captured(
         [
@@ -2001,7 +2001,7 @@ def test_join_says_when_its_key_carries_addresses_and_can_mask_them(store):
 
 
 def test_a_schema_7_store_gains_notes(store):
-    # Review of #139: rows' notes are kept from schema 8; earlier runs have none.
+    # Rows' notes are kept from schema 8; earlier runs have none.
     evidence.record(store, captured([(1, "observed", "k", "1")]))
     connection = sqlite3.connect(store)
     if "notes_kept" in {row[1] for row in connection.execute("PRAGMA table_info(runs)")}:
@@ -2030,7 +2030,7 @@ def test_a_schema_7_store_gains_notes(store):
     assert evidence.query(store, "SELECT selector, note FROM last_run")["rows"] == [
         {"selector": "k", "note": "may be the last pass's value"}
     ]
-    # Review 2 of #139: run 1's values may be unmarked, and each query showing them says
+    # Run 1's values may be unmarked, and each query showing them says
     # so (its probe's notes were not kept); run 2's were.
     for name, params in (("run", {"run": 1}), ("wide", {"run": 1}), ("hits", {"run": 1})):
         (note,) = evidence.run_query(store, name, params)["notes"]
@@ -2049,7 +2049,7 @@ def test_a_schema_7_store_gains_notes(store):
 
 
 def test_qualified_values_are_never_counted_as_divergences_changes_or_sightings(store):
-    # Review 2 of #139 (PR #145): on a C `do` body's first line, two runs' leftovers in
+    # On a C `do` body's first line, two runs' leftovers in
     # `k` and `v` came first in diff (`k 1927662298 vs 547973539`, note NULL) although
     # the computation and output were the same; hits computed `changed` from them and
     # values counted them.
@@ -2105,7 +2105,7 @@ def test_qualified_values_are_never_counted_as_divergences_changes_or_sightings(
 
 
 def test_masking_leaves_quoted_text_alone(store):
-    # Review 2 of #139: masked=1 paired `"0x00000001deadbeef"` with `"0x00000002cafebabe"`
+    # Masked=1 paired `"0x00000001deadbeef"` with `"0x00000002cafebabe"`
     # (a char[32], no address), and the address note fired for it.
     first = captured(
         [
@@ -2141,7 +2141,7 @@ def test_masking_leaves_quoted_text_alone(store):
 
 
 def test_a_qualified_value_says_so_whatever_else_its_diff_row_says(store):
-    # Review 3 of #139 (PR #145): one note per row, and `missing in run b`, `intervention
+    # One note per row, and `missing in run b`, `intervention
     # only in run a` and `type …` won over `qualified`, so a noted leftover read plain
     # (and came first).
     def run(hits, extra=False, typed="int", sets=False):
@@ -2194,7 +2194,7 @@ def test_a_qualified_value_says_so_whatever_else_its_diff_row_says(store):
 
 
 def test_interventions_at_their_own_stops_are_stored_shown_and_placed(store):
-    # #137: --set-at changes at other lines and hits. Captured at line 8 (3 hits); a
+    # --set-at changes at other lines and hits. Captured at line 8 (3 hits); a
     # change at line 8's hit 2 (captured: after-set rows), one at line 9's hit 2 (after
     # hit 2, before hit 3), and one after the last captured hit.
     rows = [(hit, "observed", "w", str(hit)) for hit in (1, 2, 3)]
@@ -2231,7 +2231,7 @@ def test_interventions_at_their_own_stops_are_stored_shown_and_placed(store):
 
 
 def test_a_schema_9_store_gains_intervention_lines(store):
-    # Every --set before #137 was made at a captured stop of the run's line.
+    # Every --set a schema 9 store holds was made at a captured stop of the run's line.
     evidence.record(store, result(sets=[("start", "0")]))
     connection = sqlite3.connect(store)
     connection.executescript(
@@ -2248,7 +2248,7 @@ def test_a_schema_9_store_gains_intervention_lines(store):
 
 
 def test_a_schema_10_store_gains_intervention_functions(store):
-    # #151 review: a --set-at line's stops can be in several functions; each change keeps
+    # A --set-at line's stops can be in several functions; each change keeps
     # the one whose variable it changed.
     recorded = result(sets=[("start", "0")])
     recorded["interventions"][0]["function"] = "main::$_0::operator()(long) const"
@@ -2268,7 +2268,7 @@ def test_a_schema_10_store_gains_intervention_functions(store):
 
 
 def test_a_schema_11_store_gains_intervention_instances(store):
-    # #151 review 3: `queries wide` said `in gen::tf` for both instances.
+    # `queries wide` said `in gen::tf` for both instances.
     recorded = result(sets=[("start", "0")])
     recorded["interventions"][0].update(
         function="gen::tf::h0000000000000002", instance="gen::tf<gen::B>"
@@ -2337,7 +2337,7 @@ def saved_rows(
     """Record a run of (hit, phase, selector, value[, stop]) rows that stopped ``hits``
     times (default: its last hit) of the ``requested``; the probe asked for exactly the
     selectors it captured. A row's stop is which of its line's 2 breakpoint locations
-    it was at (#157). ``outcomes``: its set_outcomes, as a probe since schema 16 gives."""
+    it was at. ``outcomes``: its set_outcomes, as a probe since schema 16 gives."""
     from peeky import evidence
 
     recorded = probe_result()
@@ -2356,7 +2356,7 @@ def saved_rows(
 
 
 def test_diff_leaves_out_after_set_values_the_intervention_left(store):
-    # Finding 10: `r.buf`, which `--set r.tail=3` never touched, was listed as a
+    # `r.buf`, which `--set r.tail=3` never touched, was listed as a
     # difference (`intervention only in run b`) because only run b has after-set rows.
     from peeky import evidence
 
@@ -2380,7 +2380,7 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
         ),
         ("after-set", "r.tail", "intervention only in run b"),
     ]
-    # A `--set-at` at the captured line's 4th stop (#137) gets the same after-set rows.
+    # A `--set-at` at the captured line's 4th stop gets the same after-set rows.
     at_rows = [
         (4, "observed", "r.tail", "0"),
         (4, "observed", "r.buf", "[1, 2, 3, 0]"),
@@ -2438,7 +2438,7 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
 
 
 def test_diff_gives_one_address_only_row_per_selector(store):
-    # Finding 9: `queries diff` repeated an address-only row for the same selector once
+    # `queries diff` repeated an address-only row for the same selector once
     # per hit.
     from peeky import evidence
 
@@ -2449,7 +2449,7 @@ def test_diff_gives_one_address_only_row_per_selector(store):
         rows = [(hit, "observed", "self.values", vec(base)) for hit in (1, 2, 3, 4)]
         saved_rows(store, rows + [(hit, "observed", "v", "3") for hit in (1, 2, 3, 4)])
     rows = evidence.run_query(store, "diff")["rows"]
-    # In a C, C++ or Rust run, another address may be another element's (#292).
+    # In a C, C++ or Rust run, another address may be another element's.
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
         (
             1,
@@ -2475,7 +2475,7 @@ def test_diff_gives_one_address_only_row_per_selector(store):
 
 
 def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
-    # Finding 20: diff pairs rows by hit number, so for a sort comparator every hit
+    # Diff pairs rows by hit number, so for a sort comparator every hit
     # after the first different answer showed as a difference.
     from peeky import evidence
     from peeky.cli import main
@@ -2495,7 +2495,7 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
     note, after = result["notes"]
     assert "Run 1 stopped 4 times at its line and run 2 5," in note, note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
-    # #201: how many rows come after the first hit that differs (every row is kept).
+    # How many rows come after the first hit that differs (every row is kept).
     assert after.startswith(
         "the first real difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
     ), after
@@ -2515,7 +2515,7 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
 
 
 def test_diff_pairs_hits_at_the_same_stop_where_both_runs_label_them(store):
-    # Merge of #160 (#157): a line with several breakpoint locations stops at each, and
+    # A line with several breakpoint locations stops at each, and
     # a hit at another location than the other run's is another row, not the same
     # moment with another value.
     from peeky import evidence
@@ -2541,9 +2541,9 @@ def test_diff_pairs_hits_at_the_same_stop_where_both_runs_label_them(store):
 
 
 def test_a_return_pairs_by_its_hits_stop(store):
-    # Merge of #162 (#155): a `(return)` row has no stop of its own, so with stop-aware
+    # A `(return)` row has no stop of its own, so with stop-aware
     # pairing it paired by hit number alone, comparing the returns of calls that began
-    # at different stops. It now takes its hit's stop from the hit's observed rows.
+    # at different stops. It takes its hit's stop from the hit's observed rows.
     from peeky import evidence
 
     def calls(second_stop, second_return):
@@ -2591,7 +2591,7 @@ def test_returns_alone_on_a_line_that_stops_several_times_are_flagged(store):
 
 
 def test_returns_alone_pair_by_their_own_stop(store):
-    # #174: a `(return)` row now has its hit's stop, so returns alone on a line that
+    # A `(return)` row has its hit's stop, so returns alone on a line that
     # stops several times per pass pair by stop, and nothing is left to flag.
     from peeky import evidence
 
@@ -2615,7 +2615,7 @@ def test_returns_alone_pair_by_their_own_stop(store):
 
 
 def test_a_return_whose_hits_rows_disagree_is_not_paired_by_a_guessed_stop(store):
-    # Review of PR #198: a `(return)` row saved without its stop took MIN(stop) of its
+    # A `(return)` row saved without its stop took MIN(stop) of its
     # hit's rows. Run 1's hit was observed at stop 1 and set at stop 2, so its return
     # was paired as stop 1 with run 2's and compared (5 against 6), with no note. Rows
     # that disagree give no stop: nothing is paired by a guess, and the note says so.
@@ -2664,7 +2664,7 @@ def test_a_return_whose_hits_rows_disagree_is_not_paired_by_a_guessed_stop(store
     ],
 )
 def test_diff_collapses_address_only_rows_per_stop(store, language, shown, kind, after):
-    # Finding 9 with #160's stops: one address-only row per selector and stop.
+    # One address-only row per selector and stop.
     from peeky import evidence
 
     for base in (0x16B43EDB0, 0x16D17EDB0):
@@ -2727,7 +2727,7 @@ def saved_calls(store, rows, label=None, **probe):
     return evidence.record(store, calc_result(rows, **probe), label=label, language="java")
 
 
-# `queries diff`'s verdicts where the hits may not line up (eleventh evaluation: first).
+# `queries diff`'s verdicts where the hits may not line up.
 MAY_NOT = "hits may not line up: "
 
 
@@ -2735,7 +2735,7 @@ REORDER = f"{MAY_NOT}the calls may have come in another order or number\n- "
 
 
 def test_diff_says_when_the_same_values_came_in_another_order(store):
-    # M6: an edit changed how parseExpr's calls nest; both runs stopped 5 times, so no
+    # An edit changed how parseExpr's calls nest; both runs stopped 5 times, so no
     # note came, and `op '+' -> '-'` at hit 4 read as if the edit changed an operator.
     from peeky import evidence
 
@@ -2744,7 +2744,7 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith(f"{REORDER}runs 1 and 2 saw the same values of `op` in another order")
     assert "in another order (run 2's hit 4 matches run 1's hit 5: '-')\n" in note, note
-    # `op` repeats, so no captured value could key `join` (tenth evaluation): not named.
+    # `op` repeats, so no captured value could key `join`: not named.
     assert note.endswith(
         "\n- no captured selector tells the hits apart, so `queries join` could not pair them"
     ), note
@@ -2753,8 +2753,8 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
     assert "notes" not in evidence.run_query(store, "diff")
     saved_calls(store, [(n, "op", v) for n, v in enumerate(["'*'", "'-'", "'-'", "'-'", "'+'"], 1)])
     assert "notes" not in evidence.run_query(store, "diff")
-    # With the token's position, which tells the hits apart, `join` is named. Review of
-    # M6 (PR #189): join by a value the edit leaves alone, not `op`.
+    # With the token's position, which tells the hits apart, `join` is named, to
+    # join by a value the edit leaves alone, not `op`.
     for ops, positions in (("---+-", [1, 2, 3, 4, 5]), ("----+", [1, 2, 3, 5, 4])):
         saved_calls(
             store,
@@ -2770,9 +2770,9 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
 
 
 def test_diff_says_when_a_hit_is_in_another_function_or_line(store):
-    # M6: the same hit number at another function or line is another moment, unless the
-    # places pair one to one across hits (review of M6, PR #189: a renamed function, lines
-    # an edit moved).
+    # The same hit number at another function or line is another moment, unless the
+    # places pair one to one across hits (a renamed function, lines an
+    # edit moved).
     from peeky import evidence
 
     saved_calls(store, [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "5", "f", 24)])
@@ -2795,7 +2795,7 @@ def test_diff_says_when_a_hit_is_in_another_function_or_line(store):
 
 
 def test_diff_pairs_places_by_instance_too(store):
-    # Review of M6 (PR #189), (a): Rust closures and generics differ by instance only.
+    # Rust closures and generics differ by instance only.
     from peeky import evidence
 
     rows = [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "3", "f", 24)]
@@ -2810,7 +2810,7 @@ def test_diff_pairs_places_by_instance_too(store):
 
 
 def test_diff_compares_orders_without_addresses_or_object_numbers(store):
-    # Review of M6 (PR #189), (b): values carrying addresses or Java object numbers
+    # Values carrying addresses or Java object numbers
     # never matched, so their reorder went unseen.
     from peeky import evidence
 
@@ -2825,7 +2825,7 @@ def test_diff_compares_orders_without_addresses_or_object_numbers(store):
 
 
 def test_diff_says_when_values_line_up_at_other_hits(store):
-    # Review of M6 (PR #189), (c): a call left out shifts the rest, values changing too.
+    # A call left out shifts the rest, values changing too.
     from peeky import evidence
 
     saved_calls(store, [(1, "k", "'A'"), (2, "k", "'B'"), (3, "k", "'C'")])
@@ -2838,7 +2838,7 @@ def test_diff_says_when_values_line_up_at_other_hits(store):
 
 
 def test_diff_says_when_values_cannot_show_the_hits_pair(store):
-    # Review of M6 (PR #189): where most hits' values differ and nothing lines them up,
+    # Where most hits' values differ and nothing lines them up,
     # the note says so plainly rather than nothing.
     from peeky import evidence
 
@@ -2856,7 +2856,7 @@ def test_diff_says_when_values_cannot_show_the_hits_pair(store):
 
 
 def test_diff_compares_each_hits_values_by_selector(store):
-    # Review 2 of PR #189: the fallback compared each hit's values as one multiset, so
+    # The fallback compared each hit's values as one multiset, so
     # `left=A, right=B` against `left=B, right=A` at every hit gave no note; and a value
     # missing from a hit counted as the text "None".
     from peeky import evidence
@@ -2873,7 +2873,7 @@ def test_diff_compares_each_hits_values_by_selector(store):
     saved_calls(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1"), (3, "x", "None")])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith(f"{MAY_NOT}the runs' values differ at 2 of 3 hits\n"), note
-    # A selector only one run captured is not a difference at every hit (review 3).
+    # A selector only one run captured is not a difference at every hit.
     saved_calls(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1")])
     saved_calls(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("v", "1"), ("w", "5"))])
     assert "notes" not in evidence.run_query(store, "diff")
@@ -2885,7 +2885,7 @@ def test_diff_compares_each_hits_values_by_selector(store):
 
 
 def test_diff_and_compare_name_the_runs_labels(store):
-    # L17: `queries diff` named runs by number only.
+    # `queries diff` named runs by number only.
     from peeky import evidence
 
     saved_calls(store, [(1, "x", "1")], label="mapped-public")
@@ -2901,7 +2901,7 @@ def test_diff_and_compare_name_the_runs_labels(store):
 
 
 def test_a_query_leaves_out_a_stop_column_no_row_fills(store):
-    # L7: `queries set_effect` showed an empty `stop` column for a Python run.
+    # `queries set_effect` showed an empty `stop` column for a Python run.
     from peeky import evidence
 
     result = calc_result([(1, "key", "'hello-world-'")], set=[["key", "'hello-world'"]])
@@ -2933,10 +2933,10 @@ def sets_result(sets=(), set_at=(), set_hit=1, output="out\n"):
 
 
 def test_outputs_and_diff_say_where_each_change_was_requested(store):
-    # sessions 4: `queries outputs` showed `set_hit NULL` for `--set-at` runs, which
-    # reads as no change; rechnung 5: `diff`'s `(sets)` row gave `[["gleich", "true"]]`
+    # `queries outputs` showed `set_hit NULL` for `--set-at` runs, which
+    # reads as no change, and `diff`'s `(sets)` row gave `[["gleich", "true"]]`
     # with no hit, so the same --set at hits 3 and 4 differed in nothing it showed.
-    # runs.sets holds requests (review of PR #214): see test_probe for one not made.
+    # runs.sets holds requests: see test_probe for one not made.
     evidence.record(store, sets_result(set_at=((35, 4, "gap", "20"), (35, 6, "gap", "20"))))
     evidence.record(store, sets_result(sets=(("gap", "20"),), set_hit=4))
     outputs = evidence.run_query(store, "outputs")["rows"]
@@ -2981,7 +2981,7 @@ MOVED = "its addresses differ too: it may point at another element; compare offs
 
 
 def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
-    # Prep 16: rota's candidate stored `l` as a raw pointer, `[unproven]`, and `diff` said
+    # Rota's candidate stored `l` as a raw pointer, `[unproven]`, and `diff` said
     # `qualified (run b: unproven): not evidence by itself` at each of 6 hits, though its
     # address is the pointer's own value (COOKBOOK 4.8), and gave each hit a row.
     store = tmp_path / "evidence.db"
@@ -2999,8 +2999,8 @@ def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
             ]
         evidence.record(store, typed_views(rows), language="rust")
     rows = evidence.run_query(store, "diff")["rows"]
-    # The edit made `l` a raw pointer: a real difference, first, in one row (review of PR
-    # #315: as an address difference, it ranked after later real differences).
+    # The edit made `l` a raw pointer: a real difference, first, in one row (as an
+    # address difference, it would rank after later real differences).
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
         (
             1,
@@ -3023,7 +3023,7 @@ def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
 
 
 def test_a_pointers_type_change_is_the_first_divergence(tmp_path):
-    # Review of PR #315: `p`'s type changed at hit 1 (`int *` -> `long *`), and its values
+    # `p`'s type changed at hit 1 (`int *` -> `long *`), and its values
     # differ only in addresses; `n` differs at hit 2. As an address difference, `p` came
     # after `n`, so the first divergence was hit 2's.
     store = tmp_path / "evidence.db"
@@ -3073,10 +3073,10 @@ UNTOLD = "the older run predates Rust type spellings, so Peeky can't tell whethe
 
 @pytest.mark.parametrize("kind", ["&rota::Engineer", "*const rota::Engineer"])
 def test_a_rust_type_spelled_before_schema_18_is_said_to_be_untold(tmp_path, kind):
-    # Review of PR #315: a run saved before Rust references were spelled as Rust spells
+    # A run saved before Rust references were spelled as Rust spells
     # them stored `rota::Engineer *`, for a reference and a raw pointer alike; a new run
-    # `&rota::Engineer`. `diff` said the type changed, though only its spelling may have;
-    # then (round 2) it said nothing, though an old raw pointer may now be a reference.
+    # `&rota::Engineer`. Only the spelling may have changed, or an old raw pointer may be a
+    # reference in the new run: `diff` says it can't tell.
     store = tmp_path / "evidence.db"
     old = []
     for h in (1, 2):
@@ -3127,7 +3127,7 @@ def test_a_rust_type_spelled_before_schema_18_is_said_to_be_untold(tmp_path, kin
 
 
 def test_another_languages_type_change_is_never_taken_for_a_spelling(tmp_path):
-    # Round 2 review of PR #315: a schema-17 C++ row of type `long &&` (a structured
+    # A schema-17 C++ row of type `long &&` (a structured
     # binding's reference), against a newer row of type `long` whose debugger type is
     # `long &&`, with values 1 and 2, lost its type change.
     store = tmp_path / "evidence.db"
@@ -3153,7 +3153,7 @@ def test_unproven_text_beyond_an_address_stays_qualified(tmp_path):
 
 
 def test_queries_runs_shows_the_end_of_a_long_output(tmp_path):
-    # seats 7: output_start cut both runs at `…;FREE`, hiding `=39` against `=32`.
+    # output_start cut both runs at `…;FREE`, hiding `=39` against `=32`.
     store = tmp_path / "evidence.sqlite"
     outputs = (
         "SEATS:Kim=C3-6,Okafor=C5-7,Lund=C7-11,Ng=C1-2,Sato=D2-7;FREE=39\n",
@@ -3237,7 +3237,7 @@ def _bindings(withheld, inside):
 
 
 def test_a_value_one_run_has_none_of_is_no_difference(store, capsys):
-    # nightlot: in a candidate whose structured bindings were `not shown`, 18 of 25 `diff`
+    # In a candidate whose structured bindings were `not shown`, 18 of 25 `diff`
     # rows said `differs 1` only because one side was withheld, and the note said `hour`
     # and `cars` "differ after the edit".
     evidence.record(store, _run(_bindings(False, [0, 3, 2, 0])), language="cpp")
@@ -3310,7 +3310,7 @@ OPTIMIZED = "no value here: optimized out or not live (debugger: variable not av
 @pytest.mark.parametrize("withheld", ["a", "b"])
 @pytest.mark.parametrize("error", [REASON.format("n"), OPTIMIZED], ids=["withheld", "optimized"])
 def test_a_type_change_stays_a_difference_where_a_run_has_no_value(store, withheld, error):
-    # Review of PR #389: `type int -> long` with one side withheld read `no value in run b,
+    # `type int -> long` with one side withheld read `no value in run b,
     # so not a value difference`, with differs NULL, which hid a real difference.
     one = [_n_row(1, "3"), _n_row(2, "4")]
     other = [_n_row(1, kind="long", error=error), _n_row(2, "4", kind="long")]
@@ -3345,7 +3345,7 @@ def test_a_value_one_run_lacks_beside_a_type_change_elsewhere(store):
 
 
 def test_a_type_peeky_cant_tell_changed_is_no_difference_where_a_run_has_no_value(store):
-    # Review 2 of PR #389: a Rust run saved before Rust type spellings (no debugger_type)
+    # A Rust run saved before Rust type spellings (no debugger_type)
     # against a newer one whose value is unavailable got differs 1 and ranked first, though
     # its note says Peeky can't tell whether the type changed.
     import sqlite3
@@ -3403,7 +3403,7 @@ def test_a_type_peeky_cant_tell_changed_is_no_difference_where_a_run_has_no_valu
 
 
 def test_a_note_on_left_out_selectors_says_their_rows_still_show():
-    # bill: "`tariff` and `over_peak` differ after the edit and may follow from it, so this
+    # "`tariff` and `over_peak` differ after the edit and may follow from it, so this
     # check leaves them out" read as contradicting the rows it came under.
     note = evidence._after_change(
         ["wh"],
@@ -3424,7 +3424,7 @@ def test_a_note_on_left_out_selectors_says_their_rows_still_show():
 
 
 def test_the_output_row_does_not_widen_the_other_rows(store, capsys):
-    # depot: every column was padded to the (output) row's 118 characters.
+    # Every column was padded to the (output) row's 118 characters.
     long = "SHIPPED:CL-17,GS-5,BR-204,AX-1,AX-2,AX-3;REFUSED:HX-88,GS-5,QQ-1,QQ-2;AVERAGE:{}\n"
     evidence.record(store, _run(_bindings(False, [0, 3, 2, 0]), output=long.format("5.00")))
     evidence.record(store, _run(_bindings(False, [0, 1, 2, 5]), output=long.format("6.67")))
@@ -3453,7 +3453,7 @@ def _identified(rows, candidate=False):
 
 
 def test_compare_finds_the_run_past_newer_runs_of_other_selectors(store):
-    # Review of PR #389: only the newest 20 runs whose captures differed were looked at, so
+    # Only the newest 20 runs whose captures differed were looked at, so
     # 21 newer runs of other selectors hid the one run sharing a selector.
     def saved(capture, candidate=False):
         rows = [

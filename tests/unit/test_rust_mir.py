@@ -217,7 +217,7 @@ def test_ir_functions_record_the_lines_of_each_block(tmp_path):
     # Line 0, inlined code and debug intrinsics are not code of this function's lines.
     assert function.blocks == {"start": {3}, "bb1": {4}, "panic": {4}, "bb2": {5}}
     assert function.preds["panic"] == ["bb1"] and function.mir_blocks(4) == {1}
-    # #110: each IR block's first own call and conditional branch, and where LLVM
+    # Each IR block's first own call and conditional branch, and where LLVM
     # inlined a call (the inlined code's `inlinedAt`): debug intrinsics are no calls.
     assert function.events == {
         "start": (((3, 13),), ()),
@@ -619,7 +619,7 @@ def test_lines_that_can_start_a_macro_invocation(line, possible):
 @pytest.mark.parametrize(
     "text",
     [
-        # Review of #80: each made the line read as macro-free while rustc put `vec!`
+        # Each made the line read as macro-free while rustc put `vec!`
         # code on it.
         "fn f() {\n    let u = std::\n        /* see /* nested */ note */ vec![1];\n}\n",
         "fn f() {\n    let u = crate::\n        m\u00f3dulo::vec![1];\n}\n",
@@ -656,7 +656,7 @@ def test_a_block_codegen_left_without_predecessors_keeps_its_own_label(tmp_path)
 
 
 def test_arguments_take_their_types_from_the_header():
-    # Review of #84: MIR declares arguments in `fn f(_1: ...)` only, never as `let`.
+    # MIR declares arguments in `fn f(_1: ...)` only, never as `let`.
     body = parse_body(
         "fn sum(_1: &[u8], _2: std::collections::HashMap<K, V>, _3: fn(u8) -> u8, _4: usize)"
         " -> usize {\n"
@@ -676,14 +676,14 @@ def test_arguments_take_their_types_from_the_header():
 
 
 def test_projected_bindings_and_quoted_labels():
-    # Review of #103: a closure's or async body's binding through a projection names
+    # A closure's or async body's binding through a projection names
     # its type; LLVM quotes labels with `$` (an inlined `Box::new`'s exit block).
     from peeky.rust_mir import _LABEL, _projected_type
 
     assert _projected_type("(_1.0: std::boxed::Box<Pt>)") == "std::boxed::Box<Pt>"
     assert _projected_type("(((*_36) as variant#3).0: (i32, char))") == "(i32, char)"
     assert _projected_type("_3") is None
-    # Verification of #103: a closure's type holds `: ` itself.
+    # A closure's type holds `: ` itself.
     closure = "(_1.0: std::boxed::Box<{closure@src/main.rs:27:22: 27:35}>)"
     assert _projected_type(closure) == "std::boxed::Box<{closure@src/main.rs:27:22: 27:35}>"
     # A capture by reference, dereferenced, binds the referent's type.
@@ -694,7 +694,7 @@ def test_projected_bindings_and_quoted_labels():
 
 
 def test_a_trailing_comment_ends_no_path():
-    # Verification of #103: `// doubled` read as a path that `println!` on the next line
+    # `// doubled` read as a path that `println!` on the next line
     # might complete, which turned off the scope narrowing for the line.
     text = 'fn f() {\n    let n = args.count * 2; // doubled\n    println!("{}", n);\n}\n'
     assert not may_invoke_macro(text, 2)
@@ -728,7 +728,7 @@ MACRO_SIBLING = "\n".join(
 
 
 def test_scope_narrowing_reads_the_stop_s_own_file():
-    # Verification of #103: the macro check read the function's file at the stop's line,
+    # The macro check read the function's file at the stop's line,
     # though a stop in a `macro_rules!` from another module (or `include!`d code) is at
     # another file's line, where `eprintln!` may run in the dropped Box's scope.
     body = parse_body(MACRO_SIBLING)
@@ -753,7 +753,7 @@ def test_scope_narrowing_reads_the_stop_s_own_file():
     ['        let s = "x', '        let s = r#"x', "        /* x"],
 )
 def test_a_comment_mark_inside_a_multi_line_string_is_not_a_comment(opening):
-    # Verification of #103: a line that starts inside a string or block comment from the
+    # A line that starts inside a string or block comment from the
     # line before has a `//` that comments nothing out; its path end still counts.
     closing = '"#' if "r#" in opening else ('"' if '"' in opening else " */")
     text = f'fn f() {{\n{opening}\n// y{closing}; let b = 1; eprintln\n        !("{{}}", b);\n}}\n'
@@ -761,7 +761,7 @@ def test_a_comment_mark_inside_a_multi_line_string_is_not_a_comment(opening):
 
 
 def test_a_statement_s_scope_counts_on_every_line_of_its_span():
-    # Verification of #103: a method call on its own line (`K\n.get()`) runs there, while
+    # A method call on its own line (`K\n.get()`) runs there, while
     # its span starts at the receiver on the line before. A block's `()` value emits no
     # code: its span (the whole block) never puts its scope on the closing `}` line.
     body = parse_body(
@@ -804,7 +804,7 @@ def test_a_statement_s_scope_counts_on_every_line_of_its_span():
     ],
 )
 def test_a_frame_s_shape_is_its_function_and_closure_depth(frame, shape):
-    # Verification of #103: a fallback frame (async, unmangled) takes the bodies of its
+    # A fallback frame (async, unmangled) takes the bodies of its
     # own shape, not an enclosing body whose spans cover a nested block's lines.
     assert frame_shape(frame) == shape
 
@@ -854,7 +854,7 @@ OWNERS = "\n".join(
 
 
 def test_a_reference_reads_while_used_ahead_or_just_used_on_the_line():
-    # #110: a reference reads only while the code still uses it ahead (its borrow then
+    # A reference reads only while the code still uses it ahead (its borrow then
     # keeps the target), or after a use on the stop line with nothing since that can
     # move, drop or write. A drop is not a use: drop glue keeps no loan alive.
     body = parse_body(OWNERS)
@@ -895,7 +895,7 @@ def facts(column=None, firsts=None, inlined=(), macros=()):
 
 
 def test_a_breakpoint_stops_only_where_its_line_starts_in_each_lexical_block():
-    # #110: rustc lays out a block after the block first branching to it, so where a line
+    # rustc lays out a block after the block first branching to it, so where a line
     # continues from its own branch (an overflow check the IR shows) in the same lexical
     # block, LLDB puts no breakpoint location: only steps and pauses stop there.
     body = parse_body(CONTINUED)
@@ -927,7 +927,7 @@ def test_a_breakpoint_stops_only_where_its_line_starts_in_each_lexical_block():
 
 
 def test_an_inlined_call_s_result_is_stored_after_its_body():
-    # #110: LLVM inlines `#[inline(always)]` callees even at opt-level 0; the caller's
+    # LLVM inlines `#[inline(always)]` callees even at opt-level 0; the caller's
     # code after the inlined body is where its line's breakpoint may be.
     body = parse_body(OWNERS)
     inlined = facts(column=18, inlined={20})
@@ -1089,7 +1089,7 @@ def test_aliases_follow_values_that_can_hold_a_pointer_and_find_drops_through_th
     assert body.drops_through(1) and not body.drops_through(2)
 
 
-# #116: an `#[inline(always)]` function, as rustc dumps its MIR (built before LLVM
+# An `#[inline(always)]` function, as rustc dumps its MIR (built before LLVM
 # inlines it into every caller, even at opt-level 0).
 INLINED = """fn e(_1: &mut Vec<Pt>) -> i64 {
     debug v => _1;                       // in scope 0 at src/main.rs:13:6: 13:7
@@ -1176,7 +1176,7 @@ start:
 
 
 def test_a_function_inlined_everywhere_is_recorded_from_its_inlined_code(tmp_path):
-    # #116: `#[inline(always)]` leaves no IR function of its own, yet its frames carry
+    # `#[inline(always)]` leaves no IR function of its own, yet its frames carry
     # its hash; the lines of its inlined copies identify its MIR body.
     path = tmp_path / "app.ll"
     path.write_text(INLINED_IR)
@@ -1217,7 +1217,7 @@ def test_an_inlined_frame_s_references_are_judged_at_every_place_of_its_line(tmp
 
 
 def test_a_reference_judged_unproven_says_what_may_have_run_since_its_last_use(tmp_path):
-    # #259: the reason a reference shows only its pointer is the one that held: not yet
+    # The reason a reference shows only its pointer is the one that held: not yet
     # assigned, a call on lines 16 and 17 since its last use, or a stop no line places.
     path = tmp_path / "app.ll"
     path.write_text(INLINED_IR)
@@ -1244,7 +1244,7 @@ def test_a_reference_judged_unproven_says_what_may_have_run_since_its_last_use(t
         assert why == []
 
 
-# A reference made into a raw pointer for a comparison (kitty's `if ptr::eq(f, e.payer)`):
+# A reference made into a raw pointer for a comparison (`if ptr::eq(f, e.payer)`):
 # its last use, then the call, which a stop on the line may be past.
 COMPARED = {
     0: [
@@ -1279,7 +1279,7 @@ def compared(call, *more, types=POINTERS):
     ],
 )
 def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(call):
-    # #259: making `f` a raw pointer is its last use; past the comparison's call, what it
+    # Making `f` a raw pointer is its last use; past the comparison's call, what it
     # points at still stands, since the call only compares two addresses. The raw pointer
     # it was made into is no use of `f`.
     body = compared(call)
@@ -1290,7 +1290,7 @@ def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(cal
     assert body.gaps_before(29, (1, 0)) == {(0, 3)}
     assert body.used_before(29, (1, 0), compares=True)
     assert body.gaps_before(29, (1, 0), compares=True) == set()
-    # #320 review round 3: only under the root the dump names it by (`core` for a bare
+    # Only under the root the dump names it by (`core` for a bare
     # `addr_eq`), where the crate gives that name nothing of its own.
     root = "std" if call.startswith("std") else "core"
     assert body.used_before(29, (1, 0), compares=frozenset({root}))
@@ -1306,7 +1306,7 @@ def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(cal
         "eq::<Friend>(move _31, move _32)",
         "ptr::eq::<Friend>(move _31, move _32)",
         "kitty::std::ptr::eq::<Friend>(move _31, move _32)",
-        # Not two raw pointers (#272 review: a crate's own `std::ptr::eq` taking a Box,
+        # Not two raw pointers (a crate's own `std::ptr::eq` taking a Box,
         # which it drops), or a constant.
         "std::ptr::eq::<Friend>(move _31, move _32, const ())",
         "std::ptr::eq::<Friend>(move _31, copy _1)",
@@ -1380,18 +1380,18 @@ def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
     ("text", "trusted"),
     [
         # A `std` or `core` of the crate's own: the dump names its items `std::…` too. Each
-        # root is proven alone since #320 review round 3, so the other still counts.
+        # root is proven alone, so the other still counts.
         ("mod std { pub mod ptr {} }\n", {"core"}),
         ("use crate::m as core;\n", {"std"}),
         ("macro_rules! m { () => { mod std {} } }\n", {"core"}),
-        # An `alloc` of its own names neither (#320 review round 3).
+        # An `alloc` of its own names neither.
         ("mod alloc {}\n", {"std", "core"}),
         # An `addr_eq` of its own, which the dump would name alone.
         ("fn addr_eq(a: *const u8, b: *const u8) -> bool { a == b }\n", set()),
         ("use std::ptr::addr_eq;\nfn main() { addr_eq(a, b); }\n", set()),
         # A source that does not lex.
         ('fn main() { let s = "open; }\n', set()),
-        # A macro may declare `mod std` from its argument (#272 review), and `extern
+        # A macro may declare `mod std` from its argument, and `extern
         # crate` may take the name.
         ("macro_rules! make_mod { ($n:ident) => { mod $n {} } }\nmake_mod!(std);\n", {"core"}),
         ("make_mod! { core }\n", {"std"}),
@@ -1399,7 +1399,7 @@ def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
         ("outer!(inner!(std));\n", {"core"}),
         ("extern crate core as std;\n", {"core"}),
         ("extern  crate alloc as core;\n", {"std"}),
-        # Raw identifiers on either side (#272 review, round 2).
+        # Raw identifiers on either side.
         ("extern crate evil as r#std;\n", {"core"}),
         ("extern crate evil as r#core;\n", {"std"}),
         ("extern crate r#evil as std;\n", {"core"}),
@@ -1414,7 +1414,7 @@ def test_a_crate_that_may_name_a_root_itself_trusts_no_comparison_under_it(text,
     "name", ["std::ptr::eq", "core::ptr::eq", "std::ptr::addr_eq", "inner::addr_eq", "addr_eq"]
 )
 def test_a_crate_whose_dump_holds_its_own_comparison_trusts_none(name):
-    # #272 review: `make_mod!(std)` declared `mod std { pub mod ptr { fn eq } }`, dumped
+    # `make_mod!(std)` declared `mod std { pub mod ptr { fn eq } }`, dumped
     # as `fn std::ptr::eq(…)`, and its calls as `std::ptr::eq::<Friend>(…)`. The
     # standard library's bodies are never in the crate's dump.
     assert owned_crate("fn main() {}\n", defined={"main", name})._std_compares() == set()
@@ -1495,7 +1495,7 @@ def test_a_function_also_inlined_takes_no_breakpoint_facts(tmp_path):
     assert function.copies == {4} and not function.inline_only
 
 
-# #116: an `async fn`'s body after rustc's coroutine transform: `first` is kept in its
+# An `async fn`'s body after rustc's coroutine transform: `first` is kept in its
 # state across the `.await` (variant 3), `stale` is not, and `v` is copied from the
 # state into the poll's own frame.
 COROUTINE = "\n".join(
@@ -1657,7 +1657,7 @@ def test_a_coroutine_whose_state_is_not_understood_gates_its_references():
     ],
 )
 def test_a_coroutine_s_body_is_its_closure_of_the_same_path(name, ancestors, path):
-    # #116: debug info names a coroutine by its kind, the MIR as a closure; a closure in
+    # Debug info names a coroutine by its kind, the MIR as a closure; a closure in
     # an async block is told from the block by the whole path.
     body = mir({0: ["return;"]}, header=f"fn {path}() -> () {{")
     function = IrFunction(
@@ -1669,7 +1669,7 @@ def test_a_coroutine_s_body_is_its_closure_of_the_same_path(name, ancestors, pat
 
 
 def test_a_parameter_s_rows_read_where_its_copy_holds_what_the_state_does():
-    # #116: lldb-dap shows an async fn's parameter twice, as the state's field (lent for
+    # lldb-dap shows an async fn's parameter twice, as the state's field (lent for
     # the future's life) and as the poll's copy; after a resume the copy is unassigned.
     from peeky.rust import _same_lent_rows
 
@@ -1711,7 +1711,7 @@ def test_a_parameter_s_rows_read_where_its_copy_holds_what_the_state_does():
 
 
 def test_a_value_a_coroutine_s_state_holds_is_not_a_capture_through_it():
-    # #116: `n: i64`, an async fn's parameter in its state, points at nothing that a drop
+    # `n: i64`, an async fn's parameter in its state, points at nothing that a drop
     # through the state's other fields (`*v = new`) frees.
     text = COROUTINE.replace(
         "    debug v => ((*_9).0: &std::vec::Vec<Pt>); // in scope 0 at src/main.rs:1:15: 1:16",
@@ -1755,7 +1755,7 @@ def test_rust_comments_and_literals_are_found_by_one_lexer(text, spans, complete
 @pytest.mark.parametrize(
     "text, spans, complete",
     [
-        # Review of #156, round 3: rustc skips a shebang line, so its `"` opens no string
+        # rustc skips a shebang line, so its `"` opens no string
         # (which hid the `unsafe` below it).
         ('#!/usr/bin/env -S echo "\nlet a = "x";', [(0, 24, True), (33, 36, False)], True),
         ('\ufeff#!/bin/sh "\nfn f() {}', [(0, 12, True)], True),
@@ -1811,7 +1811,7 @@ def replaced(between=(), store=f"(_1.1: {BOXED}) = move _4;", dropped=f"(_1.1: {
 
 
 def test_a_field_dropped_and_replaced_in_place_leaves_its_local_whole():
-    # Review of #108: the drop of `h.b = new` ended `h`, and the store of the new Box
+    # The drop of `h.b = new` ended `h`, and the store of the new Box
     # into the same place never made it whole again.
     body = replaced()
     drops, stores = body._replacements()
@@ -1918,7 +1918,7 @@ start:
 
 
 def test_a_generic_instantiation_names_its_type_parameters(tmp_path):
-    # Review of #106: a generic body's MIR types may name a type parameter, whatever its
+    # A generic body's MIR types may name a type parameter, whatever its
     # name (`fn show<i8>(p: Pair<i8>)` called with chars).
     from peeky.rust_mir import mentions
 
@@ -1957,7 +1957,7 @@ def test_a_generic_bodys_primitive_named_types_may_hold_pointers():
     assert body._aliases(1) == {1, 2, 3}
 
 
-# #132: `async fn work(n: u32)` with a local the future does not keep across its `.await`
+# `async fn work(n: u32)` with a local the future does not keep across its `.await`
 # (`tmp`) and one it does (`before`): lines 1-6 are the fn line, `let tmp = n + 100;`,
 # `let before = n * 2;`, `Yield.await;`, `before + 1` and `}`.
 SCALARS = "\n".join(
@@ -2127,7 +2127,7 @@ def test_a_let_without_a_value_is_unassigned_until_assigned_and_joins_take_their
     assert body.returned_into(1, 4, "src/main.rs", False, {1}) is None
 
 
-# #115: `let k = r.x; println!("k = {}", k);`: `format_args!` declares `args` twice, so
+# `let k = r.x; println!("k = {}", k);`: `format_args!` declares `args` twice, so
 # LLDB stops three times on the line, once per lexical block (k's, then each `args`'s).
 PRINTED = r"""
 fn kay(_1: &Vec<Pt>) -> i64 {
@@ -2342,7 +2342,7 @@ def printed_function(tmp_path, ir=KAY_IR):
 
 
 def test_the_ir_names_each_lexical_block_and_its_code(tmp_path):
-    # #115: each instruction's scope, named as the DWARF names the block holding a stop;
+    # Each instruction's scope, named as the DWARF names the block holding a stop;
     # a DILexicalBlockFile is its block's.
     function = printed_function(tmp_path)
     assert function.blocks == {"start": {17, 18, 19, 20}, "bb5": {21}, "panic": {20}}
@@ -2411,7 +2411,7 @@ def test_a_stop_address_names_its_lexical_block_and_the_blocks_around_it(tmp_pat
 
 
 def test_a_macro_s_own_stops_are_told_apart_by_their_lexical_block(tmp_path):
-    # #115: all three stops report the macro's column; the block keeps only its places,
+    # All three stops report the macro's column; the block keeps only its places,
     # and at a breakpoint (the line's lowest address in the block) only those up to the
     # IR's first instruction of the line there that surely leaves code.
     body = parse_body(PRINTED)
@@ -2509,7 +2509,7 @@ def test_a_macro_s_own_stops_judge_the_references_of_their_block(tmp_path):
 
 
 def test_temporaries_holding_a_copy_of_a_local_are_found_and_judged_live():
-    # Review of #105: `let t = s.a + f();` copies `s.a` into `_4` before calling `f`;
+    # `let t = s.a + f();` copies `s.a` into `_4` before calling `f`;
     # back from `f`, a change to `s.a` misses `t`.
     bindings = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
     bindings += "debug t => _3;   // in scope 1 at src/main.rs:3:9: 3:10\n"
@@ -2540,7 +2540,7 @@ def test_temporaries_holding_a_copy_of_a_local_are_found_and_judged_live():
 
 
 def test_format_args_constructors_keep_pointers_and_are_no_copies():
-    # Review of #105 (round 2): `println!("{} {}", s.a, f())` gives `format_args!` a
+    # `println!("{} {}", s.a, f())` gives `format_args!` a
     # pointer to `s.a`; what its constructors return keeps it (a later change is seen),
     # while any other call given that pointer may return a copy.
     bindings = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
@@ -2614,7 +2614,7 @@ TUPLE_SOURCE = "\n" * 6 + (
 
 
 def test_a_breakpoints_place_on_its_line_is_told_by_its_column_or_not_at_all():
-    # Review of #105 (round 3): in `let t = (&k,` / `s.a,` / `s.b);`, the line's first
+    # In `let t = (&k,` / `s.a,` / `s.b);`, the line's first
     # place by the IR's order, `_4 = &_1`, emits no code: its first code is the tuple's,
     # after `s.a` is read. Only the stop's column tells them apart; without it, the
     # change was judged before the read (allowed) and the program used the old value.
@@ -2638,7 +2638,7 @@ def test_a_breakpoints_place_on_its_line_is_told_by_its_column_or_not_at_all():
     assert judged(None) is None
 
 
-# #300 (eleventh evaluation, `rota`): `if let Some(l) = &last {` / `if ptr::eq(e, l) {`,
+# rota's `if let Some(l) = &last {` / `if ptr::eq(e, l) {`,
 # as rustc 1.96 builds it at -Zmir-opt-level=0, cut to what line 39 needs. `e` points
 # into `team`, `l` into `last`; `week` and `pick` are read by neither.
 RAW_EQ = """// MIR for `plan` after PreCodegen
@@ -2810,16 +2810,15 @@ def withheld(owned, names=ALL_NAMES):
 
 
 def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local():
-    # #300: back from `ptr::eq(e, l)`, every local was refused, as if the call read it:
+    # Back from `ptr::eq(e, l)`, every local was refused, as if the call read it:
     # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
     # point anywhere. The standard library's `ptr::eq` compares the two addresses only.
     owned = raw_eq_owned()
-    # But past the call, the branch uses `_9`, what the call returned given a pointer into
-    # it, and the frame's return then ends `last`, `e`, `l` and `team` unread (#330 and its
-    # review; this MIR leaves out the `StorageDead`s a build has, which end the first three
-    # there too). That is said only as a hedge, never as a read the call made; `week` and
-    # `pick` are not withheld. The call writes nothing either, so it leaves no copy where
-    # `e` points, which would outlive the frame (#329).
+    # But past the call, the branch uses `_9`, what the call returned given a pointer into it, and
+    # the frame's return then ends `last`, `e`, `l` and `team` unread (this MIR leaves out the
+    # `StorageDead`s a build has, which end the first three there too). That is said only as a
+    # hedge, never as a read the call made; `week` and `pick` are not withheld. The call writes
+    # nothing either, so it leaves no copy where `e` points, which would outlive the frame.
     past_team = [False, False, True, True, True, True]
     assert withheld(owned) == past_team
     owned._positions = lambda site, line, facts, block=None: [(3, 0)]
@@ -2844,7 +2843,7 @@ def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local(
 
 
 def test_a_call_given_a_raw_pointer_may_read_through_it_whatever_the_source_shows():
-    # Review of #300: whether the crate has unsafe code was read from its source, but a
+    # Whether the crate has unsafe code was read from its source, but a
     # standard-library macro brings its own (`#[allow_internal_unsafe]`) with no `unsafe`
     # in the source. Here one expands on line 39 to `ptr::read` of a pointer to `week`:
     # `week` stays refused, though the crate shows no unsafe code.
@@ -2874,7 +2873,7 @@ UNSAFE_CODE = "the crate has unsafe code (in src/main.rs)"
 
 
 def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it():
-    # Review of #300: a call given a pointer into the local, or a reference Peeky does not
+    # A call given a pointer into the local, or a reference Peeky does not
     # follow, was said to have "already read it into a temporary". Here `std::ptr::eq` is
     # the crate's own, so it may read what it is given; and the crate has unsafe code,
     # which changes nothing.
@@ -2883,7 +2882,7 @@ def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it()
     why = raw_eq_session(owned)
     # `last`: `l` points into it, and the call is given a pointer made from `l`. The call,
     # given `&raw const *e` too, may store a copy where `e` points, in `team`, which a caller
-    # may read once the frame returns (#329).
+    # may read once the frame returns.
     read = (
         "a statement under way at the stop uses a pointer that may point into it (at line 39), "
         "so it may hold a copy of it, which it uses after the stop"
@@ -2905,7 +2904,7 @@ def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it()
 
 
 def test_a_refusal_says_the_statement_read_it_only_where_every_place_it_can_stop_did():
-    # Review of #300: the places a stop on line 39 can be were joined, so the call's copy
+    # The places a stop on line 39 can be were joined, so the call's copy
     # of `e`, made past the call, was said to be read at the places before it too.
     owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
     why = raw_eq_session(owned)
@@ -2931,8 +2930,8 @@ def test_a_refusal_says_the_statement_read_it_only_where_every_place_it_can_stop
             assert found.row == "a statement under way read it (line 39)"
         else:
             assert found.startswith("a statement under way at the stop reads it into a temporary")
-    # Past the call, what a crate function given a copy of `e` returns may be anything
-    # (#311 review): only may.
+    # Past the call, what a crate function given a copy of `e` returns may be anything:
+    # only may.
     owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
     owned._positions = lambda site, line, facts, block=None: [(3, 0)]
     why = raw_eq_session(owned)
@@ -2958,7 +2957,7 @@ def at_statement(text, start):
 
 
 def test_a_refusal_names_each_variable_it_cannot_trace_by_what_it_is():
-    # Review of #300: every name was called "a reference", raw pointers too.
+    # Every name was called "a reference", raw pointers too.
     named = (
         "            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26\n",
         "            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26\n"
@@ -3013,7 +3012,7 @@ def copy_reason(any_, explicit=(), value=None, traced=None, **others):
 
 
 def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be_did():
-    # Review of #300: the places a stop can be were joined, so one with a read the MIR
+    # The places a stop can be were joined, so one with a read the MIR
     # shows made the claim for all, though another held only what may have been read.
     reason, a, b, none = copy_reason, A, B, NONE
 
@@ -3061,7 +3060,7 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
         "uses what may be the program's own copy of it (at line 5)",
     )
     # The binding itself: the program goes on with it, whether or not the statement under
-    # way at the stop uses it (review round 3: `pause();` before `x = y;`).
+    # way at the stop uses it (`pause();` before `x = y;`).
     named_at_a = [(a, {20}), (b, set())]
     sure = {"taken": named_at_a, "sources": named_at_a, "copied": named_at_a}
     assert reason([(a, {20}), (b, {7})], none, none, none, **sure, full=True) == (
@@ -3073,7 +3072,7 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
 
 
 def test_a_binding_is_named_only_where_it_gave_the_copy_at_every_place():
-    # Review round 2 of #300: the bindings each place's copy came from were joined, so a
+    # The bindings each place's copy came from were joined, so a
     # read at one place and a binding's copy at the other named the binding, though a
     # stop at the first never used it; so did a different binding at each place.
     read_then_n = [(A, {5}), (B, {20})]
@@ -3090,7 +3089,7 @@ def test_a_binding_is_named_only_where_it_gave_the_copy_at_every_place():
 
 
 def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monkeypatch):
-    # Review round 2 of #300: where one place holds the statement's read and another a
+    # Where one place holds the statement's read and another a
     # binding's copy, what is true at each: the program already holds a copy.
     import peeky.rust
 
@@ -3119,7 +3118,7 @@ def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monk
 def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_copy(
     monkeypatch,
 ):
-    # Review round 3 of #300: `let y = x; keep(&mut x);` may change `x`, so `y` no longer
+    # `let y = x; keep(&mut x);` may change `x`, so `y` no longer
     # surely holds a copy of it: no binding is named as having copied it, and the
     # statement under way is not said to use `y` (it may be `pause();`).
     import peeky.rust
@@ -3191,7 +3190,7 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
 
 
 def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
-    # Review round 2 of #300: `_2 = copy (_1.0: u32); (_1.0: u32) = const 3_u32;` left
+    # `_2 = copy (_1.0: u32); (_1.0: u32) = const 3_u32;` left
     # `_2` surely read from the local's current value, though it holds the old field.
     s = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
 
@@ -3224,7 +3223,7 @@ def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
 
 
 def test_a_write_through_a_pointer_that_may_point_into_the_changed_part_ends_a_read():
-    # Review round 3 of #300: a pointer was followed only for the whole local, so
+    # A pointer was followed only for the whole local, so
     # `_2 = copy (_1.0: u32); _6 = &mut (_1.0: u32); (*_6) = const 3_u32;` left `_2` read
     # for a change to `s.0`, though it holds the old field.
     s = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
@@ -3279,8 +3278,8 @@ def test_a_write_through_a_pointer_that_may_point_into_the_changed_part_ends_a_r
     assert body.read_copies_at(1, (1, 0), first)[0] == set()
 
 
-# rustc 1.96.0's `-Zdump-mir=PreCodegen -Zmir-include-spans=yes` for (review round 4 of
-# #300; it prints 4 with `f(1, &raw mut z)`):
+# rustc 1.96.0's `-Zdump-mir=PreCodegen -Zmir-include-spans=yes` for (it prints 4 with
+# `f(1, &raw mut z)`):
 #
 #     fn f(mut x: u32, mut p: *mut u32) -> u32 {
 #         let y = x;
@@ -3363,7 +3362,7 @@ fn f(_1: u32, _2: *mut u32) -> u32 {
 
 
 def test_a_pointer_argument_retargeted_through_a_loan_may_point_into_the_local():
-    # Review round 4 of #300: an argument pointer was apart from every local of the frame,
+    # An argument pointer was apart from every local of the frame,
     # and `_4 = &mut _2` (`q = &mut p`) apart too, so `(*_4) = copy _5` (`*q = r`) kept `p`
     # apart, and `(*_2) = const 3_u32` (`*p = 3`, which writes `x`) left `y` holding a copy.
     body = parse_body(RETARGETED)
@@ -3386,7 +3385,7 @@ def test_a_pointer_argument_retargeted_through_a_loan_may_point_into_the_local()
 
 
 def test_a_call_that_may_change_the_changed_part_ends_a_read():
-    # Review round 3 of #300 (ruling): `let y = x; keep(&mut x);` may change `x`, so `y`
+    # `let y = x; keep(&mut x);` may change `x`, so `y`
     # no longer surely holds a copy of its current value; nor does anything read before.
     s = "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
     s += "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
@@ -3437,7 +3436,7 @@ def line_39(*statements):
 
 
 def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
-    # Review round 2 of #300: what surely read the local was taken from what may have
+    # What surely read the local was taken from what may have
     # (joined over the paths, through an aggregate holding pointers to other locals too,
     # whatever part a change makes), so "has already read it" could be false.
     def why(call, *changes, name="week", projection=(), past=True, **blocks):
@@ -3451,7 +3450,7 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     sure = "a statement under way at the stop has already read it into a temporary (at line 39)"
     maybe = ", so it may hold a copy of it, which it uses after the stop"
     # `let c = week; same(c)`: read by value on every path. Past the call, its result may
-    # be anything (#311 review): only may.
+    # be anything: only may.
     by_value = line_39("_17 = copy _4;", "_10 = &raw const (*_13);")
     assert why("same(move _17)", by_value, past=False).startswith(sure)
     assert why("same(move _17)", by_value) == (
@@ -3527,7 +3526,7 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
         "same(const 0_u32)", plus_or_zero, assign, name="weeks", bb6={39}, bb7={39}, bb8={39}
     )
     # Past the call, `weeks` is assigned unread, and line 44 then reads `week`: the program
-    # goes on with its copy, on the path that never used it before too (#330).
+    # goes on with its copy, on the path that never used it before too.
     assert found == (
         "the program has already copied its value into `week` (at line 32) and goes on with "
         "that copy, so a change to `weeks` may never be seen: Peeky proves no read of the "
@@ -3579,10 +3578,10 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     )
     # `let week = weeks;` on line 32, then `same(week, e.shifts)`: the statement reads the
     # program's own copy, not `weeks`; only `e` may have reached it. And `weeks`, an
-    # argument, ends unread at the return, after line 44 reads `week` (#330).
+    # argument, ends unread at the return, after line 44 reads `week`.
     shifts = line_39("_17 = copy ((*_13).1: u32);", "_10 = &raw const (*_13);")
-    # `_17` a `u32`, which holds no pointer `same` could write through (#329: what `e`
-    # points at would outlive the frame).
+    # `_17` a `u32`, which holds no pointer `same` could write through (what `e` points
+    # at would outlive the frame).
     typed = (
         "    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20",
         "    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20\n"
@@ -3596,7 +3595,7 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
 
 
 def test_format_args_constructors_count_only_where_nothing_else_can_pass_for_them():
-    # Review of #105 (round 3): the crate's own `mod core { pub mod fmt { ... } }` prints
+    # The crate's own `mod core { pub mod fmt { ... } }` prints
     # its `core::fmt::Arguments::new(&s.a)` just as the standard library's.
     def formatting(text, path="main"):
         body = mir({0: ["return;"]})
@@ -3633,7 +3632,7 @@ def test_a_line_breakpoint_stops_before_its_lines_first_code_in_each_block():
 
 
 def test_a_body_no_function_was_matched_to_may_have_any_type_parameter():
-    # Review of #106: a macro's twins are never matched, so their type parameters are
+    # A macro's twins are never matched, so their type parameters are
     # unknown: a `usize` there may hold a pointer too.
     body = mir(
         {0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"]}, header="fn main(_1: u64) -> () {"
@@ -3643,7 +3642,7 @@ def test_a_body_no_function_was_matched_to_may_have_any_type_parameter():
 
 
 def test_a_generic_name_rustc_cannot_be_read_from_is_not_understood():
-    # Review 3 of #106: with no parameter list read, a name whose arguments cannot be
+    # With no parameter list read, a name whose arguments cannot be
     # read was taken for a non-generic function's.
     from peeky.rust_mir import _generics
 
@@ -3656,7 +3655,7 @@ def test_a_generic_name_rustc_cannot_be_read_from_is_not_understood():
 
 
 def test_an_alias_graph_is_built_again_when_the_type_parameters_become_known():
-    # Review 3 of #106: built while they were unknown (an `#[inline(always)]` body not yet
+    # Built while they were unknown (an `#[inline(always)]` body not yet
     # matched), it kept every link once they were known.
     body = mir(
         {0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"]}, header="fn main(_1: u64) -> () {"
@@ -3670,7 +3669,7 @@ def test_an_alias_graph_is_built_again_when_the_type_parameters_become_known():
 
 
 def test_an_unassigned_local_is_judged_where_its_stop_block_and_rows_put_the_pc(tmp_path):
-    # #132 with #115: `k` assigned only inside `println!`'s blocks (a synthetic body): a
+    # `k` assigned only inside `println!`'s blocks (a synthetic body): a
     # stop told apart by its lexical block, or whose rows lldb-dap lists there (`args`,
     # bound only in those blocks), is judged at that block's places alone.
     def kay(assigned_before):
@@ -3703,7 +3702,7 @@ def test_an_unassigned_local_is_judged_where_its_stop_block_and_rows_put_the_pc(
 
 
 def test_a_places_assigned_state_is_its_blocks_entry_and_each_locals_last_event():
-    # #132's dataflow takes a block at a time (each block's events read once): every
+    # The dataflow takes a block at a time (each block's events read once): every
     # place of a body reads as replaying its block statement by statement does.
     import re
 
@@ -3756,7 +3755,7 @@ def test_a_places_assigned_state_is_its_blocks_entry_and_each_locals_last_event(
 
 
 def test_a_stops_places_are_kept_apart_by_its_kind_even_without_a_column(tmp_path):
-    # #132's per-stop memo: a line breakpoint's places (its facts, here without a column)
+    # The per-stop memo: a line breakpoint's places (its facts, here without a column)
     # are fewer than a step's on the same line, whichever stop is judged first.
     owned = OwnedLocals(
         [parse_body(PRINTED)],
@@ -3773,7 +3772,7 @@ def test_a_stops_places_are_kept_apart_by_its_kind_even_without_a_column(tmp_pat
 
 
 def test_what_is_live_ahead_of_a_place_is_what_used_ahead_finds_for_each_local():
-    # #105's copies are judged at once, by a backward dataflow (``live_ahead``): every
+    # Copies are judged at once, by a backward dataflow (``live_ahead``): every
     # local at every place of a body reads as ``used_ahead``'s search from there does.
     bodies = [OWNERS, CONTINUED, INLINED, COROUTINE, SCALARS, PRINTED, TUPLE_FIRST]
     for text in bodies:
@@ -3789,7 +3788,7 @@ def test_what_is_live_ahead_of_a_place_is_what_used_ahead_finds_for_each_local()
 
 
 def test_a_locals_copies_are_what_passes_over_every_assignment_find():
-    # #105's copies follow only what mentions each temporary found (``copies_of``): they
+    # Copies follow only what mentions each temporary found (``copies_of``): they
     # are what passes over every assignment to a temporary, until none changes, find.
     import re
 
@@ -3810,7 +3809,7 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
         found = []
 
         def written(bases, value, mentioned=None):
-            # #311: what a write through a pointer may reach holds what its value holds.
+            # What a write through a pointer may reach holds what its value holds.
             if mentioned is None:
                 mentioned = {int(n) for n in _MENTIONED.findall(value)}
             for base in bases:
@@ -3880,7 +3879,7 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
         ("&str", False),
         ("*const u8", False),
         ("std::str::Chars<'_>", False),
-        # The MIR prints a trait object's lifetime nowhere (#164 review 2).
+        # The MIR prints a trait object's lifetime nowhere.
         ("std::boxed::Box<dyn std::ops::Fn() -> usize>", False),
         ("std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = usize>>>", False),
         ("impl std::iter::Iterator<Item = char>", False),
@@ -3905,7 +3904,7 @@ def test_only_types_that_provably_hold_no_pointer_are_free(kind, free):
         ("std::option::Option<&str>", True),
         ("std::str::Chars<'_>", True),
         ("std::collections::HashMap<&str, i32>", True),
-        # A drop that may read what it borrows (#164 review 3).
+        # A drop that may read what it borrows.
         ("Guard<'_>", False),
         ("std::boxed::Box<dyn std::ops::Fn() -> usize>", False),
         ("std::string::Drain<'_>", False),
@@ -3921,8 +3920,8 @@ def test_only_drops_that_cannot_read_a_borrow_are_quiet(kind, quiet):
 
 
 def test_crate_types_whose_fields_hold_no_pointer_are_free():
-    # #164 review 3: `Vec<Span>` with `Span { start: u32, end: u32 }` holds no borrow.
-    # Review 4: nor a `Box` of such (rustc describes it as a pointer named for it), a
+    # `Vec<Span>` with `Span { start: u32, end: u32 }` holds no borrow.
+    # Nor a `Box` of such (rustc describes it as a pointer named for it), a
     # C-like enum, a union of such, or a type that holds itself through a Box.
     from peeky.rust import free_types
     from peeky.rust_mir import _pointer_free
@@ -4007,7 +4006,7 @@ def test_crate_types_whose_fields_hold_no_pointer_are_free():
     assert "Rec" not in free_types(dies)
 
 
-# `for v in args[0].split('/') { total = count(v.len()); total += 1; }` (#156).
+# `for v in args[0].split('/') { total = count(v.len()); total += 1; }`.
 FROZEN = """// MIR for `main` after PreCodegen
 
 fn main() -> () {
@@ -4227,7 +4226,7 @@ def frozen_with(after, *statements):
 
 
 def test_a_borrow_made_only_from_frozen_owners_is_traced_to_them():
-    # Seventh evaluation (Low, #156): `v` of `for v in args[0].split('/')` past its last
+    # `v` of `for v in args[0].split('/')` past its last
     # use and a call was unproven, though it points into `args`, which nothing changes:
     # `&_2`, `index`, `deref`, `split`, `into_iter`, and `next` on an iterator only
     # `next` borrows `&mut`.
@@ -4272,7 +4271,7 @@ def test_next_is_the_standard_librarys_only_where_the_crate_names_no_other(code,
 
 
 def test_a_frozen_owner_is_never_a_type_the_crate_may_name_itself():
-    # Review of #156: a function's header prints its arguments' types by short names
+    # A function's header prints its arguments' types by short names
     # (`&Vec<String>`), which a crate's own `Vec` (one a macro declares) may also have.
     from peeky.rust_mir import _frozen_owners
 
@@ -4295,7 +4294,7 @@ def test_a_frozen_owner_is_never_a_type_the_crate_may_name_itself():
     "edge", ["unwind continue", "unwind unreachable", "unwind terminate(abi)", "unwind: bb9"]
 )
 def test_a_call_is_read_whatever_its_unwind_edge(edge):
-    # Review of #156: calls with no cleanup of their own print `unwind continue`, which
+    # Calls with no cleanup of their own print `unwind continue`, which
     # left a reference argument's borrows untraced.
     from peeky.rust_mir import _CALL
 
@@ -4314,7 +4313,7 @@ def test_a_call_is_read_whatever_its_unwind_edge(edge):
         ("use std::vec::Vec as Box;", {"Box"}),
         ("mk!(String);", {"String"}),
         ("type u8 = i32;", {"u8"}),
-        # Review of #156: a macro may declare one (`decl!(Vec<T>);`).
+        # A macro may declare one (`decl!(Vec<T>);`).
         ("macro_rules! decl { ($n:ident) => { pub struct Vec<T>(T); }; }", {"Vec"}),
         ("macro_rules! sum { ($($x:expr),*) => { 0 $(+ $x as i64)* }; }", {"i64"}),
         ("macro_rules! two { () => { 2usize }; }", set()),
@@ -4328,7 +4327,7 @@ def test_a_short_type_name_is_trusted_only_where_the_crate_names_no_other(code, 
 
 
 def test_the_names_a_crate_gives_its_own_items_are_found_in_one_pass():
-    # Review of #156, round 3: each macro call's arguments were searched to the next `;`,
+    # Each macro call's arguments were searched to the next `;`,
     # per name: 8,000 calls in one statement took 22 s (the inspection's whole budget).
     import time
 
@@ -4344,7 +4343,7 @@ def test_the_names_a_crate_gives_its_own_items_are_found_in_one_pass():
 
 
 def test_a_temporary_set_before_the_local_took_its_value_holds_no_copy_of_it():
-    # #183: `for entry in args` stops at the body's first line after `entry` was moved
+    # `for entry in args` stops at the body's first line after `entry` was moved
     # out of `next()`'s result, a temporary a call given a pointer made, which the next
     # pass reads (`discriminant`). That temporary held an earlier value, never this one:
     # a change to `entry` there was refused as "a statement under way has read it".
@@ -4424,7 +4423,7 @@ def test_a_temporary_set_before_the_local_took_its_value_holds_no_copy_of_it():
     ],
 )
 def test_what_a_statement_surely_does_to_a_part_of_a_local(text, projection, access):
-    # #192 review: only a read that surely covers the changed part shows the program saw
+    # Only a read that surely covers the changed part shows the program saw
     # the change.
     assert _root_access(text, 1, projection) == access
 
@@ -4488,9 +4487,9 @@ def test_std_printing_a_borrowed_primitive_reads_it_at_the_print(sink):
 @pytest.mark.parametrize(
     ("sink", "kind", "file", "generics", "crate"),
     [
-        # #192 review 3: built and given to a function of the crate's own, never formatted.
+        # Built and given to a function of the crate's own, never formatted.
         ("ignore", "i16", STD_MACROS, (), {"main", "ignore"}),
-        # #192 review 4: a call written in a file of the crate's own that only ends as
+        # A call written in a file of the crate's own that only ends as
         # std's does (`src/library/std/src/macros.rs`), or in another toolchain's.
         ("format", "i16", "src/library/std/src/macros.rs", (), {"main"}),
         ("std::io::_print", "i16", "/w/src/library/std/src/macros.rs", (), {"main"}),
@@ -4523,7 +4522,7 @@ def test_a_formatting_argument_nothing_proven_to_format_is_no_read(
 
 
 def test_a_borrow_given_to_a_call_shows_no_read():
-    # #192 review: `ignore(&x)` may never read `x`; `x = y` then puts the old value back.
+    # `ignore(&x)` may never read `x`; `x = y` then puts the old value back.
     bindings = (
         "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
         "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
@@ -4556,7 +4555,7 @@ def test_a_borrow_given_to_a_call_shows_no_read():
 
 
 def test_a_block_the_code_cannot_reach_adds_no_copy_to_a_join():
-    # #192 review 2: every parsed block seeded the flow, so a block no path reaches
+    # Every parsed block seeded the flow, so a block no path reaches
     # (bb2) put its copy into bb3's entry.
     bindings = "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
     body = mir(
@@ -4574,7 +4573,7 @@ def test_a_block_the_code_cannot_reach_adds_no_copy_to_a_join():
 
 
 def test_std_macro_files_are_exactly_the_toolchains_own(tmp_path):
-    # #192 review 4: where std's printing is written, as this toolchain's MIR names it:
+    # Where std's printing is written, as this toolchain's MIR names it:
     # its sysroot's sources, or `/rustc/<commit-hash>/` where they are not installed.
     from peeky.build import ProbeResult
     from peeky.rust import std_macro_files
@@ -4590,7 +4589,7 @@ def test_std_macro_files_are_exactly_the_toolchains_own(tmp_path):
     assert std_macro_files(inside, (), (tmp_path,)) == frozenset()
 
 
-# #222: `let label: String;`, `label = format!("sum {sum}");` (line 4), `println!` (5).
+# `let label: String;`, `label = format!("sum {sum}");` (line 4), `println!` (5).
 # `format!`'s last call, spanned in std's file, returns into line 5's block.
 DEFERRED = "\n".join(
     [
@@ -4669,7 +4668,7 @@ def test_a_foreign_call_is_another_lines_only_where_every_instruction_of_it_says
     every = body.stop_positions({2}, 5, "src/main.rs", True)
     # Taken for line 5's (a macro it may invoke), `must_use`'s return is a place of it.
     assert (2, 0) in every
-    # #230 review: where any instruction of the call does not say where it is, it may be
+    # Where any instruction of the call does not say where it is, it may be
     # line 5's: no location, line 0, an `inlinedAt` chain that does not resolve.
     unlocated = DEFERRED_IR.replace(", i64 24, i1 false), !dbg !22\n", ", i64 24, i1 false)\n")
     zero = DEFERRED_IR.replace("!23 = !DILocation(line: 615", "!23 = !DILocation(line: 0")
@@ -4683,7 +4682,7 @@ def test_a_foreign_call_is_another_lines_only_where_every_instruction_of_it_says
         placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
         assert (2, 0) in placed, ir
         assert function.call_lines(1) is None, ir
-    # Every instruction of it on line 4 (inlined from there): not line 5's (#222).
+    # Every instruction of it on line 4 (inlined from there): not line 5's.
     function = deferred_function(tmp_path)
     placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
     assert (2, 0) not in placed and placed == [(2, 2)]
@@ -4700,7 +4699,7 @@ def test_a_foreign_call_is_another_lines_only_where_every_instruction_of_it_says
 
 
 def test_a_foreign_calls_block_counts_whole_and_an_invoke_leaves_its_store_unknown(tmp_path):
-    # #230 review, round 2: which LLVM call is the MIR terminator's is not told. An
+    # Which LLVM call is the MIR terminator's is not told. An
     # unlocated call followed by a located helper call (`memcpy`) and branch on line 4 is
     # no proof: the unlocated one could be line 5's.
     body = parse_body(DEFERRED)
@@ -4721,12 +4720,12 @@ def test_a_foreign_calls_block_counts_whole_and_an_invoke_leaves_its_store_unkno
         placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
         assert (2, 0) in placed, ir
         assert function.call_lines(1) is None, ir
-    # Inlined (#222 as built): every instruction on line 4, no invoke: line 4's.
+    # Inlined: every instruction on line 4, no invoke: line 4's.
     assert deferred_function(tmp_path).call_lines(1) == {4}
 
 
 def test_files_of_one_name_in_two_directories_are_not_one_file(tmp_path):
-    # #230 review: `a/mod.rs` and `b/mod.rs` as DIFiles of one name in two directories:
+    # `a/mod.rs` and `b/mod.rs` as DIFiles of one name in two directories:
     # code inlined from `b`'s line 4 is no line of `a`'s.
     ir = DEFERRED_IR.replace(
         '!2 = !DIFile(filename: "src/main.rs", directory: "/w")',

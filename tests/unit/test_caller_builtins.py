@@ -7,7 +7,7 @@ from peeky.native import _ADDRESSES
     "body",
     [
         "saved = __builtin_addressof(x);",
-        "char *cfa = __builtin_dwarf_cfa();",  # #211 review, round 4
+        "char *cfa = __builtin_dwarf_cfa();",
         "void *f = __builtin_frame_address(0);",
         "void *r = __builtin_return_address(0);",
         "__builtin_va_start(ap, x);",

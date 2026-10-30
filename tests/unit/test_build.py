@@ -335,7 +335,7 @@ def test_before_command_validates_each_build_step_and_failures_are_fatal(source,
     assert not marker.exists()
 
 
-# #177: each compiler's dependency file, read by its own escaping, `\n` alone ending a
+# Each compiler's dependency file, read by its own escaping, `\n` alone ending a
 # line; anything that could be read two ways fails the provenance check.
 RUSTC_NAMES = ["src/main.rs", "src/a b.rs", "src/c$$d.rs", "src/e$f.rs", "src/g\u2028h.rs"]
 
@@ -416,7 +416,7 @@ def test_make_dependency_files_list_every_file_by_its_own_name(tmp_path):
         ("peeky-object-0.o: x\\ \\\n\\ y.h\n", (), "neither ends its rule nor continues it"),
         ("peeky-object-0.o: a.h \\\n", (), "its last line is continued"),
         ("a b.o: a.h\n", (), "target is not a plain name"),
-        # clang prints a name's backslash as `/`: an empty step may be one (#178 review).
+        # clang prints a name's backslash as `/`: an empty step may be one.
         ("peeky-object-0.o: /w/out//x.h\n", (), "an empty step"),
         ("peeky-object-0.o: /w/out////x.h\n", (), "an empty step"),
         ("peeky-object-0.o: /w/out/x.h/\n", (), "an empty step"),

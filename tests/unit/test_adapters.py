@@ -19,7 +19,7 @@ def test_python_launch_configuration_preserves_existing_behavior(tmp_path):
         "redirectOutput": True,
         "justMyCode": True,
         "subProcess": False,
-        # #249: a debugged run writes no __pycache__ into the root.
+        # A debugged run writes no __pycache__ into the root.
         "env": {"PYTHONDONTWRITEBYTECODE": "1"},
     }
 
@@ -31,7 +31,7 @@ def test_scope_selection_is_python_specific():
         {"name": "Expensive", "presentationHint": "locals", "expensive": True},
     ]
     assert PythonAdapter().local_scopes(scopes) == [scopes[0]]
-    # debugpy's own Globals scope (no presentation hint) is listed after the locals (#104).
+    # debugpy's own Globals scope (no presentation hint) is listed after the locals.
     debugpy = [*scopes, {"name": "Globals", "variablesReference": 3}]
     assert PythonAdapter().local_scopes(debugpy) == [scopes[0], debugpy[-1]]
 

@@ -9,9 +9,7 @@ import pytest
 import peeky.probe as probe_module
 from peeky import cli
 from peeky.cli import _probe_text, main
-from peeky.probe import (
-    _table,
-)
+from peeky.probe import _table
 
 WHOLE = (
     "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
@@ -76,7 +74,7 @@ def probe(tmp_path, monkeypatch):
 
 
 def test_the_short_name_note_is_said_once_per_state_directory(probe, capsys):
-    # Finding 8: every probe repeated `note: function shows short frame names; ...`,
+    # Every probe repeated `note: function shows short frame names; ...`,
     # even with --quiet.
     note = "note: function shows short frame names"
     assert probe(probe_result(), "--quiet") == 0
@@ -88,8 +86,8 @@ def test_the_short_name_note_is_said_once_per_state_directory(probe, capsys):
     again = capsys.readouterr().out
     assert note not in again and "trim_left " in again, again
     # The SQL text says it where SQL is used: `peeky sql --help` always, and a query's
-    # table of a run that has not had it, once per run (twelfth evaluation, laps 6: it
-    # came under every query; review of PR #350). Run 3's probe left it out.
+    # table of a run that has not had it, once per run. Run 3's probe left it
+    # out.
 
     with pytest.raises(SystemExit):
         main(["sql", "--help"])
@@ -102,7 +100,7 @@ def test_the_short_name_note_is_said_once_per_state_directory(probe, capsys):
 
 
 def test_the_instance_note_follows_the_same_rule(probe, capsys):
-    # Finding 8, after #151: a probe table's instance labels (`instance = '...'`) are part
+    # A probe table's instance labels (`instance = '...'`) are part
     # of the same note, said once per state directory and never with --quiet.
     closure = probe_result(function="cz::main::{{closure}}::h0123456789abcdef")
     closure["rows"][0]["instance"] = "cz::main::{closure#0}"
@@ -122,7 +120,7 @@ def test_the_instance_note_follows_the_same_rule(probe, capsys):
 
 
 def test_the_probe_exit_codes():
-    # Finding 14 with #151: 2 for a probe refused before it ran, 4 for a completed probe
+    # 2 for a probe refused before it ran, 4 for a completed probe
     # with a change not made, 1 for any other probe that did not complete.
     from peeky.probe import probe_exit_code
 
@@ -135,7 +133,7 @@ def test_the_probe_exit_codes():
 
 
 def test_a_probe_refused_before_launch_shows_no_table_and_exits_2(monkeypatch, capsys):
-    # Finding 14: the console script too printed an empty table header and exited 1.
+    # The console script too printed an empty table header and exited 1.
     import peeky.probe as probe_module
 
     refused = probe_result(
@@ -159,7 +157,7 @@ def test_a_probe_refused_before_launch_shows_no_table_and_exits_2(monkeypatch, c
 
 
 def test_compare_names_no_run_whose_hits_are_at_other_stops(probe, capsys):
-    # Merge of #160 (#157): an edit that changes how often the `--at` line stops per
+    # An edit that changes how often the `--at` line stops per
     # pass moves every later hit to another breakpoint location; such a run pairs by
     # value, not by `diff`'s hit number.
     import hashlib
@@ -188,7 +186,7 @@ def test_compare_names_no_run_whose_hits_are_at_other_stops(probe, capsys):
 
 
 def test_the_per_pass_warning_is_said_every_time_the_short_name_note_once(probe, capsys):
-    # Finding 8 with #160: the warning that a line stops several times per pass changes
+    # The warning that a line stops several times per pass changes
     # what hits count, so it is never once-only or quiet; the note on names is.
     warning = "Line 3 stops up to 2 times per pass in trim_left (2 breakpoint locations)"
     result = probe_result(warnings=[warning])
@@ -202,7 +200,7 @@ def test_the_per_pass_warning_is_said_every_time_the_short_name_note_once(probe,
 
 
 def test_a_candidate_probe_names_the_run_to_compare_it_with(probe, tmp_path, capsys):
-    # Finding 12: after a candidate probe, a plain `queries diff` compares it with the
+    # After a candidate probe, a plain `queries diff` compares it with the
     # latest run, which may have other arguments or a `--set`; nothing named the run
     # that is the same probe without the edit.
     import hashlib
@@ -239,7 +237,7 @@ def test_a_candidate_probe_names_the_run_to_compare_it_with(probe, tmp_path, cap
     assert compare == {"run": 1, "command": "peeky queries diff --param a=1 --param b=7"}
     assert run() == 0  # run 8
     assert "compare:" not in capsys.readouterr().out
-    # A run with a `--set-at` (#137) changed a value too: it is no baseline.
+    # A run with a `--set-at` changed a value too: it is no baseline.
     changed = probe_result()
     changed["probe"].update(program="a.py", line=1, capture=["i"], set_at=[[1, 2, "i", "3"]])
     assert probe(changed, "--capture", "i", "--set-at", "1@2", "i=3") == 0  # run 9
@@ -248,7 +246,7 @@ def test_a_candidate_probe_names_the_run_to_compare_it_with(probe, tmp_path, cap
 
 
 def test_the_compared_run_has_the_candidates_build_and_unedited_source(probe, capsys):
-    # Review of PR #165, Low 4: `compare:` named an -O1 run for an -O0 candidate, and a
+    # `compare:` named an -O1 run for an -O0 candidate, and a
     # run of the source as it was before the file changed on disk.
     import hashlib
 
@@ -275,7 +273,7 @@ def test_the_compared_run_has_the_candidates_build_and_unedited_source(probe, ca
 
 
 def test_the_compared_run_read_the_same_sources(probe, capsys):
-    # Round 2 of PR #165, Low 2: after another source file changed on disk, `compare:`
+    # After another source file changed on disk, `compare:`
     # still named a run of the old file, and `diff` credited the change to the edit.
     import hashlib
 
@@ -353,7 +351,7 @@ def recorded(rows, label=None, **probe):
 
 
 def test_unchanged_after_set_rows_are_left_out_of_the_table():
-    # L16: after-set rows repeated values the change never touched (`i`).
+    # After-set rows repeated values the change never touched (`i`).
     from peeky.probe import _table
 
     result = recorded([(1, "path", '"/users/42/"'), (1, "i", "2")], set=[["path", "x"]])
@@ -379,7 +377,7 @@ def test_unchanged_after_set_rows_are_left_out_of_the_table():
 
 
 def test_after_set_rows_that_may_hide_a_change_stay():
-    # Review of L16 (PR #189): `s` showed its first fields only, so `s` after `--set
+    # `s` showed its first fields only, so `s` after `--set
     # s.ninth=2` looked unchanged and was left out. A row whose selector holds a changed
     # value, or whose value is not shown whole (a pointer, a preview, a cut text, a note),
     # stays; only a whole scalar or text equal to before is left out.
@@ -411,7 +409,7 @@ def test_after_set_rows_that_may_hide_a_change_stay():
 
 
 def test_after_set_objects_stay_where_their_text_cannot_show_them_unchanged():
-    # Review 2 of PR #189: with `b = a`, `a[0]="x"` makes a new Java String, which `b[0]`
+    # With `b = a`, `a[0]="x"` makes a new Java String, which `b[0]`
     # shows as the same text: a Java object row stays, a primitive equal to before is
     # left out. A Python value whose identity changed stays too.
     from peeky.probe import _table
@@ -439,7 +437,7 @@ def test_after_set_objects_stay_where_their_text_cannot_show_them_unchanged():
 
 
 def test_compare_hint_leaves_out_a_candidates_set(tmp_path, monkeypatch, capsys):
-    # L21: after a candidate probe with --set (of a variable only the edit declares), the
+    # After a candidate probe with --set (of a variable only the edit declares), the
     # hint said to run it without --old/--new, which kept the impossible --set.
     import hashlib
 
@@ -466,7 +464,7 @@ def _observed_row(hit, selector, **fields):
 
 
 def test_a_probe_table_lists_the_visible_names_once():
-    # kitty 6: at line 76, every stop in `settle` (not the closure) restated the frame's
+    # At line 76, every stop in `settle` (not the closure) restated the frame's
     # ten names for `f` and again for `f.name`, 16 times in a 28-hit probe.
     missing = {"function": "kitty::settle", "error": f"not found; visible: {VISIBLE}"}
     rows = [
@@ -517,7 +515,7 @@ def _long_result(selectors, hits):
 
 
 def test_a_long_probe_table_points_at_one_line_per_hit():
-    # debounce 3: 5 selectors at 32 hits printed 160 lines; `queries wide` gives 32.
+    # 5 selectors at 32 hits printed 160 lines; `queries wide` gives 32.
     pointer = (
         "evidence: one line per hit, a column per selector: `peeky queries wide --param run=7`"
     )
@@ -564,7 +562,7 @@ def _all(name, pairs, line=26, function="main"):
 
 
 def test_the_after_set_line_says_only_scalar_rows_are_left_out():
-    # rota 4: `after-set: 1 row equal to the hit's observed value left out`, while `team`'s
+    # `after-set: 1 row equal to the hit's observed value left out`, while `team`'s
     # after-set row, equal to its observed one, stayed: only whole scalars are left out.
     team = '[Engineer { name: "Ana", shifts: 1, .. }, …]'
     rows = [_plan_row("week", "6"), _plan_row("team", team)]
@@ -580,8 +578,8 @@ def test_the_after_set_line_says_only_scalar_rows_are_left_out():
 
 
 def test_the_after_set_line_says_why_an_equal_java_string_stays():
-    # Twelfth evaluation's preparation (desks): `p.name  String  "Dev"` stayed among the
-    # after-set rows, equal to its observed one, under a line that said whole texts go.
+    # desks: `p.name  String  "Dev"` stayed among the after-set rows, equal to its
+    # observed one, under a line that said whole texts go.
     rows = [_plan_row("free", "3", type="int"), _plan_row("p.name", '"Dev"', type="String")]
     rows += [
         _plan_row("free", "3", "after-set", type="int"),
@@ -598,7 +596,7 @@ def test_the_after_set_line_says_why_an_equal_java_string_stays():
 
 
 def test_one_change_past_the_first_few_is_shown_whole():
-    # grades 6 (prep 5): `set stats.lowest: 1 more change by --set-at line 61@all, at hits 4
+    # `set stats.lowest: 1 more change by --set-at line 61@all, at hits 4
     # to 4`, where the change itself fits on that line.
     changes = _all("stats.lowest", [("101", "101"), ("58", "101"), ("72", "101"), ("64", "101")])
     text = _table(_result(interventions=changes))
@@ -626,7 +624,7 @@ def _proven(changes):
 
 
 def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
-    # seats 3: `set free: 0 -> 0` counted as a change; 35 of the @all's 42 writes were.
+    # `set free: 0 -> 0` counted as a change; 35 of the @all's 42 writes were.
     pairs = [("3", "0"), ("0", "0"), ("3", "0"), ("0", "0"), ("2", "0"), ("0", "0"), ("1", "0")]
     changes = _proven(_all("free", pairs, function="Seats.block(boolean[],int)"))
     text = _table(_result(interventions=changes, language="java"))
@@ -647,7 +645,7 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
         "set free: 2 more writes by --set-at line 26@all, at stops 4 to 5 of line 26, each with no"
         in text
     )
-    # Review of PR #314: java-debug shows a char bare, so five `+ -> +` writes were "2 more
+    # java-debug shows a char bare, so five `+ -> +` writes were "2 more
     # changes". The worker's proof decides it, for a root local (`sign`) and a field alike.
     for name in ("sign", "chars.mark"):
         chars = _proven(_all(name, [("+", "+")] * 5))
@@ -660,8 +658,8 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
             f"set {name}: 2 more writes by --set-at line 26@all, at stops 4 to 5 of line 26, each with no "
             "change (`--json` lists each)"
         ) in text, text
-    # Round 2: the text alone is never proof (a Java String, a Python `1000`, a float, or
-    # an older worker's result). Round 3: nor are such writes changes; each kind is
+    # The text alone is never proof (a Java String, a Python `1000`, a float, or
+    # an older worker's result). Nor are such writes changes; each kind is
     # counted apart, as NO_STOP counts them.
     alike = _all("x", [("1000", "1000")] * 5, line=9)
     text = _table(_result(interventions=alike, language="python"))
@@ -692,7 +690,7 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
 
 
 def test_a_return_row_names_the_line_it_returned_to():
-    # seats 5: `returned 49 Seats.block(...)`, where line 49 is in `book`, the caller.
+    # `returned 49 Seats.block(...)`, where line 49 is in `book`, the caller.
     rows = [
         {
             "hit": 1,
@@ -726,7 +724,7 @@ def _tally_row(selector, value, phase="observed", hit=1, type="u32", **fields):
 
 
 def test_the_after_set_footer_is_short():
-    # laps 6: the footer ran to 190 characters under every probe with a change.
+    # The footer ran to 190 characters under every probe with a change.
     rows = [_tally_row("week", "6"), _tally_row("week", "6", "after-set")]
     change = {"name": "pick", "before": "1", "after": "2", "hit": 1, "capture_hit": 1}
     (footer,) = [
@@ -747,14 +745,14 @@ def test_the_after_set_footer_is_short():
 
 
 def test_a_java_threads_mark_counts_the_jvms_own():
-    # desks 4: a program of one thread read `other threads are running`.
+    # A program of one thread read `other threads are running`.
     from peeky.java import _THREADS_RUNNING
 
     assert _THREADS_RUNNING.startswith("other threads, the JVM's own included, are running")
 
 
 def test_a_final_fields_mark_shows_on_its_selectors_first_row_only():
-    # desks 5: `p.name … [not settable: final]` on every row, after-set rows too.
+    # `p.name … [not settable: final]` on every row, after-set rows too.
     rows = [
         _tally_row("p.name", '"Ana"', hit=hit, phase=phase, type="String", not_settable="final")
         for hit in (1, 2)
@@ -782,7 +780,7 @@ def test_a_final_fields_mark_shows_on_its_selectors_first_row_only():
 
 
 def test_an_all_change_names_its_own_lines_stop():
-    # rainfall 3: `(--set-at line 52@all, hit 1, in summarize)` read as the probe's hit 1.
+    # `(--set-at line 52@all, hit 1, in summarize)` read as the probe's hit 1.
     changes = [
         {
             "name": "ready",
@@ -808,7 +806,7 @@ def test_an_all_change_names_its_own_lines_stop():
 
 
 def test_many_selectors_at_several_hits_point_at_queries_wide():
-    # rainfall 5: 6 selectors at 6 hits, 36 rows, printed no pointer to one line per hit.
+    # 6 selectors at 6 hits, 36 rows, printed no pointer to one line per hit.
     def result(selectors, hits):
         rows = [_tally_row(name, "0", hit=hit) for hit in range(1, hits + 1) for name in selectors]
         return _tally_result(
@@ -825,7 +823,7 @@ def test_many_selectors_at_several_hits_point_at_queries_wide():
 
 
 def test_a_rust_reference_to_a_struct_says_why_only_its_address_shows():
-    # laps 2: `read  &laps::Read  0x…` showed no preview, mark or note, beside `read.car`.
+    # `read  &laps::Read  0x…` showed no preview, mark or note, beside `read.car`.
     rows = [
         _tally_row("read", "0x000000010536d900", type="&tally::Read"),
         _tally_row("read.car", '"7"', type="String", view="memory"),
@@ -840,7 +838,7 @@ def test_a_rust_reference_to_a_struct_says_why_only_its_address_shows():
         "scalars; its fields read by name, as `read.car`"
     ) in text, text
     assert text.count("note: ") == 1, text
-    # Review of PR #350: `&app::State` may be an enum, with no field to name; a field
+    # `&app::State` may be an enum, with no field to name; a field
     # selector is named only where one read.
     for more in ([], [_tally_row("state.mode", "", error="not found: 'mode'")]):
         shown = _table(
@@ -916,7 +914,7 @@ def _bindings(withheld, inside):
 
 
 def test_a_probe_table_gives_a_long_reason_once_per_selector():
-    # nightlot: the same 300-character reason on every row, 18 times.
+    # The same 300-character reason on every row, 18 times.
     rows = _bindings(True, [0, 1, 2, 5])
     text = _table({**_run(rows), "hits": 4}, short_names=False)
     for selector in ("hour", "cars"):
@@ -932,7 +930,7 @@ def test_a_probe_table_gives_a_long_reason_once_per_selector():
 
 
 def test_a_cut_preview_says_how_to_read_the_rest():
-    # nightlot: `size=9 {…, 3: 1, …}` stopped at 8 entries, with no word on the ninth.
+    # `size=9 {…, 3: 1, …}` stopped at 8 entries, with no word on the ninth.
     row = {"hit": 1, "phase": "observed", "line": 46, "function": "main"}
     rows = [
         {
@@ -994,7 +992,7 @@ EDIT = ("--old", "return 0;", "--new", "return 1;")
 
 
 def test_compare_names_the_run_whose_captures_differ(cpp_probe, capsys):
-    # depot: `compare: no saved run is this probe without the edit …` until the plain
+    # `compare: no saved run is this probe without the edit …` until the plain
     # probe was run again with the same captures, one selector apart.
     rows = _bindings(False, [0, 1, 2, 3])
     plain = [row for row in rows if row["selector"] in ("hour", "inside")]
@@ -1052,7 +1050,7 @@ SENT = "the debugger again sent more text as Peeky closed the session (output_af
 
 
 def test_lldb_dap_18s_notes_are_whole_once_per_build(cpp_probe, capsys):
-    # depot, bill: every GCC probe with lldb-dap 18 repeated a 370-character warning about
+    # Every GCC probe with lldb-dap 18 repeated a 370-character warning about
     # `_M_local_buf` and the text it sends as it ends.
     rows = _bindings(False, [0, 1, 2, 3])
     assert cpp_probe(_noisy(rows), "--capture", "hour,cars,inside") == 0
@@ -1080,7 +1078,7 @@ def test_lldb_dap_18s_notes_are_whole_once_per_build(cpp_probe, capsys):
     ],
 )
 def test_another_build_of_the_same_target_gets_them_whole(cpp_probe, capsys, why):
-    # Review of PR #389: the key was the target's names and options alone, which a
+    # The key was the target's names and options alone, which a
     # baseline and its candidate, or two compilers, share. Each is its own build_id (the
     # digest of the build's recipe, staged sources and tools), with the same
     # target_identity, inputs and source digests here.

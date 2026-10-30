@@ -11,7 +11,7 @@ from peeky.worker import DebugWorker
 
 
 def test_session_hints_name_the_session():
-    # L1: hints in `session get` children and state lines omitted `--name X`, so a pasted
+    # Hints in `session get` children and state lines omitted `--name X`, so a pasted
     # one acted on the `default` session.
     from peeky.cli import _get_lines, _state_text
 
@@ -35,7 +35,7 @@ def test_session_hints_name_the_session():
 
 
 def test_session_get_hints_quote_a_selector_as_people_would():
-    # sessions 6: `peeky session get 'history['"'"'alice'"'"'][0]'`.
+    # Not `peeky session get 'history['"'"'alice'"'"'][0]'`.
     row = {
         "selector": "history['alice']",
         "type": "list",
@@ -54,7 +54,7 @@ def test_session_get_hints_quote_a_selector_as_people_would():
 
 
 def test_debugpys_grouping_note_comes_only_where_nothing_else_is_listed():
-    # sessions 7: every dataclass `get` said that debugpy groups more members under
+    # Every dataclass `get` said that debugpy groups more members under
     # `special variables`.
     grouped = {"selector": "s", "type": "Session", "value": "Session(start=1, last=2)"}
     grouped["children_grouped"] = ["special variables"]
@@ -67,7 +67,7 @@ def test_debugpys_grouping_note_comes_only_where_nothing_else_is_listed():
 
 
 def test_session_states_name_files_as_probes_do(tmp_path, monkeypatch):
-    # rechnung 6: a session's state said `stopped at /…/rechnung/app/Rechnung.java:47`
+    # A session's state said `stopped at /…/rechnung/app/Rechnung.java:47`
     # where its probes said `app/Rechnung.java:47`. Text only; JSON keeps the path whole.
     from peeky.cli import _read_frame, _state_text
 
@@ -102,7 +102,7 @@ def test_session_get_lists_the_visible_names_once():
 
 
 def test_session_paths_are_named_from_the_directory_the_session_started_in(tmp_path, monkeypatch):
-    # grades 5: `session start` printed `grades.cpp:61`; a `step` run from another
+    # `session start` printed `grades.cpp:61`; a `step` run from another
     # directory printed `<cases directory>/grades/grades.cpp:26`.
     case = tmp_path / "outputs" / "grades"
     case.mkdir(parents=True)
@@ -154,7 +154,7 @@ def test_a_session_command_names_paths_as_its_start_did(tmp_path, monkeypatch, c
 
 
 def test_a_session_report_says_where_it_is_and_how_far_it_came(tmp_path):
-    # seats 2: `session report --name sold` printed only `state: stopped` and its output.
+    # `session report --name sold` printed only `state: stopped` and its output.
     class Dap:
         def snapshot_output(self):
             return "", False
@@ -194,7 +194,7 @@ def test_a_session_report_says_where_it_is_and_how_far_it_came(tmp_path):
 
 
 def test_a_step_onto_the_breakpoint_line_says_whether_it_is_a_hit(tmp_path):
-    # seats 6: a `step` that landed on the breakpoint's line 26 showed no `hit N`.
+    # A `step` that landed on the breakpoint's line 26 showed no `hit N`.
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "Seats.java").write_text("")
     record = {"root": str(tmp_path), "program": "app/Seats.java", "line": 26, "language": "java"}
@@ -216,7 +216,7 @@ def test_a_step_onto_the_breakpoint_line_says_whether_it_is_a_hit(tmp_path):
 
 
 def test_session_get_lists_an_arrays_first_elements():
-    # playlist 4: `session get queue` listed all 32 elements, each with its hint.
+    # `session get queue` listed all 32 elements, each with its hint.
     row = {
         "selector": "levels",
         "type": "Level[32]",
@@ -235,7 +235,7 @@ def test_session_get_lists_an_arrays_first_elements():
         "one; `--json` lists them all"
     )
     assert "--name s --frame 1` reads one" in cli._get_lines(row | {"frame": 1}, "s")[-1]
-    # Review of PR #350: the debugger lists one page (64) of a longer array, and JSON has
+    # The debugger lists one page (64) of a longer array, and JSON has
     # no more than that page.
     page = {
         **row,
@@ -280,7 +280,7 @@ def test_session_get_lists_an_arrays_first_elements():
     ],
 )
 def test_a_step_onto_a_jump_line_says_what_it_does(tmp_path, language, source, note):
-    # laps 7, playlist 7: a step onto `continue;` or `} else {` came with no word.
+    # A step onto `continue;` or `} else {` came with no word.
     program = tmp_path / "main.src"
     program.write_text("a\nb\nc\n" + source + "\ne\n")
     record = {"root": str(tmp_path), "program": "main.src", "language": language}

@@ -1,4 +1,4 @@
-"""#27: an attached JVM's breakpoint stop whose `stopped` event was lost fails fast,
+"""An attached JVM's breakpoint stop whose `stopped` event was lost fails fast,
 with a diagnosis; nothing is ever served from it."""
 
 import time
@@ -266,7 +266,7 @@ def test_any_other_suspended_thread_makes_a_poll_no_evidence_and_restarts_the_co
 
 
 def test_a_class_load_storm_never_counts(source):
-    # The review's H1: java-debug's class-load requests suspend every thread, and a
+    # java-debug's class-load requests suspend every thread, and a
     # thread blocked entering `synchronized` shows the breakpoint line inside it.
     waiting = {7: at(source, 5, "Storm.contend()"), 9: at("/jdk/Thread.java", 1, "sleep")}
     worker = paused_worker(source, {1: at("/jdk/Class.java", 1, "forName0"), **waiting})
@@ -466,7 +466,7 @@ def test_the_diagnosis_is_a_debugger_error_whatever_its_text_mentions():
 
 
 class FailingWorker:
-    """A probe's worker whose wait meets a lost stop (#27)."""
+    """A probe's worker whose wait meets a lost stop."""
 
     def __init__(self):
         self.calls = []
@@ -620,7 +620,7 @@ def guard(worker):
 
 
 def test_an_unattended_session_verifies_a_pending_breakpoint_and_fails_on_its_lost_stop(source):
-    # Review round 4: attaching to a suspend=y JVM, the breakpoint is pending at launch
+    # Attaching to a suspend=y JVM, the breakpoint is pending at launch
     # and verified only by a `breakpoint` event. With no client waiting, nothing took
     # that event, so the guard never polled and the lost stop held the JVM.
     worker = paused_worker(source, {7: at(source, 5)}, verified=False)

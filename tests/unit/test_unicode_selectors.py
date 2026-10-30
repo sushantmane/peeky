@@ -1,4 +1,4 @@
-"""#195: a selector names a local or field by its Unicode identifier, exactly as the
+"""A selector names a local or field by its Unicode identifier, exactly as the
 debugger lists it (never normalized), and never through an invisible character."""
 
 import re
@@ -271,7 +271,7 @@ def test_inspect_says_which_spelling_each_look_alike_row_is():
     assert "t @ a.c:3: int = 1\n" in text
 
 
-# Review of #199: what the worker takes over HTTP is held to the selector's name policy,
+# What the worker takes over HTTP is held to the selector's name policy,
 # and only a row a selector can read whole is offered or marked [settable].
 REFUSED_NAMES = [
     "a\u200db",  # an invisible character: the CLI refuses it
@@ -437,7 +437,7 @@ def test_a_row_past_128_characters_is_never_offered_or_marked_settable():
         ({"name": f"{LONG} @ main.c:15"}, True, True),
         ({"name": f"{LONGER} @ main.c:15"}, False, False),
         # LLDB's spelling of a shadowed local in a file no selector can write: a change
-        # may name it, and a selector reaches it only through its plain name (#158).
+        # may name it, and a selector reaches it only through its plain name.
         ({"name": "n @ my file.c:15"}, True, False),
         ({"name": "n @ my file.c:15", "selected_as": "n"}, True, True),
         ({"name": "n @ my file.c:15", "selected_as": "m"}, True, False),
@@ -468,8 +468,8 @@ def test_java_locals_and_members_past_128_characters_are_not_settable():
     )
 
 
-# Review of #199, round 2: a shadowed local LLDB names in a file a selector cannot write
-# (`t @ my file.c:3`) is read and changed through its plain name, as before #195.
+# A shadowed local LLDB names in a file a selector cannot write
+# (`t @ my file.c:3`) is read and changed through its plain name.
 SHADOWED = {
     "name": "t @ my file.c:5",
     "type": "int",
@@ -534,7 +534,7 @@ def test_the_worker_takes_lldbs_spelling_of_a_shadowed_root_and_nothing_else(tmp
             check(name)
 
 
-# Review of #199, round 3: one parser reads LLDB's `name @ file:line`, the base up to the
+# One parser reads LLDB's `name @ file:line`, the base up to the
 # first ` @ `, never a greedy prefix: a file named `one @ two.c` reads the same way when
 # a change is checked, when the worker names the row's plain name, and when Peeky judges
 # its declaration.
@@ -546,7 +546,7 @@ def test_the_worker_takes_lldbs_spelling_of_a_shadowed_root_and_nothing_else(tmp
         ("t @ one @ two.c:5", ("t", "one @ two.c", 5), True),
         ("größe @ a @ b.rs:12", ("größe", "a @ b.rs", 12), True),
         ("a$b @ x.c:3", ("a$b", "x.c", 3), False),  # parsed, though no selector writes it
-        # Round 4: every spelling the judgments read parses, past a selector's bounds
+        # Every spelling the judgments read parses, past a selector's bounds
         # (`#line 1000000000`, a long `#line` file name), which only selecting and
         # changing apply.
         ("t @ virtual.c:1000000000", ("t", "virtual.c", 1000000000), False),
@@ -598,9 +598,9 @@ def test_a_file_named_with_an_at_sign_gives_the_real_local_its_plain_name():
     assert shown_declaration(table, outer, 50) == (table[0], ("one @ two.c", 3, True))
 
 
-# Review of #199, round 4: a selector's bounds never decide what the judgments read. A
+# A selector's bounds never decide what the judgments read. A
 # local declared under `#line 1000000000` (or a `#line` file name past 255 characters)
-# is judged as on main, and a row that looks located but does not parse is withheld.
+# is judged as any other, and a row that looks located but does not parse is withheld.
 @pytest.mark.parametrize("file, line", [("virtual.c", 1000000004), ("v" * 300 + ".c", 4)])
 def test_a_declaration_past_a_selectors_bounds_is_still_judged(file, line):
     from peeky.identifiers import looks_located, reachable
@@ -620,7 +620,7 @@ def test_a_declaration_past_a_selectors_bounds_is_still_judged(file, line):
         }
     ]
     assert shown_declaration(table, name, 15) == (table[0], (file, line, True))
-    # Declared on the line below the stop: withheld (on a930b21, "nothing to judge").
+    # Declared on the line below the stop: withheld.
     assert declared_below(table, name, file, line - 1, address=15, pc=15) == (line, None)
     assert looks_located(name) and not reachable({"name": name, "selected_as": "t"})
 
@@ -637,7 +637,7 @@ def test_a_row_that_looks_located_and_does_not_parse_is_withheld():
 
 
 def test_a_containers_storage_is_judged_by_the_one_parser():
-    # #199 review, after #186: `_declared_storages` took `t @ one` for the base of
+    # `_declared_storages` took `t @ one` for the base of
     # `t @ one @ two.c:5` and found no declaration, so a binding of a reference was
     # not known to be one.
     from peeky.native import NativeSession

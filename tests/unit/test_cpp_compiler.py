@@ -1,4 +1,4 @@
-"""C++ targets build with clang or GCC (#167), told apart by what the compiler's
+"""C++ targets build with clang or GCC, told apart by what the compiler's
 `--version` says: only clang gets `--driver-mode=g++`, a clang option. Any other compiler
 is refused before anything is built, since Peeky's C++ rules are checked against clang's
 and GCC's debug information only."""
@@ -75,7 +75,7 @@ def test_only_clang_gets_its_cpp_driver_and_gcc_builds_cpp_and_c(tmp_path):
     clang, _ = fake_compiler(tmp_path, "clang", CLANG)
     driver, flags, _, _ = target(clang)._compile_flags()
     assert driver == ("--driver-mode=g++",) and flags[0] == "--driver-mode=g++"
-    # GCC builds C++ (#167), without clang's option, which g++ does not know: before, it
+    # GCC builds C++, without clang's option, which g++ does not know: before, it
     # was refused.
     gxx, count = fake_compiler(tmp_path, "g++", GCC)
     driver, flags, _, _ = target(gxx)._compile_flags()
@@ -109,7 +109,7 @@ def test_a_probe_with_an_unknown_compiler_for_cpp_keeps_no_run(tmp_path, monkeyp
 
 
 def test_a_compiler_that_never_answers_is_ended_with_its_children(tmp_path, monkeypatch):
-    # PR #171 review: the timeout killed only the wrapper; its own child (`sleep 60`)
+    # The timeout killed only the wrapper; its own child (`sleep 60`)
     # kept running. `--version` runs in a group of its own, ended whole.
     import time
 

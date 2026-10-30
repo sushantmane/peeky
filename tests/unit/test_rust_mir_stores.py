@@ -1,4 +1,4 @@
-"""#311: a statement that stores a copy through a pointer holds it in the memory it stores
+"""A statement that stores a copy through a pointer holds it in the memory it stores
 into. `vec![x, 1]` fills its Box by `((*_10).1: …) = [move _7, const 1_u32]`, then makes
 the Vec from that Box, and `total(…)` sums it. The copy analysis skipped every store
 through a pointer: once `_7` died, nothing held `x`'s copy, so `x` was `[settable]` on the
@@ -68,7 +68,7 @@ fn main() {
 """
 
 
-# `literal` (lines 23 to 27): the issue's statement.
+# `literal` (lines 23 to 27): the statement in question.
 LITERAL = """// MIR for `literal` after PreCodegen
 
 fn literal(_1: u32) -> u32 {
@@ -737,12 +737,12 @@ MAY_READ = (
 
 
 def test_what_vec_stores_through_its_box_pointer_is_a_copy_the_statement_uses():
-    # The issue: at `+ other();`, `total(vec![x, 1])` has summed `x`'s copy into `_3`,
+    # At `+ other();`, `total(vec![x, 1])` has summed `x`'s copy into `_3`,
     # which the statement adds after the stop. `_7` held the copy until the store.
     body = body_of(LITERAL)
     stop = place(body, "_8 = other()")
     assert used(body, 1, stop) == {3}
-    # `total` is the crate's own: what it returns may be anything (#311 review), so the
+    # `total` is the crate's own: what it returns may be anything, so the
     # refusal is hedged.
     assert read(body, 1, stop) == set()
     assert why(LITERAL, SOURCE, "literal", 25, "_8 = other()") == MAY_READ
@@ -766,7 +766,7 @@ def test_what_vec_stores_through_its_box_pointer_is_a_copy_the_statement_uses():
 
 
 def test_the_box_to_vec_conversion_is_proven_under_the_root_the_dump_names():
-    # #320 review round 3: `std::boxed::box_assume_init_into_vec_unsafe` needs `std` only;
+    # `std::boxed::box_assume_init_into_vec_unsafe` needs `std` only;
     # a crate's `mod alloc {}` leaves it the standard library's, a `mod std {}` doesn't.
     body = body_of(LITERAL)
     converted = after(body, "_4 = std::boxed::box_assume_init_into_vec_unsafe")
@@ -826,9 +826,9 @@ def test_a_store_through_a_pointer_into_what_holds_a_read_ends_it():
 
 
 def test_a_box_from_a_call_and_written_since_holds_no_sure_copy():
-    # `let mut b = Box::new([x, 1]); b[0] = 7;`. On #310's merge `b` took `x`'s copy from
-    # `Box::new`, and kept it past `b[0] = 7`: "has already copied its value into `b`"
-    # was false. What a call returns is never a sure copy now; the store ends any.
+    # `let mut b = Box::new([x, 1]); b[0] = 7;`: "has already copied its value into `b`"
+    # would be false past `b[0] = 7`. What a call returns is never a sure copy; the store
+    # ends any.
     body = body_of(OVERWRITTEN)
     stop = place(body, "_12 = other()")
     taken, sources = body.read_copies_at(2, stop, (), True)[1:]
@@ -953,10 +953,10 @@ def test_a_refusal_before_the_run_lists_no_local_refused_at_its_line(tmp_path):
     )
 
 
-# #311 review. A refusal the must-analysis made through a crate function's result was
+# A refusal the must-analysis made through a crate function's result was
 # false, and the may-analysis missed writes a call makes, or one through a pointer to
 # memory no local of the frame stands for. rustc 1.96.0's MIR of this crate's functions:
-ROUND2 = """use std::env;
+CALL_WRITES = """use std::env;
 
 #[inline(never)]
 fn total(v: Vec<u32>) -> u32 {
@@ -1691,8 +1691,8 @@ fn raw(_1: u32) -> u32 {
 """.replace("{ALLOC}", ALLOC)
 
 
-def round2(text, name, line, statement):
-    return why(text, ROUND2, name, line, statement)
+def call_writes(text, name, line, statement):
+    return why(text, CALL_WRITES, name, line, statement)
 
 
 def kept(name, lines, verb="hold"):
@@ -1707,8 +1707,7 @@ def kept(name, lines, verb="hold"):
 
 def test_a_crate_functions_result_is_no_sure_copy_of_what_it_was_given():
     # `total(discard(vec![x, 1]))` / `+ other();` with `discard` returning `vec![7, 1]`:
-    # nothing live holds `x`, but "has already read `x` into a temporary" was said. Before
-    # this review the must-analysis held `{2, 3, 4, 5}` there.
+    # nothing live holds `x`, but "has already read `x` into a temporary" was said.
     body = body_of(DISCARDED)
     stop = place(body, "_11 = other()")
     assert read(body, 2, stop) == set()
@@ -1716,7 +1715,7 @@ def test_a_crate_functions_result_is_no_sure_copy_of_what_it_was_given():
     # `vec!`'s Vec surely held it, until `discard` was given it.
     assert 7 in read(body, 2, after(body, "_7 = std::boxed::box_assume_init_into_vec_unsafe"))
     assert read(body, 2, after(body, "_6 = discard(")) == set()
-    assert round2(DISCARDED, "discarded", 21, "_11 = other()") == (
+    assert call_writes(DISCARDED, "discarded", 21, "_11 = other()") == (
         "a statement under way at the stop reads it into a temporary (at line 20), so it may "
         "hold a copy of it, which it uses after the stop",
         "a statement under way may hold a copy (line 20)",
@@ -1729,7 +1728,7 @@ def test_a_call_given_a_mutable_pointer_may_store_a_copy_where_it_points():
     body = body_of(PUSHED)
     stop = place(body, "_8 = other()")
     assert 4 in body.direct_copies_at(2, stop) and body.copy_undoes(4, 2, stop)
-    assert round2(PUSHED, "pushed", 30, "_8 = other()") == kept("v", "lines 28 and 29")
+    assert call_writes(PUSHED, "pushed", 30, "_8 = other()") == kept("v", "lines 28 and 29")
     # Not where the call is given no copy: `v.push(7)`.
     seven = body_of(PUSHED.replace("_7 = copy _2;", "_7 = const 7_u32;"))
     assert 4 not in seven.direct_copies_at(2, stop)
@@ -1741,7 +1740,7 @@ def test_ptr_write_stores_a_copy_in_what_its_pointer_points_at():
     stop = place(body, "_9 = other()")
     direct = body.direct_copies_at(2, stop)
     assert 4 in direct and 5 not in direct
-    assert round2(WRITTEN, "written", 41, "_9 = other()") == kept("slot", "line 40")
+    assert call_writes(WRITTEN, "written", 41, "_9 = other()") == kept("slot", "line 40")
 
 
 def test_a_pointer_to_memory_no_local_stands_for_stands_for_it():
@@ -1750,20 +1749,20 @@ def test_a_pointer_to_memory_no_local_stands_for_stands_for_it():
     body = body_of(THROUGH)
     stop = place(body, "_7 = other()")
     assert 1 in body.direct_copies_at(3, stop) and body.copy_undoes(1, 3, stop)
-    assert why(THROUGH, ROUND2, "through", 50, "_7 = other()", "x") == kept(
+    assert why(THROUGH, CALL_WRITES, "through", 50, "_7 = other()", "x") == kept(
         "p", "line 49", "point at"
     )
     # Nor does the Box `Box::into_raw` was given, once it is moved out of.
     body = body_of(RAW)
     stop = place(body, "_8 = other()")
     assert 4 in body.direct_copies_at(2, stop) and body.copy_undoes(4, 2, stop)
-    assert round2(RAW, "raw", 60, "_8 = other()") == kept("p", "lines 58 and 59", "point at")
+    assert call_writes(RAW, "raw", 60, "_8 = other()") == kept("p", "lines 58 and 59", "point at")
 
 
-# #311 review round 2: a write through a destination propagated only direct copies, not
+# A write through a destination propagated only direct copies, not
 # what may hold or point at one; and a later read through `r` of `v.last_mut().unwrap()`
 # was no use of `v`. rustc 1.96.0's MIR of these crates' functions:
-ROUND3 = """use std::collections::HashMap;
+DESTINATIONS = """use std::collections::HashMap;
 use std::env;
 
 #[inline(never)]
@@ -1866,7 +1865,7 @@ fn main() {
     println!("GOT {}", got(x));
 }
 """
-ROUND4 = """use std::cell::{Cell, RefCell};
+CELLS = """use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::env;
 
@@ -2753,7 +2752,7 @@ def test_a_call_writing_through_a_destination_takes_what_points_at_a_copy():
         body = body_of(text)
         stop = place(body, statement)
         assert v in body.direct_copies_at(2, stop) and body.copy_undoes(v, 2, stop), name
-        reason, _ = why(text, ROUND3, name, line, statement)
+        reason, _ = why(text, DESTINATIONS, name, line, statement)
         assert reason.startswith("the program's own `v` (at lines "), reason
         assert "may hold a copy of it that it goes on with" in reason, reason
     # Not where what it points at holds no copy: `let a = [7];`.
@@ -2768,7 +2767,7 @@ def test_a_read_through_a_pointer_a_call_made_from_a_binding_uses_it():
     stop = place(body, "_13 = other()")
     assert {8, 7} <= body._pointers_to(4)
     assert 4 in body.direct_copies_at(2, stop) and body.copy_undoes(4, 2, stop)
-    reason, _ = why(LAST, ROUND3, "last", 35, "_13 = other()")
+    reason, _ = why(LAST, DESTINATIONS, "last", 35, "_13 = other()")
     assert reason.startswith(
         f"the program's own `v` (at line 34 and {ALLOC.split('/library/')[1]}:58) may hold a "
         "copy of it"
@@ -2799,14 +2798,14 @@ def test_a_standard_type_with_a_lifetime_may_be_written_through():
         body = body_of(text)
         stop = place(body, statement)
         assert owner in body.direct_copies_at(2, stop), name
-        reason, _ = why(text, ROUND4, name, line, statement)
+        reason, _ = why(text, CELLS, name, line, statement)
         assert "may hold a copy of it that it goes on with" in reason, reason
 
 
-# #311 review round 3: a standard view with a lifetime was taken to write through a
+# A standard view with a lifetime was taken to write through a
 # `&mut` it may hold, whatever it was; `a.chunks_exact(1)` only reads. rustc 1.96.0's MIR
 # of this crate's functions:
-ROUND6 = """use std::collections::BTreeMap;
+VIEWS = """use std::collections::BTreeMap;
 use std::env;
 use std::path::Path;
 
@@ -3160,10 +3159,10 @@ def test_a_view_that_only_reads_writes_no_copy_where_it_points():
         stop = place(body, statement)
         assert not body._may_write_through(view), name
         assert owner not in body.direct_copies_at(2, stop), name
-        assert why(text, ROUND6, name, line, statement) == (None, None), name
+        assert why(text, VIEWS, name, line, statement) == (None, None), name
     # A view made from a `&mut` (an `IterMut`, an `Entry`, a closure capturing `&mut v`)
     # still may: what it was made from shows it. Not where it was made from a shared
-    # `&[u32]` of a `&mut` (round 4).
+    # `&[u32]` of a `&mut`.
     lent = CHUNKED.replace("let mut _8: &[u32; 2];", "let mut _8: &mut [u32; 2];")
     lent = lent.replace("_8 = &_4;", "_8 = &mut _4;")
     assert not body_of(lent)._may_write_through(6)
@@ -3172,9 +3171,9 @@ def test_a_view_that_only_reads_writes_no_copy_where_it_points():
     assert body._may_write_through(6)
 
 
-# Review round 4 of PR #316: a struct holding a `&mut`, passed through a shared `&`, by
+# A struct holding a `&mut`, passed through a shared `&`, by
 # value, and through a `&mut`; rustc 1.96.0's MIR (round8u).
-ROUND8 = """use std::env;
+HELD_MUT = """use std::env;
 
 #[inline(never)]
 fn other() -> u32 {
@@ -3635,7 +3634,7 @@ fn mutref(_1: u32) -> u32 {
 """
 
 
-# What the debug information shows `Hold` holds (#321): a `&mut`, written through only by
+# What the debug information shows `Hold` holds: a `&mut`, written through only by
 # value or through a `&mut` (rust_symbols.interior_types).
 HOLD = {"Hold": (frozenset({"owned"}), ())}
 
@@ -3661,7 +3660,7 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
         ("&*mut u32", True),
     ):
         assert _may_write(kind, (), layouts=held) is writes, kind
-    # #321: where the debug information wasn't read, `Hold` may hold a cell.
+    # Where the debug information wasn't read, `Hold` may hold a cell.
     assert _may_write("&Hold<'_>", ()) is True
     # Reached only through a `&`, a `&mut` or a mutable view writes nothing; a raw
     # pointer or a cell still may.
@@ -3676,7 +3675,7 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
     stop = place(body, "_12 = other()")
     assert not body._may_write_through(9)
     assert 4 not in body.direct_copies_at(2, stop)
-    assert why(SHARED_HOLD, ROUND8, "shared", 32, "_12 = other()", interior=HOLD) == (None, None)
+    assert why(SHARED_HOLD, HELD_MUT, "shared", 32, "_12 = other()", interior=HOLD) == (None, None)
     # By value (`keep(h, x)`) and through `&mut h` (`poke`), the callee may push `x`.
     for text, name, line, given, statement in (
         (BYVAL_HOLD, "byval", 41, 9, "_11 = other()"),
@@ -3686,7 +3685,7 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
         stop = place(body, statement)
         assert body._may_write_through(given), name
         assert 4 in body.direct_copies_at(2, stop), name
-        reason, _ = why(text, ROUND8, name, line, statement)
+        reason, _ = why(text, HELD_MUT, name, line, statement)
         assert "the program's own `v` (at " in reason, (name, reason)
         assert "may hold a copy of it that it goes on with" in reason, (name, reason)
     # Through `&h`, a raw pointer or a cell `h` holds still may be written through.
@@ -3695,9 +3694,9 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
         assert body_of(text, HOLD)._may_write_through(9), kind
 
 
-# Review round 5 of PR #316: crate types named like a cell or an atomic, and a standard
+# Crate types named like a cell or an atomic, and a standard
 # `Cell`, each passed through a shared `&`; rustc 1.96.0's MIR (round10u).
-ROUND10 = """use std::cell::Cell;
+CELL_NAMES = """use std::cell::Cell;
 use std::env;
 
 #[inline(never)]
@@ -4155,7 +4154,7 @@ def test_a_crate_type_named_like_a_cell_or_an_atomic_is_neither():
     # `v` … may hold a copy of `x`".
     from peeky.rust_mir import _may_write
 
-    # #321: each crate type by what the debug information shows it holds.
+    # Each crate type by what the debug information shows it holds.
     named = {
         "NotCell": (frozenset({"owned"}), ()),
         "Atomicity": (frozenset({"owned"}), ()),
@@ -4192,12 +4191,12 @@ def test_a_crate_type_named_like_a_cell_or_an_atomic_is_neither():
         stop = place(body, "_12 = other()")
         assert not body._may_write_through(9), name
         assert 4 not in body.direct_copies_at(2, stop), name
-        assert why(text, ROUND10, name, line, "_12 = other()", interior=named) == (None, None)
+        assert why(text, CELL_NAMES, name, line, "_12 = other()", interior=named) == (None, None)
     # `put(&c, x)` with `c = Cell::new(0)`: through `&Cell<u32>`, `c.set(x)` stores it.
     body = body_of(CELL_LENT)
     stop = place(body, "_9 = other()")
     assert body._may_write_through(6)
     assert 4 in body.direct_copies_at(2, stop)
-    reason, _ = why(CELL_LENT, ROUND10, "celled", 54, "_9 = other()")
+    reason, _ = why(CELL_LENT, CELL_NAMES, "celled", 54, "_9 = other()")
     assert "the program's own `c` (at " in reason, reason
     assert "may hold a copy of it that it goes on with" in reason, reason

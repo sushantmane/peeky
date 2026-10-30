@@ -133,7 +133,7 @@ def test_a_bare_name_not_on_path_says_what_to_do(toolchain, monkeypatch):
 
 
 def test_a_relative_path_entry_is_not_called_a_link(toolchain, monkeypatch, capsys):
-    # Review of the PATH lookup: `which` gives `bin/cc` for a relative PATH entry; that
+    # `which` gives `bin/cc` for a relative PATH entry; that
     # is not a link, and the note gives the absolute path.
     (toolchain / "bin" / "cc").write_text("#!/bin/sh\n")
     (toolchain / "bin" / "cc").chmod(0o755)
@@ -149,7 +149,7 @@ def test_a_relative_path_entry_is_not_called_a_link(toolchain, monkeypatch, caps
 def test_rustups_cargo_and_rustc_proxies_name_its_pinned_toolchain(
     tmp_path, monkeypatch, capsys, link
 ):
-    # Review of the PATH lookup: `cargo` and `rustc` on PATH are rustup's proxies, links
+    # `cargo` and `rustc` on PATH are rustup's proxies, links
     # to rustup itself. Taken as found, both were rustup, and the build was refused as not
     # "the same real toolchain sysroot binaries".
     from peeky.rust import _toolchain
@@ -197,7 +197,7 @@ def test_rustups_cargo_and_rustc_proxies_name_its_pinned_toolchain(
 def test_a_run_on_a_worker_neither_looks_for_nor_names_this_hosts_tools(
     tmp_path, monkeypatch, capsys, command
 ):
-    # Review of the PATH lookup: the worker's configuration names its tools. A remote
+    # The worker's configuration names its tools. A remote
     # probe or session looked for the client's, said `using …` for a compiler it would
     # never run, and failed where the client had none.
     here = tmp_path.resolve()
@@ -236,7 +236,7 @@ def test_a_run_on_a_worker_neither_looks_for_nor_names_this_hosts_tools(
 def test_only_cargo_and_rustc_proxies_stand_for_the_pinned_toolchain(
     tmp_path, monkeypatch, capsys, link, variable, name
 ):
-    # Review round 2: `PEEKY_RUST_CARGO=rustfmt`, another of rustup's proxies, became the
+    # `PEEKY_RUST_CARGO=rustfmt`, another of rustup's proxies, became the
     # pinned cargo. Only `cargo` and `rustc` are taken for the tools they name; any other
     # stays as found, rustup itself, which the toolchain check refuses.
     from peeky.rust import _toolchain
@@ -268,7 +268,7 @@ def test_only_cargo_and_rustc_proxies_stand_for_the_pinned_toolchain(
 
 
 def test_a_run_on_a_worker_names_files_that_only_look_like_programs(tmp_path, monkeypatch, capsys):
-    # Review round 2: with no compiler run here, a main in a comment or an inactive #if
+    # With no compiler run here, a main in a comment or an inactive #if
     # branch was said to define main ("Several C/C++ programs define main here").
     here = tmp_path.resolve()
     (here / "app").mkdir()
@@ -298,7 +298,7 @@ def test_a_run_on_a_worker_names_files_that_only_look_like_programs(tmp_path, mo
 @pytest.mark.parametrize(
     "files, program",
     [
-        # Review round 3: one inactive textual `main`, and a main a macro makes: the text
+        # One inactive textual `main`, and a main a macro makes: the text
         # match picked old.c, which defines no main.
         ({"old.c": "#if 0\nint main(void) { return 1; }\n#endif\n", "gen.c": "MAKE_MAIN"}, None),
         ({"gen.c": "MAKE_MAIN", "util.c": "int helper(void) { return 0; }\n"}, None),

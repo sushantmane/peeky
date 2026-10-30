@@ -175,7 +175,7 @@ def test_reinspect_revokes_previous_scope_even_if_adapter_reuses_reference(tmp_p
     if frame_id == 1:
         mutate(worker, new)
     else:
-        # A caller's frame (#104 review) is read-only.
+        # A caller's frame is read-only.
         with pytest.raises(ValueError, match="caller's frame"):
             mutate(worker, new)
 

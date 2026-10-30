@@ -1,4 +1,4 @@
-"""#324: at `let y = x.clone();`, LLVM inlines `<u32 as Clone>::clone` even at opt-level 0.
+"""At `let y = x.clone();`, LLVM inlines `<u32 as Clone>::clone` even at opt-level 0.
 Its load of `x` carries `core/src/clone.rs`'s line, and comes before the line's first row of
 its own, where LLDB puts the line's breakpoint. Peeky took the stop for one before the line's
 code, so `x` was `[settable]`, and a change there never reached `y`. The DWARF's inlined call
@@ -283,7 +283,7 @@ def test_a_call_inlined_before_the_stop_may_have_read_what_it_is_given():
 
 
 def test_the_debug_information_must_agree_with_the_ir_on_the_lines_inlined_calls():
-    # #324 review: DWARF with no inlined call of the line, where the IR shows one, said
+    # DWARF with no inlined call of the line, where the IR shows one, said
     # "nothing ran before the stop". The two must name the same calls, wherever their code.
     owned = owned_of(CLONED, "cloned", inlined={20: {15}})
     agreed = owned.inlined_reads(HASH, "k", 20, AT, (), everywhere=frozenset({15}))
@@ -306,14 +306,14 @@ def test_only_what_the_inlined_call_is_given_is_withheld():
     assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == ([], None)
     owned.unsafe_code = UNSAFE
     assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == (["clone"], "given")
-    # #324 review: in unsafe code any call may read it through a pointer it isn't given
+    # In unsafe code any call may read it through a pointer it isn't given
     # (`static mut G: *const u32`): every local is withheld.
     owned = owned_of(MIXED, "mixed")
     owned.unsafe_code = UNSAFE
     assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == (["clone"], "unsafe")
     assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "clone"),)) == (["clone"], "given")
     # Except the standard library's `ptr::eq`, which reads the two addresses, never what they
-    # point at (#300); given `z` itself, it reads it.
+    # point at; given `z` itself, it reads it.
     clone = "_4 = <u32 as Clone>::clone(move _5)"
     assert MIXED.count(clone) == 1
     for given, verdict in (
@@ -326,7 +326,7 @@ def test_only_what_the_inlined_call_is_given_is_withheld():
         owned.unsafe_code = UNSAFE
         assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "eq"),)) == verdict
         assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "eq"),)) == ([], None)
-    # Each under the root the dump names it by (#320 review round 3): a crate's `mod std`
+    # Each under the root the dump names it by: a crate's `mod std`
     # may be what `std::ptr::eq` names, and leaves `core::ptr::eq` the standard library's.
     for root, verdict in (("std", (["eq"], "unsafe")), ("core", ([], None))):
         compared = MIXED.replace(clone, f"_4 = {root}::ptr::eq::<u32>(copy _5, copy _5)")
@@ -485,7 +485,7 @@ def test_the_stop_is_past_the_lines_inlined_code_where_its_breakpoint_is(tmp_pat
 
 
 def test_code_just_before_the_stop_that_peeky_cannot_place_is_a_doubt(tmp_path):
-    # #324 review: `let y = mclone!(x) + 1;` inlines `clone` from the macro's definition,
+    # `let y = mclone!(x) + 1;` inlines `clone` from the macro's definition,
     # line 4, just before line 20's first row: its site is not line 20.
     session, frame = stopped(
         tmp_path, 0x1B8, blocks_of(tmp_path, inlined(tmp_path, 0x1A8, 0x1AC, 4))
@@ -587,7 +587,7 @@ def test_the_breakpoint_withholds_what_the_inlined_call_was_given(tmp_path):
         found = session._inlined_read({"name": "k"}, frame, HASH, session.owned)
         assert found.row == "line 20's inlined code may have read it"
         assert "Peeky cannot tell from the build's MIR and IR which call it is" in found
-    # #324 review: unsafe code may read `k` through a pointer `clone` isn't given.
+    # Unsafe code may read `k` through a pointer `clone` isn't given.
     session, frame = at(0x1B8)
     session.owned.unsafe_code = UNSAFE
     found = session._inlined_read({"name": "k"}, frame, HASH, session.owned)

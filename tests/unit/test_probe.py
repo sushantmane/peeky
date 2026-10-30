@@ -176,7 +176,7 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
     if ok:
         assert result["status"] == "completed" and result["hits"] == 1
     elif "crash" in fake:
-        # The program crashed (#342): nothing of its frames is read, and nothing changed.
+        # The program crashed: nothing of its frames is read, and nothing changed.
         assert result["status"] == "failed" and result["hits"] == 0
         assert result["error"]["code"] == "PROGRAM_CRASHED", result["error"]
         what = fake["crash"].get("description", "the debugger did not say what")
@@ -187,7 +187,7 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
         assert {"inspect", "set_variable", "continue"}.isdisjoint(worker.calls)
         assert result["rows"] == []
     elif fake.get("reason") in ("exception", "signal"):
-        # No proven crash (review of #342): a signal the program may handle, or a C++
+        # No proven crash: a signal the program may handle, or a C++
         # throw filter's stop. Nothing is read, and the program goes on to its end.
         assert result["status"] == "no-stop" and result["hits"] == 0, result
         assert "crash" not in result and result["error"]["code"] == "NO_STOP"
@@ -238,7 +238,7 @@ def test_a_failed_probe_keeps_the_output_so_far_and_never_says_all(monkeypatch):
 
 class Ending(FakeWorker):
     """A session whose report reads ``output`` (``state``), and whose close leaves
-    ``final``: what the DAP read once the session ended (#203)."""
+    ``final``: what the DAP read once the session ended."""
 
     def __init__(self, state, final, output="at the hit\n", **kwargs):
         super().__init__(**kwargs)
@@ -264,12 +264,12 @@ CUT = {**WHOLE, "output_truncated": True}
 OPEN = {**WHOLE, "drained": False, "exit_code": None}
 # Text after Peeky's disconnect (lldb-dap 18's crash on Linux): kept apart, not as output.
 NOISY = {**OPEN, "after_disconnect": "free(): invalid pointer\n"}
-# Its stream ended cleanly, but the adapter then failed (#213 review).
+# Its stream ended cleanly, but the adapter then failed.
 CRASHED = {**OPEN, "stream_drained": True, "adapter_exit": 2}
 KILLED = {**OPEN, "stream_drained": True, "adapter_exit": -6}
 # A status 1 from debugpy without the signature of the exit Peeky provokes: a crash.
 UNEXPLAINED = {**OPEN, "stream_drained": True, "adapter_exit": 1, "exit_provoked": False}
-# With it: Peeky's own doing (#213 review).
+# With it: Peeky's own doing.
 PROVOKED = {**WHOLE, "stream_drained": True, "adapter_exit": 1, "exit_provoked": True}
 RAN_ON = "output so far (the program ran on after the last hit, so this can include text "
 
@@ -296,7 +296,7 @@ RAN_ON = "output so far (the program ran on after the last hit, so this can incl
     ],
 )
 def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, complete, label):
-    # #203: resumed after its last hit, the program runs on while its output is read; it
+    # Resumed after its last hit, the program runs on while its output is read; it
     # was "the output so far (the program was still running)", even once it had exited.
     import peeky.probe as probe_module
 
@@ -326,7 +326,7 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, 
             False,
             "output so far (the program ended, but its output may still have been arriving):",
         ),
-        # Peeky inferred the end (java-debug #27): the debugger never reported it.
+        # Peeky inferred the end: java-debug never reported it.
         (
             "terminated",
             None,
@@ -358,7 +358,7 @@ def test_output_is_whole_only_past_the_adapters_end(monkeypatch, state, final, c
 
 @pytest.mark.parametrize("after", [True, False])
 def test_truncated_output_is_never_called_all_of_it(after):
-    # #213 review: complete (the program's end was read) but truncated is not all of it.
+    # Complete (the program's end was read) but truncated is not all of it.
 
     result = {"status": "completed", "hits": 1, "rows": [], "interventions": [], "seconds": 1}
     result.update(output="tail\n", output_complete=True, output_truncated=True)
@@ -609,7 +609,7 @@ def test_keys_missing_from_a_partial_mapping_are_not_called_absent(listing):
 
 
 def test_each_rust_note_names_every_gate_on_what_peeky_reads():
-    # Review of the #212 rewrite: a shorter note must still name each condition Peeky
+    # A shorter note must still name each condition Peeky
     # reads under (MIR-proven, at the stop line, innermost frame, unoptimized, live, no
     # unsafe code, a raw pointer never), so no row reads as vouched for where it is not.
     from peeky import probe
@@ -625,7 +625,7 @@ def test_each_rust_note_names_every_gate_on_what_peeky_reads():
             "integer, bool, float, char and String fields",
             "the MIR proves it initialized at this stop, in the innermost frame",
         ),
-        # #260: a slice or `&Vec` is never told to be read as one.
+        # A slice or `&Vec` is never told to be read as one.
         "_LENT_COMPOSITE_RUST": (
             "a parameter the build's IR proves live",
             "only in the innermost frame",
@@ -654,7 +654,7 @@ def test_each_rust_note_names_every_gate_on_what_peeky_reads():
 
 
 def test_a_raw_pointers_note_says_only_that_peeky_never_follows_one():
-    # #255 review: a raw pointer local got a reference's note ("This Rust reference shows
+    # A raw pointer local got a reference's note ("This Rust reference shows
     # only its pointer: the build's MIR does not show that what it points at still
     # stands…"), and one in a live struct the generic one ("Here what it points at may be
     # moved or dropped, or the MIR cannot say"): both false for it.
@@ -746,7 +746,7 @@ def test_rust_container_indexes_explain_what_is_unsupported():
         _resolve(Tree({1: length}), {}, snapshot(text), parse_selector("label[0]"))
     message = str(caught.value)
     assert "shown whole, not by element" in message and "reference parameters" not in message
-    # #260: so is an owned String's, and an element's String field's, never "beyond the
+    # So is an owned String's, and an element's String field's, never "beyond the
     # debugger's visible window" of as many elements as it has bytes.
     sizes = [{"name": "len", "type": "usize", "value": "2", "variablesReference": 0}]
     for kind in ("alloc::string::String", "String"):
@@ -758,7 +758,7 @@ def test_rust_container_indexes_explain_what_is_unsupported():
 
 
 def test_a_container_a_call_may_be_changing_offers_no_field_as_its_length():
-    # Review of #260: a caller's `&mut Vec<T>` (`friends.retain_mut(decide)` under way)
+    # A caller's `&mut Vec<T>` (`friends.retain_mut(decide)` under way)
     # was told "Capture friends.len for the length", a length the call may be changing.
     from peeky.probe import _raw_rust, _resolve
 
@@ -795,7 +795,7 @@ def test_a_container_a_call_may_be_changing_offers_no_field_as_its_length():
 
 
 def test_a_slice_of_structs_left_raw_is_never_told_to_be_read_as_a_slice():
-    # #260: `friends: &mut [Friend]`, a live parameter, was told "read it as a &Vec or
+    # `friends: &mut [Friend]`, a live parameter, was told "read it as a &Vec or
     # &[T] parameter", which it was; an owned Vec may still be read where it is passed.
     from peeky.probe import _composite_note, _resolve
 
@@ -826,8 +826,8 @@ def test_a_slice_of_structs_left_raw_is_never_told_to_be_read_as_a_slice():
 
 
 def test_a_raw_rust_field_s_index_says_why_and_names_its_whole_selector():
-    # Seventh evaluation (#156): `self.values[0]` was "not found ... Capture values.len",
-    # with the owned local's reason (#53) for a field reached through `&mut self`.
+    # `self.values[0]` was "not found ... Capture values.len",
+    # with the owned local's reason for a field reached through `&mut self`.
     from peeky.probe import _raw_rust, _resolve
 
     reason = "`self` is a `&mut` parameter of a caller frame"
@@ -1272,7 +1272,7 @@ def test_a_java_preview_that_cannot_show_every_element_says_nothing():
 
 
 def test_java_preview_strings_are_literals_so_ids_mask_correctly():
-    # Review of #87: java-debug does not escape quotes inside a String, and a cut string
+    # java-debug does not escape quotes inside a String, and a cut string
     # lost its closing quote, so masking paired the wrong quotes.
     from peeky.evidence import _no_addresses
     from peeky.java import _brief
@@ -1290,7 +1290,7 @@ def test_java_preview_strings_are_literals_so_ids_mask_correctly():
 
 
 def test_java_preview_chars_are_literals_never_strings():
-    # Review of #87: java-debug writes a char bare, so `"` read as an empty String.
+    # java-debug writes a char bare, so `"` read as an empty String.
     from peeky.evidence import _no_addresses
     from peeky.java import _brief
 
@@ -1303,7 +1303,7 @@ def test_java_preview_chars_are_literals_never_strings():
 
 @pytest.mark.parametrize("name", ["OrderBookSnapshotValidator$PriceTier", "Q" * 60])
 def test_a_cut_java_field_keeps_its_object_number_whole(name):
-    # Review of #87: `Long$Name@998` fit in 40 characters and `Long$Name@1003` was cut to
+    # `Long$Name@998` fit in 40 characters and `Long$Name@1003` was cut to
     # `Long$Name@10…`, so the same field differed across runs by more than its number.
     from peeky.evidence import _no_addresses
     from peeky.java import java_preview
@@ -1326,7 +1326,7 @@ def test_a_cut_java_field_keeps_its_object_number_whole(name):
 
 
 def test_a_field_set_where_only_locals_change_fails_before_the_program_runs(monkeypatch):
-    # #86: only Java changes fields and elements; elsewhere say so at launch, not at the hit.
+    # Only Java changes fields and elements; elsewhere say so at launch, not at the hit.
     import peeky.probe as probe_module
 
     worker = FakeWorker()
@@ -1389,7 +1389,7 @@ def test_an_array_element_from_the_end_is_written_by_its_index():
 
 @pytest.mark.parametrize("names", ["deadline, retries", "breakpoint, provenance"])
 def test_a_missing_intervention_parent_is_not_found_whatever_the_names(names):
-    # Review of #86: the listed names matched the TIMEOUT and INVALID_BREAKPOINT rules.
+    # The listed names matched the TIMEOUT and INVALID_BREAKPOINT rules.
     from peeky.errors import classify
     from peeky.probe import apply_set
 
@@ -1417,7 +1417,7 @@ def test_a_missing_intervention_parent_is_not_found_whatever_the_names(names):
     ],
 )
 def test_member_refusals_are_classified_by_rule_never_by_the_selectors_words(selector, code):
-    # Review of #86: `deadline` made a refusal TIMEOUT, `breakpoint` INVALID_BREAKPOINT.
+    # `deadline` made a refusal TIMEOUT, `breakpoint` INVALID_BREAKPOINT.
     from peeky.errors import classify
     from peeky.probe import apply_set
 
@@ -1466,7 +1466,7 @@ def test_a_bundle_without_member_sets_is_a_mutation_refusal():
     ],
 )
 def test_the_workers_own_errors_keep_their_codes_in_an_intervention(error, code):
-    # Review of #86: a budget or stale-handle failure while reading the parent became
+    # A budget or stale-handle failure while reading the parent became
     # NOT_FOUND, and INVALID_REQUEST took the evidence store's hint.
     from peeky.errors import classify
     from peeky.probe import apply_set
@@ -1500,13 +1500,13 @@ def test_a_remote_row_error_keeps_its_code():
 
 
 def test_a_c_arrow_selector_says_to_use_a_dot():
-    # Eval 4 (C): `stats->total_us` was refused without saying what to write instead.
+    # `stats->total_us` was refused without saying what to write instead.
     with pytest.raises(ValueError, match=r"follow a pointer with \. \(not ->\): stats\.total_us"):
         parse_selector("stats->total_us")
 
 
 def test_a_java_lists_children_are_its_elements_with_their_selectors():
-    # Eval 4 (Java): `session get workers` listed elementData, modCount and size.
+    # `session get workers` listed elementData, modCount and size.
     from peeky.probe import _children
 
     fields = [
@@ -1546,7 +1546,7 @@ def test_a_java_lists_children_are_its_elements_with_their_selectors():
 
 
 def test_a_java_list_whose_backing_array_is_too_big_lists_its_fields():
-    # Review of #94: a list with over 512 slots lost its children (and its size).
+    # A list with over 512 slots lost its children (and its size).
     from peeky.probe import _children
 
     fields = [
@@ -1576,7 +1576,7 @@ def test_a_java_list_whose_backing_array_is_too_big_lists_its_fields():
 
 
 def test_a_probe_that_times_out_says_what_the_debugger_last_reported(monkeypatch):
-    # #27: a stop the debugger never reported looked like a slow program; the events
+    # A stop the debugger never reported looked like a slow program; the events
     # and the DAP trace show it.
     import peeky.probe as probe_module
 
@@ -1605,7 +1605,7 @@ def test_a_probe_that_times_out_says_what_the_debugger_last_reported(monkeypatch
         ("alloc::vec::Vec<(i8), alloc::alloc::Global>", True, False),
         ("&[demo::Interval]", True, False),
         ("alloc::vec::Vec<demo::Pair<unsigned short>, alloc::alloc::Global>", True, False),
-        # #260: a tuple with a String, or with any field read (the rest not read).
+        # A tuple with a String, or with any field read (the rest not read).
         ("&[(i32, alloc::string::String)]", True, False),
         ("&[((i32, i32), i32)]", True, False),
         # Never read: a tuple with no field read, nested containers, enums, std structs.
@@ -1737,7 +1737,7 @@ class Lines(FakeWorker):
 def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeypatch):
     import peeky.probe as probe_module
 
-    # Line 9's second stop is in a lambda on that line: it counts (#151 review).
+    # Line 9's second stop is in a lambda on that line: it counts.
     worker = Lines(names={9: ["main", "<lambda>", "main"]})
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     request = Probe(
@@ -1770,7 +1770,7 @@ def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeyp
     assert any("9@4 x=7 was not applied: line 9 stopped 3 time(s)" in w for w in result["warnings"])
     # The other five stops only counted or changed.
     assert len(result["pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 5
-    # Previews (#136) only where values are captured: line 8's first stop.
+    # Previews only where values are captured: line 8's first stop.
     assert [previews for line, previews in worker.previews if previews] == [["x"]]
     assert worker.previews[0] == (8, ["x"])
     assert not any("Interventions are applied once" in w for w in result["warnings"])
@@ -1830,7 +1830,7 @@ def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monke
 
 
 def test_a_set_whose_hit_never_comes_is_unapplied_like_a_set_at(monkeypatch):
-    # #151 review: a requested change that never happened is reported the same way for
+    # A requested change that never happened is reported the same way for
     # --set as for --set-at (`unapplied`; the CLI exits with 4).
     import peeky.probe as probe_module
 
@@ -1851,7 +1851,7 @@ def test_a_set_whose_hit_never_comes_is_unapplied_like_a_set_at(monkeypatch):
 def test_outputs_and_diff_say_a_requested_change_whose_hit_never_came_was_not_made(
     monkeypatch, tmp_path
 ):
-    # Review of PR #214: runs.sets holds requests; `outputs` and `diff` said where each
+    # runs.sets holds requests; `outputs` and `diff` said where each
     # change "applied", a --set or --set-at whose hit never came too.
     import json
 
@@ -1891,7 +1891,7 @@ def test_outputs_and_diff_say_a_requested_change_whose_hit_never_came_was_not_ma
 def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     monkeypatch, tmp_path, capsys
 ):
-    # #138: the worker refuses a `--set` its build rules out before the program runs; the
+    # The worker refuses a `--set` its build rules out before the program runs; the
     # probe fails with that reason, nothing ran, and no run is kept as evidence.
     import json
 
@@ -1924,7 +1924,7 @@ def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     (tmp_path / "main.py").write_text("x = 1\n")
     monkeypatch.setattr(cli_module, "run_probe", lambda *args, **kwargs: dict(result))
     command = ["probe", str(tmp_path), "--at", "main.py:1", "--set", "x=2", "--json"]
-    # Seventh evaluation, finding 14: a refusal exits 2, as any request Peeky turns down.
+    # A refusal exits 2, as any request Peeky turns down.
     assert cli_module.main(command) == 2
     shown = json.loads(capsys.readouterr().out)
     assert "evidence" not in shown and shown["refused_before_launch"] is True
@@ -1937,7 +1937,7 @@ def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
 
 
 def test_rows_say_why_no_stop_can_change_them():
-    # #138: `[not settable: register]` beside the value, never with `[settable]`.
+    # `[not settable: register]` beside the value, never with `[settable]`.
 
     rows = [
         {"hit": 1, "phase": "observed", "line": 3, "selector": "width", "type": "u64"}
@@ -1952,7 +1952,7 @@ def test_rows_say_why_no_stop_can_change_them():
 
 
 def test_rows_say_when_neither_mark_can_be_promised():
-    # #261: a Java element whose array's holder the launcher could not tell in time.
+    # A Java element whose array's holder the launcher could not tell in time.
     from peeky.cli import _get_lines
 
     why = "Peeky could not tell within 500 ms; `set` searches again, for up to 2 s"
@@ -1971,7 +1971,7 @@ def test_rows_say_when_neither_mark_can_be_promised():
 
 
 def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
-    # #137 with #138: the worker judges a --set at the --at line and each --set-at at its
+    # The worker judges a --set at the --at line and each --set-at at its
     # own line before the program runs.
     import peeky.probe as probe_module
 
@@ -1987,7 +1987,7 @@ def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     request = Probe("main.py", 8, ("x",), (("x", "2"),), set_at=((9, 1, "w.start", "5"),))
     probe_module.run_probe("/w", request)
-    # With each value, which a Java local's declared type judges before the run (#183).
+    # With each value, which a Java local's declared type judges before the run.
     assert launched["sets"] == [
         {"line": 8, "name": "x", "value": "2"},
         {"line": 9, "name": "w.start", "value": "5"},
@@ -1996,7 +1996,7 @@ def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
 
 
 def test_a_set_at_made_beside_an_unmade_set_names_only_the_set(monkeypatch):
-    # #151 review 2: "No intervention was applied" was said while a --set-at was made.
+    # "No intervention was applied" was said while a --set-at was made.
     import peeky.probe as probe_module
 
     worker = Lines()
@@ -2018,7 +2018,7 @@ def test_a_set_at_made_beside_an_unmade_set_names_only_the_set(monkeypatch):
 
 
 def test_generic_instances_and_a_shared_line_are_told_apart(monkeypatch):
-    # #151 review 2: a Rust generic's instances differ only in their symbol's hash, which
+    # A Rust generic's instances differ only in their symbol's hash, which
     # the warning's names dropped (`tf::<A>`, `tf::<B>`: no warning).
     import peeky.probe as probe_module
 
@@ -2055,7 +2055,7 @@ def test_generic_instances_and_a_shared_line_are_told_apart(monkeypatch):
 
 
 def test_peeky_probe_exits_as_peeky_probe_does(monkeypatch, capsys):
-    # #151 review 2: the `peeky-probe` script exited 0 where `peeky probe` exits 4.
+    # The `peeky-probe` script exited 0 where `peeky probe` exits 4.
     import peeky.probe as probe_module
 
     for result, code in (
@@ -2084,7 +2084,7 @@ def test_a_refusal_names_the_functions_sharing_a_reason_once():
 
 
 def test_instances_that_read_alike_are_told_apart_by_their_hash(monkeypatch):
-    # #151 review 3: two instances whose names were cut at the same 300 characters got
+    # Two instances whose names were cut at the same 300 characters got
     # the same label on both changes; the cut was not marked.
     import peeky.probe as probe_module
     from peeky.rust_mir import _instance
@@ -2107,7 +2107,7 @@ def test_instances_that_read_alike_are_told_apart_by_their_hash(monkeypatch):
 
 
 def test_python_code_the_debugger_names_alike_is_said_not_merged(tmp_path, monkeypatch):
-    # #151 review 3: two lambdas on one line are both `<lambda>`, and debugpy's frames
+    # Two lambdas on one line are both `<lambda>`, and debugpy's frames
     # give no column, so their stops were listed as one function's.
     import peeky.probe as probe_module
 
@@ -2135,7 +2135,7 @@ def test_python_code_the_debugger_names_alike_is_said_not_merged(tmp_path, monke
 
 
 def test_a_warning_says_how_many_functions_it_does_not_list():
-    # #151 review 3: "stopped in 6 functions" listed 4.
+    # "stopped in 6 functions" listed 4.
     from peeky.probe import _stops_by_function
 
     functions = {f"f{i}": [i] for i in range(10)}
@@ -2146,7 +2146,7 @@ def test_a_warning_says_how_many_functions_it_does_not_list():
 
 
 def test_a_selector_by_line_that_names_several_bindings_is_refused():
-    # PR #215 review: `x @ part.rs:1` where two included files named `part.rs` (or two
+    # `x @ part.rs:1` where two included files named `part.rs` (or two
     # `let x` on one line) both declare an `x` there: the one lldb-dap lists by its
     # plain name is not selected by it.
     from peeky.probe import Refused, _scope_lookup
@@ -2164,7 +2164,7 @@ def test_a_selector_by_line_that_names_several_bindings_is_refused():
 
 
 def test_an_opaque_rust_enum_row_says_why_where_it_is_and_what_to_read():
-    # #303: rota's `last: Option<Engineer>` read `<unqualified Rust enum layout>`, with no
+    # Rota's `last: Option<Engineer>` read `<unqualified Rust enum layout>`, with no
     # address to compare `l` of `if let Some(l) = &last` with, and nothing to read instead.
     from peeky.probe import _capture
 
@@ -2198,7 +2198,7 @@ def test_an_opaque_rust_enum_row_says_why_where_it_is_and_what_to_read():
 
 
 def test_a_signal_stop_counts_as_let_go_on_only_where_the_program_resumed(monkeypatch):
-    # Review of #348: `continue` serves another thread's breakpoint stop from the same
+    # `continue` serves another thread's breakpoint stop from the same
     # all-threads stop first, and resumes nothing; the warning said the probe let the
     # program go on after the signal.
     import peeky.probe as probe_module
@@ -2224,8 +2224,7 @@ def test_a_signal_stop_counts_as_let_go_on_only_where_the_program_resumed(monkey
 
 
 def test_an_inferred_exit_says_what_it_costs_and_what_to_do(monkeypatch):
-    # L4: "Peeky inferred it because no threads were left (java-debug, issue #27)" left
-    # the agent wondering whether to act.
+    # An inferred exit's warning says what it costs and what to do.
     import peeky.probe as probe_module
     from peeky.probe import Probe
 
@@ -2276,7 +2275,7 @@ def test_an_inferred_exit_says_what_it_costs_and_what_to_do(monkeypatch):
 
 
 def test_a_set_hit_past_the_captured_hits_says_what_to_do():
-    # Preparing the ninth evaluation: `--set gap=20 --set-hit 4` gave `Probe set_hit
+    # `--set gap=20 --set-hit 4` gave `Probe set_hit
     # must be within 1..1`, an internal name, with no way out.
     with pytest.raises(ValueError) as caught:
         Probe("sessions.py", 34, ("gap",), set=(("gap", "20"),), set_hit=4)
@@ -2298,7 +2297,7 @@ def test_a_set_hit_past_the_captured_hits_says_what_to_do():
     ],
 )
 def test_an_index_named_by_a_variable_says_to_read_it_first(selector, advice):
-    # outline 4: `self.items[at]` was refused, saying only that selectors are paths.
+    # `self.items[at]` was refused, saying only that selectors are paths.
     with pytest.raises(ValueError) as refused:
         parse_selector(selector)
     message = str(refused.value)
@@ -2405,8 +2404,8 @@ RAN = "The run made 2 changes by --set-at (at line 9): compare with a run withou
 def test_no_stop_after_changes_counts_them_and_claims_no_cause(
     monkeypatch, exit_code, message, hint
 ):
-    # Prep 14: tides, `--at 33` with six change-and-restore --set-at: every change was made,
-    # and NO_STOP said to pick a line the program executes. Review of PR #314: nothing proves
+    # Tides, `--at 33` with six change-and-restore --set-at: every change was made,
+    # and NO_STOP said to pick a line the program executes. Nothing proves
     # a change came before the line's chance to run, so the message claims no cause.
     worker = _Stops([9, 9], exit_code)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
@@ -2431,7 +2430,7 @@ def _no_stop(monkeypatch, lines, set_at, proven=True):
 
 
 def test_no_stop_after_writes_proven_to_change_nothing_blames_the_line(monkeypatch):
-    # Review of PR #314: `trend: 1 -> 1` counted as a change ("after 1 change by --set-at:
+    # `trend: 1 -> 1` counted as a change ("after 1 change by --set-at:
     # they may have kept the line from running"). A write proven to change nothing is not
     # one: where every write is such, the line is blamed, as with none.
     result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "1")))
@@ -2450,7 +2449,7 @@ def test_no_stop_after_writes_proven_to_change_nothing_blames_the_line(monkeypat
 
 
 def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monkeypatch):
-    # Round 2 of PR #314: the same text is not always a no-op (a Java String written alike
+    # The same text is not always a no-op (a Java String written alike
     # is a new object; a Python `1000` may be another). Such writes are named, never taken
     # for no-ops, and never blamed on the line.
     result = _no_stop(
@@ -2488,7 +2487,7 @@ def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monk
 
 
 def test_no_stop_after_a_change_past_the_line_claims_no_cause(monkeypatch):
-    # Review of PR #314: a --set-at on a line after the --at line got the same causal
+    # A --set-at on a line after the --at line got the same causal
     # wording. Where they were is said; that they kept the line from running is not.
     result = _no_stop(monkeypatch, [20], ((20, 1, "trend", "0"),))
     message = result["error"]["message"]
@@ -2509,7 +2508,7 @@ def test_no_stop_after_a_change_past_the_line_claims_no_cause(monkeypatch):
 
 
 def test_the_intervention_limit_says_how_many_and_what_to_do():
-    # nightlot: 12 `--set-at`s gave `At most 8 interventions (--set and --set-at
+    # 12 `--set-at`s gave `At most 8 interventions (--set and --set-at
     # together)`, with the generic hint `Fix the request arguments; …`.
     changes = tuple((31, hit, "hh", str(hit)) for hit in range(1, 13))
     with pytest.raises(ValueError) as refused:

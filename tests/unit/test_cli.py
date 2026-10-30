@@ -1,4 +1,4 @@
-"""CLI text and argument checks found by agent evaluations."""
+"""CLI text and argument checks."""
 
 import json
 
@@ -9,7 +9,7 @@ from peeky.cli import main
 
 
 def test_inspect_marks_names_no_selector_can_read():
-    # Eval 5 (C): `(Return Value)` after `step --out` was listed like any local.
+    # `(Return Value)` after `step --out` was listed like any local.
     from peeky.cli import _variables_text
 
     snapshot = {
@@ -30,8 +30,8 @@ def test_inspect_marks_names_no_selector_can_read():
 
 
 def test_field_sets_where_no_rule_allows_them_are_refused_before_any_build(tmp_path, capsys):
-    # Eval 5 (Rust): `--set s.end=10` was refused only after a build and a run. Since
-    # #105 Rust, C and C++ change fields too; Python still refuses before it runs.
+    # `--set s.end=10` was refused only after a build and a run. Rust,
+    # C and C++ change fields too; Python refuses before it runs.
     from peeky.cli import main
 
     (tmp_path / "a.py").write_text("x = 1\n")
@@ -41,7 +41,7 @@ def test_field_sets_where_no_rule_allows_them_are_refused_before_any_build(tmp_p
     assert "only Java, Rust, C and C++ targets allow" in error["message"]
     assert "COOKBOOK 6.6" in error["message"]
     assert "only the stopped function's own locals change" in error["message"]
-    # Review of #109: names are stripped as `--set` itself strips them (`n = 3`).
+    # Names are stripped as `--set` itself strips them (`n = 3`).
     from peeky.cli import _member_sets
 
     for language in ("c", "cpp", "rust", "java"):
@@ -50,7 +50,7 @@ def test_field_sets_where_no_rule_allows_them_are_refused_before_any_build(tmp_p
 
 
 def test_session_set_help_names_every_language_that_changes_fields(capsys):
-    # Review of #105: `session set --help` still said "(Java also current.end=10, ...)".
+    # `session set --help` names every language, not "(Java also current.end=10, ...)".
     import pytest
 
     from peeky.cli import main
@@ -63,7 +63,7 @@ def test_session_set_help_names_every_language_that_changes_fields(capsys):
 
 
 def test_describe_lists_a_java_block_locals_lines_and_each_type_its_own():
-    # #264: `ranking (int[], lines 51-53, 78-79)`; one name two blocks declare with
+    # `ranking (int[], lines 51-53, 78-79)`; one name two blocks declare with
     # different types is listed once per type, each with its lines.
     from peeky.cli import _describe_text
 
@@ -137,7 +137,7 @@ def _verify_line(monkeypatch, capsys, *argv):
 
 
 def test_describe_names_verifys_at_only_where_verify_needs_it(tmp_path, monkeypatch, capsys):
-    # Twelfth evaluation's preparation: a one-source Java config and a one-file crate showed
+    # A one-source Java config and a one-file crate showed
     # `--at`, though verify picks that file without it.
     crate = tmp_path / "crate"
     (crate / "src").mkdir(parents=True)
@@ -178,7 +178,7 @@ sys.exit({status})
 
 @pytest.mark.parametrize("status", [1, 3])
 def test_a_failed_checks_reason_is_its_last_output_line(tmp_path, monkeypatch, capsys, status):
-    # Finding 11: `verify --baseline` gave `reason: SystemExit: 1`; the useful line, the
+    # `verify --baseline` gave `reason: SystemExit: 1`; the useful line, the
     # checker's `FAIL ...`, was only in `output`.
     from peeky.cli import main
 
@@ -214,7 +214,7 @@ def test_a_reason_the_output_cannot_give_stays_the_checkers():
     # Output cut short may end part-way through a line.
     long = "y" * 16000 + "\nFAIL tail"
     assert _verify_reason(failed("SystemExit: 1", stdout=long)) == "SystemExit: 1"
-    # stdout first: its last line, though stderr says FAIL (round 2 of PR #165).
+    # stdout first: its last line, though stderr says FAIL.
     both = failed("SystemExit: 1", stdout="case 1 ok\n", stderr="FAIL case 2\n\n")
     assert _verify_reason(both) == "case 1 ok"
     assert _verify_reason(failed("SystemExit: 1", stderr="FAIL case 2\n")) == "FAIL case 2"
@@ -222,7 +222,7 @@ def test_a_reason_the_output_cannot_give_stays_the_checkers():
 
 
 def test_a_reason_is_the_line_that_says_what_failed():
-    # Review of PR #165, Low 5: `FAIL ...` on stdout and `note: cleanup done` on stderr
+    # `FAIL ...` on stdout and `note: cleanup done` on stderr
     # gave the stderr note.
     from peeky.cli import _verify_reason
 
@@ -249,7 +249,7 @@ def test_a_reason_is_the_line_that_says_what_failed():
 @pytest.mark.parametrize(
     "stdout, stderr, said",
     [
-        # Round 2 of PR #165, Low 3: unanchored words in passing lines were picked.
+        # Unanchored words in passing lines were picked.
         ("ok: empty input raises ValueError\nmismatch: wrap got 6 want 7\n", "",
          "mismatch: wrap got 6 want 7"),
         ("FAIL case 3: got 2 want 3\ncase 4 ok: raises KeyError as expected\n", "",
@@ -292,7 +292,7 @@ def test_the_reason_is_the_first_line_anchored_as_a_failure(stdout, stderr, said
 
 
 def test_a_failing_verify_shows_its_only_output_line_once():
-    # L5: the long `FAIL …` line came twice, as `reason:` and under `output:`.
+    # The long `FAIL …` line came twice, as `reason:` and under `output:`.
     from peeky.cli import _verify_text
 
     line = "FAIL ['10-4-3']: got 'RESULTS:9' want 'RESULTS:3'"
@@ -347,7 +347,7 @@ def counter():
 
 
 def test_describe_lists_the_module_globals_a_function_reads(tmp_path, capsys):
-    # sessions 5: `describe` listed `sessionize`'s locals but not `MAX_GAP`, which a
+    # `describe` listed `sessionize`'s locals but not `MAX_GAP`, which a
     # probe there reads (`MAX_GAP [module global]`). Names the module itself assigns:
     # not `sys`, `Session`, `print` or `len`.
     path = tmp_path / "sessions.py"
@@ -365,7 +365,7 @@ def test_describe_lists_the_module_globals_a_function_reads(tmp_path, capsys):
 
 
 def test_describe_lists_only_globals_the_module_binds_and_the_code_loads(tmp_path, capsys):
-    # Review of PR #214: `globals()["CACHE"] = {}` counted `globals` as a module global a
+    # `globals()["CACHE"] = {}` counted `globals` as a module global a
     # function read (its target names it, but only to call it), a subscript target's
     # name (`counts[0] = 1`) counted as bound, and a name in code the compiler drops
     # (`if False:`) counted as read.
@@ -393,7 +393,7 @@ def test_describe_lists_only_globals_the_module_binds_and_the_code_loads(tmp_pat
 
 
 def test_describe_counts_a_generator_expressions_loads_for_its_function(tmp_path, capsys):
-    # Review round 2 of PR #214: a generator expression's code is its own (a
+    # A generator expression's code is its own (a
     # comprehension's too, before Python 3.12), so `SCALE` read only there was missed. A
     # lambda is a scope of its own: `OTHER` is its, not `total`'s.
     path = tmp_path / "gens.py"
@@ -414,7 +414,7 @@ def test_describe_counts_a_generator_expressions_loads_for_its_function(tmp_path
 
 
 def test_a_python_field_set_is_refused_as_other_languages_refuse_it(tmp_path, capsys):
-    # prep 4: `peeky: [MUTATION_REJECTED] …` on stderr, where C, Rust and Java refusals
+    # `peeky: [MUTATION_REJECTED] …` on stderr, where C, Rust and Java refusals
     # before the run print `error [MUTATION_REJECTED]: …`; and its hint said "rows marked
     # [settable] can be changed here", which Python never shows.
     program = tmp_path / "a.py"
@@ -438,7 +438,7 @@ def test_a_python_field_set_is_refused_as_other_languages_refuse_it(tmp_path, ca
 
 
 def test_verify_takes_a_java_targets_one_source_without_at():
-    # Prep 13: `verify` on the seats directory without `--at app/Seats.java` was refused,
+    # `verify` on the seats directory without `--at app/Seats.java` was refused,
     # though its config declares that one source.
     assert cli._default_program(None, {"sources": ["app/Seats.java"]}, "verify") == "app/Seats.java"
     assert cli._default_program("app/A.java", {"sources": ["app/B.java"]}, "verify") == "app/A.java"
@@ -454,7 +454,7 @@ def test_verify_takes_a_java_targets_one_source_without_at():
 
 
 def test_describe_names_each_functions_settable_root_locals():
-    # laps 3: `mutable:` named fields and registers per function, never `start` or `total`.
+    # `mutable:` named fields and registers per function, never `start` or `total`.
     text = cli._describe_text(
         {
             "language": "rust",

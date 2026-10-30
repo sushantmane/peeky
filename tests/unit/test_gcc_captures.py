@@ -1,6 +1,6 @@
-"""A GCC lambda's captures, read through `__closure` (#361): which member of the lambda's
+"""A GCC lambda's captures, read through `__closure`: which member of the lambda's
 object holds each, how the worker lists them in a scope of their own, and that none is
-ever changed. Real builds: tests/cpp/test_cpp_gcc_captures.py."""
+ever changed. Real builds: tests/cpp/test_cpp_gcc_values.py."""
 
 import re
 
@@ -360,7 +360,7 @@ class _Statements:
 
 
 def test_which_x_a_stop_names_where_the_lambda_captures_and_declares_it(monkeypatch):
-    # #361 review: `[x]{ use(x); { use(x); long x = 9; use(x); } use(x); }`, each on its
+    # `[x]{ use(x); { use(x); long x = 9; use(x); } use(x); }`, each on its
     # own line: the capture above the block, in it above the declaration, and past it;
     # the local past its declaration, in its block.
     entry = {
@@ -382,7 +382,7 @@ def test_which_x_a_stop_names_where_the_lambda_captures_and_declares_it(monkeypa
     assert scope(29, 0x150) == ("capture", None)
     assert scope(31, 0x160) == ("local", 30)
     assert scope(35, 0x250) == ("capture", None)
-    # Review round 2: where the stop's code isn't its block's, the capture, whatever the
+    # Where the stop's code isn't its block's, the capture, whatever the
     # text reads (a macro's `if (int x = 9) …` ends where its line doesn't say).
     assert scope(31, 0x250) == ("capture", None)
     # On the declaration's own line, or past its block where the stop's code is the
@@ -410,7 +410,7 @@ def test_which_x_a_stop_names_where_the_lambda_captures_and_declares_it(monkeypa
 
 
 def test_where_a_lambda_is_defined_is_found_however_deep_it_is_nested(monkeypatch):
-    # #361 review: only 4 functions around a lambda were read, and past them it counted
+    # Only 4 functions around a lambda were read, and past them it counted
     # as finished: a fifth lambda inside `T t{1, …}` read `t.b` uninitialized.
     from peeky.native import LAMBDA_NESTING
 
@@ -483,7 +483,7 @@ class _Failing(_Dap):
     ],
 )
 def test_each_capture_not_read_says_which_read_failed(tmp_path, listing, why):
-    # Review round 2 of #361: a listing that timed out, failed, ran past 512 members or
+    # A listing that timed out, failed, ran past 512 members or
     # was malformed said the debugger gave no address for `__closure`.
     frame = {"id": 3, "name": "operator()"}
     worker = _worker(tmp_path, _Lambda())
@@ -528,7 +528,7 @@ def _kind(offset, name):
 
 
 def test_describe_tells_how_each_capture_is_held_by_the_lambdas_object():
-    # Review of #393: `describe` gave a capture the body's variable's type (`const Pt`,
+    # `describe` gave a capture the body's variable's type (`const Pt`,
     # `[*this]`'s `const Acc *const`), and left `[this]` as an ordinary local.
     from peeky.native import _gcc_capture_kinds
 
@@ -618,7 +618,7 @@ def test_describe_lists_this_once_as_the_lambdas_capture_of_the_object():
 
 
 def test_a_gcc_lambdas_capture_says_why_it_is_not_found():
-    # Prep 8: GCC's lambda read `grade` as `<not found; visible: a, b, ga, gb>`, with no
+    # GCC's lambda read `grade` as `<not found; visible: a, b, ga, gb>`, with no
     # reason; the C cookbook said why.
     snapshot = {
         "scopes": [{"name": "Locals", "variables": [{"name": n} for n in ("a", "b", "ga", "gb")]}],
@@ -660,6 +660,6 @@ def test_a_gcc_lambdas_captures_are_its_artificial_variables():
     }
     assert _gcc_captures(dies, {"chain": [2], "bodies": [2]}) == ("grade",)
     assert _gcc_captures(dies, {"chain": [8], "bodies": [8]}) == ()
-    # `[*this]`'s `this` GCC gives no location: its copy is the lambda's (#361).
+    # `[*this]`'s `this` GCC gives no location: its copy is the lambda's.
     del dies[6]["attrs"]["DW_AT_location"]
     assert _gcc_captures(dies, {"chain": [2], "bodies": [2]}) == ("grade", "this")

@@ -1,9 +1,9 @@
 """Every probe error before the debugger's launch or attach request is sent is a
-refusal before launch (#190), whatever its code: no table, exit 2,
-`refused_before_launch` in JSON, and no run kept as evidence. Before, only the refusals that said so did that; a file outside the worker
-root (`INVALID_REQUEST`), an outdated Java adapter (`UNSUPPORTED`), a build that failed
-or a debugger that never started printed an empty table and exited 1. An error once
-the debugger was asked to start the program is not one: the program may have run."""
+refusal before launch, whatever its code: no table, exit 2, `refused_before_launch` in
+JSON, and no run kept as evidence. That includes a file outside the worker root
+(`INVALID_REQUEST`), an outdated Java adapter (`UNSUPPORTED`), a build that failed and a
+debugger that never started, not only the refusals that say so. An error once the
+debugger was asked to start the program is not one: the program may have run."""
 
 import hashlib
 import json
@@ -227,7 +227,7 @@ def slow_build(tmp_path):
 
 
 def test_a_remote_build_slower_than_its_budget_answers_before_the_watchdog(tmp_path):
-    # #190 review: the launch had the worker's 40 s, the watchdog fired at 35 s and made
+    # The launch had the worker's 40 s, the watchdog fired at 35 s and made
     # up a failure without `refused_before_launch`: an empty table, exit 1, a saved run.
     from peeky.worker import _run_probe_process
 
@@ -311,7 +311,7 @@ def answering(status, body):
 def test_only_a_remote_refusal_the_worker_made_is_one_before_launch(
     tmp_path, monkeypatch, capsys, status, body, code
 ):
-    # #190 review: an answer that was not JSON was taken for a refusal before launch.
+    # An answer that was not JSON was taken for a refusal before launch.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
     (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")

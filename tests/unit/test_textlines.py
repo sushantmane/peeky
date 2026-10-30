@@ -1,4 +1,4 @@
-"""#179: a U+2028 (or another Unicode line break) in a file name, or in source text, is
+"""A U+2028 (or another Unicode line break) in a file name, or in source text, is
 part of its line: every tool Peeky reads (dwarfdump, LLDB, cargo, rustc's MIR, the
 preprocessor) and every compiler ends a line at `\\n` alone. And the names those tools
 print escaped (dwarfdump and clang in octal, LLVM IR in hex) read back whole."""
@@ -34,7 +34,7 @@ def test_lines_end_where_splitlines_ends_them_at_a_newline(text):
     "text, lines", [("x\r", ["x\r"]), ("a\rb\nc\r", ["a\rb", "c\r"]), ("a\r\n", ["a"])]
 )
 def test_a_lone_carriage_return_is_part_of_its_line(text, lines):
-    # #188 review: only a `\r` ending a chunk that `\n` ends goes with it.
+    # Only a `\r` ending a chunk that `\n` ends goes with it.
     from peeky.textlines import split_lines
 
     assert split_lines(text) == lines
@@ -177,7 +177,7 @@ def test_an_lldb_line_table_row_keeps_a_line_separator_in_its_file():
 
 
 def test_an_inline_assembly_refusal_names_its_file_with_any_character():
-    # #179 (with #180's refusal): clang's `-E` markers write the name in octal.
+    # clang's `-E` markers write the name in octal.
     from peeky.assembler import c_refusal
 
     printed = octal("dir/a\u2028b.c")
@@ -196,7 +196,7 @@ def test_an_inline_assembly_refusal_names_its_file_with_any_character():
     ],
 )
 def test_a_source_has_the_lines_its_compiler_counts(text, rust, lines):
-    # #188 review: rustc ends a line at `\n` alone; clang (and javac, Python) also at a
+    # rustc ends a line at `\n` alone; clang (and javac, Python) also at a
     # lone `\r`; neither at a form feed or vertical tab.
     from peeky.textlines import source_lines
 
@@ -233,7 +233,7 @@ Address Line Column File
 
 
 # `#[path = "module"] mod odd;`: a Rust module may have any name, so whose rule counts
-# its lines is the program's language, never the file's suffix (#188 review, round 2).
+# its lines is the program's language, never the file's suffix.
 MODULE = b"// one\r// two\nfn f(n: i64) -> i64 {\n    for _ in 0..n {}\n    n\n}\n"
 
 
@@ -345,7 +345,7 @@ def test_a_rust_module_of_any_name_has_its_macro_rules_lines_found(tmp_path):
     ],
 )
 def test_octal_names_are_read_only_as_llvm_writes_them(printed, name):
-    # #188 review: `codecs.escape_decode` read Python's escapes too (`\x41` as `A`),
+    # `codecs.escape_decode` read Python's escapes too (`\x41` as `A`),
     # kept unknown ones and cut `\400` short.
     from peeky.native import _text
     from peeky.rust_symbols import _string
@@ -384,7 +384,7 @@ def test_a_marker_name_that_is_not_llvms_names_no_file():
     ],
 )
 def test_ir_names_are_read_only_as_llvm_writes_them(printed, name):
-    # #188 review: `\FF` read as U+FFFD could name a declared `src/\ufffd.rs`, and a
+    # `\FF` read as U+FFFD could name a declared `src/\ufffd.rs`, and a
     # backslash LLVM never writes alone (`\q`) was kept.
     from peeky.rust_ir import ir_string
 

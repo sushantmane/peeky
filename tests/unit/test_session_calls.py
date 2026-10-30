@@ -1,4 +1,4 @@
-"""Session stops compared with where their step started (tenth evaluation): a step's stop
+"""Session stops compared with where their step started: a step's stop
 in another function or at another depth says so, in words the stacks prove; a step that
 left a block says so when a name it declared is read; and `session start` warns when it
 stopped at a breakpoint the debugger moved."""
@@ -81,7 +81,7 @@ def test_lldb_callers_are_told_apart_by_their_return_address():
 
 
 def test_state_lines_say_only_what_the_stacks_show():
-    # Review of #274: "returned from" was said of a generator that yielded and a C++
+    # "returned from" was said of a generator that yielded and a C++
     # function an exception unwound.
     left = {"kind": "left", "from": "boom()", "to": "main", "calls": 1}
     assert _call_text(left) == "left `boom()`; now in `main`"
@@ -138,7 +138,7 @@ def test_a_moved_start_breakpoint_warns_only_after_a_stop_there():
     assert _moved_start(launch, stop, 55, "app/outline.py") == MOVED
     assert _moved_start(launch, {**stop, "location": "app/outline.py:54"}, 55, "app/outline.py")
     assert _moved_start(launch, stop, 54, "app/outline.py") is None
-    # Review of #274: "values are from line 54" of a run that never stopped there.
+    # "values are from line 54" of a run that never stopped there.
     for state in (
         {"state": "terminated"},
         {"state": "running"},
@@ -199,7 +199,7 @@ def test_only_a_session_steps_own_stop_is_compared(tmp_path):
     stopped(worker)
     worker.compare_calls()
     assert worker.names_before is None
-    # Review of #274: a stop a breakpoint, exception or pause made first, or another
+    # A stop a breakpoint, exception or pause made first, or another
     # thread's, may be in another activation that looks the same: nothing is said.
     for reason, thread in (("breakpoint", 1), ("exception", 1), ("pause", 1), ("step", 2)):
         stopped(worker)
@@ -236,7 +236,7 @@ def test_only_a_session_steps_own_stop_is_compared(tmp_path):
     ],
 )
 def test_a_stack_not_known_to_be_whole_gives_no_note(tmp_path, frames, total):
-    # Review of #274: `levels: 0` on a deep recursion could pass the 4 MiB frame limit.
+    # `levels: 0` on a deep recursion could pass the 4 MiB frame limit.
     worker = DebugWorker(tmp_path)
     worker.dap = Recorder([{"name": "deep", "line": 4}] * frames, total)
     stopped(worker)

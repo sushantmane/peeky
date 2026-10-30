@@ -86,7 +86,7 @@ def charred(value, char_set=True):
     ],
 )
 def test_a_char_takes_a_char_literal_or_a_code_point(value, char):
-    # #183: java-debug sets a char; Peeky sends it the char itself between single quotes.
+    # java-debug sets a char; Peeky sends it the char itself between single quotes.
     session = charred(value)
     variable = {"name": "op", "type": "char"}
     session.validate_variable(variable, value)
@@ -104,7 +104,7 @@ def test_a_char_refuses_what_is_no_single_char(value):
 
 
 def test_the_type_is_judged_before_the_value_and_names_the_rule():
-    # #183: `op='+'` on a char was refused as "requires a numeric or boolean scalar
+    # `op='+'` on a char was refused as "requires a numeric or boolean scalar
     # literal" (with a hint about C, C++ and Rust); the real rule came only on a retry.
     session = charred("'+'", char_set=False)
     with pytest.raises(ValueError) as caught:
@@ -136,7 +136,7 @@ def field(name, kind, owner, jdk):
 
 
 def test_a_jdk_classs_field_is_never_settable_and_says_whose_it_is():
-    # #204: a String's cached hash; the launcher names each field's declaring class, and
+    # A String's cached hash; the launcher names each field's declaring class, and
     # whether the JDK's own class loaders loaded it.
     session = owners()
     reason = session.internal_member(field("hash", "int", "java.lang.String", True), "String")
@@ -171,7 +171,7 @@ def test_an_element_is_judged_by_the_field_that_holds_its_array():
     holder = {"name": "x", "type": "Fake"}
     assert session.internal_member(byte, parent="int[]", trail=[holder, table, row])
     # ... and so is one inside an Object[] a JDK field holds (a cache's): an Object[] is
-    # no proof of whose its elements are (PR #210 review round 2) ...
+    # no proof of whose its elements are ...
     cache = field("cache", "Object[]", "sun.util.resources.Fake", True)
     assert session.internal_member(byte, parent="int[]", trail=[holder, cache, row])
     # ... but for a JDK list's backing array, whose elements are the program's values.
@@ -202,7 +202,7 @@ def test_an_element_is_judged_by_the_field_that_holds_its_array():
 
 
 def test_before_the_run_only_classes_that_may_be_the_value_count():
-    # #204 review: an unrelated class's `size` does not make an ArrayList's the program's.
+    # An unrelated class's `size` does not make an ArrayList's the program's.
     from peeky.java import _may_be, _may_declare
 
     declared = {
@@ -259,7 +259,7 @@ def test_a_string_or_boxed_number_is_shown_whole(type_, value, whole):
 
 
 class Launcher:
-    """A launcher's answers to peekyArrayHolder (#261)."""
+    """A launcher's answers to peekyArrayHolder."""
 
     def __init__(self, body=None, refusal=None):
         self.body, self.refusal, self.calls = body, refusal, []
@@ -274,7 +274,7 @@ class Launcher:
 
 
 def test_an_elements_mark_asks_the_launcher_what_holds_its_array():
-    # #261: `ranking[1]` was marked [settable] by its path, then the write was refused.
+    # `ranking[1]` was marked [settable] by its path, then the write was refused.
     session = owners()
     session.array_holders = True
     array = {"name": "ranking", "type": "int[]", "value": "int[3]@59", "variablesReference": 7}
@@ -306,7 +306,7 @@ def test_an_elements_mark_asks_the_launcher_what_holds_its_array():
 
 
 def test_while_other_threads_run_no_element_is_promised_settable():
-    # #261 review: a line breakpoint stops only its own thread. Another may wrap the
+    # A line breakpoint stops only its own thread. Another may wrap the
     # array's list in an unmodifiable view before the write, so no verdict lasts the stop.
     session = owners()
     session.array_holders = True
@@ -324,7 +324,7 @@ def test_while_other_threads_run_no_element_is_promised_settable():
 
 
 def test_a_row_set_does_not_change_says_why():
-    # #261: `counted: int = 9` showed neither [settable] nor why not.
+    # `counted: int = 9` showed neither [settable] nor why not.
     session = owners()
     session.text_set = session.char_set = session.field_set = True
     locals_ = {

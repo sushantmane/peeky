@@ -1,8 +1,8 @@
-"""#321: a callee given a shared `&` may still store a copy where its type doesn't show a
+"""A callee given a shared `&` may still store a copy where its type doesn't show a
 cell. `send(&tx, x)` with `tx` an `mpsc::Sender` keeps `x` in the channel, where `rx`
 reads it; `bump(&c, x)` with `c = Counter::new()` keeps it in `c.c`, a `Cell`, which a
 call built, so no provenance shows it. Both left `x` `[settable]` after the call, and the
-change never reached the program. Writability through `&T` is now judged by `T`'s whole
+change never reached the program. Writability through `&T` is judged by `T`'s whole
 layout: the crate's own types by the build's debug information
 (rust_symbols.interior_types), the standard library's by the classes of
 rust_mir._STD_NAMED."""
@@ -921,7 +921,7 @@ def kept(name, lines):
 
 
 def test_a_struct_with_a_cell_field_may_store_a_copy_through_a_shared_reference():
-    # The issue: `bump(&c, x)` with `c = Counter::new()`. A call built `c`, so nothing it
+    # `bump(&c, x)` with `c = Counter::new()`. A call built `c`, so nothing it
     # was made from shows the `Cell` in `Counter`; the debug information does.
     body = body_of(COUNTED)
     stop = place(body, "_9 = other()")
@@ -937,7 +937,7 @@ def test_a_struct_with_a_cell_field_may_store_a_copy_through_a_shared_reference(
 
 
 def test_a_channels_sending_end_stores_where_its_receiving_end_reads():
-    # The issue: `send(&tx, x)` stores `x` in the channel, which `rx.recv()` reads. `rx`
+    # `send(&tx, x)` stores `x` in the channel, which `rx.recv()` reads. `rx`
     # was moved out of the tuple `mpsc::channel()` returned beside `tx`.
     body = body_of(SENT)
     stop = place(body, "_11 = other()")
@@ -965,7 +965,7 @@ def test_a_struct_without_cells_or_a_receiving_end_lent_by_a_shared_reference_st
     assert not any(body._may_write_through(n) for n in (10, 11))
     assert why(PEEKED, "peeked", 93, "_14 = other()") == (None, None)
     # Without the debug information, `Point` may hold a cell: refused, as a possibility, and
-    # what it may hold is said as no more than derived from `x` (#321 review round 2).
+    # what it may hold is said as no more than derived from `x`.
     reason = why(POINTED, "pointed", 74, "_9 = other()", None)[0]
     assert "the program's own `p` (at " in reason
     assert "may hold state derived from it" in reason
@@ -1213,7 +1213,7 @@ def test_a_copy_that_may_be_out_of_reach_advises_a_change_before_the_call():
     assert "change the copy" in mutation_hint(message.split(", which may be out")[0])
 
 
-# Review of PR #328: values built of a sharer, default type arguments, what a cell can take,
+# Values built of a sharer, default type arguments, what a cell can take,
 # `PhantomData` and function types. rustc 1.96.0's MIR of this crate.
 REVIEW = """use std::cell::Cell;
 use std::env;
@@ -2717,8 +2717,8 @@ def review(text, name, marker, statement, interior=REVIEW_TYPES, source=REVIEW, 
 
 def test_a_value_built_of_what_shares_the_cell_shares_it():
     # `let h = HoldRx { rx };` and `let h = HoldRc { c: Rc::clone(&a) };`, built before the
-    # call: `h` reaches what `send(&tx, x)` and `put(&a, x)` store. On the PR's first head an
-    # aggregate was no link, so `x` was `[settable]` and the program printed the old `6`.
+    # call: `h` reaches what `send(&tx, x)` and `put(&a, x)` store. An aggregate is a link,
+    # or `x` would be `[settable]` and the program would print the old `6`.
     for text, name, marker, statement in (
         (HELD_RX, "held_rx", "HELD_RX", "_13 = other()"),
         (HELD_RC, "held_rc", "HELD_RC", "_14 = other()"),
@@ -2735,7 +2735,7 @@ def test_a_value_built_of_what_shares_the_cell_shares_it():
 def test_an_argument_the_dump_leaves_out_is_its_declared_default():
     # `let g: Dflt = Dflt { inner: 7 };` (`struct Dflt<T = u32>`) beside a `Dflt<Cell<u32>>`:
     # the dump names `g`'s type `&Dflt`. Its argument is the default `u32`, so `look(&g, x)`
-    # stores nothing. On the PR's first head the instances' flags were joined: "may hold".
+    # stores nothing; the instances' flags are not joined (that would say "may hold").
     body = body_of(DEFAULTED, REVIEW_TYPES)
     body.layouts.defaults = {"Dflt": (("T", "u32"),)}
     lent = [n for n, kind in body.types.items() if kind == "&Dflt"]
@@ -2828,26 +2828,25 @@ def test_phantom_data_and_function_types_hold_nothing():
         assert review(text, name, marker, statement) == (None, None), name
 
 
-# Review round 2 of PR #328: what may be stored is compared by whole types, a plain cell of
+# What may be stored is compared by whole types, a plain cell of
 # a value with one state keeps nothing, an array counts by its length, and a default may
 # name an earlier parameter.
 def test_a_copy_is_said_only_for_the_very_type():
-    # On the round-1 head, types were compared by their paths' last words: `Cell<Vec<u32>>`
-    # "took a copy" of a `Vec<bool>` (both name `Vec`), `Cell<a::Id>` of a `b::Id`. Round 3:
-    # what holds a value of a type one of its parts has is "derived" too, never "a copy of
-    # part of it": `Cell<u32>` for `E::B(true)` of `enum E { A(u32), B(bool) }`, or for a
-    # `Box<u32>`, whose `u32` is behind a pointer.
+    # Types are compared whole, not by their paths' last words, where `Cell<Vec<u32>>` "took a copy"
+    # of a `Vec<bool>` (both name `Vec`), `Cell<a::Id>` of a `b::Id`. What holds a value of a type
+    # one of its parts has is "derived" too, never "a copy of part of it": `Cell<u32>` for
+    # `E::B(true)` of `enum E { A(u32), B(bool) }`, or for a `Box<u32>`, whose `u32` is behind a
+    # pointer.
     a_id = CrateType(payloads=frozenset(), parts=frozenset({("prim", "u64")}))
     b_id = CrateType(payloads=frozenset(), parts=frozenset({U32}))
     point = CrateType(payloads=frozenset(), parts=frozenset({U32, BOOL}))
     layouts = TypeLayouts({"a::Id": a_id, "b::Id": b_id, "c::Id": b_id, "Pt": point, "E": point})
     for kind, local, level in (
-        # The four of round 2's review.
         ("std::cell::Cell<std::vec::Vec<u32>>", "std::vec::Vec<bool>", "derived"),
         ("std::cell::Cell<std::option::Option<u32>>", "std::option::Option<bool>", "derived"),
         ("std::cell::Cell<a::Id>", "b::Id", "derived"),
         ("std::cell::Cell<u32>", "Pt", "derived"),
-        # Round 3's: an enum's variants, and what a pointer or a container holds.
+        # An enum's variants, and what a pointer or a container holds.
         ("std::cell::Cell<u32>", "E", "derived"),
         ("std::cell::Cell<u32>", "std::boxed::Box<u32>", "derived"),
         ("std::cell::Cell<u32>", "std::rc::Rc<u32>", "derived"),
@@ -2925,12 +2924,11 @@ def test_a_copy_is_said_only_where_every_holder_may_take_one():
 
 
 def test_a_plain_cell_of_a_value_with_one_state_keeps_nothing():
-    # `unit(&c, x)` with `c: Cell<()>`, `ghost(&g, x)` with `g: Cell<PhantomData<u32>>`:
-    # whatever is stored, the same value. The round-1 head said they "may hold state
-    # derived from `x`". A lock (poisoned), a once-cell (set), a channel's end (a message
-    # count) and a `RefCell` (its borrow flag, which a leaked `RefMut` keeps set: round 3)
-    # keep state of their own. A plain cell of such a cell, or of an enum of one fieldless
-    # variant, has one state too (round 3).
+    # `unit(&c, x)` with `c: Cell<()>`, `ghost(&g, x)` with `g: Cell<PhantomData<u32>>`: whatever is
+    # stored, the same value, so they don't "hold state derived from `x`". A lock (poisoned), a
+    # once-cell (set), a channel's end (a message count) and a `RefCell` (its borrow flag, which a
+    # leaked `RefMut` keeps set) keep state of their own. A plain cell of such a cell, or of an enum
+    # of one fieldless variant, has one state too.
     unit = CrateType(payloads=frozenset(), parts=frozenset(), single=True)
     layouts = TypeLayouts({"Unit": unit, "Count": CrateType(parts=frozenset({U32}))})
     for kind, writes in (
@@ -3025,7 +3023,7 @@ def test_a_plain_cell_of_a_value_with_one_state_keeps_nothing():
 
 def test_an_array_counts_by_its_length():
     # `look(&e, x)` with `e: [Cell<u32>; 0]`, and `Arr { none: [Cell<u32>; 0], n: u32 }`: an
-    # empty array holds nothing. The round-1 head read `[T; 0]` as `[T]`, which "may hold".
+    # empty array holds nothing, unlike `[T]`, which "may hold".
     assert _parse_type("[std::cell::Cell<u32>; 0]") == (
         "array",
         ("path", "std::cell::Cell", [("path", "u32", [])]),
@@ -3099,8 +3097,8 @@ def test_an_array_counts_by_its_length():
 
 def test_a_default_naming_an_earlier_parameter_is_that_argument():
     # `struct Pair<T, U = T>`: the dump names `Pair<u32, u32>` `&Pair<u32>`; `U` is `u32`.
-    # `struct Lst<T, U = Vec<T>>`: `Lst<u32>` is `Lst<u32, Vec<u32>>`. The round-1 head
-    # judged `T` as a type of the crate's it didn't know, and said "may hold a copy".
+    # `struct Lst<T, U = Vec<T>>`: `Lst<u32>` is `Lst<u32, Vec<u32>>`. `T` is not judged
+    # a type of the crate's that Peeky doesn't know, which "may hold a copy".
     pair = CrateType(
         frozenset(),
         (frozenset({"interior", "owned"}), frozenset({"interior", "owned"})),

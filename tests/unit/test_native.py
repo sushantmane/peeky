@@ -248,7 +248,7 @@ def test_native_mutation_missing_value_is_uncertain_failure():
         session().mutation_value({})
 
 
-# The unit's preprocessing (#180), its compile, the link, then dsymutil.
+# The unit's preprocessing, its compile, the link, then dsymutil.
 @pytest.mark.parametrize("command_index,retryable", [(0, True), (1, True), (2, True), (3, False)])
 def test_native_prepare_retries_only_fixed_compile_and_link_commands(
     tmp_path, monkeypatch, command_index, retryable
@@ -327,7 +327,7 @@ def test_cpp_build_recipe_uses_selected_compiler_for_compile_and_link(tmp_path, 
     (tmp_path / "types.hpp").write_text("#pragma once\n")
     monkeypatch.setattr("peeky.native.sys.platform", "linux")
     monkeypatch.setattr("peeky.native._tool", lambda tool: tool)
-    # What `/trusted/clang++-18 --version` would say (#167).
+    # What `/trusted/clang++-18 --version` would say.
     monkeypatch.setattr("peeky.native.compiler_family", lambda path: "clang")
 
     class Captured(Exception):
@@ -337,7 +337,7 @@ def test_cpp_build_recipe_uses_selected_compiler_for_compile_and_link(tmp_path, 
         assert recipe.language == "cpp"
         assert recipe.inputs == ("main.cpp", "types.hpp")
         assert all(command.argv[0] == "/trusted/clang++-18" for command in recipe.build_commands)
-        # The unit is preprocessed first, as it is compiled (#180).
+        # The unit is preprocessed first, as it is compiled.
         assert recipe.build_commands[0].argv[-4:] == ("-E", "main.cpp", "-o", "peeky-unit-0.i")
         assert recipe.build_commands[0].argv[:-4] == recipe.build_commands[1].argv[:-7]
         assert "-std=c++17" in recipe.build_commands[1].argv
@@ -442,7 +442,7 @@ def test_function_scopes_list_qualified_names_spans_and_locals(tmp_path):
     scopes = function_scopes(info, line, tmp_path, ("app.cpp",))
     assert scopes == [
         # The out-of-line definition takes its name and file from its declaration;
-        # nested blocks contribute locals, with their blocks' lines (#107);
+        # nested blocks contribute locals, with their blocks' lines;
         # `$`-synthesized storage does not.
         {
             "scope": "geo::Box::area",
@@ -737,7 +737,7 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
 def test_local_declarations_say_whether_a_function_returns_nothing(tmp_path):
     from peeky.native import local_declarations
 
-    # Eleventh evaluation (grades 4): a `void` function's step out showed a withheld
+    # A `void` function's step out showed a withheld
     # return, with no type. Its debug information gives it no DW_AT_type.
     (tmp_path / "bucket.c").write_text("\n" * 20)
     info, line = declaration_dumps(tmp_path)
@@ -760,7 +760,7 @@ def test_local_declarations_say_whether_a_function_returns_nothing(tmp_path):
 def test_a_declaration_lines_first_row_after_another_lines_code_is_only_preceded(tmp_path):
     from peeky.native import local_declarations
 
-    # #288: at -O0 clang puts an exception landing pad (on a closing `}`'s line, 12 here)
+    # At -O0 clang puts an exception landing pad (on a closing `}`'s line, 12 here)
     # among the function's code, just before line 11's. Whether that code runs into line 11
     # (a header over two lines does) or ends in a jump, the stop's disassembly tells.
     (tmp_path / "bucket.c").write_text("\n" * 20)
@@ -783,7 +783,7 @@ def test_a_declaration_lines_first_row_after_another_lines_code_is_only_preceded
 @pytest.mark.parametrize(
     "name, line, pc, below",
     [
-        ("refill", 7, 0x420, (8, None)),  # #74: declared on the next line: leftovers here
+        ("refill", 7, 0x420, (8, None)),  # Declared on the next line: leftovers here
         ("refill", 8, 0x430, None),  # its own line: a for-header counter is live there
         ("elapsed", 7, 0x420, None),
         ("calls", 7, 0x420, None),  # a static (listed among globals) has its value
@@ -816,7 +816,7 @@ def rows(spans, source="a.cpp"):
 def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
     from peeky.native import declared_below
 
-    # Review of #81: a local class's constructor owns its member initializer on line 5,
+    # A local class's constructor owns its member initializer on line 5,
     # above its own declaration; `main`, which defines the class, declares `v` on line 12.
     ctor = {"source": "a.cpp", "rows": rows({5: (50, 50), 7: (70, 70), 8: (80, 80)})}
     ctor.update(locals={"v": {(None, None, False)}}, jumps=False, ranges=((50, 90),))
@@ -829,7 +829,7 @@ def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
     assert declared_below([ctor, main], "v", "a.cpp", 5, pc=50) is None
     assert declared_below([ctor, main], "v", "a.cpp", 11, pc=11) == (12, None)
     # A backward goto can return above the declaration with `v` live, or this is the
-    # first pass: unproven, and withheld all the same (sixth agent evaluation).
+    # first pass: unproven, and withheld all the same.
     jumps = {**main, "jumps": True}
     assert declared_below([ctor, jumps], "v", "a.cpp", 11, pc=11) == (12, "label")
 
@@ -837,7 +837,7 @@ def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
 def test_only_the_declaration_the_debugger_shows_is_judged():
     from peeky.native import declared_below, declared_on_line
 
-    # Review of PR #140: an earlier loop's `qty` (lines 11-14), a static `qty` clang
+    # An earlier loop's `qty` (lines 11-14), a static `qty` clang
     # declares in the function's scope, and a lambda's parameter `b` each kept the
     # local declared below the stop shown with leftovers, and settable.
     main = {"source": "a.c", "jumps": False, "ranges": ((100, 200),)}
@@ -875,14 +875,14 @@ def test_only_the_declaration_the_debugger_shows_is_judged():
     "rows, address, below",
     [
         ({7: (10, 12), 8: (20, 24)}, None, (8, None)),  # line 7's code all before line 8's
-        # Review of #81: clang runs a struct's default member initializer in its caller,
+        # clang runs a struct's default member initializer in its caller,
         # on the struct's line, inside the code of a later line: a stop there may be
         # inside the declaration, so unproven (and withheld).
         ({7: (30, 32), 8: (20, 24)}, None, (8, "after")),
         ({7: (30, 32), 8: (20, 24)}, 30, (8, "after")),
         # GCC runs a `cleanup` at its variable's line when the block ends, and clang an
-        # exception handler destroying a temporary (sixth agent evaluation: `std::string
-        # name = trim_left(entry.substr(0, colon));`): line 7 then has code after line
+        # exception handler destroying a temporary (`std::string name =
+        # trim_left(entry.substr(0, colon));`): line 7 then has code after line
         # 8's. A stop before line 8's code is proven above it; one after is not.
         ({7: (10, 40), 8: (20, 24)}, None, (8, "after")),
         ({7: (10, 40), 8: (20, 24)}, 10, (8, None)),
@@ -930,7 +930,7 @@ def test_a_function_with_a_label_can_jump_back(tmp_path):
 def test_nonlocal_jumps_are_found_in_the_executable(tmp_path, contents, found):
     from peeky.native import has_nonlocal_jumps
 
-    # Review of #81: `setjmp` behind a TRY macro from a header never appears in the
+    # `setjmp` behind a TRY macro from a header never appears in the
     # function's lines, but the executable imports it.
     binary = tmp_path / "program"
     binary.write_bytes(contents)
@@ -940,7 +940,7 @@ def test_nonlocal_jumps_are_found_in_the_executable(tmp_path, contents, found):
 def test_a_function_running_code_on_another_files_line_is_among_its_owners():
     from peeky.native import declared_below
 
-    # Review of #81: clang runs a header struct's member initializer (geo.hpp:2) inside
+    # clang runs a header struct's member initializer (geo.hpp:2) inside
     # main, which declares `x` on main.cpp:5; origin_sum in geo.hpp declares its own `x`
     # on geo.hpp:5.
     main = {"source": "main.cpp", "jumps": False, "locals": {"x": {("main.cpp", 5, True)}}}
@@ -965,7 +965,7 @@ def test_a_caller_frame_inside_a_locals_declaration_statement_withholds_it():
     from peeky.c_source import Statements
     from peeky.native import declared_unfinished
 
-    # Review of #104 (round 3): line 21's own code (`t.x = seed`) all runs before the call
+    # Line 21's own code (`t.x = seed`) all runs before the call
     # on line 22, and `t.p` is stored after the calls on lines 22-23 return.
     statements = Statements(
         "\n" * 20 + "struct trio t = { seed,\n    { twice(3),\n      twice(4) } };\nlong k = 1;\n"
@@ -1037,7 +1037,7 @@ def test_a_callers_aggregate_with_no_code_on_its_line_reads_once_its_lines_have_
 def test_a_caller_frame_in_another_file_than_a_locals_declaration_withholds_it():
     from peeky.native import declared_unfinished
 
-    # Review of #104 (round 4): `struct pair ps[2] = {` on inc.c:18 takes its rows from
+    # `struct pair ps[2] = {` on inc.c:18 takes its rows from
     # `#include "table.h"`; the frame is at table.h:2. A declaration in an included file
     # with the frame in the including file is the same.
     run = {"source": "inc.c", "jumps": False, "ranges": [(0, 1000)]}
@@ -1067,7 +1067,7 @@ def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
 def test_an_external_header_hiding_the_builtin_is_found(tmp_path):
     from peeky.native import mentions_nonlocal_jumps
 
-    # Review of #81: `/usr/local/include/sjlj_try.h` defines TRY with __builtin_setjmp;
+    # `/usr/local/include/sjlj_try.h` defines TRY with __builtin_setjmp;
     # the SDK's setjmp.h only names `setjmp`, which the executable check covers.
     header = tmp_path / "sjlj_try.h"
     header.write_text("#define TRY if (__builtin_setjmp(sjlj_env) == 0)\n")
@@ -1080,7 +1080,7 @@ def test_an_external_header_hiding_the_builtin_is_found(tmp_path):
 def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_starts():
     from peeky.native import declared_on_line
 
-    # #92: line 8 runs from 0x80 to 0x9f; `i` is declared there, `total` on line 7.
+    # Line 8 runs from 0x80 to 0x9f; `i` is declared there, `total` on line 7.
     # `starts`: where control enters line 8 in the block declaring each local (the
     # function's block for `i`, a nested `{ int sq = ...; }` block from 0x90 for `sq`).
     main = {
@@ -1111,7 +1111,7 @@ def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_start
     # An address outside the line (a wrong load bias) proves nothing.
     assert declared_on_line([main], "i", "a.c", 8, 0x70) is None
     # With a label, a `goto` may have returned here with `i` live, or this is its first
-    # pass: withheld all the same (sixth agent evaluation).
+    # pass: withheld all the same.
     assert declared_on_line([{**main, "jumps": True}], "i", "a.c", 8, 0x80) == (8, "label")
     # A same-named static, or another `i` declared elsewhere in the function.
     static = {**main, "locals": {"i": {("a.c", 8, False)}}}
@@ -1125,7 +1125,7 @@ def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_start
 def test_a_first_row_after_another_lines_code_is_a_start_where_that_code_ends_in_a_jump():
     from peeky.native import declared_on_line
 
-    # #288: line 20's code (a landing pad) lies just before line 16's first row, 0x80.
+    # Line 20's code (a landing pad) lies just before line 16's first row, 0x80.
     main = {
         "source": "q.cpp",
         "rows": rows({16: (0x80, 0x84), 20: (0x70, 0x7C)}, "q.cpp"),
@@ -1159,7 +1159,7 @@ def test_a_first_row_after_another_lines_code_is_a_start_where_that_code_ends_in
 def test_the_disassembly_says_where_control_comes_from():
     from peeky.native import control_sources
 
-    # #288: clang's landing pad ends in `b`, out to the unwinder's resume; line 16's code
+    # Clang's landing pad ends in `b`, out to the unwinder's resume; line 16's code
     # follows it, reached by the inner loop's exit (`b.ge`). At -O0 clang ends a block
     # with a jump to the next instruction.
     arm = _instructions(
@@ -1186,7 +1186,7 @@ def test_the_disassembly_says_where_control_comes_from():
     }
     # Only the range's own instructions, and jumps into it.
     assert control_sources(arm, 0x6F8, 0x700, "arm64") == {0x6F8: set(), 0x6FC: set()}
-    # Review of #295: a cleanup ending in a call that never returns (`_Unwind_Resume`,
+    # A cleanup ending in a call that never returns (`_Unwind_Resume`,
     # `__cxa_throw`), laid just before the row, which a branch reaches: that call's
     # return is no way in Peeky can follow.
     noreturn = _instructions(
@@ -1250,7 +1250,7 @@ def test_control_comes_to_a_line_only_past_its_declaration_on_every_way_in():
     # Another file's code too (a member initializer clang runs in its caller).
     other = (*order[:2], (0x6E4, "q.hpp", 3), *order[3:])
     assert runs_into(other, 0x6FC, lines, {0x6FC: {0x6F8}}) is True
-    # Review of #295: from line 13 and from line 20 alike, the stop cannot tell which
+    # From line 13 and from line 20 alike, the stop cannot tell which
     # way control came: unknown, never proof that the declaration ran.
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, 0x6F8}}) is None
     assert runs_into(other, 0x6FC, lines, {0x6FC: {0x620, 0x6F8}}) is None
@@ -1265,10 +1265,10 @@ def test_control_comes_to_a_line_only_past_its_declaration_on_every_way_in():
     assert runs_into(order, 0x6FC, lines, {0x6FC: set()}) is None
     assert runs_into(order, 0x6FC, lines, None) is None
     assert runs_into(order, 0x6FC, lines, {0x700: {0x6FC}}) is None
-    # Review round 2 of #295: only a jump back comes to it, a loop's: control enters the
+    # Only a jump back comes to it, a loop's: control enters the
     # line there, and the loop's note says why the value may be the last pass's.
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x704}}) is False
-    # Review round 2 of #295: the unwinder may enter it (a landing pad), which no
+    # The unwinder may enter it (a landing pad), which no
     # disassembly shows, though line 20's code falls into it: never proof.
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, frozenset({0x6FC})) is None
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620}}, frozenset({0x6FC})) is None
@@ -1277,7 +1277,7 @@ def test_control_comes_to_a_line_only_past_its_declaration_on_every_way_in():
 
 
 def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeypatch, tmp_path):
-    # #288: one disassembly of the function says both whether a loop returns to a line's
+    # One disassembly of the function says both whether a loop returns to a line's
     # start and, where another line's code lies just before it, whether control comes
     # there only past the declaration.
     monkeypatch.setattr("peeky.native.architecture", lambda binary: "arm64")
@@ -1340,7 +1340,7 @@ def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeyp
     session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x16FC)})
     assert session.runs_into == {0x6FC: None} and session.loop_targets == {0x6FC: None}
     assert session.unread_code == {0x6FC}
-    # Review round 2 of #295: line 19's row, which only line 20's code reaches in the
+    # Line 19's row, which only line 20's code reaches in the
     # disassembly, is also a landing pad; or the binary's exception tables cannot be read.
     for entries in (frozenset({0x704}), "unread"):
         session.__dict__.pop("backward_jumps")
@@ -1357,7 +1357,7 @@ def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeyp
     assert session.unwinder_entries is None
 
 
-# Apple clang's LSDA for q.cpp's `main` (#288): no LPStart, no type table, uleb128 call
+# Apple clang's LSDA for q.cpp's `main`: no LPStart, no type table, uleb128 call
 # sites; three of its four records have a landing pad, at main + 0x164, 0x1B4 and 0x1FC.
 MAIN_LSDA = bytes.fromhex(
     "ff ff 01 17"  # LPStart, type table: none; call sites: uleb128, 23 bytes
@@ -1380,7 +1380,7 @@ def test_an_lsdas_call_sites_give_its_landing_pads():
     # A type table's offset is skipped.
     typed = bytes([0xFF, 0x9B, 0x05, 0x03, len(sites)]) + sites
     assert _lsda_pads(typed, 0x9000, 0x9000, 0x4E8) == {0x64C}
-    # Review 4 of PR #295: an LPStart of 2**64 - 1 plus a landing pad's offset leaves the
+    # An LPStart of 2**64 - 1 plus a landing pad's offset leaves the
     # address space: malformed, never an address.
     huge = bytes([0x00]) + struct.pack("<Q", (1 << 64) - 1) + bytes([0xFF, 0x03, len(sites)])
     with pytest.raises(ValueError, match="address space"):
@@ -1457,7 +1457,7 @@ def test_unwind_info_names_each_functions_lsda():
         _unwind_info_lsdas(struct.pack("<7I", 2, 28, 0, 28, 0, 28, 0), 0)
     with pytest.raises(ValueError):
         _unwind_info_lsdas(data[:60], 0x100000000)
-    # Review 4 of PR #295: offsets from a base past the address space's end are malformed,
+    # Offsets from a base past the address space's end are malformed,
     # never an address.
     with pytest.raises(ValueError):
         _unwind_info_lsdas(data, (1 << 64) - 0x100)
@@ -1596,7 +1596,7 @@ def test_a_wellformed_table_reads_and_each_malformed_case_below_is_its_variant(t
     assert landing_pads(program) == {0x10000064C, 0x10000069C, 0x1000006E4}
 
 
-# Review round 3 of #295: each must be unreadable (ValueError, for the reason given: no
+# Each must be unreadable (ValueError, for the reason given: no
 # landing pad is known, so every preceded row is None), never read as having none.
 MALFORMED = {
     "a CIE whose fields run past its end, into the terminator": (
@@ -1699,7 +1699,7 @@ def _instructions(*pairs):
 def test_backward_jump_targets_come_from_the_disassembly():
     from peeky.native import backward_targets
 
-    # Review of #99: x86-64 at -O0 tests `while ((x = next()) > 0)` first, at the line's
+    # x86-64 at -O0 tests `while ((x = next()) > 0)` first, at the line's
     # lowest address, and jumps back there: control re-enters it with `x` live.
     x86 = _instructions(
         (0x1130, "pushq  %rbp"),
@@ -1800,7 +1800,7 @@ def test_macho_text_address_reads_the_header_segment(tmp_path):
 
 
 def test_a_non_statement_row_another_row_replaces_runs_no_code(tmp_path):
-    # Review 3 of #107: GCC -O2 writes a row that is not a statement at the address of
+    # GCC -O2 writes a row that is not a statement at the address of
     # the next row (line 2 under line 3); LLDB keeps the later row there. A statement
     # row, or one with code of its own, stays.
     (tmp_path / "main.c").write_text("a\nb\nc\nd\ne\nf\n")
@@ -1842,7 +1842,7 @@ def test_a_rust_sources_macro_definitions_are_told_by_their_brackets(text, lines
 
 
 def test_a_statement_row_another_row_replaces_is_kept_for_breakpoints_but_noted(tmp_path):
-    # Review 4 of #107: LLDB keeps the later row at an address, so a statement row the
+    # LLDB keeps the later row at an address, so a statement row the
     # next row replaces runs no code; its line stays a breakpoint line.
     from peeky.native import _line_rows
 
@@ -1868,7 +1868,7 @@ def test_a_statement_row_another_row_replaces_is_kept_for_breakpoints_but_noted(
 
 
 def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
-    # Review 5 of #107: GCC gives one address runs of rows; only the last runs. A row
+    # GCC gives one address runs of rows; only the last runs. A row
     # of the last row's line is not replaced, whatever comes between.
     from peeky.native import _line_rows
 
@@ -1898,7 +1898,7 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
     assert sorted({row[2] for row in found}) == [25, 28, 29, 30, 38, 39, 40]
     assert {line for _, _, line in replaced} == {25, 28, 29, 39, 40}
     assert (0x401010, "main.c", 38) not in replaced
-    # Review 6: a line-0 row (no source line) is never a line, wherever it is.
+    # A line-0 row (no source line) is never a line, wherever it is.
     rows = ((0x1000, 5, True), (0x1010, 0, True), (0x1010, 7, True), (0x1020, 8, True))
     text = line_dump().split("0x0000000000401000")[0] + "".join(
         f"0x{0x400000 + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number, _ in rows
@@ -1906,7 +1906,7 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
     assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]
 
 
-# #121: the frame stopped in.
+# The frame stopped in.
 
 
 def _aggregate_run():
@@ -1945,8 +1945,8 @@ def test_a_stop_inside_a_declaration_statement_withholds_its_local():
     assert declared_running([run], "o", "a.c", 23, 132, unknown) == (17, None, "a.c", None)
     assert declared_running([run], "q", "a.c", 23, 132, unknown) is None
     assert declared_running([run], "q", "a.c", 23, None, unknown) == (3, None, "a.c", None)
-    # Declared in another file: its `#include` in the stop's file stands for it
-    # (review of #126, round 2); none found, or an end the source does not give, withholds.
+    # Declared in another file: its `#include` in the stop's file stands for it;
+    # none found, or an end the source does not give, withholds.
     run["rows"][("t.c", 9)] = (114, 116)
 
     def site(source, declared_in):
@@ -1979,7 +1979,7 @@ def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
 def test_a_declaration_line_without_code_is_placed_by_its_statements_code():
     from peeky.native import declared_below
 
-    # #121: `struct pair ps[2] = {` (25) has no code; its elements' lines (26, 27) do.
+    # `struct pair ps[2] = {` (25) has no code; its elements' lines (26, 27) do.
     run = {"source": "a.c", "jumps": False, "ranges": ((100, 160),)}
     run["rows"] = rows({20: (100, 110), 26: (120, 130), 27: (130, 140), 15: (140, 150)}, "a.c")
     run["locals"] = {"ps": {("a.c", 25, True)}}
@@ -1990,7 +1990,7 @@ def test_a_declaration_line_without_code_is_placed_by_its_statements_code():
     assert declared_below([run], "ps", "a.c", 20, through=through, pc=100) == (25, None)
     # Code of the stop's line after the statement's (a member initializer run there).
     assert declared_below([run], "ps", "a.c", 15, through=through, pc=140) == (25, "after")
-    # Its end unknown: unproven (review of PR #140), withheld all the same.
+    # Its end unknown: unproven, withheld all the same.
     assert declared_below([run], "ps", "a.c", 20, through=_through({}), pc=100) == (25, "no code")
 
 
@@ -2019,9 +2019,6 @@ def test_constructors_and_lambdas_are_told_from_their_debug_information():
         assert _CONSTRUCTOR_NAME.search(name), name
     for name in ("Widget::size() const", "run(long)::$_0::operator()() const", "Box(int)"):
         assert not _CONSTRUCTOR_NAME.search(name), name
-
-
-# Review of #126 (round 1).
 
 
 def test_a_local_declared_on_the_line_a_call_returns_to_is_withheld_part_way():
@@ -2132,7 +2129,7 @@ TYPEDEFS = """
 
 
 def test_a_typedef_names_the_class_behind_it():
-    # #119: `Index m` (`using Index = std::map<int, int>`) shows only as `Index`; its
+    # `Index m` (`using Index = std::map<int, int>`) shows only as `Index`; its
     # class says `m[1]` is key 1, not the second entry.
     from peeky.native import typedef_kinds
 
@@ -2213,7 +2210,7 @@ MEMBERS = """
 
 
 def test_a_class_member_typedef_keeps_the_class_every_instance_names():
-    # Review of #119 (PR #127): `Holder<std::string>::S hs2` (a std::set<int>) indexed by
+    # `Holder<std::string>::S hs2` (a std::set<int>) indexed by
     # position, since a member typedef's class was dropped.
     from peeky.native import _merged_class, typedef_kinds
 
@@ -2245,7 +2242,6 @@ def test_a_class_member_typedef_keeps_the_class_every_instance_names():
 def test_unnamed_constructors_and_member_initializer_lambdas_are_told_apart():
     from peeky.native import _CONSTRUCTOR_NAME, _class_role
 
-    # Review of #126 (round 4).
     def die(tag, parent, **attrs):
         return {"tag": tag, "parent": parent, "attrs": attrs, "children": []}
 
@@ -2282,7 +2278,7 @@ def test_unnamed_constructors_and_member_initializer_lambdas_are_told_apart():
 
 
 def test_a_blocks_lines_split_only_where_code_outside_it_runs_between():
-    # Eval 6, finding 17: C++ runs a block's cleanup on the function's closing line (35),
+    # C++ runs a block's cleanup on the function's closing line (35),
     # so `name` (lines 22-25) read `lines 22-35`, over code outside its block.
     from peeky.native import _runs
 
@@ -2346,7 +2342,7 @@ long f(void) {
 
 
 def test_a_hidden_local_is_read_from_the_preprocessed_unit_or_withheld(tmp_path):
-    # Review of PR #144 (round 2): the translation unit is read as the build's compiler
+    # The translation unit is read as the build's compiler
     # preprocesses it; where it cannot be, the row is withheld, never shown.
     frame = {"instructionPointerReference": "0x150"}
     found = preprocessing_session(tmp_path, {"a.c": UNIT})._block_storage("q", frame, "a.c", 5)
@@ -2395,7 +2391,7 @@ long f(void) {
 
 
 def test_a_static_kept_as_a_constant_is_shown_where_the_code_names_it(tmp_path):
-    # Review of PR #175: at -O1 lldb-dap lists a block's `static` that clang keeps as a
+    # At -O1 lldb-dap lists a block's `static` that clang keeps as a
     # constant (DW_AT_const_value, no address) as a local, `q @ a.c:4`. Its row is what
     # the code names; the outer local's says the static is listed apart.
     frame = {"instructionPointerReference": "0x150"}
@@ -2455,12 +2451,12 @@ def stopped(unit, line, where):
 
 @pytest.mark.parametrize("entered", ["caller", None, True, False, "inside", "pass"])
 def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, entered):
-    # #283: `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
+    # `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
     # unhedged "not what the code reads", though the header runs before the binding
     # exists. entered: "caller" (a caller frame: no stop is told), None (an optimized
     # build), True or False (unoptimized: at the line's first instruction, or past it,
     # where the line table's column is after the header's `)`). "inside": past the first
-    # instruction, but at a column inside the header (back from a call there, #287 review);
+    # instruction, but at a column inside the header (back from a call there);
     # "pass": at the loop's `:`, whose implicit code (`begin`/`end` setup, each pass's test
     # and binding, the range's cleanup) is all emitted after the range expression.
     session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
@@ -2558,7 +2554,7 @@ long f(void) {
 @pytest.mark.parametrize("entered", ["caller", None, True, False, "inside"])
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, language, entered):
-    # #286: `if (q) { static long q = 5; use(q); }` gave the outer `q` the unhedged "not
+    # `if (q) { static long q = 5; use(q); }` gave the outer `q` the unhedged "not
     # what the code reads: the code here names the block's `static`", though the `if`'s
     # header runs first and names the outer `q`. entered: as in the range-`for` test
     # above. A `while`'s condition, a `for`'s condition or increment, and a lambda's
@@ -2668,7 +2664,7 @@ long f(void) {
 
 @pytest.mark.parametrize("entered", ["caller", None, True, False])
 def test_a_line_naming_the_local_outside_a_declarations_scope_hedges_its_note(tmp_path, entered):
-    # #293: `do { static long q = 5; use(q); } while (q-- > 0);` gave the outer `q` the
+    # `do { static long q = 5; use(q); } while (q-- > 0);` gave the outer `q` the
     # unhedged "not what the code reads: the code here names the block's `static`", though
     # the `while` condition runs after that `q` leaves scope; and so did `use(q); { static
     # long q = 6; use(q); }`, whose first call runs before the block. entered: as in the
@@ -2698,7 +2694,7 @@ def test_a_line_naming_the_local_outside_a_declarations_scope_hedges_its_note(tm
         3: outside(3, "after that declaration's scope ends"),
         4: outside(4, "before that declaration"),
         5: outside(5, "before that declaration and after its scope ends"),
-        # The header's own hedge (#286) where it may not have run; past it, the call after
+        # The header's own hedge where it may not have run; past it, the call after
         # the block still names `q`.
         6: outside(6, "after that declaration's scope ends")
         if entered is False
@@ -2741,7 +2737,7 @@ long f(bool ok) {
 
 
 def test_an_operand_or_an_else_is_read_as_the_code_reads_it(tmp_path):
-    # Review of PR #319: a comma expression (here as a macro `PAIR` for `use(0), q` expands,
+    # A comma expression (here as a macro `PAIR` for `use(0), q` expands,
     # the preprocessed text Peeky reads) and C++'s `ok and q` named `q` after the block's
     # `static`, but were taken for declarators, so the plain note stayed. And an `if`'s
     # `else` is in its init-statement's binding's scope: the note said it was past it.
@@ -2790,7 +2786,7 @@ long f(bool ok) {
 
 
 def test_where_a_headers_statement_ends_decides_its_bindings_scope(tmp_path):
-    # Review round 2 of PR #319: a `do` loop an `if` controls had no known end, and the
+    # A `do` loop an `if` controls had no known end, and the
     # binding was taken to be in scope after it: the last `use(q)` reads the outer `q`.
     # Where the end is unknown (a `try` with no handler), Peeky says it cannot tell.
     frame = {"instructionPointerReference": "0x150"}
@@ -2830,7 +2826,7 @@ long f(bool ok) {
 
 
 def test_a_labelled_statement_ends_the_bindings_scope_where_it_ends(tmp_path):
-    # Review round 3 of PR #319: a label before the statement an `if` controls was read as
+    # A label before the statement an `if` controls was read as
     # a plain statement's start, run on to the `;` after the block, so the last `use(q)`,
     # which reads the outer `q`, was taken to name the binding: the plain note stayed.
     frame = {"instructionPointerReference": "0x150"}
@@ -2871,10 +2867,10 @@ def located_parameter_table():
 
 
 def test_a_parameter_lldb_names_by_its_line_is_judged(tmp_path):
-    # Review round 2 of PR #319 (on main too): at -O1, LLDB lists a parameter beside a
+    # At -O1, LLDB lists a parameter beside a
     # block's `static` kept as a constant as `q @ a.c:1`, which no local matched, so
     # `shown_declaration` gave None and the row was never judged: it showed its value,
-    # though `use(q)` in the block reads the `static`. It is the parameter now; a line
+    # though `use(q)` in the block reads the `static`. It is judged as the parameter; a line
     # the function declares nothing on cannot be told.
     from peeky.native import shown_declaration
 
@@ -2892,7 +2888,7 @@ def test_a_parameter_lldb_names_by_its_line_is_judged(tmp_path):
     assert shown_declaration(table, "q @ a.c:2", 0x150) is None
     assert shown_declaration(table, "r @ a.c:1", 0x150) is None
 
-    # A file of another name: not the parameter's line (review round 3).
+    # A file of another name: not the parameter's line.
     assert shown_declaration(table, "q @ b.c:1", 0x150, unstored=True) is False
 
     frame = {"instructionPointerReference": "0x150"}
@@ -2917,7 +2913,7 @@ long f(long q) { { static long q = 5; use(q); } return q; }
 
 @pytest.mark.parametrize("constant", [False, True])
 def test_a_parameter_and_a_static_on_its_line_cannot_be_told_apart(tmp_path, constant):
-    # Review round 3 of PR #319: `q @ a.c:1` was taken for the parameter whenever one was
+    # `q @ a.c:1` was taken for the parameter whenever one was
     # declared on line 1, though the block's `static` is declared there too (with an
     # address, or kept as a constant): which one the row is cannot be told, so it is
     # withheld with no claim that it is the outer local.
@@ -2963,7 +2959,7 @@ long f(void) {
 
 @pytest.mark.parametrize("span", [(1, 6), (3, 3), (4, 4), None])
 def test_a_lambdas_block_counts_only_in_its_own_frame(tmp_path, span):
-    # #290, review of PR #299: an explicitly `constexpr` lambda's block still counted for
+    # An explicitly `constexpr` lambda's block counted for
     # the function holding it; and in a frame wholly on a line holding two lambdas, the
     # note named one of their declarations, though which one the frame runs is unknown.
     # span: the lines of the frame's function (None: Peeky cannot place the frame).
@@ -2989,7 +2985,7 @@ def test_a_lambdas_block_counts_only_in_its_own_frame(tmp_path, span):
         assert "may not reach that code" in found.refusal
     else:
         # The lambda's own frame, or one Peeky cannot place: its enumerator hides `q`, but
-        # `long r = q` before its block and `return r + q` after it name `q` too (#293).
+        # `long r = q` before its block and `return r + q` after it name `q` too.
         assert (found.label, str(found)) == (
             "may not be what the code reads",
             "the code here may name the block's enumerator `q` (line 3), a constant, but the "
@@ -3011,7 +3007,7 @@ long f(void) {
 
 
 def test_an_if_constexpr_or_consteval_block_withholds_the_outer_local(tmp_path):
-    # #289: `if constexpr (sizeof(long) > 1) { static long q = 5; use(q); }` showed the
+    # `if constexpr (sizeof(long) > 1) { static long q = 5; use(q); }` showed the
     # outer `q` with no note, though the code there names the block's `static`. Peeky
     # builds C++17, where `if consteval` (C++23) is refused, but the scanner reads it so.
     frame = {"instructionPointerReference": "0x150"}
@@ -3029,7 +3025,7 @@ def test_an_if_constexpr_or_consteval_block_withholds_the_outer_local(tmp_path):
 
 
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
-    # #138 with #146: `set` refuses a field or element of a root the debug information
+    # `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
     # say why. Roots, frame locals and optimized builds are left to the stop.
     native = session()
@@ -3059,7 +3055,7 @@ def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
 
 
 def test_a_caller_is_judged_before_its_return_address_unless_a_signal_interrupted_it():
-    # #158, review of PR #159: a caller frame's address is where its call returns, so
+    # A caller frame's address is where its call returns, so
     # blocks are matched one before it, as LLDB reads it; the frame above a signal
     # trampoline was interrupted at its instruction, which counts as it is.
     from peeky.native import _trampoline
@@ -3081,7 +3077,7 @@ def test_a_caller_is_judged_before_its_return_address_unless_a_signal_interrupte
     for name in ("_sigtramp", "__restore_rt", "__kernel_rt_sigreturn", "<signal handler called>"):
         assert _trampoline(name), name
     assert not _trampoline("sigtramp_helper") and not _trampoline(None)
-    # A function of the program named so is no trampoline (review of PR #159, round 3).
+    # A function of the program named so is no trampoline.
     session.prepared = SimpleNamespace(workspace=Path("/w"))
     session.target = SimpleNamespace(verification_inputs=("app.c",))
     own = {**frames[1], "name": "__restore", "source": {"path": "/w/app.c"}}
@@ -3191,7 +3187,7 @@ def _row_order(text):
 
 
 def test_a_functions_prologue_runs_to_its_mark_or_else_to_its_second_row(tmp_path):
-    # #279: GCC marks no prologue end, so its second row (the body's first) ends the
+    # GCC marks no prologue end, so its second row (the body's first) ends the
     # prologue, where the parameters are stored; clang marks it. An empty prologue (two
     # rows at the entry) has no window; a lambda that names no file has one all the same.
     from peeky.native import local_declarations
@@ -3278,8 +3274,8 @@ def test_a_stop_in_a_prologue_withholds_what_it_has_not_stored(tmp_path):
         "the stop is in its function's prologue, before it has stored the parameters: its "
         "storage holds leftovers. Read it at a later stop in the function"
     )
-    # A function on several lines whose start LLDB stops at all the same (review of #279:
-    # the next function's merged rows taken for the prologue's end): no one-line advice.
+    # A function on several lines whose start LLDB stops at all the same (the next
+    # function's merged rows are not the prologue's end): no one-line advice.
     later = session.not_yet_declared({"name": "k"}, frame(0x460))
     assert later == (
         "the stop is at its function's start, before the prologue stores the parameters: its "
@@ -3314,7 +3310,7 @@ def test_a_stop_in_a_prologue_withholds_what_it_has_not_stored(tmp_path):
 
 
 def test_a_frame_whose_address_is_unknown_is_withheld_on_a_prologues_line(tmp_path, monkeypatch):
-    # Review of #279: where the debugger gives no load address (`addressRange` missing or
+    # Where the debugger gives no load address (`addressRange` missing or
     # unreadable, which a frame with a `moduleId` allows), no pc can be placed. On a line
     # where a prologue runs, the stop may be before it stored the parameters: at a GCC
     # function's start, or in any prologue on a fault or a signal.
@@ -3376,7 +3372,7 @@ def test_a_frame_whose_address_is_unknown_is_withheld_on_a_prologues_line(tmp_pa
         assert session.not_yet_declared({"name": "k"}, frame(4)).endswith(
             "Read the arguments at the call, or stop past the function's first line"
         )
-        # A prologue whose end is marked (clang's) too (review round 2 of #280): a fault or
+        # A prologue whose end is marked (clang's) too: a fault or
         # a signal can stop in it, on its line.
         marked = session.not_yet_declared({"name": "v"}, frame(5))
         assert marked == reason and marked.refusal == reason.refusal.replace("'a'", "'v'")
@@ -3409,7 +3405,7 @@ def code_die(offset, low, high, root, inline=False, depth=1, parent=None, call=N
 def test_a_caller_frames_return_address_is_proven_only_where_its_call_is_physical():
     from peeky.native import NativeSession
 
-    # Review of PR #366: LLDB gives the caller of an inlined call the address where that
+    # LLDB gives the caller of an inlined call the address where that
     # call's code starts (0x140), which is no return address, and a call from inlined code
     # returns into it (0x150). `run` is 0x100-0x200; an inlined call of it is 0x140-0x160.
     session = NativeSession.__new__(NativeSession)
@@ -3445,7 +3441,7 @@ def test_a_caller_frames_return_address_is_proven_only_where_its_call_is_physica
     assert resume(0x130, target=SimpleNamespace(optimization="O1")) is None
     session.target = SimpleNamespace(optimization="O0")
     assert resume(0x130, code=None) is None
-    # Review round 2 of PR #366: a frame LLDB rebuilt for a tail call's caller (a
+    # A frame LLDB rebuilt for a tail call's caller (a
     # `musttail` call), which has no frame of its own left. lldb-dap 20 marks one
     # "subtle"; lldb-dap 18 marks none, so a build whose debug information describes a
     # tail call, or one Peeky could not read, proves nothing.
@@ -3469,9 +3465,9 @@ def test_a_build_whose_debug_information_describes_a_tail_call_is_found():
 
 def unplaced_session(tmp_path, language="cpp"):
     """A NativeSession whose table holds `main` (0x100-0x200, rows on lines 2 and 5 of
-    a.cpp) and nothing else: GCC's lambdas and implicit constructors had no entry (#167).
+    a.cpp) and nothing else: GCC's lambdas and implicit constructors had no entry.
     Its code: `main` and a function Peeky cannot place (0x300-0x340, line 8); line 9 runs
-    both (review of #282)."""
+    both."""
     session = NativeSession.__new__(NativeSession)
     session.load_bias = 0x1000
     session.declarations = [
@@ -3499,7 +3495,7 @@ def unplaced_session(tmp_path, language="cpp"):
 
 
 def test_a_cpp_frame_peeky_cannot_place_withholds_its_locals(tmp_path):
-    # #167: GCC gives a lambda's `operator()` and an implicit constructor no source, so the
+    # GCC gives a lambda's `operator()` and an implicit constructor no source, so the
     # table had no entry for them, no rule ran, and their locals showed leftovers
     # (`x = 281474976709584` before `long x = a * 2;` ran) with no note.
     session = unplaced_session(tmp_path)
@@ -3549,7 +3545,7 @@ def test_a_cpp_frame_peeky_cannot_place_withholds_its_locals(tmp_path):
 
 
 def test_a_frame_whose_address_is_unknown_is_placed_only_by_one_functions_line(tmp_path):
-    # Review of #282: without the load address, a line some placed function runs proved
+    # Without the load address, a line some placed function runs proved
     # nothing: an inlined call Peeky cannot place runs on its own lines inside it. Only a
     # line whose every row is one placed function's own code places the frame.
     session = unplaced_session(tmp_path)
@@ -3589,7 +3585,7 @@ def test_a_frame_whose_address_is_unknown_is_placed_only_by_one_functions_line(t
 
 
 def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
-    # Review of #282: an inlined call shares its caller's code, so `_function_at` found
+    # An inlined call shares its caller's code, so `_function_at` found
     # the caller's entry for its frame, and the net never ran: a forced-inline helper a
     # `#line` declares elsewhere showed `x` as leftovers inside `main`.
     from peeky.native import frame_level
@@ -3613,7 +3609,7 @@ def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
     assert frame_level(code, 0x140, False, ("a.cpp", 10), lines) == {None}
     # A caller frame: LLDB gives the caller of an inlined call the address its code starts
     # at (`main` at 0x140, `helper` at 0x150), and a call's caller its return address.
-    # The code changes there (review round 2): only the frame's line tells which it is.
+    # The code changes there: only the frame's line tells which it is.
     assert frame_level(code, 0x140, True, ("a.cpp", 16), lines) == {1}
     assert frame_level(code, 0x140, True, ("a.cpp", 16)) == {1, None}
     assert frame_level(code, 0x150, True, ("a.cpp", 11), lines) == {None}
@@ -3660,7 +3656,7 @@ def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
 
 
 def test_a_frame_two_placed_functions_may_run_is_placed_by_neither(tmp_path):
-    # Review round 2 of #282: of several roots that may run a frame's code, `_function_at`
+    # Of several roots that may run a frame's code, `_function_at`
     # took the narrowest whenever all were placed: an inlined call's start on its own
     # call's line, or a caller frame at the end of an inlined call, was taken for the
     # call's, and judged by its declarations.
@@ -3686,7 +3682,7 @@ def test_a_frame_two_placed_functions_may_run_is_placed_by_neither(tmp_path):
     assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "helper(long)") == {2}
     assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "main") == {1}
     assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "other(int)") == {1, 2}
-    # Review 3 of PR #282: a line only `helper` owns, on a frame named `main`, contradict
+    # A line only `helper` owns, on a frame named `main`, contradict
     # each other: both stay, and the frame is withheld. Where they agree, that one.
     assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "main") == {1, 2}
     assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "helper(long)") == {2}
@@ -3737,7 +3733,7 @@ def test_a_frame_two_placed_functions_may_run_is_placed_by_neither(tmp_path):
 
 
 def gcc_dumps(workspace, class_declared=True):
-    """A C++ unit as GCC 13 builds it (#167): `main` (lines 8-17) defines a lambda (line
+    """A C++ unit as GCC 13 builds it: `main` (lines 8-17) defines a lambda (line
     10, lines 10-14) whose `operator()` and closure are artificial and name no file or
     line, but the closure does; `nested` (line 15) builds an unnamed struct (line 16)
     whose `<constructor>` is artificial too, its code a copy inside the struct. Without
@@ -3894,7 +3890,7 @@ def gcc_dumps(workspace, class_declared=True):
 
 
 def test_gccs_lambdas_and_implicit_constructors_are_placed_by_their_class(tmp_path):
-    # #167: GCC gives a lambda's `operator()` and an implicit constructor no file or line,
+    # GCC gives a lambda's `operator()` and an implicit constructor no file or line,
     # so they had no entry: no rule ran in them, and their locals showed leftovers. They
     # take their class's, as clang gives them.
     from peeky.native import frame_level, function_scopes, local_declarations
@@ -3929,7 +3925,7 @@ def test_gccs_lambdas_and_implicit_constructors_are_placed_by_their_class(tmp_pa
     }
     assert scopes["main::operator()"]["lines"] == [10, 14]
     assert scopes["main::operator()"]["names"] == ["a", "x", "y"]
-    # A closure that names no file or line either (review of #282): no row places it, as
+    # A closure that names no file or line either: no row places it, as
     # its first may be another function's code inlined there (`twice`'s, line 3). Its
     # frames withhold their locals (the code says Peeky cannot place it); in `twice`'s
     # code, the frame is `twice`'s.
@@ -4019,7 +4015,7 @@ def test_gccs_closures_and_constructors_are_told_from_their_names():
 
 
 def test_an_inlined_call_with_no_code_left_holds_no_address():
-    # Review of #282: GCC -O1 inlines `std::allocator<int>`'s destructor into `main` with no
+    # GCC -O1 inlines `std::allocator<int>`'s destructor into `main` with no
     # code left: low_pc and high_pc 0x878, which dwarfdump writes as addresses. Read as an
     # offset, it held 0x878-0x10f0, all of `main` after it, and `main`'s frame was taken for
     # that call's.
@@ -4064,6 +4060,6 @@ RUST_TYPES = {
     ],
 )
 def test_describe_spells_a_rust_reference_as_the_program_does(reference, shown):
-    # rota 3: `describe` said `e (rota::Engineer *)` and `w (&str *)`, as dwarfdump writes
+    # `describe` said `e (rota::Engineer *)` and `w (&str *)`, as dwarfdump writes
     # the pointer's type, though the debug information names it `&rota::Engineer`.
     assert _type_name(RUST_TYPES, reference) == shown

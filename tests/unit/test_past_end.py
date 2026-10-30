@@ -1,4 +1,4 @@
-"""Nothing is read through a C or C++ pointer one past an array's end (#336).
+"""Nothing is read through a C or C++ pointer one past an array's end.
 
 With `long queue[4]` and `long *end = queue + 4;`, `session get end` listed `end[0]` with the
 stack's next bytes as its value, and `--capture 'end[0]'` stored them: the address one past an
@@ -371,7 +371,7 @@ def test_a_local_holds_its_arrays_and_their_members_where_the_debug_information_
     found = held(10, "size=4", "arr", kind="std::array<long, 4>", reference="0x5000")
     assert found == [("arr", {"address": 0x5000, "length": 4, **long8})]
     assert held(10, "size=4", "arr", kind="std::array<long, 4>") == []
-    # A 2-D array is an array of its innermost elements, row after row (#339).
+    # A 2-D array is an array of its innermost elements, row after row.
     assert held(11, "long[2][2] @ 0x1000", "grid") == [
         ("grid", {"address": 0x1000, "length": 4, **long8, "dims": [2, 2]})
     ]

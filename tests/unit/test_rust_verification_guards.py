@@ -1,7 +1,6 @@
 """Independent pre/post execution integrity checks for compiled Rust test artifacts.
 
-Ported from 339def3. Adapted to main only where its executor API differs: main
-passes a bounded ``output_limit`` so overflow is an explicit failure.
+The executor gets a bounded ``output_limit``, so overflow is an explicit failure.
 """
 
 import sys

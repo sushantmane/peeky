@@ -1,7 +1,7 @@
-"""A crash stop's summary and refusal in the worker (#342): nothing of a frame outside the
+"""A crash stop's summary and refusal in the worker: nothing of a frame outside the
 program's sources is read, the nearest frame of its own code is named, and a mismatch of
 that frame with the prepared build or its module still fails closed. Only a fatal signal
-that the program neither handles nor ignores is a crash (review of #342)."""
+that the program neither handles nor ignores is a crash."""
 
 import signal
 from types import SimpleNamespace
@@ -120,8 +120,8 @@ def test_a_mismatch_in_the_programs_own_frame_still_fails_closed(worker, tmp_pat
 
 
 def test_a_module_mismatch_of_the_programs_own_frame_is_a_debugger_error(worker, tmp_path):
-    # The frame's line is the build's, but its module isn't the prepared binary (review of
-    # #342: `read_crash` named it after `validate_stop` alone).
+    # The frame's line is the build's, but its module isn't the prepared binary
+    # (`read_crash` named it after `validate_stop` alone).
     runtime = Runtime(tmp_path, [12], module=False)
     worker.dap = Stack(frames(tmp_path))
     with pytest.raises(RuntimeError) as failure:
@@ -266,7 +266,7 @@ class Events:
 
 @pytest.mark.parametrize("queued", [True, False])
 def test_continue_says_whether_it_resumed_the_program(tmp_path, queued):
-    # Review of #348: a probe counts a signal stop as let go on only where it did.
+    # A probe counts a signal stop as let go on only where it did.
     worker = DebugWorker(tmp_path)
     worker.runtime = SimpleNamespace(assert_current=lambda: None)
     worker.dap = Events(queued)

@@ -1,5 +1,5 @@
-"""#382, with fakes: a probe's `1:i` reads `i` in caller frame 1, as `session get --frame 1`
-does, beside the stopped frame's values; its rows say which frame, and the store keeps it."""
+"""A probe's `1:i` reads `i` in caller frame 1, as `session get --frame 1` does, beside
+the stopped frame's values; its rows say which frame, and the store keeps it. With fakes."""
 
 import pytest
 
@@ -239,7 +239,7 @@ def test_a_store_of_schema_20_gains_the_frame_columns(tmp_path):
 
 
 def test_queries_keep_a_name_and_the_callers_name_apart(monkeypatch, tmp_path):
-    # Review of #388: add_reading's `i` and ward's `1:i` are two selectors in every query.
+    # add_reading's `i` and ward's `1:i` are two selectors in every query.
     store = tmp_path / "evidence.db"
     for shift in (0, 1):
         evidence.record(store, probed(monkeypatch, ("i", "1:i"), shift)[1], language="python")

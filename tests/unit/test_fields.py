@@ -1,4 +1,4 @@
-"""#105: which scalar field or element of a C, C++ or Rust local `--set` may change,
+"""Which scalar field or element of a C, C++ or Rust local `--set` may change,
 decided from the debug information (fields.py), and how the worker writes and reads
 it back."""
 
@@ -162,7 +162,7 @@ def test_plain_fields_and_elements_resolve_to_their_integer(root, steps, expecte
 @pytest.mark.parametrize(
     "root, steps, expected",
     [
-        # Review of #138: an index as the stop's walk reads it, the debugger's `[N]`.
+        # An index as the stop's walk reads it, the debugger's `[N]`.
         (0x70, ["arr", "[01]"], ["arr", "[1]"]),
         (0x70, ["arr", "[-1]"], ["arr", "[2]"]),
         (0x70, ["arr", "[-3]"], ["arr", "[0]"]),
@@ -185,14 +185,14 @@ def test_a_selectors_indexes_are_read_as_the_debugger_names_elements(root, steps
 @pytest.mark.parametrize(
     "root, steps, words",
     [
-        # Nothing reached through a pointer, a typedef'd one or a reference (#101).
+        # Nothing reached through a pointer, a typedef'd one or a reference.
         (0x40, ["x"], "`s` is a pointer"),
         (0x44, ["x"], "`s` is a reference"),
         (0xD0, ["p"], "`s.p` is a pointer; only integers"),
         (0x90, ["a"], "`s.a` is a bitfield"),
         (0xA0, ["fixed"], "`s.fixed` is const"),
         (0x160, ["x"], "`s` is const"),
-        # #167: a const pointer said "`s` is const", as if what it points at were.
+        # A const pointer said "`s` is const", as if what it points at were.
         (0x170, ["x"], "`s` is a pointer"),
         (0xA0, ["v"], "`s.v` is volatile"),
         (0xB0, ["i"], "`s` is a union"),
@@ -238,7 +238,7 @@ def test_everything_else_is_refused_with_its_reason(root, steps, words):
         (0x3C, "`n` is a pointer"),
         (0x40, "`n` has type `PairPtr`"),
         (0x44, "`n` is a reference"),
-        # Review of PR #335: the stop takes a type by its name, not its width: a typedef
+        # The stop takes a type by its name, not its width: a typedef
         # it doesn't list is refused there, so here too.
         (0x30, "`n` has type `myint`"),
         # A listed integer, and what a text may change, are judged at the stop.
@@ -256,7 +256,7 @@ def test_a_root_that_is_never_a_writable_integer_is_named_with_its_type(root, wo
 
 
 def test_a_root_is_judged_by_the_name_the_debugger_gives_its_type():
-    # Review of PR #335: `_BitInt(32)` is a 4-byte DW_ATE_signed, which the stop refuses by
+    # `_BitInt(32)` is a 4-byte DW_ATE_signed, which the stop refuses by
     # its name (lldb-dap on macOS shows `_BitInt(32)`), so its width can't admit it here.
     # GCC's `long unsigned int` is the debugger's `unsigned long`; a typedef the stop takes
     # by its name (`typedef float int64_t;`) is the stop's to judge.
@@ -350,7 +350,7 @@ def test_a_declared_class_is_read_from_its_one_definition_and_a_vla_is_refused()
     # Two definitions of one name (an ODR violation): neither is chosen.
     with pytest.raises(Unsettable, match="no definition of Twice"):
         settable_member(graph, 0x28, "t", ["n"])
-    # Review of #105: named as what it is, not as a value kept outside the frame.
+    # Named as what it is, not as a value kept outside the frame.
     with pytest.raises(Unsettable, match="`vla` is a variable-length array"):
         settable_member(graph, 0x60, "vla", ["[0]"])
     assert settable_member(graph, 0x70, "big", ["[65535]"]) == (True, 32, ("int",))
@@ -369,7 +369,7 @@ NAMESPACES = dump(
 
 
 def test_a_cpp_namespace_named_core_or_alloc_is_the_programs_own():
-    # Review of #105: `core::Config cfg; --set cfg.level=60` was refused as std's.
+    # `core::Config cfg; --set cfg.level=60` was refused as std's.
     dies = _parse_dies(NAMESPACES)
     graph = type_graph(dies, (0x24, 0x34), CPP_LIBRARIES)
     assert settable_member(graph, 0x24, "cfg", ["level"]) == (True, 32, ("int",))
@@ -453,7 +453,7 @@ def test_a_root_must_be_one_local_of_one_type(declared, name, words):
 
 
 def test_a_shadowed_root_is_told_apart_by_where_it_is_declared():
-    # Review of #105: LLDB names `s @ main.rs:81` when several `s` are in scope.
+    # LLDB names `s @ main.rs:81` when several `s` are in scope.
     both = {"s": frozenset({(0x60, "automatic", A), (0x70, "automatic", B)})}
     assert NativeSession._declared_type(both, "s @ main.rs:81") == (0x70, True)
     assert NativeSession._declared_type(both, "s @ main.rs:79") == (0x60, True)
@@ -463,7 +463,7 @@ def test_a_shadowed_root_is_told_apart_by_where_it_is_declared():
 
 
 def test_the_declaration_the_debugger_shows_picks_among_types():
-    # #158: one name declared with two types in two blocks: the declaration shown at the
+    # One name declared with two types in two blocks: the declaration shown at the
     # stop (its file and line, as shown_declaration gives it) alone counts; two declared
     # on one line cannot be told apart, nor can any where none is shown.
     both = {"s": frozenset({(0x60, "automatic", A), (0x70, "automatic", B)})}
@@ -640,7 +640,7 @@ def test_an_unavailable_root_or_a_value_view_is_refused_before_any_write(tmp_pat
 
 
 class Previewing(Runtime):
-    """A runtime that previews `s` from "memory" (#106): ``memory`` overrides what the
+    """A runtime that previews `s` from "memory": ``memory`` overrides what the
     preview reads after a write; ``writable`` is what ``view_writable`` says."""
 
     def __init__(self, backend, writable=True, memory=None):
@@ -675,7 +675,7 @@ def previewing(tmp_path, **options):
 
 
 def test_a_field_of_a_struct_preview_is_changed_as_the_debugger_lists_it(tmp_path):
-    # #105 with #106: a struct local previewed from memory is its own storage; the
+    # A struct local previewed from memory is its own storage; the
     # change walks the debugger's variable, and the preview is read again after it.
     worker = previewing(tmp_path)
     changed = worker.dispatch(
@@ -697,7 +697,7 @@ def test_a_preview_that_reads_otherwise_after_a_change_fails_closed(tmp_path):
 
 
 def test_a_previews_fields_say_why_no_stop_changes_them(tmp_path):
-    # #138 with #106: the fields of a struct previewed from memory whose root the build
+    # The fields of a struct previewed from memory whose root the build
     # keeps in a register are marked so (`set` refuses them), nested fields too; a
     # settable field never is.
     worker = previewing(tmp_path)
@@ -750,7 +750,7 @@ def test_a_value_view_that_is_no_structs_own_storage_is_never_written(tmp_path):
 
 
 def test_a_container_field_is_found_only_through_plain_records():
-    # #156: `self.values` behind `&mut self`, `self.inner.items`, `self.arr[1]`; never
+    # `self.values` behind `&mut self`, `self.inner.items`, `self.arr[1]`; never
     # into a standard-library type (a RefCell's contents change behind `&self`), an
     # enum, or through a pointer on the way.
     from peeky.fields import held_container
@@ -796,7 +796,7 @@ def test_a_container_field_is_found_only_through_plain_records():
             held_container(graph, 1, "self", list(steps), dereference=True)
     with pytest.raises(Unsettable, match="`self` is a pointer"):
         held_container(graph, 1, "self", ["values"])
-    # #260: a slice parameter is a data pointer and a length, which the debug information
+    # A slice parameter is a data pointer and a length, which the debug information
     # gives a type; what it holds reads as its elements, not through `data_ptr`.
     graph[9] = record("&mut [app::Window]", [("data_ptr", 1, 0), ("length", 3, 8)]) + (
         "&mut [app::Window]",
@@ -808,7 +808,7 @@ def test_a_container_field_is_found_only_through_plain_records():
 
 
 def test_a_rust_raw_pointer_is_told_from_a_reference_by_its_debug_information_name():
-    # #255: LLDB names `*const i64` and `&i64` both `long *`; the debug information
+    # LLDB names `*const i64` and `&i64` both `long *`; the debug information
     # names each. A fat pointer's address has no name: the fat pointer's says.
     from peeky.fields import rust_raw_pointer
 
@@ -908,7 +908,7 @@ CONTAINERS = dump(
 
 
 def test_a_standard_containers_template_arguments_type_its_elements():
-    # #181: a vector holds its elements through a pointer, so only its `_Tp` reaches them.
+    # A vector holds its elements through a pointer, so only its `_Tp` reaches them.
     graph = type_graph(_parse_dies(CONTAINERS), (0x28, 0x34, 0x44), CPP_LIBRARIES)
     vector, array = graph[0x28], graph[0x34]
     assert vector[11] == "std::__1::vector<Pt>" and vector[12] == (("type", "_Tp", 0x14, None),)
@@ -945,7 +945,7 @@ REFERRED = dump(
 
 
 def test_locals_the_frame_reaches_through_a_pointer():
-    # Review of #181: `auto &[items, dropped] = *owner` is typed as the vector itself, at
+    # `auto &[items, dropped] = *owner` is typed as the vector itself, at
     # `DW_OP_fbreg -24, DW_OP_deref`: storage "automatic", so its container was taken for
     # the frame's own. Anything but one frame offset is read through a pointer.
     dies = _parse_dies(REFERRED)
@@ -993,7 +993,7 @@ THROUGH = dump(
 
 
 def test_a_variable_read_through_a_pointer_is_stored_through_it():
-    # #186's review, after round 1: `dropped` of `auto &[at, dropped] = *owner` was an
+    # `dropped` of `auto &[at, dropped] = *owner` was an
     # "automatic", so `--set dropped=50` wrote `o.dropped` through the reference. A
     # by-value parameter the ABI passes by a hidden pointer is the call's own copy, and
     # a by-value binding's constant offset is the frame's own storage.
@@ -1019,7 +1019,7 @@ def typed(name, kind, location=None):
     )
 
 
-# GCC's `auto [t, u] = pair;` (#291): each name is a variable holding a reference to
+# GCC's `auto [t, u] = pair;`: each name is a variable holding a reference to
 # `std::tuple_element<I, E>::type`, the element, at a plain frame offset.
 TUPLE_BINDINGS = dump(
     (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"t.cpp"'}),
@@ -1057,7 +1057,7 @@ TUPLE_BINDINGS = dump(
 
 
 def test_gccs_binding_of_a_pair_or_tuple_is_reached_through_its_reference():
-    # #291: GCC's `t` of `auto [t, u] = make(i)[0];` was "automatic", its row the element's
+    # GCC's `t` of `auto [t, u] = make(i)[0];` was "automatic", its row the element's
     # address. It is the element, reached through the reference however it is kept.
     dies = _parse_dies(TUPLE_BINDINGS)
     assert [element_reference(dies, f"0x{kind:08x}") for kind in (0x38, 0x3C, 0x40)] == [
@@ -1121,9 +1121,9 @@ def test_a_local_read_through_a_pointer_is_refused_as_a_root_and_by_its_fields()
     ],
 )
 def test_only_a_proven_parameters_refusal_names_a_call(kind, said, hint):
-    # prep 9: `--set e.payer=0` on a `for` item over a slice said "change the value where
+    # `--set e.payer=0` on a `for` item over a slice said "change the value where
     # it is owned, before the call that passed it", and its hint named `--at <call line>`.
-    # Review of #276: that advice needs a parameter proven at the stop; a local's says
+    # That advice needs a parameter proven at the stop; a local's says
     # what to do only if what it points at is a root local somewhere.
     from peeky.fields import pointer_advice
 

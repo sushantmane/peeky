@@ -63,7 +63,7 @@ def test_no_fix_without_intervention(tmp_path):
         investigation.finish("x = 1", "x = 2")
 
 
-# The worker's token by the worker's name and by a client's (pre-release security review).
+# The worker's token by the worker's name and by a client's.
 TOKENS = {"DEBUG_TOKEN": "never-inherit-me", "PEEKY_WORKER_TOKEN": "never-inherit-me-either"}
 SHOW_TOKENS = 'import os; print(os.getenv("DEBUG_TOKEN"), os.getenv("PEEKY_WORKER_TOKEN"))'
 

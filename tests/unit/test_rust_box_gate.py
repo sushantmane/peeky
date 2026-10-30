@@ -1,5 +1,5 @@
 """The Box gate's type tests: LLDB's C-style declarators and the MIR's non-owning types;
-and which pointer inside a value is a raw pointer (#255)."""
+and which pointer inside a value is a raw pointer."""
 
 from types import SimpleNamespace
 
@@ -35,13 +35,12 @@ from peeky.rust import (
         "long *(*)(long)",
         "unsigned char (*(*)[2])[2]",
         "long (*(**)(long))[2]",
-        # A tuple base that starts like a group, and a `->` inside a generic's argument
-        # (verification of #103).
+        # A tuple base that starts like a group, and a `->` inside a generic's argument.
         "(*const u8, i64) (*)[2]",
         "(*const u8, i64) *",
         "vb7a::W<(u8, fn() -> u8)> (*)[2]",
         "vb7a::W<(u8, fn() -> u8)> *",
-        # A parameter list that opens with a fat raw pointer (verification of #103).
+        # A parameter list that opens with a fat raw pointer.
         "void (**)(*const [u8])",
         "unsigned char (*(*)[2])(*const str)",
         "void (*(*)[2])(*const [u8])",
@@ -70,7 +69,7 @@ def test_top_level_pointers(kind):
         "unsigned char *[2]",
         "long (*[2])(long)",
         "long *(*[2])(long)",
-        # A parameter's `(*)` is not the declarator (verification of #103).
+        # A parameter's `(*)` is not the declarator.
         "unsigned char (*[2])(unsigned char (*)[4])",
         "void (*[2])(void (*)(long))",
         "long (*(*[3])(long))[2]",
@@ -96,7 +95,7 @@ def test_arrays_and_non_pointers(kind):
         "fn(i64) -> i64",
         "unsafe fn()",
         'extern "C" fn(i64)',
-        # A fn pointer taking a reference has a binder (verification of #103).
+        # A fn pointer taking a reference has a binder.
         "for<'a> fn(&'a Pt) -> i64",
         "for<'a, 'b> unsafe extern \"C\" fn(&'a u8, &'b u8)",
     ],
@@ -129,7 +128,7 @@ def test_wide_boxes(kind):
 @pytest.mark.parametrize(
     "kind",
     [
-        # Verification of #103: arrays of fn pointers returning a Box, and of references
+        # Arrays of fn pointers returning a Box, and of references
         # to one, begin with the Box's name too.
         "alloc::boxed::Box<dyn vb8c::Shape> (*[2])()",
         "alloc::boxed::Box<str> *[2]",
@@ -149,7 +148,7 @@ def test_not_wide_boxes(kind):
         "Pt *",
         "long (**)(long)",
         "unsigned char (*)[8]",
-        # Arrays of data pointers: what `[Box<Pt>; 2]` is (verification of #103).
+        # Arrays of data pointers: what `[Box<Pt>; 2]` is.
         "vb9a::Pt *[2]",
         "vb9d::Pt *[1][2]",
         "unsigned char (*[2])[4]",
@@ -203,7 +202,7 @@ def test_arrays_of_non_owning_mir_types(mir):
     ],
 )
 def test_values_that_own_no_memory(mir):
-    # #108: primitives, references and raw or fn pointers, and tuples or arrays of them.
+    # Primitives, references and raw or fn pointers, and tuples or arrays of them.
     assert not _may_own(mir)
 
 
@@ -244,7 +243,7 @@ def test_values_that_may_own_memory(mir):
     ],
 )
 def test_a_generic_bodys_primitive_names_may_be_type_parameters(mir, generics):
-    # Review of #106: `fn keep<i64>(h: i64)` called with a struct owning a Box.
+    # `fn keep<i64>(h: i64)` called with a struct owning a Box.
     assert _may_own(mir) is False
     assert _may_own(mir, generics)
     # A reference never owns, whatever it points at.
@@ -266,7 +265,7 @@ def test_values_that_hold_no_raw_pointer(mir):
     + ["Holder", "&Holder", "&mut app::Holder", "std::ptr::NonNull<i64>", "&dyn Debug", "T"],
 )
 def test_values_that_may_hold_a_raw_pointer(mir):
-    # #255: a struct's or a generic's name says nothing of its fields.
+    # A struct's or a generic's name says nothing of its fields.
     assert _may_hold_raw(mir)
 
 
@@ -275,7 +274,7 @@ def test_a_generic_bodys_primitive_name_may_hold_a_raw_pointer():
 
 
 def test_a_pointer_in_a_value_is_raw_by_its_debug_information_else_by_the_mir(monkeypatch):
-    # #255: the field's Rust type from the build's debug information decides; where
+    # The field's Rust type from the build's debug information decides; where
     # that says nothing, any pointer in a local whose MIR type may hold a raw pointer is
     # withheld as maybe one, and one in a local of references and primitives is not.
     import peeky.fields

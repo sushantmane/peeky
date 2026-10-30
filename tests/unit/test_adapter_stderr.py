@@ -1,5 +1,5 @@
 """The adapter's stderr: kept (bounded) for diagnosis, and a dead java-debug event thread
-(#27) ends the session at once instead of a silent wait."""
+ends the session at once instead of a silent wait."""
 
 import json
 import sys
@@ -219,7 +219,7 @@ def test_a_dead_event_hub_ends_the_wait_and_closes_the_session_as_errors_do(
     assert report["state"] == "closed" and report["adapter_failure"] == str(failure.value)
     assert "EventHub.java:71" in report["debugger_events"]["stderr"]
     assert [e["operation"] for e in report["history"]][-1] == "adapter_failed"
-    # What ending it did to the program (#143) comes with the repeated error and `close`.
+    # What ending it did to the program comes with the repeated error and `close`.
     if mode == "attach":
         assert report["cleanup"] == "detached; the attached program keeps running"
     assert classify(again.value)["cleanup"] == report["cleanup"]
@@ -307,7 +307,7 @@ def test_a_last_line_without_a_newline_is_kept():
 
 
 def test_close_never_leaves_a_reader_on_a_descriptor_a_descendant_still_holds():
-    # Review round 3: a process outside the adapter's group kept the inherited stderr
+    # A process outside the adapter's group kept the inherited stderr
     # open, close() gave up joining the blocked reader and closed the descriptor under
     # it, and once the number was reused the stale reader took the new owner's data.
     import os
@@ -339,7 +339,7 @@ def test_close_never_leaves_a_reader_on_a_descriptor_a_descendant_still_holds():
 
 @pytest.mark.parametrize("max_pause", [None, 3])
 def test_the_pause_guard_closes_a_session_whose_event_thread_died(tmp_path, monkeypatch, max_pause):
-    # Review round 4: with no client waiting, nothing noticed the dead event thread.
+    # With no client waiting, nothing noticed the dead event thread.
     closes = []
     real = DAP.close
     monkeypatch.setattr(
@@ -390,7 +390,7 @@ def until(condition, seconds=5):
 def test_an_adapter_crash_with_a_pause_budget_reaches_the_client_as_debugger_error(
     tmp_path, detects_lost_stops
 ):
-    # Review round 5: the pause guard's breakpoint drain met the dead transport, closed
+    # The pause guard's breakpoint drain met the dead transport, closed
     # the session and printed a traceback, so the client got NO_SESSION ("Missing or
     # stale session_id") instead of DEBUGGER_ERROR ("Debugger adapter closed").
     (tmp_path / "Main.py").write_text("pass\n")
@@ -432,12 +432,12 @@ def test_a_failure_the_pause_guard_itself_meets_reaches_the_client_not_no_sessio
     report = worker.dispatch("report", session)
     assert (report["state"], report["failure"]) == ("closed", "Debugger adapter closed")
     assert report["history"][-1]["operation"] == "session_failed"
-    # Its `cleanup` comes with the repeated error and with `close` (PR #147 review 2).
+    # Its `cleanup` comes with the repeated error and with `close`.
     assert error["cleanup"] == report["cleanup"]
     assert worker.dispatch("close", session) == {"state": "idle", "cleanup": report["cleanup"]}
 
 
-# What Peeky's Java launcher writes when it cannot resume the JVM after a change (#261).
+# What Peeky's Java launcher writes when it cannot resume the JVM after a change.
 UNRESUMED = (
     "Peeky experimental Java adapter: could not resume the JVM after a change "
     "(com.sun.jdi.InternalException: Unexpected JDWP Error: 113); disconnected from it, "
@@ -449,7 +449,7 @@ UNRESUMED = (
 
 
 def test_a_change_whose_jvm_stays_suspended_ends_the_session_as_lost():
-    # #261 review round 2: the launcher suspends every thread across a change to an
+    # The launcher suspends every thread across a change to an
     # element. Where it cannot resume them, it never answers the change: it disconnects,
     # says why, and ends. The change fails with that reason, never as made or refused.
     dap = adapter(UNRESUMED, mode="never", how="set-exit")

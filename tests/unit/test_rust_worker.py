@@ -259,8 +259,8 @@ def test_rust_launch_disables_symbol_file_scripts(monkeypatch):
 
 
 def test_lldb_waits_for_its_debug_server_as_long_as_peeky_waits_for_lldb(tmp_path):
-    # #193: under load, lldb-server answered after LLDB's 5 s packet timeout, and a value
-    # it could read came back as `invalid load address` (`p.a` unavailable). LLDB now
+    # Under load, lldb-server answered after LLDB's 5 s packet timeout, and a value
+    # it could read came back as `invalid load address` (`p.a` unavailable). LLDB
     # waits longer than Peeky's own 15 s request bound, which decides.
     from types import SimpleNamespace
 
@@ -732,7 +732,7 @@ def test_value_view_time_budget_degrades_to_opaque(worker, monkeypatch):
 
 
 def test_a_spent_value_view_budget_says_which_limit_ran_out(worker, monkeypatch):
-    # Review of #156, round 3: Peeky's own checks took the whole time, and a `&str` said
+    # Peeky's own checks took the whole time, and a `&str` said
     # "<Rust enum view budget exhausted>"; the row names the limit, and how much of the
     # time the debugger took.
     worker.dap.roots = [raw(f"some{index}", OPTION, 10) for index in range(30)]
@@ -910,7 +910,7 @@ def test_rust_locals_are_settable_only_when_kept_in_memory():
 def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fails(
     tmp_path,
 ):
-    # #138: a closure, a macro's twins or an inlined copy on the line may keep the local
+    # A closure, a macro's twins or an inlined copy on the line may keep the local
     # in memory: refused only when every function that can stop there rules it out.
     import json
     from types import SimpleNamespace
@@ -960,7 +960,7 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     session.memory = {("h1", "total"): True, ("h1", "flag"): True, ("h1", "width"): False}
     session.memory[("h3", "x")] = False
     session.memory.update({("h5", "k"): False, ("h5", "q"): True})
-    # What the IR declares each on: a `.dbg.spill` copy (review of PR #335: no declaration
+    # What the IR declares each on: a `.dbg.spill` copy (no declaration
     # proves no register).
     session.declarations_ir = {("h1", "width"): [(3, "copy")], ("h3", "x"): [(3, "copy")]}
     session.owned = SimpleNamespace(
@@ -984,7 +984,7 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     assert judged("total") is None
     assert "`flag` is a bool; only integer locals" in judged("flag")
     code, message = judged("nope")
-    # One reason for both functions, said once (#151 review 2).
+    # One reason for both functions, said once.
     assert (
         code == "NOT_FOUND"
         and "app::outer and app::outer::{closure#0} have no local `nope`" in (message)
@@ -1009,7 +1009,7 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
 
 
 def test_a_row_says_register_only_where_every_piece_is_the_debuggers_copy():
-    # Review of PR #335: a struct's row, and its fields', said `[not settable: register]`
+    # A struct's row, and its fields', said `[not settable: register]`
     # wherever the IR's memory proof wasn't True: a closure's capture (declared through its
     # environment's pointer), a binding with no declaration, pieces in a slot and in a
     # register. Only a binding whose every declaration is a `.dbg.spill` copy is in a
@@ -1049,7 +1049,7 @@ def test_a_row_says_register_only_where_every_piece_is_the_debuggers_copy():
 
 
 def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
-    # Review of #138: the IR's proof covers every binding of a name; the binding asked
+    # The IR's proof covers every binding of a name; the binding asked
     # for may have its slot while another, or an inlined copy, does not.
     from types import SimpleNamespace
 
@@ -1067,7 +1067,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ("h", "y"): [(9, "copy")],
         ("h", "far"): [(3, "inlined"), (3, "inlined")],
         ("h", "both"): [(5, "copy"), (5, "slot")],
-        # Review of PR #335: pieces of one binding, one spilled and one in a slot; a
+        # Pieces of one binding, one spilled and one in a slot; a
         # closure's capture, declared through its environment's pointer.
         ("h", "piece"): [(7, "copy"), (7, "copy"), (7, "slot")],
         ("h", "capture"): [(14, "unknown")],
@@ -1080,7 +1080,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     assert judged("h", "x", 7, "src/main.rs") == ("some", [4])  # not told which
     assert judged("h", "y") == ("own", None)
     assert judged("h", "far") == ("inlined", None)
-    # Review of PR #335: "register" only where every piece of the binding is a spill
+    # "register" only where every piece of the binding is a spill
     # copy; a slot and a spill on its line, no declaration, or one through a pointer
     # prove nothing.
     assert judged("h", "both") == ("unknown", None)
@@ -1096,7 +1096,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     assert "after the `let` on line 4" in advice
     rule, advice = RustSession._register_text("app::far", "y", ("inlined", None))
     assert "inlined where it is called" in rule and advice.startswith("Inlining prevents")
-    # `describe` gives each name the reason its rows give (review round 3).
+    # `describe` gives each name the reason its rows give.
     session.memory = {
         ("h0123456789abcdef", name): False
         for name in ("x", "y", "far", "k", "both", "piece", "capture", "spilled")
@@ -1133,11 +1133,11 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ({"src/main.rs": "#[no_mangle] pub fn free() {}"}, "src/main.rs"),
         ({"src/main.rs": 'unsafe extern "C" { fn getpid() -> i32; }'}, "src/main.rs"),
         ({"src/main.rs": "macro_rules! m { () => { unsafe { 1 } }; }"}, "src/main.rs"),
-        # Review of #156, round 3: `global_asm!` needs no `unsafe`, and can define `free`.
+        # `global_asm!` needs no `unsafe`, and can define `free`.
         ({"src/main.rs": 'std::arch::global_asm!(".globl free");'}, "src/main.rs"),
         ({"src/main.rs": "use std::arch::global_asm as g;"}, "src/main.rs"),
         ({"src/main.rs": 'fn f() { asm!("nop") }'}, "src/main.rs"),
-        # Review of #156, round 4: a macro may drop the `#` of `#unsafe`; only
+        # A macro may drop the `#` of `#unsafe`; only
         # `r#unsafe` is an identifier (`r#no_mangle` is `no_mangle`).
         (
             {
@@ -1163,7 +1163,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     ],
 )
 def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
-    # Review of #156: unsafe code anywhere in the crate (a closure, a callee, a pointer
+    # Unsafe code anywhere in the crate (a closure, a callee, a pointer
     # stored for later) can free what a Vec field still points at; dependencies (std)
     # are taken as sound.
     from peeky.rust import unsafe_source
@@ -1194,7 +1194,7 @@ def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
     ],
 )
 def test_a_nightly_feature_counts_as_unsafe_code(texts, found):
-    # Review of #156, round 4: Peeky's MIR builds set RUSTC_BOOTSTRAP, so
+    # Peeky's MIR builds set RUSTC_BOOTSTRAP, so
     # `#![feature(custom_mir)]` works, whose `Drop(*v, ...)` frees what a `&Vec` points
     # at with no `unsafe` token.
     from peeky.rust import unsafe_source
@@ -1214,7 +1214,7 @@ def test_a_nightly_feature_counts_as_unsafe_code(texts, found):
     "text,why",
     [
         ('fn f() { "unterminated }', "a comment, string or char literal does not end"),
-        # Review of #156, round 3: frontmatter is not read; a comment after `#!` is not
+        # Frontmatter is not read; a comment after `#!` is not
         # judged; brackets that do not pair up show a literal misread.
         (
             '---\nx = "\n---\nfn f() { unsafe { g() } } // "',
@@ -1293,7 +1293,7 @@ def _try_bindings(tmp_path, source=TRY_SOURCE, mir=TRY_MIR):
 
 
 def test_a_questions_marks_bindings_are_told_by_where_their_spans_end(tmp_path):
-    # prep 7: `describe` listed `residual @ main.rs:47` and `val @ main.rs:47` beside the
+    # `describe` listed `residual @ main.rs:47` and `val @ main.rs:47` beside the
     # program's own names. The DWARF doesn't mark them artificial; the MIR's span of each
     # ends right after the `?` (`residual` spans only it, `val` the expression it tries).
     desugared = _try_bindings(tmp_path)
@@ -1380,7 +1380,7 @@ def _loop_iterators(tmp_path, source=LOOP_SOURCE, mir=LOOP_MIR):
 
 
 def test_a_for_loops_iterator_is_told_by_the_block_after_its_span(tmp_path):
-    # Prep 7: `describe` and `session inspect` listed `iter @ main.rs:32` and
+    # `describe` and `session inspect` listed `iter @ main.rs:32` and
     # `iter @ main.rs:34`, the `for` loops' iterators. The MIR's span of each is the loop's
     # iterator expression, which the loop's `{` follows.
     desugared = _loop_iterators(tmp_path)

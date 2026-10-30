@@ -213,7 +213,7 @@ def test_location_read_failure_never_closes_the_session(tmp_path):
 
 
 class QuietDap:
-    """An adapter that resumed the program but never reports its exit (java-debug #27)."""
+    """An adapter that resumed the program but never reports its exit, as java-debug can."""
 
     def __init__(self, threads, pid=None, late_event=None, fail=None):
         self.threads, self.calls, self.closed = threads, [], False
@@ -491,7 +491,7 @@ def test_locations_show_the_users_source_for_a_prepared_build(tmp_path):
 
 
 def test_answered_frames_and_breakpoints_show_the_users_source(tmp_path):
-    # #252: a remote session's frames named the worker's build copy, a path only it has.
+    # A remote session's frames named the worker's build copy, a path only it has.
     from types import SimpleNamespace
 
     from peeky.worker import _public_placed, _public_sources
@@ -519,7 +519,7 @@ def test_answered_frames_and_breakpoints_show_the_users_source(tmp_path):
 
 
 def test_a_candidates_edited_file_is_shown_as_the_copy_that_ran(tmp_path):
-    # #268 review: frames named the user's file with the candidate's line numbers.
+    # Frames named the user's file with the candidate's line numbers.
     from types import SimpleNamespace
 
     from peeky.build import FileIdentity
@@ -688,7 +688,7 @@ def test_decoded_elements_get_worker_owned_handles_that_never_authorize_writes(t
 
 
 def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
-    # #108: what the runtime says of a top-level aggregate passes to its children, and to
+    # What the runtime says of a top-level aggregate passes to its children, and to
     # theirs; a pointer inside shows only its address; scalars are marked stale.
     from types import SimpleNamespace
 
@@ -761,7 +761,7 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
 
 
 def test_a_raw_pointer_view_says_so_on_its_row(tmp_path):
-    # #255: a Rust raw pointer (or one the build does not tell from one) shows only its
+    # A Rust raw pointer (or one the build does not tell from one) shows only its
     # address; its row says which, for its note. Anything else is not passed on.
     from types import SimpleNamespace
 
@@ -792,7 +792,7 @@ def test_a_raw_pointer_view_says_so_on_its_row(tmp_path):
 
 
 def test_an_opaque_enum_view_passes_on_why_it_is_not_decoded(tmp_path):
-    # #303: why a Rust enum is not decoded, where it is stored and what to read instead
+    # Why a Rust enum is not decoded, where it is stored and what to read instead
     # reach its row; a decoded variant's own view has no such reason.
     from types import SimpleNamespace
 
@@ -829,7 +829,7 @@ def test_an_opaque_enum_view_passes_on_why_it_is_not_decoded(tmp_path):
 
 
 def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
-    # #148: a root shown with a note (#140) passed it to nothing read through it; its
+    # A root shown with a note passed it to nothing read through it; its
     # fields, their fields and a decoded preview's elements now carry it, said as read
     # through the root, and none is settable where the root's change is refused.
     from types import SimpleNamespace
@@ -904,7 +904,7 @@ def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
 
 
 def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_value(tmp_path):
-    # #128: a libstdc++ string's text is the runtime's (read from memory, or noted); the
+    # A libstdc++ string's text is the runtime's (read from memory, or noted); the
     # worker keeps its handle to the raw members, reads memory only where the debugger
     # can, and never gives a value to one LLDB has none for (optimized out).
     from types import SimpleNamespace
@@ -947,7 +947,7 @@ def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_valu
 
 
 def test_a_string_shown_as_its_text_lists_no_members(tmp_path):
-    # Eval 6, finding 15: `session get name` listed libc++'s `(anonymous struct)` (and
+    # `session get name` listed libc++'s `(anonymous struct)` (and
     # libstdc++'s `_M_dataplus`) under a std::string. A value the runtime marks "text"
     # gets no handle, and is never "at the depth limit".
     from types import SimpleNamespace
@@ -996,7 +996,7 @@ class ChildrenDap:
 
 
 def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
-    # #136: a C or C++ struct's preview replaces lldb-dap's `Type @ 0x…`; the handle
+    # A C or C++ struct's preview replaces lldb-dap's `Type @ 0x…`; the handle
     # stays, so its fields are selected as before. Probes ask only for the roots they
     # capture; a listing for the values it lists.
     import time as clock
@@ -1040,7 +1040,7 @@ def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
     p, q, _ = expose(False)
     assert (p["value"], q["value"]) == ("Pt @ 0x10", "Pt @ 0x20")
     # A spent budget leaves the debugger's text; it is the preview's own, not the
-    # value views' (#128 strings, Rust).
+    # value views' (strings, Rust).
     worker.previewing = True
     worker.preview_fetches, worker.preview_deadline = PREVIEW_FETCHES, clock.monotonic() + 5
     worker.view_fetches = 0
@@ -1074,7 +1074,7 @@ def test_preview_requests_are_checked(tmp_path, operation, args, message):
 
 
 def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(tmp_path):
-    # #140 with #132's check before any view: a reason with a `note` shows the value (a
+    # A reason with a `note` shows the value (a
     # view's too) with the note, and is offered for set unless it `refuses`; a reason
     # without one withholds the row; the runtime sees the frame's rows and the stop.
     from types import SimpleNamespace
@@ -1133,7 +1133,7 @@ def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(t
 
 
 def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
-    # #138: an optimized build refuses every change, saying where the local has no stack
+    # An optimized build refuses every change, saying where the local has no stack
     # slot; otherwise the runtime's build facts decide, as a message or (code, message).
     from types import SimpleNamespace
 
@@ -1178,7 +1178,7 @@ def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
     for sets in ("x", ["x"], [{"line": 0, "name": "x"}], [{"line": 3, "name": ""}]):
         with pytest.raises(ValueError, match="sets must be a list"):
             DebugWorker.validate("launch", {"program": "a.c", "sets": sets})
-    # Each change is judged against its own line's functions only (#137: --set-at).
+    # Each change is judged against its own line's functions only (--set-at).
     judged = []
     runtime = SimpleNamespace(
         target_identity={},
@@ -1194,7 +1194,7 @@ def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
 
 
 def test_a_row_no_stop_can_change_says_why(tmp_path):
-    # #138: a root (or a field whose root) the runtime says no stop changes is marked
+    # A root (or a field whose root) the runtime says no stop changes is marked
     # `not_settable`; a settable row never is.
     from types import SimpleNamespace
 
@@ -1229,7 +1229,7 @@ def test_a_row_no_stop_can_change_says_why(tmp_path):
 
 
 def test_a_row_a_statement_under_way_withholds_says_why_where_the_runtime_gives_it(tmp_path):
-    # #300: `session inspect` explained why `week` was not [settable] at a stop part-way
+    # `session inspect` explained why `week` was not [settable] at a stop part-way
     # through a statement, while its probe row showed no mark and no reason.
     from types import SimpleNamespace
 
@@ -1284,7 +1284,7 @@ class ThreadsDap:
 
 
 def test_the_threads_at_a_stop_are_every_source_s(tmp_path):
-    # Review of #181: two `threads` replies that both say one thread (stale) proved
+    # Two `threads` replies that both say one thread (stale) proved
     # nothing; LLDB's own `thread list` and the `thread` events that said a thread
     # started count too, and any source that does not answer leaves it unsure.
     from types import SimpleNamespace
@@ -1332,7 +1332,7 @@ def test_lldb_s_thread_list_is_read_for_its_thread_ids():
 
 
 def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(tmp_path):
-    # #187: in `main` below `o.items.clear()`, `o.items[1].name` read the freed string of
+    # In `main` below `o.items.clear()`, `o.items[1].name` read the freed string of
     # an element already destroyed. The runtime says why such a row is withheld; the
     # row then has no value and no handle (nothing below it reads), even under a note.
     from types import SimpleNamespace
@@ -1343,7 +1343,7 @@ def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(t
     asked = []
 
     def changing_container(frame, steps, stack=None, deeper=None, threads=None):
-        # The stop's threads are the runtime's to judge (review of #187).
+        # The stop's threads are the runtime's to judge.
         assert threads == worker.threads_at_stop and deeper == worker.whole_stack
         asked.append((steps, stack))
         if steps[:2] == ["o", "items"] and len(steps) > 2:
@@ -1369,7 +1369,7 @@ def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(t
     assert shown["withheld"] and shown["withheld_as"] == "not shown" and not shown["settable"]
     assert shown["reason"].startswith("a standard-library call below this frame")
     assert asked[0] == (["o", "items", "[1]"], worker.listed_frames)
-    # Under a noted parent (#148) too; a sibling path is read as before.
+    # Under a noted parent too; a sibling path is read as before.
     (noted,) = worker.expose_variables(
         elements[:1], {"id": 1}, ("Locals",), (("o", "Owner"), ("items", "")), noted=("n", False)
     )
@@ -1382,7 +1382,7 @@ def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(t
 
 
 def test_a_long_element_type_is_withheld_as_any_row(tmp_path):
-    # Review of #187: a child whose name or type passes 2,000 characters was shown with
+    # A child whose name or type passes 2,000 characters was shown with
     # its raw value before the container rule ran (`value="FREED"`, no `withheld`).
     from types import SimpleNamespace
 
@@ -1429,7 +1429,7 @@ class PagedDap:
 
 
 def test_a_partial_stack_page_is_never_the_whole_stack(tmp_path):
-    # Review of #187: 64 frames with `totalFrames: 2000` were taken for the whole stack.
+    # 64 frames with `totalFrames: 2000` were taken for the whole stack.
     from peeky.worker import DebugWorker, StackPage
 
     assert StackPage([{}] * 3, 10, 3).complete is True
@@ -1449,8 +1449,8 @@ def test_a_partial_stack_page_is_never_the_whole_stack(tmp_path):
 
 @pytest.mark.parametrize("sent", [b"", b"POST /version HTTP/1.1\r\nAuthorization: Bea"])
 def test_a_connection_that_stalls_before_its_token_is_closed(tmp_path, monkeypatch, sent):
-    # Pre-release security review: nothing bounded the reads before authentication, so
-    # any local process could hold a worker thread open by sending nothing.
+    # Reads before authentication are bounded: else any local process could hold a worker
+    # thread open by sending nothing.
     import socket
     import threading
     import time
@@ -1492,7 +1492,7 @@ class _Runtime:
 
 
 def test_a_change_says_its_type_after_the_write_and_whether_it_changed_anything():
-    # Round 2 of PR #314: the type came from the value read before the write, so a Python
+    # The type came from the value read before the write, so a Python
     # `callback` set from `print` to `None` said `builtin_function_or_method`.
     from peeky.worker import _written
 
@@ -1542,8 +1542,8 @@ def test_each_runtime_proves_a_no_op_by_the_values_type_never_its_name():
     ):
         assert PythonAdapter.exact_text({"type": kind, "value": value}) is exact, (kind, value)
 
-    # C, C++ and Rust: the type the debug information gives, through typedefs. Round 2:
-    # `typedef float int64_t;` (tests/cpp/test_cpp_cli.py) was taken for an integer.
+    # C, C++ and Rust: the type the debug information gives, through typedefs, so
+    # `typedef float int64_t;` (tests/cpp/test_cpp_cli.py) is not taken for an integer.
     graph = {
         1: ("typedef", "int64_t", 2),
         2: ("base", "float", "DW_ATE_float", 4),

@@ -1,8 +1,7 @@
-"""`queries diff`, `set_effect` and `join` as the tenth agent evaluation read them: long
-values cut before their difference, a `(sets)` row 120 characters wide, intervention rows
-after their effects, an alignment note over values a change moved, and `join` showing
-unchanged selectors twice. Synthetic stores cut down from outline (Python), debounce (C),
-kitty (Rust) and runoff (Java)."""
+"""How `queries diff`, `set_effect` and `join` read: long values cut before their difference, a
+`(sets)` row 120 characters wide, intervention rows after their effects, an alignment note over
+values a change moved, and `join` showing unchanged selectors twice. Synthetic stores cut down from
+outline (Python), debounce (C), kitty (Rust) and runoff (Java)."""
 
 import contextlib
 import json
@@ -69,13 +68,13 @@ def text(capsys, store, *argv):
     return capsys.readouterr().out
 
 
-# outline: `previous` at line 66, two `u` commands; Café's level is the difference.
+# `previous` at line 66, two `u` commands; Café's level is the difference.
 ITEMS = "[{'text': 'Einkäufe', 'level': 0}, {'text': 'Milch', 'level': 1}, {'text': 'Brot', "
 CAFE = ITEMS + "'level': 1}, {'text': 'Café', 'level': %d}]"
 
 
 def test_diff_shows_long_values_from_just_before_they_differ(store, capsys):
-    # outline 1: `…{'text': 'Café', ...` against `…{'text': 'Café', 'lev...`: both cut
+    # `…{'text': 'Café', ...` against `…{'text': 'Café', 'lev...`: both cut
     # before the level, the one difference.
     saved(store, [{"previous": CAFE % 1, "i": "1"}])
     saved(store, [{"previous": CAFE % 0, "i": "1"}])
@@ -96,7 +95,7 @@ def test_diff_shows_long_values_from_just_before_they_differ(store, capsys):
 
 
 def test_both_values_of_a_pair_start_at_one_offset():
-    # Review of PR #269: `a` fits, `b` is cut, and their first difference is at 110: each
+    # `a` fits, `b` is cut, and their first difference is at 110: each
     # started at its own offset, `a` at 0 and `b` at 70.
     a = "a" * 110
     b = a + "B" * 90
@@ -113,7 +112,7 @@ def test_both_values_of_a_pair_start_at_one_offset():
 
 
 def test_set_effect_shows_each_change_where_it_differs(store, capsys):
-    # outline: `set_effect` hid `level` 1 -> 0 in both value columns and in
+    # `set_effect` hid `level` 1 -> 0 in both value columns and in
     # `interventions`.
     saved(
         store,
@@ -132,7 +131,7 @@ def test_set_effect_shows_each_change_where_it_differs(store, capsys):
     assert json_row["interventions"] == f"previous: {CAFE % 1} -> {CAFE % 0}"
 
 
-# debounce: `settle` at line 35, one hit per sample; run b resets `db.count` at line 80
+# `settle` at line 35, one hit per sample; run b resets `db.count` at line 80
 # of `main` before hits 5, 8, 16, 19, 26 and 29 (six --set-at requests).
 LEVEL = "00101101111110100100001101100000"
 STABLE = {"a": "00000111111111111110000000011111", "b": "00000000011111111111000000000000"}
@@ -167,10 +166,9 @@ def debounce(store, side, *, after=(), edit=None):
 
 
 def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
-    # debounce 1: the `(sets)` cell was about 120 characters, padding every line to about
-    # 230 columns, and the intervention rows came after about 70 effect rows. Twelfth
-    # evaluation: it showed one change, `…` for the rest; now as many as fit, then how
-    # many more.
+    # The `(sets)` cell was about 120 characters, padding every line to about
+    # 230 columns, and the intervention rows came after about 70 effect rows. The cell
+    # shows as many changes as fit, then how many more.
     debounce(store, "a")
     debounce(store, "b", after=[(5, "db.count", "0"), (8, "db.count", "0")])
     shown = text(capsys, store, "diff")
@@ -179,8 +177,8 @@ def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
     cell = "6 changes: db.count=0 (80@5), db.count=0 (80@8), … (4 not shown)"
     assert "  none  " in sets and f"  {cell}  " in sets, sets
     assert len(cell) <= evidence._SETS_WIDTH
-    # Every line was padded to the (sets) cell's width before its `differs` column: now
-    # at most `_SETS_WIDTH`.
+    # Every line is padded before its `differs` column to at most `_SETS_WIDTH`, not to
+    # the (sets) cell's width.
     assert header.index("differs") - header.index("value_b") == len(cell) + 2, header
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["selector"], r["hit"], r["note"]) for r in rows[2:4]] == [
@@ -193,9 +191,9 @@ def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
 
 
 def cells(shown, selector):
-    """The ``selector`` row's value_a and value_b in a `diff` text table: each column
-    starts where its header does. The (output) row runs past its columns (thirteenth
-    evaluation): its cells are apart by two spaces or more."""
+    """The ``selector`` row's value_a and value_b in a `diff` text table: each column starts where
+    its header does. The (output) row runs past its columns: its cells are apart by two spaces or
+    more."""
     header, *table = shown.splitlines()
     (line,) = [line for line in table if f"  {selector}  " in line]
     a, b, differs = (header.index(name) for name in ("value_a", "value_b", "differs"))
@@ -205,7 +203,7 @@ def cells(shown, selector):
 
 
 def test_the_sets_cell_shows_two_or_three_changes_whole(store, capsys):
-    # Twelfth evaluation, desks 3: `2 changes: desk=0 (requested at 58@4), …` hid the
+    # desks: `2 changes: desk=0 (requested at 58@4), …` hid the
     # second change. Two or three are shown whole; more are cut where they no longer fit,
     # saying how many are not shown.
     hits = [{"desk": str(n % 3)} for n in range(9)]
@@ -237,7 +235,7 @@ RAIN = (
 
 
 def test_the_output_cell_is_the_window_cookbook_names_in_both_runs(store, capsys):
-    # Twelfth evaluation, rainfall 1: the outputs (121 characters) differ at column 44,
+    # rainfall: the outputs (121 characters) differ at column 44,
     # and the table cut both at 120, hiding their tails; COOKBOOK 3.1 says the `(output)`
     # row shows up to 200 characters, from 60 before the first difference.
     saved(store, [{"day": "1"}], output=RAIN.format("5@6", "5@2"))
@@ -266,10 +264,10 @@ def test_the_output_cell_is_the_window_cookbook_names_in_both_runs(store, capsys
 
 
 def test_values_a_change_moved_tell_nothing_of_alignment(store):
-    # debounce: the reset count moves `db.stable`, whose 0s and 1s then line up better at
+    # The reset count moves `db.stable`, whose 0s and 1s then line up better at
     # other hits: "the values do not settle whether a hit is the same moment in both …
     # pair hits by a value that names the call", and `settle` has none. The change may
-    # account for that, so the note says so; the sign still stands (review of PR #269).
+    # account for that, so the note says so; the sign still stands.
     debounce(store, "a")
     debounce(store, "b")
     debounce(store, "b", edit="--- a/debounce.c\n")
@@ -321,10 +319,10 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
 
 
 def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
-    # Review of PR #269: with `call` left out after the edit, `key` alone said "the hits
+    # With `call` left out after the edit, `key` alone said "the hits
     # line up by `key`", though `call` shows the first two calls swapped. The note says the
     # hits pair by `key`, which does not prove they are the same moments; `call`'s other
-    # order is not said beside it (twelfth evaluation: it read as a reorder).
+    # order is not said beside it (it would read as a reorder).
     saved(store, [{"key": k, "call": c} for k, c in zip("123", ["'A'", "'B'", "'C'"])])
     saved(
         store,
@@ -362,7 +360,7 @@ def test_a_candidate_that_changes_every_value_gets_a_short_note(store):
 
 
 def test_agreement_is_said_as_agreement_between_the_runs(store):
-    # kitty 5: "`e.cents` reads the same at each of the 3 hits in both runs, but `payer`
+    # "`e.cents` reads the same at each of the 3 hits in both runs, but `payer`
     # differs …" sounded like one constant value; it means the runs agree hit by hit.
     cents = ["4500", "1000", "900"]
     for payers, edit in ((["0", "2", "1"], None), (["3", "2", "0"], None)):
@@ -405,7 +403,7 @@ def test_join_is_named_only_where_a_selector_could_key_it(store):
     assert "`peeky queries join --param a=3 --param b=4 --param key=" in note, note
 
 
-# runoff: `count` at line 56, one hit per round; the fix changes round 3's tally.
+# `count` at line 56, one hit per round; the fix changes round 3's tally.
 NAMES = 'ArrayList@64 size=4 ["Mira", "Lena", "Kofi", "Jonas"]'
 TALLY = {"a": ["[4, 2, 0, 3]", "[4, 2, 0, 3]", "[4, 0, 2, 3]", "[4, 0, 3, 0]"]}
 TALLY["b"] = ["[4, 2, 0, 3]", "[4, 2, 0, 3]", "[4, 0, 0, 5]"]
@@ -420,9 +418,9 @@ def runoff(store, side):
 
 
 def test_join_leaves_out_selectors_that_agree_at_every_paired_hit(store, capsys):
-    # runoff 7: `queries join --param key=round` was about 400 columns wide, every
+    # `queries join --param key=round` was about 400 columns wide, every
     # unchanged selector shown for both runs. Only the text table leaves them out;
-    # `--json` keeps every column (review of PR #269).
+    # `--json` keeps every column.
     runoff(store, "a")
     runoff(store, "b")
     every = ["a:counted", "a:tally", "a:this.names", "b:counted", "b:tally", "b:this.names"]
@@ -458,9 +456,9 @@ def test_join_leaves_out_selectors_that_agree_at_every_paired_hit(store, capsys)
     assert "unchanged" in evidence.schema(store)["queries"]["join"]["params"]
 
 
-# Review 2 of PR #269: the text table re-read "the newest two runs" after the query ran,
-# so a probe saved meanwhile changed what it compared. Review 3: the rows, notes and
-# table now read one snapshot, so a probe's save waits for them (a store's rollback
+# The text table re-read "the newest two runs" after the query ran,
+# so a probe saved meanwhile changed what it compared. The rows, notes and
+# table read one snapshot, so a probe's save waits for them (a store's rollback
 # journal: its commit waits for the reader's shared lock). Each test saves from another
 # thread, as a probe would, and gives it a second to commit before reading on.
 def probe_meanwhile(save):
@@ -563,7 +561,7 @@ def full_store(store):
 
 
 def test_a_run_evicted_after_the_rows_never_silences_the_alignment_note(store, monkeypatch):
-    # Review 3 of PR #269: `diff --param a=1 --param b=2` read its rows; a probe saved run
+    # `diff --param a=1 --param b=2` read its rows; a probe saved run
     # 501, evicting run 1; `_unaligned` then found no pair and said nothing, so the
     # reorder warning vanished.
     other = full_store(store)
@@ -656,8 +654,8 @@ def probe(tmp_path, monkeypatch):
 
 
 def test_a_query_table_notes_short_frame_names_once_per_saved_run(probe, capsys):
-    # laps 6: `note: function shows short frame names; …` came under every query's table.
-    # Review of PR #350: a state directory's one note, used up by an earlier unrelated
+    # `note: function shows short frame names; …` came under every query's table.
+    # A state directory's one note, used up by an earlier unrelated
     # run, left a later run's tables with none.
     note = "note: function shows short frame names"
     assert probe(_probe_result(function="other::main::h0123456789abcdef")) == 0
@@ -688,7 +686,7 @@ def test_a_query_table_notes_short_frame_names_once_per_saved_run(probe, capsys)
 
 
 def test_outputs_lists_run_a_first_with_short_arguments_whole(probe, capsys):
-    # laps 4: `queries outputs --param a=3 --param b=2` listed run 2 first, and cut both
+    # `queries outputs --param a=3 --param b=2` listed run 2 first, and cut both
     # runs' 12 reads at 120 characters.
     reads = [f"{car}@{at}.{n}" for car, at, n in zip([7, 12, 33] * 4, range(80, 92), range(12))]
     other = [*reads[:-1], "33@249.9"]
