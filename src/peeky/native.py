@@ -1452,8 +1452,7 @@ _CALL_LEAD = re.compile(
 _ASSEMBLY = re.compile(r"(?<![\w$])(?:asm|__asm|__asm__)(?![\w$])")
 # Builtins may take an address no `&` shows: of a value (`__builtin_addressof(x)`), or of
 # a frame (`__builtin_frame_address`, `__builtin_dwarf_cfa`), from which any local of it,
-# or of its callers, is reached. Every builtin counts but those known to
-# reach no memory.
+# or of its callers, is reached. Every builtin counts but those known to reach no memory.
 _ADDRESSES = re.compile(
     r"(?<![\w$])__builtin_(?!(?:expect|expect_with_probability|unreachable|assume|trap|"
     r"constant_p|types_compatible_p|choose_expr|offsetof|clzs?|clzl{0,2}|ctzs?|ctzl{0,2}|"
@@ -5168,7 +5167,7 @@ def _backslash_twin(path, listings):
     ``path``'s way named for the next step and a backslash (`a\\...` beside `a`), or one
     that, its backslashes read as `/`, is ``path`` or a directory on its way (`\\x.h`
     beside `x.h`), or None. ``listings`` caches each directory's backslashed
-    names (by the directory's path, a string: Path objects made the check slow); one
+    names (by the directory's path, a string: Path objects make the check slow); one
     that cannot be listed raises UnreadDependencies."""
     parts = path.parts
     directory = None
@@ -12131,7 +12130,8 @@ class NativeSession:
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # lldb-dap changes a field or element as it changes a local.
             "supports_member_set": raw.get("supportsSetVariable") is True,
-            # Used only inside the worker, by qualified value views (Rust containers).
+            # Used only inside the worker, to read memory behind a value (a string's bytes,
+            # an unordered container's nodes).
             "supports_read_memory": raw.get("supportsReadMemoryRequest") is True,
             # Used only by text changes (a string's heap buffer, see text_sets).
             "supports_write_memory": raw.get("supportsWriteMemoryRequest") is True,
@@ -12273,7 +12273,7 @@ class NativeSession:
             )
 
     def mutation_value(self, response):
-        # LLVM18 used result; current DAP adapters use value.
+        # LLVM 18's lldb-dap replies with `result`; later ones with `value`.
         value = response.get("value", response.get("result"))
         if not isinstance(value, str):
             raise RuntimeError("Native mutation response has no observed value")
