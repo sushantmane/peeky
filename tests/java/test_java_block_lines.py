@@ -1,4 +1,4 @@
-"""Java `describe` block lines are the lines whose breakpoint sees the local (#264 review),
+"""Java `describe` block lines are the lines whose breakpoint sees the local,
 through javac's real class files and real probes: java-debug binds a line breakpoint to
 the line's first instruction, so a line counts only where that instruction is in the
 local's scope."""

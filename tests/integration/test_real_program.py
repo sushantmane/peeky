@@ -1,4 +1,4 @@
-"""Issue #7: a non-synthetic program (CPython 3.9.6 ipaddress) with a real, upstream-fixed
+"""A non-synthetic program (CPython 3.9.6 ipaddress) with a real, upstream-fixed
 bug (CVE-2024-4032), debugged through a separate entry script with `--run`."""
 
 import json
@@ -169,7 +169,7 @@ def test_agent_feedback_args_function_names_and_partial_output(case, capsys):
     assert {row["function"] for row in result["rows"]} >= {"is_private"}
     assert result["output_complete"] is True and result["by_hit"][0]["function"]
     code, out = run(capsys, "probe", root, "--at", at, "--run", data["driver"], "--until", "hits")
-    # Resumed after its last hit, the program ran on: never "still running" (#203).
+    # Resumed after its last hit, the program ran on: never "still running".
     assert code == 0 and "the program ran on after the last hit" in out.out
     assert "still running" not in out.out
 

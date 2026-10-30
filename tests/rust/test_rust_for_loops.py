@@ -1,6 +1,6 @@
-"""The eleventh agent evaluation's Rust Lows on real builds: references and raw pointers
-spelled as Rust spells them (rota 3), the `for` loops' `iter` left out of `describe` and a
-stop's listing (prep 7), and an element's unread field naming the loop's item (rota 8)."""
+"""Rust `for` loops on real builds: the item and the raw pointer it is compared with spelled
+as Rust spells them, the loops' hidden `iter` left out of `describe` and a stop's listing,
+and an element's unread field naming the loop's item."""
 
 import json
 import os
@@ -122,8 +122,8 @@ def test_describe_spells_references_and_leaves_out_loop_iterators(crate, capsys)
     assert main(["describe", str(crate), "--json"]) == 0
     scopes = {scope["scope"]: scope for scope in json.loads(capsys.readouterr().out)["scopes"]}
     plan = scopes["rota::plan"]
-    # Before: `e (rota::Engineer *)`, `l (rota::Engineer *)`, and `iter @ main.rs:N`
-    # for each loop's iterator.
+    # Not `e (rota::Engineer *)`, `l (rota::Engineer *)`, nor `iter @ main.rs:N` for each
+    # loop's iterator.
     assert plan["types"]["e"] == "&rota::Engineer", plan
     assert plan["types"]["l"] == "*const rota::Engineer", plan
     assert plan["types"]["first"] == "&rota::Engineer", plan
@@ -152,8 +152,8 @@ def test_rows_spell_references_and_raw_pointers_as_rust(crate, capsys):
     assert rows["l"].get("unproven_pointer") == "raw", rows["l"]
     if reads_memory(rows["e.name"]):
         assert rows["e.name"]["value"] == '"Björn"', rows
-    # Review of PR #315: a pointer to an array, which LLDB writes `unsigned int (*)[3]`
-    # for both, was left in LLDB's spelling, so a reference and a raw pointer read alike.
+    # A pointer to an array, which LLDB writes `unsigned int (*)[3]` for both, is spelled
+    # as Rust spells it, so a reference and a raw pointer read apart.
     rows = probe(capsys, crate, "ARRAYS", "lent", "raw_array")
     assert (rows["lent"]["type"], rows["raw_array"]["type"]) == ("&[u32; 3]", "*const [u32; 3]")
     assert rows["lent"]["debugger_type"] == rows["raw_array"]["debugger_type"], rows
@@ -180,15 +180,15 @@ def test_a_stops_listing_leaves_out_loop_iterators(crate, capsys):
 
 @pytest.mark.timeout(400)
 def test_the_programs_own_iter_reads_by_its_plain_name(crate, capsys):
-    # Review of PR #315: beside a `for` loop's hidden `iter`, lldb-dap lists the program's
-    # `iter` as `iter @ main.rs:N`, and plain `iter`, as `describe` lists it, was not found.
+    # Beside a `for` loop's hidden `iter`, lldb-dap lists the program's `iter` as
+    # `iter @ main.rs:N`; plain `iter`, as `describe` lists it, reads it.
     rows = probe(capsys, crate, "OWN_ITER", "iter")
     assert rows["iter"]["value"] == "41", rows
 
 
 @pytest.mark.timeout(400)
 def test_an_unread_element_field_names_the_loops_item(crate, capsys):
-    # rota 8: `team[1].leave` said "such as a for loop's item" while `e` was in scope.
+    # With `e` in scope, `team[1].leave`'s note names it, not only "such as a for loop's item".
     rows = probe(capsys, crate, "EQ", "team[1].leave", "e.leave")
     if not reads_memory(rows["e.leave"]):
         pytest.skip("reading a slice's elements needs a debugger with readMemory (lldb-dap 20)")
@@ -197,7 +197,7 @@ def test_an_unread_element_field_names_the_loops_item(crate, capsys):
         "`team[1]` at a stop, read `e.leave`; Peeky can't prove it is"
     ), rows
     assert rows["e.leave"]["value"] == "[2]", rows
-    # Review of PR #315: a loop over another container names its item too, but nothing
+    # A loop over another container names its item too, but nothing
     # proves which container it goes over, so the note says so.
     rows = probe(capsys, crate, "BACKUP", "team[1].leave", "b.leave")
     assert rows["b.leave"]["value"] == "[9]", rows

@@ -1,7 +1,7 @@
-r"""#179: a U+2028 in a source file's name. rustc's MIR and Cargo's messages print it as it
-is, dwarfdump in octal (`x\342\200\250y.rs`) or as it is (`DW_AT_decl_file`), LLVM IR in
-hex (`x\E2\80\A8y.rs`): Peeky split those at the U+2028, or read the escapes as other
-characters, so a module so named could not be debugged, nor its MIR proofs read."""
+r"""A U+2028 in a source file's name. rustc's MIR and Cargo's messages print it as it is,
+dwarfdump in octal (`x\342\200\250y.rs`) or as it is (`DW_AT_decl_file`), LLVM IR in hex
+(`x\E2\80\A8y.rs`). Split at the U+2028, or with the escapes read as other characters, a
+module so named could not be debugged, nor its MIR proofs read."""
 
 import json
 import os

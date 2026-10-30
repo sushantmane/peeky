@@ -1,4 +1,4 @@
-"""--set on Java fields and array elements through real java-debug (#86)."""
+"""--set on Java fields and array elements through real java-debug."""
 
 import json
 import os
@@ -55,7 +55,7 @@ def fields(tmp_path, monkeypatch):
 
 
 def texts(fields):
-    """Whether the bundle's launcher changes a String to a text (#137)."""
+    """Whether the bundle's launcher changes a String to a text."""
     bundle = json.loads(fields[1].read_text())["bundle"]
     return b"peekyTextSet" in (Path(bundle) / "classes" / "PeekyJavaAdapter.class").read_bytes()
 
@@ -91,8 +91,8 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
         "30",
     ]
     # Rows say which values --set can change: a final field and a list's boxed element
-    # cannot; a String can, to a text (#137), where the adapter's launcher allows it. An
-    # element is not promised while the JVM's other threads run (#261 review).
+    # cannot; a String can, to a text, where the adapter's launcher allows it. An
+    # element is not promised while the JVM's other threads run.
     assert {s: after[s]["settable"] for s in capture.split(",")} == {
         "current.end": True,
         "current.id": False,
@@ -120,7 +120,7 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
 @pytest.mark.parametrize(
     "assignment, code, message",
     [
-        # The whole selector (#261), not the debugger's name alone.
+        # The whole selector, not the debugger's name alone.
         ("current.id=1", "MUTATION_REJECTED", "`current.id` cannot be changed: it is final"),
         ("current.label=1", "MUTATION_REJECTED", "label"),
         ("xs[0]=1", "MUTATION_REJECTED", "an ArrayList's elements are objects (boxed)"),
@@ -137,7 +137,7 @@ def test_set_refuses_java_members_it_cannot_change_exactly(
     status, result = probe(capsys, root, config, at, "--set", assignment, "--no-save")
     assert status == 1 and result["error"]["code"] == code, result["error"]
     if message == "label":
-        # A String takes a text (#137), not a number; a bundle predating that, nothing.
+        # A String takes a text, not a number; a bundle predating that, nothing.
         message = (
             "requires text in double quotes for String label"
             if texts(fields)
@@ -213,7 +213,7 @@ public class Hide {
 @pytest.mark.timeout(180)
 @pytest.mark.parametrize("value", ["5", "1"])
 def test_a_field_a_static_field_hides_is_never_written(tmp_path, monkeypatch, capsys, value):
-    # Review of #86: java-debug writes through fieldByName, which resolves `x` to the
+    # java-debug writes through fieldByName, which resolves `x` to the
     # subclass's hiding static while its listing shows the inherited instance field.
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
     if not bundle:

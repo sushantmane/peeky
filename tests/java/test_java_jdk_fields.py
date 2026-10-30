@@ -1,4 +1,4 @@
-"""A JDK class's own fields are never offered for a change (#204), through real java-debug:
+"""A JDK class's own fields are never offered for a change, through real java-debug:
 a String's cached hash, an ArrayList's size, inherited or not; the program's own fields
 stay settable, and a String or boxed number shows as a value."""
 
@@ -350,7 +350,7 @@ def test_a_program_class_in_a_jdk_looking_package_is_the_programs(alias, capsys)
         capsys.readouterr()
         listed = {child["name"]: child for child in get(capsys, "box")["children"]}
         assert listed["value"]["settable"] is True and "not_settable" not in listed["value"]
-        # An element is never promised while other threads run (#261 review); `set` checks.
+        # An element is never promised while other threads run; `set` checks.
         cell = get(capsys, "box.cells[0]")
         assert cell["settable"] is False and "not_settable" not in cell, cell
         assert (
@@ -372,7 +372,7 @@ def test_a_program_class_in_a_jdk_looking_package_is_the_programs(alias, capsys)
 
 @pytest.mark.timeout(300)
 def test_a_jdk_module_the_application_loader_loads_is_the_jdks(alias, capsys):
-    # PR #210 review round 2: jdk.jshell loads through the application class loader; its
+    # jdk.jshell loads through the application class loader; its
     # module, not its loader, makes it the JDK's.
     root, config, at = alias
     try:
@@ -397,7 +397,7 @@ def test_a_jdk_module_the_application_loader_loads_is_the_jdks(alias, capsys):
 
 @pytest.mark.timeout(300)
 def test_an_array_inside_an_object_array_the_jdk_holds_is_the_jdks(alias, capsys):
-    # PR #210 review round 2: an Object[] is no proof of whose its arrays are. One a
+    # An Object[] is no proof of whose its arrays are. One a
     # HashMap's entry holds is the JDK's state; a list's backing array holds the program's.
     root, config, at = alias
     try:
@@ -409,8 +409,8 @@ def test_an_array_inside_an_object_array_the_jdk_holds_is_the_jdks(alias, capsys
         assert main(["session", "set", "deep[0]=9"]) == 2
         error = capsys.readouterr().err
         assert "in a list held by java.util.HashMap$Node.value" in error, error
-        # A list whose iterator or sublist the JDK holds is the JDK's state too (review
-        # round 3): the view is followed to whoever holds it.
+        # A list whose iterator or sublist the JDK holds is the JDK's state too: the view is
+        # followed to whoever holds it.
         for assignment, holder in (
             ("keptRow[0]=9", "java.util.HashMap$Node.value"),
             ("slicedRow[0]=9", "java.util.Collections$Unmodifiable"),

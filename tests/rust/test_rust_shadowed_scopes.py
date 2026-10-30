@@ -1,9 +1,9 @@
-"""#206: a Rust function binding a name twice (the ninth evaluation's roster: `entry` of a
-`match` arm and of a later loop, `points` the `Vec<String>` and a loop's `&&str`). A field
-of the loop's `entry` was withheld because the other `entry`, out of scope at the stop,
-has another type; and `describe` merged each pair into one name (`entry (roster::Entry
-or roster::Entry *, lines 61, 82)`), though lldb-dap lists them as `points @ main.rs:73`
-and `points @ main.rs:81` where both are in scope."""
+"""A Rust function binding a name twice (a roster: `entry` of a `match` arm and of a later
+loop, `points` the `Vec<String>` and a loop's `&&str`). A field of the loop's `entry` reads,
+though the other `entry`, out of scope at the stop, has another type; and `describe` lists
+each binding apart, not one name (`entry (roster::Entry or roster::Entry *, lines 61,
+82)`), as lldb-dap lists them as `points @ main.rs:73` and `points @ main.rs:81` where both
+are in scope. Nor does it list the bindings a `?` desugars to."""
 
 import json
 import os
@@ -158,7 +158,7 @@ def test_an_out_of_scope_namesake_does_not_withhold_a_field(tmp_path, state, cap
     name = rows[(1, "entry.name")]
     assert "several locals named" not in json.dumps(result), result
     if reads(name):
-        # Through `entry: &Entry`, used on the line itself (#110), as an owned one reads.
+        # Through `entry: &Entry`, used on the line itself, as an owned one reads.
         assert name["value"] == '"Renée"' and name["view"] == "memory", name
         assert rows[(1, "entry.city")]["value"] == '"Malmö"', rows
         assert rows[(2, "entry.name")]["value"] == '"Paul"', rows
@@ -201,8 +201,8 @@ TWICE = """fn main() {
 
 @pytest.mark.timeout(400)
 def test_two_bindings_on_one_line_are_not_selectable_by_line(tmp_path, state, capsys):
-    # PR #215 review: both `x` are `x @ main.rs:3`, which names neither: `describe` said
-    # `x @ main.rs:3 (alloc::string::String or usize)`, one apparent selector.
+    # Both `x` are `x @ main.rs:3`, which names neither: `describe` doesn't offer
+    # `x @ main.rs:3 (alloc::string::String or usize)` as one apparent selector.
     crate = crate_at(tmp_path, "twice", TWICE)
     assert main(["describe", str(crate)]) == 0
     out = capsys.readouterr().out
@@ -298,9 +298,9 @@ def test_describe_leaves_out_what_a_question_mark_binds(tmp_path, state, capsys)
     assert main(["describe", str(crate), "--json"]) == 0
     scopes = {scope["scope"]: scope for scope in json.loads(capsys.readouterr().out)["scopes"]}
     parse = scopes["ledger::parse"]
-    # Before: `residual @ main.rs:9`, `residual @ main.rs:11`, `val @ main.rs:9` and
-    # `val @ main.rs:10`. The program's own `val` and `residual` stay, each now the one
-    # binding of its name.
+    # Not `residual @ main.rs:9`, `residual @ main.rs:11`, `val @ main.rs:9` and
+    # `val @ main.rs:10`: the program's own `val` and `residual` stay, each the one binding
+    # of its name.
     assert parse["names"] == ["cents", "residual", "text", "val"], parse
     assert parse["types"]["residual"] == "i64" and parse["types"]["val"] == "i64", parse
     # A `val` of the program's on a line with a `?`: the line's two `val`s, which Peeky

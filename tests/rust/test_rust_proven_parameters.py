@@ -1,6 +1,7 @@
-"""The tenth agent evaluation's Rust Lows on real builds: `describe` lists the bindings a
-`?` desugars to (prep 7), and a refused change through a `for` loop's item said to change
-it "before the call that passed it", though no call passed it (prep 9)."""
+"""A refused change through a Rust reference or pointer gets the call advice ("before the
+call that passed it") only where it is proven a parameter at the stop: not a `for` loop's
+item, a local shadowing a parameter, a reborrow, or a parameter pointed elsewhere, by
+assignment, through `&mut` or by inline assembly. Real builds."""
 
 import json
 import os
@@ -128,9 +129,8 @@ def _refused(capsys, crate, marker, assignment):
 
 @pytest.mark.timeout(400)
 def test_a_loop_items_field_gives_no_call_advice(crate, capsys):
-    # kitty: `--set e.payer=0` in `settle` said "change the value where it is owned,
-    # before the call that passed it: `--at <call line> …`"; `e` is a `for` item over a
-    # slice, whose elements Peeky never changes.
+    # `e` in `settle` is a `for` item over a slice, whose elements Peeky never changes: no
+    # "change the value where it is owned, before the call that passed it".
     error = _refused(capsys, crate, "ITEM", "e.cents=0")
     assert error["code"] == "MUTATION_REJECTED", error
     message = error["message"]
@@ -151,8 +151,8 @@ NO_CALL = "if what it points at is also a root local in some frame, change it th
 
 @pytest.mark.timeout(400)
 def test_a_local_shadowing_a_parameter_is_not_taken_for_it(crate, capsys):
-    # Review of #276: `let p = &mut own;` shadows the parameter `p`; the MIR binds `p`
-    # twice, and pooling them called the inner one a parameter.
+    # `let p = &mut own;` shadows the parameter `p`; the MIR binds `p` twice, and the inner
+    # one is no parameter.
     error = _refused(capsys, crate, "SHADOWED", "p.y=0")
     message = error["message"]
     assert f"`p` is a local here, not a parameter, so no call passed it: {NO_CALL}" in message
@@ -175,15 +175,15 @@ def test_a_local_shadowing_a_parameter_is_not_taken_for_it(crate, capsys):
 @pytest.mark.timeout(400)
 @pytest.mark.parametrize("marker", ["REDIRECTED", "AIMED"])
 def test_a_parameter_pointed_elsewhere_gets_no_call_claim(crate, capsys, marker):
-    # Review round 2 of #276: `p = &GLOBAL;` (or a write through `&mut p`) before the
-    # stop, and `p` was still called a parameter.
+    # `p = &GLOBAL;` (or a write through `&mut p`) before the stop: `p` is no longer what
+    # the caller passed.
     error = _refused(capsys, crate, marker, "p.y=0")
     message = error["message"]
     assert f"`p` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in message
     assert "before the call" not in message and "call" not in error["hint"], error
 
 
-# Review round 2 of #276: a crate's own `trait Iterator`, implemented for the standard
+# A crate's own `trait Iterator`, implemented for the standard
 # slice iterator, is dumped `<std::slice::Iter<'_, Pair> as Iterator>::next` too, and
 # its `next` may return any reference.
 OWN_ITERATOR = """struct Pair {
@@ -239,7 +239,7 @@ def test_an_item_of_a_crates_own_iterator_trait_is_no_slice_element(crate, capsy
     assert "slice or Vec" not in message, message
 
 
-# Review round 3 of #276: `asm!` with `inout(reg) p` writes the parameter, and the MIR
+# `asm!` with `inout(reg) p` writes the parameter, and the MIR
 # shows it only as an operand (`inout(reg) copy _1 => _1`): no assignment, no `&mut`.
 # `mov {0}, {0}` is the same text on x86-64 and AArch64.
 ASM = """use std::arch::asm;

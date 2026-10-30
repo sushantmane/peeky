@@ -1,7 +1,8 @@
-"""`--set-at LINE@all` on a launched JVM (#265): Peeky changes an eligible program-owned
+"""`--set-at LINE@all` on a launched JVM: Peeky changes an eligible program-owned
 instance field through a Java parameter's reference, so the line reached only when the input
-agrees with the accepted level, in `settle`, takes the change at each of its stops: the tenth
-evaluation's debounce, in Java, tested in one option."""
+agrees with the accepted level, in `settle`, takes the change at each of its stops: a
+debounce, in Java, tested in one option. A char written with the value already there is no
+change."""
 
 import json
 import os
@@ -137,8 +138,8 @@ public class Chars {
 
 @pytest.mark.timeout(120)
 def test_a_char_write_of_the_value_already_there_is_no_change(tmp_path, monkeypatch, capsys):
-    # Review of PR #314: java-debug shows a char bare (`+`), so `set sign: + -> +` was
-    # counted as a change. A change carries its value's type, which decides it, for a
+    # java-debug shows a char bare (`+`), so `set sign: + -> +` reads as no change only by
+    # its type: a change carries its value's type, which decides it, for a
     # root local and for a field alike.
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
     if not bundle:

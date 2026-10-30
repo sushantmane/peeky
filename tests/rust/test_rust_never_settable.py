@@ -1,4 +1,4 @@
-"""#138: a `--set` no stop of the build can apply (a Rust local the IR keeps in a
+"""A `--set` no stop of the build can apply (a Rust local the IR keeps in a
 register, a field through a reference) is refused before the program runs, and rows and
 `describe` say which locals are never settable."""
 
@@ -24,7 +24,7 @@ version = 4
 name = "{name}"
 version = "0.1.0"
 """
-# The sixth evaluation's `limiter` (by-value parameters in registers even at opt-level 0).
+# `limiter`: by-value parameters in registers even at opt-level 0.
 LIMITER = """use std::env;
 
 #[derive(Debug, Clone, Copy)]
@@ -128,14 +128,14 @@ def refused_before_launch(result, code="MUTATION_REJECTED"):
 
 @pytest.mark.timeout(300)
 def test_a_register_parameter_is_refused_before_the_run_and_marked(tmp_path, state, capsys):
-    # Sixth evaluation (#138): `--set width=9 --set-hit 3` ran to hit 3, then was refused
-    # ("kept in a register ... settable here: none"), and the run's output was lost.
+    # `--set width=9 --set-hit 3` is refused before the run, not at hit 3 ("kept in a
+    # register ... settable here: none"), where the run's output would be lost.
     crate = crate_at(tmp_path, "limiter", LIMITER)
     at, run = line_of(LIMITER, "// ALLOW"), ["--arg", "2", "--arg", "10", "--arg", "0,1,10,11"]
     code, result = probe(
         capsys, crate, at, *run, "--hits", "3", "--set", "width=9", "--set-hit", "3"
     )
-    # A refusal exits 2 (seventh evaluation, finding 14).
+    # A refusal exits 2.
     assert code == 2
     message = refused_before_launch(result)
     assert "in limiter::allow, `width` is a parameter kept in a register" in message, message
@@ -187,10 +187,10 @@ def test_only_what_fails_in_every_function_on_the_line_is_refused_before_the_run
     assert "{closure#0} has no local `offset`" in message, message
     # `factor` is in memory in `scale` (the closure borrows it), but `total` holds what was
     # computed from it, and `scale` never reads the argument by value again before it
-    # returns (#330): refused in both.
+    # returns: refused in both.
     code, result = probe(capsys, crate, shared, "--capture", "factor", "--set", "factor=3")
     message = refused_before_launch(result)
-    # The closure reaches `factor` through its capture, a pointer (#335): not proven in memory.
+    # The closure reaches `factor` through its capture, a pointer: not proven in memory.
     assert "in scale::scale::{closure#0}, the build's IR doesn't prove `factor` in memory" in (
         message
     ), message
@@ -290,9 +290,8 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_an_index_is_judged_as_the_stop_reads_it(tmp_path, state, capsys):
-    # Review of #138: `sp[-1].end` and `sp[01].end` change `sp[1].end` at the stop (the
-    # walk counts `-1` from the array's end and reads `01` as 1), but were refused before
-    # the run ("`sp` is an array: select an element as `sp[0]`").
+    # `sp[-1].end` and `sp[01].end` change `sp[1].end` at the stop (the walk counts `-1`
+    # from the array's end and reads `01` as 1), so they are not refused before the run.
     crate = crate_at(tmp_path, "shapes", SHAPES)
     at = line_of(SHAPES, "// ARR")
     for selector in ("sp[-1].end", "sp[01].end"):
@@ -310,9 +309,9 @@ def test_an_index_is_judged_as_the_stop_reads_it(tmp_path, state, capsys):
 
 @pytest.mark.timeout(400)
 def test_a_local_an_async_body_keeps_across_an_await_says_so(tmp_path, state, capsys):
-    # Review of #138: `k`, black-boxed but kept in the future's state across the
-    # `.await`, was refused as "kept in a register" with `black_box` advice that cannot
-    # help: the poll reaches it through a pointer at every stop of the body.
+    # `k`, black-boxed but kept in the future's state across the `.await`, is not refused
+    # as "kept in a register" with `black_box` advice that cannot help: the poll reaches it
+    # through a pointer at every stop of the body.
     crate = crate_at(tmp_path, "shapes", SHAPES)
     at = line_of(SHAPES, "// ASYNC")
     code, result = probe(capsys, crate, at, "--set", "k=9")
@@ -381,9 +380,9 @@ pub fn far(a: u64) -> u64 {
 
 @pytest.mark.timeout(400)
 def test_the_binding_kept_in_a_register_is_named(tmp_path, state, capsys):
-    # Review of #138: the IR's proof covers every binding of a name, so `x @ main.rs:6`,
-    # black-boxed, was refused with advice to black-box it; so was `y` of an always-inlined
-    # function, which no `black_box` helps.
+    # The IR's proof covers every binding of a name: the refusal names the binding kept in
+    # a register, never advice to black-box `x @ main.rs:6`, already black-boxed, nor `y`
+    # of an always-inlined function, which no `black_box` helps.
     crate = crate_at(tmp_path, "bind", BINDINGS)
     (crate / "src/other.rs").write_text(OTHER)
     shadow = line_of(BINDINGS, "// SHADOW")
@@ -423,8 +422,8 @@ def test_the_binding_kept_in_a_register_is_named(tmp_path, state, capsys):
     assert "black_box(&mut y)" not in message and "Inlining prevents" in result["error"]["hint"]
     code = main(["probe", str(crate), "--at", f"src/other.rs:{far}", "--capture", "y", "--json"])
     assert json.loads(capsys.readouterr().out)["rows"][0]["not_settable"] == "inlined"
-    # `describe` gives the same reasons (review round 3), not "kept in a register", to
-    # each binding, by its selector as the rows name it (#206).
+    # `describe` gives the same reasons, not "kept in a register", to each binding, by its
+    # selector as the rows name it.
     assert main(["describe", str(crate)]) == 0
     out = capsys.readouterr().out
     mutable = next(line for line in out.splitlines() if line.startswith("mutable:"))
@@ -450,8 +449,8 @@ def test_settable_here_names_selectors_and_a_final_index_is_set_as_marked(tmp_pa
         "settable here: z @ main.rs:12, z @ main.rs:14 (root locals; fields too where rows "
         "mark them [settable])"
     ), message
-    # A final index read as `set` takes it (review of #138: marked [settable], then
-    # refused as "negative index ... only in a Java array" or "'[03]' is not a field").
+    # A final index read as `set` takes it: marked [settable], and not refused as "negative
+    # index ... only in a Java array" or "'[03]' is not a field".
     capture = "arr[-1],arr[03],nested[1][-1]"
     code, result = probe(capsys, crate, twins, "--capture", capture)
     assert all(row["settable"] is True for row in result["rows"]), result["rows"]
@@ -484,7 +483,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state, capsys):
-    # #138 with #106: a struct parameter kept in a register is previewed from what the
+    # A struct parameter kept in a register is previewed from what the
     # debugger shows; its fields read with the reason no stop changes them, as `set`
     # refuses them before the run. A struct kept in memory has [settable] fields.
     crate = crate_at(tmp_path, "previewed", PREVIEWED)
@@ -518,7 +517,7 @@ def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state,
 
 @pytest.mark.timeout(400)
 def test_a_set_at_is_judged_before_the_run_against_its_own_lines_functions(tmp_path, state, capsys):
-    # #137 with #138: each --set-at is judged before the run at its own line, by the same
+    # Each --set-at is judged before the run at its own line, by the same
     # rules as --set at the --at line, and a --set at the --at line only there.
     crate = crate_at(tmp_path, "scale", SCALE)
     loop, call = line_of(SCALE, "// LOOP"), line_of(SCALE, "// CALL")
@@ -590,8 +589,8 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_a_generics_instances_are_named_with_their_type_arguments(tmp_path, state, capsys):
-    # #151 review 2: `tf::<A>` and `tf::<B>` stop on line ADD in turn, and their frames
-    # differ only in a symbol hash, which the warning dropped (no warning at all).
+    # `tf::<A>` and `tf::<B>` stop on line ADD in turn, and their frames differ only in a
+    # symbol hash: the warning names each with its type arguments.
     crate = crate_at(tmp_path, "gen", GENERIC)
     add, call = line_of(GENERIC, "// ADD"), line_of(GENERIC, "// CALL")
     sets = ("--set-at", f"{add}@1", "k=500", "--set-at", f"{add}@2", "k=600")
@@ -651,8 +650,8 @@ CLOSURES = """fn main() {
 
 @pytest.mark.timeout(400)
 def test_long_instances_and_closures_are_labelled_apart(tmp_path, state, capsys):
-    # #151 review 3: two instances whose names were cut at the same 300 characters got
-    # the same label, with no mark of the cut; closures showed escaped symbol names.
+    # Two instances whose names are cut at the same 300 characters get labels apart, with
+    # a mark of the cut; closures show no escaped symbol names.
     crate = crate_at(tmp_path, "lg", LONG)
     bump, call = line_of(LONG, "// BUMP"), line_of(LONG, "// CALL")
     sets = ("--set-at", f"{bump}@1", "k=10", "--set-at", f"{bump}@2", "k=20")
@@ -701,13 +700,12 @@ def latest_rows(capsys, sql):
 
 @pytest.mark.timeout(400)
 def test_closure_and_instance_labels_are_found_in_sql(tmp_path, state, capsys):
-    # #151 review 4: the table showed `cz::main::{closure#0}` and `{closure#1}`, but the
-    # store kept no instance for captures, and its note's short_function(function) gives
-    # both closures one name (`cz::main::{{closure}}`); generic instances lost their types.
+    # The table shows `cz::main::{closure#0}` and `{closure#1}`, and the store keeps that
+    # instance for each capture: short_function(function), which the note uses, gives both
+    # closures one name (`cz::main::{{closure}}`). Generic instances keep their types.
     crate = crate_at(tmp_path, "cz", LABELLED)
     both, tag = line_of(LABELLED, "// BOTH"), line_of(LABELLED, "// TAG")
-    # The note comes with the state directory's first such table, never with --quiet
-    # (seventh evaluation, finding 8).
+    # The note comes with the state directory's first such table, never with --quiet.
     at = ["probe", str(crate), "--at", f"src/main.rs:{both}", "--capture", "i"]
     assert main([*at, "--hits", "5", "--quiet", "--no-save"]) == 0
     assert "note:" not in capsys.readouterr().out
@@ -733,7 +731,6 @@ def test_closure_and_instance_labels_are_found_in_sql(tmp_path, state, capsys):
     assert latest_rows(capsys, sql) == [{"names": 1, "instances": 2, "i16": 2}]
 
 
-# The evaluation's case, as the agent had it.
 MOVAVG = """use std::env;
 
 /// Rolling mean over the last `k` values, printed with one decimal after each value.
@@ -771,12 +768,12 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_describe_says_which_rust_locals_have_settable_fields(tmp_path, state, capsys):
-    # Finding 16: `describe`'s `mutable:` line listed only register-bound locals, not
-    # that `w.k` is settable.
+    # `describe`'s `mutable:` line says that `w.k` is settable, not only which locals are
+    # register-bound.
     crate = crate_at(tmp_path, "movavg", MOVAVG)
     assert main(["describe", str(crate)]) == 0
     (mutable,) = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
-    # #183: the paths themselves (`w.values`' elements are not settable).
+    # The paths themselves (`w.values`' elements are not settable).
     assert ": movavg::main: w.k, w.sum. Never settable" in mutable, mutable
     # `self` is a reference: its fields are not changed through it.
     assert "push: self" not in mutable.split("Never settable")[0], mutable

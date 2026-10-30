@@ -1,9 +1,8 @@
-"""#260 (the tenth evaluation's kitty): the elements of `friends: &mut [Friend]`, a live
-parameter, were never read, because `Friend` has a `name: String`. `friends[0].name` said
-to read it as a `&[T]` parameter, which it was; `friends.data_ptr.name` blamed the debug
-information. A closure's captured `&str` showed only LLDB's summary with no note, and a
-`Vec<&str>` the line moves got the Box note, and a shadowed binding's register reason.
-Also the tenth evaluation's address comparison across runs (rust-cookbook 4.8)."""
+"""The elements of `friends: &mut [Friend]`, a live parameter, read, though `Friend` has a
+`name: String`: `friends[0].name` reads, and `friends.data_ptr.name` blames no debug
+information. A closure's captured `&str` says why it shows only LLDB's summary, and a
+`Vec<&str>` the line moves gets neither the Box note nor a shadowed binding's register
+reason. Also an address comparison across runs (rust-cookbook 4.8)."""
 
 import json
 import os
@@ -229,7 +228,7 @@ def test_a_vec_of_str_the_line_moves_is_not_called_a_box(crate, capsys):
     assert shown.get("view") != "unproven" and "Box" not in shown["note"], shown
     assert f"does not prove `{vec}` initialized at this line" in shown["note"], shown
     assert "its items are references" in shown["note"], shown
-    # Its own length is its own storage: shown, with what it may be (#108).
+    # Its own length is its own storage: shown, with what it may be.
     assert rows[(1, f"{vec}.len")]["value"] == "3", rows[(1, f"{vec}.len")]
 
 
@@ -246,9 +245,9 @@ def test_a_vec_s_length_is_not_blamed_on_another_binding_of_its_name(crate, caps
 
 @pytest.mark.timeout(400)
 def test_two_runs_pointers_pair_by_their_offset_from_each_runs_base(crate, capsys):
-    # Eval 10: heap addresses differ per run, so kitty's agent matched the payers' pointers
-    # to the slots after the sort by `substr(value, -3)`. rust-cookbook 4.8's SQL pairs
-    # them by `address(value)` minus each run's lowest address.
+    # Heap addresses differ per run, so `substr(value, -3)` doesn't match the payers'
+    # pointers to the slots after the sort. rust-cookbook 4.8's SQL pairs them by
+    # `address(value)` minus each run's lowest address.
     payer = f"payer @ main.rs:{line_of('let payer = trip.friend(payer)?;')}"
     cents = f"cents @ main.rs:{line_of('let cents: i64')}"
     probe(capsys, crate, line_of("// BUILT"), f"{payer},{cents}", "--hits", "all")
@@ -303,8 +302,8 @@ fn main() {
 def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
     tmp_path, state, capsys
 ):
-    # Review of #260: on `decide`'s third call, `retain_friends`' `friends.len` read 3 with
-    # no note (the Vec ends with 2), and the note said to capture it for the length.
+    # On `decide`'s third call, `retain_friends`' `friends.len` is 3, mid-change (the Vec
+    # ends with 2): never read as its value, nor captured for the length.
     crate = crate_at(tmp_path, "retain", RETAIN)
     at = f"src/main.rs:{line_of('// DECIDE', RETAIN)}"
     assert main(["session", "start", str(crate), "--at", at]) == 0
@@ -340,7 +339,7 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
     assert "`slots` is a `&mut` parameter of a caller frame" in rows["slots"]["note"], rows
     assert "`friends` is a local of a caller frame" in owner["note"], owner
     assert "Capture" not in owner["note"] and owner.get("stale"), owner
-    # Its own length, selected directly, says why too (review round 2 of #260).
+    # Its own length, selected directly, says why too.
     assert owned_length["value"] == "3" and owned_length.get("stale"), owned_length
     assert owned_length["note"].startswith(
         "read through `friends`: `friends` is a local of a caller frame: Peeky doesn't check "
@@ -424,7 +423,7 @@ fn main() {
 def test_real_layouts_read_strings_and_scalars_and_withhold_every_other_field(
     tmp_path, state, capsys
 ):
-    # Review of #260: the compiler's own layout of a reordered generic struct with padding,
+    # The compiler's own layout of a reordered generic struct with padding,
     # a zero-sized field, an `Option<String>`, a `Box<str>`, a nested struct, a `char` and
     # a `u128`: what reads matches the program's own `{:?}`; the rest is withheld by type.
     crate = crate_at(tmp_path, "mixed", MIXED)

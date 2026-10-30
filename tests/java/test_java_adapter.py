@@ -77,7 +77,7 @@ public class BranchBug {
 def wait_for_exit(dap, timeout=30):
     """The JVM's exit: `terminated`/`exited`, or its announced pid gone.
 
-    java-debug can drop its exit events for a JVM that is gone (#27). The worker infers
+    java-debug can drop its exit events for a JVM that is gone. The worker infers
     the exit the same way (`debuggee_gone`); this test drives DAP directly, so it must too.
     Without a pid, or with the JVM still alive, it fails at the deadline.
     """
@@ -118,13 +118,13 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             "supportsSetVariable": True,
             "peekySteps": True,
             "peekyFieldSet": True,
-            # A launcher from #137 on: a String takes a text (older bundles say to rebuild).
+            # Where the launcher has it: a String takes a text (older bundles say to rebuild).
             **({"peekyTextSet": True} if b"peekyTextSet" in launcher.read_bytes() else {}),
-            # And from #183 on, a char takes a quoted char.
+            # A char takes a quoted char.
             **({"peekyCharSet": True} if b"peekyCharSet" in launcher.read_bytes() else {}),
-            # And from #204 on, each listed field's declaring class.
+            # Each listed field's declaring class.
             **({"peekyJdkOwners": True} if b"peekyJdkOwners" in launcher.read_bytes() else {}),
-            # And from #261 on, what holds an array, before its elements are marked.
+            # What holds an array, before its elements are marked.
             **(
                 {"peekyArrayHolders": True} if b"peekyArrayHolders" in launcher.read_bytes() else {}
             ),
@@ -205,7 +205,7 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
 
 
 def test_an_array_write_waits_no_longer_than_the_pause_budget_allows(bundle, tmp_path):
-    # #204, PR #210 review round 2: before writing an element the launcher has the JVM
+    # Before writing an element the launcher has the JVM
     # search its heap for what refers to the array, which nothing can interrupt; it waits
     # at most what the session's pause budget leaves, and refuses when that is too little.
     if (
@@ -267,7 +267,7 @@ public class Cells {
 
 def test_a_dropped_exit_event_is_inferred_only_when_the_jvm_is_gone():
     class Silent:
-        """An adapter that never sends an exit event (#27)."""
+        """An adapter that never sends an exit event."""
 
         def __init__(self, pid):
             self.debuggee_pid = pid
@@ -331,8 +331,8 @@ public class ResumeHarness {
 def test_a_jvm_the_launcher_cannot_resume_is_disconnected_and_ends_the_session(
     bundle, tmp_path, mode, resumed, calls
 ):
-    # #261 review round 2: the launcher took any failure to resume the JVM after a change
-    # for a disconnect, and could leave an attached JVM with every thread suspended.
+    # A failure to resume the JVM after a change is no disconnect, which would leave an
+    # attached JVM with every thread suspended.
     import re
 
     from peeky.java import JavaSession

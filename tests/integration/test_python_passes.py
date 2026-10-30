@@ -1,4 +1,4 @@
-"""#182 against real debugpy: a local the loop's current pass has not assigned yet."""
+"""Against real debugpy: a local the loop's current pass has not assigned yet."""
 
 import json
 
@@ -58,8 +58,8 @@ def rows(capsys, *selectors, frame=0):
 
 
 def test_a_local_the_pass_assigns_below_the_stop_is_noted_as_an_earlier_passs(program, capsys):
-    # Eighth evaluation: back in `group` with `step --out` on its second pass, `key`
-    # showed the first title's key, with nothing to say it is not this pass's.
+    # Back in `group` with `step --out` on its second pass, `key` holds the first title's
+    # key, and its note says it is not this pass's.
     assert run(capsys, "session", "start", program, "--at", SLUG)[0] == 0
     assert run(capsys, "session", "continue")[0] == 0
     # In `slug`, the caller's frame is on the call: the same holds there.
@@ -110,8 +110,8 @@ def test_probe_rows_carry_the_note_on_later_passes(program, capsys):
 
 
 def test_a_candidates_copy_is_judged_as_the_code_that_runs(program, capsys):
-    # The copy a candidate runs is written once the run has begun: it read as "changed
-    # after the program started", so nothing was noted (nor any global proven, #104).
+    # The copy a candidate runs is written once the run has begun, which is no "changed
+    # after the program started": it is judged as the code that runs.
     code, out = run(
         capsys,
         "probe",
@@ -134,7 +134,7 @@ def test_a_candidates_copy_is_judged_as_the_code_that_runs(program, capsys):
     assert second["value"] == "'hello-world'" and second["note"] == NOTE
 
 
-# Review of PR #185: each program shows, at the probe's second hit, a value the note
+# Each program shows, at the probe's second hit, a value the note
 # would have called an earlier pass's.
 REVIEWED = {
     # The function that runs is not the one on disk: here `x` is this pass's (20).
@@ -216,7 +216,7 @@ f([1, 2])
         4,
         "0",
     ),
-    # Round 3: the builtins reached by name replace the function as `exec` did.
+    # The builtins reached by name replace the function as `exec` did.
     "replaced_by_name": (
         """\
 def f(xs):
@@ -241,7 +241,7 @@ f([1, 2])
         5,
         "20",
     ),
-    # Round 2: a `with` whose `__exit__` swallows the exception rejoins the pass
+    # A `with` whose `__exit__` swallows the exception rejoins the pass
     # without the store.
     "suppressed": (
         """\
@@ -272,7 +272,7 @@ f([1, 2])
         18,
         "-1",
     ),
-    # Round 2: an `async for` that yields nothing ends through its exception handler.
+    # An `async for` that yields nothing ends through its exception handler.
     "drained": (
         """\
 import asyncio
@@ -318,7 +318,7 @@ def test_no_note_where_the_code_does_not_prove_it(tmp_path, monkeypatch, capsys,
 
 
 def test_a_loop_bodys_last_line_is_noted_where_a_breakpoint_stops(tmp_path, monkeypatch, capsys):
-    # Review of PR #185: `inner = x + y` also holds the jump back to its loop, after its
+    # `inner = x + y` also holds the jump back to its loop, after its
     # assignment; a breakpoint stops only where the line begins.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     path = tmp_path / "nested.py"
@@ -346,7 +346,7 @@ def test_a_loop_bodys_last_line_is_noted_where_a_breakpoint_stops(tmp_path, monk
 
 
 def test_a_handled_exceptions_assignment_is_named_too(tmp_path, monkeypatch, capsys):
-    # Review of PR #185 (round 3): the note named only the `try` body's `x = 1`; where
+    # The note named only the `try` body's `x = 1`; where
     # `fail()` raises, `except ValueError:` assigns it.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     path = tmp_path / "handled.py"

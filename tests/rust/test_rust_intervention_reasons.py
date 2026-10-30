@@ -1,5 +1,5 @@
-"""Rust interventions with their real reasons and what `describe` says can change
-(#183, eighth evaluation's `board`), on real builds."""
+"""Rust interventions with their real reasons and what `describe` says can change, on real
+builds."""
 
 import json
 import os
@@ -112,9 +112,9 @@ def probe(capsys, crate, line, capture, *argv):
 
 @pytest.mark.timeout(400)
 def test_a_loop_binding_is_changed_at_the_bodys_first_line(crate, capsys):
-    # `for entry in args`: at the body's first line, `entry` was refused as "a statement
+    # `for entry in args`: at the body's first line, `entry` is not refused as "a statement
     # under way at the stop has already read it into a temporary (... at its second
-    # line)": the iterator's `next()` result, made before `entry` took its value.
+    # line)": that is the iterator's `next()` result, made before `entry` took its value.
     code, result = probe(capsys, crate, line_of("ENTRY"), "entry", "--set", 'entry="zed:50"')
     if WRITES:
         assert code == 0, result.get("error")
@@ -375,14 +375,13 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_a_copy_in_the_programs_own_binding_blocks_the_change(crate, capsys):
-    # #192 review: copies into named bindings were not counted. A `match` arm's `n`, a
-    # `while let`'s `v`, `let y = x;` and a `move` closure each hold the old value the
-    # program goes on with, replacing or dropping `x` unread: `set x: … -> 50` was
-    # reported, and the output kept the old. Writing a part (`s.a = t;`) reads none.
-    # Round 2: reading another field (`x.a` for a change to `x.b`) or lending `&x` to a
-    # call that may never read it does not show the program saw the change either.
-    # Round 3: nor does a `format_args!` that is built and never formatted.
-    # #300 review round 3: `keep(&mut x)` after the copy may have changed `x`, so the
+    # Copies into named bindings count. A `match` arm's `n`, a `while let`'s `v`,
+    # `let y = x;` and a `move` closure each hold the old value the program goes on with,
+    # replacing or dropping `x` unread: `set x: … -> 50` would be reported while the output
+    # keeps the old. Writing a part (`s.a = t;`) reads none. Reading another field (`x.a`
+    # for a change to `x.b`) or lending `&x` to a call that may never read it does not
+    # show the program saw the change either; nor does a `format_args!` that is built and
+    # never formatted. `keep(&mut x)` after the copy may have changed `x`, so the
     # binding is said only to maybe hold a copy of it; with no such call, it has one.
     (crate / "src/main.rs").write_text(COPIES)
 
@@ -428,8 +427,8 @@ def test_a_copy_in_the_programs_own_binding_blocks_the_change(crate, capsys):
 
 @pytest.mark.timeout(400)
 def test_describe_walks_arrays_of_records_and_says_how_many_more(crate, capsys):
-    # #192 review: `grid.cells[*].n` (records inside an array field) was not listed, and
-    # a struct with more than 8 integer fields was cut short without a word.
+    # `grid.cells[*].n` (records inside an array field) is listed, and a struct with more
+    # than 8 integer fields says how many more.
     (crate / "src/main.rs").write_text(COPIES)
     assert main(["describe", str(crate)]) == 0
     [mutable] = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
@@ -502,9 +501,9 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_only_std_s_own_printing_counts_as_reading_a_value(crate, capsys):
-    # #192 review 4: a crate's own `src/library/std/src/macros.rs` and its own `fn
-    # format(_: Arguments) -> String` that formats nothing passed for std's `format!`:
-    # `set x: 1 -> 50` was reported, `x = y` put the old value back, and 1 was printed.
+    # A crate's own `src/library/std/src/macros.rs` and its own `fn format(_: Arguments) ->
+    # String` that formats nothing are not std's `format!`: `set x: 1 -> 50` would be
+    # reported, `x = y` put the old value back, and 1 be printed.
     (crate / "src/main.rs").write_text(SPOOF)
     (crate / "src/library/std/src").mkdir(parents=True)
     (crate / "src/library/std/src/macros.rs").write_text(SPOOF_MACROS)
@@ -516,7 +515,7 @@ def test_only_std_s_own_printing_counts_as_reading_a_value(crate, capsys):
     code = main([*at, "--set", "x=50", "--json", "--quiet"])
     result = json.loads(capsys.readouterr().out)
     assert code == 2 and result.get("refused_before_launch") is True, result
-    # `keep(&mut x)` since `let y = x;` may have changed `x` (#300 review round 3).
+    # `keep(&mut x)` since `let y = x;` may have changed `x`.
     maybe = "the program's own `y` (at line 19) may hold a copy of `x` that it goes on with"
     assert maybe in result["error"]["message"], result
     # std's own `println!` and `format!` (`std::fmt::format`, beside the crate's

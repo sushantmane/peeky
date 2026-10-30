@@ -1,4 +1,4 @@
-"""#27: inferring a dropped JVM exit must never end a live, thread-churning JVM."""
+"""Inferring a dropped JVM exit must never end a live, thread-churning JVM."""
 
 import os
 from pathlib import Path

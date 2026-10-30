@@ -1,8 +1,7 @@
-"""Rust Lows found preparing the twelfth agent evaluation, on real builds: a closure's
-capture of a struct with no pointer is withheld with a note that fits it, not one about
-memory it may own through a pointer; a small struct the program keeps in registers says
-so on its own row, as its fields do; and `describe`'s `verify:` line needs no `--at` for
-a one-file crate."""
+"""A Rust struct's row says what fits it, on real builds: a closure's capture of a struct
+with no pointer is withheld with a note that fits it, not one about memory it may own
+through a pointer; a small struct the program keeps in registers says so on its own row, as
+its fields do."""
 
 import json
 import os
@@ -146,7 +145,7 @@ def test_a_captured_struct_with_no_pointer_is_withheld_with_a_note_that_fits(cra
         assert "own memory through a pointer" not in row["note"], row
     # Probe rows mark it as `session inspect` does.
     assert "  [stale]" in _table(result), _table(result)
-    # Review of PR #335: the capture is declared through the closure's environment, not in
+    # The capture is declared through the closure's environment, not in
     # a register: its field says only that Peeky doesn't prove it in memory, and so does a
     # change's refusal.
     assert rows["lap.number"].get("not_settable") == "not proven in memory", rows["lap.number"]

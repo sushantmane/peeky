@@ -1,4 +1,4 @@
-"""Protocol v1 error codes and lifecycle conformance against real debugpy (issue #6)."""
+"""Protocol v1 error codes and lifecycle conformance against real debugpy."""
 
 import http.client
 import json
@@ -164,8 +164,8 @@ def test_classification_is_stable(exception, code, closed):
 
 
 def test_a_crashed_adapter_reaches_the_client_as_debugger_error_with_a_pause_budget(worker):
-    # Review round 5: the pause guard met the dead transport first, closed the session,
-    # and the client got NO_SESSION ("Missing or stale session_id") instead.
+    # The pause guard may meet the dead transport first and close the session: the client
+    # still gets DEBUGGER_ERROR, not NO_SESSION ("Missing or stale session_id").
     import os
     import signal
 
@@ -186,7 +186,7 @@ def test_a_crashed_adapter_reaches_the_client_as_debugger_error_with_a_pause_bud
 
 # Loaded by every Python process given its directory on PYTHONPATH: the debuggee
 # (`debugpy --connect …`) records its pid and hangs before pydevd can send `initialized`,
-# as a pydevd blocked listing a directory above the program does (#143).
+# as a pydevd blocked listing a directory above the program does.
 HANG_BEFORE_INITIALIZED = """
 import os, sys, time
 if os.environ.get("PEEKY_TEST_HANG") and "--connect" in sys.argv:
@@ -213,7 +213,7 @@ def test_a_python_program_that_never_starts_is_not_left_running(worker, monkeypa
         pids = [int(pid) for pid in record.read_text().split()]
         table = processes.table()
         # debugpy's launcher started it in a process group of its own: ending the
-        # adapter's group never reached it, and it was left to PID 1 before #143.
+        # adapter's group never reaches it, so Peeky ends it itself.
         assert len(pids) == 1 and not processes.alive(table.get(pids[0]))
         assert failure.error_code == "TIMEOUT" and failure.payload["session_closed"] is True
         assert failure.payload["message"].startswith("The debuggee did not start")
@@ -228,7 +228,7 @@ def test_a_python_program_that_never_starts_is_not_left_running(worker, monkeypa
 
 
 # The program starts a child in its process group and one in a session of its own, then
-# loops at the breakpoint (PR #147 review, `py1.py`).
+# loops at the breakpoint.
 FAMILY = """import subprocess, time
 same = subprocess.Popen(["sleep", "1001"])
 own = subprocess.Popen(["sleep", "1002"], start_new_session=True)
@@ -263,7 +263,7 @@ def test_what_a_python_program_started_is_ended_when_its_debugger_dies(worker):
         while not set(children) <= set(dap.family.kin):
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        # `kill -9`, unreaped as a crash leaves it: Peeky reaps it at close (PR #170).
+        # `kill -9`, unreaped as a crash leaves it: Peeky reaps it at close.
         os.kill(dap.process.pid, signal.SIGKILL)
         while dap._adapter_running():
             assert time.monotonic() < deadline + 5

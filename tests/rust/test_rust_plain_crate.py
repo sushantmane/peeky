@@ -109,7 +109,7 @@ def test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does(plain, capsys)
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "opts[0]", "--quiet")
     error = result["rows"][0]["error"]
     # The reason is the element type (an enum), not a guess about freed memory.
-    # As the program spells it (#183).
+    # As the program spells it.
     assert "does not read Vec<Option<u8>>'s elements" in error, error
     assert "freed" not in error
     # Reference locals of element types Peeky reads (as parameters) get no such note.
@@ -137,8 +137,8 @@ def test_a_crate_without_tests_is_verified_by_its_checker_alone(plain, capsys):
 
 @pytest.mark.timeout(300)
 def test_verify_baseline_builds_and_checks_the_unedited_crate(plain, capsys):
-    # Sixth evaluation, finding 5: whether the checker fails on the program as it is,
-    # before a fix's `passed: True` is trusted (an agent made a whitespace-only edit).
+    # Whether the checker fails on the program as it is, before a fix's `passed: True` is
+    # trusted (a whitespace-only edit passes a checker that never fails).
     common = ["verify", str(plain), "--check", str(plain / "check.py"), "--baseline"]
     code, result = run(capsys, *common)
     assert code == 1 and result["passed"] is False and result["baseline"] is True, result
@@ -204,7 +204,7 @@ def test_the_shape_is_documented_where_agents_read():
 
 @pytest.mark.timeout(300)
 def test_verify_timeout_bounds_the_cargo_tests_too(plain, capsys):
-    # Review of #94: the compiled tests always had 30 s, past any --timeout.
+    # The compiled tests get no fixed 30 s past --timeout.
     import time
 
     (plain / "tests").mkdir()
@@ -234,7 +234,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_char_containers_are_read_and_print_as_rust_does(plain, capsys):
-    # #90: Vec<char> and &[char] contents were never read.
+    # Vec<char> and &[char] contents are read.
     (plain / "src/main.rs").write_text(CHARVEC)
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") is None and not _reads_memory(plain, capsys):
         pytest.skip("this lldb-dap has no readMemory")
@@ -265,7 +265,7 @@ def _reads_memory(plain, capsys):
 
 @pytest.mark.timeout(300)
 def test_the_char_table_is_what_the_pinned_rust_prints():
-    # Review of #95: the table must come from the pinned toolchain itself; regenerate
+    # The table must come from the pinned toolchain itself; regenerate
     # it here and compare (scripts/rust_char_table.py).
     import importlib.util
 
@@ -304,7 +304,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_describe_merges_a_generic_functions_instantiations(plain, capsys):
-    # Review of #97: each instantiation was its own scope once types were listed.
+    # Each instantiation is not a scope of its own, with types listed.
     (plain / "src/main.rs").write_text(GENERIC)
     assert main(["describe", str(plain), "--json"]) == 0
     every = json.loads(capsys.readouterr().out)["scopes"]
@@ -383,7 +383,7 @@ SAME_NAMES = ("small", "letters", "wide", "sizes")
 
 @pytest.mark.timeout(300)
 def test_tuple_and_struct_elements_are_read_as_rust_prints_them(plain, capsys):
-    # #90: Vec and slice elements that are tuples or structs of scalars were never read.
+    # Vec and slice elements that are tuples or structs of scalars were never read.
     (plain / "src/main.rs").write_text(COMPOSITE)
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") is None and not _reads(plain, capsys, "runs"):
         pytest.skip("this lldb-dap has no readMemory")
@@ -408,7 +408,7 @@ def test_tuple_and_struct_elements_are_read_as_rust_prints_them(plain, capsys):
         "lengths[1].__0": ("-0.0", "f64"),
         "pairs[0].b": ("2", "u16"),
     }
-    # #260: a struct with a String field reads too, its text from memory.
+    # A struct with a String field reads too, its text from memory.
     assert rows["named"]["value"] == printed[2].rsplit(" ", 1)[0], rows["named"]
     code, result = run(
         capsys, "probe", str(plain), "--at", owned, "--capture", "named[0].name", "--quiet"
@@ -472,7 +472,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_same_named_structs_and_std_structs_are_never_decoded(plain, capsys):
-    # Review of #98: a function's own `Token` (with a String) shares its path with
+    # A function's own `Token` (with a String) shares its path with
     # `mod parse`'s, so its bytes were decoded with the other's fields; std's `Range`
     # and `Wrapping` were shown in derived style although they print as `1..5`, `250`.
     (plain / "src/main.rs").write_text(TWINS)
@@ -502,7 +502,7 @@ DROPPED = """fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_rust_reference_is_never_indexed_as_a_pointer(plain, capsys):
-    # Review of #100: LLDB shows `&i32` as `int *`; after `drop(v)` its pointee is
+    # LLDB shows `&i32` as `int *`; after `drop(v)` its pointee is
     # freed memory (here `w`'s 901), so `r[0]` must not read it as C's `*p`.
     (plain / "src/main.rs").write_text(DROPPED)
     at = f"src/main.rs:{line_of(DROPPED, 'HERE')}"
@@ -537,7 +537,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_moved_or_dropped_box_shows_only_its_pointer(plain, capsys):
-    # #101: after `consume(bp)` and `drop(bi)`, LLDB read the freed allocations as
+    # After `consume(bp)` and `drop(bi)`, LLDB read the freed allocations as
     # their contents (`again` reuses `bi`'s, so `bi` would show 555).
     (plain / "src/main.rs").write_text(BOXES)
     at = f"src/main.rs:{line_of(BOXES, 'HERE')}"
@@ -601,7 +601,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_boxes_in_parameters_closures_and_reused_names_are_gated(plain, capsys):
-    # Review of #103: a dropped Box parameter (MIR spells it `Box<Pt>`), a closure's
+    # A dropped Box parameter (MIR spells it `Box<Pt>`), a closure's
     # captured Box and a name bound twice read freed memory; a fresh Box right after
     # `Box::new` was hidden (LLVM quotes the inlined constructor's exit label).
     (plain / "src/main.rs").write_text(BOX_PLACES)
@@ -682,7 +682,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_references_stay_readable_and_a_gated_box_shows_only_its_address(plain, capsys):
-    # Verification of #103: references whose name is bound twice (two loops), or in an
+    # References whose name is bound twice (two loops), or in an
     # async body, were hidden; a dropped Box<u8>'s row kept LLDB's string summary, read
     # through the freed pointer (a later Box's bytes).
     (plain / "src/main.rs").write_text(BOX_REFS)
@@ -737,7 +737,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_boxes_in_unmangled_functions_and_closure_types_are_gated(plain, capsys):
-    # Verification of #103: a `#[no_mangle]` frame has no hash, which skipped the gate;
+    # A `#[no_mangle]` frame has no hash, which skipped the gate;
     # a captured `Box<dyn Fn>`'s MIR type holds `: ` (`{closure@src/main.rs:27:22: …}`),
     # which was misparsed.
     (plain / "src/main.rs").write_text(BOX_EDGES)
@@ -1130,13 +1130,13 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
-    # Verification of #103: a dropped Box held in a generic `T` or `P` was not gated
+    # A dropped Box held in a generic `T` or `P` was not gated
     # (the MIR says `T`); values captured by reference and arrays of fn pointers, which
     # LLDB names with a `*` inside, and an unmangled function's `&Pt` beside a closure,
     # were hidden.
     (plain / "src/macros.rs").write_text(BOX_MACROS)
-    # `#[unsafe(no_mangle)]` is unsafe code, after which no Box is read (review of
-    # #156): the live Boxes read in the crate without it, and the unmangled functions'
+    # `#[unsafe(no_mangle)]` is unsafe code, after which no Box is read: the
+    # live Boxes read in the crate without it, and the unmangled functions'
     # own cases are checked in the crate with it, below.
     (plain / "src/main.rs").write_text(BOX_GENERIC.replace("#[unsafe(no_mangle)]", "// mangled"))
     cases = {
@@ -1156,10 +1156,10 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         if value is None:
             assert whole["view"] == "unproven" and "value" not in field, (marker, result["rows"])
         else:
-            # Read, not gated: a `&Pt` held by `T` (a reference parameter) previews (#106).
+            # Read, not gated: a `&Pt` held by `T` (a reference parameter) previews.
             assert field["value"] == value, (marker, result["rows"])
             assert whole.get("view") in (None, "memory"), (marker, result["rows"])
-    # Verification of #103: a wide Box (`Box<str>`, which LLDB names itself) and a 2-D
+    # A wide Box (`Box<str>`, which LLDB names itself) and a 2-D
     # array Box (`unsigned char (*)[2][4]`) held by a generic `T`.
     for marker, capture in (
         ("DROPPED_WIDE", "w,s"),
@@ -1187,14 +1187,14 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     )
     rows = result["rows"]
     assert rows[0].get("value") == "2" and rows[2].get("value") == "10", rows
-    # Verification of #103: a captured `fn(&Pt)` (MIR: `for<'a> fn(&'a Pt) -> i64`) and
+    # A captured `fn(&Pt)` (MIR: `for<'a> fn(&'a Pt) -> i64`) and
     # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read
-    # (`p`, a `Pt`, previews: #106).
+    # (`p`, a `Pt`, previews).
     assert all(row.get("view") in (None, "memory") for row in rows), rows
     assert "px" in str(rows[3].get("value")), rows
     assert "not shown" not in str(rows[4].get("value")), rows
     # A Box bound to the same name in a sibling block does not hide an integer or an
-    # array of integers (verification of #103).
+    # array of integers.
     for marker, capture, value in (
         ("REBOUND_INT", "v", "5"),
         ("REBOUND_ARRAY", "a[1]", "22"),
@@ -1206,7 +1206,7 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// REBOUND_FN')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "op", "--quiet")
     assert "make" in str(result["rows"][0].get("value")), result["rows"]
-    # Verification of #103: a reference was hidden when its name had another binding
+    # A reference was hidden when its name had another binding
     # anywhere in the function: one `println!` binds (`args`), a later shadowing `let`, a
     # sibling block, a later `let` after a loop, an inner block's. Only the bindings in
     # scope on the stop line count; a Box bound twice is proven by the one in scope.
@@ -1221,18 +1221,18 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
         assert result["rows"][0].get("value") == value, (marker, result["rows"])
-    # Verification of #103: `eprintln!`'s code runs on its line in the dropped Box's
+    # `eprintln!`'s code runs on its line in the dropped Box's
     # block, with spans in std's macros.rs, so no statement of this file shows that scope:
     # a line that may invoke a macro keeps every binding.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// MACRO_SIBLING')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
-    # Verification of #103: `.get()` on its own line runs in the dropped Box's block,
+    # `.get()` on its own line runs in the dropped Box's block,
     # while its statement's span starts at `KEPT` on the line before.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAIN')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
-    # Verification of #103: a block's `()` value (the whole `if let` block's span) put
+    # A block's `()` value (the whole `if let` block's span) put
     # the binding's scope on `} else if b.x > 0`, hiding the parameter; and an unmangled
     # frame's bodies were picked by spans starting on the line, so `.get()`'s line found
     # only a nested `fn`'s `&Pt` binding of the name.
@@ -1242,13 +1242,13 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAINED_EXPORT')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
-    # Verification of #103: the outer async body's spans cover the nested `async { }`
+    # The outer async body's spans cover the nested `async { }`
     # block's lines, so its `p: Box<Pt>` hid the inner `p: &Pt`; the frame's own shape
     # (`outer_async::{{closure}}::{{closure}}`) picks the body.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// NESTED_ASYNC')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--quiet")
     assert result["rows"][0].get("value") == "3", result["rows"]
-    # Verification of #103: an unmangled frame stopped in a macro from another file
+    # An unmangled frame stopped in a macro from another file
     # found only that file's bodies (a `peer(b: &Pt)`), not its own; and a `fn` nested in
     # an async body (`twin_a::{{closure}}::tw`) was taken for a closure, so its own body
     # was skipped for the async bodies' `b: &Pt`.
@@ -1261,7 +1261,7 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     )
     read = [row.get("value") for row in result["rows"] if row["selector"] == "b.x"]
     assert read and all(value in (None, "41") for value in read), result["rows"]
-    # #110: a reference or raw pointer into a dropped Box or Vec read freed memory
+    # A reference or raw pointer into a dropped Box or Vec read freed memory
     # through the address the Box's own row hid; a reference reads only where the code
     # still uses it, a raw pointer never. A reference parameter's referent is outside
     # the frame.
@@ -1302,7 +1302,7 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     assert "view" not in g and "px" in str(g.get("value")), result["rows"]
     assert "view" not in hs and "not shown" not in str(hs.get("value")), result["rows"]
     # The crate with its unmangled functions (`#[unsafe(no_mangle)]`, unsafe code): their
-    # frames read as before, and a live Box shows only its pointer (review of #156).
+    # frames read as before, and a live Box shows only its pointer.
     (plain / "src/main.rs").write_text(BOX_GENERIC)
     for marker, capture, value in (("UNMANGLED", "p.x", "10"), ("CHAINED_EXPORT", "b", None)):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
@@ -1361,7 +1361,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_describe_reads_a_unit_full_of_std_generics(plain, capsys):
-    # Eval 5 (Rust): `describe` on this 37-line crate said "function names: unavailable
+    # `describe` on this 37-line crate said "function names: unavailable
     # (Native symbol metadata exceeds limit)": its unit holds every std generic it uses.
     (plain / "src/main.rs").write_text(SPANS)
     assert main(["describe", str(plain), "--json"]) == 0
@@ -1416,8 +1416,8 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_an_optimized_build_never_reads_a_box(plain):
-    # #111: optimized builds skipped the Box gate, so a dropped Box read freed memory
-    # (`b.x` 777). Their MIR now says what each binding is; nothing is ever proven
+    # An optimized build's dropped Box holds freed memory (`b.x` 777). Its MIR says what
+    # each binding is; nothing is ever proven
     # there, so a Box shows only its pointer and a reference reads.
     from peeky.probe import Probe, run_probe
     from peeky.rust import RustTarget
@@ -1637,8 +1637,8 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_references_read_only_while_their_target_stands(plain, capsys):
-    # #110: a reference or raw pointer into a moved, dropped, reassigned or reallocated
-    # value read freed memory. A reference now reads while the code still uses it (at a
+    # A reference or raw pointer into a moved, dropped, reassigned or reallocated value
+    # would read freed memory. A reference reads while the code still uses it (at a
     # breakpoint, on its last line too); otherwise only its address shows.
     (plain / "src/main.rs").write_text(REFERENCES)
     gated = {
@@ -1669,7 +1669,7 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
     at = f"src/main.rs:{line_of(REFERENCES, '// DEAD_FINE')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r.x", "--quiet")
     assert result["rows"][0].get("value") == "7", result["rows"]
-    # Verification of #110: a loop's later iteration reallocated the buffer a reference
+    # A loop's later iteration reallocated the buffer a reference
     # still pointed into, and drop glue (`t` beside a String) counted as a use.
     at = f"src/main.rs:{line_of(REFERENCES, '// LOOP_BACK')}"
     code, result = run(
@@ -1685,7 +1685,7 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--quiet")
     assert result["rows"][0].get("value") == "5", result["rows"]
     # `println!` declares variables of its own: LLDB stops in each of its lexical blocks,
-    # at one column; the stop's address tells them apart (#115), so the first reads.
+    # at one column; the stop's address tells them apart, so the first reads.
     at = f"src/main.rs:{line_of(REFERENCES, '// PRINTED')}"
     code, result = run(
         capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--hits", "3", "--quiet"
@@ -1747,8 +1747,8 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_callers_references_are_judged_as_the_stopped_frames_are(plain, capsys):
-    # #104 review: the #110 gate ran only in the innermost frame, so `--frame 1` read a
-    # reference into a dropped Box through freed memory (`r.x` showed 777).
+    # The reference gate runs in caller frames too: `--frame 1` would read a reference into
+    # a dropped Box through freed memory (`r.x` 777).
     (plain / "src/main.rs").write_text(CALLER_REFS)
     at = f"src/main.rs:{line_of(CALLER_REFS, '// CHURN')}"
     assert main(["session", "start", str(plain), "--at", at]) == 0
@@ -1902,11 +1902,10 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_references_read_only_where_their_stop_is_told_apart(plain, capsys):
-    # Verification of #110: where a breakpoint stops was guessed from the MIR alone, and
-    # wrong where a line has several lexical blocks (`assert_eq!`'s), an inlined call,
-    # or code on a method's own line; a name bound twice on a macro line, a literal
-    # `&str` written through `&mut`, and `NonNull` read freed memory. The stop's column
-    # and the IR's calls now place it.
+    # Where a breakpoint stops, guessed from the MIR alone, is wrong where a line has
+    # several lexical blocks (`assert_eq!`'s), an inlined call, or code on a method's own
+    # line; a name bound twice on a macro line, a literal `&str` written through `&mut`, and
+    # `NonNull` would read freed memory. The stop's column and the IR's calls place it.
     (plain / "src/main.rs").write_text(REVIEWED_REFS)
 
     def probe(marker, capture, hits="1"):
@@ -2076,16 +2075,16 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, capsys):
-    # Verification of #110 (round 4): a same-file macro with `#[collapse_debuginfo]` puts
+    # A same-file macro with `#[collapse_debuginfo]` puts
     # its code on the invoking line while its statements keep the macro's lines; a stop in
     # a macro from another module is in another file than its function. Both read freed
     # memory. A parameter written through, or holding references by value, was hidden.
     at = f"src/main.rs:{line_of(COLLAPSED_REFS, '// M4_COLLAPSED')}"
-    # Round 6: inside `cfg_attr` too.
+    # Inside `cfg_attr` too.
     attributes = (
         "#[collapse_debuginfo(yes)]",
         "#[cfg_attr(debug_assertions, collapse_debuginfo(yes))]",
-        # Round 7: after a comment on the same line.
+        # After a comment on the same line.
         "/* eat collapses */ #[collapse_debuginfo(yes)]",
     )
     for attribute in attributes:
@@ -2100,7 +2099,7 @@ def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, cap
     at = f"src/macros.rs:{line_of(MACRO_FILE, '// M4_IN_MACRO')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
-    # Round 5: a reference parameter the frame never reassigns is the caller's there too.
+    # A reference parameter the frame never reassigns is the caller's there too.
     code, result = run(
         capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--hits", "2", "--quiet"
     )
@@ -2110,7 +2109,7 @@ def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, cap
         ("M4_BUMP", "p.x", "8"),
         ("M4_VIEW", "v.p.x", "7"),
         ("M4_VIEW", "pair.__0.y", "8"),
-        # A comment naming the attribute is not the attribute (round 5).
+        # A comment naming the attribute is not the attribute.
         ("M4_SCORED", "item.x", "7"),
     ):
         at = f"src/main.rs:{line_of(PARAMETER_REFS, '// ' + marker)}"
@@ -2207,7 +2206,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_references_into_moved_box_contents_and_mid_replacement_values(plain, capsys):
-    # Verification of #110 (round 5): the built MIR moves out of a Box's contents through
+    # The built MIR moves out of a Box's contents through
     # a raw pointer made from it, so the Box looked initialized after `let d = bx.data;`;
     # and between `drop((*v))` and the store of `*v = new`, `v` points at a dropped value.
     (plain / "src/main.rs").write_text(DROPPED_INSIDE)
@@ -2233,7 +2232,7 @@ def test_references_into_moved_box_contents_and_mid_replacement_values(plain, ca
         capsys.readouterr()
     variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
     assert variables["v"].get("view") == "unproven", variables["v"]
-    # Round 6: a drop through a reborrow of it (`let w = &mut *v; *w = new`) too. The
+    # A drop through a reborrow of it (`let w = &mut *v; *w = new`) too. The
     # third drop is the reborrowed vector's (`replace_vec` dropped two).
     reborrow = line_of(DROPPED_INSIDE, "// M6_REBORROW")
     assert main(["session", "start", str(plain), "--at", at]) == 0
@@ -2409,7 +2408,7 @@ def _stepped_out_to(plain, capsys, at, continues, line, file="main.rs"):
 def test_references_through_nested_boxes_struct_fields_calls_and_big_functions(
     plain, capsys, monkeypatch
 ):
-    # Verification of #110 (round 7): a Box inside a Box is moved out of or dropped
+    # A Box inside a Box is moved out of or dropped
     # through a copy of it; a `&mut` stored in a struct or returned by a call aliases the
     # reference it came from; and the dataflow's budget gave up in a big function.
     (plain / "src/main.rs").write_text(ALIASED_DROPS)
@@ -2660,7 +2659,7 @@ macro_rules! swap_reset {
 
 @pytest.mark.timeout(600)
 def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files(plain, capsys):
-    # Verification of #110 (round 8): methods a macro generates are not told apart, so
+    # Methods a macro generates are not told apart, so
     # their references read as before; and a reference parameter dropped through in a
     # macro from another file (`*h = new`, `*c.borrow_mut() = new` through a shared
     # `&RefCell`) read its dropped value between the drop and the store.
@@ -2677,19 +2676,19 @@ def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files
         (0, ("macros.rs", "M8_RESET"), "h"),
         (1, ("macros.rs", "M8_SWAP"), "c"),
         (2, ("main.rs", "M8_SAME_CELL"), "c"),
-        # Round 9: a pointer stored into a slot through `&mut` (by `mem::swap`, or
+        # A pointer stored into a slot through `&mut` (by `mem::swap`, or
         # through a reference to the slot) makes the slot an alias.
         (3, ("main.rs", "M9_VIA_SWAP"), "v"),
         (4, ("main.rs", "M9_VIA_SLOT"), "v"),
         (5, ("macros.rs", "M9_SWAP_RESET"), "h"),
-        # Round 10: through a value made from the slot's borrow (a `Cell` or `RefCell`
+        # Through a value made from the slot's borrow (a `Cell` or `RefCell`
         # holding it, a method's `&mut` to it, a struct field, a closure capturing it).
         (6, ("main.rs", "M10_CELL"), "v"),
         (7, ("main.rs", "M10_REFCELL"), "v"),
         (8, ("main.rs", "M10_METHOD"), "v"),
         (9, ("main.rs", "M10_FIELD"), "v"),
         (10, ("main.rs", "M10_CLOSURE"), "v"),
-        # Round 11: inside a closure body, through its capture of a `&mut`.
+        # Inside a closure body, through its capture of a `&mut`.
         (11, ("main.rs", "M11_IN_CLOSURE"), "h"),
     ):
         text = CELL_MACROS if file == "macros.rs" else TWINS_AND_CELLS
@@ -2860,7 +2859,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_references_in_inlined_frames_and_async_bodies(plain, capsys):
-    # #116: frames the proof did not match read references as before, freed memory too:
+    # Frames the proof did not match read references as before, freed memory too:
     # an `#[inline(always)]` function's (no IR function of its own) and an async body's
     # (a coroutine: debug info names it `{async_fn#0}`, its MIR `{closure#0}`).
     (plain / "src/main.rs").write_text(UNMATCHED)
@@ -3036,7 +3035,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_a_macro_s_own_stops_are_told_apart_by_the_stop_address(plain, capsys):
-    # #115: `println!` and `assert_eq!` declare variables of their own; LLDB stops in each
+    # `println!` and `assert_eq!` declare variables of their own; LLDB stops in each
     # of their lexical blocks, all at the macro's column, so each stop was judged as any
     # of them, and a reference past its last use showed only its address at the first
     # stop too. The stop's address names its DWARF lexical block, so its MIR scope.
@@ -3191,7 +3190,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
-    # Review of #107: instantiations whose code differs (a per-type constant condition)
+    # Instantiations whose code differs (a per-type constant condition)
     # gave different block lines and were listed once each.
     (plain / "src/main.rs").write_text(GENERIC_SPANS)
     code, result = run(capsys, "describe", str(plain))
@@ -3201,11 +3200,11 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     assert first <= line_of(GENERIC_SPANS, "n += i;"), scopes
     assert last >= line_of(GENERIC_SPANS, "n += 100;"), scopes
     assert "_v" not in scopes[0]["spans"], scopes
-    # Review 2: a local macro's expansion runs on its definition's lines, which take no
+    # A local macro's expansion runs on its definition's lines, which take no
     # span from the blocks around it.
     scope = next(s for s in result["scopes"] if str(s.get("scope")).endswith("::with_macro"))
     assert {"i", "s", "total"} <= set(scope.get("spans", {})), scope
-    # Review 3: one defined below the function, past others, stretched its lines and
+    # One defined below the function, past others, stretched its lines and
     # spans over theirs.
     scopes = {str(s.get("scope")).rpartition("::")[2]: s for s in result["scopes"]}
     end = line_of(GENERIC_SPANS, "fn after(")
@@ -3214,14 +3213,14 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
         last < end for spans in scopes["below"].get("spans", {}).values() for _, last in spans
     ), scopes["below"]
     assert scopes["after"]["lines"][1] < line_of(GENERIC_SPANS, "macro_rules! half"), scopes
-    # Review 4: a macro defined inside the function keeps its lines (its expansion
+    # A macro defined inside the function keeps its lines (its expansion
     # stops there in this frame); a function a macro declares runs its argument's code
     # on the invoking line, past other functions, so its blocks give no span.
     # The loop header's line, between the expansion's and the body's, runs code outside
-    # the loop variable's block, so its lines are two spans (eval 6, finding 17). The
+    # the loop variable's block, so its lines are two spans. The
     # later one starts right after it: `let s = twice!(i);` has no code of its own (the
     # macro's is on its definition's line), and a stop there is made on the next line,
-    # in the block (review of the eval-6 fixes: it was left out).
+    # in the block.
     spans = scopes["inside"]["spans"]["i"]
     assert spans[0][0] <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
     body = line_of(GENERIC_SPANS, "let s = twice!(i);")
@@ -3404,7 +3403,7 @@ def _shown(row):
 
 @pytest.mark.timeout(600)
 def test_a_moved_or_dropped_aggregate_reads_nothing_through_its_pointers(plain, capsys):
-    # #108: a struct, tuple or array that owns a Box was read through its pointers after
+    # A struct, tuple or array that owns a Box was read through its pointers after
     # a move or drop (`h.b.x` showed the 777 `churn` allocated in the freed block).
     (plain / "src/main.rs").write_text(AGGREGATES)
     for marker in ("AG_DROPPED", "AG_CALL", "AG_LET", "AG_PARTIAL"):
@@ -3442,7 +3441,7 @@ def test_a_moved_or_dropped_aggregate_reads_nothing_through_its_pointers(plain, 
     expected = {"h.b.x": "5", "h.n": "10", "t.__0.x": "5", "t.__1": "4", "arr[1].b.x": "7"}
     assert {name: rows[name].get("value") for name in expected} == expected, rows
     assert rows["w.n"]["value"] == "3" and rows["w.label.length"]["value"] == "8", rows
-    # (A `Box<str>` field of a proven local is read from memory where it can be, #156.)
+    # (A `Box<str>` field of a proven local is read from memory where it can be.)
     assert not any(
         row.get("stale") or row.get("view") not in (None, "memory") for row in rows.values()
     ), rows
@@ -3450,7 +3449,7 @@ def test_a_moved_or_dropped_aggregate_reads_nothing_through_its_pointers(plain, 
 
 @pytest.mark.timeout(600)
 def test_session_listings_of_moved_aggregates_and_callers_aggregates(plain, capsys):
-    # #108: `session get h` listed `h.b` as expandable into freed memory, in the stopped
+    # `session get h` listed `h.b` as expandable into freed memory, in the stopped
     # frame and in its callers' (`--frame N`).
     (plain / "src/main.rs").write_text(AGGREGATES)
     at = f"src/main.rs:{line_of(AGGREGATES, '// AG_DROPPED')}"
@@ -3507,7 +3506,7 @@ def test_session_listings_of_moved_aggregates_and_callers_aggregates(plain, caps
 
 @pytest.mark.timeout(600)
 def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
-    # Review of #108: `h.b = new` drops the old Box in place (`drop((_1.1: Box<Pt>))`),
+    # `h.b = new` drops the old Box in place (`drop((_1.1: Box<Pt>))`),
     # then stores the new one there; the drop alone left `h` stale after the store.
     (plain / "src/main.rs").write_text(AGGREGATES)
     capture = "h,h.b.x,h.b.y,h.n,w,w.n,w.v.len,w.s,w.label.length,arr[0].b.x,arr[1].b.x,arr[1].n"
@@ -3524,7 +3523,7 @@ def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
         "arr[1].n": "12",
     }
     assert {name: rows[name].get("value") for name in expected} == expected, rows
-    # The String field of a proven local is read from memory where it can be (#156).
+    # The String field of a proven local is read from memory where it can be.
     if rows["w.s"].get("view") == "memory":
         assert rows["w.s"]["value"] == '"changed"', rows
     assert not any(
@@ -3656,7 +3655,7 @@ PREVIEWED = ("s", "p", "small", "letters", "pair", "mark", "mixed", "single", "t
 
 @pytest.mark.timeout(600)
 def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
-    # #106: a struct local showed `chars::Span @ 0x…` (a reference parameter its
+    # A struct local showed `chars::Span @ 0x…` (a reference parameter its
     # address) while a Vec of them read `[Span { start: 1, end: 10 }]`.
     (plain / "src/main.rs").write_text(PREVIEWS)
     if not _reads_memory_here(plain, capsys):
@@ -3675,7 +3674,7 @@ def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
     # before, and their fields still read.
     for name in ("rect", "packed", "tok", "named"):
         assert "view" not in rows[name] and " @ 0x" in rows[name]["value"], rows[name]
-    # Moved (`consume(o)`): never previewed, and marked (#108).
+    # Moved (`consume(o)`): never previewed, and marked.
     assert "view" not in rows["o"] and rows["o"].get("stale"), rows["o"]
     picked = {name: (rows[name]["value"], rows[name]["type"]) for name in fields.split(",")}
     assert picked == {
@@ -3686,12 +3685,12 @@ def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
         "mixed.f": ("0.1", "f32"),
         "mixed.u": ("255", "u8"),
         "small.b": ("-2", "i8"),
-        # A raw field's Rust type too, from the debug information (seventh evaluation, 18).
+        # A raw field's Rust type too, from the debug information.
         "rect.a.end": ("3", "usize"),
         "tok.end": ("3", "u32"),
         "named.n": ("1", "i32"),
     }
-    # A field keeps LLDB's name beside the Rust one, raw or previewed (review of PR #165).
+    # A field keeps LLDB's name beside the Rust one, raw or previewed.
     assert rows["named.n"]["debugger_type"] == "int"
     assert rows["s.start"]["debugger_type"] == "unsigned long", rows["s.start"]
     # Not yet assigned (`later` on its assignment's line): no preview.
@@ -3734,7 +3733,7 @@ def test_reference_parameters_preview_and_callers_locals_do_not(plain, capsys):
         # The innermost frame's inspection lists previews with their marker.
         assert main(["session", "inspect", "--frame", "1"]) == 0
         text = capsys.readouterr().out
-        # Its Rust type, from the build's IR (sixth evaluation, finding 13).
+        # Its Rust type, from the build's IR.
         assert "s: &chars::Span = Span { start: 2, end: 3 }  [memory]" in text, text
     finally:
         main(["session", "close"])
@@ -3810,7 +3809,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_a_generic_bodys_types_are_never_taken_for_the_frames(plain, capsys):
-    # Review of #106: the MIR of a generic body declares `Pair<i8>` where `i8` is a type
+    # The MIR of a generic body declares `Pair<i8>` where `i8` is a type
     # parameter; called with chars, `p` showed `Pair { a: 65, b: 0 }` from `Pair<i8>`'s
     # layout, `t` `(67, 0)`, and the Vec `v` its elements likewise.
     (plain / "src/main.rs").write_text(GENERIC_PREVIEWS)
@@ -3845,13 +3844,13 @@ def test_a_generic_bodys_types_are_never_taken_for_the_frames(plain, capsys):
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "x", "--quiet")
     row = result["rows"][0]
     assert row["value"] == "7" and row["type"] != "u64", row
-    # #108: a type parameter named `i64` holding a struct that owns a Box, dropped: it
+    # A type parameter named `i64` holding a struct that owns a Box, dropped: it
     # read the freed Box (`h.b.x` showed 777).
     at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_KEEP')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "h,h.b.x", "--quiet")
     whole, field = result["rows"]
     # Nothing read through the freed Box in any part of the row but `function`, whose Rust
-    # symbol hash changes with each build and held `777` once in ~300 (#193).
+    # symbol hash changes with each build and held `777` once in ~300.
     read = {key: value for key, value in field.items() if key != "function"}
     assert whole.get("stale") and "value" not in field and "777" not in str(read), result["rows"]
 
@@ -3891,7 +3890,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_numbered_fields_and_packed_structs_are_never_previewed(plain, capsys):
-    # Review of #106: a struct whose fields are named `__0`, `__1` previewed as a tuple
+    # A struct whose fields are named `__0`, `__1` previewed as a tuple
     # struct (`Num(1, 2)`; it prints `Num { __0: 1, __1: 2 }`): the DWARF names a tuple
     # struct's fields so too. A source naming such a field leaves every tuple struct
     # raw. A packed struct is never read, even where its fields fall aligned.
@@ -3941,7 +3940,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_fields_a_macro_names_like_a_tuples_are_never_previewed(plain, capsys):
-    # Review 2 of #106: `fields!(Num, __0, __1)` declares `Num { __0: u32, __1: u32 }`,
+    # `fields!(Num, __0, __1)` declares `Num { __0: u32, __1: u32 }`,
     # which previewed as `Num(1, 2)`: the source had no `__0:`, only the token.
     (plain / "src/main.rs").write_text(MACRO_NUMBERED)
     at = f"src/main.rs:{line_of(MACRO_NUMBERED, '// MN_STOP')}"
@@ -3991,7 +3990,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_const_generic_functions_keep_their_previews_and_rust_types(plain, capsys):
-    # Review 2 of #106: rustc names a const generic's instantiation `sum<3>` but lists no
+    # rustc names a const generic's instantiation `sum<3>` but lists no
     # template parameter for it, which was taken for a generic not understood: `n` lost
     # its `usize` and `s`, `w` their previews. A const argument is a value, never a type.
     (plain / "src/main.rs").write_text(CONST_GENERICS)
@@ -4077,7 +4076,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_a_twins_primitive_named_type_parameter_may_alias_a_reference(plain, capsys):
-    # Review 2 of #106: a macro's twins are matched to no function, so their type
+    # A macro's twins are matched to no function, so their type
     # parameters are unknown; their `u64` was taken for a pointerless integer, so the
     # drop through `w` (made from `v`) of `*w = new` was not seen as one through `v`, which
     # then read the dropped Vec between the drop and the store.
@@ -4120,9 +4119,9 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_nightly_feature_leaves_every_tuple_struct_unread(plain, capsys):
-    # Review 3 of #106: a macro concatenating `__` and `0` declares `Num { __0: u32, … }`
-    # with no `__0` token in the source, and it previewed as `Num(1, 2)`. Review 5: only
-    # a nightly feature does that (Peeky's builds allow them), so a crate enabling any
+    # A macro concatenating `__` and `0` declares `Num { __0: u32, … }`
+    # with no `__0` token in the source; previewed, it would be `Num(1, 2)`. Only a nightly
+    # feature does that (Peeky's builds allow them), so a crate enabling any
     # reads no tuple struct, `Two` neither (the MIR's aggregates, which had proved it,
     # name types by too short a path to be matched).
     (plain / "src/main.rs").write_text(CONCAT_NUMBERED)
@@ -4161,7 +4160,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_char_const_generic_keeps_its_previews_and_rust_types(plain, capsys):
-    # Review 3 of #106: rustc 1.96 names `ch::<'a'>` `ch<{CONST#27d96aba666aa2f7}>`, which
+    # rustc 1.96 names `ch::<'a'>` `ch<{CONST#27d96aba666aa2f7}>`, which
     # was taken for a generic not understood.
     (plain / "src/main.rs").write_text(CHAR_CONST)
     at = f"src/main.rs:{line_of(CHAR_CONST, '// CC_STOP')}"
@@ -4205,7 +4204,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_tuple_structs_the_mir_names_by_their_path_are_read(plain, capsys):
-    # Review 4 of #106: the MIR prints `m::Point(…)` where `Point` is not unique (`n`'s)
+    # The MIR prints `m::Point(…)` where `Point` is not unique (`n`'s)
     # and `m::Wrapping(…)` beside std's; the proof matched names alone, so these stayed
     # raw, `v` and `p` too, which main read.
     (plain / "src/main.rs").write_text(MODULE_TUPLES)
@@ -4254,10 +4253,10 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_root_tuple_struct_proves_nothing_for_a_same_named_one_elsewhere(plain, capsys):
-    # Review 4 of #106: the root `Num(3, 4)` proved the name `Num`, and `b::Num { __0: … }`
+    # The root `Num(3, 4)` proved the name `Num`, and `b::Num { __0: … }`
     # (named fields, which the DWARF cannot tell from a tuple struct's) was not counted,
-    # so `n` previewed as `Num(1, 2)`; the program prints `Num { __0: 1, __1: 2 }`. Since
-    # review 5 the crate's nightly feature leaves both unread.
+    # so `n` previewed as `Num(1, 2)`; the program prints `Num { __0: 1, __1: 2 }`. The
+    # crate's nightly feature leaves both unread.
     (plain / "src/main.rs").write_text(ROOT_AND_MODULE_NUM)
     at = f"src/main.rs:{line_of(ROOT_AND_MODULE_NUM, '// RM_STOP')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t,n,n.__0", "--quiet")
@@ -4266,7 +4265,7 @@ def test_a_root_tuple_struct_proves_nothing_for_a_same_named_one_elsewhere(plain
     assert "Num(3, 4) Num { __0: 1, __1: 2 }" in result["output"]
     assert rows["n"].get("view") != "memory" and "Num(" not in rows["n"]["value"], rows
     assert rows["n.__0"]["value"] == "1", rows
-    # A nightly feature: no tuple struct is read (review 5).
+    # A nightly feature: no tuple struct is read.
     assert rows["t"].get("view") != "memory" and "Num(" not in rows["t"]["value"], rows
 
 
@@ -4304,7 +4303,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_tuple_structs_read_whatever_path_the_mir_prints(plain, capsys):
-    # Review 5 of #106: the MIR prints a type from its nearest uniquely named ancestor
+    # The MIR prints a type from its nearest uniquely named ancestor
     # (`shapes::Point` for `geo::shapes::Point` beside `other::Point`) and raw identifiers
     # with `r#`, which the construction proof never matched: `g` was raw (main read it).
     # The locals' MIR types are printed so too.
@@ -4357,10 +4356,10 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_an_enum_variant_never_proves_a_struct_of_its_path(plain, capsys):
-    # Review 5 of #106: the MIR prints `a::Color::Red(1, 2)` as `Color::Red(…)`, the
+    # The MIR prints `a::Color::Red(1, 2)` as `Color::Red(…)`, the
     # DWARF path of `fn Color`'s own `Red { __0, __1 }` (built with `${concat}`, never by
     # an aggregate), so `r` previewed `Red(7, 8)`; the program prints
-    # `Red { __0: 7, __1: 8 }`. The crate's nightly feature now leaves it unread.
+    # `Red { __0: 7, __1: 8 }`. The crate's nightly feature leaves it unread.
     (plain / "src/main.rs").write_text(VARIANT_PATH)
     at = f"src/main.rs:{line_of(VARIANT_PATH, '// VP_STOP')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r,r.__1", "--quiet")
@@ -4412,7 +4411,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_fields_named_in_the_manifest_the_crate_includes_are_never_previewed(plain, capsys):
-    # Review 6 of #106: Cargo.toml is an input the compiler may read, and a TOML comment
+    # Cargo.toml is an input the compiler may read, and a TOML comment
     # is Rust: `include!("../Cargo.toml")` declared `Num { __0, __1 }` with no `__0` in a
     # scanned source, and `n` previewed `Num(1, 2)`, `v` `[Num(1, 2)]`.
     (plain / "Cargo.toml").write_text(INCLUDED_MANIFEST)
@@ -4519,7 +4518,7 @@ def _withheld(row, *words):
 
 @pytest.mark.timeout(600)
 def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, capsys):
-    # #132: a poll resumed after an `.await` showed its own copy of a parameter, which
+    # A poll resumed after an `.await` showed its own copy of a parameter, which
     # only the first poll assigns, as an ordinary value: whatever an earlier call left
     # in its slot (0xABABABAB here), beside the future's field holding 5. So did a local
     # the future does not keep across the `.await` (`tmp`, 105 in the first poll).
@@ -4540,11 +4539,11 @@ def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, caps
         assert _withheld(named["tmp"], "`.await`", "leftovers"), rows
         assert "evaluable" not in copy and "evaluable" not in named["tmp"], rows
         assert _withheld(named["trio"], "`.await`", "leftovers"), rows
-        # Never marked `[settable]`, and nothing in them is listed to be marked (#141).
+        # Never marked `[settable]`, and nothing in them is listed to be marked.
         for row in (copy, named["tmp"], named["trio"]):
             assert row["settable"] is False and row["variablesReference"] == 0, row
         # Nothing to change: the program assigns it before reading it again. Nor in an
-        # array or struct local withheld so (#105's changes to fields and elements).
+        # array or struct local withheld so.
         assert main(["session", "set", "tmp=7", "--json"]) != 0
         assert "has no value here" in capsys.readouterr().err
         assert main(["session", "set", "trio[0]=7", "--json"]) == 2
@@ -4556,7 +4555,7 @@ def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, caps
         found = {row["selector"]: row for row in found}
         assert "no value yet" in found["tmp"]["error"] and "`.await`" in found["tmp"]["error"]
         assert found["before"]["value"] == "10", found
-        # An element of a withheld local: no value, and never settable (#141's marks).
+        # An element of a withheld local: no value, and never settable.
         assert "has no value here" in found["trio[0]"]["error"], found
         assert found["tmp"]["settable"] is False and found["trio[0]"]["settable"] is False
         # A caller frame of the resumed poll (stopped in a function it calls): the same.
@@ -4580,7 +4579,7 @@ def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, caps
 
 @pytest.mark.timeout(600)
 def test_async_parameters_kept_across_an_await_and_plain_functions_read(plain, capsys):
-    # #132: what the future keeps across the `.await` reads as before: a parameter used
+    # What the future keeps across the `.await` reads as before: a parameter used
     # after it (both rows), and its saved locals. A parameter the body reassigns (`mut
     # n`) is in its own copy: the future's field holds only what the caller passed. In a
     # plain function, scalars read as before, and a `let` without a value is withheld
@@ -4663,7 +4662,7 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_async_locals_after_several_awaits_in_loops_closures_and_blocks(plain, capsys):
-    # #132: the same in a poll after several `.await`s, an `.await` in a loop, a name
+    # The same in a poll after several `.await`s, an `.await` in a loop, a name
     # shadowed after the `.await`, an async closure and an async block: what the future
     # keeps reads, what it does not is withheld.
     (plain / "src/main.rs").write_text(ASYNC_SHAPES)
@@ -4750,8 +4749,8 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_reference_parameters_show_their_rust_types(plain, capsys):
-    # Sixth evaluation, finding 13: a `&mut Window` parameter's type showed as LLDB's
-    # `limiter::Window *`. The build's IR declares each instantiation's own type.
+    # A `&mut Window` parameter's type is `&mut chars::Window`, not LLDB's
+    # `chars::Window *`: the build's IR declares each instantiation's own type.
     (plain / "src/main.rs").write_text(REFERENCE_TYPES)
     expected = {
         "RT_ALLOW": {
@@ -4762,7 +4761,7 @@ def test_reference_parameters_show_their_rust_types(plain, capsys):
         "RT_PEEK": {
             "w": ("&chars::Window", "chars::Window *"),
             "v": (
-                # As the program spells it (#183).
+                # As the program spells it.
                 "&Vec<u64>",
                 "alloc::vec::Vec<unsigned long, alloc::alloc::Global> *",
             ),
@@ -4811,8 +4810,8 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_describe_leaves_out_a_macros_own_bindings(plain, capsys):
-    # Sixth evaluation, finding 12: `describe` listed `println!`'s `args`
-    # (`core::fmt::rt::Argument[1]`, `(&usize)`) beside the program's own `args`.
+    # `describe` lists no `println!`'s `args` (`core::fmt::rt::Argument[1]`, `(&usize)`)
+    # beside the program's own `args`.
     (plain / "src/main.rs").write_text(MACRO_BINDINGS)
     code, result = run(capsys, "describe", str(plain))
     assert code == 0, result
@@ -4820,7 +4819,7 @@ def test_describe_leaves_out_a_macros_own_bindings(plain, capsys):
     vec = "alloc::vec::Vec<alloc::string::String, alloc::alloc::Global>"
     # The program's own: a parameter, a `let`, a tuple pattern and a closure's capture.
     assert types[("chars::count", 1)]["args"] == "&[alloc::string::String]", types
-    # Bound twice in `main`: each binding by its selector (#206), never `println!`'s.
+    # Bound twice in `main`: each binding by its selector, never `println!`'s.
     own = types[("chars::main", line_of(MACRO_BINDINGS, "fn main"))]
     assert own[f"args @ main.rs:{line_of(MACRO_BINDINGS, 'let args: Vec')}"] == vec, own
     assert own[f"args @ main.rs:{line_of(MACRO_BINDINGS, 'let (args2, args)')}"] == "i32", own
@@ -4858,7 +4857,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_describe_keeps_the_bindings_of_the_programs_own_collapsed_macro(plain, capsys):
-    # Review 1 of the sixth evaluation's PR: a `#[collapse_debuginfo(yes)]` macro of the
+    # A `#[collapse_debuginfo(yes)]` macro of the
     # crate's own has its bindings placed on the invoking line by the debug information
     # and on its definition's lines by the MIR, and `args` and `kind` are names std's
     # macros bind too: `helper` lost them.
@@ -4888,7 +4887,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_reference_to_a_byte_or_char_shows_its_address_not_a_c_string(plain, capsys):
-    # Review 1 of the sixth evaluation's PR: LLDB reads `&u8` (`unsigned char *`) and
+    # LLDB reads `&u8` (`unsigned char *`) and
     # `&char` (`char32_t *`) as C strings, `0x… "\\xc8\\xfd…"`: past the one value they
     # point at, unrelated memory, shown under a Rust type.
     (plain / "src/main.rs").write_text(BYTE_REFERENCES)
@@ -4937,7 +4936,7 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_saved_evidence_keeps_a_moved_locals_fields_stale(plain, capsys):
-    # Review of #139 (PR #145, round 1): `h.o` read `Some(40)` with `stale` and the
+    # `h.o` read `Some(40)` with `stale` and the
     # `active-variant` view; the store kept only the view, so `queries wide` showed it
     # plain while `h.n` was stale.
     (plain / "src/main.rs").write_text(MOVED_HOLDER)

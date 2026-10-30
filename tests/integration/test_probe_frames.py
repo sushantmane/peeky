@@ -1,4 +1,4 @@
-"""#382 against real debugpy: a probe's `1:i` reads `i` in the caller's frame, beside the
+"""Against real debugpy, a probe's `1:i` reads `i` in the caller's frame, beside the
 stopped frame's values, with the rules `session get --frame 1` applies, in one run."""
 
 import json
@@ -39,8 +39,8 @@ def run(capsys, *argv):
 
 
 def test_one_probe_reads_the_callers_iteration_beside_the_callees_value(program, capsys):
-    # Thirteenth evaluation: which pass of ward's loop each add_reading hit belonged to took
-    # a second probe at ward's line and a join of the two runs by hit number.
+    # Which pass of ward's loop each add_reading hit belongs to, in one probe, with no second
+    # probe at ward's line and join of the two runs by hit number.
     code, out = run(
         capsys, "probe", program, "--at", APPEND, "--hits", "all", "--json",
         "--capture", "reading,1:i,1:reading,1:last,2:readings,3:x",
