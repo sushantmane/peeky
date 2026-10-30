@@ -4928,8 +4928,9 @@ def run_probe(
                 returning.clear()
                 if state.get("exit_inferred"):
                     warnings.append(
-                        "The debugger never reported the program's exit (java-debug #27); "
-                        "with no threads left, it has ended, but its exit code is unknown. "
+                        "The debugger never reported the program's exit, as java-debug "
+                        "sometimes doesn't; with no threads left, it has ended, but its exit "
+                        "code is unknown. "
                         "The captured hits stand: nothing to do."
                     )
                 # A thread was seen paused at the breakpoint, but the debugger never
@@ -5451,7 +5452,7 @@ def run_probe(
                 f"thread {unreported.get('thread_name')!r} was seen paused at "
                 f"{unreported.get('breakpoint')} (in {unreported.get('function')} at "
                 f"{unreported.get('location')}), a stop the debugger never reported "
-                "(java-debug, issue #27)"
+                "(java-debug sometimes loses a stop event)"
             )
             if events := report.get("debugger_events"):
                 result["debugger_events"] = events
@@ -5462,7 +5463,7 @@ def run_probe(
                     "code": "DEBUGGER_ERROR",
                     "message": f"The program ended after {seen}; no values were read",
                     "hint": "The line did run; the debugger failed to report its stop. Retry "
-                    "the probe, and keep `debugger_events` for issue #27.",
+                    "the probe, and keep `debugger_events` for a bug report.",
                     "retryable": False,
                     "session_closed": True,
                 }

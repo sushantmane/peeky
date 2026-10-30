@@ -2125,7 +2125,8 @@ def _state_text(state, name="default", base=None):
         text += (
             f"\nnote: thread {unreported.get('thread_name')!r} was seen paused at "
             f"{unreported.get('breakpoint')}, but the debugger never reported that stop "
-            "(java-debug, issue #27); `peeky session report --json` has its debugger_events"
+            "(java-debug sometimes loses a stop event); `peeky session report --json` has its "
+            "debugger_events"
         )
     if state.get("note"):
         text += f"\nnote: {state['note']}"
