@@ -50,6 +50,25 @@ def cxx_is_gcc():
     return bool(compiler) and is_gcc(compiler)
 
 
+def default_cc():
+    """The C compiler a case builds with: PEEKY_NATIVE_CC, else the one Peeky picks
+    (`clang` or `clang-18` on the path, xcrun's on macOS), or None."""
+    if found := os.environ.get("PEEKY_NATIVE_CC"):
+        return found
+    from peeky.cli import native_tools
+
+    try:
+        return native_tools("c")["compiler"]
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def cc_is_gcc():
+    """Whether the C compiler cases build with is GCC."""
+    compiler = default_cc()
+    return bool(compiler) and is_gcc(compiler)
+
+
 def cxx_for(family):
     """The C++ compiler a case parametrized over ``family`` ("clang" or "gcc") builds with,
     or (None, why) to skip it. A lane builds each family's cases with its default C++

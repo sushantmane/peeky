@@ -1261,6 +1261,10 @@ Some things only look different:
   no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
   once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
   build, or above an inlined call, it stays withheld in a caller frame.
+- **A block's `extern`:** GCC describes it, so lldb-dap lists it apart, as `gcount @ main.c:11`,
+  beside the outer local, `gcount @ main.c:8`. Neither is plain `gcount`. The outer local's row
+  says `not what the code reads`. GCC gives the `extern` no location, so the debugger reads no
+  value for it, and it can't be changed.
 - **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
   is in read-only data, not in the frame. It reads as a `static` local does, and is never changed
   ([details](#read-a-static-local)).
@@ -1545,6 +1549,11 @@ until its `;` has run.
 - Peeky finds the end in the source, read as for caller frames ([5.1](#51-stop-look-change-finish)).
 - Where it can't find the end, the local is withheld.
 - A declaration below the stop whose own line has no code is placed by its elements' lines.
+- The compiler may run the later lines' code first, then store on the declaration's first line,
+  as GCC does for `struct outer o = {`. A stop on that first line, just after such code, is
+  withheld too. Peeky can't tell which code has run there, so the row says so.
+- In C++, a temporary's cleanup can run on the declaration's lines once the object is whole. So
+  the row says the local `may not be fully initialized yet`.
 
 A variable that a `for`, `if`, `while`, `switch` or `catch` header declares is different. It has
 run with its part of the header, so the body reads it.
