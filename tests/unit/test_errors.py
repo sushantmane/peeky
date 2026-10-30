@@ -1,8 +1,12 @@
 """Error classification: codes and hints."""
 
+import re
+from pathlib import Path
+
 import pytest
 
-from peeky.errors import Refused, classify
+import peeky
+from peeky.errors import ERROR_CODES, Refused, classify
 
 
 @pytest.mark.parametrize(
@@ -99,3 +103,17 @@ def test_a_python_sessions_field_set_hint_names_no_settable_rows():
         )
     )
     assert "[settable]" in old["hint"], old
+
+
+def test_every_code_the_sources_send_is_one_peeky_lists():
+    # The worker's `version` gives ERROR_CODES; a code sent outside the rules was left out.
+    source = "\n".join(
+        path.read_text() for path in sorted((Path(peeky.__file__).parent).rglob("*.py"))
+    )
+    sent = set(
+        re.findall(
+            r'(?:"code":\s*|Refused\(\s*|code, hint, retryable = \(?\s*)"([A-Z][A-Z_]+)"', source
+        )
+    )
+    assert {"BUILD_FAILED", "NO_STOP", "PROGRAM_CRASHED", "UNAUTHORIZED", "INTERNAL_ERROR"} <= sent
+    assert sent <= ERROR_CODES, sent - ERROR_CODES

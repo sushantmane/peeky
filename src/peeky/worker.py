@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
-from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
+from peeky.errors import ERROR_CODES, PROTOCOL_VERSION, UnplacedStop, classify
 from peeky.identifiers import (
     changeable,
     is_located,
@@ -7252,15 +7252,7 @@ def make_server(root, token, port=8765, *, adapter=None):
                         # Where its paths start: a remote client shows them as its own.
                         "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
-                        "error_codes": sorted(
-                            {rule[1] for rule in _RULES}
-                            | {
-                                "DEBUGGER_ERROR",
-                                "INVALID_REQUEST",
-                                "UNAUTHORIZED",
-                                "INTERNAL_ERROR",
-                            }
-                        ),
+                        "error_codes": sorted(ERROR_CODES),
                     }
                 elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
