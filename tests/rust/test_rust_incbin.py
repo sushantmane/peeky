@@ -1,4 +1,4 @@
-"""Inline assembly that reads a file is refused before building (#180), on a real Rust
+"""Inline assembly that reads a file is refused before building, on a real Rust
 build: `global_asm!`'s `.incbin` read a file rustc's dependency file does not list, so
 the program ran on bytes no provenance check covered (`blob=SECRET`). A `.incbin`
 string outside inline assembly builds as before."""

@@ -1,7 +1,6 @@
-"""#311 (found fixing #300): at `+ other();`, the second line of `let t = total(vec![x, 1])`,
-`x` was `[settable]`, and `--set x=100` reported the change, but `t` used the old value.
-`vec!` had stored `x`'s copy in its Box through a raw pointer, a store the copy analysis
-skipped. Now `x` is refused there with a true reason, and at the statement's first line a
+"""At `+ other();`, the second line of `let t = total(vec![x, 1])`, `vec!` has stored `x`'s
+copy in its Box through a raw pointer, so `--set x=100` would be reported while `t` uses the
+old value. `x` is refused there with a true reason, and at the statement's first line a
 change still reaches the program. The same holds for a String cloned into a `vec!`, and for
 a copy a raw pointer stores in the program's own array, which a later line reads."""
 
@@ -82,7 +81,7 @@ fn main() {
 }
 """
 
-# #311 review: a crate function's result, and writes a call or a pointer to memory no local
+# A crate function's result, and writes a call or a pointer to memory no local
 # stands for makes. `x` is never read again: `black_box(&x)` only lends it.
 CALLS = """use std::env;
 
@@ -161,7 +160,7 @@ fn main() {
 }
 """
 
-# Review round 2: what points at a copy, a pointer made through `Option<&mut u32>`, and a
+# What points at a copy, a pointer made through `Option<&mut u32>`, and a
 # standard type whose `&mut` does not show (`Entry`, `IterMut`).
 SHAPES = """use std::collections::HashMap;
 use std::env;
@@ -268,7 +267,7 @@ fn main() {
 }
 """
 
-# Review round 3: views that only read write no copy where they point.
+# Views that only read write no copy where they point.
 VIEWS = """use std::collections::BTreeMap;
 use std::env;
 
@@ -312,7 +311,7 @@ fn main() {
 
 
 # A struct holding a `&mut` (or a raw pointer, or a `&Cell`), passed by value, through
-# `&mut`, or through a shared `&` (#311 review round 4).
+# `&mut`, or through a shared `&`.
 HOLDS = """use std::cell::Cell;
 use std::env;
 
@@ -440,7 +439,7 @@ fn main() {
 
 
 # Crate types named like a cell or an atomic, and a standard `Cell` and `AtomicU32`, each
-# passed through a shared `&` (#311 review round 5).
+# passed through a shared `&`.
 NAMES = """use std::cell::Cell;
 use std::env;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -665,7 +664,7 @@ def test_writes_a_call_or_an_untraced_pointer_makes_withhold_the_local(crate, ca
 def test_a_copy_that_reaches_a_binding_by_a_call_or_a_pointer_withholds_the_local(crate, capsys):
     root = crate("shapes", SHAPES)
     # Not `s.push_str(&x.to_string())`: what a call given a pointer into `x` returns is
-    # no copy (#192, as `x.len()`), nor what it is stored into.
+    # no copy (as `x.len()`), nor what it is stored into.
     for marker, holder in (
         ("SLICED", "v"),
         ("LITERAL", "v"),

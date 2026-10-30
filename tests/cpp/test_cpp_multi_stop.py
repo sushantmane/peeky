@@ -1,4 +1,4 @@
-"""A C++ range `for` header stops more than once per pass (#157), on a real build: its
+"""A C++ range `for` header stops more than once per pass, on a real build: its
 range's code runs once, before the loop, and each element's binding at every pass, in
 blocks of their own, so LLDB places a location at each."""
 
@@ -51,7 +51,7 @@ def test_a_range_for_header_stops_once_before_the_loop_and_at_each_pass(ranged, 
     line = line_of("// RANGE_FOR")
     result = probe(ranged, capsys, line)
     if cxx == "gcc":
-        # GCC's range `for` header gets one breakpoint location, before the loop (#167):
+        # GCC's range `for` header gets one breakpoint location, before the loop:
         # one stop, which the loop-header warning says.
         assert result["hits"] == 1 and [row["value"] for row in result["rows"]] == ["0"]
         assert not [w for w in result["warnings"] if "times per pass" in w], result

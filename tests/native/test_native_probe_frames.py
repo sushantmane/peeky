@@ -1,4 +1,4 @@
-"""#382, on real builds: a probe's `1:pass` reads main's `pass` while add_reading runs, beside
+"""On real builds, a probe's `1:pass` reads main's `pass` while add_reading runs, beside
 add_reading's own values, in one run. A caller's local is withheld wherever `session get
 --frame 1` withholds it: below a call in its declaration, or a loop's own variable."""
 

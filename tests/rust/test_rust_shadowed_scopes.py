@@ -1,9 +1,9 @@
-"""#206: a Rust function binding a name twice (the ninth evaluation's roster: `entry` of a
-`match` arm and of a later loop, `points` the `Vec<String>` and a loop's `&&str`). A field
-of the loop's `entry` was withheld because the other `entry`, out of scope at the stop,
-has another type; and `describe` merged each pair into one name (`entry (roster::Entry
-or roster::Entry *, lines 61, 82)`), though lldb-dap lists them as `points @ main.rs:73`
-and `points @ main.rs:81` where both are in scope."""
+"""A Rust function binding a name twice (a roster: `entry` of a `match` arm and of a later
+loop, `points` the `Vec<String>` and a loop's `&&str`). A field of the loop's `entry` reads,
+though the other `entry`, out of scope at the stop, has another type; and `describe` lists
+each binding apart, not one name (`entry (roster::Entry or roster::Entry *, lines 61,
+82)`), as lldb-dap lists them as `points @ main.rs:73` and `points @ main.rs:81` where both
+are in scope. Nor does it list the bindings a `?` desugars to."""
 
 import json
 import os
@@ -158,7 +158,7 @@ def test_an_out_of_scope_namesake_does_not_withhold_a_field(tmp_path, state, cap
     name = rows[(1, "entry.name")]
     assert "several locals named" not in json.dumps(result), result
     if reads(name):
-        # Through `entry: &Entry`, used on the line itself (#110), as an owned one reads.
+        # Through `entry: &Entry`, used on the line itself, as an owned one reads.
         assert name["value"] == '"Renée"' and name["view"] == "memory", name
         assert rows[(1, "entry.city")]["value"] == '"Malmö"', rows
         assert rows[(2, "entry.name")]["value"] == '"Paul"', rows
@@ -201,8 +201,8 @@ TWICE = """fn main() {
 
 @pytest.mark.timeout(400)
 def test_two_bindings_on_one_line_are_not_selectable_by_line(tmp_path, state, capsys):
-    # PR #215 review: both `x` are `x @ main.rs:3`, which names neither: `describe` said
-    # `x @ main.rs:3 (alloc::string::String or usize)`, one apparent selector.
+    # Both `x` are `x @ main.rs:3`, which names neither: `describe` doesn't offer
+    # `x @ main.rs:3 (alloc::string::String or usize)` as one apparent selector.
     crate = crate_at(tmp_path, "twice", TWICE)
     assert main(["describe", str(crate)]) == 0
     out = capsys.readouterr().out
@@ -215,3 +215,96 @@ def test_two_bindings_on_one_line_are_not_selectable_by_line(tmp_path, state, ca
     error = rows[(1, f"x @ main.rs:{twice}")]["error"]
     assert "2 bindings on this line: not selectable by line" in error, error
     assert rows[(1, "n")]["value"] == "3", rows
+
+
+LEDGER = """use std::num::ParseIntError;
+
+struct Expense {
+    payer: *const i64,
+    cents: i64,
+}
+
+fn parse(text: &str) -> Result<i64, ParseIntError> {
+    let cents: i64 = text.trim().parse()?; // TRY
+    let val = cents + 1; // OWN_VAL
+    let residual = val * 2; // OWN_RESIDUAL
+    Ok(residual)
+}
+
+fn both(text: &str) -> Result<i64, ParseIntError> {
+    let val: i64 = text.parse()?; // SAME_LINE
+    Ok(val)
+}
+
+fn credit(e: &Expense) -> i64 {
+    e.cents + 1 // PARAM
+}
+
+struct Pair {
+    x: i64,
+    y: i64,
+}
+
+fn shadow(p: &mut Pair) -> i64 { // SIGNATURE
+    p.y += 1; // PARAM_USE
+    let q = &*p;
+    let seen = q.x; // COPY
+    let mut own = Pair { x: seen, y: 0 };
+    let p = &mut own; // INNER
+    p.y += 2; // SHADOWED
+    p.x + p.y
+}
+
+static GLOBAL: Pair = Pair { x: 7, y: 8 };
+
+fn redirect(mut p: &Pair) -> i64 {
+    let first = p.x;
+    p = &GLOBAL;
+    first + p.y // REDIRECTED
+}
+
+fn aimed(mut p: &Pair) -> i64 {
+    let first = p.x;
+    let slot = &mut p;
+    *slot = &GLOBAL;
+    first + p.y // AIMED
+}
+
+fn settle(expenses: &[Expense]) -> i64 {
+    let mut total = 0;
+    for e in expenses {
+        total += credit(e); // ITEM
+    }
+    total
+}
+
+fn main() {
+    let one = 1i64;
+    let expenses = vec![
+        Expense { payer: &one, cents: parse("4").unwrap_or(0) },
+        Expense { payer: &one, cents: both("x").unwrap_or(7) },
+    ];
+    let paid = settle(&expenses);
+    let mut pair = Pair { x: 3, y: 4 };
+    let shadowed = shadow(&mut pair) + redirect(&pair) + aimed(&pair);
+    println!("{} {} {} {}", paid, expenses[0].payer == expenses[1].payer, shadowed, pair.y);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_describe_leaves_out_what_a_question_mark_binds(tmp_path, state, capsys):
+    crate = crate_at(tmp_path, "ledger", LEDGER)
+    assert main(["describe", str(crate), "--json"]) == 0
+    scopes = {scope["scope"]: scope for scope in json.loads(capsys.readouterr().out)["scopes"]}
+    parse = scopes["ledger::parse"]
+    # Not `residual @ main.rs:9`, `residual @ main.rs:11`, `val @ main.rs:9` and
+    # `val @ main.rs:10`: the program's own `val` and `residual` stay, each the one binding
+    # of its name.
+    assert parse["names"] == ["cents", "residual", "text", "val"], parse
+    assert parse["types"]["residual"] == "i64" and parse["types"]["val"] == "i64", parse
+    # A `val` of the program's on a line with a `?`: the line's two `val`s, which Peeky
+    # can't tell apart by line, are both listed (shown when unsure); its `residual` is not.
+    same = scopes["ledger::both"]
+    assert "residual" not in json.dumps(same["names"]), same
+    assert any(name.startswith("val") for name in same["names"]), same

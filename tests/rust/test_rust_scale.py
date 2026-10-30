@@ -1,4 +1,4 @@
-"""A Rust crate a little bigger than the evaluations' (#397): 607 lines using HashMap,
+"""A larger Rust crate: 607 lines using HashMap,
 BTreeMap, BTreeSet, VecDeque and BinaryHeap (examples/large/rust-shop), whose own unit is
 33 MB of llvm-dwarfdump text. Peeky reads it as it is written."""
 

@@ -1,8 +1,8 @@
-"""A C loop header that stops only before its loop says so (#161), on real builds: a
+"""A C loop header that stops only before its loop says so, on real builds: a
 `for`/`while` header's one breakpoint location is its first code (`i = 0`, a jump to
 the condition), which runs once before the loop, never at the condition the loop
-returns to. `--at` on it with `--hits all` gave one row where an agent expected one per
-pass, with no word. Decided from the code (LLDB's disassembly), with clang and GCC."""
+returns to. `--at` on it with `--hits all` gives one row, not one per pass. Decided from
+the code (LLDB's disassembly), with clang and GCC."""
 
 import json
 import os
@@ -110,7 +110,7 @@ def test_a_loop_header_that_stops_only_before_its_loop_says_so(loops, capsys):
         # Once per start of its loop: the inner one starts at each outer pass.
         assert hits == (2 if marker == "INNER" else 1), (marker, seen[marker])
     # `for (;;)` and `do {` hold no code of their loop's header (a jump into it at most,
-    # which a `goto` is too: review of #166): no note, whether they stop once (clang) or
+    # which a `goto` is too): no note, whether they stop once (clang) or
     # move into the body (GCC).
     for marker in ("FOREVER", "DO_OPEN"):
         hits, notes, line = seen[marker]
@@ -141,8 +141,8 @@ def test_session_start_on_a_loop_header_says_it_stops_before_the_loop(loops, cap
         capsys.readouterr()
 
 
-# Review of #166: lines that run at each pass of a loop around them, where the note said
-# "never at the passes": a loop entered under a condition, a line holding a whole loop
+# Lines that run at each pass of a loop around them, where a note of "never at the
+# passes" would be wrong: a loop entered under a condition, a line holding a whole loop
 # (a statement macro's), a `goto` into a loop.
 AROUND = """#include <stdio.h>
 #define FILL(a, n, v) for (int i_ = 0; i_ < (n); i_++) (a)[i_] = (v)
@@ -194,8 +194,8 @@ def test_lines_at_each_pass_of_a_loop_around_them_get_no_note(loops, capsys):
     assert result["hits"] == 1 and [w for w in result["warnings"] if "is a loop header" in w]
 
 
-# Review 2 of #166: a location that runs only under a condition (`if (z) { int w = 5;
-# ... }` has a block of its own on the line) made "stops 3 times" stop twice.
+# A location that runs only under a condition (`if (z) { int w = 5; ... }` has a block of
+# its own on the line): the line's count of stops per pass is an upper bound.
 CONDITIONAL = """#include <stdio.h>
 int main(int argc, char **argv) {
     int total = 0, z = argc - 1;

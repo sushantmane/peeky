@@ -53,8 +53,8 @@ def test_a_rust_candidate_is_built_and_probed_without_touching_the_crate(crate, 
 
 @pytest.mark.timeout(300)
 def test_a_candidate_with_many_compile_errors_is_build_failed_with_rustcs_words(crate, capsys):
-    # Several errors and warnings pass 16 KB of Cargo JSON; that used to read as a
-    # possibly truncated diagnostic and fail as DEBUGGER_ERROR, with no compiler output.
+    # Several errors and warnings pass 16 KB of Cargo JSON, which is no truncated
+    # diagnostic: BUILD_FAILED with the compiler's output, not DEBUGGER_ERROR.
     source = crate / "src/main.rs"
     line = next(i for i, text in enumerate(source.read_text().splitlines(), 1) if "OBSERVE" in text)
     broken = "".join(f"let unused_{n} = 0usize; let bad_{n}: i64 = unused_{n};\n" for n in range(8))
@@ -76,7 +76,7 @@ def test_a_candidate_with_many_compile_errors_is_build_failed_with_rustcs_words(
         ]
     )
     result = json.loads(capsys.readouterr().out)
-    # Refused before the launch request (#190): exit 2, no table.
+    # Refused before the launch request: exit 2, no table.
     assert code == 2 and result["error"]["code"] == "BUILD_FAILED", result["error"]
     assert result["refused_before_launch"] is True
     message = result["error"]["message"]

@@ -1,7 +1,7 @@
-"""C locals in static storage (#364): a `static` local, and a `const` aggregate GCC builds
-at compile time in read-only data. lldb-dap lists none of them among a frame's locals, so
-each was `not found`. Peeky reads the one the code at the stop names, from the debug
-information's declaration, and never changes one."""
+"""C locals in static storage: a `static` local, and a `const` aggregate GCC builds at
+compile time in read-only data. lldb-dap lists none of them among a frame's locals. Peeky
+reads the one the code at the stop names, from the debug information's declaration, and
+never changes one."""
 
 import json
 import os
@@ -85,8 +85,8 @@ def refused(capsys, assignment, phrase):
 
 @pytest.mark.timeout(300)
 def test_a_static_local_is_read_where_the_code_names_it(directory, capsys):
-    # #364: `calls`, `cs` and `st` were `not found: tick declares 'calls' in static
-    # storage ... Peeky cannot read it here`. In the inner block, `calls` is its own.
+    # `calls`, `cs` and `st` are read, not `not found`. In the inner block, `calls` is its
+    # own.
     path = directory / "statics.c"
     path.write_text(STATICS)
     inner, outer = line_of(STATICS, "// INNER"), line_of(STATICS, "// OUTER")
@@ -120,8 +120,8 @@ def test_a_static_local_is_read_where_the_code_names_it(directory, capsys):
 
 @pytest.mark.timeout(240)
 def test_describe_marks_a_static_local_static(directory, capsys):
-    # Eval 13 (#385): `describe` listed `now (struct vitals)`, a `static` local, as if it
-    # were the frame's own; its rows say `[not settable: static]`.
+    # `describe` marks `now`, a `static` local, as static, not as the frame's own; its rows
+    # say `[not settable: static]`.
     path = directory / "statics.c"
     path.write_text(STATICS)
     assert main(["describe", str(path), "--json"]) == 0
@@ -168,7 +168,7 @@ def test_a_static_local_is_never_changed(directory, capsys):
         capsys.readouterr()
 
 
-# Review of PR #370: a function inlined twice and called once out of line, optimized: each
+# A function inlined twice and called once out of line, optimized: each
 # copy has its own code for the block declaring `hits`.
 INLINED = """#include <stdio.h>
 

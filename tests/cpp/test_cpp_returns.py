@@ -1,6 +1,7 @@
-"""The seventh evaluation's C++ finding (#155): `before()`, a comparator `std::sort`
-calls, is the proof of the bug, yet `step --out` landed in sort.h, where `inspect`
-refused everything, and no probe could capture a return value. Real builds."""
+"""What C++ functions return, on real builds: `before()`, a comparator `std::sort` calls,
+is the proof of the bug in `sched`. `step --out` of it stops in std::sort's own code,
+outside the program's sources, and shows what it returned; probes capture each call's
+return."""
 
 import json
 import os
@@ -11,13 +12,13 @@ from peeky.cli import main
 from peeky.probe import RETURN
 
 # What LLDB names `before`: GCC gives a static function no linkage name, so LLDB names it
-# from its declaration, from the global scope (#167).
+# from its declaration, from the global scope.
 BEFORE = {
     "clang": "before(Task const&, Task const&)",
     "gcc": "::before(const Task &, const Task &)",
 }
 
-# The seventh evaluation's case (sched.cpp): a later deadline runs first.
+# sched.cpp: a later deadline runs first.
 SCHED = """#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -225,9 +226,9 @@ def test_struct_string_and_reference_returns_are_withheld(cpp, capsys):
     assert (found["WEIGHT"]["value"], found["WEIGHT"]["type"]) == ("30", "long")
 
 
-# Round 1 of #162: f(0) throws and its caller catches it on the same line; the loop's
-# next call, g(1), returns to the same place in the same frame. LLDB's step out of f(0)
-# ended there, and g(1)'s 1000 was shown as f(0)'s return.
+# f(0) throws and its caller catches it on the same line; the loop's next call, g(1),
+# returns to the same place in the same frame. LLDB's step out of f(0) ends there, and
+# g(1)'s 1000 is not f(0)'s return.
 THROWS = """#include <cstdio>
 #include <stdexcept>
 static int f(int n) {

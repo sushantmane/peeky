@@ -1,3 +1,13 @@
+# Lib/ipaddress.py from CPython 3.9.6, renamed to ipaddress39.py. It is unchanged but for
+# this notice: https://github.com/python/cpython/blob/v3.9.6/Lib/ipaddress.py
+#
+# Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
+# 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021 Python Software Foundation;
+# All Rights Reserved
+#
+# Licensed under the PSF License Agreement (Python Software Foundation License Version 2),
+# whose text is in LICENSE-PSF beside this file.
+
 # Copyright 2007 Google Inc.
 #  Licensed to PSF under a Contributor Agreement.
 

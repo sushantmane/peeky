@@ -1,7 +1,11 @@
 """The standalone `peeky` CLI against real debugpy: no model, no mode switch."""
 
 import json
+import os
 import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -64,7 +68,7 @@ def test_session_commands_share_state_across_processes(workspace, capsys):
     assert "3 -> 0" in run(capsys, "session", "set", "start=0")[1].out
     assert "terminated" in run(capsys, "session", "continue")[1].out
     report = run(capsys, "session", "report")[1].out
-    # No unexplained count of the worker's requests (sixth evaluation, finding 14).
+    # No unexplained count of the worker's requests.
     assert "PAGE: [10, 20, 30]" in report and "operations" not in report
     assert run(capsys, "session", "list")[1].out.strip() == "default"
     assert run(capsys, "session", "close")[0] == 0
@@ -91,7 +95,7 @@ def test_verify_runs_the_independent_checker_on_a_candidate(workspace, capsys):
 
 
 def test_verify_takes_several_edits_each_quoting_the_original(workspace, capsys):
-    # #76: a general fix often touches two places; each pair is checked against the
+    # A general fix often touches two places; each pair is checked against the
     # original file, and the candidate gets every edit.
     args = [
         "verify",
@@ -175,7 +179,7 @@ def test_verify_explains_why_old_text_does_not_match(workspace, capsys):
     assert code == 2 and "literal backslash-n" in out.err
     code, out = run(capsys, *args, "--old", "nothing like this", "--new", "x")
     assert code == 2 and "matched 0 times" in out.err
-    # Which condition failed (sixth evaluation, finding 11): an edit that changes nothing.
+    # Which condition failed: an edit that changes nothing.
     code, out = run(capsys, *args, "--old", "page * page_size", "--new", "page * page_size")
     assert code == 2 and "--new equals --old" in out.err and "matched" not in out.err
     assert "--baseline" in out.err
@@ -184,7 +188,7 @@ def test_verify_explains_why_old_text_does_not_match(workspace, capsys):
 
 
 def test_verify_baseline_checks_the_unedited_program(workspace, capsys):
-    # Sixth evaluation, finding 5: whether the checker fails on the program as it is.
+    # Whether the checker fails on the program as it is.
     args = [
         "verify",
         workspace / "pagination_bug.py",
@@ -203,7 +207,7 @@ def test_verify_baseline_checks_the_unedited_program(workspace, capsys):
     assert code == 2 and "leave out --old/--new" in out.err
     code, out = run(capsys, *args)
     assert code == 2 and "or --baseline" in out.err
-    # Review 1: a checker that crashes rejects nothing; only the failure is reported.
+    # A checker that crashes rejects nothing; only the failure is reported.
     broken = workspace / "broken_check.py"
     broken.write_text("import no_such_module_anywhere\n")
     code, out = run(capsys, *args[:2], "--check", broken, "--baseline")
@@ -755,8 +759,8 @@ def session_at(tmp_path, monkeypatch, name, text):
 
 
 def test_session_steps_say_when_they_stop_in_another_function(tmp_path, capsys, monkeypatch):
-    # Tenth evaluation (outline): a step off `rename`'s last line landed in `run` with no
-    # word of it, and the next `get` of rename's names failed.
+    # A step off `rename`'s last line lands in `run`, and says so, and says why the next
+    # `get` of rename's names finds none.
     program = session_at(tmp_path, monkeypatch, "calls.py", CALLS)
     try:
         assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
@@ -802,7 +806,7 @@ for d in (0, 1):
 
 
 def test_a_continue_says_nothing_of_calls(tmp_path, capsys, monkeypatch):
-    # Review of #274: from the first `f(0)`, `continue` reached another `f(0)` that `f(1)`
+    # From the first `f(0)`, `continue` reached another `f(0)` that `f(1)`
     # called, and the state said "entered `f`, called from `f`". The stacks cannot tell
     # one activation from another, so a continue's stop is never compared.
     program = session_at(tmp_path, monkeypatch, "recursion.py", RECURSION)
@@ -844,7 +848,7 @@ print("GEN:", main())
 
 
 def test_a_step_out_of_a_generator_at_yield_never_says_it_returned(tmp_path, capsys, monkeypatch):
-    # Review of #274: the generator only yielded, and the state said "returned from".
+    # The generator only yielded, and the state said "returned from".
     program = session_at(tmp_path, monkeypatch, "gen.py", GENERATOR)
     try:
         assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
@@ -870,9 +874,9 @@ print("DEEP:", deep(300))
 
 
 def test_a_stack_deeper_than_the_bound_gives_no_note_and_steps_on(tmp_path, capsys, monkeypatch):
-    # Review of #274: the whole stack was read with no bound (`levels: 0`), so a deep
-    # recursion's could pass the debugger connection's 4 MiB message limit. At most 256
-    # frames are read now, and a stack not known to be whole gets no note.
+    # A stack read whole (`levels: 0`) could pass the debugger connection's 4 MiB message
+    # limit for a deep recursion. At most 256 frames are read, and a stack not known to be
+    # whole gets no note.
     program = session_at(tmp_path, monkeypatch, "deep.py", DEEP)
     try:
         # 302 frames deep: each step leaves one `deep` for its caller.
@@ -890,8 +894,8 @@ def test_a_stack_deeper_than_the_bound_gives_no_note_and_steps_on(tmp_path, caps
 
 
 def test_session_start_warns_when_it_stopped_at_a_moved_breakpoint(tmp_path, capsys, monkeypatch):
-    # Tenth evaluation (outline): `session start --at` a blank line stopped at the line
-    # before it with no warning, where a probe at that line warns.
+    # `session start --at` a blank line stops at the line before it, and warns, as a probe
+    # at that line does.
     program = session_at(tmp_path, monkeypatch, "calls.py", CALLS)
     moved = (
         "The debugger moved the breakpoint from line 14 to line 13 (line 14 has no code of its "
@@ -918,7 +922,7 @@ def test_session_start_warns_when_it_stopped_at_a_moved_breakpoint(tmp_path, cap
         assert code == 0 and "warnings" not in json.loads(out.out)
     finally:
         run(capsys, "session", "close")
-    # Review of #274: a breakpoint moved into a function that never runs. The program
+    # A breakpoint moved into a function that never runs. The program
     # ends, and "values are from line 2" would say nothing true.
     program.write_text('def never():\n    value = 1\n\n\nprint("done")\n')
     try:
@@ -1006,7 +1010,7 @@ def test_sessions_number_their_hits_and_run_on_to_the_nth(tmp_path, monkeypatch,
         code, out = run(capsys, "session", "start", script, "--at", "3", "--hit", "3")
         assert code == 0 and ", hit 3 (paused" in out.out, out
         assert run(capsys, "session", "get", "i")[1].out.strip() == "i: int = 2"
-        # #93 (eval 4): inspect names the hit too, as start and continue do.
+        # Inspect names the hit too, as start and continue do.
         code, out = run(capsys, "session", "inspect")
         assert code == 0 and "loop.py:3 in <module>, hit 3" in out.out.splitlines()[0], out
         code, out = run(capsys, "session", "continue", "--count", "2")
@@ -1055,7 +1059,7 @@ def test_a_programs_own_breakpoint_call_ends_hit_numbering(tmp_path, monkeypatch
 
 
 def test_a_python_string_takes_a_text_as_its_debugger_evaluates_it(workspace, capsys):
-    # #137 part 2: the same `--set name="..."` as C, C++, Rust and Java; debugpy
+    # The same `--set name="..."` as C, C++, Rust and Java; debugpy
     # evaluates it as a Python literal (JSON's escapes are Python's too), and the name is
     # rebound to the new str.
     program = workspace / "greet.py"
@@ -1071,3 +1075,233 @@ def test_a_python_string_takes_a_text_as_its_debugger_evaluates_it(workspace, ca
     assert [(c["before"], c["after"]) for c in result["interventions"]] == [
         ("'apple '", "'café \"x\"'")
     ]
+
+
+TOKEN = "cli-test-token-1234567890abcdef"
+
+
+def gone(pid, seconds=5):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return True
+        except ChildProcessError:
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def test_two_starts_with_one_name_cannot_both_succeed(workspace):
+    command = [
+        sys.executable,
+        "-m",
+        "peeky.cli",
+        "session",
+        "start",
+        str(workspace / "pagination_bug.py"),
+        "--at",
+        "8",
+    ]
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    pipes = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}
+    starts = [subprocess.Popen(command, env=env, **pipes) for _ in "ab"]
+    results = [(p.wait(timeout=60), *p.communicate()) for p in starts]
+    codes = sorted(code for code, _, _ in results)
+    assert codes == [0, 2], results
+    assert "exists" in next(err for code, _, err in results if code == 2)
+    record = json.loads((workspace / "state/sessions/default.json").read_text())
+    subprocess.run([*command[:3], "session", "close"], env=env, check=True, capture_output=True)
+    assert gone(record["pid"]), "the winning start's worker outlived its session"
+
+
+def test_an_interrupted_start_leaves_no_worker_and_frees_the_name(workspace, capsys, monkeypatch):
+    import peeky.cli as cli
+
+    spawned = []
+    real_popen = subprocess.Popen
+
+    def recording(*args, **kwargs):
+        spawned.append(real_popen(*args, **kwargs))
+        return spawned[-1]
+
+    real_call = cli._LocalClient.call
+
+    def interrupted(self, operation, **arguments):
+        if operation == "launch":
+            raise KeyboardInterrupt
+        return real_call(self, operation, **arguments)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", recording)
+    monkeypatch.setattr(cli._LocalClient, "call", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        main(["session", "start", str(workspace / "pagination_bug.py"), "--at", "8"])
+    assert spawned and spawned[0].poll() is not None
+    assert not (workspace / "state/sessions/default.json").exists()
+    monkeypatch.setattr(cli._LocalClient, "call", real_call)
+    code, out = run(capsys, "session", "start", workspace / "pagination_bug.py", "--at", "8")
+    assert code == 0, out.err
+    closed = json.loads(run(capsys, "session", "close", "--json")[1].out)
+    # The program, stopped at line 8, ended with its session.
+    assert closed["closed"] == "default" and closed["cleanup"].startswith("terminated pid ")
+
+
+def test_relative_java_bundles_follow_the_configuration_file(tmp_path, monkeypatch):
+    from peeky.cli import resolve
+
+    configuration = tmp_path / "conf" / "target.json"
+    configuration.parent.mkdir()
+    configuration.write_text(
+        json.dumps({"language": "java", "bundle": "adapter", "sources": ["A.java"]})
+    )
+    (tmp_path / "A.java").write_text("class A {}\n")
+    monkeypatch.chdir(tmp_path / "conf")
+    data = resolve(tmp_path, "A.java:1", configuration)[4]
+    assert data["bundle"] == str((tmp_path / "conf" / "adapter").resolve())
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"status": "timeout", "error": {"code": "TIMEOUT", "message": "cap", "hint": "h"}},
+        {"error": {"code": "DEBUGGER_ERROR", "message": "child crashed", "hint": "h"}},
+    ],
+)
+def test_partial_remote_probe_replies_keep_their_error(workspace, capsys, monkeypatch, reply):
+    class Worker:
+        sources = {"kind": "python"}
+
+        def probe(self, *args, **kwargs):
+            return json.loads(json.dumps(reply))
+
+    monkeypatch.setattr("peeky.cli._remote", lambda url: (Worker(), TOKEN))
+    probe = ["probe", workspace / "pagination_bug.py", "--at", "8", "--no-save"]
+    code, out = run(capsys, *probe, "--worker", "http://127.0.0.1:1", "--json")
+    result = json.loads(out.out)  # exactly one JSON document
+    assert code == 1 and result["error"]["code"] == reply["error"]["code"]
+    assert result["status"] == reply.get("status", "failed") and result["rows"] == []
+    code, out = run(capsys, *probe, "--worker", "http://127.0.0.1:1")
+    assert code == 1 and f"error [{reply['error']['code']}]" in out.out
+
+
+def test_session_get_reports_one_unreadable_selector_as_a_row(workspace, capsys):
+    program = workspace / "wide.py"
+    program.write_text(
+        "class O:\n    pass\n"
+        "o = O()\n"
+        "for i in range(600):\n    setattr(o, f'a{i:03}', i)\n"
+        "small = [1, 2]\n"
+        "print('ready')\n"
+    )
+    assert run(capsys, "session", "start", program, "--at", "7")[0] == 0
+    code, out = run(capsys, "session", "get", "small[0]", "o.a599", "small[1]", "--json")
+    rows = {row["selector"]: row for row in json.loads(out.out)}
+    # Every row is reported; the exit status says that one selector had no value.
+    assert code == 1, out.err
+    assert rows["small[0]"]["value"] == "1" and rows["small[1]"]["value"] == "2"
+    assert rows["o.a599"].get("error")
+    run(capsys, "session", "close")
+
+
+def test_timeouts_are_checked_before_anything_runs(workspace, capsys):
+    program = workspace / "pagination_bug.py"
+    code, out = run(capsys, "session", "start", program, "--at", "8", "--timeout", "500")
+    assert code == 2 and "--timeout" in out.err
+    assert json.loads(run(capsys, "session", "list", "--json")[1].out) == []
+    assert run(capsys, "session", "start", program, "--at", "8")[0] == 0
+    code, out = run(capsys, "session", "continue", "--timeout", "0")
+    assert code == 2 and "--timeout" in out.err
+    code, out = run(capsys, "session", "get", "start", "--json")
+    assert code == 0 and json.loads(out.out)[0]["value"] == "3"  # still stopped
+    assert json.loads(run(capsys, "session", "list", "--json")[1].out) == ["default"]
+    run(capsys, "session", "close")
+
+
+def test_long_python_lists_are_not_reported_missing(workspace, capsys):
+    program = workspace / "long.py"
+    program.write_text("xs = list(range(200))\nprint(len(xs))\n")
+    code, out = run(
+        capsys, "probe", program, "--at", "2", "--capture", "xs[5],xs[150]", "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["xs[5]"]["value"] == "5"
+    assert "beyond the debugger's visible window" in rows["xs[150]"]["error"]
+
+
+def test_describe_reports_python_syntax_errors_as_request_errors(workspace, capsys):
+    program = workspace / "bad.py"
+    program.write_text("x = 1\ndef broken(:\n")
+    code, out = run(capsys, "describe", program, "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "INVALID_REQUEST" and "line 2" in error["message"]
+
+
+def test_selectors_share_one_inspection_unless_budget_runs_out():
+    from peeky.probe import _capture
+
+    class Worker:
+        def __init__(self):
+            self.inspects, self.budget = 0, 2
+
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                self.inspects += 1
+                self.budget = 2
+                child = {"name": "c", "value": "9", "variablesReference": 0}
+                variables = [{"name": n, "value": n, "variablesReference": 0} for n in "abcde"] + [
+                    {"name": "o", "value": "O", "variablesReference": 7}
+                ]
+                self.child = child
+                return {"frames": [{"line": 3}], "scopes": [{"variables": variables}]}
+            self.budget -= 1
+            if self.budget < 0:
+                raise ValueError("Expansion node budget exhausted; inspect again")
+            return {"variables": [self.child], "truncated": False}
+
+    worker = Worker()
+    rows = _capture(worker, {"stop_id": "s"}, ("a", "b", "c", "d", "e"), 1, "observed")
+    assert worker.inspects == 1 and [r["value"] for r in rows] == list("abcde")
+    worker = Worker()
+    rows = _capture(worker, {"stop_id": "s"}, ("o.c",) * 4, 1, "observed")
+    assert [r.get("value") for r in rows] == ["9"] * 4 and worker.inspects == 2
+
+
+def test_a_shared_inspection_never_makes_a_readable_value_an_error(workspace, capsys):
+    program = workspace / "spent.py"
+    program.write_text("a = list(range(300))\nitems = list(range(60))\nprint(len(a))\n")
+    selectors = ",".join(["a[10]"] * 7 + ["items[-1]", "items[59]"])
+    code, out = run(
+        capsys, "probe", program, "--at", "3", "--capture", selectors, "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["items[-1]"].get("value") == "59", rows["items[-1]"]
+    assert rows["items[59]"]["value"] == "59"
+
+
+def test_an_interrupted_start_never_blocks_its_name(workspace, capsys):
+    sessions = workspace / "state" / "sessions"
+    sessions.mkdir(parents=True, mode=0o700)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    record = sessions / "default.json"
+    record.write_text(json.dumps({"name": "default", "starting": dead.pid}))
+    record.chmod(0o600)
+    code, out = run(capsys, "session", "inspect", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "NO_SESSION"
+    code, out = run(capsys, "session", "close", "--forget", "--json")
+    assert code == 0 and json.loads(out.out) == {"forgot": "default", "worker_contacted": False}
+    record.write_text(json.dumps({"name": "default", "starting": dead.pid}))
+    record.chmod(0o600)
+    # A new start takes over the abandoned claim.
+    code, out = run(capsys, "session", "start", workspace / "pagination_bug.py", "--at", "8")
+    assert code == 0, out.err
+    run(capsys, "session", "close")
+    record.write_text(json.dumps({"name": "default", "starting": os.getpid()}))
+    record.chmod(0o600)
+    code, out = run(capsys, "session", "start", workspace / "pagination_bug.py", "--at", "8")
+    assert code == 2 and "exists" in out.err  # a live start keeps its claim
+    assert run(capsys, "session", "close", "--forget")[0] == 0

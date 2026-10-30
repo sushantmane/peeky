@@ -1,4 +1,4 @@
-"""#156: a Vec, String, &str or Box<str> field reads its contents where what holds it
+"""A Vec, String, &str or Box<str> field reads its contents where what holds it
 cannot change or be freed while the frame stands: through a reference parameter the
 IR proves live (`&mut` only in the innermost frame), or inside a local the MIR proves
 initialized at the stop. Anything else stays raw, with the reason on its row."""
@@ -25,7 +25,7 @@ version = 4
 name = "{name}"
 version = "0.1.0"
 """
-# The seventh evaluation's `movavg`, as the agent saw it.
+# `movavg`: a moving average.
 MOVAVG = """use std::env;
 
 /// Rolling mean over the last `k` values, printed with one decimal after each value.
@@ -383,7 +383,7 @@ fn main() {
     println!("{total}");
 }
 """
-# The review's `g3`: a `Vec` a macro declares, with a buffer `unsafe` code regrows
+# A `Vec` a macro declares, with a buffer `unsafe` code regrows
 # behind a shared reference.
 SHADOWED = """use std::cell::UnsafeCell;
 use std::hint::black_box;
@@ -477,9 +477,8 @@ NO_MEMORY = "the debugger gives no memory address for it"
 
 @pytest.mark.timeout(400)
 def test_the_movavg_window_reads_its_values_through_self(tmp_path, state, capsys):
-    # Seventh evaluation: `self.values` (a Vec<i64> behind `&mut self`) showed only LLDB's
-    # summary with a warning about an owned local that may be moved (#53), and
-    # `self.values[0]` was "not found ... Capture values.len".
+    # `self.values` (a Vec<i64> behind `&mut self`) reads, not only as LLDB's summary with
+    # a warning about an owned local that may be moved, and `self.values[0]` is found.
     crate = crate_at(tmp_path, "movavg", MOVAVG)
     selectors = "self.values,self.values[0],self.values[-1],self.values.len,self.sum"
     result = probe(
@@ -507,7 +506,7 @@ def test_the_movavg_window_reads_its_values_through_self(tmp_path, state, capsys
         error = rows[0]["self.values[0]"]["error"]
         assert NO_MEMORY in error and "Capture self.values.len" in error, error
     # main's `w`, which the MIR proves initialized, reads too. `w.sum` is not [settable] at
-    # `out.push(format!(…, mean))` (#320): `mean = w.push(…)` may hold a value computed from
+    # `out.push(format!(…, mean))`: `mean = w.push(…)` may hold a value computed from
     # it, which the program goes on with. On the last pass nothing reads `w.sum` again.
     result = probe(capsys, crate, MOVAVG, "// MEAN", "w.values,w.sum", "--arg", "3", "--arg", "3,6")
     rows = {row["selector"]: row for row in result["rows"] if row["hit"] == 1}
@@ -555,7 +554,7 @@ def test_fields_read_through_a_reference_and_in_a_proven_local(tmp_path, state, 
         raw(rows["self.values"], NO_MEMORY)
     # A RefCell's contents change behind `&self`: never read.
     raw(rows["self.cell.value.value"], "`self.cell` is a standard-library type (RefCell<")
-    # In main: the proven local, a Box's contents, and a generic's instances (#130).
+    # In main: the proven local, a Box's contents, and a generic's instances.
     names = "bag.values,bag.inner.items,held.items,named.label"
     rows = {row["selector"]: row for row in probe(capsys, crate, FIELDS, "// NAMED", names)["rows"]}
     if reads(rows["bag.values"]):
@@ -565,7 +564,7 @@ def test_fields_read_through_a_reference_and_in_a_proven_local(tmp_path, state, 
             "[5]",
             '"t1"',
         ], rows
-    # `named.label` borrows `text`: past `named`'s last use and a call, #110 cannot show
+    # `named.label` borrows `text`: past `named`'s last use and a call, Peeky cannot show
     # what it borrows still stands, so nothing in `named` is read (it reads where it is
     # used). A struct with no lifetime holds only `&'static str`: `tagged.tag` reads.
     names = "named.label,tagged.tag,tagged.counts"
@@ -586,8 +585,8 @@ def test_a_moved_or_partly_moved_struct_keeps_its_fields_raw(tmp_path, state, ca
         row["selector"]: row
         for row in probe(capsys, crate, FIELDS, "// AFTER", "bag.values,moved.values")["rows"]
     }
-    # `bag` was moved into `moved`: its bytes are a moved-from copy (#108), which its
-    # note says (not that an owned local may be moved, #53).
+    # `bag` was moved into `moved`: its bytes are a moved-from copy, which its note says
+    # (not that an owned local may be moved).
     assert rows["bag.values"].get("view") is None and rows["bag.values"].get("stale"), rows
     assert rows["bag.values"]["note"].startswith("This is (or is inside) a Rust local"), rows
     if reads(rows["moved.values"]):
@@ -633,9 +632,9 @@ def test_caller_frames_read_only_through_a_shared_reference(tmp_path, state, cap
 
 @pytest.mark.timeout(400)
 def test_a_borrow_of_a_local_nothing_changes_reads_past_its_last_use(tmp_path, state, capsys):
-    # Seventh evaluation (Low): `v` of `for v in args[2].split(',')`, past its last use
-    # and a call, showed `<not shown: may point at freed memory>`, though it points into
-    # `args`, which nothing borrows `&mut`, moves or drops before the end of `main`.
+    # `v` of `for v in args[2].split(',')`, past its last use and a call, reads, not `<not
+    # shown: may point at freed memory>`: it points into `args`, which nothing borrows `&mut`,
+    # moves or drops before the end of `main`.
     crate = crate_at(tmp_path, "borrows", BORROWS)
     result = probe(capsys, crate, BORROWS, "// FROZEN", "v", "--arg", "ab/cd", "--hits", "2")
     rows = result["rows"]
@@ -643,17 +642,17 @@ def test_a_borrow_of_a_local_nothing_changes_reads_past_its_last_use(tmp_path, s
     if reads(rows[0]):
         assert [row["value"] for row in rows] == ['"ab"', '"cd"'], rows
     # `w` points into `owned`, changed (`push_str`, a `&mut` borrow) since its last
-    # use: what it pointed at may have been reallocated, so it is never read (#110).
+    # use: what it pointed at may have been reallocated, so it is never read.
     result = probe(capsys, crate, BORROWS, "// THAWED", "w", "--arg", "ab/cd")
     assert result["rows"][0]["view"] == "unproven", result["rows"]
-    # Review of #156: into what a shared reference argument points at too, though its
+    # Into what a shared reference argument points at too, though its
     # calls print `unwind continue` (no cleanup of their own).
     result = probe(capsys, crate, BORROWS, "// BY_REF", "v", "--arg", "ab/cd", "--hits", "2")
     rows = result["rows"]
     assert [row.get("view") != "unproven" for row in rows] == [True, True], rows
     if reads(rows[0]):
         assert [row["value"] for row in rows] == ['"ab"', '"cd"'], rows
-    # Review of #156: `v.as_ptr()` in safe code (printed with `{:p}`) frees nothing, so
+    # `v.as_ptr()` in safe code (printed with `{:p}`) frees nothing, so
     # it hides nothing.
     result = probe(capsys, crate, BORROWS, "// GROWTH", "v", "--arg", "ab/cd", "--hits", "2")
     rows = result["rows"]
@@ -669,11 +668,11 @@ UNSAFE_CRATE = "the crate has unsafe code (in src/main.rs), which can free a buf
 
 @pytest.mark.timeout(600)
 def test_nothing_unsafe_code_may_have_freed_is_read_in_its_crate(tmp_path, state, capsys):
-    # Review of #156: sound unsafe code frees the buffer a field (or a Vec local) still
-    # points at where the MIR shows it initialized, and in places the stopped function
-    # cannot see (a closure, a callee, a pointer stored for later, after a move, in a
-    # caller); the field read the freed memory (`[3, 4356, 0]`). In a crate with unsafe
-    # code anywhere, no container is read from what it owns, and no borrow is frozen.
+    # Sound unsafe code frees the buffer a field (or a Vec local) still points at where the MIR
+    # shows it initialized, and in places the stopped function cannot see (a closure, a callee,
+    # a pointer stored for later, after a move, in a caller), where the field would read the
+    # freed memory (`[3, 4356, 0]`). In a crate with unsafe code anywhere, no container is read
+    # from what it owns, and no borrow is frozen.
     crate = crate_at(tmp_path, "unsafe", UNSAFE)
     rebound = f"w @ main.rs:{line_of(UNSAFE, 'let w = w;')}"
     cases = {
@@ -695,16 +694,16 @@ def test_nothing_unsafe_code_may_have_freed_is_read_in_its_crate(tmp_path, state
         raw(rows[field], UNSAFE_CRATE)
         # Its scalar fields are the bytes the struct holds: they still read.
         assert rows[scalar]["value"] == value, (marker, rows)
-    # An owned Vec local too (#53's reads, before this review).
+    # An owned Vec local too.
     [row] = probe(capsys, crate, UNSAFE, "// OWNED_LOCAL", "v")["rows"]
     raw(row, UNSAFE_CRATE)
-    # A borrow #110 cannot show still standing is not frozen: through a pointer cast
+    # A borrow Peeky cannot show still standing is not frozen: through a pointer cast
     # from `&s` (undefined behaviour), the String it borrows moved.
     [row] = probe(capsys, crate, UNSAFE, "// MUTATED", "v")["rows"]
     assert row["view"] == "unproven", row
     # Nor what a reference parameter points at (a caller freed the Vec's buffer, then
     # lent it), nor a Box's contents (freed through a second Box): this narrows reads
-    # main makes, for a crate with unsafe code (review of #156, round 3).
+    # main makes, for a crate with unsafe code.
     for marker, name in (("// LOOK_VEC", "v"), ("// LOOK_TEXT", "t")):
         [row] = probe(capsys, crate, UNSAFE, marker, name)["rows"]
         assert row.get("view") is None and UNSAFE_CRATE in row.get("note", ""), row
@@ -719,13 +718,13 @@ def test_nothing_unsafe_code_may_have_freed_is_read_in_its_crate(tmp_path, state
     }
     assert rows["b"]["view"] == "unproven" and "unsafe code" in rows["b"]["note"], rows
     assert "value" not in rows["b.x"], rows
-    # The review's `g3`: a crate's own `Vec` (a macro's) is no frozen owner.
+    # A crate's own `Vec` (a macro's) is no frozen owner.
     crate = crate_at(tmp_path, "shadowed", SHADOWED)
     [row] = probe(capsys, crate, SHADOWED, "// SHADOWED", "s")["rows"]
     assert row["view"] == "unproven", row
 
 
-# Review of #156, round 3: what the scan for unsafe code misread or missed.
+# What the scan for unsafe code must not misread or miss.
 HOLDER = """
 struct W {
     values: Vec<i64>,
@@ -776,9 +775,8 @@ fn main() {
 }
 """
 )
-# Unsafe code only in an integration test still counts (review of #156, round 4: what
-# Peeky read from rustc's dependency file to leave such files out was not exact for
-# every file name).
+# Unsafe code only in an integration test still counts, whatever the file's name in
+# rustc's dependency file.
 TEST_ONLY = GLOBAL_ASM.split("\n", 1)[1]
 TEST_ONLY_TEST = """#[test]
 fn freed() {
@@ -846,7 +844,7 @@ def test_many_macro_calls_leave_the_view_budget_to_the_debugger(tmp_path, state,
         assert row["value"] == '"a,b"' and row["view"] == "memory", row
 
 
-# Review of #156, round 4: four ways unsafe code (or what does its work) went unseen.
+# Four ways unsafe code (or what does its work) can go unseen.
 # The buffer `release` frees, which `w.values` still points at.
 FREED = (
     HOLDER
@@ -868,9 +866,9 @@ RELEASE = """pub fn release(v: &Vec<i64>) {
 
 @pytest.mark.timeout(400)
 def test_unsafe_code_in_a_module_of_any_file_name_counts(tmp_path, state, capsys):
-    # Read from rustc's dependency file, `src/a$$b.rs` was `src/a$b.rs` (make's `$$`, a
-    # decoy's name), and a U+2028 in a name split its line, losing `src/helper.rs`
-    # after it: the unsafe module went unscanned.
+    # In rustc's dependency file, `src/a$$b.rs` is `src/a$b.rs` (make's `$$`; read
+    # literally, a decoy's name), and a U+2028 in a name is no line break (read as one, it
+    # loses `src/helper.rs` after it): the unsafe module is scanned either way.
     dollar = '#[path = "a$$b.rs"]\nmod helper;\n' + FREED
     crate = crate_at(tmp_path, "dollar", dollar)
     (crate / "src/a$$b.rs").write_text(RELEASE)

@@ -1,7 +1,7 @@
-"""Inline assembly that reads a file is refused before building (#180), on real builds
-with clang and GCC: the assembler's `.incbin` read a file that no dependency file
-lists, so the program ran on bytes no provenance check covered (`blob=SECRET`). A
-`.incbin` string outside inline assembly builds as before."""
+"""Inline assembly that reads a file is refused before building, on real builds with clang
+and GCC: the assembler's `.incbin` reads a file that no dependency file lists, so the program
+would run on bytes no provenance check covers (`blob=SECRET`). A `.incbin` string outside
+inline assembly builds."""
 
 import json
 import os

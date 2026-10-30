@@ -1,7 +1,6 @@
-"""Review of #276 (tenth evaluation, prep 9): a refused change through a C++ pointer gets
-the call advice only where the pointer is proven a parameter at the stop. A local that
-shadows a parameter, a static, and a parameter the function points elsewhere (round 2)
-get advice that claims no call."""
+"""A refused change through a C++ pointer gets the call advice only where the pointer is
+proven a parameter at the stop. A local that shadows a parameter, a static, and a parameter
+the function points elsewhere get advice that claims no call."""
 
 import json
 import os
@@ -94,7 +93,7 @@ def test_only_a_proven_parameter_gets_the_call_advice(program, capsys):
     out = refusal(program, capsys, "PARAM", "a.count=5")
     assert "before the call that passed it" in out and "proven" not in out, out
     # The shadowed parameter (`Acc *a = &own;` reads as pointing `a` elsewhere), and
-    # parameters pointed elsewhere, by assignment or through a `Acc *&` (round 2).
+    # parameters pointed elsewhere, by assignment or through a `Acc *&`.
     for marker, root in (
         ("PARAM_USE", "a"),
         ("SHADOWED", f"a @ acc.cpp:{line_of('SIGNATURE')}"),

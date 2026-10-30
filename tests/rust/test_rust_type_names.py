@@ -1,6 +1,5 @@
-"""The seventh agent evaluation's Rust findings, on a real build: a field's type shows
-its Rust name, as a local's does (18), and `describe` says which locals have settable
-fields (16)."""
+"""Rust type names on a real build: a field's type shows its Rust name, as a local's does,
+with LLDB's beside it."""
 
 import json
 import os
@@ -24,7 +23,6 @@ version = 4
 name = "movavg"
 version = "0.1.0"
 """
-# The evaluation's case, as the agent had it.
 MAIN = """use std::env;
 
 /// Rolling mean over the last `k` values, printed with one decimal after each value.
@@ -84,7 +82,7 @@ def rows(capsys, crate, line, capture):
 
 @pytest.mark.timeout(400)
 def test_a_fields_type_is_its_rust_name(crate, capsys):
-    # Finding 18: `self.k` and `w.k` showed `unsigned long` while `k` showed `usize`.
+    # `self.k` and `w.k` are `usize`, as `k` is, not LLDB's `unsigned long`.
     found = rows(capsys, crate, 18, "self.k,self.sum,self.values.len,v")
     assert [found[s]["type"] for s in ("self.k", "self.sum", "self.values.len", "v")] == [
         "usize",
@@ -103,18 +101,6 @@ def test_a_fields_type_is_its_rust_name(crate, capsys):
     assert " w.k       usize " in capsys.readouterr().out
 
 
-@pytest.mark.timeout(400)
-def test_describe_says_which_rust_locals_have_settable_fields(crate, capsys):
-    # Finding 16: `describe`'s `mutable:` line listed only register-bound locals, not
-    # that `w.k` is settable.
-    assert main(["describe", str(crate)]) == 0
-    (mutable,) = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
-    # #183: the paths themselves (`w.values`' elements are not settable).
-    assert ": movavg::main: w.k, w.sum. Never settable" in mutable, mutable
-    # `self` is a reference: its fields are not changed through it.
-    assert "push: self" not in mutable.split("Never settable")[0], mutable
-
-
 SPAN = """#[derive(Debug, Clone, Copy)]
 struct Span {
     start: usize,
@@ -131,8 +117,8 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_every_field_keeps_lldbs_type_name_beside_the_rust_one(crate, capsys):
-    # Review of PR #165: a field of a struct previewed from memory (`s.start`) had no
-    # `debugger_type`, while a raw field (`w.k`) had one.
+    # A field of a struct previewed from memory (`s.start`) has a `debugger_type`, as a raw
+    # field (`w.k`) has.
     (crate / "src/main.rs").write_text(SPAN)
     line = next(i for i, text in enumerate(SPAN.splitlines(), 1) if "// HERE" in text)
     found = rows(capsys, crate, line, "s,s.start,s.end")

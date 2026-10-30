@@ -1,4 +1,4 @@
-"""#382 on a launched JVM: a probe's `1:pass` reads the caller's loop counter while the
+"""On a launched JVM, a probe's `1:pass` reads the caller's loop counter while the
 callee runs, and `1:readings[1]` an element of the caller's array, in one run. A caller's
 values are never settable."""
 

@@ -1,10 +1,9 @@
-"""#330 (found preparing the twelfth evaluation): after the program copied a local (into a
-binding, or into a Vec by `push`), a change to it was `[settable]` where the program then
-replaced or ended the local before it used the copy. `--set y=100` after `u.push(y);`, at
-`let t = n;` before `y = t;`, was reported, and `u` printed the old value. Now such a change
-is refused, and so is one where no path reads the value again: it is overwritten, or it goes
-out of scope, first. A change still works before the copy, and where the program reads the
-local again before replacing it."""
+"""After the program copies a local (into a binding, or into a Vec by `push`), a change to it is
+not `[settable]` where the program then replaces or ends the local before it uses the copy:
+`--set y=100` after `u.push(y);`, at `let t = n;` before `y = t;`, would be reported while `u`
+prints the old value. Such a change is refused, and so is one where no path reads the value
+again: it is overwritten, or it goes out of scope, first. A change still works before the copy,
+and where the program reads the local again before replacing it."""
 
 import json
 import os
@@ -132,7 +131,7 @@ fn main() {
 }
 """
 
-# Review of PR #334: a type's own `Drop` reads what it drops; a panic, `process::exit` or a
+# A type's own `Drop` reads what it drops; a panic, `process::exit` or a
 # coroutine's exit ends the frame's locals; a refusal names where a value ends only where
 # every path ends there. Each run takes what to do first.
 FRAMES = """use std::env;
@@ -576,7 +575,7 @@ def test_a_value_never_read_again_is_refused_saying_where(crate, capsys):
     total, scope = line_of("TOTAL"), line_of("SCOPE_DEAD") + 1
     for marker in ("BEFORE_TOTAL", "TOTAL"):
         message = refused(capsys, crate, marker, "--set", "total=100")
-        # `other()` and the overflow check of `k + n` may panic first (review 2).
+        # `other()` and the overflow check of `k + n` may panic first.
         assert (
             f"the program does not read `total` after any stop of line {line_of(marker)}, so a "
             f"change there would never be seen: it is overwritten at line {total} first, unless "
@@ -608,7 +607,7 @@ def test_a_local_read_again_before_it_is_replaced_stays_settable(crate, capsys):
     assert row(capsys, crate, "READ_LATER", "x").get("settable") is True
     assert "LATER 101 [6]" in changed(capsys, crate, "READ_LATER", "--set", "x=100")
     # `w.push(x); let s: u32 = w.iter().sum(); x = s;`: `w` is read first, so it is still
-    # refused (#316).
+    # refused.
     message = refused(capsys, crate, "SUMMED", "--set", "x=100")
     assert "the program's own `w` (at lines " in message, message
 
@@ -627,7 +626,7 @@ def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
     # And through a field: `h.d.0` of `Holder { d: D, n: u32 }`.
     lines = changed(capsys, frames, "HELD", "--set", "h.d.__0=100", run=run)
     assert lines == ["DROP 2", "DROP 6", "DROP 1", "DROP 100", last], lines
-    # Review 2: the drop prints `self.0` only. After `let z = d.1;`, it may read `d.1` or
+    # The drop prints `self.0` only. After `let z = d.1;`, it may read `d.1` or
     # not, which Peeky can't tell: refused, saying so, where a change before the copy works.
     message = refused(capsys, frames, "SECOND", "--set", "d.__1=100", run=run)
     assert (
@@ -657,7 +656,7 @@ def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
 def test_a_panic_an_exit_or_a_coroutines_end_ends_the_local(crate, capsys):
     # `let z = x;`, the stop, `println!` of `z`, then `process::exit(0)`: `x` is never read
     # again. In a crate with unsafe code, the never-read rule is off: the copy's is the one.
-    # Review 3: and `panic!` in a function that returns `!`. Every path from the stop panics
+    # And `panic!` in a function that returns `!`. Every path from the stop panics
     # or exits before reading `x`, and the refusal says so.
     exits = crate.parent / "exits"
     for marker, run, copy in (
@@ -713,9 +712,9 @@ def test_where_a_value_ends_is_named_only_where_every_path_ends_there(crate, cap
 
 @pytest.mark.timeout(400)
 def test_a_mark_of_settable_covers_the_paths_that_dont_panic(crate, capsys):
-    # Review 3: settable where every path from the stop that doesn't panic reads the value
-    # first. Review 2 refused `record(z); may_panic(k); x`, as a caller's `catch_unwind`
-    # may go on with `z`: that path panics, and the mark leaves it out.
+    # Settable where every path from the stop that doesn't panic reads the value
+    # first. `record(z); may_panic(k); x` is not refused for a caller's `catch_unwind`,
+    # which may go on with `z`: that path panics, and the mark leaves it out.
     frames, run = crate.parent / "frames", ("--", "caught", "1")
     lines = changed(capsys, frames, "CAUGHT", "--set", "x=100", run=run)
     assert lines == ["RECORDED 2", "CAUGHT 100 CHECKED 23 BAILED 3 GUARDED 3"], lines
@@ -733,9 +732,9 @@ def test_a_mark_of_settable_covers_the_paths_that_dont_panic(crate, capsys):
 
 @pytest.mark.timeout(400)
 def test_a_loop_the_program_never_leaves_refuses_on_its_own_path(crate, capsys):
-    # Review 4: `if k > 100 { record(z); loop {} }`, then `x + k`: the path into the loop
+    # `if k > 100 { record(z); loop {} }`, then `x + k`: the path into the loop
     # uses `z` and never reads `x`. A loop with a way out to the read stays settable.
-    # Review 5: so does `loop { if other() == 0 { panic!("stop"); } }`, whose only way out
+    # So does `loop { if other() == 0 { panic!("stop"); } }`, whose only way out
     # is a panic.
     frames, run = crate.parent / "frames", ("--", "spun", "1")
     for marker, copy, seen in (
@@ -756,7 +755,7 @@ def test_a_loop_the_program_never_leaves_refuses_on_its_own_path(crate, capsys):
 
 @pytest.mark.timeout(400)
 def test_panic_any_is_a_call_that_never_returns_in_either_spelling(crate, capsys):
-    # Review 4: `if z == 0 { std::panic::panic_any(1); }`: not std's panic but a call that
+    # `if z == 0 { std::panic::panic_any(1); }`: not std's panic but a call that
     # never returns, as rustc prints it bare here and with its path in a crate with its own.
     frames = crate.parent / "frames"
     for root, text, run in (
@@ -775,7 +774,7 @@ def test_panic_any_is_a_call_that_never_returns_in_either_spelling(crate, capsys
 
 @pytest.mark.timeout(400)
 def test_a_read_while_the_program_panics_doesnt_count(crate, capsys):
-    # Review 4: every path panics, and only the cleanup's drop of `d` reads `d.0`: refused,
+    # Every path panics, and only the cleanup's drop of `d` reads `d.0`: refused,
     # though that drop would print the change. A change before the copy is seen by both.
     frames, run = crate.parent / "frames", ("--", "unwinding", "1")
     message = refused(capsys, frames, "UNWINDING", "--set", "d.__0=100", run=run)

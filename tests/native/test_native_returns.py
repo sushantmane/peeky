@@ -1,4 +1,4 @@
-"""What C functions return (#155), captured by probes once per call and shown by a
+"""What C functions return, captured by probes once per call and shown by a
 session after `step --out`, on real builds; never guessed."""
 
 import json
@@ -121,7 +121,7 @@ def test_each_call_of_a_recursive_function_gets_its_own_return(c_program, capsys
 @pytest.mark.timeout(120)
 def test_returns_are_shown_only_where_exact(c_program, capsys):
     # A line run on each pass of a loop: each pass's stop is proven in the same call by
-    # the step out's watch (#174), so every hit gets the call's return.
+    # the step out's watch, so every hit gets the call's return.
     loop = returns(probe(capsys, c_program, "LOOP"))
     assert loop[3]["value"] == "6" and loop[3]["line"] == line_of("int s = sum_to(3)")
     assert [loop[hit].get("value") for hit in (1, 2)] == ["6", "6"], loop
@@ -130,7 +130,7 @@ def test_returns_are_shown_only_where_exact(c_program, capsys):
     assert "value" not in made, made
     # LLDB lists the struct (Apple's), or cannot read it at all (LLDB 18/20 on Linux).
     assert "pair is not a number" in made["error"] or "reported no value" in made["error"]
-    # A function returning nothing: no value, of type `void` (eleventh evaluation).
+    # A function returning nothing: no value, of type `void`.
     noted = returns(probe(capsys, c_program, "NOTE"))[1]
     assert "value" not in noted and noted["type"] == "void", noted
     assert noted["error"] == "no value: the function returns nothing", noted
@@ -199,7 +199,7 @@ def test_optimized_builds_capture_no_return(tmp_path):
     assert "value" not in row and "optimized build (-O2)" in row["error"]
 
 
-# Round 1 of #162: calls that never return, inlined calls, a --set-at in the call.
+# Calls that never return, inlined calls, a --set-at in the call.
 ENDINGS = """#include <setjmp.h>
 #include <stdio.h>
 
@@ -285,8 +285,8 @@ def run(capsys, source, text, marker, capture, *extra):
 @pytest.mark.timeout(120)
 def test_a_call_left_by_longjmp_is_never_credited_with_the_next_calls_value(c_program, capsys):
     # leap(1) jumps back to main, which calls leap(2) from the same place in the same
-    # frame: LLDB's step out of leap(1) ended at leap(2)'s return, and its 20 was shown
-    # as leap(1)'s.
+    # frame: LLDB's step out of leap(1) ends at leap(2)'s return, whose 20 is not
+    # leap(1)'s.
     source = c_program.with_name("endings.c")
     source.write_text(ENDINGS)
     _, hits = run(capsys, source, ENDINGS, "LEAP", "n,return")
@@ -319,7 +319,7 @@ def test_a_return_after_a_set_at_in_the_call_is_that_calls(c_program, capsys):
     assert result["output"].split()[1] == str(7 + 501 + 21)
 
 
-# #174: `if (...) SWAP(...)` has two breakpoint locations (#160), the condition and the
+# `if (...) SWAP(...)` has two breakpoint locations, the condition and the
 # macro's block, so a call of `order` that swaps stops twice before it returns; `jump(1)`
 # leaves by longjmp, and main then calls `jump(2)` from another place, at the same depth.
 MULTI = """#include <setjmp.h>
@@ -356,9 +356,9 @@ int main(void) {
 @pytest.mark.timeout(120)
 def test_a_return_is_followed_across_a_lines_breakpoint_locations(c_program, capsys):
     # order(&x, &y) stops at the condition, then in SWAP's block (stop 2 of 2), before
-    # it returns 31. Hit 1's return was withheld as "the line ran again ... (a loop's
-    # next pass ...)"; the step out's watch proves stop 2 is in the same call, so both
-    # hits get its return, each `(return)` row with its own hit's stop.
+    # it returns 31. The step out's watch proves stop 2 is in the same call (not "the
+    # line ran again ... (a loop's next pass ...)"), so both hits get its return, each
+    # `(return)` row with its own hit's stop.
     source = c_program.with_name("multi.c")
     source.write_text(MULTI)
     line = next(i for i, row in enumerate(MULTI.splitlines(), 1) if "ORDER" in row)
@@ -424,7 +424,7 @@ def test_a_threaded_callee_withholds_returns_it_cannot_follow_and_keeps_every_ro
     assert "session continue" not in json.dumps(result)
 
 
-# Round 2 of #162: a step out over a deep recursion through its caller, mutual recursion
+# A step out over a deep recursion through its caller, mutual recursion
 # in probes, a caller LLDB refuses to disassemble unless forced, and the leftover step.
 DEEP = """#include <stdio.h>
 #include <stdlib.h>
@@ -479,10 +479,10 @@ def line(text, marker):
 def test_a_step_out_over_a_deep_recursion_completes_and_withholds_what_it_cannot_follow(
     c_program, capsys
 ):
-    # Each deeper c() runs the watched call: LLDB stopped (and said `continued`) twice
-    # per level, and 1,100 levels overflowed the 2,000-entry event history: the session
-    # failed and the program was killed. The watch now gives up inside LLDB after
-    # WATCH_TRAPS runs, and the return is withheld, never the session.
+    # Each deeper c() runs the watched call: LLDB stops (and says `continued`) twice per
+    # level, and 1,100 levels would overflow the 2,000-entry event history and end the
+    # session. The watch gives up inside LLDB after WATCH_TRAPS runs, and the return is
+    # withheld, never the session.
     source = c_program.with_name("deep.c")
     source.write_text(DEEP)
     start = ["session", "start", str(source), "--at", str(line(DEEP, "TOP")), "--", "1100"]
@@ -519,8 +519,8 @@ def test_a_probe_follows_each_call_of_a_mutual_recursion_to_its_return(c_program
 
 @pytest.mark.timeout(180)
 def test_a_caller_too_large_for_lldb_to_disassemble_unforced_is_still_watched(c_program, capsys):
-    # LLDB refuses a function this large without --force: every return was withheld,
-    # saying no call came before it, and the function was disassembled again each time.
+    # LLDB refuses a function this large without --force; still, no return is withheld as
+    # if no call came before it.
     body = []
     for k in range(120):
         body.append(f"    t += f(k + {k});")

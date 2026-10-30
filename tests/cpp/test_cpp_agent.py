@@ -12,7 +12,6 @@ import pytest
 import peeky.agent as agent_module
 from peeky.agent import Investigation
 
-ROOT = Path(__file__).resolve().parents[2]
 BUG = "int start = request.page * request.page_size;"
 FIX = "int start = (request.page - 1) * request.page_size;"
 

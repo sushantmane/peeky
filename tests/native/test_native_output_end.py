@@ -1,5 +1,5 @@
 """What a C probe says of its output when the program starts a process that writes after
-the program itself has finished its own work (review of PR #335): Peeky calls the output
+the program itself has finished its own work: Peeky calls the output
 whole only where the adapter's stream ended cleanly after the program's end, never from
 the end alone, and never without what the later process wrote."""
 
