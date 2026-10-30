@@ -218,7 +218,7 @@ def test_java_adapter_death_reaps_target(java_worker):
     adapter.wait(timeout=3)
     with pytest.raises(HTTPError) as caught:
         client.call("inspect", **context)
-    # The error says what became of the JVM the adapter launched and announced (#143).
+    # The error says what became of the JVM the adapter launched and announced.
     cleanup = json.load(caught.value)["error"]["cleanup"]
     assert cleanup.startswith(f"terminated pid {pid}; the debugger was gone: a process ")
     assert worker.session is None

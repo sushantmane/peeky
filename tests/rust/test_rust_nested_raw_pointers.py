@@ -1,9 +1,9 @@
-"""#255: a raw pointer inside a live value (a field, a tuple or array element, a
-NonNull's, a fat raw pointer's address) was followed: a struct or tuple the MIR proves
-initialized reads everything, so `h.p` listed its pointee, which safe code can free
-(`let p = &*b as *const i64; drop(b);`). It now shows only its address, with a note
-saying Peeky never follows a raw pointer, as a raw pointer local does; references
-inside the same values still read. An array of raw pointers expands to its elements."""
+"""A raw pointer inside a live value (a field, a tuple or array element, a NonNull's, a fat raw
+pointer's address) is never followed, though a struct or tuple the MIR proves initialized reads
+everything else: `h.p`'s pointee is something safe code can free (`let p = &*b as *const i64;
+drop(b);`). It shows only its address, with a note saying Peeky never follows a raw pointer, as
+a raw pointer local does; references inside the same values still read. An array of raw pointers
+expands to its elements."""
 
 import json
 import os
@@ -123,12 +123,12 @@ RAW = {
     "o.inner.p": ("o.inner", "p"),
     "o.q.pointer": ("o.q", "pointer"),
     "o.text.data_ptr": ("o.text", "data_ptr"),
-    # An array of raw pointers local expands to its elements (review of #256).
+    # An array of raw pointers local expands to its elements.
     "arr[0]": ("arr", "[0]"),
     "arr[1]": ("arr", "[1]"),
 }
 # The note of a raw pointer (probe._RAW_RUST), and of what holds one (_RAW_HELD_RUST):
-# no reference's words, nor moved, dropped or unproven claims (review of #256).
+# no reference's words, nor moved, dropped or unproven claims.
 NOTE = (
     "This Rust raw pointer shows only its address: Peeky never follows a raw pointer, "
     "because nothing proves that what it points at still stands."
@@ -176,7 +176,7 @@ def address_only(row):
     assert not row.get("children") and "777" not in str(row), brief(row)
     assert row.get("view") == "unproven", brief(row)
     assert re.fullmatch(r"0x[0-9a-fA-F]+", row.get("value") or ""), brief(row)
-    # The row itself says it is a raw pointer, as a listing's child does (#256 round 2).
+    # The row itself says it is a raw pointer, as a listing's child does.
     assert row.get("unproven_pointer") == "raw", brief(row)
     assert row.get("note") == NOTE, row.get("note")
     for claim in ("reference", "moved", "dropped", "MIR", "may be"):
@@ -206,7 +206,7 @@ def test_a_raw_pointer_inside_a_live_value_shows_only_its_address(crate, capsys)
         assert not children[name].get("expandable"), (selector, children[name])
         assert holders[holder].get("note") == HELD, (selector, holders[holder])
         assert holders[holder].get("view") is None, (selector, holders[holder])
-    # A raw pointer local: the same, not a reference's note (review of #256).
+    # A raw pointer local: the same, not a reference's note.
     address_only(rows["lone"])
     # The values that hold them are live and proven: everything else in them reads.
     expected = {"h.n": "1", "m.n": "2", "t.__0": "3", "a.n": "4", "o.inner.n": "5"}
@@ -273,8 +273,8 @@ fn main() {
 
 @pytest.mark.timeout(300)
 def test_a_raw_pointer_local_of_an_optimized_build_shows_only_its_address(crate):
-    # #255 review: where #110 cannot judge a raw pointer local (an optimized build proves
-    # nothing), it read what the pointer points at: `p.x` showed the freed Box's 777.
+    # Where the borrow check cannot judge a raw pointer local (an optimized build proves
+    # nothing), what it points at is not read: `p.x` would show the freed Box's 777.
     from peeky.probe import Probe, run_probe
     from peeky.rust import RustTarget
 
@@ -300,8 +300,8 @@ def test_a_raw_pointer_local_of_an_optimized_build_shows_only_its_address(crate)
     assert "value" not in rows["arr[0].x"] and "777" not in str(rows["arr[0].x"]), rows
     if not rows["p"].get("unavailable"):
         address_only(rows["p"])
-    # Review of #256: an array of raw pointers is not collapsed (`arr[0]` was "cannot
-    # expand 'arr'"): each element shows its address, as one inside a value does.
+    # An array of raw pointers is not collapsed (`arr[0]` is no "cannot expand 'arr'"): each
+    # element shows its address, as one inside a value does.
     if not rows["arr"].get("unavailable"):
         assert rows["arr"].get("view") != "unproven", brief(rows["arr"])
         for element in ("arr[0]", "arr[1]"):

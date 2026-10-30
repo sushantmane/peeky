@@ -1,5 +1,5 @@
-"""The eleventh agent evaluation's C++ Lows on real builds: a GCC lambda's capture said why
-it was not found (prep 8); it is read through `__closure` now (#361)."""
+"""A C++ lambda's captures on real builds, read where the compiler keeps them: GCC passes
+them through `__closure`, which lldb-dap doesn't list."""
 
 import json
 import os
@@ -50,10 +50,8 @@ def test_cpp_a_lambdas_capture_is_read(directory, cxx, capsys):
     # The lambda's parameter is listed.
     assert not str(rows["a"].get("error", "")).startswith("not found"), rows
     if cxx == "gcc":
-        # Before prep 8: `not found; visible: a, b, ga`, with no reason; before #361, `not
-        # found: 'grade' is a capture of this lambda, which GCC passes through `__closure`,
-        # and lldb-dap doesn't list it ...`. Read through `__closure` now: `std::sort` calls
-        # a copy of the lambda's object, which no listed frame holds, so both are marked.
+        # Read through `__closure`, which lldb-dap doesn't list: `std::sort` calls a copy of
+        # the lambda's object, which no listed frame holds, so both are marked.
         assert rows["bonus"]["value"] == "2", rows
         assert rows["grade"]["type"].startswith("std::map<"), rows
         assert rows["grade"]["debugger_type"].endswith("&"), rows

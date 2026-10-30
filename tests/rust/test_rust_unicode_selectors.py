@@ -1,4 +1,4 @@
-"""#195: Rust locals and fields with non-ASCII names, captured, read and set through
+"""Rust locals and fields with non-ASCII names, captured, read and set through
 real LLDB by the names rustc gives them: NFC-normalized (an NFD `größe` in the
 source is the NFC `größe`), so an NFD selector is refused with the listed spelling."""
 
@@ -62,7 +62,7 @@ def crate(tmp_path, monkeypatch):
 
 @pytest.mark.timeout(400)
 def test_a_probe_captures_and_sets_rust_names_in_unicode(crate, capsys):
-    # The IR names a non-ASCII local quoted (`%"\C3\B1"`), which #194 reads: `ñ` and
+    # The IR names a non-ASCII local quoted (`%"\C3\B1"`), which Peeky reads: `ñ` and
     # `größe` are proven kept in memory, as ASCII twins are, and change for real.
     captures = (f"{NFC}.zähler", f"{NFC}.{NFC}", "ñ", f"holder.{NFC}", NFD, f"{NFC}.zahler")
     sets = (f"{NFC}.zähler=30", "ñ=6", f"holder.{NFC}=40")
@@ -138,7 +138,7 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_a_non_ascii_parameter_kept_in_a_register_is_said_so_as_its_ascii_twin(crate, capsys):
-    # By-value parameters stay in registers even at opt-level 0 (#138): read through
+    # By-value parameters stay in registers even at opt-level 0: read through
     # the quoted IR name, `größe` gets `n`'s verdict, the true one.
     (crate / "src/main.rs").write_text(PARAMETER, encoding="utf-8")
     code = main(["probe", str(crate), "--at", "src/main.rs:3", "--set", f"{NFC}=9", "--json"])

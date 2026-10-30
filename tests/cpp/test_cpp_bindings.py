@@ -1,5 +1,5 @@
 """Locals the frame reaches through a pointer or reference are never changed, as roots
-or by their fields (#186's review, after round 1): clang describes a structured binding
+or by their fields: clang describes a structured binding
 of a reference (`auto &[at, dropped] = *owner`) as a variable of the member's own type,
 at a location read through the hidden reference (`DW_OP_fbreg -16, DW_OP_deref`)."""
 
@@ -75,7 +75,7 @@ def test_a_structured_binding_of_a_reference_is_never_changed(cpp, capsys):
         # Refused before the program runs: nothing ran.
         assert code != 0 and error["code"] == "MUTATION_REJECTED", result
         assert THROUGH in error["message"] and "before the program runs" in error["message"]
-        # What it binds holds the value (eval 13): `*owner`, owned by the caller.
+        # What it binds holds the value: `*owner`, owned by the caller.
         if assignment == "dropped=50":
             assert "`dropped` is a structured binding by reference to `*owner`" in error["message"]
             assert "change what it binds where that is owned" in error["message"], error

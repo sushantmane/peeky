@@ -1,4 +1,4 @@
-"""Issue #7: a non-synthetic program (CPython 3.9.6 ipaddress) with a real, upstream-fixed
+"""A non-synthetic program (CPython 3.9.6 ipaddress) with a real, upstream-fixed
 bug (CVE-2024-4032), debugged through a separate entry script with `--run`."""
 
 import json
@@ -87,7 +87,7 @@ def test_verify_accepts_the_multi_line_upstream_fix_and_reports_its_diff(case, c
     )
     old = "        return any(self in net for net in self._constants._private_networks)"
     code, out = run(capsys, *args, "--old", old, "--new", "        return False")
-    assert code == 2 and "matched 2 times (lines 1335, 2008)" in out.err
+    assert code == 2 and "matched 2 times (lines 1345, 2018)" in out.err
 
 
 def test_run_is_confined_and_python_only(case, capsys, tmp_path):
@@ -133,9 +133,15 @@ def test_http_probe_and_worker_accept_an_entry(case):
 def test_the_program_is_byte_for_byte_cpython_3_9_6():
     import hashlib
 
-    digest = hashlib.sha256((CASE / "ipaddress39.py").read_bytes()).hexdigest()
+    # Below the notice of its origin and licence, the file is upstream's.
+    notice, upstream = (CASE / "ipaddress39.py").read_bytes().split(b"\n\n", 1)
+    assert all(line.startswith(b"#") for line in notice.splitlines()), notice
+    assert b"PSF License Agreement" in notice and b"LICENSE-PSF" in notice, notice
+    digest = hashlib.sha256(upstream).hexdigest()
     assert digest == "a7a7a939af9f74613b4f278f81d3d5e1f55ec6c573825c70d902ae3c0bdd3469"
     assert digest in (CASE / "README.md").read_text()
+    licence = (CASE / "LICENSE-PSF").read_text()
+    assert "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2" in licence
 
 
 def test_agent_feedback_args_function_names_and_partial_output(case, capsys):
@@ -163,7 +169,7 @@ def test_agent_feedback_args_function_names_and_partial_output(case, capsys):
     assert {row["function"] for row in result["rows"]} >= {"is_private"}
     assert result["output_complete"] is True and result["by_hit"][0]["function"]
     code, out = run(capsys, "probe", root, "--at", at, "--run", data["driver"], "--until", "hits")
-    # Resumed after its last hit, the program ran on: never "still running" (#203).
+    # Resumed after its last hit, the program ran on: never "still running".
     assert code == 0 and "the program ran on after the last hit" in out.out
     assert "still running" not in out.out
 
@@ -177,7 +183,7 @@ def test_directory_targets_explain_what_to_pass(case, capsys):
     assert "--run <script.py>" in manifest["commands"]["probe"]
     assert "--at ipaddress39.py" in manifest["commands"]["verify"]
     scope = next(s for s in manifest["scopes"] if s["scope"] == "IPv6Address.is_private")
-    assert scope["lines"][0] <= 2008 <= scope["lines"][1]
+    assert scope["lines"][0] <= 2018 <= scope["lines"][1]
 
 
 def test_verify_reads_edits_verbatim_from_files(case, capsys, tmp_path):

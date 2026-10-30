@@ -1,9 +1,9 @@
-"""#324: at a line breakpoint on `let y = x.clone();` in an unoptimized build, `x` was
-`[settable]`; `--set x=100` reported the change, but the program printed the old value. LLVM
-inlines `clone` even at opt-level 0: its load of `x` carries `core/src/clone.rs`'s line, and
-comes before the line's first row of its own, where LLDB puts the line's breakpoint. So the
-stop was past the read, not before the line's code. Now Peeky reads the inlined call's site
-and addresses from the DWARF and withholds what the call was given; a step onto the line,
+"""At a line breakpoint on `let y = x.clone();` in an unoptimized build, `--set x=100` would
+be reported while the program prints the old value. LLVM inlines `clone` even at opt-level
+0: its load of `x` carries `core/src/clone.rs`'s line, and comes before the line's first row
+of its own, where LLDB puts the line's breakpoint. So the stop is past the read, not before
+the line's code. Peeky reads the inlined call's site and addresses from the DWARF and
+withholds what the call was given; a step onto the line,
 which stops before the inlined code, still allows the change."""
 
 import json
@@ -104,7 +104,7 @@ WRITES = sys.platform == "darwin"
 RUN = ("--", "5", "hello")
 
 
-# #324 review: a macro's inlined call names the macro's definition as its site, not the line.
+# A macro's inlined call names the macro's definition as its site, not the line.
 MACROS = """use std::env;
 
 macro_rules! mclone {
@@ -123,7 +123,7 @@ fn main() {
     println!("MACRO {}", macro_line(x));
 }
 """
-# #324 review: unsafe code reads `x` through a pointer the inlined call isn't given.
+# Unsafe code reads `x` through a pointer the inlined call isn't given.
 GLOBALS = """use std::env;
 
 static mut G: *const u32 = std::ptr::null();
@@ -230,7 +230,7 @@ def test_a_line_breakpoint_past_an_inlined_read_withholds_what_the_call_was_give
     assert f"line {line_of('FIELD')}'s code may already have read `p`" in message, message
     # A String's text, where lldb-dap writes memory. Past the inlined call, `n` may hold
     # what `size` made of `s`, and the argument `s` is never read by value again before
-    # `sized` returns, which is refused first (#330).
+    # `sized` returns, which is refused first.
     if WRITES:
         message = refused(*probe(capsys, root, "SIZE", "--set", 's="zz"'))
         assert (
@@ -310,8 +310,8 @@ def stepped(capsys, root, before, assignment):
 
 @pytest.mark.timeout(600)
 def test_a_macros_inlined_code_before_the_stop_withholds_every_local(crate, capsys):
-    # #324 review: `mclone!(x)` inlines `clone` from the macro's definition, line 4, before
-    # line 10's first row: `x` was `[settable]`, and `--set x=100` printed `MACRO 6`.
+    # `mclone!(x)` inlines `clone` from the macro's definition, line 4, before line 10's
+    # first row: a `--set x=100` there would leave the program printing `MACRO 6`.
     root, line = crate(MACROS), line_of("MACRO", MACROS)
     code, result = probe(capsys, root, "MACRO", "--capture", "x")
     assert code == 0, result.get("error")
@@ -334,8 +334,8 @@ def test_a_macros_inlined_code_before_the_stop_withholds_every_local(crate, caps
 
 @pytest.mark.timeout(600)
 def test_unsafe_code_may_read_the_local_through_a_pointer_the_call_is_not_given(crate, capsys):
-    # #324 review: `read_global()` is given nothing, but reads `x` through `G`, a
-    # `static mut`: `x` was `[settable]`, and `--set x=100` printed `GLOBAL 6`.
+    # `read_global()` is given nothing, but reads `x` through `G`, a `static mut`: a
+    # `--set x=100` there would leave the program printing `GLOBAL 6`.
     root, line = crate(GLOBALS), line_of("GLOBAL", GLOBALS)
     code, result = probe(capsys, root, "GLOBAL", "--capture", "x")
     assert code == 0, result.get("error")

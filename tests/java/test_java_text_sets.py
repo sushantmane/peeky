@@ -1,4 +1,4 @@
-"""Setting a Java String to a text (#137 part 2): java-debug makes a new String of it,
+"""Setting a Java String to a text: java-debug makes a new String of it,
 and the variable (a local, a field or an array element declared String) refers to it;
 other references keep the old String. A bundle whose launcher predates it refuses."""
 
@@ -12,7 +12,7 @@ from peeky.cli import main
 
 
 def _refused_code(result):
-    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    # A probe refused before it ran exits 2; a refusal at a stop, 1.
     return 2 if result.get("refused_before_launch") else 1
 
 
@@ -62,7 +62,7 @@ def greet(tmp_path, monkeypatch):
             }
         )
     )
-    # A bundle built before #137's launcher has no marker for String changes.
+    # A bundle whose launcher predates String changes has no marker for them.
     launcher = Path(bundle) / "classes" / "PeekyJavaAdapter.class"
     return root, config, b"peekyTextSet" in launcher.read_bytes()
 
@@ -77,8 +77,8 @@ def probe(capsys, greet, *argv):
 
 @pytest.mark.timeout(180)
 def test_a_string_local_field_or_element_takes_a_text(greet, capsys):
-    # #137 part 2: `--set name="apple"` was refused ("Java mutation requires a numeric or
-    # boolean scalar literal").
+    # `--set name="apple"` changes the String, not refused as "Java mutation requires a
+    # numeric or boolean scalar literal".
     sets = ["--set", 'name="apple"', "--set", 'g.label="new \\"quoted\\""', "--set", 'names[1]="z"']
     code, result = probe(capsys, greet, *sets)
     if not greet[2]:
@@ -111,7 +111,7 @@ def test_a_text_changes_only_a_string(greet, capsys):
 
 @pytest.mark.timeout(180)
 def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(greet, capsys):
-    # #164 review: `Object o = "obj"` and `CharSequence cs` were marked [settable] from
+    # `Object o = "obj"` and `CharSequence cs` were marked [settable] from
     # the type of the String they hold, though the launcher refuses them (and javac's
     # constant locals, `final String fc = "const"` and `final int fk = 5`, were changed
     # and reported, while the program printed the constants it had compiled in).
@@ -136,7 +136,7 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
             result
         )
         message = result["error"]["message"]
-        # #183: judged from the class files before the program runs, any bundle.
+        # Judged from the class files before the program runs, any bundle.
         assert result.get("refused_before_launch") is True, result
         assert "javac compiles a constant local into its uses" in message, message
         assert "FC:const FK:5" not in (result.get("output") or ""), result
@@ -153,12 +153,12 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
 
 @pytest.mark.timeout(180)
 def test_a_local_the_code_never_reads_after_the_stop_is_never_changed(greet, capsys):
-    # #164 review 2: `cap` was captured by a lambda before the stop, and nothing reads
+    # `cap` was captured by a lambda before the stop, and nothing reads
     # it after: the change was reported, and `lam.get()` still returned `captured`.
     code, result = probe(capsys, greet, "--set", 'cap="X"')
     assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     message = result["error"]["message"]
-    # #183: no read follows the line's start, judged before the program runs.
+    # No read follows the line's start, judged before the program runs.
     assert result.get("refused_before_launch") is True, result
     assert "is never read after a stop at this line's start (a lambda or inner class" in message
     assert "LAM:" not in (result.get("output") or ""), result

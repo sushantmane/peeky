@@ -1,4 +1,4 @@
-"""Setting a Rust `String` to a text (#137 part 2), on real builds: the bytes and `len`,
+"""Setting a Rust `String` to a text, on real builds: the bytes and `len`,
 within its capacity, only where the MIR proves the local holds a String at the stop;
 never a `&str` (borrowed, possibly read-only text)."""
 
@@ -12,7 +12,7 @@ from peeky.cli import main
 
 
 def _refused_code(result):
-    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    # A probe refused before it ran exits 2; a refusal at a stop, 1.
     return 2 if result.get("refused_before_launch") else 1
 
 
@@ -78,8 +78,8 @@ def refusal(code, result, *texts):
 
 @pytest.mark.timeout(400)
 def test_a_string_takes_a_text_within_its_capacity(crate, capsys):
-    # #137 part 2: `--set name="pear"` was refused before the run ("`name` is a
-    # std::string::String; only integer locals ... can be changed").
+    # `--set name="pear"` changes the text, not refused as "`name` is a std::string::String;
+    # only integer locals ... can be changed".
     code, result = probe(capsys, crate, "--set", 'name="pear"', "--set", 'keep="gon"')
     if not WRITES:
         refusal(code, result, "a String's text is on the heap, and this debugger cannot write")
@@ -113,8 +113,8 @@ def test_borrowed_moved_or_other_values_take_no_text(crate, capsys):
     code, result = probe(capsys, crate, "--set", "name=5")
     refusal(code, result, "and a String to a text in double quotes (--set 'name=\"apple\"')")
     # A moved String's buffer belongs to another binding, or is freed: never written.
-    # `keep` took it, and `println!` goes on with `keep` (#311 review round 2: a use
-    # through the `Arguments` made of `&keep` is a use of it), so before the run.
+    # `keep` took it, and `println!` goes on with `keep` (a use through the `Arguments` made
+    # of `&keep` is a use of it), so before the run.
     code, result = probe(capsys, crate, "--set", 'moved="x"')
     refusal(code, result, "the program has already copied `moved` into `keep` (at line 6)")
     assert result.get("refused_before_launch") is True, result
@@ -157,10 +157,10 @@ fn main() {
     println!("{:?} {:?} {} {} {} {}", chars.next(), cell.borrow(), shout(), n, copy, e);
 }
 """
-# #320: `first` (`chars.next()`) and `copy` (`e.clone()`) hold copies of `a` and `e`, and
+# `first` (`chars.next()`) and `copy` (`e.clone()`) hold copies of `a` and `e`, and
 # the program never reads either String by value again, so a change there is refused for
 # that before any borrow is judged. Moved at the end, they are read again. So is `b`, which
-# nothing reads after `// MANY` otherwise (#330).
+# nothing reads after `// MANY` otherwise.
 BORROWS_READ = BORROWS.replace(
     "copy, e);\n}", "copy, e);\n    drop(a);\n    drop(e);\n    drop(b);\n}"
 )
@@ -168,7 +168,7 @@ BORROWS_READ = BORROWS.replace(
 
 @pytest.mark.timeout(400)
 def test_a_string_a_live_borrow_reads_is_never_changed(crate, capsys):
-    # #164 review: with `head = &s[..2]` and `tail = &s[2..]` still to be used, a change
+    # With `head = &s[..2]` and `tail = &s[2..]` still to be used, a change
     # to `s` left both reading new bytes at old lengths (`[61, c3]`, `[a9, ...]`: not
     # UTF-8, undefined behavior), and `t = &s` read `byelo world`. Refused wherever the
     # MIR shows a borrow of the String used after the stop; made after its last use.
@@ -269,7 +269,7 @@ fn main() { boxed(); listed(); shown(); guarded(); iterated(); awaited(); }
 
 @pytest.mark.timeout(400)
 def test_a_borrow_in_a_trait_object_or_a_guards_drop_is_never_missed(crate, capsys):
-    # #164 review 2: the MIR prints `dyn Fn() -> usize` without the borrow's lifetime,
+    # The MIR prints `dyn Fn() -> usize` without the borrow's lifetime,
     # so a `Box<dyn Fn + '_>`, `Vec<Box<dyn Fn + '_>>`, `Box<dyn Show + '_>`, `Box<dyn
     # Iterator + '_>` or `Pin<Box<dyn Future + '_>>` holding `&s[2..]` passed as holding
     # no pointer; and a guard whose `Drop` reads its `&str` is used only by its drop.
@@ -320,7 +320,7 @@ fn main() {
     s.push('!');
 }
 """
-# #320: `merged` holds what `spans` parsed out of `text`; moved at the end, `text` is read.
+# `merged` holds what `spans` parsed out of `text`; moved at the end, `text` is read.
 ADDRESSES_READ = ADDRESSES.replace("    s.push('!');\n}", "    s.push('!');\n    drop(text);\n}")
 UNSAFE = """#[inline(never)]
 fn mark() {}
@@ -347,7 +347,7 @@ def probe_at(crate, capsys, text, marker, name):
 
 @pytest.mark.timeout(400)
 def test_crate_types_without_pointers_and_quiet_drops_hold_no_borrow(crate, capsys):
-    # #164 review 3: `merged: Vec<Span>` (`Span` only `u32`s) counted as maybe holding a
+    # `merged: Vec<Span>` (`Span` only `u32`s) counted as maybe holding a
     # borrow of `text`, and a `Vec<&str>` dropped at the end of `main` as reading `b`.
     (crate / "src/main.rs").write_text(ADDRESSES)
     code, result = probe_at(crate, capsys, ADDRESSES, "SPANS", "text")
@@ -379,7 +379,7 @@ def test_crate_types_without_pointers_and_quiet_drops_hold_no_borrow(crate, caps
 
 @pytest.mark.timeout(400)
 def test_a_crate_with_unsafe_code_takes_no_text(crate, capsys):
-    # #164 review 3: `s.as_ptr() as usize` holds no borrow the MIR shows, and `unsafe`
+    # `s.as_ptr() as usize` holds no borrow the MIR shows, and `unsafe`
     # code read the String through it after a change: bytes that are not UTF-8.
     (crate / "src/main.rs").write_text(UNSAFE)
     code, result = probe_at(crate, capsys, UNSAFE, "ADDR", "s")
@@ -407,7 +407,7 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_a_shebang_line_hides_no_unsafe_code(crate, capsys):
-    # #164 review 4: the shebang's `"` opened a string up to the char literal's, hiding
+    # The shebang's `"` opened a string up to the char literal's, hiding
     # the `unsafe` block between them; rustc skips a shebang line.
     (crate / "src/main.rs").write_text(SHEBANG)
     code, result = probe_at(crate, capsys, SHEBANG, "SHEBANG", "s")
@@ -438,13 +438,13 @@ fn main() {
     s.push('!');
 }
 """
-# #320: `b`, `e` and `r` hold what was computed from `s.len()`; moved at the end, `s` is read.
+# `b`, `e` and `r` hold what was computed from `s.len()`; moved at the end, `s` is read.
 OWNING_READ = OWNING.replace("    s.push('!');\n}", "    s.push('!');\n    drop(s);\n}")
 
 
 @pytest.mark.timeout(400)
 def test_crate_types_owning_boxes_enums_or_themselves_hold_no_borrow(crate, capsys):
-    # #164 review 4: `Boxed { b: Box<u32> }` (rustc describes a Box as a pointer) and a
+    # `Boxed { b: Box<u32> }` (rustc describes a Box as a pointer) and a
     # C-like enum counted as maybe holding a borrow of `s`; a type that holds itself
     # through a Box is judged by what else it holds.
     (crate / "src/main.rs").write_text(OWNING)

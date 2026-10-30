@@ -1,10 +1,10 @@
-"""#288 (found while preparing the eleventh evaluation): in C++ built with clang, a local
-declared on the stop line showed its leftovers, `[settable]`, with no note, at the line's
+"""In C++ built with clang, a local declared on the stop line holds leftovers at the line's
 first instruction. At -O0 clang puts an exception landing pad, which ends in a jump, just
-before that line's code, on a closing `}`'s line. Peeky took it for a later line's code
-running into the line, as a `for` header over two lines does. Now the stop's disassembly
-tells them apart. Each case is built with clang and with g++, which puts its landing pads
-after the function's code; a local is withheld at its line's first instruction with both."""
+before that line's code, on a closing `}`'s line. Taken for a later line's code running into
+the line, as a `for` header over two lines is, it would leave the local shown, `[settable]`,
+with no note. The stop's disassembly tells them apart. Each case is built with clang and with
+g++, which puts its landing pads after the function's code; a local is withheld at its line's
+first instruction with both."""
 
 import bisect
 import json
@@ -36,7 +36,7 @@ int main() {
     return 0;
 }
 """
-# Like the evaluation's grades: on main, hits 2 and 3 showed the previous student's quiz.
+# Grades: unwithheld, hits 2 and 3 would show the previous student's quiz.
 GRADES = """#include <cstdio>
 #include <string>
 #include <unordered_map>
@@ -193,8 +193,8 @@ def test_where_peeky_cannot_tell_how_control_came_the_row_says_so(
 ):
     # Clang's landing pad lies just before line 16. Where Peeky cannot read the
     # disassembly ("unread": an architecture it does not know), where control may come
-    # both from before the declaration and past it ("paths", review of #295), or where
-    # the unwinder may enter the line ("unwinder", review round 2), the value is shown
+    # both from before the declaration and past it ("paths"), or where the unwinder may
+    # enter the line ("unwinder"), the value is shown
     # with a note, and a change is refused; never shown plainly. GCC's line 16 has no
     # other line's code just before it.
     if unknown == "unread":
@@ -223,7 +223,7 @@ def test_where_peeky_cannot_tell_how_control_came_the_row_says_so(
 def test_the_binarys_landing_pads_are_read_where_the_compiler_put_them(
     build, cxx, capsys, monkeypatch
 ):
-    # Review round 2 of #295: the unwinder enters a function at its landing pads, which
+    # The unwinder enters a function at its landing pads, which
     # no disassembly shows. Peeky reads them from the binary's exception tables (Mach-O's
     # `__unwind_info` and `__gcc_except_tab`, ELF's `.eh_frame` and `.gcc_except_table`).
     # Clang and GCC both put `main`'s in code of its closing line, 20; none is line 16's.

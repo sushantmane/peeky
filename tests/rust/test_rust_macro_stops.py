@@ -1,11 +1,11 @@
-"""#326: a `session step` from the line before `let y = mclone!(x) + 1;`, with
+"""A `session step` from the line before `let y = mclone!(x) + 1;`, with
 `macro_rules! mclone { ($v:expr) => {{ $v.clone() }}; }`, stops at the inlined `clone`'s first
-instruction, which LLDB shows on the macro's definition. That line has no row of its own, so
-`session inspect` failed with DEBUGGER_ERROR "Native stopped line does not match prepared
-symbols", and the session was closed. So did a step onto a line whose only code is an
-`#[inline(always)]` call. Now the stop keeps the session: it reads no value of the frame and
-says why, and `session step` goes on. A breakpoint on such a line is refused before it is
-placed, where it was placed on the inlined code (`breakpoint src/main.rs:615 verified`)."""
+instruction, which LLDB shows on the macro's definition. That line has no row of its own; so
+does a step onto a line whose only code is an `#[inline(always)]` call. The stop keeps the
+session, with no DEBUGGER_ERROR "Native stopped line does not match prepared symbols": it
+reads no value of the frame and says why, and `session step` goes on. A breakpoint on such a
+line is refused before it is placed, not placed on the inlined code (`breakpoint
+src/main.rs:615 verified`)."""
 
 import json
 import os
@@ -109,7 +109,7 @@ fn main() {
     println!("DECLARED {}", declared(x));
 }
 """
-# #326 review: a macro's line with code of its own in `own`, and only an inlined call's site
+# A macro's line with code of its own in `own`, and only an inlined call's site
 # in `inlined`.
 MIXED = """use std::env;
 
@@ -177,8 +177,8 @@ def macro_stop(capsys, macro, line, file="src/main.rs"):
     code, state = command(capsys, "step")
     assert code == 0, state
     assert state["location"].endswith(f"{file}:{line}"), state
-    # On main: DEBUGGER_ERROR "Native stopped line does not match prepared symbols", and
-    # the session was closed.
+    # Not DEBUGGER_ERROR "Native stopped line does not match prepared symbols", which closes
+    # the session.
     code, result = command(capsys, "inspect")
     error = result.get("error") or {}
     assert code != 0 and error.get("code") == "INVALID_REQUEST", result
@@ -349,9 +349,9 @@ def test_a_decl_macros_inlined_code_keeps_the_session(crate, capsys):
 
 @pytest.mark.timeout(600)
 def test_a_macros_line_with_code_elsewhere_is_withheld_where_it_is_only_inlined(crate, capsys):
-    # #326 review: line PICK has code of its own in `own`, so it is the build's line, and a
-    # breakpoint there is placed. In `inlined`, LLDB shows the stop at `pick!`'s inlined
-    # `clone` on it too. On main that stop was judged as a line of `inlined`: `x` was
+    # Line PICK has code of its own in `own`, so it is the build's line, and a breakpoint
+    # there is placed. In `inlined`, LLDB shows the stop at `pick!`'s inlined `clone` on it
+    # too: that stop is not judged as a line of `inlined`, where `x` would be
     # `[not settable: part-way through line 3]`, which it isn't.
     root, line = crate(MIXED), line_of("PICK", MIXED)
     start(capsys, root, "IBEFORE", MIXED)

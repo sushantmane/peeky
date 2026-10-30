@@ -1,4 +1,4 @@
-"""#8: the client/worker boundary across processes and a forwarded TCP hop (ssh -L).
+"""The client/worker boundary across processes and a forwarded TCP hop (ssh -L).
 
 The relay process stands in for an SSH local forward: it listens on loopback and
 pipes bytes to the worker's loopback port. Killing it models a dropped tunnel.
@@ -115,7 +115,7 @@ def run(capsys, *argv):
 
 
 def test_a_file_the_worker_root_lacks_is_refused_before_launch(remote, capsys):
-    # #190: it printed an empty table and exited 1, as if the probe had run.
+    # It printed an empty table and exited 1, as if the probe had run.
     host, local, worker, _ = remote
     _, port = worker()
     (local / "extra.py").write_text("x = 1\nprint(x)\n")
@@ -163,7 +163,7 @@ HELPER = "def page():\n    return 3\n"
 
 
 def test_an_imported_module_that_differs_on_the_host_is_refused_before_launch(remote, capsys):
-    # #249: only the program's file was compared, so the host ran another helper.py and
+    # Only the program's file was compared, so the host ran another helper.py and
     # the values came from it without a note.
     host, local, worker, relay = remote
     for root in (host, local):
@@ -212,7 +212,7 @@ def test_a_module_on_one_side_only_is_refused_before_launch(remote, capsys):
 
 
 def test_a_python_session_launch_reports_the_sources_it_accepted(remote):
-    # #254 review, blocking 1: a Python session's launch answered inputs_checked but no
+    # A Python session's launch answered inputs_checked but no
     # inputs_sha256, and the client accepted the missing digest.
     from peeky.client import Client
     from peeky.sources import digest, python_digest, python_sources
@@ -237,7 +237,7 @@ def test_a_python_session_launch_reports_the_sources_it_accepted(remote):
 
 
 def test_a_python_session_that_meets_a_changed_source_is_closed_without_values(remote, capsys):
-    # #254 review, blocking 5: the program imported a helper.py changed after the start.
+    # The program imported a helper.py changed after the start.
     host, local, worker, relay = remote
     program = "x = 0\nimport helper\nx = helper.page()\nprint('PAGE', x)\n"
     for root in (host, local):
@@ -258,8 +258,8 @@ def test_a_python_session_that_meets_a_changed_source_is_closed_without_values(r
 
 
 def test_a_module_in_a_hidden_directory_is_compared(remote, capsys):
-    # #254 review, blocking 6a: .hidden/ was skipped on both sides, so the host ran a
-    # different .hidden/helper.py (x=4) and the probe exited 0.
+    # .hidden/ is compared too, not skipped on both sides: the host's .hidden/helper.py
+    # (x=4) differs, so the probe is refused.
     host, local, worker, relay = remote
     for root in (host, local):
         (root / ".hidden").mkdir()
@@ -314,7 +314,7 @@ def sourceless(root, text):
 
 
 def test_a_stack_frame_in_an_uncompared_file_under_the_root_is_refused(remote, capsys):
-    # #254 review round 1, 6(c) option A: hook is loaded from a .pyc, which is never
+    # hook is loaded from a .pyc, which is never
     # compared, and its frame is on the stack at the stop (it calls page()).
     host, local, worker, relay = remote
     for root in (host, local):
@@ -331,8 +331,6 @@ def test_a_stack_frame_in_an_uncompared_file_under_the_root_is_refused(remote, c
     code, out = run(capsys, "session", "start", local / "main.py", "--at", "4", "--worker", url)
     assert code == 2 and "a stack frame is in hook.py" in out.err, out.err
 
-
-# Round 2 of the #254 review: each passed on 7a37d9d.
 
 GIT_HOOKED = (
     "import os, sys\n"
@@ -433,7 +431,7 @@ def test_later_session_commands_carry_the_note(remote, capsys):
 
 
 def test_remote_stops_are_named_in_your_checkout(remote, capsys):
-    # #252: locations and frames named the worker host's root, a path you don't have.
+    # Locations and frames named the worker host's root, a path you don't have.
     host, local, worker, _ = remote
     _, port = worker()
     url = f"http://127.0.0.1:{port}"
@@ -464,7 +462,7 @@ VENV_MAIN = (
 
 
 def test_a_frame_outside_the_compared_sources_stays_the_worker_hosts(remote, capsys):
-    # #268 review: a frame in a virtual environment under the root was shown as a file
+    # A frame in a virtual environment under the root was shown as a file
     # of yours, though no virtual environment is compared.
     host, local, worker, _ = remote
     for root in (host, local):

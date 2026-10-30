@@ -1,4 +1,4 @@
-"""C and C++ locals declared below the stop are never shown as values (#74)."""
+"""C and C++ locals declared below the stop are never shown as values."""
 
 import json
 import os
@@ -55,7 +55,7 @@ def probe(capsys, *argv):
 
 def never_stops_at(capsys, program, line):
     """GCC runs a default member initializer's code on another line, the constructor's or
-    the one building the object (#167): `describe` leaves the member's line out, and
+    the one building the object: `describe` leaves the member's line out, and
     `--at` it never stops."""
     assert main(["describe", str(program), "--json"]) == 0
     lines = json.loads(capsys.readouterr().out)["breakpoint_lines"]
@@ -106,7 +106,7 @@ def test_a_local_declared_below_cannot_be_set(bucket, capsys):
     code, result = probe(capsys, bucket, "--at", "7", "--capture", "elapsed", "--set", "refill=5")
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
     assert "declared at line 8" in result["error"]["message"]
-    # #77: the refusal lists what can be changed at that stop.
+    # The refusal lists what can be changed at that stop.
     assert result["error"]["message"].endswith("settable here: now_ms, elapsed")
     code, result = probe(capsys, bucket, "--at", "7", "--capture", "elapsed,refill,last")
     settable = {row["selector"]: row.get("settable") for row in result["rows"]}
@@ -133,8 +133,8 @@ int main(void) {
 
 @pytest.mark.timeout(120)
 def test_a_callers_local_declared_on_its_calling_line_is_withheld(bucket, capsys):
-    # #104: in `long result = twice(seed);`, main stores `result` only after twice
-    # returns, so `--frame 1` showed its leftovers (6712212928) as its value.
+    # In `long result = twice(seed);`, main stores `result` only after twice returns, so
+    # until then `--frame 1` would show its leftovers (6712212928) as its value.
     path = bucket.parent / "twice.c"
     path.write_text(TWICE)
     bucket.unlink()
@@ -192,9 +192,9 @@ int main(void) {
 
 @pytest.mark.timeout(120)
 def test_a_callers_declaration_over_several_lines_is_withheld_until_it_is_stored(bucket, capsys):
-    # Review of #104: `long multi =` / `twice(seed + 1);` stores `multi` on line 18 after
-    # the call returns, so `--frame 1` showed leftovers (-1575490704436559704), and so did
-    # a designated initializer's fields (20878, 20879). Caller values are never settable.
+    # `long multi =` / `twice(seed + 1);` stores `multi` on line 18 after the call
+    # returns, so `--frame 1` would show leftovers (-1575490704436559704), and so would a
+    # designated initializer's fields (20878, 20879). Caller values are never settable.
     path = bucket.parent / "frames.c"
     path.write_text(FRAMES)
     bucket.unlink()
@@ -267,8 +267,8 @@ int main(void) {
 
 @pytest.mark.timeout(180)
 def test_a_callers_aggregate_stored_element_by_element_is_withheld_until_stored(bucket, capsys):
-    # Review of #104 (round 2): clang puts no code on the declaration line of an array of
-    # structs, a 2-D array or a nested struct, so `--frame 1` showed `o.in.y = 20905`,
+    # Clang puts no code on the declaration line of an array of structs, a 2-D array or
+    # a nested struct, so `--frame 1` would show `o.in.y = 20905`,
     # `ps[1].x = -1530060163171811189` and `grid[1][0] = 20908` while being stored.
     path = bucket.parent / "frames3.c"
     path.write_text(AGGREGATES)
@@ -285,7 +285,7 @@ def test_a_callers_aggregate_stored_element_by_element_is_withheld_until_stored(
             capsys.readouterr()
         shown[hit] = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
     # Each is read once all of its lines' code comes before the call: `o` from hit 5 on,
-    # `ps` from hit 9 and `grid` at hit 11 (withheld at every hit on main).
+    # `ps` from hit 9 and `grid` at hit 11.
     stored = {2: (), 5: ("o",), 9: ("o", "ps"), 11: ("o", "ps", "grid")}
     values = {
         "o": "{in = {x = 2, y = 4}}",
@@ -346,9 +346,9 @@ int main(void) {
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("suffix", ["c", "cpp"])
 def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, capsys, suffix):
-    # Review of #104 (round 3): line 21 has code (`t.x = seed`), all of it before the
-    # call, and `t.p` is stored after the calls on lines 22-23 return, so `--frame 1`
-    # showed `t.p.x = 20905` and `t.p.y = 20906` at hit 3, and `t.p.y = 20906` at hit 4.
+    # Line 21 has code (`t.x = seed`), all of it before the call, and `t.p` is stored
+    # after the calls on lines 22-23 return, so `--frame 1` would show `t.p.x = 20905` and
+    # `t.p.y = 20906` at hit 3, and `t.p.y = 20906` at hit 4.
     directory = bucket.parent.with_name(f"trio-{suffix}")
     directory.mkdir()
     path = directory / f"frames5.{suffix}"
@@ -365,9 +365,9 @@ def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, cap
             main(["session", "close"])
             capsys.readouterr()
     if suffix == "cpp" and cxx_is_gcc():
-        # GCC gives an aggregate's declaration line no code of its own (#167): its stores
+        # GCC gives an aggregate's declaration line no code of its own: its stores
         # carry its elements' lines. Withheld while they run; read once all of their code
-        # comes before the call (`q` from line 21 on, `t` at line 25: on main, never).
+        # comes before the call (`q` from line 21 on, `t` at line 25).
         for hit in (3, 4):
             for selector in ("t", "t.p", "t.p.y"):
                 row = rows[hit][selector]
@@ -489,7 +489,7 @@ def test_a_callers_aggregate_is_read_once_its_lines_have_run_on_this_pass(looped
         }, (hit, rows[hit])
 
 
-# The same, where a unit may optimize a function beyond -O0 on its own (review of PR #366):
+# The same, where a unit may optimize a function beyond -O0 on its own:
 # its code may leave source order, so the line table proves nothing.
 OPTIMIZING = {
     "attribute": LOOPED.replace(
@@ -507,8 +507,8 @@ OPTIMIZING = {
 def test_a_callers_aggregate_in_a_unit_that_may_optimize_a_function_is_withheld(
     looped, capsys, kind
 ):
-    # On the PR's first head, `ps` was read at line 26 with `optimize("reorder-blocks")` on
-    # `run`, or `#pragma GCC optimize` above it: the build's -O0 was taken as proof.
+    # `ps` is not read at line 26 with `optimize("reorder-blocks")` on `run`, or `#pragma
+    # GCC optimize` above it: the build's -O0 is no proof.
     if looped.language == "c" and looped.family == "gcc":
         pytest.skip("GCC's C gives these declarations' first lines code: the rule is not used")
     path = looped.write(OPTIMIZING[kind])
@@ -584,10 +584,10 @@ def _run_rows(capsys, path, line, hit, *selectors):
 
 @pytest.mark.timeout(300)
 def test_a_callers_aggregate_above_an_inlined_call_is_withheld(looped, capsys):
-    # Review of PR #366: LLDB gives the caller of an inlined call (`lifted`, always_inline)
-    # the address where that call's code starts, which is no return address. On the PR's
-    # first head, `ps` was read there at line 24 by taking it as one. Withheld inside and
-    # after its declaration above an inlined call; read in a physical call's caller.
+    # LLDB gives the caller of an inlined call (`lifted`, always_inline) the address where
+    # that call's code starts, which is no return address, so `ps` is not read there at
+    # line 24. Withheld inside and after its declaration above an inlined call; read in a
+    # physical call's caller.
     if looped.language == "c" and looped.family == "gcc":
         pytest.skip("GCC's C gives these declarations' first lines code: the rule is not used")
     path = looped.write(INLINED, "inlined")
@@ -639,7 +639,7 @@ int main(void) {
 
 @pytest.mark.timeout(180)
 def test_a_tail_calls_caller_is_never_read_as_a_physical_caller(looped, capsys):
-    # Review round 2 of PR #366: `run` tail-calls `leaf` (`musttail`, which works at -O0),
+    # `run` tail-calls `leaf` (`musttail`, which works at -O0),
     # so it has no frame of its own while `twice` runs. LLDB rebuilds one only from a
     # call site the debug information marks a tail call, which clang gives none of at
     # -O0: the stack is twice, leaf, main. A rebuilt `run` would not be read either
@@ -735,9 +735,9 @@ def _frame_one(capsys, path, line, hit, *selectors):
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("kind", sorted(INCLUDED))
 def test_a_callers_local_declared_in_another_file_than_its_line_is_withheld(bucket, capsys, kind):
-    # Review of #104 (round 4): with an initializer's rows in an `#include`d file,
-    # `--frame 1` (at table.h:2) showed `ps[1].x = 429835611285028900`; so does a
-    # declaration in an included file, with the frame in the including file.
+    # With an initializer's rows in an `#include`d file, `--frame 1` (at table.h:2) would
+    # show `ps[1].x = 429835611285028900`; so would a declaration in an included file,
+    # with the frame in the including file.
     body, header, fragment = INCLUDED[kind]
     directory = bucket.parent.with_name(f"inc-{kind}")
     directory.mkdir()
@@ -843,8 +843,8 @@ int main() {
 def test_a_declaration_the_compiler_reads_differently_from_its_text_is_withheld(
     bucket, capsys, program, cases
 ):
-    # Review of #104 (round 4): the statement scan found an end too early, so
-    # `get t.p --frame 1` showed leftovers.
+    # The statement scan must not find an end too early, or `get t.p --frame 1` shows
+    # leftovers.
     directory = bucket.parent.with_name(program.replace(".", "-"))
     directory.mkdir()
     path = directory / program
@@ -863,9 +863,9 @@ def test_a_declaration_the_compiler_reads_differently_from_its_text_is_withheld(
 
 @pytest.mark.timeout(240)
 def test_a_lone_carriage_return_breaks_a_line_as_the_compiler_counts_it(bucket, capsys):
-    # Review of #104 (round 5): with a lone `\r` between `{ twice(3),` and
-    # `twice(4) } };`, the scan ended `t` on line 22, so frame 1 at line 23 (hit 4)
-    # showed `t.p.y = 20906`. The frame's line and DWARF's declaration lines count it too.
+    # With a lone `\r` between `{ twice(3),` and `twice(4) } };`, a scan that ends `t` on
+    # line 22 shows `t.p.y = 20906` in frame 1 at line 23 (hit 4). The frame's line and
+    # DWARF's declaration lines count it too.
     directory = bucket.parent.with_name("cr")
     directory.mkdir()
     path = directory / "cr.c"
@@ -921,10 +921,9 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_local_a_backward_goto_can_keep_live_above_its_declaration_is_withheld(bucket, capsys):
-    # Review of #81: on later passes `x` holds its value from the previous pass, and it
-    # was shown, but on the first it holds leftovers, which were shown too (only later
-    # passes were checked). Peeky cannot tell the passes apart, so it withholds every
-    # one (sixth agent evaluation: never a value it cannot vouch for).
+    # On later passes `x` holds its value from the previous pass, but on the first it
+    # holds leftovers. Peeky cannot tell the passes apart, so it withholds every one:
+    # never a value it cannot vouch for.
     program = bucket.with_name("goto.c")
     program.write_text(GOTO)
     code, result = probe(capsys, program, "--at", "5", "--capture", "x", "--hits", "3")
@@ -937,7 +936,7 @@ def test_a_local_a_backward_goto_can_keep_live_above_its_declaration_is_withheld
 @pytest.mark.cpp
 @pytest.mark.timeout(120)
 def test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_local(bucket, capsys):
-    # Review of #81: the constructor runs `w = helper(3)` on line 5, above its own
+    # The constructor runs `w = helper(3)` on line 5, above its own
     # declaration; `main` declares another `v` on line 12.
     directory = bucket.parent.with_name("ctor")
     directory.mkdir()
@@ -992,7 +991,7 @@ int main(void) {
 @pytest.mark.cpp
 @pytest.mark.timeout(120)
 def test_a_member_initializer_run_by_its_caller_withholds_nothing(bucket, capsys):
-    # Review of #81: clang runs `weight = default_weight()` in main on line 5, inside
+    # Clang runs `weight = default_weight()` in main on line 5, inside
     # the code of line 10; main's locals are live there.
     directory = bucket.parent.with_name("items")
     directory.mkdir()
@@ -1014,7 +1013,7 @@ def test_a_member_initializer_run_by_its_caller_withholds_nothing(bucket, capsys
 
 @pytest.mark.timeout(120)
 def test_setjmp_behind_a_macro_withholds_nothing(bucket, capsys):
-    # Review of #81: after longjmp, the volatile `x` declared below is live (40, 41).
+    # After longjmp, the volatile `x` declared below is live (40, 41).
     program = bucket.with_name("try.c")
     program.write_text(TRY)
     code, result = probe(capsys, program, "--at", "9", "--capture", "x", "--hits", "2")
@@ -1069,14 +1068,14 @@ def session_inspect(capsys, program, line, *steps, hit=1):
 @pytest.mark.cpp
 @pytest.mark.timeout(120)
 def test_a_header_structs_initializer_run_in_main_withholds_nothing(bucket, capsys):
-    # Review of #81: stepping from main.cpp:5 lands on geo.hpp:2 in main (clang runs
+    # Stepping from main.cpp:5 lands on geo.hpp:2 in main (clang runs
     # the member initializer there); main's live `x` is not geo.hpp's `x` (line 5).
     directory = bucket.parent.with_name("geo")
     directory.mkdir()
     (directory / "geo.hpp").write_text(GEO)
     (directory / "main.cpp").write_text(GEO_MAIN)
     snapshot, shown = session_inspect(capsys, directory / "main.cpp", 5, 1)
-    # GCC runs the initializer on `p`'s own line (#167): the step ends on main's next.
+    # GCC runs the initializer on `p`'s own line: the step ends on main's next.
     landed = "main.cpp:6" if cxx_is_gcc() else "geo.hpp:2"
     assert snapshot["location"].endswith(landed), snapshot["location"]
     assert shown["x"].get("value") == "41", shown["x"]
@@ -1144,7 +1143,7 @@ def _withheld(row, line):
 
 @pytest.mark.timeout(180)
 def test_a_local_declared_on_the_stop_line_is_withheld_where_its_line_starts(convert, capsys):
-    # #92 (eval 4, C): `us` showed the previous call's 1000 at its own declaration line.
+    # At its own declaration line, `us` holds the previous call's 1000.
     rows = _rows(capsys, convert, 6, "us,ms", 3)
     for hit in (1, 2, 3):
         assert _withheld(rows[hit, "us"], 6) and rows[hit, "us"].get("settable") is False
@@ -1152,7 +1151,7 @@ def test_a_local_declared_on_the_stop_line_is_withheld_where_its_line_starts(con
     code, result = probe(capsys, convert, "--at", "6", "--capture", "ms", "--set", "us=5")
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
     assert "declared on line 6" in result["error"]["message"]
-    # Review of #99: a one-line function stops after its prologue, not at the line's
+    # A one-line function stops after its prologue, not at the line's
     # first row; a braced one-line loop body stops where its own block starts.
     rows = _rows(capsys, convert, 4, "us,ms", 2)
     assert all(_withheld(rows[hit, "us"], 4) for hit in (1, 2))
@@ -1169,7 +1168,7 @@ def test_a_line_a_loop_returns_to_and_mid_line_stops_show_the_value(convert, cap
     # loop, so its start is not a first pass (x86-64 does this for `while` tests too).
     rows = _rows(capsys, convert, 15, "y,x", 3)
     assert all("value" in rows[hit, "y"] for hit in (1, 2, 3))
-    # Review of #99: a header over several lines runs its next line's code first (the
+    # A header over several lines runs its next line's code first (the
     # loop's `i2 = 10`, the switch's `sw = next()`), then its own line, with the local set.
     rows = _rows(capsys, convert, 19, "i2", 3)
     assert [rows[hit, "i2"]["value"] for hit in (1, 2, 3)] == ["10", "11", "12"]

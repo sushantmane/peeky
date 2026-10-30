@@ -1,9 +1,9 @@
-"""A copy a call stores in a `static` or a `thread_local!`, which a later call reads (#329).
+"""A copy a call stores in a `static` or a `thread_local!`, which a later call reads.
 `local_set(&SLOT, x)` keeps `x` in a thread-local `Cell`, and `SLOT.with(|c| c.get())` reads
-it back: `x` was `[settable]` after the call, `--set x=100` was reported, and the output kept
-the old value. So with a `static` `Mutex` or atomic, written through a `&'static` the call is
+it back: after the call, `--set x=100` would be reported while the output keeps the old
+value. So with a `static` `Mutex` or atomic, written through a `&'static` the call is
 given (one a function returned too), or by a function of the crate's that names the static
-itself, however deep. Now `x` is refused after such a call, hedged: a static or thread-local may
+itself, however deep. `x` is refused after such a call, hedged: a static or thread-local may
 hold a copy of it. A change before the call reaches the program, and a call that touches no
 global state (a function of the crate's that names none, the standard library's) leaves `x`
 settable."""
@@ -880,8 +880,8 @@ def test_a_call_counts_by_its_path_and_by_where_the_pointer_it_returns_may_point
 
 @pytest.mark.timeout(600)
 def test_a_pointer_handed_to_a_thread_outlives_the_frame(keeps, capsys):
-    # The thread reads the copy in what `r` points at after the stop. `x` was settable, and
-    # the thread printed `THREAD 5`, the old value.
+    # The thread reads the copy in what `r` points at after the stop: a change of `x` would
+    # leave it printing `THREAD 5`, the old value.
     for marker, lines in (("SPAWNED", (29, 30)), ("HANDED", (42, 43))):
         message, _ = refused(*probe(capsys, keeps, marker, "--set", "x=100", text=KEEPS), marker)
         assert (
@@ -892,7 +892,7 @@ def test_a_pointer_handed_to_a_thread_outlives_the_frame(keeps, capsys):
     code, result = probe(capsys, keeps, "SPAWNED_CALL", "--set", "x=100", text=KEEPS)
     assert code == 0, result.get("error")
     assert "THREAD 100" in result["output"].splitlines(), result["output"]
-    # `black_box(std::ptr::eq(r, q))` hands `r` to nothing that keeps it: `x` was refused.
+    # `black_box(std::ptr::eq(r, q))` hands `r` to nothing that keeps it: `x` is settable.
     code, result = probe(capsys, keeps, "COMPARED", "--capture", "x", "--set", "x=100", text=KEEPS)
     assert code == 0, result.get("error")
     (row,) = [r for r in result["rows"] if r["selector"] == "x" and r["phase"] == "observed"]
@@ -903,7 +903,7 @@ def test_a_pointer_handed_to_a_thread_outlives_the_frame(keeps, capsys):
 def test_only_a_proven_keeping_call_or_a_use_beyond_the_address_withholds_the_local(kept, capsys):
     # The crate's own `spawn(r)`, `mem::forget(r)`, `let _ = Box::leak(Box::new(r));`, and a
     # stop before `black_box(std::ptr::eq(r, q))`: none hands on what `r` points at, nor uses
-    # it. Each was refused.
+    # it. None is refused.
     for marker in ("OWN_SPAWN", "FORGOT", "LEAKED", "COMPARED"):
         code, result = probe(capsys, kept, marker, "--capture", "x", "--set", "x=100", text=KEPT)
         assert code == 0, (marker, result.get("error"))

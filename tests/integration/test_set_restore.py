@@ -1,4 +1,4 @@
-"""`--set-at LINE@HIT name=@before` against real debugpy (#305): the guard flip that skips a
+"""`--set-at LINE@HIT name=@before` against real debugpy: the guard flip that skips a
 statement in two `--set-at`s, in a function and at module level; another call of the same
 function, and a generator, are refused."""
 
@@ -145,7 +145,7 @@ def test_another_call_or_a_generator_is_refused(state, capsys):
 
 @pytest.mark.timeout(240)
 def test_until_hits_waits_for_the_restore_of_its_last_change(state, capsys):
-    # Review of PR #322: with `--hits 2 --until hits`, the probe ended after the guard's
+    # With `--hits 2 --until hits`, the probe ended after the guard's
     # second change, before the restore that undoes it.
     (state / "trail.py").write_text(TRAIL)
     guard, flat = line_of(TRAIL, "GUARD"), line_of(TRAIL, "FLAT")
@@ -166,10 +166,10 @@ def test_until_hits_waits_for_the_restore_of_its_last_change(state, capsys):
 
 @pytest.mark.timeout(240)
 def test_a_restore_line_that_never_runs_names_each_write_it_never_restored(state, capsys):
-    # Twelfth evaluation, rainfall: the guard was flipped at each hit and restored at the
-    # line it guards, which then never ran. None of the writes was restored, but the run
-    # said one change was left in place, and named only the latest. Hit 2's wrote the 0
-    # already there, a write of the same text (Python doesn't prove an int unchanged).
+    # The guard is flipped at each hit and restored at the line it guards, which then never
+    # runs. None of the writes is restored, and the run names each, not one change left in
+    # place, the latest. Hit 2's writes the 0 already there, a write of the same text (Python
+    # doesn't prove an int unchanged).
     (state / "trail.py").write_text(TRAIL)
     guard, move = line_of(TRAIL, "GUARD"), line_of(TRAIL, "MOVE")
     code, result = probe(

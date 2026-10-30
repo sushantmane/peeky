@@ -1,4 +1,4 @@
-"""Rust loop headers (#161), on a real build: `for` has two breakpoint locations, both
+"""Rust loop headers, on a real build: `for` has two breakpoint locations, both
 before its loop (`into_iter` and the iterator's binding), `while` and `loop` one each,
 so each stops only before its loop and says so; `while let` binds at its loop's head,
 so it stops at every pass and gets no such note."""
@@ -88,19 +88,19 @@ def test_rust_loop_headers_say_when_they_stop_only_before_their_loop(crate, caps
         "first pass, never at the passes; put --at (or --set-at) on the first line of the "
         "loop's body for one stop per pass (each hit's stop, 1 to 2, says which)."
     ]
-    # The loop note says more than #157's per-pass warning, which it replaces.
+    # The loop note says more than the per-pass warning, which it replaces.
     assert not [w for w in result["warnings"] if "times per pass" in w], result["warnings"]
     assert [row["stop"] for row in result["rows"]] == [1, 2]
     line, result, notes = probe(crate, capsys, "WHILE")
     assert result["hits"] == 1 and len(notes) == 1, result["warnings"]
     assert notes[0].startswith(f"Line {line} is a loop header: it stops once"), notes
     # `loop {` holds no code of its loop's header, only a jump into it (as a `goto`
-    # would): no note (review of #166).
+    # would): no note.
     line, result, notes = probe(crate, capsys, "LOOP")
     assert result["hits"] == 1 and not notes, result["warnings"]
-    # Review of #166: a loop entered under a condition, and a line holding a whole loop
-    # and more, run at each pass of the loop around them: no note, and #157's per-pass
-    # warning where the line has several locations.
+    # A loop entered under a condition, and a line holding a whole loop and more, run at each
+    # pass of the loop around them: no note, and the per-pass warning where the line has several
+    # locations.
     for marker, passes in (("IFWHILE", 5), ("STMTWHILE", 3)):
         line, result, notes = probe(crate, capsys, marker)
         assert result["hits"] >= passes and not notes, (marker, result["warnings"])

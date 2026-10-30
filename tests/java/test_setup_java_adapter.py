@@ -65,7 +65,7 @@ UPSTREAM_EVENT_HUB = """\
 
 
 def test_the_event_hub_patch_applies_once_and_is_idempotent(bootstrap, tmp_path):
-    # #27: java-debug's event thread died building a log line nobody reads.
+    # java-debug's event thread died building a log line nobody reads.
     path = tmp_path / bootstrap.EVENT_HUB
     path.parent.mkdir(parents=True)
     path.write_text(UPSTREAM_EVENT_HUB)

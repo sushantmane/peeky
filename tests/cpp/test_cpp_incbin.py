@@ -1,6 +1,6 @@
-"""C++ inline assembly that reads a file is refused before building (#180), on a real
-clang++ build: `.incbin` read a file no dependency file lists. A `.incbin` string
-outside inline assembly builds as before."""
+"""C++ inline assembly that reads a file is refused before building, on a real clang++
+build: `.incbin` reads a file no dependency file lists. A `.incbin` string outside inline
+assembly builds."""
 
 import json
 import os

@@ -1,4 +1,4 @@
-"""Java loop headers (#161), on a real JVM: java-debug binds a line breakpoint to the
+"""Java loop headers, on a real JVM: java-debug binds a line breakpoint to the
 line's first bytecode in the first method holding it. A counted `for` and a for-each
 start with their initialization, which runs once before the loop, so they stop only
 there and say so; a `while`, a `for` with no initialization and a `do`'s `while` start
@@ -88,8 +88,7 @@ def test_java_loop_headers_say_when_they_stop_only_before_their_loop(loops, caps
                 "first line of the loop's body for one stop per pass"
             ],
         ), marker
-    # A loop entered under a condition runs at each pass of the loop around it (review
-    # of #166): no note.
+    # A loop entered under a condition runs at each pass of the loop around it: no note.
     for marker, passes in (("WHILE", 4), ("DO", 7), ("FOR_NO_INIT", 3), ("IFFOR", 4)):
         line, hits, notes = run(marker)
         assert (hits, notes) == (passes, []), marker

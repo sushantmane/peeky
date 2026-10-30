@@ -1,4 +1,4 @@
-"""A one-line lambda's parameter at a stop on its line (#279): the value passed, or
+"""A one-line lambda's parameter at a stop on its line: the value passed, or
 withheld where the stop is before the lambda's prologue stores it. A GCC build stops
 there (`v` read 0, then 7, for 7 and 8); clang marks the prologue's end, so every value
 reads. Built by clang and by g++."""

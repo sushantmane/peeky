@@ -1,4 +1,4 @@
-"""Each unit's preprocessing, then each unit's compile, run at the same time (#398). A
+"""Each unit's preprocessing, then each unit's compile, run at the same time. A
 parallel build gives what a build in order gives: the same values, and, where several
 sources fail, the first one's error, word for word."""
 
