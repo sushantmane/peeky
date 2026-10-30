@@ -1790,6 +1790,86 @@ def test_a_set_at_line_the_debugger_moves_is_refused(monkeypatch):
     assert "set_variable" not in worker.calls and "wait" not in worker.calls
 
 
+class Signalled(Lines):
+    """Lines, with a handled signal's stop where `order` says "signal"; records each change
+    as (line, that line's stop number)."""
+
+    def __init__(self, order):
+        super().__init__()
+        self.order, self.stops, self.changed_at = list(order), {}, []
+
+    def dispatch(self, operation, args):
+        if operation in ("launch", "breakpoints"):
+            order = self.order
+            reply = super().dispatch(operation, args)
+            asked = {point["line"] for point in args["breakpoints"]}
+            self.order = [stop for stop in order if stop == "signal" or stop in asked]
+            return reply
+        if operation == "wait" and self.order[:1] == ["signal"]:
+            self.order.pop(0)
+            return {
+                "state": "stopped",
+                "stop_id": "t",
+                "event": {"body": {"reason": "exception"}},
+                "signal_stop": {"kind": "signal", "description": "signal SIGINT"},
+            }
+        if operation == "wait" and self.order:
+            self.stops[self.order[0]] = self.stops.get(self.order[0], 0) + 1
+        if operation == "set_variable":
+            self.changed_at.append((self.line, self.stops[self.line]))
+        return super().dispatch(operation, args)
+
+
+def test_a_handled_signals_stop_leaves_each_lines_stop_count_as_it_was(monkeypatch):
+    # A handled signal's stop between a --set-at line's stops started its count again:
+    # `9@2` was made at line 9's 3rd stop, and `8@2` never, with "line 8 stopped 1 time(s)".
+    import peeky.probe as probe_module
+
+    worker = Signalled([8, 9, "signal", 9, 8, 9])
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), set_at=((9, 2, "x", "5"), (8, 2, "x", "6")))
+    result = probe_module.run_probe("/w", request)
+    assert result["status"] == "completed", result
+    assert worker.changed_at == [(9, 2), (8, 2)], result
+    assert [(change["at"], change["after"]) for change in result["interventions"]] == [
+        ("9@2", "5"),
+        ("8@2", "6"),
+    ]
+    assert "unapplied" not in result, result
+    assert any("stopped on signal SIGINT" in w for w in result["warnings"]), result["warnings"]
+
+
+def test_a_lost_stop_with_a_set_at_never_made_is_reported_not_an_internal_error(monkeypatch):
+    # A stop the debugger never reported (java-debug) with a --set-at whose stop never
+    # came failed with an internal error ('str' object has no attribute 'get').
+    import peeky.probe as probe_module
+
+    class Lost(Lines):
+        def dispatch(self, operation, args):
+            if operation == "wait" and not self.order:
+                return {
+                    "state": "terminated",
+                    "unreported_stop": {
+                        "thread_name": "main",
+                        "breakpoint": "main.py:9",
+                        "function": "main",
+                        "location": "main.py:9",
+                    },
+                }
+            return super().dispatch(operation, args)
+
+    worker = Lost(stops=1)
+    worker.order = [8]
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"),)))
+    assert result["status"] == "completed" and result["hits"] == 1, result
+    assert result["unapplied"] == [
+        {"option": "--set-at", "at": "9@1", "name": "x", "value": "5", "stops": 0}
+    ]
+    assert any("was seen paused at main.py:9" in w for w in result["warnings"]), result
+    assert any("9@1 x=5 was not applied: line 9 stopped 0 time(s)" in w for w in result["warnings"])
+
+
 def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monkeypatch):
     import subprocess
     import threading

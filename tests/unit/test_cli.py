@@ -169,6 +169,35 @@ def test_describe_names_verifys_at_only_where_verify_needs_it(tmp_path, monkeypa
     assert line.startswith(f"peeky verify {app} --config {config} --at app/Desks.java "), line
 
 
+def test_describe_shows_no_verify_command_for_an_attached_jvm(tmp_path, monkeypatch, capsys):
+    # `describe` printed a `verify:` command, which `verify` refuses for an attached JVM.
+    from peeky import cli
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "Desks.java").write_text("class Desks {}\n")
+    config = tmp_path / "attach.json"
+    config.write_text(
+        json.dumps(
+            {"bundle": "b", "port": 5005, "sources": ["app/Desks.java"], "class_roots": ["c"]}
+        )
+    )
+    monkeypatch.setattr(cli, "adapter_for", lambda language, data: _Target())
+    argv = ["describe", str(tmp_path), "--config", str(config)]
+    assert cli.main([*argv, "--json"]) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["language"] == "java-attach", manifest
+    assert "verify" not in manifest["commands"] and "candidate" not in manifest["commands"]
+    assert manifest["commands"]["background"].startswith("add --background to probe, then ")
+    assert cli.main(argv) == 0
+    text = capsys.readouterr().out
+    assert not any(line.startswith("verify:") for line in text.splitlines()), text
+    # As `verify` refuses it.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    assert cli.main(["verify", *argv[1:], "--check", "c.py", "--baseline", "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["message"].startswith("Attached JVMs cannot verify edits"), error
+
+
 CHECKER = """import json, subprocess, sys
 print("checking 3 cases")
 print("FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'")

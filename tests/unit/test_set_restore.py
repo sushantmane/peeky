@@ -853,7 +853,10 @@ def test_watch_stops_are_counted_apart(monkeypatch):
     result = run(monkeypatch, Passes(passes("1", "1")), flip())
     # The first line's one stop; the flat line's two (a --set-at's) stay set pauses.
     assert len(result["watch_pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 2
-    assert "watching for new calls: 1 stops, max" in probe_module._table(result)
+    # It said "1 stops".
+    assert "watching for new calls: 1 stop, max" in probe_module._table(result)
+    more = {**result, "watch_pauses_ms": [1.5, 2.5]}
+    assert "watching for new calls: 2 stops, max 2.5 ms" in probe_module._table(more)
 
 
 def test_a_probe_without_a_restore_asks_the_worker_for_nothing_new(monkeypatch):

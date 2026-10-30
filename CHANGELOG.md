@@ -64,6 +64,11 @@
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).
+- **Probe and describe fixes:** a handled signal's or exception's stop no longer starts a line's
+  count of stops again, so `--set-at LINE@HIT` is made at that line's HIT-th stop. A probe whose
+  debugger lost a stop, with a `--set-at` never made, no longer fails with an internal error.
+  `describe` lists no `verify` command for an attached JVM, which `verify` refuses. One stop is
+  `1 stop`, not `1 stops` (#408, #422, #424).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

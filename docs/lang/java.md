@@ -46,7 +46,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   With an attached JVM:
   - The config gives `port` and `class_roots` instead of `main_class`.
   - `--arg` is refused.
-  - Candidates and `verify` don't work. Try and verify edits with a launched target.
+  - Candidates and `verify` don't work, so `describe` lists neither. Try and verify edits with a
+    launched target.
   - Values show plain, without their fields, to keep the JVM's pauses short.
   - A session's `--max-pause` defaults to 10 s.
 

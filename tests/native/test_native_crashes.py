@@ -113,6 +113,26 @@ int main(int argc, char **argv) {
 """
 
 
+SIGNALLED = """#include <signal.h>
+#include <stdio.h>
+
+static volatile sig_atomic_t got;
+
+static void on_signal(int number) { got = number; }
+
+int main(void) {
+    int step = 1, total = 0;
+    signal(SIGINT, on_signal);
+    for (int k = 0; k < 4; k++) {
+        total += step; /* ADD */
+        raise(SIGINT);
+    }
+    printf("total %d\\n", total); /* DONE */
+    return 0;
+}
+"""
+
+
 def line_of(source, marker):
     return next(i for i, text in enumerate(source.splitlines(), 1) if f"/* {marker} */" in text)
 
@@ -285,6 +305,25 @@ def test_a_loop_of_handled_signals_is_bounded_with_an_honest_message(cc, capsys)
         )
         for w in result["warnings"]
     ), result["warnings"]
+
+
+@pytest.mark.timeout(300)
+def test_a_handled_signal_between_a_set_at_lines_stops_leaves_its_count(cc, capsys):
+    # The signal's stop after each pass started line ADD's count again: `ADD@2` was never
+    # made ("line 12 stopped 0 time(s)", though it stopped 4 times), and the total was 4.
+    Path("signalled.c").write_text(SIGNALLED)
+    add = line_of(SIGNALLED, "ADD")
+    code = main(
+        ["probe", "signalled.c", "--at", str(line_of(SIGNALLED, "DONE")), "--capture", "total"]
+        + ["--set-at", f"{add}@2", "step=100", "--json", "--quiet"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["status"] == "completed", result
+    assert [row["value"] for row in result["rows"]] == ["301"], result["rows"]
+    [change] = result["interventions"]
+    assert (change["at"], change["before"], change["after"]) == (f"{add}@2", "1", "100"), change
+    assert "unapplied" not in result, result
+    assert any("stopped on signal SIGINT" in w for w in result["warnings"]), result["warnings"]
 
 
 @pytest.mark.timeout(300)

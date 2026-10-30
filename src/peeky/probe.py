@@ -5000,20 +5000,26 @@ def run_probe(
                 # Not a proven crash: a signal the program may handle
                 # (SIGINT, SIGPIPE), a C++ throw or catch filter's stop, or a fatal one
                 # whose handlers can't be read. Nothing is read; the program goes on.
-                seen = state.get("signal_stop")
-                seen = seen if isinstance(seen, dict) else {}
+                # Named apart from `seen`: this stop leaves each line's stop count as it was.
+                signal_stop = state.get("signal_stop")
+                signal_stop = signal_stop if isinstance(signal_stop, dict) else {}
                 what = str(
-                    seen.get("description") or body.get("description") or f"reason: {reason}"
+                    signal_stop.get("description") or body.get("description") or f"reason: {reason}"
                 )[:300]
                 # A C++ throw or catch filter's stop is no signal (`kind`: exceptionInfo's).
-                filtered = seen.get("kind") not in (None, "signal", "exception")
+                filtered = signal_stop.get("kind") not in (None, "signal", "exception")
                 # The same stop: the same text, place, and nearest frame of the program's code
                 # (a loop raising from two lines reaches one place in libc from each).
-                place = (what, state.get("location"), seen.get("function"), seen.get("location"))
+                place = (
+                    what,
+                    state.get("location"),
+                    signal_stop.get("function"),
+                    signal_stop.get("location"),
+                )
                 again = (place, again[1] + 1 if again[0] == place else 1)
                 if again[1] >= REPEATED_STOPS:
                     # A bound, not a proof: the program may make progress between them.
-                    repeated = {**seen, "description": what}
+                    repeated = {**signal_stop, "description": what}
                     if "location" not in repeated and place[1]:
                         repeated["stopped_at"] = str(place[1])[:500]
                     for call in reversed(returning):
@@ -5448,7 +5454,7 @@ def run_probe(
         if type(report.get("exit_code")) is int:
             result["exit_code"] = report["exit_code"]
         if unreported:
-            seen = (
+            sighting = (
                 f"thread {unreported.get('thread_name')!r} was seen paused at "
                 f"{unreported.get('breakpoint')} (in {unreported.get('function')} at "
                 f"{unreported.get('location')}), a stop the debugger never reported "
@@ -5457,11 +5463,13 @@ def run_probe(
             if events := report.get("debugger_events"):
                 result["debugger_events"] = events
             if hits:
-                warnings.append(f"Before the program ended, {seen}; values from it were not read.")
+                warnings.append(
+                    f"Before the program ended, {sighting}; values from it were not read."
+                )
             else:
                 result["error"] = {
                     "code": "DEBUGGER_ERROR",
-                    "message": f"The program ended after {seen}; no values were read",
+                    "message": f"The program ended after {sighting}; no values were read",
                     "hint": "The line did run; the debugger failed to report its stop. Retry "
                     "the probe, and keep `debugger_events` for a bug report.",
                     "retryable": False,
@@ -6466,7 +6474,8 @@ def _table(result, short_names=True, sent_before=False):
             else ""
         )
         + (
-            f"  watching for new calls: {len(watched)} stops, max {max(watched)} ms"
+            f"  watching for new calls: {len(watched)} stop{'s' if len(watched) > 1 else ''}, "
+            f"max {max(watched)} ms"
             if (watched := result.get("watch_pauses_ms"))
             else ""
         )

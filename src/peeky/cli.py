@@ -714,12 +714,20 @@ def describe(args):
             "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
             "continue [--count N|--to LINE|--to-exit] | "
             "report | close",
-            "verify": f"peeky verify {target}{at} --check <checker.py> "
-            "--old <text> --new <text> (or --old-file/--new-file; repeat the pair for several "
-            "edits, each quoting the original file); --baseline instead checks the unedited "
-            "program, which the checker should fail",
-            "background": "add --background to probe or verify, then `peeky job wait <id>` "
-            "(exit 3 while running)",
+            # `verify` refuses an attached JVM: edits need a launched program.
+            **(
+                {}
+                if language == "java-attach"
+                else {
+                    "verify": f"peeky verify {target}{at} --check <checker.py> "
+                    "--old <text> --new <text> (or --old-file/--new-file; repeat the pair for "
+                    "several edits, each quoting the original file); --baseline instead checks "
+                    "the unedited program, which the checker should fail"
+                }
+            ),
+            "background": "add --background to probe"
+            + ("" if language == "java-attach" else " or verify")
+            + ", then `peeky job wait <id>` (exit 3 while running)",
             **(
                 {}
                 if language in ("python", "java-attach")
@@ -3382,7 +3390,9 @@ def _run_on(record, client, state, more, deadline, target):
     elif state["state"] == "stopped" and not _counted(state):
         state["note"] = f"stopped for another reason before {target} (shown above)"
     elif state["state"] == "stopped":
-        state["note"] = f"reached {reached} of {more} stops before --timeout ({target})"
+        state["note"] = (
+            f"reached {reached} of {more} stop{'s' if more > 1 else ''} before --timeout ({target})"
+        )
     else:
         state["note"] = f"the program is still running ({target}); `peeky session wait`"
     if type(last) is int:
