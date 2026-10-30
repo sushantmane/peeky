@@ -83,6 +83,14 @@ def test_a_request_sent_a_byte_at_a_time_is_closed_at_its_deadline(served, monke
     assert server.ran == ["inspect"]
 
 
+def taken(slots, within=10):
+    """Wait until the worker has accepted connections into all of ``slots`` (read only)."""
+    deadline = time.monotonic() + within
+    while slots._value:
+        assert time.monotonic() < deadline, "the worker never accepted the connections"
+        time.sleep(0.02)
+
+
 def test_a_connection_past_the_cap_is_answered_busy_and_runs_nothing(served, monkeypatch):
     # Re-review: one closed unread read to a client as a lost connection, whose request's
     # outcome is unknown, so a session's change couldn't be retried safely.
@@ -94,7 +102,7 @@ def test_a_connection_past_the_cap_is_answered_busy_and_runs_nothing(served, mon
     assert client.call("inspect") == {}  # its hello is done
     held = [socket.create_connection(address) for _ in range(2)]
     try:
-        time.sleep(0.3)
+        taken(server.slots)
         with pytest.raises(PeekyError) as busy:
             client.call("continue", session_id="s", stop_id="t")
         assert busy.value.code == 503 and busy.value.error_code == "BUSY", busy.value.payload
@@ -104,7 +112,7 @@ def test_a_connection_past_the_cap_is_answered_busy_and_runs_nothing(served, mon
         # Past the spare connections too: closed unread.
         with socket.create_connection(address) as spare:
             spare.sendall(b"POST /hello HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n")
-            time.sleep(0.3)
+            taken(server.spares)
             with socket.create_connection(address) as extra:
                 extra.settimeout(5)
                 try:
