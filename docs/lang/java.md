@@ -29,10 +29,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - Build the adapter bundle with `scripts/setup_java_adapter.py`. A bundle built before Peeky's
   java-debug patches is refused before anything runs: `UNSUPPORTED`, exit status 2, no table.
   Rebuild it, and point the config's `bundle` at the new one ([ERRORS](../ERRORS.md)).
-- Starting the JVM takes most of a run's time. On a laptop, for a small program, `describe` takes
-  about 0.6 s, a probe 0.8 to 1.7 s, and `session start` 0.7 to 0.9 s. A `verify` takes about 0.5 s
-  unedited, and about 3 s with an edit to compile, for a checker that runs the program 44 times.
-  Session commands take about 0.15 s.
+- Starting the JVM takes most of a run's time. A session's commands after `session start` reuse
+  its JVM, so they are quicker than a probe.
 - If a probe or `verify` may outlast your tool's timeout, add `--background`. Then run
   `peeky job wait <id>` ([8](../COOKBOOK.md#8-slow-programs-and-tool-timeouts)).
 - Add `--until hits` to skip waiting for the program to exit

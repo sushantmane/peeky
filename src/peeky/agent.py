@@ -86,10 +86,7 @@ def kill_process_group(process):
     except ProcessLookupError:
         return
     except PermissionError:
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            raise
+        process.wait(timeout=1)
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -343,8 +340,8 @@ class Investigation:
                 self.session = self.context = self.snapshot = None
 
     def source_lines(self):
-        """The program's lines as its compiler or interpreter numbers them (#188 review):
-        rustc ends a line at `\n` alone, the others at a lone `\r` too."""
+        """The program's lines as its compiler or interpreter numbers them: rustc ends a
+        line at `\n` alone, the others at a lone `\r` too."""
         rust = self.execution is not None and self.execution.language == "rust"
         return source_lines(read_source(self.source), rust)
 
@@ -555,7 +552,7 @@ class Investigation:
 def main():
     from peeky.processes import keep_children_waitable
 
-    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
+    keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(prog="peeky-agent")
     add_version(parser)
     parser.add_argument("--model", help="Model override; otherwise uses saved Codex model")

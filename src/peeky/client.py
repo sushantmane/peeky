@@ -31,7 +31,7 @@ def _spoken(headers, operation, url):
     """Refuse a worker's answer where the worker says it speaks another protocol (its
     `X-Peeky-Protocol` header, on every answer), however the session started: a local
     session's worker of an older Peeky would ignore what this client sends, such as
-    `expand`'s `key`, and answer something else (#374 review). Not `version`'s answer,
+    `expand`'s `key`, and answer something else. Not `version`'s answer,
     whose caller compares the protocol it states and says what to do."""
     spoken = headers.get(PROTOCOL_HEADER) if headers is not None else None
     if operation == "version" or spoken is None or spoken.strip() == str(PROTOCOL_VERSION):
@@ -48,8 +48,8 @@ class Client:
         self.url = url.rstrip("/")
         self.token = token
         # The protocol the worker's `version` states, once asked (or vouched for by the
-        # caller): nothing but `version` is sent to a worker before it is this client's
-        # (#374 review). A worker of another protocol would run a step or a change as it
+        # caller): nothing but `version` is sent to a worker before it is this client's.
+        # A worker of another protocol would run a step or a change as it
         # reads the request, and ignore what it doesn't know (`expand`'s `key`). Read,
         # asked and set under ``lock``; forgotten when a connection is lost, since
         # another worker may answer at the same address then.
@@ -103,7 +103,7 @@ class Client:
                 "Authorization": "Bearer " + self.token,
                 "Content-Type": "application/json",
                 # A worker of protocol 10 or later refuses any request but `version` that
-                # names another protocol, or none, before it runs it (#374 review).
+                # names another protocol, or none, before it runs it.
                 PROTOCOL_HEADER: str(PROTOCOL_VERSION),
             },
         )
@@ -114,7 +114,7 @@ class Client:
                     return json.load(response)
                 except ValueError:
                     # Sent and answered, but not as the worker answers: whatever the
-                    # worker did is unknown (#190 review).
+                    # worker did is unknown.
                     raise TransportLost(
                         f"Connection to the worker at {self.url} broke during {operation!r} "
                         "(its answer is not JSON); its outcome is unknown"
@@ -184,14 +184,14 @@ class Client:
         """One stateless request: stop at `path:line`, capture, optionally set, report.
 
         ``set_at`` holds (line, hit, name, value) interventions, each at its own stop of
-        the same file (#137); a hit of "all" makes it at every stop of its line (#265).
+        the same file; a hit of "all" makes it at every stop of its line.
 
         ``edit=(old, new)`` probes a candidate fix: the worker builds the program with
         ``old`` replaced once by ``new``; ``at`` is in the original's line numbering. A
         tuple of such pairs makes several edits, each quoting the original file.
 
         ``expect_inputs`` maps every source the worker's target reads to its sha256: the
-        worker refuses before launching when any differs, or is on one side only (#249).
+        worker refuses before launching when any differs, or is on one side only.
         """
         from peeky.probe import edit_pairs
 

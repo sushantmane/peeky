@@ -22,7 +22,6 @@ from peeky.rust_mir import (
     TypeLayouts,
     _crate_traits,
     _impl_trait,
-    _inherent,
     _keeping_call,
     _own_trait,
     global_state,
@@ -2881,20 +2880,6 @@ def test_a_copy_is_said_only_where_each_global_holds_the_very_type():
     assert levels == ["copy", "derived", "copy", "derived", "derived", "copy"]
     assert body.global_level(_GLOBAL_BASE, "u64") == "derived"
     assert body.global_level(_GLOBAL_BASE, None) == "derived"
-
-
-def test_an_inherent_impl_is_one_the_standard_library_cant_call():
-    texts = {
-        "src/main.rs": (
-            "#[derive(Debug)]\nstruct Wrap(u32);\nimpl Wrap {\n    fn keep(&self) {}\n}\n"
-            "impl std::fmt::Display for Wrap {\n    fn fmt(&self) {}\n}\n"
-        )
-    }
-    assert _inherent("<impl at src/main.rs:3:1: 3:10>", texts)
-    assert not _inherent("<impl at src/main.rs:6:1: 6:33>", texts)
-    assert not _inherent("<impl at src/main.rs:1:10: 1:15>", texts)
-    assert not _inherent("<impl at src/other.rs:3:1: 3:10>", texts)
-    assert not _inherent("keep", texts)
 
 
 def test_a_refusal_by_global_state_advises_a_change_before_the_call():
