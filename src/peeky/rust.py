@@ -1883,14 +1883,17 @@ def _unproven(variable, why=None, pointer=None):
     """``variable`` shown only as its pointer; ``why``, where it is a
     reference the MIR does not show still valid, says so. ``pointer``: "raw" for a raw
     pointer, "unknown" for one the build's debug information does not tell from a raw
-    pointer, for the row's note."""
+    pointer, for the row's note. One the debugger gives no address of shows none: where
+    ``why`` is given it surely holds a pointer (a reference, a NonNull); else only its type
+    is known to be able to (an `Option<&T>` may be `None`), and its value says only that."""
     # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read through the
     # pointer too.
     address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
+    unshown = "may point at freed memory" if why else "its type can hold a pointer"
     return {
         "name": variable.get("name"),
         "type": variable.get("type"),
-        "value": address[0] if address else "<not shown: may point at freed memory>",
+        "value": address[0] if address else f"<not shown: {unshown}>",
         "variablesReference": 0,
         "rust_view": "unproven",
         **({"why": why} if why else {}),

@@ -737,12 +737,25 @@ def test_a_withheld_rust_pointers_note_matches_what_its_row_shows():
         "This Rust NonNull is not shown: Peeky shows a NonNull, a raw pointer that is never "
         f"null, only as one address, and {wide}. To see its address, capture a thin pointer"
     ), hidden
-    tuple_ = {"name": "t", "type": "(i64, &app::Pt)", "value": unshown, "view": "unproven"}
+    tuple_ = {
+        "name": "t",
+        "type": "(i64, &app::Pt)",
+        "value": "<not shown: its type can hold a pointer>",
+        "view": "unproven",
+    }
     held = _unproven_note(tuple_)
-    assert held.startswith(
-        "This Rust value is not shown, because a pointer in it can reach freed memory: read a "
-        "plain function's own local where it is live"
+    assert held == (
+        "This Rust value is not shown: its type can hold a pointer, and Peeky can't prove that "
+        "what it would point at still stands. Read a plain function's own local where it is "
+        "live, or capture what it holds where it is created. Peeky never follows a raw "
+        "pointer, and follows another only to a value the MIR proves live, in the innermost "
+        "frame of an unoptimized build, in a crate with no unsafe code (rust-cookbook 7.2)."
     ), held
+    # Said of its type, not its value, which is not read: an `Option<&T>` may be `None`.
+    option = {**tuple_, "name": "o", "type": "core::option::Option<&app::Pt>"}
+    assert _unproven_note(option) == held
+    for claim in ("a pointer in it", "what it points at", "moved or dropped", "freed memory"):
+        assert claim not in held, claim
     why = "the build's MIR does not show that what it points at still stands here"
     text = {"name": "s", "type": "&str", "value": unshown, "view": "unproven"}
     lent = _unproven_note({**text, "unproven_reason": why})

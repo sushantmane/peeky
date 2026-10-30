@@ -1381,23 +1381,27 @@ def _composite_note(variable, selector):
     return _rust_note(_LENT_COMPOSITE_RUST if lent else _COMPOSITE_RUST, variable, selector)
 
 
-# What to do about a pointer that can reach freed memory, and how Peeky judges one.
-_UNPROVEN_TAIL = (
+# What to do about a pointer Peeky can't prove, and how Peeky judges one.
+_UNPROVEN_ADVICE = (
     "read a plain function's own local where it is live, or capture what it holds where "
-    "it is created. Peeky never follows a raw pointer, and follows another only to a "
-    "value the MIR proves live, in the innermost frame of an unoptimized build, in a "
-    "crate with no unsafe code. Here what it points at may be moved or dropped, or the "
-    "MIR cannot say (rust-cookbook 7.2)"
+    "it is created"
+)
+_UNPROVEN_RULE = (
+    "Peeky never follows a raw pointer, and follows another only to a value the MIR proves "
+    "live, in the innermost frame of an unoptimized build, in a crate with no unsafe code"
 )
 _UNPROVEN_RUST = (
     "this Rust Box, or pointer, shows only its pointer, which can reach freed memory: "
-    + _UNPROVEN_TAIL
+    f"{_UNPROVEN_ADVICE}. {_UNPROVEN_RULE}. Here what it points at may be moved or dropped, "
+    "or the MIR cannot say (rust-cookbook 7.2)"
 )
-# The same, for a value the debugger gives no address of (a tuple or `Option` of
-# references, a `&str`): none of it shows.
+# The same, for a value the debugger gives no address of (a tuple or `Option` that can
+# hold a reference): none of it shows. Said of its type, never of its value, which is not
+# read: an `Option` may be `None`.
 _UNSHOWN_RUST = (
-    "this Rust value is not shown, because a pointer in it can reach freed memory: "
-    + _UNPROVEN_TAIL
+    "this Rust value is not shown: its type can hold a pointer, and Peeky can't prove that "
+    f"what it would point at still stands. {_UNPROVEN_ADVICE[0].upper()}"
+    f"{_UNPROVEN_ADVICE[1:]}. {_UNPROVEN_RULE} (rust-cookbook 7.2)"
 )
 # A raw pointer is never followed, wherever it is and however live.
 _RAW_RUST = (

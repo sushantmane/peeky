@@ -1143,7 +1143,9 @@ The details:
 - A `NonNull` to a slice, `str` or trait object shows nothing, since its pointer has a length or
   vtable too. Its note says so, and how to see its address.
 - An `AtomicPtr` local is never followed either. It shows nothing, and its note says so. So does a
-  tuple or `Option` that holds a reference past its proof.
+  tuple or `Option` whose type can hold a reference, past that reference's proof.
+- Such a row shows `<not shown: its type can hold a pointer>`. It speaks of the type, not the
+  value, which Peeky doesn't read: an `Option<&T>` may be `None`.
 - The raw pointer inside a `NonNull` field is a raw pointer inside a value: `o.q.pointer`.
 - A raw pointer inside a value shows only its address too: a field, a tuple or array element, at any
   depth. For example, with `let h = Holder { n: 1, p: &*b as *const i64 };`, `h.p` shows `0x…`

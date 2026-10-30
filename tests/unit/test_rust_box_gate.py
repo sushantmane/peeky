@@ -380,3 +380,17 @@ def test_a_non_null_local_shows_only_its_address_as_a_raw_pointer_does():
     listed[0] = [{**pointer, "type": "app::Pt *", "value": "0x10"}]
     mir[0] = ["NonNull<app::Pt>"]
     assert (view("app::NonNull<app::Pt>") or {}).get("value") != "0x10"
+
+
+def test_a_value_shown_by_no_address_claims_a_pointer_only_where_it_surely_holds_one():
+    # Withheld before its variant is read, an `Option<&T>` that is now `None` showed
+    # `<not shown: may point at freed memory>`. Only a reference or a NonNull, whose
+    # gate says why, surely holds a pointer; anything else is said of its type.
+    from peeky.rust import _unproven
+
+    option = {"name": "o", "type": "core::option::Option<&app::Pt>", "value": "None"}
+    assert _unproven(option)["value"] == "<not shown: its type can hold a pointer>"
+    text = {"name": "s", "type": "&str", "value": '"abc"'}
+    why = "the build's MIR does not show that what it points at still stands here"
+    assert _unproven(text, why)["value"] == "<not shown: may point at freed memory>"
+    assert _unproven({**text, "value": "0x10"}, why)["value"] == "0x10"

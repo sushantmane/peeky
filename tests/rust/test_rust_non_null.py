@@ -1,7 +1,8 @@
 """A `NonNull<T>` local was withheld as `<not shown: may point at freed memory>`, while its
 note said it "shows only its pointer"; `n.pointer` was refused, so the address showed
 nowhere. A NonNull is a raw pointer that is never null: it now shows only its address, as a
-raw pointer local does, never followed. What shows no address says it is not shown."""
+raw pointer local does, never followed. What shows no address says it is not shown, and
+claims a pointer only where it surely holds one: an `Option<&T>` may be `None`."""
 
 import json
 import os
@@ -27,7 +28,8 @@ name = "nonnull"
 version = "0.1.0"
 """
 # No `unsafe` anywhere: making a NonNull, and letting it dangle, is safe.
-MAIN = """use std::ptr::NonNull;
+MAIN = """use std::fmt::Debug;
+use std::ptr::NonNull;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pt {
@@ -51,11 +53,19 @@ fn dangling() -> i64 {
     let bytes: NonNull<u8> = n.cast();
     let v = vec![1i64, 2, 3];
     let s = NonNull::from(&v[..]);
+    let label = String::from("a label");
+    let ts = NonNull::from(label.as_str());
+    let d: NonNull<dyn Debug> = NonNull::from(&v as &dyn Debug);
     let t: (i64, &Pt) = (1, &*b);
-    let k = t.0 + s.len() as i64;
+    let mut o: Option<&Pt> = Some(&*b);
+    let k = t.0 + s.len() as i64 + o.map_or(0, |p| p.x);
+    o = None;
+    let k = k + o.is_none() as i64;
     drop(b);
     let z = churn();
     let held = n.as_ptr() as i64 + raw as i64 + bytes.as_ptr() as i64;
+    let held = held + d.as_ptr() as *const u8 as i64 + ts.as_ptr() as *const u8 as i64;
+    let held = held + label.len() as i64;
     z + k + held * 0 + v.len() as i64 // OBSERVE
 }
 
@@ -69,6 +79,15 @@ ADDRESS = (
     "still stands."
 )
 UNSHOWN = "<not shown: may point at freed memory>"
+# Said of a value's type, never of its value, which is not read.
+TYPED = "<not shown: its type can hold a pointer>"
+TYPE_NOTE = (
+    "This Rust value is not shown: its type can hold a pointer, and Peeky can't prove that "
+    "what it would point at still stands. Read a plain function's own local where it is live, "
+    "or capture what it holds where it is created. Peeky never follows a raw pointer, and "
+    "follows another only to a value the MIR proves live, in the innermost frame of an "
+    "unoptimized build, in a crate with no unsafe code (rust-cookbook 7.2)."
+)
 
 
 @pytest.fixture
@@ -92,7 +111,7 @@ def line_of(text, marker):
 @pytest.mark.timeout(400)
 def test_a_non_null_local_shows_its_address_and_its_note_says_so(crate, capsys):
     at = f"src/main.rs:{line_of(MAIN, '// OBSERVE')}"
-    capture = "n,n.pointer,raw,bytes,s,t"
+    capture = "n,n.pointer,raw,bytes,s,ts,d,t,o"
     code = main(["probe", str(crate), "--at", at, "--capture", capture, "--quiet", "--json"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
@@ -113,14 +132,20 @@ def test_a_non_null_local_shows_its_address_and_its_note_says_so(crate, capsys):
     assert (
         rows["n.pointer"]["error"] == "cannot expand 'n': " + ADDRESS[0].lower() + ADDRESS[1:-1]
     ), rows["n.pointer"]
-    # A wide one (to a slice) has no one address: not shown, and its note says so and why.
-    wide = rows["s"]
-    assert wide.get("value") == UNSHOWN and wide.get("view") == "unproven", wide
-    assert wide["note"].startswith("This Rust NonNull is not shown: Peeky shows a NonNull"), wide
-    assert "this one is a wide pointer" in wide["note"] and "`.cast::<u8>()`" in wide["note"]
-    # Nor does a tuple holding a reference past its proof claim to show its pointer.
-    held = rows["t"]
-    assert held.get("value") == UNSHOWN, held
-    assert held["note"].startswith("This Rust value is not shown, because a pointer"), held
-    for row in (wide, held):
-        assert "shows only its pointer" not in row["note"], row
+    # A wide one (to a slice, `str` or trait object) has no one address: not shown, and
+    # its note says so and why. Neither its data's address nor its vtable's is given, nor
+    # where the debugger keeps its parts.
+    for name in ("s", "ts", "d"):
+        wide = rows[name]
+        assert wide.get("value") == UNSHOWN and wide.get("view") == "unproven", wide
+        assert wide["note"].startswith("This Rust NonNull is not shown: Peeky shows a"), wide
+        assert "this one is a wide pointer" in wide["note"], wide
+        assert "`.cast::<u8>()`" in wide["note"], wide
+        assert "0x" not in json.dumps(wide) and not wide.get("children"), wide
+    # Nor does a tuple whose type can hold a reference claim to show its pointer, and an
+    # `Option<&Pt>` that was `Some` and is now `None` is said to hold none: only its type
+    # can.
+    for name in ("o", "t"):
+        row = rows[name]
+        assert row.get("value") == TYPED and row.get("note") == TYPE_NOTE, row
+        assert "Some" not in json.dumps(row) and not row.get("children"), row
