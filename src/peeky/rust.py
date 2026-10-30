@@ -1,14 +1,15 @@
 """Fixed dependency-free Cargo binaries debugged through LLDB DAP.
 
-Scope: one explicit edition-2021 binary with immutable declared integration-test
-files, built offline/locked into a fresh workspace with a controlled environment
-and explicit real (non-rustup-proxy) cargo/rustc executables. Symbols come only
-from application compile units (see rust_symbols). Root integer locals kept in
-memory are the only mutable values; qualified Option<i32> values are shown by active variant and other
-data-carrying enums are opaque. Prepared builds also compile the declared Cargo
-integration test; verification runs that hashed test executable directly (never
-Cargo, so nothing can be rebuilt or substituted) and still requires the
-independent checker. Trusted code; not a sandbox.
+Scope: one dependency-free binary crate (edition 2021 or 2024) with at most one
+immutable declared integration test, built offline/locked into a fresh workspace
+with a controlled environment and explicit real (non-rustup-proxy) cargo/rustc
+executables. Symbols come only from application compile units (see rust_symbols).
+Only integer locals kept in memory, such integer fields and elements of locals,
+and `String` locals are mutable; only qualified enum layouts are shown by active
+variant, and other data-carrying enums are opaque. Prepared builds also compile
+the declared Cargo integration test, if any; verification runs that hashed test
+executable directly (never Cargo, so nothing can be rebuilt or substituted) and
+still requires the independent checker. Trusted code; not a sandbox.
 """
 
 import hashlib
@@ -156,7 +157,7 @@ _CARGO_STDERR = re.compile(
     r"|warning: `[a-z0-9_-]{1,64}` \(bin \"[a-z0-9_-]{1,64}\"\) generated [0-9]{1,6} warnings?"
 )
 SYMBOL_BUDGET_S = 10
-# How long each read of the application units after `prepare` may take (#397).
+# How long each read of the application units after `prepare` may take.
 UNIT_READ_S = 15
 _SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
@@ -575,7 +576,7 @@ class RustTarget:
                 raise RuntimeError("Staged Cargo inputs differ from validated preflight")
             if not judged:
                 # Inline assembly that can read a file, which no dependency file lists,
-                # is refused before anything runs (#180); the staged bytes are rechecked
+                # is refused before anything runs; the staged bytes are rechecked
                 # before each command.
                 texts = {
                     name: (workspace / name).read_bytes().decode("utf-8", errors="replace")
@@ -616,7 +617,7 @@ class RustTarget:
             assert_cargo_ancestry_clear(parent)
             # Outside the workspace, in Peeky's own directory; checked before every
             # command (validate_workspace). Optimized builds have it too: their bindings'
-            # types decide what a Box is (#111), though nothing there is ever proven.
+            # types decide what a Box is, though nothing there is ever proven.
             wrapper, wrapper_text = mir_wrapper(parent)
             environment = {
                 **environment,
@@ -726,19 +727,19 @@ class RustTarget:
             session.test_target = prepared.workspace / uplift
             session.units = tuple(units)
             session.code_blocks = blocks
-            # Each local's IR declarations, to say why a name is not in memory (#138).
+            # Each local's IR declarations, to say why a name is not in memory.
             session.declarations_ir = declarations
-            # Unsafe code can free what safe code shows owned (#156 review): where the
+            # Unsafe code can free what safe code shows owned: where the
             # crate has any, no owned container, field container or frozen borrow reads.
-            # Every declared file counts, an integration test's too (#156 review: what
+            # Every declared file counts, an integration test's too (what
             # Peeky reads from rustc's dependency file is not exact for every file name).
             session.unsafe_code = unsafe_source(texts, rust)
             if owned is not None:
                 owned.unsafe_code = session.unsafe_code
                 # What the crate's own types hold, to judge what a callee may change
-                # through them (#321).
+                # through them.
                 owned.interior = interior
-                # Where std's printing is written, to trust a read it makes (#192 review).
+                # Where std's printing is written, to trust a read it makes.
                 owned.std_macros = std_macro_files(
                     rustc, prepared.manifest.probes, (prepared.workspace, root)
                 )
@@ -756,8 +757,8 @@ class RustTarget:
 
 def std_macro_files(rustc, probes, outside):
     """The files std's and alloc's `print!`, `println!`, `eprint!`, `eprintln!` and
-    `format!` are written in, exactly as this toolchain's MIR names a span in them (#192
-    review 4): its sysroot's library sources (`rust-src`, where rustc maps its own
+    `format!` are written in, exactly as this toolchain's MIR names a span in them:
+    its sysroot's library sources (`rust-src`, where rustc maps its own
     paths back), or rustc's `/rustc/<commit-hash>/library/…`, the hash from the build's
     own `rustc -vV`. Never a file under ``outside`` (the crate, its build): a crate's
     own `src/library/std/src/macros.rs` is no std file."""
@@ -795,7 +796,7 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
         for name in sources
         for text in [(Path(workspace) / name).read_text(errors="replace")]
     )
-    # Every function the dump holds, to tell the crate's own `std::ptr::eq` (#259).
+    # Every function the dump holds, to tell the crate's own `std::ptr::eq`.
     defined = set()
     return OwnedLocals(
         load_bodies(Path(workspace) / MIR_DIR, crate, defined),
@@ -843,7 +844,7 @@ RUST_INTEGERS = frozenset(
 
 _HASH_IN = re.compile(r"17(h[0-9a-f]{16})E")
 
-# What a Rust function may return that Peeky shows (#155), as LLDB names it: integers
+# What a Rust function may return that Peeky shows, as LLDB names it: integers
 # (u8 and i8 as C characters, converted), bool and floats.
 RUST_RETURNS = RUST_INTEGERS | {"bool", "float", "double", "unsigned char", "char", "signed char"}
 
@@ -852,7 +853,7 @@ _SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "
 
 
 # LLDB's names for a `Vec`, `String`, `&str`, `Box<str>` or slice: a field of one of
-# these types may be read from memory (#156).
+# these types may be read from memory.
 _FIELD_CONTAINER = re.compile(
     r"alloc::vec::Vec<.+>|alloc::string::String|&(?:mut )?str|&(?:mut )?\[.+\]"
     r"|alloc::boxed::Box<str, alloc::alloc::Global>"
@@ -869,7 +870,7 @@ _UNREAD_CRATE = (
 # are unsafe without saying so before the 2024 edition (a `#[no_mangle]` function can
 # replace `free`), and `global_asm!`, which needs no `unsafe` but can define `free`
 # too (`asm!` and `naked_asm!` need it, but count anyway). Only `r#unsafe` is an
-# identifier: a macro may drop the `#` of `#unsafe` (#156 review), and `r#asm` is `asm`.
+# identifier: a macro may drop the `#` of `#unsafe`, and `r#asm` is `asm`.
 _UNSAFE_CODE = re.compile(
     r"(?<!\w)(?:unsafe|no_mangle|export_name|link_section|global_asm|naked_asm)\b"
     r"|(?<!\w)asm\s*!"
@@ -943,7 +944,7 @@ _NO_MEMORY = (
 )
 
 
-# A String as the MIR names it: what a text (#137) changes.
+# A String as the MIR names it: what a text changes.
 _TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
 # A `&mut` reference to a Vec, String, slice or str, as the IR or the MIR names its type.
 _MUT_CONTAINER = re.compile(
@@ -951,7 +952,7 @@ _MUT_CONTAINER = re.compile(
 )
 
 
-# The prelude's own types (#183), named as the program names them, and the default
+# The prelude's own types, named as the program names them, and the default
 # allocator's argument, which the program never writes.
 _PRELUDE_PATH = re.compile(
     r"(?<![\w:])(?:alloc::vec::|alloc::string::|alloc::boxed::|core::option::|core::result::)"
@@ -970,16 +971,16 @@ _C_NAMED = re.compile(
 
 
 def rust_spelling(name):
-    """A Rust type as the program spells it (#183): `Vec<u32>`, `String`, `Option<i32>`,
+    """A Rust type as the program spells it: `Vec<u32>`, `String`, `Option<i32>`,
     `Box<T>`, `Result<T, E>`, without the default allocator (`alloc::alloc::Global`).
     ``name``: as the debug information gives it (Rust's primitives, whole paths)."""
     return _PRELUDE_PATH.sub("", _GLOBAL_ARGUMENT.sub("", str(name)))
 
 
 class _Copied(str):
-    """``mid_statement``'s reason, with its own ``advice`` where it has one (#192: a
+    """``mid_statement``'s reason, with its own ``advice`` where it has one (a
     binding of the program's own holds the copy, and no other place on the statement
-    helps), and the short form a row gives (``row``, #300: `[not settable: …]`)."""
+    helps), and the short form a row gives (``row``: `[not settable: …]`)."""
 
     def __new__(cls, reason, advice=None, row=None):
         made = super().__new__(cls, reason)
@@ -1001,8 +1002,8 @@ _POINTER_KINDS = {
 
 def _untraced(proofs, hashed, held, home, target):
     """The clause of a refusal naming what a statement under way used that may point at
-    ``target`` ("it", or the local's name), where Peeky does not follow it (#300;
-    ``held``: the temporaries that may hold a copy): ("uses `e` and `l` (at line 39),
+    ``target`` ("it", or the local's name), where Peeky does not follow it
+    (``held``: the temporaries that may hold a copy): ("uses `e` and `l` (at line 39),
     references Peeky can't trace that may point at it", their places)."""
     places, variables = proofs.untraced_reads(hashed, held)
     made = _line_list(places, home)
@@ -1024,15 +1025,15 @@ def _either(clauses):
 
 
 def _unread_where(ends, home, owner="it"):
-    """Where a local ends unread on every path from a stop, for a refusal (#330:
-    ``OwnedLocals.unread_after``'s [(kind, file, line)]): "it is overwritten at line 7
+    """Where a local ends unread on every path from a stop, for a refusal
+    (``OwnedLocals.unread_after``'s [(kind, file, line)]): "it is overwritten at line 7
     first", "it is overwritten at line 7, or goes out of scope at line 14, first", "the
     function returns at line 9 first"; ``owner`` is what goes out of scope (`` `lap` ``
     for a change to `lap.start`). Paths that end otherwise are named too, so the line
-    is never said to come first where it may not (#330 review): "…, unless the program
+    is never said to come first where it may not: "…, unless the program
     panics, exits or loops forever before that", or alone "the program panics or exits
-    first". A drop whose `Drop` impl may read it is named as one Peeky can't tell (#330
-    review 2): "it is dropped at line 21 first; a `Drop` that drop runs may read the
+    first". A drop whose `Drop` impl may read it is named as one Peeky can't tell:
+    "it is dropped at line 21 first; a `Drop` that drop runs may read the
     changed part, which Peeky can't tell". None where nothing is known."""
     lines = {}
     for kind, file, line in ends:
@@ -1059,8 +1060,8 @@ def _unread_where(ends, home, owner="it"):
 
 
 def _unread_lead(ends, what="it", where="this stop"):
-    """The rule a refusal of a value no path reads states (#330), hedged where a drop may
-    read it (review 2): "the program does not read it after this stop, so a change would
+    """The rule a refusal of a value no path reads states, hedged where a drop may
+    read it: "the program does not read it after this stop, so a change would
     never be seen", or "the program may not read it after this stop, so a change may
     never be seen"."""
     if any(kind == "drop" for kind, _, _ in ends):
@@ -1070,7 +1071,7 @@ def _unread_lead(ends, what="it", where="this stop"):
 
 def _drop_doubt(doubts, home, name):
     """The clause a refusal by a copy ends with where a drop of the local ``name`` may read
-    the changed part (#330 review 2: ``OwnedLocals.drop_doubts``), in place of saying
+    the changed part (``OwnedLocals.drop_doubts``), in place of saying
     that Peeky proves no read first: "`d` is dropped at line 21, and a `Drop` it runs may
     read the changed part, which Peeky can't tell"."""
     return (
@@ -1081,8 +1082,8 @@ def _drop_doubt(doubts, home, name):
 
 def _exits_first(kinds, name, projection=()):
     """The clause a refusal by a copy ends with where every path from the stop panics,
-    exits or never leaves a loop before reading the local ``name`` (#330 review 3:
-    ``OwnedLocals.exits_first``), in place of saying that Peeky proves no read first:
+    exits or never leaves a loop before reading the local ``name``
+    (``OwnedLocals.exits_first``), in place of saying that Peeky proves no read first:
     "every path from here panics or exits before reading `x`", or "panics, exits or
     loops forever" (a loop may also panic)."""
     what = name if projection == () else "the changed part"
@@ -1091,15 +1092,15 @@ def _exits_first(kinds, name, projection=()):
 
 def _loops_first(name, projection=()):
     """The clause a refusal by a copy ends with where its only reason is a path that never
-    leaves a loop, once the copy is used, and reads the local ``name`` nowhere in it (#330
-    review 4: ``Body.copy_kind``'s "loop"): "on a path from here the program loops forever
+    leaves a loop, once the copy is used, and reads the local ``name`` nowhere in it
+    (``Body.copy_kind``'s "loop"): "on a path from here the program loops forever
     without reading `x`"."""
     what = name if projection == () else "the changed part"
     return f"on a path from here the program loops forever without reading {what}"
 
 
 def _stopped(kinds):
-    """What a program may do instead of reaching where a local ends (#330 review), for
+    """What a program may do instead of reaching where a local ends, for
     ``_either``: "panics" and "exits" where a path stops the frame, "loops forever" where
     one never leaves a loop; ``kinds`` holds ``_unread_where``'s kinds."""
     return [
@@ -1114,7 +1115,7 @@ def _overwritten(ends):
     return any(kind == "write" for kind, _, _ in ends)
 
 
-# Where to change a value the program does not read after the stop (#330), by whether it
+# Where to change a value the program does not read after the stop, by whether it
 # is overwritten ("written") or only ends ("ended").
 _UNREAD_ADVICE = {
     "written": "Change it on a later line, after the program overwrites it, or on an earlier "
@@ -1124,15 +1125,15 @@ _UNREAD_ADVICE = {
 
 
 # What a refusal says of a binding that may hold a copy or only point into the local
-# (#320 review: ``_copy_reason``), which has no copy to change for sure.
+# (``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
-# And of bindings that may keep the copy where no change Peeky makes reaches (#321), and
+# And of bindings that may keep the copy where no change Peeky makes reaches, and
 # what such a binding's type can't hold a copy in, only what was computed from it.
 _HIDDEN_COPY = ", which may be out of Peeky's reach ("
 _DERIVED = " state derived from "
-# And of global state a call may have stored a copy in (#329), which no change reaches.
+# And of global state a call may have stored a copy in, which no change reaches.
 _GLOBAL_COPY = "a static or thread-local"
-# The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
+# The ``copy_hazards`` readings a refusal weighs (``_copy_reason``).
 _READINGS = (
     "any",
     "explicit",
@@ -1147,20 +1148,20 @@ _READINGS = (
 
 
 def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
-    """How sure a refusal may be of what a statement under way holds (#300), from
+    """How sure a refusal may be of what a statement under way holds, from
     ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
     [(place, hazards)], or None where not understood}):
 
     - where at every place a binding's copy of it surely gave what the statement holds
       ("taken"), and some bindings ("sources") gave it at every one: ("named", those
-      bindings, their places) (#192);
+      bindings, their places);
     - where at every place the statement surely read it ("explicit"): ("read", None, the
       places of those temporaries);
     - where at every place one of those holds: ("holds", None, their places), what is
       true at each, whichever it is;
     - where only bindings of the program's own may hold a copy it goes on with (a call
       given `&mut x` since may have changed `x`): ("kept", what says so, their places);
-      it says which of them may only point into it instead ("pointing", #320 review);
+      it says which of them may only point into it instead ("pointing");
     - else ("may", what the statement does that may leave a copy of ``target``, places):
       it reads it ("value", on some path, maybe past the stop), uses a binding's copy of
       it ("copied"), reads another part of it ("whole"), uses a pointer that may point
@@ -1197,7 +1198,7 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
         clause(f"may have read {target}", held["any"])
         return "may", _either(clauses), places, None
     copied = held["taken"] | held["copied"]
-    # #329: global state a place may have stored a copy in.
+    # Global state a place may have stored a copy in.
     stored = getattr(proofs, "global_holders", lambda *args: frozenset())(hashed, copied)
     # A binding itself, not what a statement computed from one: the program goes on with
     # it, whether or not the statement under way uses it (`pause();` before `x = y;`).
@@ -1231,7 +1232,7 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
         owned.append(own)
         at |= lines
     if stored:
-        # #329: a `static` or `thread_local!` a call stored a copy in, which a later call
+        # A `static` or `thread_local!` a call stored a copy in, which a later call
         # may read; no change Peeky makes reaches it.
         lines = proofs.copy_lines(hashed, stored)
         levels = proofs.global_levels(hashed, stored, kind)
@@ -1254,10 +1255,10 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
 
 def _own_copies(proofs, hashed, found, home, target, kind, bound):
     """What ``_copy_reason`` says of the program's own bindings ``bound`` that may hold a
-    copy of ``target`` it goes on with (#192, #320 review, #321), and their lines."""
+    copy of ``target`` it goes on with, and their lines."""
     at = proofs.copy_lines(hashed, bound, True)
     made = _line_list(at, home)
-    # A pointer of the program's own stands for what it points at (#311 review: `p` of
+    # A pointer of the program's own stands for what it points at (`p` of
     # `*p = x;`, an argument): it may point at a copy.
     aiming = getattr(proofs, "pointer_bindings", lambda *args: frozenset())(hashed, bound)
     holds = "may point at" if aiming == bound else "may hold or point at" if aiming else "may hold"
@@ -1266,22 +1267,22 @@ def _own_copies(proofs, hashed, found, home, target, kind, bound):
         + (f" (at {made})" if made else "")
         + f" {holds} a copy of {target} that it goes on with"
     )
-    # What a call returned, which may hold a copy or only point into it (#320 review:
-    # `(u32, &'static ())`, an iterator adapter of the crate's): Peeky can't tell which.
+    # What a call returned, which may hold a copy or only point into it
+    # (`(u32, &'static ())`, an iterator adapter of the crate's): Peeky can't tell which.
     pointing = frozenset().union(*(dict(found.get("pointing") or ()).values())) & bound
     if names := proofs.copy_names(hashed, pointing):
         own += f", unless {_names(names)} only point{'s' if len(names) == 1 else ''} into it"
     elif not aiming and bound == getattr(proofs, "hidden_holders", lambda *args: None)(
         hashed, bound
     ):
-        # #321: a cell, a channel's state (`rx`), a struct's cell field, where a callee
+        # A cell, a channel's state (`rx`), a struct's cell field, where a callee
         # given a `&` may have stored the copy: no field change Peeky makes reaches it.
         levels, unsure = (
             proofs.holder_kinds(hashed, bound, kind)
             if hasattr(proofs, "holder_kinds")
             else (dict.fromkeys(bound, "copy"), ())
         )
-        # #321 review rounds 1 to 3: a copy only where each may hold one of its very type, a
+        # A copy only where each may hold one of its very type, a
         # `Cell<bool>` none of a `u32`: only what was computed from it.
         if kind is None or "derived" in levels.values():
             own = own.replace(f" may hold a copy of {target} ", f" may hold{_DERIVED}{target} ")
@@ -1352,7 +1353,7 @@ def _slice_element(proofs, body, assigned):
     """Whether the values ``assigned`` to a reference local (``body._assignments()``'s)
     are all a standard slice iterator's items, in a crate whose `std` paths are the
     standard library's (OwnedLocals._std_compares: under the `std` root ``_SLICE_NEXT``
-    names, #320 review round 3, as a `mod core` of the crate's leaves them)."""
+    names, as a `mod core` of the crate's leaves them)."""
     found = [_FOR_ITEM.fullmatch(value) for value in assigned]
     if not found or not all(found):
         return False
@@ -1362,7 +1363,7 @@ def _slice_element(proofs, body, assigned):
         if not calls or not all(_SLICE_NEXT.match(call) for call in calls):
             return False
     # A crate's own `trait Iterator` (`impl Iterator for std::slice::Iter<…>`) is dumped
-    # `<std::slice::Iter<…> as Iterator>::next` too (review of #276).
+    # `<std::slice::Iter<…> as Iterator>::next` too.
     return "std" in proofs._std_compares() and bool(proofs._std_iterator())
 
 
@@ -1396,9 +1397,9 @@ def _spans_and_text(session, bodies, source, name, line, texts):
 def _redirected(body, local):
     """Whether the argument ``local`` of the MIR ``body`` may hold another value than
     the call passed, at some stop: the body assigns to it, whole or in part, or takes
-    it by `&mut` or as a raw pointer, which can write it (review of #276: `p = &GLOBAL;`).
+    it by `&mut` or as a raw pointer, which can write it (`p = &GLOBAL;`).
     Also any `asm!` in the body, which may write any operand (`inout(reg) copy _1 =>
-    _1`, round 3), as for C and C++; and a body Peeky doesn't fully read
+    _1`), as for C and C++; and a body Peeky doesn't fully read
     (``supported``). Anywhere in the body counts, before the stop or not."""
     if not body.supported or body._assignments().get(local):
         return True
@@ -1419,7 +1420,7 @@ def _names(names):
 def _line_list(places, home=None):
     """`line 60`, `lines 3 and 4`, `lines 3, 4 and 7`: the lines of ``places`` ({(file,
     line)}) for a message; empty if none. A line of a file other than ``home`` (the
-    function's) is named with its file (#222: `format!`'s code is at
+    function's) is named with its file (`format!`'s code is at
     `alloc/src/macros.rs:113`, which `line 113` read as the program's own)."""
     own = sorted({number for file, number in places if home is None or _same_file(file, home)})
     others = sorted(
@@ -1490,7 +1491,7 @@ _CHAR_POINTER = re.compile(
 _ADDRESS = re.compile(r"(0x[0-9a-fA-F]+)(?:\s|$)")
 
 
-# The standard types whose own fields Peeky does not read (#164): each holds no pointer
+# The standard types whose own fields Peeky does not read: each holds no pointer
 # but what its type arguments hold (as its MIR name, rust_mir._FREE_PATHS).
 _FREE_RECORDS = frozenset(
     {
@@ -1524,7 +1525,7 @@ _STD_PREFIXES = ("std::", "core::", "alloc::")
 def free_types(dies):
     """The names (as the MIR prints them, `Span`, and qualified, `spans::Span`) of the
     crate's own structs, enums and unions without type parameters that provably hold no
-    pointer, read from the debug information (#164): every field, variant and element,
+    pointer, read from the debug information: every field, variant and element,
     however deep, is a number, a C-like enum, an array, a crate type of the same kind,
     or a standard container of such (``_FREE_RECORDS``, by their type arguments); a
     `Box` (which rustc describes as a pointer named for it) by what it owns. A type
@@ -1650,7 +1651,7 @@ def _frame_hash(frame):
 def _same_lent_rows(copies, variable, siblings, read):
     """True if every row shown under the variable's name holds the same bytes, where
     the MIR says they are an async body's parameter and its copies (``copies``: bytes,
-    rows; see OwnedLocals.lent_copies, #116): then each shows what the caller lent."""
+    rows; see OwnedLocals.lent_copies): then each shows what the caller lent."""
     if not copies:
         return False
     width, count = copies
@@ -1782,7 +1783,7 @@ def _may_own(kind, generics=()):
     (a Box, a Vec's or String's buffer, an Rc's allocation): anything but a primitive,
     a reference, a raw or fn pointer, or a tuple or array made only of those. A struct's
     or enum's name says nothing of its fields, and None (a type not written out) may be
-    anything (#108). In a generic body (``generics``: its type parameters, None if
+    anything. In a generic body (``generics``: its type parameters, None if
     unknown) a primitive's name may be a type parameter's (`fn keep<i64>(h: i64)`)."""
     if kind is None:
         return True
@@ -1802,7 +1803,7 @@ def _may_own(kind, generics=()):
 
 def _may_hold_raw(kind, generics=()):
     """Whether a value of MIR type ``kind`` may hold a raw pointer, or reach one through
-    its references (#255): anything but a primitive, `str`, a fn pointer, or a
+    its references: anything but a primitive, `str`, a fn pointer, or a
     reference, tuple or array made only of those. A struct's or enum's name says nothing
     of its fields; None may be anything; ``generics`` as for _may_own."""
     if kind is None:
@@ -1839,7 +1840,7 @@ def _top_level_parts(text, separator):
 
 
 def _caller_reason(name, held, changed="it"):
-    """Why a caller frame's container is not trusted (#260): ``held`` is what the frame
+    """Why a caller frame's container is not trusted: ``held`` is what the frame
     holds it as (`a local`). Whether the call under way was lent it is not checked, so
     this holds whether it was or not."""
     return (
@@ -1862,15 +1863,15 @@ _STALE_NO_POINTER = _Taint("stale")
 def _raw_container(why, taint=None):
     """A container left raw, saying ``why`` (view_variable). Where a call under way may be
     changing it (a caller frame's, owned or `&mut`), its own fields (`friends.len`) are not
-    its value either: they show `[stale]`, each saying why (#260)."""
+    its value either: they show `[stale]`, each saying why."""
     if CALLER_CHANGING in why:
         return {"raw_reason": why, "taint": "stale", "carry": True}
     return {"raw_reason": why, **({"taint": taint} if taint else {})}
 
 
 def _unproven(variable, why=None, pointer=None):
-    """``variable`` shown only as its pointer (#101, #108); ``why``, where it is a
-    reference past #110's proof, says so (#205). ``pointer`` (#255): "raw" for a raw
+    """``variable`` shown only as its pointer; ``why``, where it is a
+    reference the MIR does not show still valid, says so. ``pointer``: "raw" for a raw
     pointer, "unknown" for one the build's debug information does not tell from a raw
     pointer, for the row's note."""
     # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read through the
@@ -1904,7 +1905,7 @@ def _listed(items):
 
 def _gap_reason(name, reasons, line):
     """Why the MIR does not show that what the reference ``name`` points at still stands
-    at a stop on ``line`` (#259): a clause after "because", from the reason
+    at a stop on ``line``: a clause after "because", from the reason
     OwnedLocals.reference_valid gave (``reasons``, its ``why``). It names what may have
     run since its last use, and where."""
     reason = reasons[0] if reasons else ("since", frozenset())
@@ -1958,9 +1959,9 @@ def _gap_reason(name, reasons, line):
 
 
 class RustSession(NativeSession):
-    # mid_statement judges a field or element by the part it changes (#192 review).
+    # mid_statement judges a field or element by the part it changes.
     projected_copies = True
-    # Which element's address a pointer holds is told in C and C++ only (#302).
+    # Which element's address a pointer holds is told in C and C++ only.
     value_extent = None
 
     def __init__(
@@ -1999,14 +2000,14 @@ class RustSession(NativeSession):
         return json.loads(self._layouts_data)
 
     units = ()
-    # {legacy hash: the function's CodeBlocks} (rust_symbols.code_blocks; #115).
+    # {legacy hash: the function's CodeBlocks} (rust_symbols.code_blocks).
     code_blocks = {}
-    # Why the crate may have unsafe code, or None (``unsafe_source``; #156 review).
+    # Why the crate may have unsafe code, or None (``unsafe_source``).
     unsafe_code = None
 
     def _unit_symbols(self):
         """The application units' debug information (a native DieMap), read as
-        llvm-dwarfdump writes it (#397): a unit holds every std generic the crate
+        llvm-dwarfdump writes it: a unit holds every std generic the crate
         instantiates (`sort_by_key`, iterators, BTreeMap), tens of megabytes of text."""
         return read_debug_info(
             _absolute_tool(self.target.dwarfdump, "dwarfdump"),
@@ -2052,7 +2053,7 @@ class RustSession(NativeSession):
         )
 
     def entry_lines(self, program, lines):
-        """{line: the first line of each function with code on it} (#305), as
+        """{line: the first line of each function with code on it}, as
         NativeSession.entry_lines, from the application units' debug information, which
         `prepare` reads only for types: read again here, once per probe that restores a
         value."""
@@ -2125,7 +2126,7 @@ class RustSession(NativeSession):
 
     def _kept_in_memory(self, linkages, name):
         """For `describe`: whether the build's IR keeps the local ``name`` in memory in
-        every copy of the function (``linkages``), as a field change needs (#105); never
+        every copy of the function (``linkages``), as a field change needs; never
         in an optimized build."""
         if self._optimized() or not self.memory:
             return False
@@ -2133,8 +2134,8 @@ class RustSession(NativeSession):
         return bool(hashes) and all(self.memory.get((hashed, name)) is True for hashed in hashes)
 
     def _register_names(self, linkages, names):
-        """For `describe` (#138): of a function's integer locals (``names``: {name:
-        types}; `x @ main.rs:6` for one of several of its name, #206), those no stop can
+        """For `describe`: of a function's integer locals (``names``: {name:
+        types}; `x @ main.rs:6` for one of several of its name), those no stop can
         change, and why, as their rows say (see never_settable_row): `async state` where
         an async body keeps one across an
         `.await` in its state; `inlined` where only a copy of the function inlined where
@@ -2172,8 +2173,8 @@ class RustSession(NativeSession):
         return found
 
     def _macro_binding(self):
-        """For `describe`, which bindings the DWARF declares are a macro's own (sixth
-        evaluation, finding 12): `println!`'s `args` (`core::fmt::rt::Argument[1]`),
+        """For `describe`, which bindings the DWARF declares are a macro's own:
+        `println!`'s `args` (`core::fmt::rt::Argument[1]`),
         which rustc places on the line invoking the macro. Told per function by its own
         MIR body (the IR function its linkage name is), which places each binding where
         its code is: a name the body binds in another crate's file (std's `macros.rs`),
@@ -2181,7 +2182,7 @@ class RustSession(NativeSession):
         sources, while every binding of the name the body places there has a
         declaration of its own (one moved to the invoking line, by a
         `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Also the
-        bindings a `?` desugars to (`residual`, `val`: tenth evaluation, prep 7), which
+        bindings a `?` desugars to (`residual`, `val`), which
         the DWARF does not mark artificial: every binding the body places on that line
         under that name has a span ending right after a `?` of the source, where a
         binding the program writes spans its name (``_try_bindings``). Shown when unsure: a
@@ -2246,7 +2247,7 @@ class RustSession(NativeSession):
 
     def _loop_iterators(self, bodies, source, name, line, texts):
         """Whether ``bodies`` bind ``name`` on ``line`` of ``source`` only as a `for` loop
-        desugars it (eleventh evaluation, prep 7): `iter`, the loop's iterator, whose span
+        desugars it: `iter`, the loop's iterator, whose span
         is the loop's iterator expression (`1..=weeks`, `team.iter().enumerate()`), so the
         loop's block opens right after it. A binding the program writes spans its name,
         which a `{` never follows. False where any span is missing or the source can't be
@@ -2290,7 +2291,7 @@ class RustSession(NativeSession):
     def return_withheld(self, variable):
         """Why a Rust return LLDB lists is not shown, or None: integers, bool and floats,
         which come back in a register; never an enum, Option, struct, reference, String
-        or char (LLDB shows a char as C's, #155)."""
+        or char (LLDB shows a char as C's)."""
         kind = str(variable.get("type") or "")
         if kind in RUST_RETURNS:
             return None
@@ -2330,14 +2331,14 @@ class RustSession(NativeSession):
 
     def text_storage(self, variable, frame):
         """(kind, shape) for text_sets: a String, with its layout from the build's debug
-        information; ValueError for anything else (#137)."""
+        information; ValueError for anything else."""
         return text_kind(variable, "rust"), self.layouts.get("alloc::string::String")
 
     def validate_text_target(self, variable, frame, stop=None):
         """A String's buffer is written only where the MIR proves the local initialized
-        at the stop (#108): a moved or dropped String's pointer may point into freed
+        at the stop: a moved or dropped String's pointer may point into freed
         memory, and a String not yet assigned holds whatever its slot held. And only
-        where no borrow of it is used after the stop (#164): a `&str` taken before the
+        where no borrow of it is used after the stop: a `&str` taken before the
         change keeps the old length, so it would read a mix of old and new text, or bytes
         that are not UTF-8 (undefined behavior). ``stop``: the stop's reason."""
         name = variable.get("name")
@@ -2352,7 +2353,7 @@ class RustSession(NativeSession):
                 "String's buffer may then be freed memory"
             )
         if unsafe := getattr(self, "unsafe_code", None):
-            # #164 review 3: a raw pointer, or an address kept as an integer (`s.as_ptr()
+            # A raw pointer, or an address kept as an integer (`s.as_ptr()
             # as usize`), holds the String's bytes where no borrow shows it.
             raise ValueError(
                 f"`{name}` cannot be changed to a text: {unsafe}, or read the String's bytes "
@@ -2476,12 +2477,12 @@ class RustSession(NativeSession):
         return named if len(named) <= 300 else named[:299] + "…"
 
     def never_settable_row(self, variable, frame, member=False, steps=None):
-        """`register` where no stop of this build can change the row (#138): the build's
+        """`register` where no stop of this build can change the row: the build's
         IR keeps its local (for ``member``, the local holding the field or element) only
         in a register in the frame's function, so the debugger shows a copy. A root row
         only when it is an integer, which nothing else would rule out. Else None, as for
         a member whose path (``steps``: the debugger's child names) `set` refuses first,
-        whatever holds it (`sharers.len`, a standard-library type's field, #260)."""
+        whatever holds it (`sharers.len`, a standard-library type's field)."""
         if self._optimized():
             return None
         kind = str(variable.get("type") or "")
@@ -2512,8 +2513,8 @@ class RustSession(NativeSession):
             return "inlined"
         if kind in ("other", "some"):
             return f"another binding in a register (line {', '.join(map(str, lines))})"
-        # Only where every piece of the binding is proven the debugger's copy (review of
-        # PR #335: a closure's capture, a value split between a slot and a register).
+        # Only where every piece of the binding is proven the debugger's copy (a
+        # closure's capture, a value split between a slot and a register).
         return "register" if kind == "own" else "not proven in memory"
 
     def _path_refused(self, frame, root, steps):
@@ -2593,7 +2594,7 @@ class RustSession(NativeSession):
     def _in_scope(self, hashed, name, line, path):
         """(source, line) of the declaration of the root local ``name`` in scope at
         ``line`` of ``path`` (the MIR's scopes), for _declared_type to pick among a
-        function's locals of that name (#206: a loop's `entry`, not an earlier loop's);
+        function's locals of that name (a loop's `entry`, not an earlier loop's);
         None where the name says it (`x @ main.rs:6`) or that is not one binding."""
         if not is_name(str(name), limit=None) or path is None or type(line) is not int:
             return None
@@ -2610,14 +2611,14 @@ class RustSession(NativeSession):
 
     def _declaration_at(self, frame, root):
         """(source, line) of the binding of the root local ``root`` in scope at the stop
-        ``frame`` (the MIR's scopes: _frame_scope), for a `@before` restore (#305)."""
+        ``frame`` (the MIR's scopes: _frame_scope), for a `@before` restore."""
         return self._frame_scope(frame, root)
 
     def compiler_binding(self, variable, frame):
         """Whether a root local lldb-dap lists in ``frame`` is a binding rustc makes, not
         the program: a `for` loop's `iter` or a `?`'s `residual` or `val`, told as
-        `describe` tells them (_loop_iterators, _try_bindings; eleventh evaluation, prep
-        7). The worker leaves it out of a stop's listing, as `describe` does. False
+        `describe` tells them (_loop_iterators, _try_bindings). The worker leaves it out
+        of a stop's listing, as `describe` does. False
         where unsure: no MIR, or not one binding."""
         name, at, place = str(variable.get("name")).partition(" @ ")
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
@@ -2659,7 +2660,7 @@ class RustSession(NativeSession):
         so only because a binding rustc makes shares its name (`iter @ main.rs:2` beside a
         `for` loop's `iter`): every other binding of the name in the frame's body is the
         compiler's, which a stop's listing leaves out, so the plain name is this one, as
-        `describe` lists it (review of PR #315)."""
+        `describe` lists it."""
         found = super().selected_as(variable, frame, siblings)
         shown = split_located(str(variable.get("name")))
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
@@ -2684,7 +2685,7 @@ class RustSession(NativeSession):
         """The name of a `for` loop's item among ``siblings`` (the frame's root locals, as
         lldb-dap lists them) that is a reference to a value of type ``element`` (the
         debug information's name), through which a field a container's view does not
-        read may be read (eleventh evaluation: `team[1].leave` did not read where `e`,
+        read may be read (`team[1].leave` did not read where `e`,
         the loop's `&Engineer`, did). A loop's item is a binding of the MIR scope just
         inside the one holding the loop's `iter` (_loop_iterators). Nothing proves the
         loop goes over that container (`for e in backups.iter()`), so the note that
@@ -2734,8 +2735,8 @@ class RustSession(NativeSession):
 
     def declared_at(self, variable, frame):
         """(`entry @ main.rs:81`, how many bindings that names) for a root local lldb-dap
-        lists by its plain name where its function binds that name more than once
-        (#206): where it is declared, as `describe` lists it and as lldb-dap names it
+        lists by its plain name where its function binds that name more than once:
+        where it is declared, as `describe` lists it and as lldb-dap names it
         where another of its name is in scope too. None for another, or where the MIR
         does not tell which it is."""
         name = variable.get("name")
@@ -2763,7 +2764,7 @@ class RustSession(NativeSession):
             return None
         file, number = found.pop()
         # Bindings that share it (`let x = 1; let x = "a";` on one line, or a file of the
-        # same name in another directory): it names none of them (#215 review).
+        # same name in another directory): it names none of them.
         shared = {
             (b[0], b[1]) if b[0] is not None else (None, b[1], b[4])
             for b in body.bindings.get(name, ())
@@ -2839,13 +2840,13 @@ class RustSession(NativeSession):
 
     def never_settable(self, program, lines, names, text=False):
         """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
-        ``lines`` of ``program`` in this build (#138): the refusal, as (code, message)
+        ``lines`` of ``program`` in this build: the refusal, as (code, message)
         where no such local exists there, else as its message; or None. ``text``: the
-        values are texts (#137), which change a String rather than an integer. Only what the
+        values are texts, which change a String rather than an integer. Only what the
         build fixes counts, and only where it fails in every function that can stop there (a
         closure, a generic's instances, an inlined copy): the IR keeping the local in a
         register (or no such local), its MIR type for a root, and for a field or element
-        the debug information's types on the way (#105). What depends on the stop (a
+        the debug information's types on the way. What depends on the stop (a
         statement under way, an initialization) is judged there."""
         from peeky.fields import Unsettable
         from peeky.probe import parse_selector
@@ -2903,7 +2904,7 @@ class RustSession(NativeSession):
         )
 
         plain = _plain(root)
-        # The part a change makes, which the program's own copies are judged by (#192).
+        # The part a change makes, which the program's own copies are judged by.
         projection = ()
         proofs = getattr(self, "owned", None)
         body = proofs.body(hashed) if proofs is not None else None
@@ -2956,7 +2957,7 @@ class RustSession(NativeSession):
                     kind,
                     root,
                     named,
-                    # The call advice only for a proven parameter (tenth evaluation).
+                    # The call advice only for a proven parameter.
                     owner=lambda: pointer_advice(
                         root, self._pointer_kind(hashed, root, line, source)
                     ),
@@ -2985,8 +2986,8 @@ class RustSession(NativeSession):
     def _unread_everywhere(self, hashed, plain, source, line, projection=()):
         """("unread", (where it ends unread, whether it is overwritten there)) where, from
         every place ``line`` can stop at in ``hashed``, no path reads ``plain`` (the part
-        ``projection`` of it) before it is overwritten or ends (#330:
-        ``OwnedLocals.unread_after``): a change there is never seen. Else None."""
+        ``projection`` of it) before it is overwritten or ends
+        (``OwnedLocals.unread_after``): a change there is never seen. Else None."""
         proofs = getattr(self, "owned", None)
         check = getattr(proofs, "unread_after", None)
         if check is None or self._optimized():
@@ -3003,8 +3004,8 @@ class RustSession(NativeSession):
         """("statement", why) where every place ``line`` can stop at in ``hashed`` is
         inside a statement that may hold a copy of ``plain`` it uses again (a statement's
         later line: `let arr = [s.a,` / `k,` / `s.b];` at `k,`), so no stop there can
-        change it for that statement (#183); else None. It says the statement has read
-        it only where the MIR shows that at every place (#300: ``_copy_reason``)."""
+        change it for that statement; else None. It says the statement has read
+        it only where the MIR shows that at every place (``_copy_reason``)."""
         proofs = getattr(self, "owned", None)
         check = getattr(proofs, "copied_everywhere", None)
         if check is None or self._optimized():
@@ -3035,22 +3036,22 @@ class RustSession(NativeSession):
             hashed, plain, line, path, projection=projection, coded=True
         )
         if doubts:
-            # #330 review 2: a drop may read it, which Peeky can't tell.
+            # A drop may read it, which Peeky can't tell.
             unseen = "so a change there may never be seen: " + _drop_doubt(
                 doubts, source, f"`{plain}`"
             )
         elif exits:
-            # #330 review 3: no path that doesn't panic goes on to read it.
+            # No path that doesn't panic goes on to read it.
             unseen = "so a change there may never be seen: " + _exits_first(
                 exits, f"`{plain}`", projection
             )
         elif copied == {"loop"}:
-            # #330 review 4: a path that never leaves a loop, nor reads it there.
+            # A path that never leaves a loop, nor reads it there.
             unseen = "so a change there may never be seen: " + _loops_first(
                 f"`{plain}`", projection
             )
         if kind == "named":
-            # #192: a binding of the program's own holds the old value it goes on with.
+            # A binding of the program's own holds the old value it goes on with.
             return (
                 "statement",
                 f"at every place line {line} can stop at, the program has already copied "
@@ -3058,7 +3059,7 @@ class RustSession(NativeSession):
                 f"goes on with that copy, {unseen}",
             )
         if kind == "kept":
-            # #300 review: a call given `&mut x` since the copy may have changed `x`.
+            # A call given `&mut x` since the copy may have changed `x`.
             return "statement", f"at every place line {line} can stop at, {detail}, {unseen}"
         if kind == "may" and kept:
             return (
@@ -3255,7 +3256,7 @@ class RustSession(NativeSession):
         )
 
     def _stop_block(self, hashed, frame):
-        """#115: the lexical block the frame's pc is in (``stop_block``), once per function
+        """The lexical block the frame's pc is in (``stop_block``), once per function
         and pc: a frame's every row asks."""
         pc = self._unslid(frame)
         found = self.__dict__.setdefault("_stop_blocks", {})
@@ -3268,7 +3269,7 @@ class RustSession(NativeSession):
     def not_yet_declared(
         self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
     ):
-        """#132: why a top-level local of ``frame`` (an unoptimized build's) holds no value
+        """Why a top-level local of ``frame`` (an unoptimized build's) holds no value
         of its own at the stop, or None (see OwnedLocals.unassigned): one a poll resuming
         an async body after an `.await` never assigned, since the future keeps no copy of
         it (a parameter's copy, a local not used after it), or one some path to the stop
@@ -3287,7 +3288,7 @@ class RustSession(NativeSession):
             breakpoint=innermost and stop == "breakpoint",
             column=(frame or {}).get("column"),
             caller=not innermost,
-            # #115: the lexical block the innermost frame's pc is in, which tells a
+            # The lexical block the innermost frame's pc is in, which tells a
             # line's stops in a macro's own blocks apart.
             block=self._stop_block(hashed[1], frame) if innermost else None,
             shown=[row.get("name") for row in siblings or ()],
@@ -3326,7 +3327,7 @@ class RustSession(NativeSession):
         """Why a change to the root local ``variable`` of the stopped ``frame`` (or to the
         part the debugger's child names ``steps`` reach in it; with ``members``, to any
         part of it, leaving out the program's own copies, which each part is judged by)
-        may not reach a statement under way at the stop, or None (#105). Allowed only
+        may not reach a statement under way at the stop, or None. Allowed only
         where the stop is before its line's first code (``stop``, its reason: a line
         breakpoint's, or a step's that ends at the line's lowest address) and from there
         no temporary the build's MIR shows may hold a value read from it is used again: a
@@ -3366,14 +3367,14 @@ class RustSession(NativeSession):
             }
             found = proofs.copy_hazards(**asked)
         if found is not None and not any(hazards for _, hazards in found):
-            # #330: no path from the stop reads it before it is overwritten or ends.
+            # No path from the stop reads it before it is overwritten or ends.
             if unread := self._unread_here(variable, place, asked, proofs, steps):
                 return unread
-            # #324: code LLVM inlined from a call on the line may run below where the line
+            # Code LLVM inlined from a call on the line may run below where the line
             # breakpoint stops (`x.clone()`), and read the local before the stop.
             return self._inlined_read(variable, frame, hashed[1], proofs)
         if found:
-            # #183: where the copy was made, not an example of where one may be; #300: as a
+            # Where the copy was made, not an example of where one may be; as a
             # fact only what the MIR shows at every place the stop can be.
             home = (place.get("source") or {}).get("path")
             found = {"any": found} | {
@@ -3398,22 +3399,22 @@ class RustSession(NativeSession):
             copied = getattr(proofs, "copy_kinds", lambda **asked: ())(**where)
             name = f"`{variable.get('name')}`"
             if doubts:
-                # #330 review 2: a drop may read it, which Peeky can't tell.
+                # A drop may read it, which Peeky can't tell.
                 unseen = f"so a change to {name} may never be seen: " + _drop_doubt(
                     doubts, home, name
                 )
             elif exits:
-                # #330 review 3: no path that doesn't panic goes on to read it.
+                # No path that doesn't panic goes on to read it.
                 unseen = f"so a change to {name} may never be seen: " + _exits_first(
                     exits, name, asked["projection"]
                 )
             elif copied == {"loop"}:
-                # #330 review 4: a path that never leaves a loop, nor reads it there.
+                # A path that never leaves a loop, nor reads it there.
                 unseen = f"so a change to {name} may never be seen: " + _loops_first(
                     name, asked["projection"]
                 )
             if kind == "named":
-                # #192: the program's own binding goes on with the old value.
+                # The program's own binding goes on with the old value.
                 names = _names(detail)
                 return _Copied(
                     f"the program has already copied its value into {names}"
@@ -3424,18 +3425,18 @@ class RustSession(NativeSession):
                     f"copied into {names}" + (f" ({made})" if made else ""),
                 )
             if kind == "kept":
-                # #300 review: a call given `&mut x` since the copy may have changed it.
-                # #320 review: where what holds it may only point into it, there may be
+                # A call given `&mut x` since the copy may have changed it.
+                # Where what holds it may only point into it, there may be
                 # no copy to change.
                 return _Copied(
                     f"{detail}, {unseen}",
                     "Change it before the program copies or borrows it (a stop on an earlier line)"
                     if _ONLY_POINTS in detail
-                    # #321 review: what was computed from it, not a copy.
+                    # What was computed from it, not a copy.
                     else "Change it before the program uses it (a stop on an earlier line)"
                     if _DERIVED in detail
-                    # #321: a copy no change reaches has nothing to change instead; nor has
-                    # one in a static or thread-local (#329).
+                    # A copy no change reaches has nothing to change instead; nor has
+                    # one in a static or thread-local.
                     else "Change it before the program copies it (a stop on an earlier line)"
                     if _HIDDEN_COPY in detail or _GLOBAL_COPY in detail
                     else "Change it before the program copies it (a stop on an earlier line), "
@@ -3471,7 +3472,7 @@ class RustSession(NativeSession):
                     "a statement under way may hold a copy" + (f" ({made})" if made else ""),
                 )
             if kind == "holds":
-                # #300: a read at one place, a binding's copy at another.
+                # A read at one place, a binding's copy at another.
                 return _Copied(
                     "the program already holds a copy of it"
                     + (f" (at {made})" if made else "")
@@ -3481,7 +3482,7 @@ class RustSession(NativeSession):
                 )
             # The stop is where its line's code starts (a line breakpoint's, or a step's
             # landing there): the statement under way began before it, on an earlier
-            # line or at an earlier stop of this one, never at this stop (#222).
+            # line or at an earlier stop of this one, never at this stop.
             return _Copied(
                 "a statement under way at the stop has already read it into a temporary"
                 + (f" (at {made})" if made else "")
@@ -3498,7 +3499,7 @@ class RustSession(NativeSession):
     def _unread_here(self, variable, place, asked, proofs, steps=None):
         """``mid_statement``'s reason where no path from any place of the stop reads the
         local ``variable`` (the part ``steps`` reach in it) before it is overwritten or
-        ends (#330: ``OwnedLocals.unread_after``): a change there is never seen. Else
+        ends (``OwnedLocals.unread_after``): a change there is never seen. Else
         None."""
         check = getattr(proofs, "unread_after", None)
         if check is None:
@@ -3523,7 +3524,7 @@ class RustSession(NativeSession):
             if kind in lines
         )
         if stops := _stopped(lines):
-            # #330 review: other paths end otherwise, and the row says so.
+            # Other paths end otherwise, and the row says so.
             row += (", or " if row else "") + f"the program {_either(stops)}"
         where = _unread_where(ends, home, owner)
         written = "written" if _overwritten(ends) else "ended"
@@ -3538,7 +3539,7 @@ class RustSession(NativeSession):
     def _projection(self, hashed, root, steps, where=None):
         """The MIR projection the debugger's child names ``steps`` make in the root local
         ``root`` of the function ``hashed`` (fields.member_indexes): () for the whole
-        local, None where the debug information does not tell (#192 review). ``where``:
+        local, None where the debug information does not tell. ``where``:
         the declaration in scope at the stop (_in_scope)."""
         from peeky.fields import Unsettable, member_indexes
 
@@ -3557,11 +3558,11 @@ class RustSession(NativeSession):
     def _line_start(self, frame):
         """Whether the frame's pc is where its line's code starts in its function: the
         lowest address of the line's own rows, where a line breakpoint stops and a step
-        onto the line does; or (#324) the lowest of those and of the code inlined there
+        onto the line does; or the lowest of those and of the code inlined there
         that is the line's (``_line_inlined``: LLVM's inlined calls made from the line,
         and those just before it that Peeky can't place), where a step stops when that
         code comes first. At the first, ``_inlined_below`` tells what such code ran before
-        it. A line with no row of its own (#326: `bump(&mut x);` of an
+        it. A line with no row of its own (`bump(&mut x);` of an
         `#[inline(always)] fn bump`), outside macro definitions, starts at the lowest of
         the calls inlined from it, where LLDB shows a step's stop on the line. False where
         it is neither, or that is not known."""
@@ -3614,7 +3615,7 @@ class RustSession(NativeSession):
         return tuple(dict.fromkeys(name for name, low, high in spans if low <= place[1] <= high))
 
     def _inlined_site(self, frame, innermost=None):
-        """(#326) Whether the frame's line, one with no row in the build, is where LLDB shows
+        """Whether the frame's line, one with no row in the build, is where LLDB shows
         a stop at a call the build inlined: True where the frame's pc is in the code of a
         call inlined into its function from that line (a caller frame's return address
         may end that code, so its pc - 1 counts too); False where it is not, or the frame
@@ -3645,7 +3646,7 @@ class RustSession(NativeSession):
         )
 
     def validate_stop(self, frame):
-        """NativeSession's check, and (#326) a stop LLDB shows on a line with no row of its
+        """NativeSession's check, and a stop LLDB shows on a line with no row of its
         own in the build: at a call the build inlined, LLDB shows the line the call is
         made from. That line is the build's too where the frame's pc is in the code of
         such a call (``_inlined_site``). Where the pc isn't known yet, ``validate_debugger``
@@ -3657,7 +3658,7 @@ class RustSession(NativeSession):
                 raise
 
     def validate_debugger(self, dap, frame):
-        """NativeSession's check, then (#326) a line with no row in the build must be an
+        """NativeSession's check, then a line with no row in the build must be an
         inlined call's site at the frame's pc, now that the load bias is known."""
         super().validate_debugger(dap, frame)
         place = self._place(frame)
@@ -3673,7 +3674,7 @@ class RustSession(NativeSession):
             raise RuntimeError("Native stopped line does not match prepared symbols")
 
     def macro_stop(self, frame):
-        """(#326) The macros whose definition ``frame`` is stopped in, on a line with no row
+        """The macros whose definition ``frame`` is stopped in, on a line with no row
         of its own in its function; () where the source isn't read as rustc reads it, so
         such a line may be a macro's; None for any other stop. LLDB shows a stop in a call
         the build inlined (`$v.clone()` of `mclone!(x)`) on the line it is made from: here
@@ -3744,7 +3745,7 @@ class RustSession(NativeSession):
         )
 
     def unplaceable_line(self, program, line):
-        """(#326) Why a breakpoint on ``line`` of ``program`` can't stop where it is asked,
+        """Why a breakpoint on ``line`` of ``program`` can't stop where it is asked,
         or None: the line has no row of its own in the build, and the build inlined a call
         made from it. LLDB places such a breakpoint on the call's code, and reports the
         called function's line (`clone.rs:615` for `$v.clone()` of `macro_rules! mclone`
@@ -3822,8 +3823,8 @@ class RustSession(NativeSession):
         return number == place[1] and self._call_source(file) == place[0]
 
     def _window(self, blocks, place, pc):
-        """The lowest address of the code that runs just before ``pc`` on its line
-        (#324 review): past the last row below it of another line of the stop's source
+        """The lowest address of the code that runs just before ``pc`` on its line:
+        past the last row below it of another line of the stop's source
         that is a statement's, outside inlined code and macro definitions (whose rows
         may be any invocation's); the function's first address where there is none. None
         where the source's macro definitions are not known."""
@@ -3847,7 +3848,7 @@ class RustSession(NativeSession):
 
     def _unplaced(self, block, place):
         """What an inlined call (``block``) that runs just before a stop on ``place`` is,
-        where Peeky can't place it as a statement's (#324 review), or None for a call of a
+        where Peeky can't place it as a statement's, or None for a call of a
         statement of the stop's own source: one whose site is not known, in another file
         (a macro from another module), or in a macro's definition (`$v.clone()` of
         `macro_rules! mclone`, invoked on the line)."""
@@ -3882,7 +3883,7 @@ class RustSession(NativeSession):
         return found if start is not None else None
 
     def _inlined_below(self, frame):
-        """#324: what LLVM inlined before the stop of the frame's line: ((DWARF column in
+        """What LLVM inlined before the stop of the frame's line: ((DWARF column in
         bytes, 0 where not given; the function's name, "" where not read) of each call
         made from the line with code below the frame's pc, what of the code just before
         the pc Peeky can't place or None, the columns of every call made from the line
@@ -4036,7 +4037,7 @@ class RustSession(NativeSession):
 
     def _root_type(self, frame, root):
         """(type offset, whether the frame keeps it in its own memory, type graph) of the
-        root local of a field or element change (#105), from the application units'
+        root local of a field or element change, from the application units'
         debug information."""
         from peeky.fields import Unsettable
 
@@ -4108,7 +4109,7 @@ class RustSession(NativeSession):
         """The Rust primitive a field or element shows as (`usize`, not LLDB's `unsigned
         long`, which is also `u64`): the base type the build's debug information
         declares at ``path`` (the root local's name, then the debugger's child names),
-        where LLDB's ``kind`` spells it (seventh evaluation, finding 18); else None."""
+        where LLDB's ``kind`` spells it; else None."""
         from peeky.fields import Unsettable, member_base
 
         if kind in UNIQUE_SCALARS or not any(kind in names for names in RUST_SCALARS.values()):
@@ -4131,7 +4132,7 @@ class RustSession(NativeSession):
     def _raw_pointer(self, variable, frame, ancestry):
         """Whether a field or element LLDB shows as a data pointer (``ancestry``: the
         (name, type) of each value above it, its root local first) is a raw pointer, or is
-        read through one (#255): "raw" where its Rust type in the build's debug
+        read through one: "raw" where its Rust type in the build's debug
         information says so (fields.rust_raw_pointer), never LLDB's C-style name, which a
         reference shares (`long *` is `&i64` and `*const i64`). Where that does not say:
         "unknown" in a local whose MIR type may hold a raw pointer (a struct's name says
@@ -4167,7 +4168,7 @@ class RustSession(NativeSession):
         return None
 
     def _free_types(self):
-        """The names of the crate's own types that hold no pointer (#164), for the borrow
+        """The names of the crate's own types that hold no pointer, for the borrow
         check of a text change: read from the build's debug information once."""
         found = self.__dict__.get("_free_cache")
         if found is None:
@@ -4203,7 +4204,7 @@ class RustSession(NativeSession):
         self._free_cache = free_types(dies)
         graph = type_graph(dies, kinds, RUST_LIBRARIES)
         # And what a local reference or Box points at, one level down: the fields a
-        # reference parameter's target holds (#156). Changes never walk through either.
+        # reference parameter's target holds. Changes never walk through either.
         aimed = {
             node[2]
             for kind in kinds
@@ -4231,8 +4232,8 @@ class RustSession(NativeSession):
     ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged; {"raw_reason": why} leaves a container raw,
-        saying why (#156), with "taint" for what it holds (#205) and "carry" where each
-        value read through it says why too (#260: a call may be changing it).
+        saying why, with "taint" for what it holds and "carry" where each
+        value read through it says why too (a call may be changing it).
 
         A container is read only for a top-level variable of ``frame`` that is either a
         proven reference parameter (rust_ir), once the frame is past the parameter's
@@ -4244,20 +4245,20 @@ class RustSession(NativeSession):
 
         ``taint`` (see aggregate_taint) says the value is inside a local whose pointers
         may reach freed memory: a pointer there shows only its address. A raw pointer
-        anywhere inside a value shows only its address too (#255). ``ancestry``:
+        anywhere inside a value shows only its address too. ``ancestry``:
         the (name, type) of each value above a field or element, its root local first,
         for a `Vec`, `String`, `&str` or `Box<str>` field (see _field_container).
         """
         kind = variable.get("type")
         raw = self._raw_pointer(variable, frame, ancestry) if not top and ancestry else None
         if raw == "raw" or (raw and not taint):
-            # #255: a raw pointer inside a value (a field, a tuple or array element, a
+            # A raw pointer inside a value (a field, a tuple or array element, a
             # NonNull's) keeps no borrow, so nothing shows that what it points at still
             # stands, however live the value is: only its address, as a local's. One the
             # debug information does not tell apart in a moved value is the next rule's.
             return _unproven(variable, pointer=raw)
         if taint and not top and (_holds_data_pointers(kind) or _is_wide_box(kind)):
-            # #108: a Box field (or a Vec's, String's or Rc's pointer, a reference) of a
+            # A Box field (or a Vec's, String's or Rc's pointer, a reference) of a
             # moved, dropped or unproven local; its own fields hold no pointer.
             return _unproven(variable)
         if not top and ancestry:
@@ -4269,7 +4270,7 @@ class RustSession(NativeSession):
         proof = self.parameters.get((hashed[1], variable.get("name"))) if hashed else None
         line = (frame or {}).get("line")
         if top and hashed and not innermost and getattr(self, "owned", None) is not None:
-            # #260: a `&mut` Vec, String or slice in a caller frame. The call under way
+            # A `&mut` Vec, String or slice in a caller frame. The call under way
             # (`friends.retain_mut(decide)`) may be part-way through changing it, so even
             # its own fields (`friends.len`) are not its value: they show `[stale]`. A shared
             # one reads in any frame, as a reference parameter's contents do.
@@ -4288,25 +4289,25 @@ class RustSession(NativeSession):
         ):
             parameter = proof["type"]
         # In a crate with unsafe code, what a reference parameter points into may have
-        # been freed by it (a caller's `ptr::read`): Peeky reads none of it (#156).
+        # been freed by it (a caller's `ptr::read`): Peeky reads none of it.
         lent = parameter if getattr(self, "unsafe_code", None) else None
         if lent:
             parameter = None
         proofs = getattr(self, "owned", None)
-        # An optimized build's line table cannot place a proof (#13): nothing is proven.
+        # An optimized build's line table cannot place a proof: nothing is proven.
         unoptimized = self.target.opt_level == "0"
         shown_path = ((frame or {}).get("source") or {}).get("path")
         verdict, reasons = [], []
 
         def block():
-            # #115: the DWARF lexical block the innermost frame's pc is in, which tells
+            # The DWARF lexical block the innermost frame's pc is in, which tells
             # apart a line's stops in a macro's own blocks (`println!`'s `args`).
             if not innermost or not hashed:
                 return None
             return self._stop_block(hashed[1], frame)
 
         def reference_valid():
-            # #110, once per variable: True, False or None (see OwnedLocals).
+            # reference_valid, once per variable: True, False or None (see OwnedLocals).
             if not verdict:
                 verdict.append(
                     proofs.reference_valid(
@@ -4346,13 +4347,13 @@ class RustSession(NativeSession):
             and REFERENCE_PARAMETERS.get(
                 declared := proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
             )
-            # In a crate with unsafe code, what #110 shows standing may have been freed.
+            # In a crate with unsafe code, what the MIR shows standing may have been freed.
             and not getattr(self, "unsafe_code", None)
             and reference_valid() is True
         ):
-            # A `&str` or slice local whose target #110 shows still standing (`v` of `for
-            # v in args[2].split(',')`, #156) reads as a parameter's does; so does a `&&str`
-            # (`cell` of `for cell in cells`, #205), whose `&str` outlives it.
+            # A `&str` or slice local whose target the MIR shows still standing (`v` of `for
+            # v in args[2].split(',')`) reads as a parameter's does; so does a `&&str`
+            # (`cell` of `for cell in cells`), whose `&str` outlives it.
             parameter = declared
         owned = bool(
             hashed
@@ -4376,7 +4377,7 @@ class RustSession(NativeSession):
         )
         layouts = self.layouts
         if option_layouts(kind, layouts):
-            # #303: an `Option` of a tuple or struct, read from memory under its proofs.
+            # An `Option` of a tuple or struct, read from memory under its proofs.
             return self._option_view(variable, read, frame, layouts, top=top, innermost=innermost)
         container = container_view(
             variable,
@@ -4391,7 +4392,7 @@ class RustSession(NativeSession):
         if container is not None:
             return container
         if hashed and unoptimized and proofs is not None:
-            # #106: a tuple or struct of scalars, previewed under the same proofs.
+            # A tuple or struct of scalars, previewed under the same proofs.
             declared = (
                 proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
                 if innermost
@@ -4433,8 +4434,8 @@ class RustSession(NativeSession):
             # every binding is a reference, a raw pointer or a fn pointer (or an array of
             # them): a generic `T`, `Self` or `impl Trait` may be a Box.
             pointer = _holds_data_pointers(kind)
-            # #255: a raw pointer keeps no borrow, so nothing proves what it points at: only
-            # its address, whatever #110 would find, and also where it cannot judge (an
+            # A raw pointer keeps no borrow, so nothing proves what it points at: only
+            # its address, whatever reference_valid would find, and also where it cannot judge (an
             # optimized build). An array of them (`[*const Pt; 2]`) is not collapsed: each
             # element is a raw pointer inside a value.
             levels = _constructors(kind)
@@ -4461,12 +4462,12 @@ class RustSession(NativeSession):
             # value readable (an owned container, a Box) are the innermost frame's.
             lent_only = not gated
             if not gated and unoptimized and hashed and not raw_array:
-                # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
+                # A reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
                 # still uses it ahead. A line breakpoint stops only where the line starts in
                 # each lexical block, at the frame's column (`stop`); a step or a pause can
                 # stop anywhere in it. What cannot be told (a site or local not understood)
-                # reads as before.
+                # is not gated here.
                 gated = reference_valid() is False
                 if gated and siblings:
                     gated = not _same_lent_rows(
@@ -4491,8 +4492,8 @@ class RustSession(NativeSession):
                 and provable
                 and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
             ):
-                # A Vec of references past #110's proof (`names: Vec<&str>` after its last
-                # use, #205): its own fields (`names.len`) are its own, initialized, and
+                # A Vec of references the MIR does not show still valid (`names: Vec<&str>` after
+                # its last use): its own fields (`names.len`) are its own, initialized, and
                 # read; the pointers inside it show only their address.
                 return {
                     "raw_reason": "its items are references, and the build's MIR does not "
@@ -4506,9 +4507,9 @@ class RustSession(NativeSession):
                 and str(kind).startswith("alloc::vec::Vec<")
                 and not _holds_data_pointers(kind)
             ):
-                # A Vec #110 does not show standing and the MIR does not prove initialized
-                # here (`sharers`, moved on this line), or in a caller frame (#260): not a
-                # Box, so its own fields show, as a moved struct's do (#108); the pointers
+                # A Vec reference_valid does not show standing and the MIR does not prove initialized
+                # here (`sharers`, moved on this line), or in a caller frame: not a
+                # Box, so its own fields show, as a moved struct's do; the pointers
                 # inside it show only their address.
                 name = variable.get("name")
                 if not provable:
@@ -4522,7 +4523,7 @@ class RustSession(NativeSession):
                     why += ", and its items are references"
                 return _raw_container(why, taint="pointers")
             if gated:
-                # #101: a moved or dropped Box still holds its pointer, and LLDB would
+                # A moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
                 why = None
@@ -4535,7 +4536,7 @@ class RustSession(NativeSession):
                         or str(kind).startswith(("&[", "&mut ["))
                     )
                 ):
-                    # A reference past its last use (`cell` of `for cell in cells`, #205).
+                    # A reference past its last use (`cell` of `for cell in cells`).
                     why = (
                         "the build's MIR does not show that what it points at still stands "
                         "here, because " + _gap_reason(variable.get("name"), reasons, line)
@@ -4552,7 +4553,7 @@ class RustSession(NativeSession):
             # A reference parameter's contents, left raw in a crate with unsafe code.
             return {"raw_reason": getattr(self, "unsafe_code", None)}
         if view is None and top and not parameter and kind in OWNED_CONTAINERS:
-            # Why an owned Vec or String stays raw, for its row's note (#156).
+            # Why an owned Vec or String stays raw, for its row's note.
             why = self._owned_raw(variable, frame, innermost, owned)
             return _raw_container(why) if why else None
         if (
@@ -4566,10 +4567,10 @@ class RustSession(NativeSession):
             and (why := self._owned_raw(variable, frame, innermost, owned))
         ):
             # An owned Vec of other elements (`Vec<Friend>`) in a caller frame says why too,
-            # never offering a length the call may be changing (#260).
+            # never offering a length the call may be changing.
             return _raw_container(why)
         if view is None and top and kind in ("&str", "&mut str"):
-            # A closure's capture (`name` of `|f| f.name == *name`, #260) is never judged:
+            # A closure's capture (`name` of `|f| f.name == *name`) is never judged:
             # why its text is not shown.
             if self._captured(variable, frame):
                 name = variable.get("name")
@@ -4599,7 +4600,7 @@ class RustSession(NativeSession):
         )
 
     def _option_view(self, variable, read, frame, layouts, *, top, innermost):
-        """An `Option` of a tuple or struct the crate defines (#303), read from memory as
+        """An `Option` of a tuple or struct the crate defines, read from memory as
         an owned `Vec` or `String` local is: a local or parameter of the innermost frame
         of an unoptimized build, which the MIR proves initialized at the stop, and whose
         MIR type picks its layout (LLDB's names collide); one holding a `String`, only
@@ -4679,7 +4680,7 @@ class RustSession(NativeSession):
         return None
 
     def _field_container(self, variable, read, frame, ancestry, innermost, stop, taint):
-        """#156: a `Vec`, `String`, `&str` or `Box<str>` field (or element) held where
+        """A `Vec`, `String`, `&str` or `Box<str>` field (or element) held where
         nothing can change or free it while the frame stands, read as an owned container
         is: in what a reference parameter the IR proves live points at (`self.values`,
         `&self` and `&mut self`; a `&mut` one only in the innermost frame, as for the
@@ -4688,11 +4689,10 @@ class RustSession(NativeSession):
         struct and tuple fields and fixed-size array elements (fields.held_container),
         never a pointer, an enum or a standard-library type (a `RefCell`'s contents
         change behind `&self`). A `&str` field borrows: through an owned local, only
-        while #110 shows what it borrows still stands; through a reference parameter,
+        while the MIR shows what it borrows still stands; through a reference parameter,
         what it borrows outlives the call. The view, or {"raw_reason": why} where it
-        stays raw (elements Peeky does not read too: `Vec<String>`, #183); None where this
-        does not apply (another type, a local not proven initialized, whose row says so:
-        #108)."""
+        stays raw (elements Peeky does not read too: `Vec<String>`); None where this
+        does not apply (another type, a local not proven initialized, whose row says so)."""
         from peeky.fields import Unsettable, held_container
 
         kind = str(variable.get("type") or "")
@@ -4717,7 +4717,7 @@ class RustSession(NativeSession):
         verdict, declared, reasons = [], None, []
 
         def valid():
-            # #110 for the root, once.
+            # reference_valid for the root, once.
             if not verdict:
                 verdict.append(
                     proofs.reference_valid(
@@ -4735,7 +4735,7 @@ class RustSession(NativeSession):
 
         if proof and type(line) is int and line > proof["line"]:
             if proof["type"].startswith("&mut ") and not innermost:
-                # Its own fields (`self.values.len`) may be mid-change too (#260).
+                # Its own fields (`self.values.len`) may be mid-change too.
                 return _raw_container(
                     _caller_reason(root, "a `&mut` parameter", "what it points at")
                 )
@@ -4751,8 +4751,8 @@ class RustSession(NativeSession):
             declared = proofs.declared_type(hashed[1], root, line, path) or ""
             through, dereference = "owned", bool(re.match(r"(?:std::boxed::)?Box<", declared))
             if re.match(r"&(?:mut )?[\w(]", declared):
-                # A reference local (`entry` of `for entry in entries.iter()`, #206): what
-                # it points at, where #110 shows that still standing; what the target's
+                # A reference local (`entry` of `for entry in entries.iter()`): what
+                # it points at, where the MIR shows that still standing; what the target's
                 # own references borrow outlives it (`&'b S<'a>` needs `'a: 'b`).
                 if valid() is not True:
                     return {
@@ -4775,7 +4775,7 @@ class RustSession(NativeSession):
         layouts = self.layouts
         if name not in layouts or layouts[name].get("kind") == "unread":
             # Elements Peeky never reads (`Vec<String>`): said on the field's own row, as
-            # in a listing of what holds it (#183).
+            # in a listing of what holds it.
             return {"raw_reason": unread_elements(name)}
         if through == "reference" and valid() is False:
             return {
@@ -4785,7 +4785,7 @@ class RustSession(NativeSession):
         if (
             through == "owned"
             and name.startswith("&")
-            # A struct with no lifetime holds only `&'static str` (#110 judges the rest).
+            # A struct with no lifetime holds only `&'static str` (reference_valid judges the rest).
             and (not declared or _BORROWING.search(declared.removeprefix("std::boxed::")))
             and valid() is not True
         ):
@@ -4801,7 +4801,7 @@ class RustSession(NativeSession):
 
     def view_writable(self, view):
         """Whether a field of the value ``view`` shows is the value's own storage, laid
-        out as the build's DWARF says (#105): a #106 tuple or struct preview, read with a
+        out as the build's DWARF says: a tuple or struct preview, read with a
         `composite` struct layout. A container's contents (a Vec's, a String's, a Box's)
         or an enum's variant are not: they stay unchangeable. The change itself is still
         judged by validate_member, from the debugger's own variable."""
@@ -4839,11 +4839,11 @@ class RustSession(NativeSession):
         )
 
     def aggregate_taint(self, variable, frame, *, innermost=False):
-        """#108: how much of a top-level local LLDB shows as a struct, tuple, array or
+        """How much of a top-level local LLDB shows as a struct, tuple, array or
         enum (a value with children, not a pointer) reads, for one whose MIR type may own
         memory through a pointer inside it (a Box field, a Vec's or String's buffer, an
         Rc; any struct, as the MIR names no fields). None: all of it but what a raw
-        pointer in it points at (view_variable, #255), where the build's MIR proves it
+        pointer in it points at (view_variable), where the build's MIR proves it
         initialized at the stop in the innermost frame of an unoptimized build.
         "pointers": its own fields, not what its pointers reach, in a caller frame
         proven the same way (a callee may be midway through replacing a Box it lent).
@@ -4858,7 +4858,7 @@ class RustSession(NativeSession):
         if _holds_data_pointers(kind) or _is_wide_box(kind):
             # A pointer at the top is the Box and reference gates' (view_variable); in a
             # crate with unsafe code, the pointers in what it points at show only their
-            # address (`self.b`, a Box unsafe code may have freed, #156).
+            # address (`self.b`, a Box unsafe code may have freed).
             return "pointers" if getattr(self, "unsafe_code", None) else None
         name = str(variable.get("name"))
         if not (is_name(name, limit=None) or is_located(name, r" @ .+", limit=None)):
@@ -4871,7 +4871,7 @@ class RustSession(NativeSession):
         generics = proofs.type_parameters(hashed[1]) if hashed else ()
         if types and not any(_may_own(each, generics) for each in types):
             # Primitives, references and raw pointers only (`(i64, &Pt)`): a move leaves
-            # their bytes as they were, and what a reference reaches is #110's.
+            # their bytes as they were, and what a reference reaches is reference_valid's.
             return None
         proven = bool(
             self.target.opt_level == "0"
@@ -4884,7 +4884,7 @@ class RustSession(NativeSession):
             )
         )
         if proven:
-            # Unsafe code may have freed what its pointers reach (#156).
+            # Unsafe code may have freed what its pointers reach.
             return None if innermost and not getattr(self, "unsafe_code", None) else "pointers"
         return _STALE_NO_POINTER if self._pointer_free(variable, frame) else "stale"
 
@@ -4981,7 +4981,7 @@ class RustSession(NativeSession):
         return rust_spelling(name)
 
     def _rust_name(self, frame, path, kind):
-        """A library type as the program spells it (#183: `Vec<u32>`, not LLDB's
+        """A library type as the program spells it (`Vec<u32>`, not LLDB's
         `alloc::vec::Vec<unsigned int, alloc::alloc::Global>`; `String`): the name the
         build's debug information gives the type at ``path`` (the root local's name, then
         the debugger's child names), where LLDB's ``kind`` spells it; without one, LLDB's
