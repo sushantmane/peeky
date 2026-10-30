@@ -586,6 +586,33 @@ def test_a_bundle_without_an_exact_recipe_is_refused(tmp_path, offline):
         assert f"({why})" in str(other.value)
 
 
+def test_the_worker_asks_the_jdk_once_per_process_while_its_files_are_unchanged(
+    tmp_path, offline, monkeypatch
+):
+    # A bundle verified before it settles is verified at every operation: the JDK's version
+    # texts are asked once, until java's or javac's file or JAVA_HOME changes.
+    monkeypatch.setattr(java_setup, "_TOOLCHAINS", {})
+    java, javac = tmp_path / "java", tmp_path / "javac"
+    for tool in (java, javac):
+        tool.write_text("tool")
+        offline.versions[str(tool)] = f"{tool.name} 17"
+
+    def asked():
+        return sum(command[-1] == "-version" for command in offline.commands)
+
+    for _ in range(3):
+        java_setup._toolchain_now(str(java), str(javac))
+    assert asked() == 2
+    javac.write_text("a newer tool")
+    java_setup._toolchain_now(str(java), str(javac))
+    monkeypatch.setenv("JAVA_HOME", str(tmp_path))
+    java_setup._toolchain_now(str(java), str(javac))
+    assert asked() == 6
+    monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
+    java_setup._toolchain_now(str(java), str(javac))
+    assert asked() == 8
+
+
 @pytest.mark.parametrize("text", ["[]", '"bundle"', "7", "not json", "null"])
 def test_an_adapter_json_that_is_not_an_object_is_stale_not_an_internal_error(state, offline, text):
     version = Path(java_setup.install()["bundle"])

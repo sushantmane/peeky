@@ -210,6 +210,31 @@ def toolchain(java: str, javac: str) -> dict:
     }
 
 
+# toolchain() results recipe_mismatch reused in this process: see _toolchain_now.
+_TOOLCHAINS = {}
+
+
+def _toolchain_now(java: str, javac: str) -> dict:
+    """toolchain(), reused in this process while both tools' files (their resolved paths
+    and stat identities) and JAVA_HOME are unchanged, as peeky.java reuses a verified
+    bundle; a bundle verified before it settles (peeky.digest) asks them only once."""
+
+    def identity(path):
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        return os.path.realpath(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+    tools = (identity(java), identity(javac))
+    if None in tools or os.environ.get("PEEKY_NO_DIGEST_CACHE") == "1":
+        return toolchain(java, javac)
+    key = (java, javac, *tools, os.environ.get("JAVA_HOME"))
+    if key not in _TOOLCHAINS:
+        _TOOLCHAINS[key] = toolchain(java, javac)
+    return _TOOLCHAINS[key]
+
+
 def recipe(tools: dict) -> dict:
     """Everything a bundle is built from with the JDK ``tools`` (toolchain): equal recipes
     build equal bundles."""
@@ -255,7 +280,7 @@ def recipe_mismatch(manifest: dict) -> str | None:
     if recorded.get("java") != (manifest.get("command") or [None])[0]:
         return "its recipe names another java than its command"
     try:
-        tools = toolchain(str(recorded["java"]), str(recorded["javac"]))
+        tools = _toolchain_now(str(recorded["java"]), str(recorded["javac"]))
     except (KeyError, OSError, RuntimeError, ValueError) as exc:
         return f"its JDK can't be run now: {str(exc)[:200]}"
     wanted = recipe(tools)
