@@ -1,4 +1,4 @@
-"""libstdc++ `std::basic_string` values as LLDB's libc++ summary shows them (#128).
+"""libstdc++ `std::basic_string` values as LLDB's libc++ summary shows them.
 
 LLDB's summary of a libstdc++ string is a C string: it ends at the first NUL, so
 `"a\\0b"` shows as `"a"`. A `std::string` LLDB names by that typedef gets the summary
@@ -382,7 +382,7 @@ def libstdcxx_string(variable, fetch, read, found="type"):
         whole = count == length and not capped
         limited = width == 1 and capped and count == SUMMARY_UNITS < length
         if whole or limited:
-            # The debugger's own text, checked: map keys compare it (#119).
+            # The debugger's own text, checked: map keys compare it.
             return {"string_length": length}
     if read is not None:
         text = _read(members, length, width, prefix, read)

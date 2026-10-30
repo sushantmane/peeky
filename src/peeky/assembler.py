@@ -1,4 +1,4 @@
-"""Inline assembly that can read a file is refused before building (#180).
+"""Inline assembly that can read a file is refused before building.
 
 The assembler's `.incbin` and `.include` read a file that no compiler lists in its
 dependency file (`-MD`, rustc's `.d`), so the provenance check, which hashes every file
@@ -163,7 +163,7 @@ def _c_places(text, blanked):
             if marker := _C_MARKER.match(original):
                 number = int(marker[1])
                 if marker[2] is not None:
-                    # clang writes a non-ASCII byte in octal (`\342\200\250`; #179).
+                    # clang writes a non-ASCII byte in octal (`\342\200\250`).
                     name = octal_string(marker[2]) or "<unknown>"
             else:
                 number += 1

@@ -1,4 +1,4 @@
-r"""Where a C or C++ declaration statement ends, from the source text alone (#104).
+r"""Where a C or C++ declaration statement ends, from the source text alone.
 
 A caller frame is inside a call made from its line. When that line is within a local's
 declaration (`struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`), the
@@ -12,7 +12,7 @@ end that cannot be found is None, and so is one where the text the scan reads ma
 from what the compiler reads. That is anywhere in a file with a `#line`, a line splice
 inside a token or before `\n\r`; and, from the declaration's line
 to its end, a directive (an `#include` can hold the rows), a line splice, a `<::`, or
-a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
+a macro whose expansion may hold an unclosed bracket or a `;` (`macro_hazards`).
 """
 
 import bisect
@@ -22,8 +22,8 @@ from peeky.textlines import octal_string
 
 # An identifier's characters: ASCII letters, digits and `_`, and every non-ASCII
 # character but whitespace (Clang reads U+00A0 as a space), which outside comments and
-# literals a program the compiler accepts holds only in identifiers (#195: `größe`, or
-# an NFD `größe`, whose combining mark `\w` misses).
+# literals a program the compiler accepts holds only in identifiers (`größe`, or an
+# NFD `größe`, whose combining mark `\w` misses).
 _ID = r"[^\s\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
 _NAME = r"[^\s\x00-\x40\x5b-\x5e\x60\x7b-\x7f]" + _ID + "*"
 # An identifier, not the tail of a number or of another identifier (`1e5`).
@@ -32,23 +32,23 @@ _IDENTIFIER = re.compile(f"(?<!{_ID}){_NAME}")
 # `&&` (group 1).
 _BINDING_LEAD = re.compile(r"\bauto(?:\s+(?:const|volatile)\b)*\s*(&{0,2})\s*$")
 # The members of a standard container whose call gives a value, never a pointer, an
-# iterator or a reference to an element (#297): what code may call on it anywhere while
+# iterator or a reference to an element: what code may call on it anywhere while
 # a structured binding refers to one of its elements.
 _VALUES = frozenset({"capacity", "contains", "count", "empty", "max_size", "size"})
-# A token, as an expression's context is read (#297): a word, a number, an operator.
+# A token, as an expression's context is read: a word, a number, an operator.
 _LEXEME = re.compile(
     rf"(?<!{_ID}){_NAME}|\.?[0-9](?:[eEpP][-+]|[\w.'])*|<<=|>>=|->\*|<=>|\.\.\.|::|->|"
     r"\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|\.\*|<%|%>|\S"
 )
 _ASSIGNING = frozenset(("=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="))
-# Operators that are built in where every operand is a number or a character (#297 review
-# round 2): no type of the program's is there for an overload of its own to take one.
+# Operators that are built in where every operand is a number or a character: no type
+# of the program's is there for an overload of its own to take one.
 _BUILT_IN = frozenset(
     ("+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "&", "|", "^")
     + ("<<", ">>", "!", "~")
 )
-# A number literal as the language spells it, with only its own suffixes (#297 review round
-# 3): no user-defined literal (`1_sink`, `10s`, `2i`), which calls an operator of its own.
+# A number literal as the language spells it, with only its own suffixes: no
+# user-defined literal (`1_sink`, `10s`, `2i`), which calls an operator of its own.
 _DIGITS = r"[0-9](?:'?[0-9])*"
 _HEX_DIGITS = r"[0-9a-fA-F](?:'?[0-9a-fA-F])*"
 _NUMBER_LITERAL = re.compile(
@@ -113,7 +113,7 @@ _NOT_TYPES = frozenset(
 # any label it lists as an operand.
 _ASM_GOTO = re.compile(rf"(?<!{_ID})(?:asm|__asm__|__asm)(?!{_ID})[^(;]*?(?<!{_ID})goto(?!{_ID})")
 # Where a comment or a literal may start. The lookahead lets the regex engine skip to
-# a character one may start with (the optional prefix first made it try every
+# a character one may start with (without it, the optional prefix makes it try every
 # position: half the inline-assembly check of a large unit).
 _OPENING = re.compile(r"""(?=[/"'uULR])(?://|/\*|["']|(?:u8|u|U|L)?R\")""")
 # A raw string's prefix and delimiter: `R"x(`, `u8R"(`.
@@ -145,7 +145,6 @@ _PAIRS.update({"<%": "{", "%>": "{"})
 # A word or a punctuator, as statements are read: keywords, labels and brackets.
 _WORDS = re.compile(f"(?<!{_ID}){_NAME}|" + _TOKENS.pattern)
 _WORD = re.compile(_NAME)
-_LAST_WORD = re.compile(_NAME + "$")
 # Words and punctuators as a declaration is read: its `=` and `,` (not `==`, `+=`, ...).
 _DECLARATION_TOKENS = re.compile(
     f"(?<!{_ID}){_NAME}|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,.]"
@@ -282,15 +281,6 @@ def _digit_separator(text, i):
     return start < i and text[start].isdigit()
 
 
-def unsafe_macros(texts, raw_strings=True, trigraphs=None):
-    r"""The names of the macros ``texts`` define that a statement scan cannot see
-    through: an expansion that may hold a bracket it does not close, a `;` outside its
-    brackets, a `<::`, or a pasted token (`<` ## `%` is a brace), or that names such a
-    macro. Every macro a source with a splice before `\n\r` defines counts.
-    ``trigraphs``: C's (by default, without ``raw_strings``: C)."""
-    return macro_hazards(texts, raw_strings, trigraphs)["brackets"]
-
-
 # What may return twice into the function calling it: setjmp's family (`_setjmp`,
 # `sigsetjmp`, `__builtin_setjmp`, ...) and the ucontext switches.
 _RETURNS_TWICE = re.compile(r"\w*setjmp\w*|getcontext|swapcontext|savectx")
@@ -387,12 +377,13 @@ _PREFIX = re.compile(f"{_NAME}|::|->|\\S")
 
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
     r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
-    text: ``brackets`` (`unsafe_macros`), ``blocks`` (the same but for a `;`: a bracket
-    it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`),
-    ``gotos`` (a `goto`), ``setjmp`` (a call that may return twice, `setjmp`) and
+    text: ``brackets`` (a bracket it does not close, a `;` outside its brackets, a
+    `<::`, or a pasted token: `<` ## `%` is a brace), ``blocks`` (the same but for a
+    `;`: a bracket it does not close), ``labels`` (a `case`, `default` or label a jump
+    can reach, `x:`), ``gotos`` (a `goto`), ``setjmp`` (a call that may return twice, `setjmp`) and
     ``declares`` (a `static`, `extern` or `using` declaration). A macro naming such a
     macro counts too, and every macro of a source with a splice before `\n\r` counts
-    for all of them."""
+    for all of them. ``trigraphs``: C's (by default, without ``raw_strings``: C)."""
     trigraphs = not raw_strings if trigraphs is None else trigraphs
     uses = {}
     found = {
@@ -609,7 +600,7 @@ class Preprocessed:
                 number = int(marker[1])
                 if marker[2] is not None:
                     # clang writes an unprintable byte (any non-ASCII one) in octal,
-                    # `\342\200\250`, gcc as it is; both escape `\` and `"` (#179).
+                    # `\342\200\250`, gcc as it is; both escape `\` and `"`.
                     path = octal_string(marker[2]) or "<unread>"
                     if path not in names:
                         names[path] = program(path)
@@ -643,17 +634,16 @@ class Preprocessed:
 
 
 class Statements:
-    """A source's statements, for finding where a declaration ends. ``macros``: the
-    names `unsafe_macros` gives for the build's sources and headers; ``hazards``: what
-    `macro_hazards` gives for them (its ``brackets`` replace ``macros``)."""
+    """A source's statements, for finding where a declaration ends. ``hazards``: what
+    `macro_hazards` gives for the build's sources and headers."""
 
-    def __init__(self, text, raw_strings=True, macros=frozenset(), hazards=None, trigraphs=None):
+    def __init__(self, text, raw_strings=True, hazards=None, trigraphs=None):
         # C (`-std=c11`) has trigraphs and no raw strings; C++17 the other way round.
         self.raw_strings = raw_strings
         self.text = translated(text, not raw_strings if trigraphs is None else trigraphs)
         self.blanked = blank(self.text, raw_strings)
         self.starts = [0] + [mark.end() for mark in re.finditer("\n", self.blanked)]
-        hazards = hazards or {"brackets": macros}
+        hazards = hazards or {}
         self.macros = frozenset(hazards.get("brackets", ()))
         # What `jumped_past` cannot see through: a label, or a bracket left open.
         self.opaque = frozenset(hazards.get("labels", ())) | frozenset(hazards.get("blocks", ()))
@@ -762,7 +752,7 @@ class Statements:
 
         ``declaring``: the one statement that declares ``name`` instead (`long t = 11;`
         in `long t = 11; while (t > 20) t--;`, whose header only uses it), for where its
-        scope and its block are; None unless just one does (review of PR #159)."""
+        scope and its block are; None unless just one does."""
         key = ("declaration", line, name, declaring)
         if key not in self._ends:
             self._ends[key] = self._declaration(line, name, declaring)
@@ -1137,7 +1127,7 @@ class Statements:
         iterator calls). Its own declarator needs an initializer (`for (int i; …)` sets
         nothing), and it and each declarator before it may hold only literals and
         operators: a name may be a macro that calls (`#define INIT make_i()`, or a
-        library's `errno`), which the text cannot rule out (review of PR #214). Those
+        library's `errno`), which the text cannot rule out. Those
         after it run once it is set: `int i = 0, j = f` keeps `i`. In C++ only the first
         declarator counts: constructing one before it may call."""
         part = self.blanked[start:end]
@@ -1164,7 +1154,7 @@ class Statements:
         `case` of a `switch` around it, or a label any `goto` of the function names),
         False if there is none, or None if unknown: an `#include` or a macro that may
         hold a label or a bracket there, or a block that never closes. A `goto` to a
-        label in a one-line loop's body skips `int i = 0` (review of PR #214)."""
+        label in a one-line loop's body skips `int i = 0`."""
         key = ("into", line, name, span)
         if key not in self._ends:
             self._ends[key] = self._into(line, name, span)
@@ -1281,7 +1271,7 @@ class Statements:
             return True
         previous = self._word_before(position)
         if previous == "template" and self._member(position):
-            # A member template's name (`P::template t<0>()`, #283), not a declaration.
+            # A member template's name (`P::template t<0>()`), not a declaration.
             return False
         return previous is not None and previous not in _USES
 
@@ -1594,7 +1584,7 @@ class Statements:
         local's lifetime anew (C11 6.2.4); for a header's variable, or with the braces
         unknown, any. Also a macro that may `goto` named there, or a computed `goto`, or
         a GNU `asm goto` anywhere in the source, whose labels are its operands
-        (`__asm__ goto("…" : : : : inside)`, review of PR #214): then any label counts.
+        (`__asm__ goto("…" : : : : inside)`): then any label counts.
         The function is its lines ``span`` (first, last) when given, else the outermost
         braces around the declaration (in C++ maybe a namespace's: more counts)."""
         blanked = self.blanked
@@ -1687,7 +1677,7 @@ class Statements:
         """Whether the code of ``line`` starts a statement (True), or continues one that
         an earlier line started (False: `long t = s.a` then `+ f();`, a call's arguments,
         a `for` header's parts, an initializer's rows), as a stop at the line's start
-        finds it (#105). Part-way through a statement, what it has read may be held in a
+        finds it. Part-way through a statement, what it has read may be held in a
         register or a temporary, which a change to the variable does not reach.
 
         Every bracket around the line, up to its function's (or lambda's) body, must be
@@ -1883,8 +1873,8 @@ class Statements:
         in may declare one).
 
         ``body``: the stop is in a function wholly on the line (a lambda in a statement
-        there, #169): where the line opens one function's or lambda's body, it is that
-        one, and only its statements count, with those of each block in it (#290), not
+        there): where the line opens one function's or lambda's body, it is that
+        one, and only its statements count, with those of each block in it, not
         the statement holding it (a range-`for`'s binding names nothing inside a lambda
         in its range); where it opens several, the line is read as any other.
 
@@ -1894,16 +1884,16 @@ class Statements:
 
         ``others``: the stop is in a known function that goes on past the line: a
         function's or a lambda's body wholly on the line is another function's code,
-        and no block in it counts, as none of its statements does (#290).
+        and no block in it counts, as none of its statements does.
 
         ``entering``: the stop is the first instruction of the statements that start on
         the line, so none of them has run: a range-`for` there whose header ends the
         line with its body's `{` is about to run its range's expression, where its
-        binding is not declared yet (#169), so the binding names nothing at the stop.
+        binding is not declared yet, so the binding names nothing at the stop.
 
         ``own``: the line of the shown local's own declaration where it may be a `static`
         (or `extern`, or a thread's own): an optimized build keeps a `static` it never
-        changes as a constant, which lldb-dap lists among the frame's locals (#173). A
+        changes as a constant, which lldb-dap lists among the frame's locals. A
         declaration with that storage whose declarator for ``name`` is on that line is
         then the local itself, not one hiding it; only where ``name`` appears once on
         the line, so that no other declaration there can be the local.
@@ -1963,7 +1953,7 @@ class Statements:
         # Where the statement that holds the stop (or the position read) is.
         within = position if scope is None else scope
         if len(bodies) == 1:
-            # The body's own statements, and those of each block in it (#290).
+            # The body's own statements, and those of each block in it.
             opened = bodies[0]
             closed = min(pairs[opened], finish)
             blocks = [opened] + sorted(
@@ -1992,7 +1982,7 @@ class Statements:
         )
         if others:
             # A block in a function's or lambda's body wholly on the line is that
-            # function's: the frame's goes on past the line (#290).
+            # function's: the frame's goes on past the line.
             wholly = [
                 (opened, closed)
                 for opened, closed in pairs.items()
@@ -2021,7 +2011,7 @@ class Statements:
         )
         if found and len(bodies) > 1:
             # A frame wholly on a line holding several functions' bodies: which one it
-            # runs, and so whether what is found is its own, cannot be told (#299 review).
+            # runs, and so whether what is found is its own, cannot be told.
             return ("bodies", found[1])
         return found
 
@@ -2080,7 +2070,7 @@ class Statements:
         """The lines (first, last) of a C++ range-`for`'s header that holds ``line``, whose
         structured binding declares ``name`` and whose header also names ``name`` outside
         the binding, in its range's expression or an init-statement: `for (const auto &[t,
-        u] : make(t))`. That code runs before the binding exists (#283), where ``name`` is
+        u] : make(t))`. That code runs before the binding exists, where ``name`` is
         an outer one; but a mention need not be a read (`sizeof(t)`, a lambda's body), so
         a caller can only say the header names it. A member's or a qualified name does not
         count (`p.t`, `p->t`, `n::t`, `p.template t<0>()`). Else None."""
@@ -2110,7 +2100,7 @@ class Statements:
         k)`) or a range's expression: `if (t) { static long t = 5; use(t); }`, where only
         the `static` the line declares later hides it (``block_storage``, read with
         ``after``, ``entering``, ``own`` and ``others`` as it is). Running that header may
-        read the outer local, or not (a mention need not be a read, #283). A member's or a
+        read the outer local, or not (a mention need not be a read). A member's or a
         qualified name does not count (`p.t`, `n::t`, `p.template t<0>()`), nor one in a
         range-`for`'s structured binding. None if no header does, or Peeky cannot tell.
 
@@ -2592,7 +2582,7 @@ class Statements:
             if (bound := self._binding(statement, name, after)) is not None:
                 return ("binding", bound)
         # A lambda's body (or an initializer's braces) in the statement is a scope of its
-        # own: what it declares names nothing in the block (review of PR #159).
+        # own: what it declares names nothing in the block.
         braced = _braced(statement)
         if self.raw_strings and nested:
             for index, (text, position, _) in enumerate(statement):
@@ -2683,7 +2673,7 @@ class Statements:
 
     def _declared_beside(self, line, name):
         """Whether ``line`` declares ``name`` otherwise than by a structured binding,
-        outside the bodies of lambdas (or functions) there (#169): a local of the name
+        outside the bodies of lambdas (or functions) there: a local of the name
         in one is that function's own, whose frame no binding outside it names."""
         return any(
             self._declares(low, high, name, bindings=False) for low, high in self._outside(line)
@@ -2720,7 +2710,7 @@ class Statements:
     def binds(self, line, name):
         """Whether ``line`` declares ``name`` as a C++ structured binding's name (`auto [t,
         u] = make(i)[0];`, `const auto &[t, u]`, a range-`for`'s) and in no other way,
-        outside the bodies of lambdas (or functions) there (#291). A variable of reference
+        outside the bodies of lambdas (or functions) there. A variable of reference
         type that the build declares there is then the reference it holds to a pair's or
         tuple's element, which the binding names."""
         if (
@@ -2769,7 +2759,7 @@ class Statements:
 
     def binding(self, line, name):
         """``(reference, initializer, ranged)`` of the C++ structured binding that names
-        ``name`` on ``line`` (as ``binds`` finds it, #291): whether it binds by reference
+        ``name`` on ``line`` (as ``binds`` finds it): whether it binds by reference
         (`auto &`, `const auto &`, `auto &&`), the text of what it binds (`make(0)[0]` in
         `auto &[t, u] = make(0)[0];`, `p` in `auto [t, u](p)`, the range `m` of `for (const
         auto &[k, v] : m)`), and whether it is a range-`for`'s. None where no binding names
@@ -2844,7 +2834,7 @@ class Statements:
     def leaves_elements(self, name, scope, region, line, bound, scalar=None, passes=None):
         """Whether the code leaves the element of the standard container local ``name``
         that the structured binding ``bound``, declared on ``line``, refers to alive while
-        the binding is in scope (#297): ``scope`` is the lines the local is in scope on,
+        the binding is in scope: ``scope`` is the lines the local is in scope on,
         from its declaration (a parameter's: its function's), ``region`` the binding's
         (Statements.scope_lines).
 
@@ -3063,7 +3053,7 @@ class Statements:
         `&b`, a reference bound to it, an argument a call may take by reference
         (``passes(function, index)`` says which take theirs by value), a branch of `?:`,
         nor in the body of a lambda or a local class's function (``bodies``). So no
-        pointer or reference to an element is made through them (#297)."""
+        pointer or reference to an element is made through them."""
         names = self._bound_names(line, bound)
         if not names or scalar is None:
             return False
@@ -3113,7 +3103,7 @@ class Statements:
     def _only_read(self, index, scalar, passes):
         """Whether the use of a binding's name (a number or a character) at token ``index``
         of ``_lexemes`` makes no pointer or reference to it, read from the expression
-        around it (``_operand``) and what takes that expression (#297 review rounds 1, 2).
+        around it (``_operand``) and what takes that expression.
 
         The expression may hold only numbers and characters: the binding's names and
         locals of such types (``scalar(name)``), number literals, casts to such types
@@ -3456,7 +3446,7 @@ class Statements:
         `FOR_EACH(x) {`; a function-try-block's, `f(P p) try {`, and its handlers'),
         "lambda" (`[&] {`, `[](int v) -> int {`), or "other" (a class, an initializer,
         `({`, `new T[1]{`, `decltype(W{}){`, a compound literal). The block of an `if
-        constexpr (...)`, `if consteval` or `if !consteval` is a statement's (#289)."""
+        constexpr (...)`, `if consteval` or `if !consteval` is a statement's."""
         before = self._unattributed(opening)
         if before is None:
             return "other"

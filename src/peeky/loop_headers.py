@@ -1,4 +1,4 @@
-"""Whether a line breakpoint on a loop header stops only before its loop (#161).
+"""Whether a line breakpoint on a loop header stops only before its loop.
 
 A C, C++ or Java `for`/`while` header with one breakpoint location stops at its first
 code, which runs once before the loop (`i = 0`, a jump to the condition), never at the
@@ -13,7 +13,7 @@ header holds code of the line. The line stops only before it where:
 - every breakpoint location of the line is outside each such loop, and every path from
   it passes through that loop's header before it can come back to the location or
   return (so it runs once each time the loop starts, never on its own: not a condition
-  the loop sits under, review of #166);
+  the loop sits under);
 - the loop holds code of other lines (its body), and the line's code in it is the loop's
   own: its condition (the blocks the header starts, of the line's code alone), its
   increment (the line's code ending a block that jumps back to the header), or a
@@ -254,7 +254,7 @@ def stops_before_loop(instructions, table, line, locations, handlers=()):
     the line is that loop's header alone (see the module); else None. Each stops at most
     once per start; ``exact`` where every one is on every path into the loop (it
     dominates the loop's header), else some may not run (`if (z) { int w = 5; ... } for
-    (...)`: review 2 of #166), so it is at most so many. ``table``: which line each range
+    (...)`), so it is at most so many. ``table``: which line each range
     of code is (``line_table``)."""
     analysed = natural_loops(instructions, handlers)
     if analysed is None or not locations or not table:
@@ -352,7 +352,7 @@ def _own_code(headers, loops, code, successors, ours):
 def java_instructions(code):
     """[(pc, kind, targets)] of a method's bytecode (as `disassembly` gives), or None
     where it does not decode (an unknown opcode, a target outside the code): the
-    decoding ``java_bytecode.decode`` shares with a local's reads after a stop (#164)."""
+    decoding ``java_bytecode.decode`` shares with a local's reads after a stop."""
     decoded = decode(code)
     return None if decoded is None else [(each.pc, each.kind, each.targets) for each in decoded]
 

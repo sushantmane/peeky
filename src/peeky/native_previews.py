@@ -1,7 +1,7 @@
-"""Previews of C and C++ structs, classes and fixed-size arrays (#136).
+"""Previews of C and C++ structs, classes and fixed-size arrays.
 
 lldb-dap shows a struct, class, union or array that has no summary of its own as its
-type and address (`bin[4] @ 0x16bb9f278`), so an agent had to list every field by hand.
+type and address (`bin[4] @ 0x16bb9f278`), with none of its fields.
 A preview is written from the debugger's own children, in the C-like form LLDB's
 `frame variable` uses: `{lo = 0, hi = 2, count = 0}`, an array `[5, 4, 3]`, an array of
 structs `[{lo = 0, hi = 2, count = 0}, {...}]`, a 2-D array `[[1, 2, 3], [4, 5, 6]]`.
@@ -24,7 +24,7 @@ member holds what was stored); a pointer, or a reference, inside shows its addre
 is never followed; a member with no value shows `<no value>`; a variable-length array
 shows `[…]`, and is not previewed itself; an incomplete type (declared, never defined:
 an opaque handle) is not previewed; a standard-library value keeps the debugger's
-summary (`size=2`, a string's text, checked as the worker checks every string, #128)
+summary (`size=2`, a string's text, checked as the worker checks every string)
 or shows `{…}`; a base class shows as a member named by its class
 (`{Base = {b = 1}, d = 2}`), as LLDB lists it; an anonymous struct shows its members in
 braces, with no name; the unnamed bitfields LLDB adds to fill gaps are left out. LLDB
@@ -58,7 +58,7 @@ _WIDE = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _CHARACTER = re.compile(r"(?:u8|[LuU])?'(.+)'")
 _WIDE_LITERAL = re.compile(r"(?<=\s)(?:u8|[LuU])'(?:[^'\\]|\\[^']+|\\')'$")
 _ESCAPES = {"0": 0, "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, "e": 27}
-# The standard containers previewed (#181), by how LLDB lists them: elements [0], [1], ...
+# The standard containers previewed, by how LLDB lists them: elements [0], [1], ...
 # in order (a sequence's, a set's, in iteration order) or a map's entries, each a pair.
 _CONTAINERS = {
     "vector": "sequence",
@@ -74,7 +74,7 @@ _CONTAINERS = {
 }
 _CXX_ARRAY = re.compile(r"std::(?:__\w+::)*array<")
 _UNORDERED = re.compile(r"std::(?:__\w+::|pmr::)*unordered_(?:multi)?(?:map|set)<")
-# An unordered container whose count is not proven (#167): never its debugger's summary.
+# An unordered container whose count is not proven: never its debugger's summary.
 UNLISTED = "<not listed>"
 # LLDB's summary of a standard container: its element count.
 _SIZE = re.compile(r"size=(0|[1-9][0-9]{0,9})")
@@ -85,7 +85,7 @@ class Typed:
     ``graph`` (fields.type_graph), with the array dimensions still to index (a
     multi-dimensional array is one type) and, for a bitfield member, its width. Or one
     entry LLDB lists of a standard map (``entry``: its key's and value's Typed), which
-    the program's types do not name (#181)."""
+    the program's types do not name."""
 
     def __init__(self, graph, offset, dims=None, bits=None, entry=None):
         self.graph, self.offset, self.dims, self.bits = graph, offset, dims, bits
@@ -195,7 +195,7 @@ class Typed:
 
     def placed_members(self):
         """[(name, Typed, byte offset)] of a record's or union's named members that the
-        debug information places (#336): never a bitfield, nor a struct member it gives
+        debug information places: never a bitfield, nor a struct member it gives
         no offset (a union's are at 0)."""
         node = self.node()
         if node is None or node[0] != "record":
@@ -211,7 +211,7 @@ class Typed:
 
     def placed_bases(self):
         """[(name, Typed, byte offset)] of a class's base classes that the debug information
-        places (#339): never a virtual one, whose place only the running object says."""
+        places: never a virtual one, whose place only the running object says."""
         node = self.node()
         if node is None or node[0] != "record" or len(node) < 14:
             return []
@@ -225,7 +225,7 @@ class Typed:
 
     def byte_size(self):
         """How many bytes one value of the type takes, from the debug information, or
-        None where it does not say (#302): a base type's, an enum's, a complete
+        None where it does not say: a base type's, an enum's, a complete
         record's, a pointer's (8 where it leaves that to the target, as clang's does,
         for one that names what it points at: a pointer to a member may be 16), or an
         array's of a constant length. Never a bitfield's, a reference's or a map
@@ -278,7 +278,7 @@ class Typed:
         if sort == "library":
             return self._contained(str(name))
         if sort in ("pointer", "reference"):
-            # The debugger lists what a pointer points at as its children (#102).
+            # The debugger lists what a pointer points at as its children.
             target = self.target()
             if target is None:
                 return None
@@ -301,7 +301,7 @@ class Typed:
         return None
 
     def container(self):
-        """A standard container's kind and what its elements are (#181), or None:
+        """A standard container's kind and what its elements are, or None:
         ("sequence", element) for `std::vector`, `std::deque`, `std::list` and
         `std::array`; ("map", key, value) for `std::map` and `std::unordered_map`;
         ("set", key) for the sets. The types are the class template's own arguments in
@@ -323,7 +323,7 @@ class Typed:
 
     def unordered(self):
         """Whether it is a C++ unordered container (`std::unordered_map` and its kin, the
-        multimap too), whose count LLDB's libstdc++ formatter can get wrong (#167)."""
+        multimap too), whose count LLDB's libstdc++ formatter can get wrong."""
         node = None if self.dims or self.entry else self.node()
         return (
             node is not None
@@ -350,11 +350,11 @@ class Typed:
 
     def identity(self):
         """The type under typedefs and qualifiers as every compile unit of a build names it
-        alike (#336), so that a pointer in one source file matches an array in another: a
+        alike, so that a pointer in one source file matches an array in another: a
         base type by its name, encoding and size; a struct, class or union by its layout
         (``_layout``: its name, size, and each member's name, offset and type, those of
         its members too), never by its name alone, which two files may give two layouts.
-        A pointer is told by what it points at, by name (#339: an `int **` in one file at
+        A pointer is told by what it points at, by name (an `int **` in one file at
         an `int *` local in another). Any other type (an enum, whose values the walk does
         not read), or a record or pointer whose layout was not all read, is its offset in
         the debug information: the same type only within one unit. None where it was not
@@ -397,7 +397,7 @@ class Typed:
         return name, member
 
     def _contained(self, name):
-        """``child`` of a standard container (#181): an element (`[2]`), a map's entry
+        """``child`` of a standard container: an element (`[2]`), a map's entry
         (its `first` and `second`), or a `std::array`'s C array."""
         found = self.container()
         if found is None:
@@ -477,7 +477,7 @@ def _named(graph, offset, depth=0):
         inner = _named(graph, node[2], depth + 1)
         return None if inner is None else f"{list(node[3])}{inner}"
     if node[0] == "other" and node[1] == "DW_TAG_subroutine_type":
-        # A function, whose parameters the walk does not read (#339: a callback member,
+        # A function, whose parameters the walk does not read (a callback member,
         # a C++ class's vtable pointer).
         return "fn"
     return None
@@ -540,10 +540,10 @@ def _bits(code, bits, signed):
 
 class _Room:
     """The characters a preview has left, and whether it may show a standard
-    container's elements (#181): ``containers``, a bool or a function asked only when a
+    container's elements: ``containers``, a bool or a function asked only when a
     container is met. ``unlisted(at, child)``: whether an unordered container (``at``:
-    the debugger's names from the preview's value to it) is shown as ``UNLISTED`` (#167),
-    or (the container, a fetch) as read from its nodes (#360)."""
+    the debugger's names from the preview's value to it) is shown as ``UNLISTED``,
+    or (the container, a fetch) as read from its nodes."""
 
     def __init__(self, length, containers=True, unlisted=None):
         self.left, self.allows, self.unlisted = length, containers, unlisted
@@ -563,7 +563,7 @@ class _Unsure(Exception):
 def preview(variable, fetch, typed, text, containers=True, unlisted=None):
     """The preview of a C or C++ value, or None to keep the debugger's text: a struct,
     class, fixed-size array (a wide character array too) or standard container
-    (`size=2 [1, 2]`, #181), or a C++ reference to one (`0x… {x = 1, y = 2}`, its
+    (`size=2 [1, 2]`), or a C++ reference to one (`0x… {x = 1, y = 2}`, its
     address first, as for a string).
 
     ``typed``: its ``Typed``. ``fetch(reference, count)``: the first ``count`` children
@@ -573,9 +573,9 @@ def preview(variable, fetch, typed, text, containers=True, unlisted=None):
     function asked when a container is met), a standard container keeps the debugger's
     summary (`size=2`): a library call may be part-way through changing it.
     ``unlisted(at, child)``: whether an unordered container, the value itself (``at``
-    empty) or one inside it, is withheld (#167): the value then has no preview, and one
+    empty) or one inside it, is withheld: the value then has no preview, and one
     inside shows `<not listed>`, never the debugger's count. Or, in a tuple, (the
-    container, a fetch for its entries) as Peeky read them from its nodes (#360), which
+    container, a fetch for its entries) as Peeky read them from its nodes, which
     are shown in place of the debugger's."""
     reference = variable.get("variablesReference")
     if type(reference) is not int or reference <= 0 or typed is None:
@@ -586,7 +586,7 @@ def preview(variable, fetch, typed, text, containers=True, unlisted=None):
         located, target = _ADDRESS.match(value), typed.target()
         if located and target is not None and target.container() is not None:
             # A reference to a standard container: its address, then the debugger's
-            # summary of the container (`0x… size=2`), if any (#181).
+            # summary of the container (`0x… size=2`), if any.
             summary = value[located.end() :].strip()
             shown = summary or f"{variable.get('type')} @ {located[0]}"
             prefix, typed, variable = located[0] + " ", target, {**variable, "value": shown}
@@ -600,7 +600,7 @@ def preview(variable, fetch, typed, text, containers=True, unlisted=None):
     if sort == "library" and typed.unordered() and unlisted is not None:
         held = unlisted((), variable)
         if isinstance(held, tuple):
-            # Its entries as Peeky read them from its nodes (#360): listed as the
+            # Its entries as Peeky read them from its nodes: listed as the
             # debugger lists a container it reads right; a multimap by its count.
             variable, fetch = held
             if typed.container() is None:
@@ -608,7 +608,7 @@ def preview(variable, fetch, typed, text, containers=True, unlisted=None):
         elif held:
             return None
     if sort == "library" and typed.container() is not None:
-        # A standard container (#181): `size=3 [1, 2, 3]`.
+        # A standard container: `size=3 [1, 2, 3]`.
         if not (containers() if callable(containers) else containers):
             return None
         room = _Room(LENGTH - len(prefix), unlisted=unlisted)
@@ -701,7 +701,7 @@ def _elements(variable, typed, fetch, text, depth, room, at):
 
 def _container(variable, typed, fetch, text, depth, room, at):
     """`size=N [e0, e1, …]` of a standard sequence, `size=N {k0: v0, …}` of a map and
-    `size=N {e0, …}` of a set (#181), in the order LLDB lists them (a map's or set's
+    `size=N {e0, …}` of a set, in the order LLDB lists them (a map's or set's
     iteration order), from the debugger's children, which its formatter reads from the
     container's own storage, `size()` of them: [0], [1], ... Each is shown as the class
     template's argument in the build's debug information says (`_Tp`). A `std::array`
@@ -765,7 +765,7 @@ def _member(child, typed, fetch, text, depth, room, at):
 
     value = str(child.get("value") or "")
     if child.get("withheld") and child.get("value") is None:
-        # Withheld on its own, with why (#374): a container held in an unordered
+        # Withheld on its own, with why: a container held in an unordered
         # container's node that Peeky doesn't read.
         return "<not read>"
     if is_unavailable(value):
@@ -774,11 +774,11 @@ def _member(child, typed, fetch, text, depth, room, at):
     if sort == "library" and typed.unordered() and room.unlisted:
         held = room.unlisted(at, child)
         if isinstance(held, tuple):
-            # Its entries as Peeky read them from its nodes (#360).
+            # Its entries as Peeky read them from its nodes.
             child, fetch = held
             value = str(child.get("value") or "")
         elif held:
-            # Its count is not proven (#167): neither its summary nor its elements.
+            # Its count is not proven: neither its summary nor its elements.
             return UNLISTED
     if sort == "union":
         return "<union>"
@@ -810,7 +810,7 @@ def _member(child, typed, fetch, text, depth, room, at):
         and typed.container() is not None
         and room.containers
     ):
-        # A standard container inside (#181): its elements, or else its summary.
+        # A standard container inside: its elements, or else its summary.
         try:
             return _container(child, typed, fetch, text, depth + 1, room.nested(), at)
         except _Unsure:
