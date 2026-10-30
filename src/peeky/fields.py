@@ -1,12 +1,12 @@
-"""Which scalar field or element of a C, C++ or Rust local `--set` may change (#105).
+"""Which scalar field or element of a C, C++ or Rust local `--set` may change.
 
 Decided from the build's debug information, never from the type names a debugger
 shows: a typedef can hide a pointer, and a bitfield shows as its declared type. The
 path from the local to the value may only select fields of plain structs, classes and
 tuples (`.field`, `.__0`) and elements of fixed-size arrays (`[2]`): nothing reached
-through a pointer or a reference (what it points at may be gone, #101), and nothing
+through a pointer or a reference (what it points at may be gone), and nothing
 inside a union, an enum, a packed record or a standard-library type. The value must
-be a 16-, 32- or 64-bit integer that is neither const nor volatile.
+be a 16-, 32- or 64-bit integer that is not const, volatile or atomic.
 """
 
 import re
@@ -31,7 +31,7 @@ _RECORDS = {
 # own namespace `core`), and Rust's crates.
 CPP_LIBRARIES = frozenset({"std", "__gnu_cxx", "__gnu_debug", "__cxxabiv1"})
 RUST_LIBRARIES = frozenset({"std", "core", "alloc"})
-# The C++ standard containers Peeky previews by their elements (#181), by qualified name
+# The C++ standard containers Peeky previews by their elements, by qualified name
 # (libc++'s `std::__1::vector<…>`, libstdc++'s `std::vector<…>`, `std::__debug::map<…>`).
 CXX_CONTAINER = re.compile(
     r"std::(?:__\w+::)*(vector|array|deque|list|map|unordered_map|set|multiset|"
@@ -39,7 +39,7 @@ CXX_CONTAINER = re.compile(
 )
 # libstdc++'s unordered containers and their hashtable: every template argument is
 # walked, so the allocator LLDB's formatter takes their entries' type from, and the
-# hashtable's value type, can be compared (#167).
+# hashtable's value type, can be compared.
 HASHED = re.compile(r"std::(?:__\w+::)*(?:unordered_(?:multi)?(?:map|set)|_Hashtable)<")
 _PARAMETERS = {
     "DW_TAG_template_type_parameter": "type",
@@ -76,7 +76,7 @@ _ELSEWHERE = (
 
 def pointer_advice(root, kind):
     """settable_member's advice for the pointer or reference root local ``root``, by
-    what it is in the frame (tenth evaluation: kitty's `e.payer`): "parameter", proven,
+    what it is in the frame: "parameter", proven,
     gets the call advice; "local" (a `for` loop's item, `let r = &mut x;`), which no
     call passed, and None (not proven either: a static, a shadowed or unclear
     declaration) get no call claim; "element", a local proven to point at a slice's or
@@ -114,8 +114,8 @@ def referred_locals(dies, bodies):
     any location other than one frame offset (`DW_OP_fbreg -24`), such as clang's
     `DW_OP_fbreg -24, DW_OP_deref` for a structured binding of a reference
     (`auto& [items, n] = *owner`), a class passed by value through a hidden pointer, or
-    a named return value. Their values may be what a caller's library call is changing
-    (#181). None if there are too many to list them all."""
+    a named return value. Their values may be what a caller's library call is changing.
+    None if there are too many to list them all."""
     found, pending, seen = set(), [child for body in bodies for child in dies[body]["children"]], 0
     while pending:
         child = pending.pop()
@@ -137,7 +137,7 @@ def referred_locals(dies, bodies):
 
 def element_reference(dies, value):
     """Whether the DW_AT_type ``value`` of a variable is GCC's for a C++ structured
-    binding of a tuple-like type (`auto [t, u] = pair;`, #291): a reference (`&` or
+    binding of a tuple-like type (`auto [t, u] = pair;`): a reference (`&` or
     `&&`) to `std::tuple_element<I, E>::type`, the type the standard gives the element
     each name binds. GCC describes each name as a variable that holds that reference, so
     the debugger shows the element's address as its value. clang marks such a variable
@@ -178,7 +178,7 @@ def local_types(dies, bodies, through=False):
     pointer (`DW_OP_fbreg -16, DW_OP_deref`: a C++ structured binding of a reference, a
     named return value, a C `__block` variable), which a change would write through, and
     for GCC's structured binding of a tuple-like type, wherever it is kept: a variable
-    holding a reference to its element (``element_reference``, #291);
+    holding a reference to its element (``element_reference``);
     the file name (no directory) and line it is declared on, as
     LLDB names a local when several of its name are in scope (`s @ main.rs:81`), or
     None. None if there are too many to list them all."""
@@ -358,9 +358,9 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             encoding = (attrs.get("DW_AT_encoding") or "").strip()
             graph[offset] = ("base", name, encoding, size)
         elif tag in ("DW_TAG_pointer_type", "DW_TAG_ptr_to_member_type"):
-            # What it points at, never walked here: previews read one level (#136). Its
+            # What it points at, never walked here: previews read one level. Its
             # byte size where the debug information gives one (GCC's; clang's leave it to
-            # the target's address size): how far LLDB skips past `_M_nxt` (#167).
+            # the target's address size): how far LLDB skips past `_M_nxt`.
             aimed = target if tag == "DW_TAG_pointer_type" else None
             graph[offset] = ("pointer", name, aimed, size)
             if pointees and aimed is not None:
@@ -371,7 +371,7 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 pending.append(target)
         elif tag == "DW_TAG_enumeration_type":
             # Its enumerators and whether its values are signed, which an entry read
-            # from an unordered container's node is shown by (#374), and its qualified
+            # from an unordered container's node is shown by, and its qualified
             # name.
             values, signed = _enumerators(dies, die)
             graph[offset] = ("enum", name, size, values, signed, _qualified(dies, offset) or name)
@@ -400,7 +400,7 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                     continue
                 if member["tag"] in _PARAMETERS:
                     # A class template's arguments: a standard container's element type
-                    # (#181), the `_Tp` of `std::vector<_Tp, _Allocator>`.
+                    # (the `_Tp` of `std::vector<_Tp, _Allocator>`).
                     own = member["attrs"]
                     parameters.append(
                         (
@@ -431,7 +431,7 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                         _number(own.get("DW_AT_data_member_location")),
                         "DW_AT_bit_size" in own or "DW_AT_bit_offset" in own,
                         _number(own.get("DW_AT_alignment")),
-                        # A bitfield's width, for its preview (#136).
+                        # A bitfield's width, for its preview.
                         _number(own.get("DW_AT_bit_size")),
                     )
                 )
@@ -446,22 +446,22 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 variant,
                 "DW_AT_declaration" in attrs,
                 _library(dies, offset, libraries),
-                # Its base classes, in order (#136).
+                # Its base classes, in order.
                 tuple(bases),
                 # Its qualified name (`alloc::vec::Vec<i64, alloc::alloc::Global>`), which
-                # picks a Rust container's layout (#156).
+                # picks a Rust container's layout.
                 _qualified(dies, offset) or name,
                 # Its template arguments: ("type", name, type offset, None) or ("value",
-                # name, type offset, constant) (#181).
+                # name, type offset, constant).
                 tuple(parameters),
-                # Each base class's byte offset in the object, or None (#339).
+                # Each base class's byte offset in the object, or None.
                 tuple(based),
             )
             pending.extend(kind for kind in holds if kind is not None)
             if graph[offset][9] and CXX_CONTAINER.match(graph[offset][11]):
                 # A standard container's elements (and a map's keys and values), which
-                # its members reach only through pointers: their previews' types (#181).
-                # And its order and allocator, which may see where each element is (#297).
+                # its members reach only through pointers: their previews' types.
+                # And its order and allocator, which may see where each element is.
                 pending.extend(p[2] for p in parameters if p[0] == "type" and p[2])
             if graph[offset][9] and HASHED.match(graph[offset][11]):
                 pending.extend(p[2] for p in parameters if p[0] == "type" and p[2])
@@ -559,7 +559,7 @@ def _pointer_under(graph, offset):
 
 def debugger_steps(graph, root, name, steps):
     """A selector's ``steps`` from the local ``name`` of type ``root`` as the debugger
-    names the children they reach, which is how the stop's walk reads them (#138): an
+    names the children they reach, which is how the stop's walk reads them: an
     index with leading zeros is that element (`[01]` is `[1]`), and a negative one
     counts from the end of a fixed-size array (`[-1]` of an `int[3]` is `[2]`). None
     where that cannot be told here (a negative index into an array whose length the
@@ -602,7 +602,7 @@ def debugger_steps(graph, root, name, steps):
 
 def member_indexes(graph, root, name, steps):
     """The projection ``steps`` (the debugger's child names, as ``debugger_steps`` gives
-    them) make from the local ``name`` of type ``root``, as MIR numbers it (#192 review):
+    them) make from the local ``name`` of type ``root``, as MIR numbers it:
     ("field", its position among its record's members, which rustc's debug information
     lists in declaration order, as MIR numbers fields) or ("index", n) of a fixed-size
     array. None where a step is neither."""
@@ -627,7 +627,7 @@ def member_indexes(graph, root, name, steps):
 def held_container(graph, root, name, steps, dereference=False):
     """The qualified type name of the record (a Rust `Vec`, `String`, `&str`) that
     ``steps`` (the debugger's child names: `values`, `__1`, `[2]`) reach from the local
-    ``name`` of type ``root`` (#156), held in that local's own storage or, with
+    ``name`` of type ``root``, held in that local's own storage or, with
     ``dereference``, in what the local (a reference or a Box) points at. On the way:
     fields of plain structs and tuples and elements of fixed-size arrays only; never a
     pointer, a reference, a union, an enum (which variant it holds is not read), a
@@ -636,7 +636,7 @@ def held_container(graph, root, name, steps, dereference=False):
     offset, node, _ = _strip(graph, root, name)
     if dereference:
         if node[0] == "record" and re.fullmatch(r"&(?:mut )?\[.*\]", str(node[1] or "")):
-            # A slice reference is a data pointer and a length, not a pointer (#260).
+            # A slice reference is a data pointer and a length, not a pointer.
             raise Unsettable(
                 f"`{name}` is a slice, a data pointer and a length: Peeky reads what it holds "
                 f"only as its elements (`{name}[0]`), not through `{name}.data_ptr`"
@@ -714,7 +714,7 @@ def settable_member(graph, root, name, steps, owner=None):
             element, counts = pending
         else:
             # A const pointer (`Counter *const`, GCC's `this`) is refused as a pointer: what
-            # it points at need not be const (#167).
+            # it points at need not be const.
             under = _pointer_under(graph, offset)
             offset, node = under if under else _strip(graph, offset, path)[:2]
             if node[0] in ("pointer", "reference"):
@@ -909,10 +909,10 @@ def settable_parts(graph, root, name, limit=64, visits=4096):
     """The paths (`board.entries`, `bins[*].hi`, `board.cells[*].n`, `xs[*]`; `[*]`: any
     element) of the integer fields and elements of the struct, class, tuple or array
     local ``name`` of type ``root`` that ``settable_member`` allows, found by a walk
-    through records and fixed-size arrays at any depth (#192 review), each leaf judged
+    through records and fixed-size arrays at any depth, each leaf judged
     by ``settable_member`` as `set` judges it; at most ``limit``, then `… and N more`
     (`… and more` past ``visits`` types walked); else None. What `describe` lists
-    (seventh evaluation, finding 16; #183: the paths, not the local). A Rust reference
+    (the paths, not the local). A Rust reference
     or slice (`&str`, a record the debug information names `&…` or `*…`), a union, an
     enum and a library's type are never walked into: `set` changes nothing there."""
 
@@ -1010,7 +1010,7 @@ def member_type(graph, root, steps):
     """The node of the type that the debugger's child names ``steps`` reach from a local
     of type ``root``, as ``member_base`` walks them (typedefs and qualifiers kept, what a
     pointer or reference points at when a step goes below it), or None. For display
-    only (#183: a field's Rust name), from a graph built with ``pointees``."""
+    only (a field's Rust name), from a graph built with ``pointees``."""
     offset = root
     for step in steps:
         node = None
@@ -1062,7 +1062,7 @@ def _rust_raw(node, holder):
 
 
 def rust_raw_pointer(graph, root, steps):
-    """#255: for a pointer the debugger's child names ``steps`` reach from a Rust local
+    """For a pointer the debugger's child names ``steps`` reach from a Rust local
     of type ``root``: True if it is a raw pointer (`*const T`, `*mut T`, or the address in
     a fat one, `*const str`) or is read through one, False if it is a reference or a Box
     (`&T`, `Box<T>`, or the address in a fat one, `&str`), None where the debug
@@ -1106,7 +1106,7 @@ FUNCTION = "\x00"
 def by_function(reasons):
     """A refusal's reasons, [(function, reason with FUNCTION where it is named)], each
     given once for the functions it holds in (`in fc and fd, `a.pp` is a pointer: ...`),
-    in order (#138: a line several functions share)."""
+    in order (a line several functions share)."""
     grouped = {}
     for function, reason in reasons:
         named = grouped.setdefault(reason, [])

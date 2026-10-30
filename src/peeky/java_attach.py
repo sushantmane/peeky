@@ -66,7 +66,7 @@ def attached_source_map(class_roots, sources, deadline=None, identities=None):
         if key in packages:
             raise ValueError("Two declared sources share a package and file name")
         packages[key] = source
-        # Java ends a line at CR, LF or CRLF alone (#179).
+        # Java ends a line at CR, LF or CRLF alone.
         counts[source] = len(source_lines(text, rust=False))
     classes, total = {}, 0
     for class_root in class_roots:
@@ -205,10 +205,10 @@ class JavaAttachSession(JavaSession):
     """Java runtime contract over an attached JVM; reuses JavaSession inspection rules."""
 
     # Attached JVMs report their own death through the closed JDWP connection; the
-    # dropped exit event (#27) was seen only on launch, and a false "terminated"
+    # dropped exit event was seen only on launch, and a false "terminated"
     # would detach a live JVM.
     liveness_by_threads = False
-    # Their `stopped` event can be lost instead (#27): the worker detects a thread left
+    # Their `stopped` event can be lost instead: the worker detects a thread left
     # suspended at a verified session breakpoint and fails fast (find_lost_stop).
     detects_lost_stops = True
 

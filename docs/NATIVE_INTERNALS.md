@@ -30,10 +30,8 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   directory. The toolchain probes run on every build: a tool's output may depend on files its
   hash doesn't cover, such as a configuration file, a library or a program a wrapper runs.
 - `assembler.c_refusal` passes a unit with no `asm` keyword at once. It reads where a line came
-  from only to word a refusal. Tests compare it with the earlier scan on random text.
+  from only to word a refusal. Tests compare it with a slower reference scan on random text.
 - The worker turns off LLDB's init files with both the LLVM 18 key and the newer one.
-- The first target was tiny, unoptimized code. Symbol tool and debugger versions remain part of
-  what is qualified.
 
 ## Reading a build's symbols
 
@@ -52,9 +50,10 @@ Peeky reads a build's line tables and debug information as llvm-dwarfdump writes
 - `_parse_dies` reads the debug information into a `DieMap`, the `{offset: entry}` the text
   gives. It keeps one copy of each repeated name or value. It also notes whether the text
   describes a tail call.
-- Rust's `parse_dies` reads a unit's lines the same way, fail-closed as before.
+- Rust's `parse_dies` reads a unit's lines the same way, and fails closed.
 
-The bounds are on what is kept, and on the time:
+The bounds are on what is kept, and on the time. The sizes given were measured in October 2026, on
+the programs in `examples/large`, on macOS and Linux:
 
 - 300 MiB kept in memory (`MAX_KEPT`). Each parse reckons it as it goes: each entry's dicts and
   lists, each attribute's slot, each range, and each distinct name or value by `sys.getsizeof`.
@@ -92,9 +91,9 @@ Over a bound (`SymbolLimit`), the message names the bound and says to probe a sm
   through: Rust's address rows, field types and text changes' borrow checks.
 - `describe` shows "function names: unavailable", with the reason, for any of them.
 
-Before, Peeky held at most 2 MiB of line tables and 16 MiB of debug information. Wall time of
-one probe, as measured on the programs in `examples/large` and a ninth C++ file using
-`std::regex`, before builds ran in parallel:
+Wall time of one probe, measured in October 2026 on the programs in `examples/large` and a ninth
+C++ file using `std::regex`, before builds ran in parallel. "Before" is with the earlier bounds,
+2 MiB of line tables and 16 MiB of debug information:
 
 | Program | macOS before | macOS after | Linux before | Linux after |
 | --- | ---: | ---: | ---: | ---: |
@@ -103,9 +102,10 @@ one probe, as measured on the programs in `examples/large` and a ninth C++ file 
 | `rust-shop` | 3.6 s, refused | 5.4 s | 3.0 s, refused | 4.7 s |
 | The same crate without BTreeMap | 3.6-3.9 s | 3.6 s | 3.0-3.2 s | 3.0 s |
 
-- What's new in each is the reading and checking the old bounds cut short.
+- The added time is the reading and checking that the earlier bounds cut short.
 - Reading 32 MB of debug information takes 0.27 s as it is written, against 0.39 s through a file.
-- The probe's peak memory for `cpp-shop` on macOS is 195 MB, against 148 MB for the part it read.
+- The probe's peak memory for `cpp-shop` on macOS is 195 MB, against 148 MB with the earlier
+  bounds, which read only part of it.
 - Tests: `tests/unit/test_metadata_budget.py`, `tests/cpp/test_cpp_scale.py` and
   `tests/rust/test_rust_scale.py`.
 
@@ -161,9 +161,8 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - **A safety net:** a C++ frame on a line of the program's sources or headers withholds every
   local and parameter when its function has no entry (`_unplaced`). The row says `not shown`, and
   that Peeky can't place the function's declarations.
-- Before GCC's lambdas and implicit constructors were placed, the net took them. A `#line` that
-  names another file for a function's declaration, as bison writes, still takes it there, with
-  clang too.
+- A function whose declaration a `#line` puts in another file, as bison writes it, has no entry,
+  so the net takes it, with clang too.
 - `_function_entries` also gives a `CodeDie` for every `DW_TAG_subprogram` and
   `DW_TAG_inlined_subroutine` with code, placed or not. Each has its ranges, depth, entry root
   (None where unplaced), enclosing code, call site, and the row at each range's start.
@@ -186,10 +185,10 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - Copies of a function at one address (folded) are several roots, placed or not.
 - A frame left with several roots, or one unplaced, is withheld. The row says Peeky can't tell
   which function the frame runs, or can't place it.
-- C targets keep the narrowest entry, as before.
+- C targets keep the narrowest entry.
 - GCC gives an inlined call with no code left the same `DW_AT_low_pc` and `DW_AT_high_pc`, and
   dwarfdump writes both as addresses. `_code_ranges` reads that as no code. Read as an offset, it
-  held twice its address, and took the frames of `main` after it.
+  would hold twice its address, and take the frames of `main` after it.
 - Without the load address, the frame's line must be one placed function's own code: each of its
   rows must be that function's, as the deepest code there. Else the row is withheld, saying why.
 - Frames outside the program's sources, such as the standard library's, aren't judged so. Nor are
@@ -327,9 +326,8 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - With `readMemory`, the hook reads the data pointer and the length from the string's first two
   words, and checks the length against `_M_string_length`. The text takes one 32-byte request for
   a string in its own 16-byte buffer, and a second for one on the heap.
-- A literal is kept within the worker's 2000 characters, and cut between characters, for two
-  reasons. A value with a note once ran to 5041 characters. A long libc++ text was cut inside an
-  escape, with no mark.
+- A literal is kept within the worker's 2000 characters, its note included. It is cut between
+  characters, never inside an escape, which would change the text with no mark.
 - `tidy` respells only the debugger's own text, and only once. LLDB's escapes are unambiguous:
   `\0` is always one NUL, and LLDB writes no other octal escape. Reading memory again on macOS
   would cost a request per string, just to fix a spelling.
@@ -451,8 +449,8 @@ shows that reference's address as the variable's value.
 
 ## Function names
 
-LLDB's demangled C++ signatures run to about 100 characters, which made a probe table about 200
-columns wide.
+LLDB's demangled C++ signatures run to about 100 characters, which would make a probe table about
+200 columns wide.
 
 - `names.short_function` gives a table's short name.
 - `function_labels` gives a table's column. That is the short name, or, for frames that would read
@@ -469,8 +467,8 @@ clang's lexical blocks are right, but their code isn't contiguous.
 - The landing pads that destroy a block's objects, when an exception leaves it, lie inside the
   block's `DW_AT_ranges`. They carry the function's closing line. LLDB places that line's
   breakpoint locations there, among the function's own.
-- A span from a block's lowest line to its highest was too wide. In a function ending at line 35,
-  a `while` body's local read `colon (size_t, lines 17-35)`, and an `if` block's
+- A span from a block's lowest line to its highest is too wide. In a function ending at line 35,
+  a `while` body's local would read `colon (size_t, lines 17-35)`, and an `if` block's
   `name (lines 22-35)`.
 - `_block_spans` splits a block's lines only where a line between two of them runs code, none of
   which is the block's (`_runs`).
@@ -556,7 +554,7 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - Every C or C++ pointer, and every C++ reference, on the row's way must be judged to
     refer to a live object (`DebugWorker.nodes_reachable`). `NativeSession.indirections`
     names them by the debug information: `T &`, `T &&`, a typedef of one, a member.
-  - A pointer is judged by #339's `pointee_unproven`. A reference is judged the same way
+  - A pointer is judged by `pointee_unproven`. A reference is judged the same way
     (`referent_proven`): the address the debugger shows for it, and what `referent_of`
     says it refers to.
   - One the rule doesn't judge counts as unproven, as does a root local the frame reaches
@@ -655,11 +653,10 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.
   - Nothing is read where a call may be changing the container (`containers_settled`).
   - The reads have their own budget: 4,096 requests and 4 MiB per inspection or expansion
-    (`NODE_READS`), within the value view's 10 s. A hover's text is cached for the stop. With
-    lldb-dap 18, 333 entries in three containers took about 1,000 hovers and 0.25 s.
+    (`NODE_READS`), within the value view's 10 s. A hover's text is cached for the stop.
   - `m[K]` sends `expand` a `key`: `DebugWorker.keyed_entry` compares every entry's key, as a
-    selector compares one, however many there are. `m[#N]` past 511 sends `index`. Protocol 10
-    added `key`.
+    selector compares one, however many there are. `m[#N]` past 511 sends `index`. `key` needs
+    protocol 10.
   - The client takes an entry only from an answer that names the key it asked for, and only
     where that entry's `first` is the key. `Client.call` asks a worker's `version` before its
     first other request, under its lock, and again after a lost connection. It sends nothing
@@ -716,7 +713,7 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - The worker asks for `__closure` as a hover, which reads the frame's variable and runs
     nothing. It lists what it points at, and shows each capture by its own name in a `Captures`
     scope. An expansion finds the member again the same way (`walk_capture`).
-  - What is read through `__closure` is judged as through any pointer (#339): its type is the
+  - What is read through `__closure` is judged as through any pointer: its type is the
     lambda's object. A capture by reference is judged as a pointer to what it refers to
     (`capture_referent`), and shown as that value, as a pair's binding is (`bound_element`). A
     pointer captured by reference shows its value; its text is judged as a pointer local's
