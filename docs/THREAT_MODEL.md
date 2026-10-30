@@ -33,12 +33,15 @@ Peeky is not:
   worker started with another token. The client refuses both with `UNAUTHORIZED`.
 - `hello` needs no token. It says only the protocol and the proof, and runs nothing.
 - So anyone who can connect can test guesses of the token offline, against a proof. The token
-  must be random, and at least 32 characters: the worker and the client refuse a shorter one.
-  `secrets.token_urlsafe(32)` makes 43.
-- **Browsers:** a web page can't reach the worker. Its scripts send an `Origin` header, and a page
-  whose name was pointed at 127.0.0.1 (DNS rebinding) sends that name as its `Host`. The worker
-  refuses a request with an `Origin` header, or a `Host` other than 127.0.0.1, before `hello` and
-  before the token check.
+  must be random, and at least 32 characters: the worker and the `peeky` command refuse a
+  shorter one. `secrets.token_urlsafe(32)` makes 43. The `Client` class needs no such check: it
+  never sends the token before the proof.
+- **Browsers:** a web page's requests are refused before anything runs. Its scripts send an
+  `Origin` header, and a page whose name was pointed at 127.0.0.1 (DNS rebinding) sends that name
+  as its `Host`. The worker refuses a request with an `Origin` header, or a `Host` other than
+  127.0.0.1, with 403, before `hello` and before the token check.
+- At capacity, the `BUSY` answer comes before that check: such a request gets 503, not 403. It
+  still runs nothing.
 - It assumes the token is secret, random and long. A process that can reach a running worker with
   the same token can pass a client's `hello` on to it (a relay). So start each worker with a fresh
   token, and never two with the same one.
