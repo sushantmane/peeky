@@ -26,6 +26,8 @@
 
 ### Other changes
 
+- **A rare failure closing a session:** closing a session just as its program started a
+  process could fail with "cannot join thread before it is started". It no longer does.
 - **Faster C and C++ builds:** sources preprocess and compile in parallel, the checks of
   preprocessed text are 4× faster, and a new process doesn't rehash the toolchain binaries. An
   8-file C++ probe takes 2.3 s on macOS, down from 6.1 s (#398).
