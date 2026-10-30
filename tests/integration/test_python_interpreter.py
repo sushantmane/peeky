@@ -93,6 +93,17 @@ def project(tmp_path, lib, monkeypatch):
     return root, python
 
 
+def compiled_lines(text, optimize):
+    """The lines this interpreter (the program's in these tests) gives code at
+    ``optimize``: they differ by version."""
+    lines, pending = set(), [compile(text, "<t>", "exec", dont_inherit=True, optimize=optimize)]
+    while pending:
+        code = pending.pop()
+        lines.update(line for _, _, line in code.co_lines() if line)
+        pending.extend(each for each in code.co_consts if hasattr(each, "co_lines"))
+    return sorted(lines)
+
+
 def run(capsys, *argv):
     code = main([str(arg) for arg in argv])
     return code, capsys.readouterr()
@@ -166,7 +177,8 @@ def test_describe_reads_with_the_projects_interpreter(project, capsys):
     code, out = run(capsys, "describe", root / "app.py", "--json")
     manifest = json.loads(out.out)
     assert code == 0 and manifest["python"]["chosen"] == ".venv", manifest
-    assert manifest["breakpoint_lines"] == {"app.py": [1, 4, 5, 6, 9]}
+    assert manifest["breakpoint_lines"] == {"app.py": compiled_lines(APP, 0)}
+    assert {1, 5, 6, 9} <= set(manifest["breakpoint_lines"]["app.py"])
 
 
 def test_a_worker_runs_its_roots_environment(tmp_path, lib, capsys, monkeypatch):
@@ -326,11 +338,12 @@ def test_peeky_reads_the_program_at_its_optimization_level(project, capsys, monk
     root, python = project
     (root / "opt.py").write_text(OPTIMIZED)
     code, out = run(capsys, "describe", root / "opt.py", "--json")
-    assert json.loads(out.out)["breakpoint_lines"] == {"opt.py": [1, 3, 4, 7]}
+    assert json.loads(out.out)["breakpoint_lines"] == {"opt.py": compiled_lines(OPTIMIZED, 0)}
     monkeypatch.setenv("PYTHONOPTIMIZE", "1")
     code, out = run(capsys, "describe", root / "opt.py", "--json")
     manifest = json.loads(out.out)
-    assert manifest["breakpoint_lines"] == {"opt.py": [1, 4, 7]}, manifest
+    assert manifest["breakpoint_lines"] == {"opt.py": compiled_lines(OPTIMIZED, 1)}, manifest
+    assert 3 not in manifest["breakpoint_lines"]["opt.py"]
     assert manifest["python"]["optimize"] == 1
     argv = ["probe", root / "opt.py", "--at", "4", "--capture", "total", "--no-save"]
     code, out = run(capsys, *argv, "--json")
@@ -421,7 +434,8 @@ def test_an_environment_that_prints_at_startup_and_exit_is_read(project, capsys,
     monkeypatch.setenv("PYTHONOPTIMIZE", "1")
     code, out = run(capsys, "describe", root / "opt.py", "--json")
     manifest = json.loads(out.out)
-    assert code == 0 and manifest["breakpoint_lines"] == {"opt.py": [1, 4, 7]}, manifest
+    assert code == 0, manifest
+    assert manifest["breakpoint_lines"] == {"opt.py": compiled_lines(OPTIMIZED, 1)}, manifest
     argv = ["probe", root / "app.py", "--at", "6", "--capture", "word", "--no-save", "--json"]
     code, out = run(capsys, *argv)
     result = json.loads(out.out)

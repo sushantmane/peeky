@@ -428,14 +428,29 @@ def test_readings_in_a_helper_are_the_readings_here(tmp_path, monkeypatch, no_ac
 OPTIMIZED = 'def f(x):\n    """Doc."""\n    assert x\n    return x\n\n\nprint(f(1))\n'
 
 
-@pytest.mark.parametrize("level, lines", [("", [1, 3, 4, 7]), ("1", [1, 4, 7]), ("2", [1, 4, 7])])
+def compiled_lines(text, optimize):
+    """The lines this interpreter gives code at ``optimize``: what a program running on
+    it at that level can stop at (they differ by version: 3.12 keeps a line for a
+    docstring -OO leaves out, 3.13 none)."""
+    lines, pending = set(), [compile(text, "opt.py", "exec", dont_inherit=True, optimize=optimize)]
+    while pending:
+        code = pending.pop()
+        lines.update(line for _, _, line in code.co_lines() if line)
+        pending.extend(each for each in code.co_consts if hasattr(each, "co_lines"))
+    return sorted(lines)
+
+
+@pytest.mark.parametrize("level", ["", "1", "2"])
 def test_readings_are_made_at_the_programs_optimization_level(
-    tmp_path, monkeypatch, no_active, level, lines
+    tmp_path, monkeypatch, no_active, level
 ):
     # PYTHONOPTIMIZE reaches the program, which then leaves out an `assert`; the helper
     # runs isolated (-I), which ignored it, and so did Peeky's own compile.
     path = tmp_path / "opt.py"
     path.write_text(OPTIMIZED)
+    lines = compiled_lines(OPTIMIZED, int(level or 0))
+    # The assert's line has code only where -O does not leave it out.
+    assert (3 in lines) is (not level) and {1, 4, 7} <= set(lines)
     if level:
         monkeypatch.setenv("PYTHONOPTIMIZE", level)
     found = find(tmp_path)
@@ -473,7 +488,8 @@ def test_peekys_own_optimization_is_not_the_programs(tmp_path, no_active):
         cwd=tmp_path,
     )
     manifest = json.loads(ran.stdout)
-    assert manifest["breakpoint_lines"] == {"opt.py": [1, 3, 4, 7]}, manifest
+    assert manifest["breakpoint_lines"] == {"opt.py": compiled_lines(OPTIMIZED, 0)}, manifest
+    assert 3 in manifest["breakpoint_lines"]["opt.py"]
     assert manifest["python"]["optimize"] == 0
 
 
@@ -754,7 +770,17 @@ def test_a_module_a_file_of_its_name_shadows_is_not_self_contained(tmp_path):
     for place in places:
         place.mkdir()
     assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is True
-    for shadow in ("json.py", "JSON.py", "json.pyc", "json/", "json.cpython-313-darwin.so"):
+    import importlib.machinery
+
+    # Each kind of module this interpreter imports, by its own suffixes: a source, a
+    # compiled or extension module (`.cpython-312-x86_64-linux-gnu.so`), a package.
+    suffixes = [
+        importlib.machinery.SOURCE_SUFFIXES[0],
+        importlib.machinery.BYTECODE_SUFFIXES[0],
+        *importlib.machinery.EXTENSION_SUFFIXES,
+    ]
+    shadows = [f"json{suffix}" for suffix in suffixes] + ["JSON.py", "json/"]
+    for shadow in shadows:
         made = places[1] / shadow.rstrip("/")
         made.mkdir() if shadow.endswith("/") else made.write_text("")
         assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is False, shadow
