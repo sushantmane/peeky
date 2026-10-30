@@ -119,7 +119,7 @@ def test_a_dead_event_hub_fails_a_waiting_transport_at_once_with_its_stack():
         assert message == HUB_DIED and dap.fatal == HUB_DIED
         error = classify(failure.value)
         assert (error["code"], error["session_closed"]) == ("DEBUGGER_ERROR", True)
-        assert "rebuild the adapter with scripts/setup_java_adapter.py" in error["hint"]
+        assert "rebuild the adapter with `peeky setup-java`" in error["hint"]
         # Nothing but `disconnect` goes out any more, and the log is kept for diagnosis.
         with pytest.raises(RuntimeError, match="event thread died"):
             dap.send("threads")

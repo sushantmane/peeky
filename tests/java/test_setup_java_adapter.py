@@ -1,6 +1,6 @@
-"""Bootstrap guards require no JDK or network."""
+"""Bootstrap guards require no JDK or network: peeky.java_setup, which `peeky setup-java`
+and scripts/setup_java_adapter.py run."""
 
-import importlib.util
 import io
 import json
 import sys
@@ -11,11 +11,9 @@ import pytest
 
 @pytest.fixture
 def bootstrap():
-    path = Path(__file__).resolve().parents[2] / "scripts/setup_java_adapter.py"
-    spec = importlib.util.spec_from_file_location("java_setup_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from peeky import java_setup
+
+    return java_setup
 
 
 def test_setup_rejects_existing_and_dangling_output(bootstrap, tmp_path):
@@ -140,9 +138,7 @@ def test_a_bundle_whose_compiled_event_hub_lacks_the_patch_is_refused_whatever_i
     java = fake_bundle(tmp_path, OLD_EVENT_HUB, patches)
     with pytest.raises(ValueError, match="predates Peeky's java-debug fixes") as refused:
         _verify_bundle(tmp_path, java)
-    assert "eventhub-log-guard" in str(refused.value) and "setup_java_adapter.py" in str(
-        refused.value
-    )
+    assert "eventhub-log-guard" in str(refused.value) and "`peeky setup-java`" in str(refused.value)
     assert classify(refused.value)["code"] == "UNSUPPORTED"
 
 

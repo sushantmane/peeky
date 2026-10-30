@@ -4949,7 +4949,7 @@ def run_probe(
                 "--set changes only the stopped function's own locals here; "
                 + (
                     "this Java adapter bundle predates field and element changes (rebuild it "
-                    "with scripts/setup_java_adapter.py)"
+                    "with `peeky setup-java`)"
                     if identity.get("language") == "java"
                     else "fields and array elements can be changed only in Java, Rust, C and C++"
                 )

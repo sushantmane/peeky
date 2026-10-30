@@ -7,11 +7,11 @@ Third-party software
 
 - debugpy (MIT License), a runtime dependency installed from PyPI; not included in
   Peeky's distributions.
-- Microsoft java-debug (Eclipse Public License 1.0). scripts/setup_java_adapter.py
+- Microsoft java-debug (Eclipse Public License 1.0). `peeky setup-java` (src/peeky/java_setup.py)
   downloads its pinned source and runtime jars, applies one small patch whose text is in
-  that script (eventhub-log-guard), and builds a local adapter bundle that keeps the
+  that module (eventhub-log-guard), and builds a local adapter bundle that keeps the
   upstream licence and notices. None of it is included in Peeky's distributions. See
-  adapters/java/NOTICES.md.
+  src/peeky/java_adapter/NOTICES.md.
 - CPython 3.9.6's Lib/ipaddress.py (PSF License Agreement), copied as
   examples/real/ipaddress_mapped/ipaddress39.py with a notice of its origin added: a real
   program the tests debug. It is in Peeky's source distribution, with its licence in

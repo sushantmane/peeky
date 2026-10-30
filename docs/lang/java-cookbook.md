@@ -25,6 +25,7 @@ through JDI, the JDK's debugger API. For these words and a few more, see
   - [What `--into` and `--out` skip](#what---into-and---out-skip)
 - [7.3 Java (launched)](#73-java-launched)
   - [Set up a launched target](#set-up-a-launched-target)
+  - [Build the adapter](#build-the-adapter)
   - [What Peeky checks about a Java build](#what-peeky-checks-about-a-java-build)
   - [What can be set](#what-can-be-set)
   - [Change a local](#change-a-local)
@@ -62,7 +63,7 @@ peeky describe examples/java --config examples/java/merge.json
 language: java
 ...
 names in MergeBug.main (demo/MergeBug.java:22-35): args (String[]), input (java.util.List), merged (java.util.List), current (demo.MergeBug$Interval), next (demo.MergeBug$Interval, lines 26-30)
-mutable: root locals, fields (not final or static) and array elements (current.end, xs[0]) of type byte, short, int, long, char, boolean, float or double, and String ones; a char takes a char in single quotes ('+') or a code point (43), a String a text in double quotes (--set 'name="apple"'); never a boxed value (Integer), another object or an ArrayList's elements, nor a field a JDK class declares (a String's hash, an ArrayList's size) or an element of an array one holds. Field, char and String changes need an adapter bundle built by this version of scripts/setup_java_adapter.py. Rows mark what can change [settable]
+mutable: root locals, fields (not final or static) and array elements (current.end, xs[0]) of type byte, short, int, long, char, boolean, float or double, and String ones; a char takes a char in single quotes ('+') or a code point (43), a String a text in double quotes (--set 'name="apple"'); never a boxed value (Integer), another object or an ArrayList's elements, nor a field a JDK class declares (a String's hash, an ArrayList's size) or an element of an array one holds. Field, char and String changes need an adapter bundle built by this version of Peeky (`peeky setup-java`). Rows mark what can change [settable]
 probe: peeky probe examples/java --config examples/java/merge.json --at demo/MergeBug.java:<line> [--arg A ...] --capture <a,b.c> [--set name=value] [--set-hit N] [--set-at LINE@HIT|LINE@all name=value] [--hits N] [--json]
 ...
 ```
@@ -179,17 +180,20 @@ stays in your code, and it reaches lambda bodies.
 
 ### Set up a launched target
 
-A launched Java target needs `--config <file.json>`. The file names the adapter bundle, the
-sources and the main class. `arguments` is optional. An attached target's config differs: see
+A launched Java target needs `--config <file.json>`. The file names the sources and the main
+class. `arguments` is optional. An attached target's config differs: see
 [7.4](#74-java-tests-already-running-gradle---debug-jvm-eg-venice). The commands that `describe`
 prints repeat the `--config`.
 
-For example, `examples/java/pagination.json`. The bundle path is relative to the config file:
+For example, `examples/java/pagination.json`:
 
 ```json
-{"bundle": "../../work/java-adapter", "sources": ["demo/PaginationBug.java"], "main_class": "demo.PaginationBug", "arguments": []}
+{"sources": ["demo/PaginationBug.java"], "main_class": "demo.PaginationBug", "arguments": []}
 ```
 
+- `bundle` is optional. Without it, Peeky uses the adapter bundle that `peeky setup-java` built
+  ([Build the adapter](#build-the-adapter)). With it, Peeky uses the bundle it names, relative to
+  the config file.
 - `sources` are relative to the target's directory. Declare every `.java` file the program needs.
   Maven or Gradle projects, and external classpaths, aren't supported.
 - Use a standard package-relative layout. A source-root prefix works.
@@ -198,22 +202,41 @@ For example, `examples/java/pagination.json`. The bundle path is relative to the
   empty. Embedded double quotes, CR or LF, and NUL are refused: the JDI connector's quoted-string
   contract can't carry them. Peeky takes at most 100 arguments, each at most 8,192 characters.
 
-Build the adapter bundle once, with JDK 17 and Python 3.11 or later. Run it from the repository
-root or the unpacked source archive: the wheel doesn't have the script.
+### Build the adapter
+
+Build the adapter bundle once, with JDK 17 or later on `PATH`. It works from the wheel too:
 
 ```sh
-python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"
+peeky setup-java
 ```
 
-- The script builds java-debug from its pinned, checksummed source, and Peeky's launcher. It
-  applies Peeky's patches to java-debug before compiling, and lists them in the bundle's
-  `adapter.json`, under `patches`.
+```text
+Building the Java adapter in /home/me/.peeky/java-adapter: downloading java-debug and its jars (pinned by SHA-256) and compiling them can take a minute.
+Built the Java adapter at /home/me/.peeky/java-adapter in 2.7 s: java-debug 6a597f2bcccd with Peeky's patches (eventhub-log-guard).
+Java configs without "bundle" use it.
+```
+
+- The bundle goes to `java-adapter` in Peeky's state directory: `$PEEKY_STATE_DIR`, else
+  `~/.peeky`. Only you can read it.
+- Run it again after you upgrade Peeky. A bundle that is up to date is kept. An older one is
+  replaced once the new one is built. `--force` rebuilds it anyway.
+- `--output DIR` builds into a new directory instead. Name it as the config's `bundle`.
+- `--json` prints `bundle`, `built`, `default` (whether it is Peeky's own bundle), and `adapter`,
+  the bundle's `adapter.json`.
+- Setup downloads java-debug's source and five jars, each checked against a pinned SHA-256. It
+  needs access to GitHub and Maven Central. A failure installs nothing, and leaves no staging
+  behind.
+- In a source checkout, `python scripts/setup_java_adapter.py --output DIR` does the same without
+  Peeky installed. CI uses it.
+- Setup builds java-debug from its pinned, checksummed source, and Peeky's launcher. It applies
+  Peeky's patches to java-debug before compiling, and lists them in the bundle's `adapter.json`,
+  under `patches`. The upstream licence and notices are in the bundle's `notices`.
 - One patch, `eventhub-log-guard`, keeps java-debug's event thread alive. Without it, that thread
   could die and stop reporting every stop and exit
   ([JAVA_ATTACH.md](../JAVA_ATTACH.md#root-cause-java-debugs-event-thread-died)).
 - Peeky checks each patch in the compiled classes, not in the list: the patched `EventHub.class`
   calls `Logger.isLoggable`. A bundle without it is refused with `UNSUPPORTED` and the rebuild
-  command. Rebuild an older bundle into a new directory.
+  command.
 
 ### What Peeky checks about a Java build
 
@@ -256,8 +279,8 @@ No kind of variable can always be set. Each row gives the conditions, and links 
 These rules also apply:
 
 - The value must fit the type exactly ([rule](#values-must-fit-the-type)).
-- Field, char and String changes need an adapter bundle built by this version of
-  `scripts/setup_java_adapter.py`.
+- Field, char and String changes need an adapter bundle built by this version of Peeky, with
+  `peeky setup-java`.
 
 Rows mark what can be changed: `[settable]`. A row of a type that `set` changes, which can't be
 changed there, says why instead:
@@ -349,7 +372,7 @@ for `end`.
   field hides it, such as a subclass's. It is also refused if another instance field has the same
   name. java-debug would write the other field.
 - A static field that this field itself hides, such as a superclass's, doesn't matter.
-- Field changes need an adapter bundle built by this version of `scripts/setup_java_adapter.py`.
+- Field changes need an adapter bundle built by this version of Peeky, with `peeky setup-java`.
   With an older one, `set` refuses them and says to rebuild it.
 
 ### Fields the JDK declares
@@ -550,7 +573,7 @@ quotes, as Java writes one: `'+'`, `'\n'`, `'\''`, `'\u0041'`. Or give a code po
 65535: `43` is `'+'`, as in `char op = 43;`.
 java-debug shows a char as itself: `set op: - -> +`.
 
-This needs an adapter bundle built by this version of `scripts/setup_java_adapter.py`. An older
+This needs an adapter bundle built by this version of Peeky, with `peeky setup-java`. An older
 one refuses, naming the char rule and the rebuild.
 
 ### Set a String
@@ -574,7 +597,7 @@ set name: "c" -> "z"
 ```
 
 - java-debug shows a String between quotes without escaping it: `"new "quoted""`.
-- This needs an adapter bundle built by this version of `scripts/setup_java_adapter.py`. An older
+- This needs an adapter bundle built by this version of Peeky, with `peeky setup-java`. An older
   one refuses texts and says to rebuild it.
 
 ### The declared type decides
@@ -674,10 +697,10 @@ Apple Silicon without Rosetta a native gRPC code generator. The
 lists them.
 
 The config gives the JVM's `port` instead of a `main_class`. `class_roots` lists the directories
-with the class files:
+with the class files. Without `bundle`, it uses the adapter bundle `peeky setup-java` built:
 
 ```json
-{"bundle": "/abs/path/to/peeky/work/java-adapter", "port": 5005,
+{"port": 5005,
  "sources": ["internal/venice-test-common/src/integrationTest/java/com/linkedin/venice/endToEnd/TestEmptyPush.java"],
  "class_roots": ["internal/venice-test-common/build/classes/java/integrationTest"]}
 ```

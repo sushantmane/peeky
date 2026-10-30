@@ -33,6 +33,10 @@ version = { attr = "peeky.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# What `peeky setup-java` builds the Java adapter from (peeky.java_setup).
+peeky = ["java_adapter/*.java", "java_adapter/*.json", "java_adapter/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers --import-mode=importlib -ra"

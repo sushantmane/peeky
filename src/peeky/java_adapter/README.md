@@ -1,15 +1,21 @@
 # Experimental Java DAP launcher
 
-This launcher wraps Microsoft java-debug's core with narrow service providers. Setup applies one source patch to that core (`eventhub-log-guard`; see `scripts/setup_java_adapter.py`). It is qualified by packaged and nested-class fixtures and connects to the experimental [Java worker](../../docs/WORKER.md#start-a-java-worker). Use JDK 17 (the CI version), Python 3.11+, and HTTPS access to GitHub/Maven Central for setup.
+This launcher wraps Microsoft java-debug's core with narrow service providers. `peeky setup-java` builds it, from this directory, which ships in Peeky's package. Setup applies one source patch to that core (`eventhub-log-guard`; see `peeky/java_setup.py`). It is qualified by packaged and nested-class fixtures and connects to the experimental [Java worker](../../../docs/WORKER.md#start-a-java-worker). Use JDK 17 or later (CI uses 17), Python 3.11+, and HTTPS access to GitHub/Maven Central for setup.
 
-From the repository root:
+With Peeky installed, from a wheel too:
+
+```sh
+peeky setup-java
+```
+
+That builds Peeky's own bundle, in `$PEEKY_STATE_DIR/java-adapter` (`~/.peeky/java-adapter`), owner-only. Java targets whose config names no `bundle` use it. Run again, it keeps a bundle that is up to date and replaces an older one once the new one is built. `--output DIR` builds into a new directory instead. In a source checkout, without Peeky installed, `scripts/setup_java_adapter.py --output DIR` runs the same setup:
 
 ```sh
 python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"
 PEEKY_JAVA_ADAPTER="$PWD/work/java-adapter" pytest tests/java
 ```
 
-Setup requires a fresh output directory, validates every archive/jar against committed SHA-256 pins, bounds downloads and compiler subprocesses, compiles core/launcher into clean staging, and moves the finished bundle into place. Failure removes only its own temporary staging. The JSON printed to stdout is also written as `adapter.json`, with command, toolchain version, source/dependency/launcher identities, and per-file hashes. It never publishes or downloads executable launch commands from request data. Outputs contain private local paths; regenerate after moving the bundle. Cache the whole bundle only when the source/dependency lock, launcher, JDK, OS, and output path remain identical; consumers must validate its file manifest before execution.
+Setup with `--output` requires a fresh output directory. It validates every archive/jar against committed SHA-256 pins, bounds downloads and compiler subprocesses, compiles core/launcher into clean staging, and moves the finished bundle into place. Failure removes only its own temporary staging. The manifest the script prints (`peeky setup-java --json`: its `adapter`) is also written as `adapter.json`, with command, toolchain version, source/dependency/launcher identities, and per-file hashes. It never publishes or downloads executable launch commands from request data. Outputs contain private local paths; regenerate after moving the bundle. Cache the whole bundle only when the source/dependency lock, launcher, JDK, OS, and output path remain identical; consumers must validate its file manifest before execution.
 
 Start the command vector in `adapter.json`, appending one absolute prepared source-map JSON path. Input/output use standard DAP framing over stdio. The source map explicitly lists binary class names and breakpoint lines:
 

@@ -109,8 +109,8 @@ _RULES = (
     (
         r"^java-debug's event thread died",
         "DEBUGGER_ERROR",
-        "Retry. If it recurs, rebuild the adapter with scripts/setup_java_adapter.py. The "
-        "session is closed: an attached JVM is detached, a launched one ended.",
+        "Retry. If it recurs, rebuild the adapter with `peeky setup-java`. The session is "
+        "closed: an attached JVM is detached, a launched one ended.",
         False,
     ),
     (
@@ -242,8 +242,29 @@ _RULES = (
     (
         r"adapter bundle at .* predates Peeky's java-debug fixes",
         "UNSUPPORTED",
-        "Rebuild it with scripts/setup_java_adapter.py, and point the target's bundle or "
-        "PEEKY_JAVA_ADAPTER at the new one.",
+        "Rebuild it with `peeky setup-java`; for a bundle the config names, add --output <a "
+        "new directory> and point the config's bundle at it.",
+        False,
+    ),
+    (
+        r"^No Java adapter bundle at ",
+        "INVALID_REQUEST",
+        "Build it with the `peeky setup-java` command the message gives; it needs JDK 17 or "
+        "later, and access to GitHub and Maven Central.",
+        False,
+    ),
+    (
+        r"^JDK required: java and javac",
+        "UNSUPPORTED",
+        "Install JDK 17 or later, put its java and javac on PATH, and run `peeky setup-java` "
+        "again.",
+        False,
+    ),
+    (
+        r"^Java adapter setup failed",
+        "UNSUPPORTED",
+        "Fix what the message names (network access to GitHub and Maven Central, or the JDK) "
+        "and run it again. Report a checksum mismatch.",
         False,
     ),
     (
@@ -582,7 +603,7 @@ _MUTATION_HINTS = (
     (
         r"predates field and element changes|predates String changes"
         r"|with an adapter bundle built by this version",
-        "Rebuild the Java adapter bundle with scripts/setup_java_adapter.py.",
+        "Rebuild the Java adapter bundle with `peeky setup-java`.",
     ),
     (
         r"the text does not fit",

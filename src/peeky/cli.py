@@ -5,7 +5,8 @@ runs these commands and decides what to do next, as with `git`. There is no mode
 switch: `probe` answers one question in one stateless call and saves its evidence,
 `sql` and `queries` ask follow-up questions about saved evidence (read-only SQL),
 `session` subcommands explore step by step, `verify` checks a candidate fix on a fresh
-build, `describe` prints a manifest of what can be asked. Targets are detected from the path:
+build, `describe` prints a manifest of what can be asked, `setup-java` builds the Java
+adapter once. Targets are detected from the path:
 `Cargo.toml` -> Rust, `.py` -> Python, `.c`/`.cpp` -> C/C++; `--config` overrides
 detection with a trusted target configuration (required for Java).
 """
@@ -27,7 +28,7 @@ import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from peeky import add_version
+from peeky import add_version, state_home
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import LOOPBACK_URL, MIN_TOKEN_CHARS, Client
 from peeky.errors import PROTOCOL_VERSION
@@ -61,15 +62,19 @@ RUST_VERSION = "1.96.0"
 MAX_SESSION_SECONDS = 300
 
 
-def _private_dir(name):
-    # Absolute (not symlink-resolved) so detached children with another cwd agree.
-    base = Path(os.path.abspath(os.environ.get("PEEKY_STATE_DIR") or str(Path.home() / ".peeky")))
+def _state_base():
+    """Peeky's state directory (peeky.state_home), made if missing."""
+    base = state_home()
     # No other user may write it, whatever the umask (002 where each user has a group of
     # their own): Peeky builds under it (build.private_base).
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
     if (info := base.stat()).st_uid == os.getuid() and info.st_mode & 0o022:
         base.chmod(info.st_mode & 0o7755)
-    path = base / name
+    return base
+
+
+def _private_dir(name):
+    path = _state_base() / name
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     info = path.lstat()
     if path.is_symlink() or info.st_uid != os.getuid():
@@ -327,6 +332,11 @@ def _resolve(path, program, line, config, tools=True):
             # Relative to the configuration file, wherever the command runs from (session
             # workers read a copy of the configuration from the state directory).
             data["bundle"] = str((Path(config).resolve().parent / data["bundle"]).resolve())
+        elif language in ("java", "java-attach") and "bundle" not in data:
+            from peeky.java_setup import default_bundle
+
+            # The one `peeky setup-java` builds.
+            data["bundle"] = str(default_bundle())
         if language in ("c", "cpp"):
             data["language"] = language
         root = path if path.is_dir() else path.parent
@@ -395,9 +405,9 @@ def _resolve(path, program, line, config, tools=True):
 
 _NATIVE_SUFFIXES = (".c", ".cpp", ".cc", ".cxx")
 _JAVA_NEEDS_CONFIG = (
-    "Java targets need --config <file.json> naming the adapter bundle, the sources and the "
-    'main class, e.g. {"bundle": "work/java-adapter", "sources": ["shop/Main.java"], '
-    '"main_class": "shop.Main"} (java-cookbook 7.3; attached JVMs: 7.4)'
+    "Java targets need --config <file.json> naming the sources and the main class, e.g. "
+    '{"sources": ["shop/Main.java"], "main_class": "shop.Main"}, and an adapter built once '
+    "with `peeky setup-java` (java-cookbook 7.3; attached JVMs: 7.4)"
 )
 
 
@@ -819,7 +829,7 @@ def describe(args):
             "(Integer), another object or an ArrayList's elements, nor a field a JDK class "
             "declares (a String's hash, an ArrayList's size) or an element of an array one "
             "holds. Field, char and String changes need an adapter bundle built by this "
-            "version of scripts/setup_java_adapter.py. Rows mark what can change [settable]",
+            "version of Peeky (`peeky setup-java`). Rows mark what can change [settable]",
             "java-attach": "root locals, fields and array elements of type byte, short, int, "
             "long, char, boolean, float or double, and String ones, as for launched Java, "
             "never a JDK class's fields (attached JVM; no edit verification)",
@@ -4036,6 +4046,68 @@ def _job_text(spec, out):
     return text + "\n"
 
 
+def setup_java(args):
+    """`peeky setup-java`: build the Java adapter bundle (peeky.java_setup). Without
+    --output, Peeky's own bundle in its state directory: kept while it is up to date,
+    replaced once a new one is complete otherwise."""
+    from peeky import java_setup
+
+    default = args.output is None
+    if default:
+        _state_base()
+        output = java_setup.default_bundle()
+    elif args.force:
+        raise ValueError(
+            "--force replaces only Peeky's own bundle (no --output); give --output a new directory"
+        )
+    else:
+        output = Path(os.path.abspath(os.path.expanduser(args.output)))
+    action, why = "Building", None
+    if default and os.path.lexists(output):
+        why = None if args.force else java_setup.current(output)
+        if not args.force and why is None:
+            manifest = json.loads((output.resolve() / "adapter.json").read_text())
+            _emit(
+                {"bundle": str(output), "built": False, "default": True, "adapter": manifest},
+                args.json,
+                lambda r: (
+                    f"The Java adapter at {r['bundle']} is up to date: nothing to do "
+                    "(--force rebuilds it)."
+                ),
+            )
+            return 0
+        action = "Rebuilding" if args.force else "Replacing"
+    if not args.quiet:
+        print(
+            f"{action} the Java adapter in {output}{f' ({why})' if why else ''}: downloading "
+            "java-debug and its jars (pinned by SHA-256) and compiling them can take a minute.",
+            file=sys.stderr,
+            flush=True,
+        )
+    manifest = java_setup.setup(output, replace=default, private=default)
+    built = output.absolute().parent.resolve() / output.name
+
+    def text(result):
+        adapter = result["adapter"]
+        use = (
+            'Java configs without "bundle" use it.'
+            if result["default"]
+            else f'Name it as "bundle" in a Java target\'s config: "bundle": "{result["bundle"]}"'
+        )
+        return (
+            f"Built the Java adapter at {result['bundle']} in {adapter['setup_seconds']:.1f} s: "
+            f"java-debug {adapter['source_commit'][:12]} with Peeky's patches "
+            f"({', '.join(sorted(adapter['patches']))}).\n{use}"
+        )
+
+    _emit(
+        {"bundle": str(built), "built": True, "default": default, "adapter": manifest},
+        args.json,
+        text,
+    )
+    return 0
+
+
 # `peeky queries --help`'s epilog, filled in only when help is shown: the evidence module,
 # which lists the canned queries, is imported only by the commands that read the store.
 _QUERIES_HELP = "(canned queries)"
@@ -4417,6 +4489,25 @@ def _main(argv, _job, _edits):
     listing = actions.add_parser("list", help="Jobs from the last 24 hours")
     for action in (wait, listing):
         common(action, target=False)
+    sub = commands.add_parser(
+        "setup-java",
+        help="Build the Java debugger adapter once (needs JDK 17+ and network access)",
+        description="Build the adapter Peeky debugs Java with: java-debug and its jars, "
+        "downloaded and checked against pinned SHA-256s, patched, and compiled with Peeky's "
+        "launcher. Without --output it goes to $PEEKY_STATE_DIR/java-adapter "
+        '(~/.peeky/java-adapter), which Java configs without "bundle" use. One there that is '
+        "up to date is kept; an older one is replaced once the new one is built.",
+    )
+    sub.add_argument(
+        "--output",
+        metavar="DIR",
+        help='Build into this new directory instead, and name it as a config\'s "bundle"',
+    )
+    sub.add_argument(
+        "--force", action="store_true", help="Rebuild Peeky's own bundle even if up to date"
+    )
+    sub.add_argument("--quiet", action="store_true", help="No progress message")
+    common(sub, target=False)
     args = parser.parse_args(argv)
     args._edits = _edits
     if args.command == "probe" or getattr(args, "action", None) == "start":
@@ -4430,6 +4521,7 @@ def _main(argv, _job, _edits):
         "session": session,
         "verify": verify,
         "job": job,
+        "setup-java": setup_java,
     }
 
     def terminate(signum, frame):

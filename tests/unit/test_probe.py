@@ -1516,7 +1516,7 @@ def test_a_bundle_without_member_sets_is_a_mutation_refusal():
 
     message = (
         "This Java adapter bundle predates field and element changes, so only locals can be "
-        "changed; rebuild it with scripts/setup_java_adapter.py"
+        "changed; rebuild it with `peeky setup-java`"
     )
     assert classify(ValueError(message))["code"] == "MUTATION_REJECTED"
 

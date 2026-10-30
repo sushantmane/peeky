@@ -144,7 +144,9 @@ The last column is the `retryable` field.
 | Case | What to do |
 | --- | --- |
 | An operation or capability that isn't offered, such as `--capture return` for Python, or `verify` on an attached JVM | Call `version` to see what is offered, or do what the message names |
-| A Java adapter bundle built before a required java-debug patch | Rebuild the adapter with `scripts/setup_java_adapter.py` |
+| A Java adapter bundle built before a required java-debug patch | Run `peeky setup-java` again. For a bundle that a config names, build a new one with `--output`, and point `bundle` at it |
+| `peeky setup-java` without a JDK: `JDK required: java and javac …` | Install JDK 17 or later, and put its `java` and `javac` on `PATH` |
+| `peeky setup-java` that failed: `Java adapter setup failed, and nothing was installed: …`, such as a download that failed | Fix what the message names, such as network access to GitHub and Maven Central, and run it again. Report a checksum mismatch |
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
@@ -173,6 +175,8 @@ file lists what it reads.
   16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
   directory, or start the worker with another `--root`.
 - A remote session started by an older Peeky, without source provenance. Start it again.
+- A Java target without an adapter bundle: `No Java adapter bundle at …`. Run the
+  `peeky setup-java` command that the message gives.
 - `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
   reads no value there, and the session goes on. `session step` reaches your code's next line.
 

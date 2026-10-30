@@ -29,9 +29,8 @@ COPY --chown=peeky:peeky examples/pagination_bug.py examples/verify_pagination.p
 FROM host AS java
 COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
 RUN ln -s /opt/java/openjdk/bin/java /opt/java/openjdk/bin/javac /usr/local/bin/
-COPY scripts/setup_java_adapter.py /opt/peeky/scripts/
-COPY adapters/java /opt/peeky/adapters/java
-RUN python /opt/peeky/scripts/setup_java_adapter.py --output /opt/peeky-java >/dev/null
+# Built by the installed Peeky, from the sources its package holds, as from a wheel.
+RUN peeky setup-java --output /opt/peeky-java --quiet >/dev/null
 COPY --chown=peeky:peeky examples/java/demo/PaginationBug.java /home/peeky/java/demo/
 
 # C, C++ and Rust: LLVM 18 (clang, lldb-dap, llvm-dwarfdump) from Debian 13's signed

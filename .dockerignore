@@ -7,7 +7,5 @@
 !examples/pagination_bug.py
 !examples/verify_pagination.py
 !scripts/remote_e2e/
-!scripts/setup_java_adapter.py
-!adapters/java/
 !examples/java/demo/PaginationBug.java
 **/__pycache__

@@ -185,7 +185,8 @@ separate, identical controller and worker source directories on one host, and th
 HTTP interface. Decision fixtures replace the model call. This shows path independence, not a
 deployment on a separate host.
 
-**Java** needs the adapter bundle:
+**Java** needs an adapter bundle. In a checkout, `scripts/setup_java_adapter.py` builds one where
+the tests read it:
 
 ```sh
 python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"
@@ -241,11 +242,11 @@ peeky-agent \
 `peeky-agent --root "$PWD/examples/cpp" --native-config config.json --program pagination_bug.cpp
 --check verify_pagination.py`.
 
-**Java.** Create `work/java-agent-target.json`:
+**Java.** Build the adapter bundle once with `peeky setup-java`. Then create
+`work/java-agent-target.json`. Without `bundle`, it uses the bundle `peeky setup-java` built:
 
 ```json
 {
-  "bundle": "java-adapter",
   "sources": ["demo/PaginationBug.java"],
   "main_class": "demo.PaginationBug",
   "arguments": []

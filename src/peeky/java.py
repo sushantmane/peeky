@@ -445,9 +445,9 @@ def _member(root, name):
 
 
 _BUNDLES = {}
-# Patches scripts/setup_java_adapter.py applies to java-debug (also listed, for people, in
-# the bundle's adapter.json), each proven by the compiled class it changes: the class and
-# bytes only the patched code has. eventhub-log-guard: without it java-debug's
+# Patches `peeky setup-java` (peeky.java_setup) applies to java-debug (also listed, for
+# people, in the bundle's adapter.json), each proven by the compiled class it changes: the
+# class and bytes only the patched code has. eventhub-log-guard: without it java-debug's
 # event thread can die on a finished thread's name, and the adapter reports no stop,
 # step or exit ever again; the patched EventHub calls Logger.isLoggable, the old one not.
 JAVA_DEBUG_PATCHES = {
@@ -455,10 +455,34 @@ JAVA_DEBUG_PATCHES = {
 }
 STALE_BUNDLE = (
     "The Java adapter bundle at {bundle} predates Peeky's java-debug fixes (missing: "
-    "{missing}): rebuild it with `python scripts/setup_java_adapter.py --output <a new "
-    "directory>`, then point the target's bundle (or PEEKY_JAVA_ADAPTER) at it. Without "
-    "eventhub-log-guard, java-debug can stop reporting stops and exits"
+    "{missing}): rebuild it with `peeky setup-java`, which replaces Peeky's own bundle; for "
+    "one a config names, add `--output <a new directory>` and point the config's bundle at "
+    "it. Without eventhub-log-guard, java-debug can stop reporting stops and exits"
 )
+
+
+def bundle_directory(bundle):
+    """The adapter bundle's resolved directory; where there is none, a refusal that says
+    how to build it."""
+    from peeky.java_setup import default_bundle
+
+    path = Path(bundle)
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        resolved = None
+    if resolved is not None and resolved.is_dir():
+        return resolved
+    if path.resolve() == default_bundle().resolve():
+        raise ValueError(
+            f"No Java adapter bundle at {path}, where Peeky looks when the config names no "
+            "bundle: build it once with `peeky setup-java`"
+        )
+    raise ValueError(
+        f"No Java adapter bundle at {path}, which the config names: build one there with "
+        f"`peeky setup-java --output {path}`, or drop the config's bundle to use the one "
+        "`peeky setup-java` builds"
+    )
 
 
 def _bundle(bundle, java):
@@ -606,7 +630,7 @@ class JavaTarget:
         relative = program.relative_to(root).as_posix()
         if relative not in self.sources:
             raise ValueError("Program is not a declared Java source")
-        bundle = Path(self.bundle).resolve(strict=True)
+        bundle = bundle_directory(self.bundle)
         java, javac = _tool(self.java), _tool(self.javac)
         command, bundle_hash = _bundle(bundle, java)
         recipe = BuildRecipe(
@@ -1213,8 +1237,7 @@ class JavaSession:
             if not getattr(self, "field_owners", False):
                 return (
                     "this adapter bundle predates telling the JDK's own fields from the "
-                    "program's, so no field can be changed; rebuild it with "
-                    "scripts/setup_java_adapter.py"
+                    "program's, so no field can be changed; rebuild it with `peeky setup-java`"
                 )
             return "Peeky cannot tell which class declares " + (
                 f"{found}, which holds its array" if element else "it"
@@ -1255,7 +1278,7 @@ class JavaSession:
             return (
                 Unproven(
                     "this adapter bundle can't tell before a change whether a JDK class holds "
-                    "its array; rebuild it with scripts/setup_java_adapter.py"
+                    "its array; rebuild it with `peeky setup-java`"
                 ),
                 True,
             )
@@ -1320,7 +1343,7 @@ class JavaSession:
             if not self.field_set:
                 return (
                     "this adapter bundle predates field and element changes; rebuild it with "
-                    "scripts/setup_java_adapter.py"
+                    "`peeky setup-java`"
                 )
         else:
             if not is_name(name):
@@ -1533,8 +1556,8 @@ class JavaSession:
         text = f"only {', '.join(kinds[:-1])} and {kinds[-1]} values can be changed"
         if kind not in kinds and kind in ("char", *_JAVA_STRINGS):
             text += (
-                f"; a {kind} too with an adapter bundle built by this version of "
-                "scripts/setup_java_adapter.py"
+                f"; a {kind} too with an adapter bundle built by this version of Peeky "
+                "(`peeky setup-java`)"
             )
         return text
 

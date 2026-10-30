@@ -190,13 +190,14 @@ The worker takes a launched target's config, the same as the CLI's `--config`
 
 ```json
 {
-  "bundle": "java-adapter",
   "sources": ["demo/BranchBug.java"],
   "main_class": "demo.BranchBug",
   "arguments": []
 }
 ```
 
+- Without `bundle`, the worker uses the adapter bundle that `peeky setup-java` built
+  ([Java 7.3](lang/java-cookbook.md#build-the-adapter)). Run it once, as the worker's user.
 - `bundle` resolves relative to the config file, and source paths relative to the worker root.
 - The config is trusted local input, not a request from an agent. A request can't supply adapter
   commands or build recipes.
@@ -210,8 +211,8 @@ DEBUG_TOKEN="$token" peeky-worker --root /absolute/path/to/java-sources \
 
 The bundled example starts with
 `peeky-worker --root examples/java --java-config examples/java/target.json`, with a fresh
-`DEBUG_TOKEN` given to it alone, as above. Its config names the adapter bundle
-`work/java-adapter`: build it there first.
+`DEBUG_TOKEN` given to it alone, as above. Its config names no bundle: run `peeky setup-java`
+first.
 
 A JVM already waiting for a debugger takes `--java-attach-config` instead
 ([JAVA_ATTACH.md](JAVA_ATTACH.md), [REMOTE.md](REMOTE.md#java-on-the-worker-host)).

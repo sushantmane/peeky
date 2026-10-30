@@ -139,7 +139,7 @@ has no examples or scripts. Run the recipes from the unpacked source archive,
 | Python | nothing | the interpreter running `peeky` |
 | C, C++ | clang (or GCC: set `PEEKY_NATIVE_CC` or `PEEKY_NATIVE_CXX`), lldb-dap and dwarfdump: on macOS the Command Line Tools, on Linux LLVM 18 | `xcrun` or `PATH`. Set `PEEKY_NATIVE_*` to override |
 | Rust | the rustup toolchain 1.96.0, and lldb-dap | `rustup which`. Set `PEEKY_RUST_*` to override |
-| Java | JDK 17, and the [adapter bundle](lang/java.md#words-used-here): `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"`, run from the repository root or the unpacked source archive (the wheel doesn't have the script) | the target's `--config target.json` |
+| Java | JDK 17 or later, and the [adapter bundle](lang/java.md#words-used-here), which `peeky setup-java` builds once | the target's `--config target.json`; its `bundle`, else the one `peeky setup-java` built |
 
 - On Ubuntu 24.04, as in CI, `apt-get install clang-18 lldb-18 llvm-18` installs clang, lldb-dap
   and llvm-dwarfdump for C, C++ and Rust. Other Debian and Ubuntu releases with LLVM 18 use the

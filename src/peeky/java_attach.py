@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
-from peeky.java import JavaSession, _bundle, _hash, _tool
+from peeky.java import JavaSession, _bundle, _hash, _tool, bundle_directory
 from peeky.java_metadata import MAX_CLASS_BYTES, _class_metadata
 from peeky.textlines import source_lines
 
@@ -185,7 +185,7 @@ class JavaAttachTarget:
         sources = [_inside(root, name, "source") for name in self.sources]
         class_roots = [_inside(root, name, "class root") for name in self.class_roots]
         java = _tool(self.java)
-        bundle = Path(self.bundle).resolve(strict=True)
+        bundle = bundle_directory(self.bundle)
         command, bundle_hash = _bundle(bundle, java)
         parsed = {}
         mapping = attached_source_map(class_roots, sources, deadline, parsed)

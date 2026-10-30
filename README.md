@@ -30,8 +30,8 @@ peeky --version
   Python 3.11 or later, from python.org or Homebrew, and make the virtual environment with it.
 - **SQLite:** the evidence store needs SQLite 3.30 or later, with its JSON functions.
   `python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version.
-- **Other languages:** Python needs nothing more. Java needs JDK 17 and an adapter bundle that a
-  script builds. C, C++ and Rust need LLVM's `lldb-dap`.
+- **Other languages:** Python needs nothing more. Java needs JDK 17 or later, and its debugger
+  adapter, which `peeky setup-java` builds once. C, C++ and Rust need LLVM's `lldb-dap`.
   [COOKBOOK 0](docs/COOKBOOK.md#what-each-language-also-needs) lists what to install.
 
 ### The package name
@@ -50,8 +50,9 @@ python3.11 -m venv .venv && . .venv/bin/activate
 pip install peeky-0.1.0-py3-none-any.whl
 ```
 
-The wheel has the commands, but not the examples. They are in the source archive. Unpack it, and
-run every example from its top directory:
+The wheel has the commands, and what `peeky setup-java` builds the Java adapter from. It doesn't
+have the examples. They are in the source archive. Unpack it, and run every example from its top
+directory:
 
 ```sh
 tar -xzf peeky-0.1.0.tar.gz && cd peeky-0.1.0
@@ -207,5 +208,5 @@ privately instead, as [SECURITY.md](SECURITY.md) describes.
 ## Licence
 
 Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The Java adapter that
-`scripts/setup_java_adapter.py` builds locally is Microsoft java-debug, under the Eclipse Public
-License 1.0 ([notices](adapters/java/NOTICES.md)).
+`peeky setup-java` builds locally is Microsoft java-debug, under the Eclipse Public License 1.0
+([notices](src/peeky/java_adapter/NOTICES.md)).

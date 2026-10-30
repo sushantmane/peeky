@@ -112,10 +112,11 @@ The worker's own trusted config decides what runs. Its paths are relative to `--
 
 | Target | Worker flag | The config names |
 | --- | --- | --- |
-| A JVM that Peeky launches | `--java-config` | `bundle`, `sources`, `main_class` |
-| A JVM already waiting for a debugger | `--java-attach-config` | `bundle`, `port`, `sources`, `class_roots` |
+| A JVM that Peeky launches | `--java-config` | `sources`, `main_class`, and optionally `bundle` |
+| A JVM already waiting for a debugger | `--java-attach-config` | `port`, `sources`, `class_roots`, and optionally `bundle` |
 
-- The host needs a JDK, and an adapter bundle built there with `scripts/setup_java_adapter.py`.
+- The host needs a JDK, and an adapter bundle built there: run `peeky setup-java` on it, as the
+  worker's user. A config without `bundle` uses that one.
 - On your machine, pass your own `--config` of the same kind. With `--worker`, the client uses it
   only to tell a launched JVM from an attached one.
 - Every file in `sources` must match yours: see [Source identity](#source-identity).
