@@ -133,9 +133,8 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     by_text = "twice(const std::string &)" if cxx == "gcc" else "twice(std::string const&)"
     assert "twice(int)" in text and by_text in text, text
     assert "basic_string" not in text, text
-    # A probe's table says the note once per state directory; a query's table says it of a
-    # run that has not had it. Its example is what short_function gives: both overloads'
-    # rows.
+    # A probe's table says the note once per state directory; a query's table says it of a run
+    # that has not had it. Its example is what short_function gives: both overloads' rows.
     assert "note: function shows short frame names" not in text, text
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out

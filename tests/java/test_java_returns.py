@@ -149,10 +149,9 @@ public class Loops {
 
 @pytest.mark.timeout(120)
 def test_a_line_that_stops_again_before_the_return_claims_no_cause(java, tmp_path):
-    # The line's next stop, at the same depth, before the call returned. Java has
-    # no watch on the caller to prove it is the same call: withheld, with a reason that
-    # claims no loop's next pass, but says Peeky could not tell, and names the
-    # possibilities.
+    # The line's next stop, at the same depth, before the call returned. Java has no watch on
+    # the caller to prove it is the same call: withheld, with a reason that claims no loop's
+    # next pass, but says Peeky could not tell, and names the possibilities.
     (tmp_path / "demo/Loops.java").write_text(LOOPS)
     target = JavaTarget(bundle=java.bundle, sources=("demo/Loops.java",), main_class="demo.Loops")
     line = next(i for i, text in enumerate(LOOPS.splitlines(), 1) if "// SUM" in text)

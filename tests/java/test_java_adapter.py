@@ -205,16 +205,16 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
 
 
 def test_an_array_write_waits_no_longer_than_the_pause_budget_allows(bundle, tmp_path):
-    # Before writing an element the launcher has the JVM
-    # search its heap for what refers to the array, which nothing can interrupt; it waits
-    # at most what the session's pause budget leaves, and refuses when that is too little.
+    # Before writing an element the launcher has the JVM search its heap for what refers to
+    # the array, which nothing can interrupt; it waits at most what the session's pause
+    # budget leaves, and refuses when that is too little.
     if (
         b"peekyJdkOwners"
         not in (
             Path(os.environ["PEEKY_JAVA_ADAPTER"]) / "classes" / "PeekyJavaAdapter.class"
         ).read_bytes()
     ):
-        pytest.skip("a launcher from before #204 does not search")
+        pytest.skip("this bundle's launcher predates the heap search for what refers to an array")
     directory = tmp_path / "demo"
     directory.mkdir()
     source = directory / "Cells.java"
@@ -342,7 +342,7 @@ def test_a_jvm_the_launcher_cannot_resume_is_disconnected_and_ends_the_session(
         b"could not resume the JVM"
         not in (root / "classes" / "PeekyJavaAdapter.class").read_bytes()
     ):
-        pytest.skip("a launcher from before #261 suspends no thread for a change")
+        pytest.skip("this bundle's launcher predates suspending threads for a change")
     (tmp_path / "ResumeHarness.java").write_text(RESUME_HARNESS)
     path = os.pathsep.join([str(root / "classes"), str(root / "lib" / "*"), str(tmp_path)])
     subprocess.run(

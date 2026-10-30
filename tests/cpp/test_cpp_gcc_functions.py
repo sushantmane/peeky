@@ -354,9 +354,8 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_a_lambdas_own_parameter_is_judged_as_its_own(compiler, tmp_path, capsys):
-    # GCC's lambda's frame is judged by its own declarations, not `main`'s: its own
-    # parameter `t` (40) is not withheld as "the code here names the structured binding
-    # `t`".
+    # GCC's lambda's frame is judged by its own declarations, not `main`'s: its own parameter
+    # `t` (40) is not withheld as "the code here names the structured binding `t`".
     path = tmp_path / "range_lambda.cpp"
     path.write_text(RANGE_LAMBDA)
     line = line_of(RANGE_LAMBDA, "// ID")

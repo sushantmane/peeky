@@ -133,9 +133,8 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys):
-    # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a
-    # visible local here, yet the code means the static, not this->calls. The static is
-    # read.
+    # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a visible
+    # local here, yet the code means the static, not this->calls. The static is read.
     (ring / "ring.cpp").write_text(STATIC)
     code = main(
         [
