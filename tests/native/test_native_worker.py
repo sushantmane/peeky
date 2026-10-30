@@ -75,11 +75,16 @@ def native_worker(tmp_path, native_config, monkeypatch):
 
     def start(**overrides):
         target = NativeTarget(**{**native_config, **overrides})
-        server = make_server(tmp_path, "native-test-secret-token-123", 0, adapter=target)
+        server = make_server(
+            tmp_path, "native-test-secret-token-123-0123456789abcdef", 0, adapter=target
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         servers.append((server, thread))
-        client = Client(f"http://127.0.0.1:{server.server_port}", "native-test-secret-token-123")
+        client = Client(
+            f"http://127.0.0.1:{server.server_port}",
+            "native-test-secret-token-123-0123456789abcdef",
+        )
         return client, server.worker
 
     yield start, source, first, second
@@ -156,7 +161,7 @@ def hash_file(path):
 
 
 def test_c_http_scalar_intervention_and_stale_stop(native_worker, monkeypatch):
-    monkeypatch.setenv("DEBUG_TOKEN", "never-pass-to-native-target")
+    monkeypatch.setenv("DEBUG_TOKEN", "never-pass-to-native-target-0123456789abcdef")
     start, source, first, second = native_worker
     client, worker = start()
     initial_hash = hash_file(source)

@@ -211,7 +211,7 @@ def test_a_run_on_a_worker_neither_looks_for_nor_names_this_hosts_tools(
     monkeypatch.setenv("PEEKY_NATIVE_CC", "cc351")  # on PATH; no adapter or dwarfdump is
     monkeypatch.setenv("PATH", str(here / "bin"))
     monkeypatch.setenv("PEEKY_STATE_DIR", str(here / "state"))
-    monkeypatch.setenv(cli.WORKER_TOKEN_ENV, "a-worker-token-of-some-length")
+    monkeypatch.setenv(cli.WORKER_TOKEN_ENV, "a-worker-token-of-some-length-0123456789")
     monkeypatch.setattr(cli, "_ON_PATH_SAID", set(), raising=False)
     with socket.socket() as unused:
         unused.bind(("127.0.0.1", 0))
@@ -277,7 +277,7 @@ def test_a_run_on_a_worker_names_files_that_only_look_like_programs(tmp_path, mo
     (here / "app" / "notes.c").write_text("/*\nint main(void) { return 2; }\n*/\n")
     monkeypatch.setenv("PATH", str(here))
     monkeypatch.setenv("PEEKY_STATE_DIR", str(here / "state"))
-    monkeypatch.setenv(cli.WORKER_TOKEN_ENV, "a-worker-token-of-some-length")
+    monkeypatch.setenv(cli.WORKER_TOKEN_ENV, "a-worker-token-of-some-length-0123456789")
     with socket.socket() as unused:
         unused.bind(("127.0.0.1", 0))
         url = f"http://127.0.0.1:{unused.getsockname()[1]}"

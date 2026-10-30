@@ -19,7 +19,7 @@ from peeky.errors import PROTOCOL_VERSION, PeekyError, classify
 from peeky.worker import MAX_HISTORY_BYTES, DebugWorker, make_server
 
 ROOT = Path(__file__).resolve().parents[2]
-TOKEN = "lifecycle-test-token-123456"
+TOKEN = "lifecycle-test-token-123456-0123456789abcdef"
 
 
 @pytest.fixture

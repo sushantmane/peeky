@@ -573,7 +573,7 @@ def test_remote_options_fail_closed(remote, capsys, monkeypatch):
     assert code == 2 and "loopback URL" in json.loads(out.out)["error"]["message"]
     code, out = run(capsys, *target, "--worker", f"http://127.0.0.1:{worker_port}")
     assert code == 0
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "wrong-token-but-long-enough")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "wrong-token-but-long-enough-0123456789abcdef")
     code, out = run(capsys, *target, "--worker", f"http://127.0.0.1:{worker_port}")
     assert code == 2 and json.loads(out.out)["error"]["code"] == "UNAUTHORIZED"
     monkeypatch.delenv("PEEKY_WORKER_TOKEN")

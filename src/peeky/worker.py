@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -10,6 +11,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import sys
 import tempfile
 import threading
@@ -20,6 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
+from peeky.client import MIN_TOKEN_CHARS, hello_proof
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import ERROR_CODES, PROTOCOL_VERSION, UnplacedStop, classify
 from peeky.identifiers import (
@@ -66,6 +69,7 @@ OPERATIONS = frozenset(
         "probe",
         "shutdown",
         "version",
+        "hello",
     }
 )
 # Stops the pause budget (--max-pause) may auto-resume: Peeky's own breakpoints and the
@@ -287,6 +291,15 @@ MAX_REQUEST_BYTES = 4 * 1024 * 1024
 # Each read of a request (its line, headers and body) waits at most this long: a
 # connection that sends nothing holds a thread no longer, even before it authenticates.
 REQUEST_READ_TIMEOUT_S = 10
+# The whole request must arrive within this long: a client that sends a byte at a time
+# holds a thread no longer. Its connection is then closed, and nothing runs.
+REQUEST_DEADLINE_S = 30
+# A connection past MAX_CONNECTIONS: up to SPARE_CONNECTIONS more are read, within
+# BUSY_DEADLINE_S, and answered BUSY (503: not run, retry); any beyond are closed unread.
+SPARE_CONNECTIONS = 16
+BUSY_DEADLINE_S = 2
+# At most this many connections at once; another is closed unread.
+MAX_CONNECTIONS = 32
 
 
 class _NodePaths:
@@ -7078,8 +7091,8 @@ def _inside_program(runtime, frame, *roots):
 
 
 def make_server(root, token, port=8765, *, adapter=None):
-    if not isinstance(token, str) or len(token) < 16:
-        raise ValueError("Token must contain at least 16 characters")
+    if not isinstance(token, str) or len(token) < MIN_TOKEN_CHARS:
+        raise ValueError(f"Token must contain at least {MIN_TOKEN_CHARS} characters")
     worker = DebugWorker(root, adapter=adapter)
     probes = threading.Semaphore(1)
 
@@ -7178,7 +7191,107 @@ def make_server(root, token, port=8765, *, adapter=None):
         def log_message(self, *args):
             pass
 
+        def handle(self):
+            # The whole request must arrive by REQUEST_DEADLINE_S: then `expire` shuts the
+            # connection, which ends a read waiting on it, and nothing more is read or run.
+            self.arrival = threading.Lock()
+            self.reading, self.expired = True, False
+            self.busy = self.server.busy()
+            timer = threading.Timer(
+                BUSY_DEADLINE_S if self.busy else REQUEST_DEADLINE_S, self.expire
+            )
+            timer.daemon = True
+            timer.start()
+            try:
+                super().handle()
+            finally:
+                timer.cancel()
+
+        def expire(self):
+            with self.arrival:
+                if not self.reading:
+                    return
+                self.expired = True
+            with contextlib.suppress(OSError):
+                self.connection.shutdown(socket.SHUT_RDWR)
+
+        def arrived(self):
+            """Whether the request arrived by its deadline; from then on it never expires."""
+            with self.arrival:
+                self.reading = False
+                return not self.expired
+
+        def hello(self):
+            # Unauthenticated: the client checks this proof that the worker holds the
+            # token before it sends the token. It says nothing else, and runs nothing.
+            try:
+                size = int(self.headers.get("Content-Length", 0))
+                if not 0 < size <= 256:
+                    raise ValueError
+                body = self.rfile.read(size)
+                if not self.arrived():
+                    return
+                args = json.loads(body)
+                if not isinstance(args, dict) or set(args) != {"nonce"}:
+                    raise ValueError
+                nonce = bytes.fromhex(args["nonce"])
+                if len(nonce) != 32:
+                    raise ValueError
+            except (OSError, RecursionError, TypeError, ValueError):
+                self.reply(
+                    400,
+                    {
+                        "error": {
+                            "code": "INVALID_REQUEST",
+                            "message": "A hello sends only its nonce: 32 random bytes, in hex",
+                            "hint": "Send what Peeky's client sends, or use the client.",
+                            "retryable": False,
+                            "session_closed": False,
+                        },
+                        "protocol": PROTOCOL_VERSION,
+                    },
+                )
+                return
+            self.reply(200, {"protocol": PROTOCOL_VERSION, "proof": hello_proof(token, nonce)})
+
+        def refuse(self, status, code, message, hint, retryable=False):
+            error = {"code": code, "message": message, "hint": hint}
+            error.update(retryable=retryable, session_closed=False)
+            self.reply(status, {"error": error, "protocol": PROTOCOL_VERSION})
+
         def do_POST(self):
+            if self.busy:
+                # Read whole, so that the answer isn't lost to a reset, then refused.
+                with contextlib.suppress(OSError, ValueError):
+                    size = int(self.headers.get("Content-Length", 0))
+                    if 0 < size <= MAX_REQUEST_BYTES:
+                        self.rfile.read(size)
+                self.refuse(
+                    503,
+                    "BUSY",
+                    f"The worker is serving {MAX_CONNECTIONS} connections, its most: this "
+                    "request was not run",
+                    "Retry once the worker's other requests are done; nothing was run.",
+                    retryable=True,
+                )
+                return
+            host = self.headers.get("Host", "")
+            if self.headers.get("Origin") is not None or not re.fullmatch(
+                r"127\.0\.0\.1(:[0-9]{1,5})?", host
+            ):
+                # A browser sends Origin, and a page that renamed itself 127.0.0.1 (DNS
+                # rebinding) its own Host: its scripts never reach the worker.
+                self.refuse(
+                    403,
+                    "INVALID_REQUEST",
+                    "The worker answers only requests to 127.0.0.1 without an Origin header, "
+                    "not a browser's",
+                    "Call the worker as http://127.0.0.1:PORT, from a program, not a web page.",
+                )
+                return
+            if self.path == "/hello":
+                self.hello()
+                return
             # Compared as bytes: a non-ASCII header must be a 401, not a dropped connection.
             supplied = self.headers.get("Authorization", "").encode("latin-1", "replace")
             if not hmac.compare_digest(supplied, ("Bearer " + token).encode()):
@@ -7204,6 +7317,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                     if not 0 < size <= MAX_REQUEST_BYTES:
                         raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
                     body = self.rfile.read(size)
+                    if not self.arrived():
+                        return
                     if len(body) != size:
                         raise ValueError("Request body ended early")
                     args = json.loads(body)
@@ -7282,6 +7397,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                 self.reply(500, {"error": classify(exc), "protocol": PROTOCOL_VERSION})
 
         def reply(self, status, body):
+            if not self.arrived():
+                return
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -7290,9 +7407,56 @@ def make_server(root, token, port=8765, *, adapter=None):
             self.end_headers()
             self.wfile.write(encoded)
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = _Server(("127.0.0.1", port), Handler)
     server.worker = worker
     return server
+
+
+class _Server(ThreadingHTTPServer):
+    """At most MAX_CONNECTIONS connections at once. Up to SPARE_CONNECTIONS more are
+    answered BUSY (``Handler.busy``); any beyond those are closed unread. A connection
+    that its client or its deadline closed is not reported as an error."""
+
+    def __init__(self, address, handler):
+        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self.spares = threading.BoundedSemaphore(SPARE_CONNECTIONS)
+        self.serving = threading.local()
+        super().__init__(address, handler)
+
+    def busy(self):
+        """Whether this thread's connection is past MAX_CONNECTIONS."""
+        return getattr(self.serving, "slot", None) is self.spares
+
+    def process_request(self, request, client_address):
+        for slot in (self.slots, self.spares):
+            if slot.acquire(blocking=False):
+                break
+        else:
+            self.shutdown_request(request)
+            return
+        thread = threading.Thread(
+            target=self.serve_connection, args=(request, client_address, slot), daemon=True
+        )
+        try:
+            thread.start()
+        except BaseException:
+            slot.release()
+            self.shutdown_request(request)
+            raise
+
+    def serve_connection(self, request, client_address, slot):
+        self.serving.slot = slot
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            slot.release()
+
+    def handle_error(self, request, client_address):
+        if not isinstance(sys.exc_info()[1], OSError):
+            super().handle_error(request, client_address)
 
 
 # A probe child's launch budget is the HTTP cap less this, so that a slow launch (a
@@ -7516,8 +7680,10 @@ def load_java_attach_target(path):
 
 
 def main():
-    from peeky.processes import keep_children_waitable
+    from peeky.processes import keep_children_waitable, take_credentials
 
+    # Out of the environment first: nothing the worker starts inherits the token.
+    token = take_credentials().get("DEBUG_TOKEN")
     keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(prog="peeky-worker")
     add_version(parser)
@@ -7548,9 +7714,8 @@ def main():
         "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
     )
     args = parser.parse_args()
-    token = os.environ.get("DEBUG_TOKEN")
-    if not token or len(token) < 16:
-        parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
+    if not token or len(token) < MIN_TOKEN_CHARS:
+        parser.error(f"Set DEBUG_TOKEN to a random secret of at least {MIN_TOKEN_CHARS} characters")
     adapter = None
     if args.java_config or args.native_config or args.rust_config or args.java_attach_config:
         try:

@@ -665,10 +665,10 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     selector compares one, however many there are. `m[#N]` past 511 sends `index`. `key` needs
     protocol 10.
   - The client takes an entry only from an answer that names the key it asked for, and only
-    where that entry's `first` is the key. `Client.call` asks a worker's `version` before its
-    first other request, under its lock, and again after a lost connection. It sends nothing
-    else to a worker of another protocol (`Client._preflight`). A local session whose record
-    names this protocol skips the ask (`cli._LocalClient`, `verified`).
+    where that entry's `first` is the key. `Client.call` says `hello` before its first other
+    request, under its lock, and again after a lost connection. Unless the worker proves it holds
+    the token and speaks this protocol, it is sent nothing else, nor the token
+    (`Client._preflight`, `Client._hello`). Each `session` command says `hello` again.
   - Each request carries `X-Peeky-Protocol`, which the worker checks before dispatch. Each
     answer carries the worker's, which `Client` checks too.
   - Otherwise the row stays `not listed`, with the note it had.

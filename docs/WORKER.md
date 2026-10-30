@@ -7,26 +7,32 @@ itself.
 - To run a worker on another host, see [REMOTE.md](REMOTE.md).
 - Every operation, with its inputs and results, is in [DESIGN.md](DESIGN.md#http-contract). So is
   what each request must carry. The `Client` class used below sends it for you.
+- Before it sends the token, `Client` checks that the worker holds it, with `hello`. A client of
+  your own should do the same ([DESIGN.md](DESIGN.md#http-contract)).
 
 ## Start a Python worker
 
-Start a worker with a secret token, from the repository root or the unpacked source archive:
+Start a worker with a fresh secret token, from the repository root or the unpacked source archive:
 
 ```sh
-export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-peeky-worker --root "$PWD" --port 8765
+token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+echo "$token"                  # give it to the client; never commit it
+DEBUG_TOKEN="$token" peeky-worker --root "$PWD" --port 8765
 ```
 
-A session left idle for `--idle-timeout` seconds (default 300) is closed, and its program ended.
+- Make a new token each time you start a worker, and give it to the worker alone.
+- Don't `export DEBUG_TOKEN`: a restarted worker would reuse the old token, and every program the
+  shell starts would get it ([REMOTE.md](REMOTE.md#separate-host-procedure)).
+- A session left idle for `--idle-timeout` seconds (default 300) is closed, and its program ended.
 
-In a second terminal, export the same `DEBUG_TOKEN` value. Then run this with the Python Peeky is
-installed in:
+In a second terminal, run this with the Python Peeky is installed in. Set `PEEKY_WORKER_TOKEN` to
+the token for that command alone:
 
 ```python
 import os
 from peeky.client import Client
 
-url, token = "http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"]
+url, token = "http://127.0.0.1:8765", os.environ["PEEKY_WORKER_TOKEN"]
 client = Client(url, token)
 launch = client.call("launch", program="examples/pagination_bug.py", breakpoints=[{"line": 8}])
 session = {"session_id": launch["session_id"]}
@@ -120,11 +126,13 @@ each request except `close`, and again after each one that succeeds
 
 The worker takes the same config file as the CLI's `--config`
 ([C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config)). Save it as
-`work/native-target.json`, set a random worker token, and start the worker on the bundled example:
+`work/native-target.json`, make a fresh worker token, and start the worker on the bundled example:
 
 ```sh
-export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-peeky-worker --root "$PWD/examples/c" --native-config "$PWD/work/native-target.json" --port 8765
+token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+echo "$token"                  # give it to the client; never commit it
+DEBUG_TOKEN="$token" peeky-worker --root "$PWD/examples/c" \
+    --native-config "$PWD/work/native-target.json" --port 8765
 ```
 
 - The config is trusted startup input. HTTP requests choose only a program it already declares,
@@ -194,13 +202,16 @@ The worker takes a launched target's config, the same as the CLI's `--config`
   commands or build recipes.
 
 ```sh
-export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-peeky-worker --root /absolute/path/to/java-sources --java-config "$PWD/work/java-target.json" --port 8765
+token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+echo "$token"                  # give it to the client; never commit it
+DEBUG_TOKEN="$token" peeky-worker --root /absolute/path/to/java-sources \
+    --java-config "$PWD/work/java-target.json" --port 8765
 ```
 
 The bundled example starts with
-`peeky-worker --root examples/java --java-config examples/java/target.json`, after setting
-`DEBUG_TOKEN`. Its config names the adapter bundle `work/java-adapter`: build it there first.
+`peeky-worker --root examples/java --java-config examples/java/target.json`, with a fresh
+`DEBUG_TOKEN` given to it alone, as above. Its config names the adapter bundle
+`work/java-adapter`: build it there first.
 
 A JVM already waiting for a debugger takes `--java-attach-config` instead
 ([JAVA_ATTACH.md](JAVA_ATTACH.md), [REMOTE.md](REMOTE.md#java-on-the-worker-host)).
@@ -211,13 +222,13 @@ A JVM already waiting for a debugger takes `--java-attach-config` instead
 `String result = timeoutMs > 0 ? "ready" : "timed out";`. At that stop, change `timeoutMs` from
 `0` to `5000`, and continue: the program prints `ready` instead of `timed out`.
 
-From another process, with the same token:
+From another process, with `PEEKY_WORKER_TOKEN` set to the same token:
 
 ```python
 import os
 from peeky.client import Client
 
-client = Client("http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"])
+client = Client("http://127.0.0.1:8765", os.environ["PEEKY_WORKER_TOKEN"])
 launch = client.call("launch", program="demo/BranchBug.java", breakpoints=[{"line": 6}])
 session = {"session_id": launch["session_id"]}
 stop = client.call("wait", **session, timeout=2)
@@ -275,8 +286,8 @@ config for the C++ fixture, with the worker root set to `examples/cpp`:
 }
 ```
 
-- Start the worker with `peeky-worker --native-config config.json`. Set `DEBUG_TOKEN` first, and
-  pass the intended `--root`.
+- Start the worker with `peeky-worker --native-config config.json`. Give it a fresh `DEBUG_TOKEN`
+  for it alone, as above, and pass the intended `--root`.
 - On macOS, also set `dsymutil` and the SDK's `sysroot`. Take the compiler's and debugger's paths
   from `xcrun --find`.
 - The compiler must be clang++ or g++

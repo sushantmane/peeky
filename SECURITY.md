@@ -29,29 +29,43 @@ release is out.
 ## In scope
 
 - **The worker's authentication.** A request that the worker carries out without the right token,
-  or a worker that listens anywhere but `127.0.0.1`.
-- **The worker's root confinement.** A request that makes the worker launch or build a program
-  outside its `--root`.
+  or from a web page, or a worker that listens anywhere but `127.0.0.1`. A token under 32
+  characters is refused.
+- **The worker's proof.** A client that sends the token, or any request, to a process that hasn't
+  proven it holds the token. Or a client that sends it to anything but `http://127.0.0.1:PORT`.
+- **The worker's root check.** A request that names a program or `--run` script outside `--root`,
+  and the worker launches or builds it. The check covers the file a request names, not what code
+  then runs.
+- **Other users on the same host.** Another local user who gets the token, or makes Peeky run
+  their code: through a shared directory such as `/tmp`, or the port of a worker that stopped.
+  This holds for every language's build, a Python candidate's copy and `peeky verify`'s
+  candidate.
 - **Path handling.** A path in a request, a result or a session record that reaches a file it
   shouldn't, for example through `..` or a link.
 - **`peeky sql` confinement.** A query that changes saved runs, writes a file, loads an extension,
   or reads anything but the saved runs.
 - **Token handling.** The token reaching a result, a report, an error, a log, an argument list, or
-  the environment of a debugger, debuggee, build, checker or model process.
+  the environment of any process Peeky starts. Two get a token on purpose: a session's own local
+  worker gets its own, and a `--background` job gets the client's, as it is the same command.
 
 ## By design
 
 These are not vulnerabilities:
 
-- An authenticated client can run code. It launches programs, changes their values, and builds and
-  runs candidate edits, with the worker's permissions.
+- An authenticated client can run any code. It launches programs, changes their values, and builds
+  and runs candidate edits, with the worker's permissions. A request's `edit` changes the code
+  that runs, so an edit that reaches outside `--root` is not a vulnerability.
 - Peeky runs the program you point it at, with your permissions. It is not a sandbox for hostile
   code.
 - `peeky-agent` applies and runs the model's edit without a sandbox. Program output that reaches
   the model is untrusted, and can steer it.
 - The program the worker launches can read and import files outside `--root`. The root check
   covers the program a request names.
-- A process running as the same user can read Peeky's environment, process state and session
-  records.
+- A process running as the same user, or as root, can read Peeky's environment, process state and
+  session records.
+- Another local process can keep the worker busy, up to its limits: 32 connections at once, each
+  for at most 30 s before its request arrives. That is a denial of service, not a way in.
+- The limits of the worker's proof that [THREAT_MODEL.md](docs/THREAT_MODEL.md) names: a relay to
+  a running worker with the same token, and a port taken between two of one client's requests.
 
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) describes these trust boundaries in full.

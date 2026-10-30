@@ -41,6 +41,7 @@ from peeky.build import (
     default_sdk,
     dependency_paths,
     prepare,
+    private_base,
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
@@ -58,6 +59,7 @@ from peeky.cxx_strings import (
 from peeky.digest import sha256_file
 from peeky.identifiers import changeable, looks_located, split_located
 from peeky.names import standard_type, unicode_escape
+from peeky.processes import without_credentials
 from peeky.text_sets import text_kind
 from peeky.textlines import octal_string, read_source, source_lines, split_lines
 
@@ -119,7 +121,7 @@ def compiler_family(path):
             stderr=subprocess.PIPE,
             text=True,
             errors="replace",
-            env={**os.environ, "LC_ALL": "C"},
+            env={**without_credentials(os.environ), "LC_ALL": "C"},
             start_new_session=True,
         )
     except OSError:
@@ -4981,6 +4983,8 @@ class NativeTarget:
                     tuple(probes),
                 ),
                 root,
+                # Not in a directory others can write: `#include "../x.h"` reads above it.
+                parent=private_base(),
                 edit=edit,
                 deadline=deadline,
                 before_command=before_command,

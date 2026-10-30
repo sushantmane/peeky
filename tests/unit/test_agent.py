@@ -64,7 +64,10 @@ def test_no_fix_without_intervention(tmp_path):
 
 
 # The worker's token by the worker's name and by a client's.
-TOKENS = {"DEBUG_TOKEN": "never-inherit-me", "PEEKY_WORKER_TOKEN": "never-inherit-me-either"}
+TOKENS = {
+    "DEBUG_TOKEN": "never-inherit-me-0123456789abcdef",
+    "PEEKY_WORKER_TOKEN": "never-inherit-me-either-0123456789abcdef",
+}
 SHOW_TOKENS = 'import os; print(os.getenv("DEBUG_TOKEN"), os.getenv("PEEKY_WORKER_TOKEN"))'
 
 
