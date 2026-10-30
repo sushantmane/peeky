@@ -288,6 +288,20 @@ def test_inspections_mark_settable_root_locals_only(tmp_path):
     assert all(v.get("settable") is False for s in snapshot["scopes"] for v in s["variables"])
 
 
+def test_a_value_the_debugger_cannot_read_is_never_marked_settable(tmp_path):
+    # GCC lists a block's `extern` with no location: lldb-dap 18 shows the row as an error,
+    # which was marked [settable], though `set` refuses a value it cannot read.
+    worker = stopped(tmp_path)
+    worker.runtime.settable = lambda variable, frame: True
+    worker.runtime.reports_unavailable_as_text = True
+    worker.dap.variable["value"] = "<error: no location, value may have been optimized out>"
+    [row] = [v for s in inspect(worker)["scopes"] for v in s["variables"]]
+    assert row["settable"] is False, row
+    worker.dap.variable["value"] = "1"
+    [row] = [v for s in inspect(worker)["scopes"] for v in s["variables"]]
+    assert row["settable"] is True, row
+
+
 def test_native_writes_are_read_back_and_never_reported_otherwise():
     from types import SimpleNamespace
 

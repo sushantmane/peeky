@@ -255,7 +255,18 @@ class PythonCandidate:
         text = self.original.read_text()
         if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
             raise ValueError("--old must match the --at file exactly once and --new must change it")
-        self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-"))
+        from peeky.build import private_base
+
+        def outside(base):
+            if base.resolve().is_relative_to(root):
+                raise ValueError(
+                    f"A Python candidate is copied outside its target, and {base} is inside "
+                    f"{root}: set TMPDIR to a directory only you can write, outside it"
+                )
+
+        # Where no other user can write: a program that reaches above its root (`../`,
+        # `Path(__file__).parents[2]`) finds nothing of theirs there.
+        self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-", dir=private_base(outside)))
         try:
             self.root = self.scratch / (root.name or "root")
             # The copy of the --at file, under the name it has on disk (`--at APP.py`
@@ -939,7 +950,7 @@ def _git_environment():
     # Git variables that would point git at another repository than the one asked for.
     return {
         key: value
-        for key, value in os.environ.items()
+        for key, value in without_credentials(os.environ).items()
         if not key.startswith("GIT_")
         or key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM")
     }

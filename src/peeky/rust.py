@@ -34,7 +34,9 @@ from peeky.build import (
     _digest,
     dependency_paths,
     prepare,
+    private_base,
     real_tool,
+    require_private,
 )
 from peeky.compiled_verification import CompiledVerification
 from peeky.identifiers import changeable, is_located, is_name, split_located
@@ -164,6 +166,17 @@ _SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
     r"([0-9]{1,6}) measured; ([0-9]{1,6}) filtered out; finished in [0-9]{1,6}\.[0-9]{1,3}s"
 )
+
+
+def _cargo_free(base):
+    """Refuse a place to build a crate where Cargo would read configuration above it."""
+    try:
+        assert_cargo_ancestry_clear(base)
+    except ValueError as exc:
+        raise ValueError(
+            f"Peeky builds a Rust crate only where Cargo reads no configuration above it: {exc}. "
+            "Set TMPDIR to a directory only you can write, outside it"
+        ) from None
 
 
 def _remove_owned(parent, error=None):
@@ -490,6 +503,8 @@ class RustTarget:
             "CARGO_HOME": ".peeky-cargo-home",
             "CARGO_TARGET_DIR": "target",
             "RUSTC": rustc,
+            # Empty: no `build.rustc-wrapper` from any Cargo configuration runs.
+            "RUSTC_WRAPPER": "",
             "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(self.rustflags),
             "CARGO_TERM_COLOR": "never",
             "LC_ALL": "C",
@@ -587,6 +602,7 @@ class RustTarget:
                     raise refused
                 judged.append(True)
             assert_cargo_ancestry_clear(workspace)
+            require_private(workspace)
             if wrapper is not None and (
                 env.get("RUSTC_WORKSPACE_WRAPPER") != str(wrapper)
                 or wrapper.is_symlink()
@@ -612,10 +628,13 @@ class RustTarget:
             ].startswith(f"cargo {self.rust_version} "):
                 raise ValueError("Rust toolchain does not match the pinned version")
 
-        # Cargo also reads ancestor configuration; own a checked parent directory.
-        parent = Path(tempfile.mkdtemp(prefix="peeky-rust-")).resolve()
+        # Cargo also reads ancestor configuration; own a checked parent directory, where no
+        # other user can add any (private_base), nor holds any already.
+        parent = Path(tempfile.mkdtemp(prefix="peeky-rust-", dir=private_base(_cargo_free)))
+        parent = parent.resolve()
         try:
             assert_cargo_ancestry_clear(parent)
+            require_private(parent)
             # Outside the workspace, in Peeky's own directory; checked before every
             # command (validate_workspace). Optimized builds have it too: their bindings'
             # types decide what a Box is, though nothing there is ever proven.

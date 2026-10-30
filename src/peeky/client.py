@@ -1,9 +1,13 @@
 """JSON HTTP SDK and CLI, usable by any agent with shell or HTTP tools."""
 
 import argparse
+import hashlib
+import hmac
 import http.client
 import json
 import os
+import re
+import secrets
 import socket
 import threading
 from urllib.error import HTTPError, URLError
@@ -25,16 +29,47 @@ class TransportLost(OSError):
 _OPENER = build_opener(ProxyHandler({}))
 # Each request and answer names its sender's protocol.
 PROTOCOL_HEADER = "X-Peeky-Protocol"
+# The only worker URLs a client sends the token to, in plain HTTP: this host's loopback,
+# where an SSH tunnel's local end is.
+LOOPBACK_URL = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}")
+# A token's least length: `hello` lets anyone who can connect test guesses of it offline.
+MIN_TOKEN_CHARS = 32
+# What a worker's `hello` proof is a MAC of, before the client's nonce: no other message
+# of Peeky's starts so.
+HELLO_LABEL = b"peeky worker hello v1\x00"
+
+
+def hello_proof(token, nonce):
+    """A worker's answer to a client's `hello` nonce (bytes): HMAC-SHA256, keyed by the
+    token, of HELLO_LABEL and the nonce, in hex. Only a holder of the token can make it."""
+    return hmac.new(token.encode(), HELLO_LABEL + nonce, hashlib.sha256).hexdigest()
+
+
+def _stated(error):
+    """The protocol a worker's error answer states (its header, else its body's), or
+    "unknown"."""
+    stated = error.headers.get(PROTOCOL_HEADER) if error.headers is not None else None
+    if stated is None:
+        try:
+            stated = json.loads(error.read()).get("protocol")
+        except (AttributeError, OSError, ValueError):
+            stated = None
+    stated = str(stated).strip()
+    return int(stated) if re.fullmatch(r"[0-9]{1,6}", stated) else "unknown"
 
 
 def _spoken(headers, operation, url):
     """Refuse a worker's answer where the worker says it speaks another protocol (its
     `X-Peeky-Protocol` header, on every answer), however the session started: a local
     session's worker of an older Peeky would ignore what this client sends, such as
-    `expand`'s `key`, and answer something else. Not `version`'s answer,
-    whose caller compares the protocol it states and says what to do."""
+    `expand`'s `key`, and answer something else. Not `version`'s or
+    `hello`'s answer, whose caller compares the protocol it states and says what to do."""
     spoken = headers.get(PROTOCOL_HEADER) if headers is not None else None
-    if operation == "version" or spoken is None or spoken.strip() == str(PROTOCOL_VERSION):
+    if (
+        operation in ("version", "hello")
+        or spoken is None
+        or spoken.strip() == str(PROTOCOL_VERSION)
+    ):
         return
     raise ValueError(
         f"Worker speaks protocol {spoken.strip()[:20]}, this client {PROTOCOL_VERSION}: its "
@@ -46,66 +81,92 @@ def _spoken(headers, operation, url):
 class Client:
     def __init__(self, url, token):
         self.url = url.rstrip("/")
+        if not LOOPBACK_URL.fullmatch(self.url):
+            raise ValueError(
+                f"A worker's URL must be loopback (http://127.0.0.1:PORT), not {self.url[:80]}: "
+                "the token goes in plain HTTP. Reach a remote worker through an SSH tunnel"
+            )
         self.token = token
-        # The protocol the worker's `version` states, once asked (or vouched for by the
-        # caller): nothing but `version` is sent to a worker before it is this client's.
-        # A worker of another protocol would run a step or a change as it
-        # reads the request, and ignore what it doesn't know (`expand`'s `key`). Read,
-        # asked and set under ``lock``; forgotten when a connection is lost, since
-        # another worker may answer at the same address then.
+        # The protocol the worker's `hello` states, once it proved it holds the token: no
+        # request, and not the token, is sent to a worker before that (``_hello``), nor to
+        # a worker of another protocol, which would run a step or a change
+        # as it reads the request, and ignore what it doesn't know (`expand`'s `key`).
+        # Asked and set under ``lock``; forgotten when a connection is lost, since another
+        # process may answer at the same address then.
         self.protocol = None
         self.lock = threading.Lock()
 
     def call(self, operation, **arguments):
         try:
-            if operation != "version":
-                self._preflight(operation)
-            answer = self._request(operation, arguments)
+            self._preflight(operation)
+            return self._request(operation, arguments)
         except (WorkerUnreachable, TransportLost):
             with self.lock:
                 self.protocol = None
             raise
-        if (
-            operation == "version"
-            and isinstance(answer, dict)
-            and type(answer.get("protocol")) is int
-        ):
-            with self.lock:
-                self.protocol = answer["protocol"]
-        return answer
 
     def _preflight(self, operation):
-        """Ask the worker's `version` once, before anything else is sent; refuse
-        ``operation`` where the worker speaks another protocol, or doesn't say. Decided
-        on the protocol held under the lock, which one ask at a time sets."""
+        """Say `hello` once, before anything else is sent; refuse ``operation`` where the
+        worker speaks another protocol, or doesn't say. Decided on the protocol held
+        under the lock, which one `hello` at a time sets."""
         with self.lock:
             if self.protocol is None:
-                answer = self._request("version", {})
-                found = answer.get("protocol") if isinstance(answer, dict) else None
-                self.protocol = found if type(found) is int else "unknown"
+                self.protocol = self._hello()
             spoken = self.protocol
         if spoken != PROTOCOL_VERSION:
             raise ValueError(self._refusal(operation, spoken))
 
+    def _hello(self):
+        """The worker's protocol, once it has proven it holds this client's token: it
+        answers a fresh random nonce with hello_proof, checked before the token is sent.
+        A process that took the worker's port after it stopped never gets the token. A
+        worker before protocol 11 has no `hello`: it says its protocol as it refuses."""
+        nonce = secrets.token_bytes(32)
+        try:
+            answer = self._request("hello", {"nonce": nonce.hex()}, authorized=False)
+        except PeekyError as error:
+            if not getattr(error, "from_worker", False) or error.error_code == "BUSY":
+                # Not as a worker answers (a tunnel's or a proxy's page), or a worker past
+                # its connections, which ran nothing: said as it is.
+                raise
+            if (spoken := _stated(error)) != PROTOCOL_VERSION:
+                return spoken
+            answer = None
+        found = answer.get("protocol") if isinstance(answer, dict) else None
+        if type(found) is int and found != PROTOCOL_VERSION:
+            return found
+        proof = answer.get("proof") if isinstance(answer, dict) else None
+        expected = hello_proof(self.token, nonce).encode()
+        if found != PROTOCOL_VERSION or not isinstance(proof, str):
+            proof = ""
+        if not hmac.compare_digest(proof.encode("utf-8", "replace"), expected):
+            raise ValueError(
+                f"The process at {self.url} did not prove it holds the worker's token, so "
+                "neither the token nor the request was sent: it is another program on that "
+                "port, or a worker started with another token"
+            )
+        return PROTOCOL_VERSION
+
     def _refusal(self, operation, spoken):
         return (
-            f"Worker speaks protocol {spoken}, this client {PROTOCOL_VERSION}: nothing but its "
-            f"version was sent to the worker at {self.url}, not {operation!r}. Run the same "
-            "Peeky version as the worker"
+            f"Worker speaks protocol {spoken}, this client {PROTOCOL_VERSION}: install the "
+            f"same Peeky version on both hosts. Only a `hello`, without the token, was sent "
+            f"to the worker at {self.url}, not {operation!r}"
         )
 
-    def _request(self, operation, arguments):
-        """One request, as it is: its answer, or the worker's error."""
+    def _request(self, operation, arguments, *, authorized=True):
+        """One request, as it is: its answer, or the worker's error. ``authorized``: with
+        the token, which only a worker that proved it holds it gets (``_hello``)."""
+        headers = {
+            "Content-Type": "application/json",
+            # A worker of protocol 10 or later refuses any request but `version` that
+            # names another protocol, or none, before it runs it.
+            PROTOCOL_HEADER: str(PROTOCOL_VERSION),
+        }
+        if authorized:
+            headers["Authorization"] = "Bearer " + self.token
         request = Request(
-            self.url + "/" + operation,
-            data=json.dumps(arguments).encode(),
-            headers={
-                "Authorization": "Bearer " + self.token,
-                "Content-Type": "application/json",
-                # A worker of protocol 10 or later refuses any request but `version` that
-                # names another protocol, or none, before it runs it.
-                PROTOCOL_HEADER: str(PROTOCOL_VERSION),
-            },
+            self.url + "/" + operation, data=json.dumps(arguments).encode(), headers=headers
         )
         try:
             with _OPENER.open(request, timeout=45) as response:

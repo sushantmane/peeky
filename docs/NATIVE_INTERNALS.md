@@ -244,6 +244,13 @@ frame's entry: the narrowest function whose code holds the frame's address.
   jumps back come. Anything else is None, and so is a landing pad, or tables Peeky can't read.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
+- One rule comes first: `declared_after_later_lines` withholds the local where the code just
+  before the row is of a later line of its own statement. GCC builds `struct outer o = {` over
+  several lines so: the elements' code, then their stores on the first line. It holds for a plain
+  declaration, not a header's, unless `runs_into` is False.
+- That order of rows proves where the stop is, not what has run. A C++ temporary's cleanup on the
+  line may follow the whole object, and an optimized build moves code. So the row says Peeky
+  can't tell whether the local is fully initialized, never that it isn't.
 
 ## A caller's local whose declaration line has no code
 
@@ -658,10 +665,10 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     selector compares one, however many there are. `m[#N]` past 511 sends `index`. `key` needs
     protocol 10.
   - The client takes an entry only from an answer that names the key it asked for, and only
-    where that entry's `first` is the key. `Client.call` asks a worker's `version` before its
-    first other request, under its lock, and again after a lost connection. It sends nothing
-    else to a worker of another protocol (`Client._preflight`). A local session whose record
-    names this protocol skips the ask (`cli._LocalClient`, `verified`).
+    where that entry's `first` is the key. `Client.call` says `hello` before its first other
+    request, under its lock, and again after a lost connection. Unless the worker proves it holds
+    the token and speaks this protocol, it is sent nothing else, nor the token
+    (`Client._preflight`, `Client._hello`). Each `session` command says `hello` again.
   - Each request carries `X-Peeky-Protocol`, which the worker checks before dispatch. Each
     answer carries the worker's, which `Client` checks too.
   - Otherwise the row stays `not listed`, with the note it had.

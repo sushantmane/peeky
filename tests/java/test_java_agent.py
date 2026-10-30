@@ -33,7 +33,7 @@ def java_investigation(tmp_path):
     source = root / "demo/PaginationBug.java"
     check = root / "verify_pagination.py"
     target = JavaTarget(Path(bundle), ("demo/PaginationBug.java",), "demo.PaginationBug")
-    token = "java-agent-tests-token-123456"
+    token = "java-agent-tests-token-123456-0123456789abcdef"
     server = make_server(root, token, 0, adapter=target)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

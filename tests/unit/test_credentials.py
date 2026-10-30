@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 CREDENTIALS = {
-    "DEBUG_TOKEN": "worker-side-token-1234567890",
-    "PEEKY_WORKER_TOKEN": "client-side-token-1234567890",
+    "DEBUG_TOKEN": "worker-side-token-1234567890-0123456789abcdef",
+    "PEEKY_WORKER_TOKEN": "client-side-token-1234567890-0123456789abcdef",
 }
 
 

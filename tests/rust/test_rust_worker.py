@@ -16,7 +16,7 @@ from peeky.worker import make_server
 
 ROOT = Path(__file__).resolve().parents[2]
 INPUTS = ("Cargo.toml", "Cargo.lock", "src/main.rs", "tests/pagination.rs")
-TOKEN = "rust-test-secret-token-1234"
+TOKEN = "rust-test-secret-token-1234-0123456789abcdef"
 
 
 @pytest.fixture

@@ -33,7 +33,11 @@ from peeky.textlines import split_lines
 # and gives the first entries, which a client would take for the key's. Each request
 # names its client's protocol (`X-Peeky-Protocol`), which the worker checks before it
 # runs anything but `version`.
-PROTOCOL_VERSION = 10
+# 11: a client sends a worker nothing, and not its token, before the worker answers its
+# `hello` with a proof that it holds the token (client.hello_proof). A protocol 10 worker
+# has no `hello`: it asks for the token, so a client never learnt whether another process
+# had taken the worker's port, and sent the token there.
+PROTOCOL_VERSION = 11
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -79,6 +83,13 @@ _RULES = (
         "Restore the worker or SSH tunnel, and retry: it keeps the session until its idle "
         "timeout. If it is gone for good, run `peeky session close --forget`.",
         True,
+    ),
+    (
+        r"did not prove it holds the worker's token",
+        "UNAUTHORIZED",
+        "Use the worker's own DEBUG_TOKEN. If it is, another program holds the port: stop it, "
+        "or restart the worker.",
+        False,
     ),
     (
         r"broke during .*its outcome is unknown",

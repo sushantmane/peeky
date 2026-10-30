@@ -64,6 +64,10 @@
   client's requests, and a client sends an older worker nothing, except `version` (#374).
 - **`version`'s `error_codes`** lists every code Peeky sends, now with `BUILD_FAILED`, `NO_STOP`
   and `PROGRAM_CRASHED` (#423).
+- **C and C++ declarations over several lines:** a stop on the first line, just after code of a
+  later line, withholds the local: Peeky can't tell whether it is fully initialized. It showed
+  leftovers, with GCC and clang. A row the debugger can't read is never marked `[settable]`. The
+  GCC lane runs two more test files (#425).
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).
@@ -71,6 +75,14 @@
   type can hold a pointer but may hold none, as an `Option<&T>`, the note says only that. A change
   that the program's own copy rules out at every stop gives that one reason, and its hint agrees
   (#420, #421).
+- **Security review before going public (protocol 11):** a client sends the token only after the
+  worker proves it holds it, through a new `hello`. A process on a stopped worker's port gets
+  nothing. The worker refuses a web page's requests, and a token under 32 characters. Builds,
+  Python candidates and `verify` candidates go only where no other user can write. `peeky`,
+  `peeky-worker` and `peeky-agent` take the token out of their environment first. A session's
+  own worker runs isolated, and `peeky-agent --url` takes only loopback. A worker bounds each
+  request at 30 s, and answers `BUSY` past 32 connections.
+  Protocol 11 also covers the Rust withheld-value labels and notes, and `NonNull` rows (#431).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

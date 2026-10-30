@@ -14,7 +14,7 @@ from peeky.errors import PeekyError
 from peeky.probe import Probe, run_probe
 from peeky.worker import DebugWorker, make_server
 
-TOKEN = "agent-speed-test-token-123456"
+TOKEN = "agent-speed-test-token-123456-0123456789abcdef"
 LOOP = """import time
 
 

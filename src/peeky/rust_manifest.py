@@ -263,12 +263,12 @@ def assert_cargo_ancestry_clear(workspace):
     for parent in (workspace, *workspace.parents):
         cargo = parent / ".cargo"
         if cargo.is_symlink():
-            raise ValueError("Cargo configuration directory cannot be a symlink")
+            raise ValueError(f"Cargo configuration directory cannot be a symlink: {cargo}")
         for name in ("config", "config.toml"):
             path = cargo / name
             if path.exists() or path.is_symlink():
-                raise ValueError("Ambient Cargo configuration is not supported")
+                raise ValueError(f"Ambient Cargo configuration is not supported: {path}")
         if parent != workspace:
             manifest = parent / "Cargo.toml"
             if manifest.exists() or manifest.is_symlink():
-                raise ValueError("Ancestor Cargo manifests are not supported")
+                raise ValueError(f"Ancestor Cargo manifests are not supported: {manifest}")
