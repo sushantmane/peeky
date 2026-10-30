@@ -1,11 +1,11 @@
 """SHA-256 of file contents, reused while a file is provably unchanged.
 
 Provenance checks rerun on every debugger operation, and they cover toolchain
-binaries (clang is 125 MB). Rehashing them each time dominated compiled-target
+binaries (clang is 125 MB). Rehashing them each time would dominate compiled-target
 latency. A digest is reused only while the file keeps the same device, inode, size,
 modification time and status-change time, which any write, replacement or rename
 changes. This is the change detection git, make and Cargo rely on, and it matches
-Peeky's threat model: trusted code, accidental changes (see THREAT_MODEL.md). Files
+Peeky's threat model: trusted code, accidental changes (see docs/THREAT_MODEL.md). Files
 whose timestamps are recent are always rehashed, so filesystems with coarse
 timestamps cannot hide a second write in the same tick, and a file that changes
 while it is being hashed is never cached. A caller may also keep a digest in a

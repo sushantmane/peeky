@@ -1,4 +1,4 @@
-"""Locals a loop's pass has not assigned yet (#182).
+"""Locals a loop's pass has not assigned yet.
 
 Stopped in a loop, a local that the pass assigns below the stop still holds what an
 earlier pass, or the code before the loop, left there: back from `slug` with `step
@@ -182,7 +182,7 @@ class Flow:
         }
         # Where every path that runs no further exception ends in a raise: an `except`
         # that does not match re-raises, as does a `with` whose `__exit__` does not
-        # swallow the exception (round 3: such a branch leaves the pass abnormally).
+        # swallow the exception (such a branch leaves the pass abnormally).
         self.dooms = {
             number
             for number, each in enumerate(instructions)
@@ -347,7 +347,7 @@ class Flow:
         ``positions`` that run no exception, where each such path stores it before the
         pass ends (back at the loop's head, out of the loop, a return or a raise); else
         None. A store reached only through an exception's handler, or on some branches,
-        proves nothing (review of PR #185)."""
+        proves nothing."""
         body, stores, seen, pending = self.loops[head], set(), set(), list(positions)
         while pending:
             node = pending.pop()
@@ -364,7 +364,7 @@ class Flow:
         caught = self._caught_stores(head, positions, name)
         if caught is None:
             return None
-        # Each path's first store, a handled exception's included (round 3).
+        # Each path's first store, a handled exception's included.
         return stores | caught
 
     def _caught_stores(self, head, positions, name):
@@ -372,7 +372,7 @@ class Flow:
         through a handler in the loop as well (a `with` whose `__exit__` swallows the
         exception, an `except` that falls through, an `async for`'s end); None where one
         of them ends the pass without a store and lets it go on: back to the head, out of
-        the loop or to a return (review of PR #185, round 2). An exception into a handler
+        the loop or to a return. An exception into a handler
         outside the loop, or one re-raised out of it, ends the pass abnormally: it proves
         nothing either way, and its paths are not followed."""
         body, stores, seen, pending = self.loops[head], set(), set(), list(positions)
@@ -441,7 +441,7 @@ def opaque(tree):
                     return module.split(".")[0]
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             # `getattr(sys, "_getframe")`, `importlib.import_module("builtins")`,
-            # `getattr(b, "exec")`, `globals()["__builtins__"]` (round 3).
+            # `getattr(b, "exec")`, `globals()["__builtins__"]`.
             if node.value in _REACHES or node.value in _MODULES:
                 return node.value
             if node.value in _DYNAMIC or node.value in _RUNS:
@@ -472,9 +472,9 @@ def _identity():
 def same_compiler(interpreter):
     """Whether ``interpreter`` (the program's) compiles a source as this one does: the
     same file, or the same implementation, exact version and build, ABI flags, cache tag
-    and bytecode magic number, asked once; False where it cannot be asked (review of PR
-    #185: a 3.11 worker read a 3.12 program's inlined comprehension as a loop of its own;
-    round 2: one magic number spans patch versions and builds)."""
+    and bytecode magic number, asked once; False where it cannot be asked. A 3.11 worker
+    would read a 3.12 program's inlined comprehension as a loop of its own, and one magic
+    number spans patch versions and builds."""
     if not isinstance(interpreter, str) or not interpreter:
         return False
     if interpreter not in _COMPILERS:

@@ -1,9 +1,9 @@
-# A separate Linux host for the remote-worker end-to-end test (#8): sshd with key-only
+# A separate Linux host for the remote-worker end-to-end test: sshd with key-only
 # login, Peeky installed, and a copy of the example programs. Build from the repo root:
 #   docker build -f scripts/remote_e2e/Dockerfile --target host -t peeky-remote-e2e .
-# The `java` target adds a JDK and the Java adapter bundle (#248):
+# The `java` target adds a JDK and the Java adapter bundle:
 #   docker build -f scripts/remote_e2e/Dockerfile --target java -t peeky-remote-e2e-java .
-# The `native` target adds C, C++ and Rust (#252):
+# The `native` target adds C, C++ and Rust:
 #   docker build -f scripts/remote_e2e/Dockerfile --target native -t peeky-remote-e2e-native .
 FROM eclipse-temurin:17-jdk@sha256:fe947d993c32dd9cf651a4353a6ed723c2370b3a9d034ea4cab4775404ea531a AS jdk
 

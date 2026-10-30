@@ -1,11 +1,11 @@
-"""Lines and quoted names as the tools and compilers Peeky reads write them (#179).
+"""Lines and quoted names as the tools and compilers Peeky reads write them.
 
 `str.splitlines()` also breaks at U+2028, U+2029, U+0085, `\\x0b`, `\\x0c` and `\\x1c`
 to `\\x1e`, which may be part of a file name (`main\\u2028x.c` in dwarfdump's
 `DW_AT_decl_file`, a span in a MIR dump) or of a source line (a form feed in a Python
 file, a U+2028 in a C string). No tool or compiler Peeky reads ends a line there:
 tools end one at `\\n`; rustc at `\\n` alone (`\\r\\n` too); clang, javac and Python also
-at a lone `\\r` (#188 review). So a source is read as it is (``read_source``: no newline
+at a lone `\\r`. So a source is read as it is (``read_source``: no newline
 translation), and split by its own compiler's rule (``source_lines``).
 """
 
@@ -52,7 +52,7 @@ _SIMPLE = {b"\\": b"\\", b'"': b'"', b"t": b"\t", b"n": b"\n"}
 def octal_string(raw):
     """The name LLVM's tools (or gcc) wrote as ``raw`` (str or bytes, without its
     quotes), or None where it is not one they write: any other escape (`\\x41`, `\\q`,
-    `\\400`), a `"` not escaped, or bytes that are not UTF-8 (#188 review)."""
+    `\\400`), a `"` not escaped, or bytes that are not UTF-8."""
     data = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
     found, at = [], 0
     while (backslash := data.find(b"\\", at)) >= 0:
