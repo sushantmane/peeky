@@ -370,3 +370,33 @@ def test_every_ssh_tunnel_the_docs_give_exits_when_its_port_is_taken():
     ]
     assert len(commands) >= 3, commands
     assert [c for c in commands if "-o ExitOnForwardFailure=yes" not in c[1]] == []
+
+
+def test_the_guide_lists_session_wait_and_program_arguments_up_front():
+    # Findings 21 and 22: the command table did not list `session wait`, and passing
+    # program arguments (`--`, `--arg`) was explained only for Python projects.
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    guide = (docs / "AGENT_GUIDE.md").read_text()
+    table = guide.split("## Commands", 1)[1].split("###", 1)[0]
+    sessions = [row for row in table.splitlines() if row.startswith("| `peeky session")]
+    assert any(
+        "/ `wait`" in row and "`wait` waits for a running one to stop" in row for row in sessions
+    ), sessions
+    probe = next(row for row in table.splitlines() if row.startswith("| `peeky probe <target>"))
+    assert "[-- ARGS]" in probe, probe
+    # The arguments' syntax is in the commands section, for every language.
+    assert "**Program arguments:** after `--` or repeated `--arg`" in table, table
+    # Review of PR #165: exit 3 is not only a background job's.
+    flat = " ".join(guide.split())
+    assert (
+        "3: not there yet (a background job still running; a session's `--to`, `--count` or "
+        "`--hit` stopped first)."
+    ) in flat
+    assert "4: a probe change never made" in flat
+    # Finding 19: a step can land back on an `if`'s line.
+    cookbook = " ".join((docs / "COOKBOOK.md").read_text().split())
+    assert "A step can also land back on an `if`'s line after the last line of its block" in (
+        cookbook
+    )

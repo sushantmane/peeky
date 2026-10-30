@@ -363,3 +363,23 @@ def test_a_wrong_canned_query_or_parameter_points_to_queries_help(store, capsys,
     assert code == 2 and error["code"] == "INVALID_QUERY" and message in error["message"]
     assert error["hint"].startswith("`peeky queries --help` lists each canned query's --param")
     assert len(error["hint"]) <= 150
+
+
+def test_the_schema_marks_the_columns_only_some_languages_fill():
+    # desks 8: a Java store's `sql --schema captures` listed C and C++ columns as its own.
+    lines = evidence._schema_lines(evidence.schema("store.db"), "captures")
+    marked = {line.split(":")[0].strip() for line in lines if " only]" in line.split(":")[0]}
+    assert marked == {
+        "identity [Python only]",
+        "scope [Python only]",
+        "instance [Rust only]",
+        "stop [C, C++, Rust only]",
+        "element_size [C, C++ only]",
+        "at_element_of [C, C++ only]",
+        "element_index [C, C++ only]",
+        "offset_from [C, C++ only]",
+        "element_offset [C, C++ only]",
+    }
+    assert "  value: Value as the debugger displays it" in "\n".join(lines)
+    text = evidence.schema_part_text(evidence.schema_part(evidence.schema("s"), ["interventions"]))
+    assert "  stop [C, C++, Rust only]: " in text and "  instance [Rust only]: " in text

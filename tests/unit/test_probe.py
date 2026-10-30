@@ -2,7 +2,9 @@ import re
 
 import pytest
 
-from peeky.probe import Probe, parse_location, parse_selector
+import peeky.probe as probe_module
+from peeky.errors import classify
+from peeky.probe import MAX_SETS, Probe, _table, parse_location, parse_selector
 
 
 @pytest.mark.parametrize(
@@ -213,7 +215,6 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
 
 def test_a_failed_probe_keeps_the_output_so_far_and_never_says_all(monkeypatch):
     import peeky.probe as probe_module
-    from peeky.probe import _table
 
     class Refusing(FakeWorker):
         def dispatch(self, operation, args):
@@ -298,7 +299,6 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, 
     # #203: resumed after its last hit, the program runs on while its output is read; it
     # was "the output so far (the program was still running)", even once it had exited.
     import peeky.probe as probe_module
-    from peeky.probe import _table
 
     worker = Ending("running", final)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
@@ -345,7 +345,6 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, 
 )
 def test_output_is_whole_only_past_the_adapters_end(monkeypatch, state, final, complete, label):
     import peeky.probe as probe_module
-    from peeky.probe import _table
 
     worker = Ending(state, final)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
@@ -360,7 +359,6 @@ def test_output_is_whole_only_past_the_adapters_end(monkeypatch, state, final, c
 @pytest.mark.parametrize("after", [True, False])
 def test_truncated_output_is_never_called_all_of_it(after):
     # #213 review: complete (the program's end was read) but truncated is not all of it.
-    from peeky.probe import _table
 
     result = {"status": "completed", "hits": 1, "rows": [], "interventions": [], "seconds": 1}
     result.update(output="tail\n", output_complete=True, output_truncated=True)
@@ -381,7 +379,6 @@ def test_truncated_output_is_never_called_all_of_it(after):
 )
 def test_an_adapter_that_failed_as_it_exited_leaves_the_output_partial(monkeypatch, final, how):
     import peeky.probe as probe_module
-    from peeky.probe import _table
 
     worker = Ending("terminated", final)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
@@ -397,7 +394,6 @@ def test_an_adapter_that_failed_as_it_exited_leaves_the_output_partial(monkeypat
 
 def test_the_exit_peeky_provokes_is_said_in_json_and_never_warned(monkeypatch):
     import peeky.probe as probe_module
-    from peeky.probe import _table
 
     worker = Ending("terminated", PROVOKED)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
@@ -410,7 +406,6 @@ def test_the_exit_peeky_provokes_is_said_in_json_and_never_warned(monkeypatch):
 
 
 def test_only_the_last_twenty_lines_of_output_are_shown_and_it_says_so():
-    from peeky.probe import _table
 
     output = "".join(f"line {n}\n" for n in range(1, 26))
     result = {"status": "completed", "hits": 1, "rows": [], "interventions": [], "seconds": 1}
@@ -1943,7 +1938,6 @@ def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
 
 def test_rows_say_why_no_stop_can_change_them():
     # #138: `[not settable: register]` beside the value, never with `[settable]`.
-    from peeky.probe import _table
 
     rows = [
         {"hit": 1, "phase": "observed", "line": 3, "selector": "width", "type": "u64"}
@@ -1960,7 +1954,6 @@ def test_rows_say_why_no_stop_can_change_them():
 def test_rows_say_when_neither_mark_can_be_promised():
     # #261: a Java element whose array's holder the launcher could not tell in time.
     from peeky.cli import _get_lines
-    from peeky.probe import _table
 
     why = "Peeky could not tell within 500 ms; `set` searches again, for up to 2 s"
     row = {"hit": 1, "phase": "observed", "line": 3, "selector": "xs[0]", "type": "int"}
@@ -2228,3 +2221,305 @@ def test_a_signal_stop_counts_as_let_go_on_only_where_the_program_resumed(monkey
     result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
     assert "continue" in worker.calls and "inspect" not in worker.calls
     assert not any("let the program go on" in w for w in result.get("warnings", ())), result
+
+
+def test_an_inferred_exit_says_what_it_costs_and_what_to_do(monkeypatch):
+    # L4: "Peeky inferred it because no threads were left (java-debug, issue #27)" left
+    # the agent wondering whether to act.
+    import peeky.probe as probe_module
+    from peeky.probe import Probe
+
+    class Ended:
+        waited = False
+
+        def dispatch(self, operation, args):
+            if operation == "launch":
+                return {
+                    "session_id": "s",
+                    "breakpoints": [{"id": 1, "verified": True, "line": 8}],
+                    "artifact_manifest_id": None,
+                    "target_identity": None,
+                    "source_sha256": "x",
+                }
+            if operation == "wait":
+                if self.waited:
+                    return {"state": "terminated", "exit_inferred": True}
+                self.waited = True
+                return {
+                    "state": "stopped",
+                    "stop_id": "t",
+                    "event": {"body": {"reason": "breakpoint"}},
+                }
+            if operation == "inspect":
+                return {
+                    "frames": [{"source": {"path": "/w/main.py"}, "line": 8}],
+                    "scopes": [
+                        {
+                            "name": "Locals",
+                            "reference": 1,
+                            "variables": [{"name": "x", "value": "1", "variablesReference": 0}],
+                        }
+                    ],
+                }
+            if operation == "report":
+                return {"output": "", "output_truncated": False}
+            return {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: Ended())
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert result["status"] == "completed", result
+    (warning,) = [w for w in result["warnings"] if "never reported" in w]
+    assert "exit code is unknown" in warning and "nothing to do" in warning, warning
+
+
+def test_a_set_hit_past_the_captured_hits_says_what_to_do():
+    # Preparing the ninth evaluation: `--set gap=20 --set-hit 4` gave `Probe set_hit
+    # must be within 1..1`, an internal name, with no way out.
+    with pytest.raises(ValueError) as caught:
+        Probe("sessions.py", 34, ("gap",), set=(("gap", "20"),), set_hit=4)
+    assert str(caught.value) == (
+        "--set-hit 4 is past the last hit this probe captures (1, --hits 1): raise --hits "
+        "to 4 or more, or use --hits all; or --set-at 34@4 NAME=VALUE changes it at that "
+        "hit without capturing there"
+    )
+    with pytest.raises(ValueError, match=r"^--set-hit must be within 1\.\.1$"):
+        Probe("sessions.py", 34, ("gap",), set=(("gap", "20"),), set_hit=0)
+
+
+@pytest.mark.parametrize(
+    ("selector", "advice"),
+    [
+        ("self.items[at]", "capture `at` first, then use its value, as self.items[2]"),
+        ("xs[i + 1]", "capture what it is computed from first, then use its value, as xs[2]"),
+        ("d[k]", "capture `k` first, then use its value, as d[2]"),
+    ],
+)
+def test_an_index_named_by_a_variable_says_to_read_it_first(selector, advice):
+    # outline 4: `self.items[at]` was refused, saying only that selectors are paths.
+    with pytest.raises(ValueError) as refused:
+        parse_selector(selector)
+    message = str(refused.value)
+    assert "an index or key is a literal (a number, or text in quotes)" in message, message
+    assert message.endswith(advice), message
+
+
+def test_a_too_long_number_gets_no_such_advice():
+    with pytest.raises(ValueError) as refused:
+        parse_selector("xs[1234567]")
+    assert "capture" not in str(refused.value)
+
+
+class _Stops:
+    """Stops once at each of ``lines`` (a --set-at line's stops), never at the --at line,
+    then ends with ``exit_code``. `trend` holds "1" until a change."""
+
+    def __init__(self, lines, exit_code=0, proven=True):
+        self.lines, self.exit_code, self.value, self.line = list(lines), exit_code, "1", None
+        # Whether the worker proves a write of the same text a no-op (worker._written).
+        self.proven = proven
+
+    def dispatch(self, operation, args):
+        if operation == "launch":
+            return {
+                "session_id": "s",
+                "breakpoints": [
+                    {"id": index, "verified": True, "line": point["line"]}
+                    for index, point in enumerate(args["breakpoints"], 1)
+                ],
+                "artifact_manifest_id": None,
+                "target_identity": {"language": "c"},
+                "source_sha256": "x",
+            }
+        if operation == "wait":
+            if not self.lines:
+                return {"state": "terminated"}
+            self.line = self.lines.pop(0)
+            return {
+                "state": "stopped",
+                "stop_id": f"t{len(self.lines)}",
+                "event": {"body": {"reason": "breakpoint"}},
+                "location": f"tides.c:{self.line}",
+            }
+        if operation == "inspect":
+            frame = {"name": "find_waters", "source": {"path": "/w/tides.c"}, "line": self.line}
+            return {
+                "frames": [frame],
+                "scopes": [
+                    {
+                        "name": "Locals",
+                        "reference": 1,
+                        "variables": [
+                            {"name": "trend", "value": self.value, "variablesReference": 0}
+                        ],
+                    }
+                ],
+            }
+        if operation == "set_variable":
+            before, self.value = self.value, args["value"]
+            same = self.proven and before == args["value"]
+            return {
+                "name": args["name"],
+                "before": before,
+                "after": args["value"],
+                "type": "int",
+                **({"unchanged": True} if same else {}),
+            }
+        if operation == "report":
+            return {"output": "", "output_truncated": False, "exit_code": self.exit_code}
+        return {}
+
+    def close(self):
+        pass
+
+
+RAN = "The run made 2 changes by --set-at (at line 9): compare with a run without them"
+
+
+@pytest.mark.parametrize(
+    "exit_code, message, hint",
+    [
+        (
+            0,
+            f"The program finished without stopping at tides.c:8. {RAN}",
+            "Probe the line without the changes to compare; if it never stops there either, "
+            "pick a line the program executes (`peeky describe`).",
+        ),
+        (
+            3,
+            f"The program failed (exit code 3) without stopping at tides.c:8; its output says "
+            f"why. {RAN}",
+            "Read its output, and check its arguments and input; probe without the changes to "
+            "compare.",
+        ),
+        (
+            None,
+            f"The program ended without stopping at tides.c:8 (exit code unknown). {RAN}",
+            "If the output shows an error, the program failed before the line; else probe "
+            "without the changes to compare, or pick a line it executes.",
+        ),
+    ],
+)
+def test_no_stop_after_changes_counts_them_and_claims_no_cause(
+    monkeypatch, exit_code, message, hint
+):
+    # Prep 14: tides, `--at 33` with six change-and-restore --set-at: every change was made,
+    # and NO_STOP said to pick a line the program executes. Review of PR #314: nothing proves
+    # a change came before the line's chance to run, so the message claims no cause.
+    worker = _Stops([9, 9], exit_code)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("tides.c", 8, ("trend",), set_at=((9, 1, "trend", "0"), (9, 2, "trend", "1")))
+    result = probe_module.run_probe("/w", request)
+    assert result["status"] == "no-stop" and len(result["interventions"]) == 2, result
+    assert result["error"]["code"] == "NO_STOP"
+    assert result["error"]["message"] == message
+    assert result["error"]["hint"] == hint and len(hint) <= 150
+    # Without changes, the line is blamed as before.
+    worker = _Stops([], 0)
+    result = probe_module.run_probe("/w", Probe("tides.c", 8, ("trend",)))
+    assert result["error"]["hint"] == "Pick a line the program executes; see `peeky describe`."
+
+
+def _no_stop(monkeypatch, lines, set_at, proven=True):
+    worker = _Stops(lines, proven=proven)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("tides.c", 8, ("trend",), set_at=set_at))
+    assert result["status"] == "no-stop", result
+    return result
+
+
+def test_no_stop_after_writes_proven_to_change_nothing_blames_the_line(monkeypatch):
+    # Review of PR #314: `trend: 1 -> 1` counted as a change ("after 1 change by --set-at:
+    # they may have kept the line from running"). A write proven to change nothing is not
+    # one: where every write is such, the line is blamed, as with none.
+    result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "1")))
+    assert [(c["before"], c["after"]) for c in result["interventions"]] == [("1", "1")] * 2
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8; check `peeky describe` for "
+        "executable lines"
+    )
+    assert result["error"]["hint"] == "Pick a line the program executes; see `peeky describe`."
+    # One proven no-op and one change: the change alone is counted.
+    result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "5")))
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8. The run made 1 change by "
+        "--set-at (at line 9): compare with a run without them"
+    )
+
+
+def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monkeypatch):
+    # Round 2 of PR #314: the same text is not always a no-op (a Java String written alike
+    # is a new object; a Python `1000` may be another). Such writes are named, never taken
+    # for no-ops, and never blamed on the line.
+    result = _no_stop(
+        monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "1")), proven=False
+    )
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8. The run made 2 writes by "
+        "--set-at with the same text, not proven unchanged (at line 9): "
+        "compare with a run without them"
+    )
+    # A change, a write not proven a no-op, and one proven: the first two are named.
+    worker = _Stops([9, 20, 31])
+
+    def dispatch(operation, args, plain=worker.dispatch):
+        reply = plain(operation, args)
+        if operation == "set_variable" and worker.line == 20:
+            reply.pop("unchanged", None)
+        return reply
+
+    worker.dispatch = dispatch
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe(
+        "tides.c",
+        8,
+        ("trend",),
+        set_at=((9, 1, "trend", "0"), (20, 1, "trend", "0"), (31, 1, "trend", "0")),
+    )
+    result = probe_module.run_probe("/w", request)
+    assert [c.get("unchanged") for c in result["interventions"]] == [None, None, True]
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8. The run made 1 change by "
+        "--set-at (at line 9), and 1 write by --set-at with the same text, not proven "
+        "unchanged (at line 20): compare with a run without them"
+    )
+
+
+def test_no_stop_after_a_change_past_the_line_claims_no_cause(monkeypatch):
+    # Review of PR #314: a --set-at on a line after the --at line got the same causal
+    # wording. Where they were is said; that they kept the line from running is not.
+    result = _no_stop(monkeypatch, [20], ((20, 1, "trend", "0"),))
+    message = result["error"]["message"]
+    assert message == (
+        "The program finished without stopping at tides.c:8. The run made 1 change by "
+        "--set-at (at line 20): compare with a run without them"
+    )
+    result = _no_stop(
+        monkeypatch,
+        [9, 20, 31],
+        ((9, 1, "trend", "0"), (20, 1, "trend", "2"), (31, 1, "trend", "3")),
+    )
+    assert (
+        "The run made 3 changes by --set-at (at lines 9, 20 and 31)" in result["error"]["message"]
+    )
+    for text in (message, result["error"]["message"], result["error"]["hint"]):
+        assert "kept" not in text and "may have" not in text, text
+
+
+def test_the_intervention_limit_says_how_many_and_what_to_do():
+    # nightlot: 12 `--set-at`s gave `At most 8 interventions (--set and --set-at
+    # together)`, with the generic hint `Fix the request arguments; …`.
+    changes = tuple((31, hit, "hh", str(hit)) for hit in range(1, 13))
+    with pytest.raises(ValueError) as refused:
+        Probe("nightlot.cpp", 40, ("hour",), set_at=changes)
+    message = str(refused.value)
+    assert f"At most {MAX_SETS} interventions" in message, message
+    assert "this one has 12" in message, message
+    error = classify(refused.value)
+    assert error["code"] == "INVALID_REQUEST", error
+    assert "several probes" in error["hint"] and "`--old`/`--new`" in error["hint"], error
+    assert len(error["hint"]) <= 150, error["hint"]
+    # A probe of 8 is still one probe.
+    assert len(Probe("nightlot.cpp", 40, ("hour",), set_at=changes[:MAX_SETS]).set_at) == 8

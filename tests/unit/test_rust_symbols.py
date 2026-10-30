@@ -12,6 +12,7 @@ from peeky.rust_symbols import (
     UNQUALIFIED,
     UNVERIFIED,
     RustUnit,
+    _partial_elements,
     active_variant,
     application_symbols,
     application_units,
@@ -3144,3 +3145,40 @@ def test_an_opaque_enum_names_the_binding_its_own_kind_has(kind, top, advice):
     view = active_variant(variable, None, {kind: {"kind": "unqualified"}}, top=top)
     assert view["value"] == UNQUALIFIED, view
     assert view["why"].endswith(f"It is stored at 0x0000000000000010; {advice}"), view
+
+
+LAYOUT = {
+    "kind": "vec",
+    "shape": "struct",
+    "shown": "Engineer",
+    "element": "rota::Engineer",
+    "element_size": 32,
+    "fields": [
+        ("shifts", 0, "u32"),
+        ("leave", 8, "alloc::vec::Vec<u32, alloc::alloc::Global>"),
+    ],
+}
+
+
+def _leave(item, holder=None):
+    _, children = _partial_elements(LAYOUT, [bytes(32)] * 2, None, item=item, holder=holder)
+    return {member["name"]: member for member in children[1]["children"]}["leave"]["reason"]
+
+
+def test_an_unread_field_names_the_for_loops_item_in_scope():
+    # rota 8: `team[1].leave` said to read it "through a reference to the element, such as
+    # a for loop's item", while the loop's `e` was in scope, and `e.leave` read. Nothing
+    # proves the loop goes over `team` (review of PR #315: `for e in backups.iter()`), nor
+    # which element `e` is at a stop, so the note says so.
+    assert _leave("e", "team").endswith(
+        "read it through a reference to the element: if the `for` loop's item `e` is "
+        "`team[1]` at a stop, read `e.leave`; Peeky can't prove it is"
+    )
+    assert _leave("e").endswith(
+        "if the `for` loop's item `e` is `this element` at a stop, "
+        "read `e.leave`; Peeky can't prove it is"
+    )
+    # Without one in scope, the hint stays general.
+    assert _leave(None, "team").endswith(
+        "read it through a reference to the element, such as a `for` loop's item"
+    )

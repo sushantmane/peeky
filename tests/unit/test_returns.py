@@ -2,13 +2,15 @@
 step left, and captured by probes once per call (`--capture return`)."""
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from peeky import cli, evidence
 from peeky.errors import classify
 from peeky.java import JavaSession
 from peeky.native import NativeSession, _instructions, _return_paths
-from peeky.probe import RETURN, Probe, run_probe
+from peeky.probe import RETURN, Probe, _returned_row, run_probe
 from peeky.rust import RustSession
 from peeky.worker import DebugWorker, _method_name
 
@@ -640,7 +642,6 @@ def test_optimized_builds_capture_no_returns(monkeypatch, tmp_path):
 
 
 def test_a_return_row_is_stored_and_queried_with_the_hits(tmp_path):
-    from peeky import evidence
 
     store = tmp_path / "evidence.db"
     rows = [
@@ -898,3 +899,85 @@ def test_a_step_still_under_way_at_another_threads_stop_is_interrupted(tmp_path,
 
     if left:
         assert "the step was interrupted here" in _state_text(state)
+
+
+class _Void:
+    """A native runtime whose step origin is a function returning nothing (or not)."""
+
+    reports_unavailable_as_text = True
+    target_identity = {"language": "cpp"}
+
+    def __init__(self, void):
+        self.void = void
+
+    @staticmethod
+    def return_entry(variable):
+        return NativeSession.return_entry(variable)
+
+    def returns_nothing(self, frame):
+        return self.void and frame["name"] == "Stats::reset()"
+
+
+def _stepped_out(tmp_path, runtime, frame=True):
+    origin = [
+        {"name": "Stats::reset()", "instructionPointerReference": "0x10", "line": 26},
+        {"name": "main", "instructionPointerReference": "0x30", "line": 61},
+    ]
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.thread_id, worker.stop_reason = runtime, 7, "step"
+    worker.step_origin = {
+        "thread": 7,
+        "function": "Stats::reset()",
+        "frames": [(f["name"], f["instructionPointerReference"], f["line"]) for f in origin],
+        "kind": "out",
+        **({"frame": origin[0]} if frame else {}),
+    }
+    return worker, origin[1:]
+
+
+def test_a_void_function_returns_no_value_rather_than_a_withheld_one(tmp_path):
+    # grades 4: `session step --out` from `void reset()` printed `(return):  = <withheld:
+    # the debugger reported no value …>`, with an empty type.
+    worker, frames = _stepped_out(tmp_path, _Void(True))
+    returned = worker.returned_value(worker.runtime, frames, None)
+    assert returned == {
+        "function": "Stats::reset()",
+        "type": "void",
+        "unavailable": True,
+        "reason": "the function returns nothing",
+    }
+    row = _returned_row(
+        {"hit": 1, "phase": "returned", "selector": "(return)"},
+        {"returned": returned, "frames": [frames[0]]},
+    )
+    assert row["type"] == "void" and "value" not in row and row["unavailable"] is True
+    assert row["error"] == "no value: the function returns nothing"
+    assert cli._get_lines(row) == ["(return): void (no value: the function returns nothing)"]
+    assert cli._returned_text(returned) == (
+        "Stats::reset() returned: void (no value: the function returns nothing)"
+    )
+    # Not proven void (another function, or no origin frame to judge): withheld as before.
+    for worker, frames in (
+        _stepped_out(tmp_path, _Void(False)),
+        _stepped_out(tmp_path, _Void(True), frame=False),
+    ):
+        returned = worker.returned_value(worker.runtime, frames, None)
+        assert "type" not in returned and "reported no value" in returned["reason"], returned
+
+
+def test_only_a_c_or_cpp_function_its_build_gives_no_return_type_returns_nothing():
+    class Session:
+        returns_nothing = NativeSession.returns_nothing
+
+        def __init__(self, language, found):
+            self.target, self.found = SimpleNamespace(language=language), found
+
+        def _function_at(self, frame):
+            return self.found
+
+    assert Session("cpp", {"returns_nothing": True}).returns_nothing({}) is True
+    assert Session("c", {"returns_nothing": True}).returns_nothing({}) is True
+    assert Session("cpp", {"returns_nothing": False}).returns_nothing({}) is False
+    # A frame Peeky cannot place, or a Rust function (whose unit return is not `void`).
+    assert Session("cpp", None).returns_nothing({}) is False
+    assert Session("rust", {"returns_nothing": True}).returns_nothing({}) is False

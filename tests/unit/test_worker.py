@@ -3,6 +3,7 @@ import json
 import pytest
 
 from peeky.adapters import PythonAdapter
+from peeky.native import NativeSession
 from peeky.worker import DebugWorker, make_server
 
 
@@ -1479,3 +1480,98 @@ def test_the_worker_bounds_each_read_at_ten_seconds():
     from peeky import worker as worker_module
 
     assert worker_module.REQUEST_READ_TIMEOUT_S == 10
+
+
+class _Runtime:
+    def __init__(self, exact):
+        self.exact, self.asked = exact, []
+
+    def exact_text(self, variable, frame=None, root=None, steps=()):
+        self.asked.append((variable["name"], frame, root, steps))
+        return self.exact
+
+
+def test_a_change_says_its_type_after_the_write_and_whether_it_changed_anything():
+    # Round 2 of PR #314: the type came from the value read before the write, so a Python
+    # `callback` set from `print` to `None` said `builtin_function_or_method`.
+    from peeky.worker import _written
+
+    callback = {"name": "callback", "type": "builtin_function_or_method", "value": "<print>"}
+    reply = {"value": "None", "type": "NoneType"}
+    assert _written(_Runtime(True), callback, reply, "<print>", "None") == {"type": "NoneType"}
+    # No type in the reply: none is said.
+    assert _written(_Runtime(True), callback, {"value": "None"}, "<print>", "None") == {}
+    # The same text proves nothing until the runtime proves it exact for the value's type.
+    flag = {"name": "flag", "type": "bool", "value": "True"}
+    proof = _Runtime(True)
+    assert _written(proof, flag, {"type": "bool"}, "True", "True", "frame", flag, ("a",)) == {
+        "type": "bool",
+        "unchanged": True,
+    }
+    assert proof.asked == [("flag", "frame", flag, ("a",))]
+    assert _written(_Runtime(False), flag, {"type": "bool"}, "True", "True") == {"type": "bool"}
+    assert _written(object(), flag, {"type": "bool"}, "True", "True") == {"type": "bool"}
+    assert _written(_Runtime(True), {"name": "t"}, {"type": "T" * 400}, "1", "2") == {
+        "type": "T" * 300
+    }
+
+
+def test_each_runtime_proves_a_no_op_by_the_values_type_never_its_name():
+    from peeky.adapters import PythonAdapter
+    from peeky.java import JavaSession
+
+    # Java: a primitive but a float or double (a primitive's name is a keyword).
+    for kind, exact in (
+        ("char", True),
+        ("int", True),
+        ("boolean", True),
+        ("long", True),
+        ("double", False),
+        ("float", False),
+        ("String", False),
+        ("Integer", False),
+    ):
+        assert JavaSession.exact_text({"type": kind}) is exact, kind
+    # Python: True, False and None, which are always the same objects.
+    for kind, value, exact in (
+        ("bool", "True", True),
+        ("NoneType", "None", True),
+        ("int", "1000", False),
+        ("str", "'a'", False),
+        ("MyFlag", "True", False),
+    ):
+        assert PythonAdapter.exact_text({"type": kind, "value": value}) is exact, (kind, value)
+
+    # C, C++ and Rust: the type the debug information gives, through typedefs. Round 2:
+    # `typedef float int64_t;` (tests/cpp/test_cpp_cli.py) was taken for an integer.
+    graph = {
+        1: ("typedef", "int64_t", 2),
+        2: ("base", "float", "DW_ATE_float", 4),
+        3: ("typedef", "count_t", 4),
+        4: ("qualifier", "restrict", 5),
+        5: ("base", "long", "DW_ATE_signed", 8),
+        6: ("base", "bool", "DW_ATE_boolean", 1),
+        7: ("base", "char", "DW_ATE_signed_char", 1),
+        8: ("pointer", "", 5, 8),
+        9: ("base", "double", "DW_ATE_float", 8),
+    }
+
+    class Session:
+        exact_text = NativeSession.exact_text
+
+        def __init__(self, kind):
+            self.kind = kind
+
+        def _root_type(self, frame, root):
+            if self.kind is None:
+                from peeky.fields import Unsettable
+
+                raise Unsettable("not read")
+            return self.kind, True, graph
+
+    lossy = {"name": "lossy", "type": "int64_t", "value": "1"}
+    for kind, exact in ((1, False), (3, True), (6, True), (7, True), (8, False), (9, False)):
+        assert Session(kind).exact_text(lossy, frame={}, root=lossy) is exact, kind
+    # Where Peeky cannot read the type, or has no frame: never proven.
+    assert Session(None).exact_text(lossy, frame={}, root=lossy) is False
+    assert Session(3).exact_text(lossy) is False

@@ -7,6 +7,7 @@ them (libc++ and libstdc++ alike); the real builds are in tests/native.
 
 import pytest
 
+from peeky.native import NativeSession
 from peeky.probe import Probe, _children, _resolve, parse_selector
 
 
@@ -583,3 +584,90 @@ def test_a_withheld_entry_says_why_its_key_is_not_read():
     entry.update(withheld=True, withheld_as="not shown", reason="a library call below …")
     with pytest.raises(ValueError, match=r"entries: not shown: a library call below …$"):
         _entry_part(None, {}, entry, "first", "o.tags")
+
+
+def test_template_arguments_split_at_their_top_level():
+    from peeky.native import _template_split
+
+    assert _template_split("std::map<int, long, type>") == ("std::map", ["int", "long", "type"], "")
+    assert _template_split(
+        "map<int, long int, main()::<lambda(int, int)>, std::allocator<std::pair<const int, long "
+        "int> > >"
+    ) == (
+        "map",
+        [
+            "int",
+            "long int",
+            "main()::<lambda(int, int)>",
+            "std::allocator<std::pair<const int, long int> >",
+        ],
+        "",
+    )
+    assert _template_split("const std::set<int, type> &") == (
+        "const std::set",
+        ["int", "type"],
+        " &",
+    )
+    assert _template_split("int") is None and _template_split("a<b") is None
+
+
+class _Session(NativeSession):
+    """A NativeSession with only the build's type graph: ``_root_type`` gives the local's
+    type offset in it."""
+
+    def __init__(self, graph, root):
+        self.graph, self.root = graph, root
+
+    def _root_type(self, frame, root):
+        if root.get("name") != "by_hour":
+            raise ValueError("no such local")
+        return self.root, True, self.graph
+
+
+def _record(name):
+    return ("record", name, "class", 48, 8, (), (), False, False, True, (), name, (), ())
+
+
+@pytest.mark.parametrize(
+    "shown,declared,named",
+    [
+        # Apple clang 21, libc++: LLDB names the lambda by `__type_identity<…>::type`.
+        (
+            "std::map<int, long, type>",
+            "map<int, long, (lambda at nightlot.cpp:23:24), std::__1::allocator<std::__1::pair"
+            "<const int, long> > >",
+            "std::map<int, long, (lambda at nightlot.cpp:23:24)>",
+        ),
+        # GCC 13, libstdc++: by `key_compare`.
+        (
+            "std::map<int, long, key_compare>",
+            "map<int, long int, main()::<lambda(int, int)>, std::allocator<std::pair<const int, "
+            "long int> > >",
+            "std::map<int, long, main()::<lambda(int, int)>>",
+        ),
+        # An unnamed struct's typedef name.
+        (
+            "std::set<int, Order>",
+            "set<int, (unnamed struct at a.cpp:3:9), std::__1::allocator<int> >",
+            "std::set<int, (unnamed struct at a.cpp:3:9)>",
+        ),
+    ],
+)
+def test_a_lambda_comparator_is_named_as_the_compiler_names_it(shown, declared, named):
+    # nightlot: a map ordered by a lambda showed `std::map<int, long, type>`.
+    session = _Session({7: ("typedef", "Hours", 8), 8: _record(declared)}, 7)
+    variable = {"name": "by_hour", "type": shown}
+    assert session.display_type(variable, {}, top=True) == named
+
+
+def test_a_named_comparator_or_another_local_keeps_lldbs_type():
+    session = _Session({8: _record("map<int, long, ByAbs, std::allocator<int> >")}, 8)
+    assert (
+        session.display_type({"name": "by_hour", "type": "std::map<int, long, ByAbs>"}, {}) is None
+    )
+    assert session.display_type({"name": "other", "type": "std::map<int, long, type>"}, {}) is None
+    # Another class's record: nothing is taken from it.
+    lambdas = _Session({8: _record("set<int, (lambda at a.cpp:3:9)>")}, 8)
+    assert lambdas.display_type({"name": "by_hour", "type": "std::map<int, type>"}, {}) is None
+    # Fields keep LLDB's type.
+    assert session.display_type({"name": "m", "type": "std::map<int, type>"}, {}, top=False) is None

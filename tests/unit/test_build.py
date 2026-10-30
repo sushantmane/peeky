@@ -429,3 +429,37 @@ def test_a_make_dependency_file_read_two_ways_is_refused(tmp_path, text, made, w
         (tmp_path / name).write_text("")
     with pytest.raises(UnreadDependencies, match=why):
         dependency_paths(text, tmp_path, "make")
+
+
+def _manifest(**changed):
+    from peeky.build import BuildManifest, FileIdentity, ProbeResult, ToolIdentity
+
+    parts = {
+        "schema_version": 1,
+        "recipe_sha256": "r" * 64,
+        "original_inputs": (FileIdentity("a.cpp", "1" * 64, 10),),
+        "inputs": (FileIdentity("a.cpp", "1" * 64, 10),),
+        "artifacts": (FileIdentity("a.out", "2" * 64, 900),),
+        "tools": (ToolIdentity("/usr/bin/g++-13", "3" * 64),),
+        "probes": (ProbeResult(("g++", "--version"), "g++ 13.3", ""),),
+        "effective_environment": (("PATH", "/usr/bin"),),
+    }
+    return BuildManifest(**{**parts, **changed})
+
+
+def test_a_build_id_is_its_sources_and_tools_not_its_artifacts():
+    from peeky.build import FileIdentity, ProbeResult, ToolIdentity
+
+    base = _manifest()
+    # Every build's binary differs (its debug information names the fresh workspace).
+    rebuilt = _manifest(artifacts=(FileIdentity("a.out", "4" * 64, 901),))
+    assert rebuilt.build_id == base.build_id and rebuilt.manifest_id != base.manifest_id
+    edited = (FileIdentity("a.cpp", "5" * 64, 11),)
+    for other in (
+        _manifest(inputs=edited),
+        _manifest(original_inputs=edited, inputs=edited),
+        _manifest(tools=(ToolIdentity("/usr/bin/clang++-18", "6" * 64),)),
+        _manifest(probes=(ProbeResult(("g++", "--version"), "g++ 14.1", ""),)),
+        _manifest(recipe_sha256="7" * 64),
+    ):
+        assert other.build_id != base.build_id, other

@@ -12,10 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from peeky import evidence
+import peeky.probe as probe_module
+from peeky import cli, evidence
 from peeky.build import BuildCommandError
 from peeky.errors import classify
-from peeky.probe import Probe, candidate_line, combine_edits
+from peeky.probe import Probe, candidate_line, combine_edits, keeps_lines
 
 TEXT = "a;\nb;\nc;\nd;\n"
 
@@ -1360,3 +1361,138 @@ def test_a_probe_takes_one_edit_or_several_pairs():
     for bad in ((), (("a", "b"), ("c",)), (("a", "a"),), tuple(("a", "b") for _ in range(33))):
         with pytest.raises(ValueError, match="candidate edit"):
             Probe("x.c", 1, edit=bad)
+
+
+def test_a_python_candidates_copy_note_is_short_once_and_quiet(tmp_path, monkeypatch, capsys):
+    # L6: a one-file, standard-library-only script got a 70-word note on its copied root,
+    # printed twice (as progress and with the result), once even with --quiet.
+    import json
+
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    case = tmp_path / "case"
+    case.mkdir()
+    alone = case / "words.py"
+    alone.write_text(
+        "import re\nimport sys\n\n\ndef slug(t):\n    return '-'.join(re.split(r'\\W+', t))\n\n\n"
+        "total = 0\nfor arg in sys.argv[1:]:\n    total += len(slug(arg))\nprint(total)\n"
+    )
+    probe = ["probe", str(alone), "--at", "11", "--capture", "total", "--json"]
+    edit = ["--old", "total = 0", "--new", "total = 1"]
+    assert main([*probe, *edit, "--", "a b"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    # It reaches nothing outside its own file: no note.
+    assert result["status"] == "completed" and not result.get("warnings"), result
+
+    # One that does (`__file__`) keeps it: in text once, then not again for this root.
+    reaching = case / "conf.py"
+    reaching.write_text(
+        "from pathlib import Path\nhere = Path(__file__).parent\ntotal = 0\nprint(total, here)\n"
+    )
+    probe = ["probe", str(reaching), "--at", "4", "--capture", "total"]
+    edit = ["--old", "total = 0", "--new", "total = 1"]
+    assert main([*probe, *edit]) == 0
+    captured = capsys.readouterr()
+    shown = captured.out + captured.err
+    assert shown.count("ran from a copy") == 1 and len(shown.split("(no .git")) == 2, shown
+    assert main([*probe, *edit]) == 0
+    captured = capsys.readouterr()
+    assert "ran from a copy" not in captured.out + captured.err, captured
+    assert main([*probe, "--json", *edit]) == 0
+    assert any("ran from a copy" in w for w in json.loads(capsys.readouterr().out)["warnings"])
+    # --quiet never shows it, even the first time.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "quiet"))
+    assert main([*probe, "--quiet", *edit]) == 0
+    captured = capsys.readouterr()
+    assert "ran from a copy" not in captured.out + captured.err, captured
+
+
+def test_a_candidate_says_which_of_its_lines_the_at_line_is_before_its_breakpoint(
+    tmp_path, monkeypatch
+):
+    # tides 5: `breakpoint tides.c:37 in the candidate verified` for `--at tides.c:40`; the
+    # mapping came only at the end.
+    source = tmp_path / "tides.c"
+    source.write_text(
+        "".join(f"line {n}\n" for n in range(1, 50)).replace("line 33\n", "a\nb\nc\nd\n")
+    )
+
+    class Worker:
+        adapter = None
+
+        def path(self, program):
+            return source
+
+        def dispatch(self, operation, args):
+            if operation == "launch":
+                return {
+                    "session_id": "s",
+                    "breakpoints": [
+                        {"id": 1, "verified": True, "line": args["breakpoints"][0]["line"]}
+                    ],
+                    "artifact_manifest_id": None,
+                    "target_identity": {"language": "c"},
+                    "source_sha256": "x",
+                }
+            if operation == "wait":
+                return {"state": "terminated"}
+            if operation == "report":
+                return {"output": "", "output_truncated": False, "exit_code": 0}
+            return {}
+
+        def close(self):
+            pass
+
+    said = []
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: Worker())
+    edit = ("a\nb\nc\nd\n", "line 33\n")
+    probe_module.run_probe(
+        str(tmp_path), Probe("tides.c", 40, ("turn",), edit=edit), progress=said.append
+    )
+    assert said[0] == (
+        "started; line 40 is line 37 of the candidate; breakpoint tides.c:37 in the candidate "
+        "verified"
+    ), said
+
+
+def test_a_candidate_that_moves_no_line_says_so():
+    # playlist 5: "locations name the candidate's copy, since the line numbers are the
+    # candidate's" for an edit that changed one line in place.
+    original = "a = 1\nb = 2\nc = 3\n"
+    same = {"candidate": {}}
+    cli._bind_candidate(same, original, ("b = 2", "b = 3"), "p.py")
+    assert same["candidate"]["note"] == cli.CANDIDATE_SAME_LINES
+    assert "line numbers" in cli.CANDIDATE_SAME_LINES
+    moved = {"candidate": {}}
+    cli._bind_candidate(moved, original, ("b = 2\n", "b = 2\nb += 1\n"), "p.py")
+    assert moved["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
+    # Two edits that add a line and remove one move the lines between them.
+    both = {"candidate": {}}
+    cli._bind_candidate(both, original, (("a = 1\n", "a = 1\nz = 0\n"), ("c = 3\n", "")), "p.py")
+    assert both["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
+    # Review of PR #350: removing a last line that no newline ends removes no newline.
+    unended = {"candidate": {}}
+    cli._bind_candidate(unended, "a = 1\nb = 2", ("b = 2", ""), "p.py")
+    assert unended["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
+    # Ending the last line with a newline, or no longer, adds or removes no line.
+    for text, edit in (("a\nb", ("b", "c\n")), ("a\nb\n", ("b\n", "c"))):
+        assert keeps_lines(text, edit), (text, edit)
+        kept = {"candidate": {}}
+        cli._bind_candidate(kept, text, edit, "p.py")
+        assert kept["candidate"]["note"] == cli.CANDIDATE_SAME_LINES
+        assert candidate_line(text, edit, 2) == 2
+    assert not keeps_lines("a\nb", ("b", "")) and not keeps_lines("a\nb\n", ("b\n", ""))
+
+
+def test_a_line_an_edit_removes_at_the_files_end_is_refused():
+    # Review of PR #350: removing `b` from `a\nb` mapped line 2 to a line 2 the candidate
+    # does not have.
+    with pytest.raises(ValueError, match=r"Line 2 is inside the edit \(line 2, which the "):
+        candidate_line("a\nb", ("b", ""), 2)
+    assert candidate_line("a\nb", ("b", ""), 1) == 1
+    with pytest.raises(ValueError, match="Line 3 is inside the edit"):
+        candidate_line("a\nb\nc", ("b\nc", "b\n"), 3)
+    with pytest.raises(ValueError, match=r"\(line 2, which the candidate removes\)"):
+        candidate_line("a\nb\nc\n", ("b\n", ""), 2)
+    assert candidate_line("a\nb\nc", ("a", "z"), 3) == 3

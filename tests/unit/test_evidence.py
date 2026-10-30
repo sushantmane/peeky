@@ -1,5 +1,6 @@
 """The captured-evidence store: record probe results, query them read-only (ADR 0004)."""
 
+import hashlib
 import json
 import os
 import re
@@ -2283,3 +2284,1198 @@ def test_a_schema_11_store_gains_intervention_instances(store):
     connection.close()
     rows = evidence.query(store, "SELECT function, instance FROM interventions")["rows"]
     assert rows == [{"function": "gen::tf::h0000000000000002", "instance": None}]
+
+
+WHOLE = (
+    "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
+    "std::__1::allocator<char>> const&)"
+)
+
+
+def probe_result(function=WHOLE, **extra):
+    return {
+        "probe": {
+            "program": "a.cpp",
+            "line": 3,
+            "capture": ["i"],
+            "set": [],
+            "hits": 1,
+            "set_hit": 1,
+            "args": [],
+        },
+        "status": "completed",
+        "hits": 1,
+        "seconds": 0.5,
+        "pauses_ms": [1.0],
+        "rows": [
+            {
+                "hit": 1,
+                "phase": "observed",
+                "line": 3,
+                "function": function,
+                "selector": "i",
+                "type": "int",
+                "value": "1",
+            }
+        ],
+        "by_hit": [],
+        "interventions": [],
+        "warnings": [],
+        "output": "",
+        # The build and the source as it ran (a candidate's: the unedited source's hash).
+        "target_identity": {"language": "c", "optimization": "O0"},
+        "source_sha256": "0" * 64,
+        # Every source the build read (a candidate's before its edit).
+        "inputs_sha256": "a" * 64,
+        **extra,
+    }
+
+
+def saved_rows(
+    store, rows, hits=None, requested="all", warnings=(), outcomes=None, language="c", **probe
+):
+    """Record a run of (hit, phase, selector, value[, stop]) rows that stopped ``hits``
+    times (default: its last hit) of the ``requested``; the probe asked for exactly the
+    selectors it captured. A row's stop is which of its line's 2 breakpoint locations
+    it was at (#157). ``outcomes``: its set_outcomes, as a probe since schema 16 gives."""
+    from peeky import evidence
+
+    recorded = probe_result()
+    recorded["probe"]["hits"] = requested
+    recorded["rows"] = [
+        dict(hit=hit, phase=phase, line=36, selector=selector, value=value)
+        | ({"stop": stop[0], "stops": 2} if stop else {})
+        for hit, phase, selector, value, *stop in rows
+    ]
+    recorded["probe"].update(capture=list(dict.fromkeys(row[2] for row in rows)), **probe)
+    recorded["hits"] = hits if hits is not None else max([row[0] for row in rows], default=0)
+    recorded["warnings"] = list(warnings)
+    if outcomes is not None:
+        recorded["set_outcomes"] = outcomes
+    return evidence.record(store, recorded, language=language)
+
+
+def test_diff_leaves_out_after_set_values_the_intervention_left(store):
+    # Finding 10: `r.buf`, which `--set r.tail=3` never touched, was listed as a
+    # difference (`intervention only in run b`) because only run b has after-set rows.
+    from peeky import evidence
+
+    saved_rows(store, [(4, "observed", "r.tail", "0"), (4, "observed", "r.buf", "[1, 2, 3, 0]")])
+    saved_rows(
+        store,
+        [
+            (4, "observed", "r.tail", "0"),
+            (4, "observed", "r.buf", "[1, 2, 3, 0]"),
+            (4, "after-set", "r.tail", "3"),
+            (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
+        ],
+        set=[["r.tail", "3"]],
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
+        (
+            None,
+            "(sets)",
+            "the runs requested different interventions (--set, --set-at), or made different ones",
+        ),
+        ("after-set", "r.tail", "intervention only in run b"),
+    ]
+    # A `--set-at` at the captured line's 4th stop (#137) gets the same after-set rows.
+    at_rows = [
+        (4, "observed", "r.tail", "0"),
+        (4, "observed", "r.buf", "[1, 2, 3, 0]"),
+        (4, "after-set", "r.tail", "3"),
+        (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
+    ]
+    saved_rows(store, at_rows[:2])
+    saved_rows(store, at_rows, set_at=[[36, 4, "r.tail", "3"]])
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
+        (
+            None,
+            "(sets)",
+            "the runs requested different interventions (--set, --set-at), or made different ones",
+        ),
+        ("after-set", "r.tail", "intervention only in run b"),
+    ]
+    # Both runs set something: an after-set value equal to its run's observed value is
+    # no difference of its own; the observed row has any. Both recorded how the change
+    # went (schema 16), so their equal requests are no difference either.
+    made = [
+        {"option": "--set", "at": "3@1", "name": "r.tail", "value": "3", "made": 1}
+        | {"ended": "made", "complete": True}
+    ]
+    saved_rows(
+        store,
+        [
+            (4, "observed", "r.tail", "0"),
+            (4, "observed", "r.buf", "[1, 2, 3, 0]"),
+            (4, "after-set", "r.tail", "3"),
+            (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
+        ],
+        set=[["r.tail", "3"]],
+        outcomes=made,
+    )
+    saved_rows(
+        store,
+        [
+            (4, "observed", "r.tail", "1"),
+            (4, "observed", "r.buf", "[1, 2, 3, 4]"),
+            (4, "after-set", "r.tail", "3"),
+            (4, "after-set", "r.buf", "[1, 2, 3, 4]"),
+        ],
+        set=[["r.tail", "3"]],
+        outcomes=made,
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
+        ("observed", "r.tail", None),
+        ("observed", "r.buf", None),
+    ]
+    # `compare` still shows every value.
+    compared = evidence.run_query(store, "compare")["rows"]
+    assert ("after-set", "r.buf") in [(r["phase"], r["selector"]) for r in compared]
+
+
+def test_diff_gives_one_address_only_row_per_selector(store):
+    # Finding 9: `queries diff` repeated an address-only row for the same selector once
+    # per hit.
+    from peeky import evidence
+
+    def vec(address):
+        return f"alloc::vec::Vec<long, alloc::alloc::Global> @ 0x{address:012x}"
+
+    for base in (0x16B43EDB0, 0x16D17EDB0):
+        rows = [(hit, "observed", "self.values", vec(base)) for hit in (1, 2, 3, 4)]
+        saved_rows(store, rows + [(hit, "observed", "v", "3") for hit in (1, 2, 3, 4)])
+    rows = evidence.run_query(store, "diff")["rows"]
+    # In a C, C++ or Rust run, another address may be another element's (#292).
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (
+            1,
+            "self.values",
+            f"addresses differ at 4 hits (one row per selector: its first hit): {HOLDS}",
+        )
+    ]
+    assert rows[0]["value_a"] == vec(0x16B43EDB0) and rows[0]["value_b"] == vec(0x16D17EDB0)
+    # A single hit keeps the plain note.
+    saved_rows(store, [(1, "observed", "p", vec(0x16B43EDB0))])
+    saved_rows(store, [(1, "observed", "p", vec(0x16D17EDB0))])
+    (row,) = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == f"addresses differ: {HOLDS}"
+    # A Python repr's address is no element's: `addresses only`, one row too.
+    for base in (0x104A5B2C0, 0x1052C3A90):
+        saved_rows(
+            store,
+            [(hit, "observed", "n", f"<Node object at 0x{base:x}>") for hit in (1, 2)],
+            language="python",
+        )
+    (row,) = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == "addresses only, at 2 hits (one row per selector: its first hit)"
+
+
+def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
+    # Finding 20: diff pairs rows by hit number, so for a sort comparator every hit
+    # after the first different answer showed as a difference.
+    from peeky import evidence
+    from peeky.cli import main
+
+    pairs_a = [("test", "build"), ("deploy", "test"), ("lint", "deploy"), ("lint", "test")]
+    pairs_b = [("test", "build"), ("deploy", "test"), ("deploy", "build"), ("lint", "deploy")]
+    for pairs in (pairs_a, pairs_b + [("lint", "test")]):
+        saved_rows(
+            store,
+            [
+                row
+                for hit, (a, b) in enumerate(pairs, 1)
+                for row in ((hit, "observed", "a.name", a), (hit, "observed", "b.name", b))
+            ],
+        )
+    result = evidence.run_query(store, "diff")
+    note, after = result["notes"]
+    assert "Run 1 stopped 4 times at its line and run 2 5," in note, note
+    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # #201: how many rows come after the first hit that differs (every row is kept).
+    assert after.startswith(
+        "the first real difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
+    ), after
+    assert len(result["rows"]) == 5
+    assert main(["queries", "diff", "--store", str(store)]) == 0
+    assert "Run 1 stopped 4 times" in capsys.readouterr().out
+    # The same number of stops: no note.
+    saved_rows(store, [(1, "observed", "x", "1")])
+    saved_rows(store, [(1, "observed", "x", "2")])
+    assert "notes" not in evidence.run_query(store, "diff")
+    # Nor where the runs asked for different numbers of hits.
+    saved_rows(store, [(1, "observed", "x", "1")])
+    saved_rows(store, [(1, "observed", "x", "1"), (2, "observed", "x", "2")], hits=2)
+    assert "notes" in evidence.run_query(store, "diff")
+    saved_rows(store, [(1, "observed", "x", "1")], requested=1)
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_diff_pairs_hits_at_the_same_stop_where_both_runs_label_them(store):
+    # Merge of #160 (#157): a line with several breakpoint locations stops at each, and
+    # a hit at another location than the other run's is another row, not the same
+    # moment with another value.
+    from peeky import evidence
+
+    saved_rows(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "2", 2)])
+    saved_rows(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "5", 1)])
+    result = evidence.run_query(store, "diff")
+    assert [(r["hit"], r["value_a"], r["value_b"], r["note"]) for r in result["rows"]] == [
+        (2, "2", None, "missing in run b (run a: stop 2)"),
+        (2, None, "5", "missing in run a (run b: stop 1)"),
+    ]
+    (note,) = result["notes"]
+    assert "At hit 2, run 1 was at stop 2 of its line and run 2 at stop 1" in note, note
+    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # The same stops pair as before; a run with no labels pairs by hit and says so.
+    saved_rows(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "7", 2)])
+    result = evidence.run_query(store, "diff", {"a": 1, "b": 3})
+    assert [(r["hit"], r["note"]) for r in result["rows"]] == [(2, None)], result
+    assert "notes" not in result, result
+    saved_rows(store, [(1, "observed", "x", "1"), (2, "observed", "x", "7")])
+    result = evidence.run_query(store, "diff")
+    assert result["rows"] == [] and "run 4 at an unlabelled stop" in result["notes"][0]
+
+
+def test_a_return_pairs_by_its_hits_stop(store):
+    # Merge of #162 (#155): a `(return)` row has no stop of its own, so with stop-aware
+    # pairing it paired by hit number alone, comparing the returns of calls that began
+    # at different stops. It now takes its hit's stop from the hit's observed rows.
+    from peeky import evidence
+
+    def calls(second_stop, second_return):
+        return [
+            (1, "observed", "x", "1", 1),
+            (1, "returned", "(return)", "5"),
+            (2, "observed", "x", "2", second_stop),
+            (2, "returned", "(return)", second_return),
+        ]
+
+    saved_rows(store, calls(2, "6"))
+    saved_rows(store, calls(1, "9"))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (2, "x", "missing in run b (run a: stop 2)"),
+        (2, "(return)", "missing in run b (run a: stop 2)"),
+        (2, "x", "missing in run a (run b: stop 1)"),
+        (2, "(return)", "missing in run a (run b: stop 1)"),
+    ]
+    # At the same stops, the returns pair and differ as values.
+    saved_rows(store, calls(2, "7"))
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 3})["rows"]
+    assert [(r["hit"], r["selector"], r["value_a"], r["value_b"]) for r in rows] == [
+        (2, "(return)", "6", "7")
+    ]
+
+
+def test_returns_alone_on_a_line_that_stops_several_times_are_flagged(store):
+    # With `--capture return` alone no observed row says at which stop a call began:
+    # where the line stops several times per pass, diff's note says pairing by hit
+    # cannot be checked.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    returns = [(1, "returned", "(return)", "5"), (2, "returned", "(return)", "6")]
+    saved_rows(store, returns, warnings=[warning])
+    saved_rows(store, returns[:1] + [(2, "returned", "(return)", "8")], warnings=[warning])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert "Run 1's line stops several times per pass, and its `(return)`" in note
+    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # A line with one location: no note.
+    saved_rows(store, returns)
+    saved_rows(store, returns)
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_returns_alone_pair_by_their_own_stop(store):
+    # #174: a `(return)` row now has its hit's stop, so returns alone on a line that
+    # stops several times per pass pair by stop, and nothing is left to flag.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    saved_rows(
+        store,
+        [(1, "returned", "(return)", "5", 1), (2, "returned", "(return)", "6", 2)],
+        warnings=[warning],
+    )
+    saved_rows(
+        store,
+        [(1, "returned", "(return)", "5", 1), (2, "returned", "(return)", "8", 1)],
+        warnings=[warning],
+    )
+    result = evidence.run_query(store, "diff")
+    assert [(r["hit"], r["note"]) for r in result["rows"]] == [
+        (2, "missing in run b (run a: stop 2)"),
+        (2, "missing in run a (run b: stop 1)"),
+    ]
+    assert not any("rows do not say at which stop" in note for note in result.get("notes", ()))
+
+
+def test_a_return_whose_hits_rows_disagree_is_not_paired_by_a_guessed_stop(store):
+    # Review of PR #198: a `(return)` row saved without its stop took MIN(stop) of its
+    # hit's rows. Run 1's hit was observed at stop 1 and set at stop 2, so its return
+    # was paired as stop 1 with run 2's and compared (5 against 6), with no note. Rows
+    # that disagree give no stop: nothing is paired by a guess, and the note says so.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    saved_rows(
+        store,
+        [
+            (1, "observed", "x", "1", 1),
+            (1, "after-set", "x", "1", 2),
+            (1, "returned", "(return)", "5"),
+        ],
+        warnings=[warning],
+    )
+    saved_rows(
+        store,
+        [
+            (1, "observed", "x", "1", 1),
+            (1, "after-set", "x", "1", 1),
+            (1, "returned", "(return)", "6"),
+        ],
+        warnings=[warning],
+    )
+    result = evidence.run_query(store, "diff")
+    returns = [
+        (r["value_a"], r["value_b"], r["note"])
+        for r in result["rows"]
+        if r["selector"] == "(return)"
+    ]
+    assert returns == [
+        ("5", None, "missing in run b"),
+        (None, "6", "missing in run a (run b: stop 1)"),
+    ]
+    assert any(
+        "Run 1's line stops several times per pass, and its `(return)` rows" in note
+        for note in result["notes"]
+    ), result["notes"]
+
+
+@pytest.mark.parametrize(
+    "language, shown, kind, after",
+    [
+        ("c", "Vec<long> @ 0x{:012x}", "addresses differ", f": {HOLDS}"),
+        ("python", "<Node object at 0x{:x}>", "addresses only,", ""),
+    ],
+)
+def test_diff_collapses_address_only_rows_per_stop(store, language, shown, kind, after):
+    # Finding 9 with #160's stops: one address-only row per selector and stop.
+    from peeky import evidence
+
+    for base in (0x16B43EDB0, 0x16D17EDB0):
+        address = shown.format(base)
+        rows = [(hit, "observed", "p", address, 2 - hit % 2) for hit in (1, 2, 3, 4)]
+        saved_rows(store, rows, language=language)
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["note"]) for r in rows] == [
+        (
+            stop,
+            f"{kind} at 2 hits at stop {stop} (one row per selector and stop: its first hit)"
+            f"{after}",
+        )
+        for stop in (1, 2)
+    ]
+
+
+def calc_result(rows, label=None, **probe):
+    """A probe result of (hit, selector, value[, function[, line]]) observed rows."""
+    hits = max([row[0] for row in rows], default=0)
+    return {
+        "probe": {
+            "program": "Calc.java",
+            "line": 24,
+            "capture": list(dict.fromkeys(row[1] for row in rows)),
+            "set": [],
+            "hits": "all",
+            "set_hit": 1,
+            "args": [],
+            **probe,
+        },
+        "status": "completed",
+        "hits": hits,
+        "seconds": 0.5,
+        "pauses_ms": [1.0],
+        "rows": [
+            {
+                "hit": hit,
+                "phase": "observed",
+                "line": rest[1] if len(rest) > 1 else 24,
+                "function": rest[0] if rest else "Calc.parseExpr()",
+                "selector": selector,
+                "type": "char",
+                "value": value,
+            }
+            for hit, selector, value, *rest in rows
+        ],
+        "by_hit": [],
+        "interventions": [],
+        "warnings": [],
+        "output": "",
+        "target_identity": {"language": "java"},
+        "source_sha256": "0" * 64,
+    }
+
+
+def saved_calls(store, rows, label=None, **probe):
+    from peeky import evidence
+
+    return evidence.record(store, calc_result(rows, **probe), label=label, language="java")
+
+
+# `queries diff`'s verdicts where the hits may not line up (eleventh evaluation: first).
+MAY_NOT = "hits may not line up: "
+
+
+REORDER = f"{MAY_NOT}the calls may have come in another order or number\n- "
+
+
+def test_diff_says_when_the_same_values_came_in_another_order(store):
+    # M6: an edit changed how parseExpr's calls nest; both runs stopped 5 times, so no
+    # note came, and `op '+' -> '-'` at hit 4 read as if the edit changed an operator.
+    from peeky import evidence
+
+    saved_calls(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'+'", "'-'"], 1)])
+    saved_calls(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(f"{REORDER}runs 1 and 2 saw the same values of `op` in another order")
+    assert "in another order (run 2's hit 4 matches run 1's hit 5: '-')\n" in note, note
+    # `op` repeats, so no captured value could key `join` (tenth evaluation): not named.
+    assert note.endswith(
+        "\n- no captured selector tells the hits apart, so `queries join` could not pair them"
+    ), note
+    # The same values in the same order, or other values: no note.
+    saved_calls(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
+    assert "notes" not in evidence.run_query(store, "diff")
+    saved_calls(store, [(n, "op", v) for n, v in enumerate(["'*'", "'-'", "'-'", "'-'", "'+'"], 1)])
+    assert "notes" not in evidence.run_query(store, "diff")
+    # With the token's position, which tells the hits apart, `join` is named. Review of
+    # M6 (PR #189): join by a value the edit leaves alone, not `op`.
+    for ops, positions in (("---+-", [1, 2, 3, 4, 5]), ("----+", [1, 2, 3, 5, 4])):
+        saved_calls(
+            store,
+            [
+                row
+                for n, (op, at) in enumerate(zip(ops, positions), 1)
+                for row in ((n, "op", f"'{op}'"), (n, "pos", str(at)))
+            ],
+        )
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert "peeky queries join --param a=5 --param b=6 --param key=<selector>" in note, note
+    assert "a value that names the call and that the edit leaves alone" in note, note
+
+
+def test_diff_says_when_a_hit_is_in_another_function_or_line(store):
+    # M6: the same hit number at another function or line is another moment, unless the
+    # places pair one to one across hits (review of M6, PR #189: a renamed function, lines
+    # an edit moved).
+    from peeky import evidence
+
+    saved_calls(store, [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "5", "f", 24)])
+    saved_calls(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24), (3, "x", "5", "f", 24)])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(
+        f"{MAY_NOT}where the runs stopped does not pair the same way at every hit\n"
+        "- at hit 2 run 1 stopped in f at line 24 and run 2 in g at line 24\n"
+    ), note
+    saved_calls(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24), (3, "x", "5", "g", 24)])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(
+        f"{MAY_NOT}where the runs stopped does not pair the same way at every hit\n"
+        "- at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24\n"
+        "- but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24\n"
+    ), note
+    # Renamed and moved, the same way at every hit: the same moments.
+    saved_calls(store, [(1, "x", "1", "f2", 30), (2, "x", "3", "g", 26), (3, "x", "5", "g", 26)])
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_diff_pairs_places_by_instance_too(store):
+    # Review of M6 (PR #189), (a): Rust closures and generics differ by instance only.
+    from peeky import evidence
+
+    rows = [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "3", "f", 24)]
+    saved_calls(store, rows)
+    run = saved_calls(store, rows)
+    import sqlite3
+
+    with sqlite3.connect(store) as db:
+        db.execute("UPDATE captures SET instance = 'f::<u8>' WHERE run_id = ? AND hit = 3", (run,))
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert "\n- at hit 3 run 1 stopped in f at line 24 and run 2 in f::<u8>" in note, note
+
+
+def test_diff_compares_orders_without_addresses_or_object_numbers(store):
+    # Review of M6 (PR #189), (b): values carrying addresses or Java object numbers
+    # never matched, so their reorder went unseen.
+    from peeky import evidence
+
+    saved_calls(store, [(1, "s", '0x000000016fdff2a0 "x"'), (2, "s", '0x000000016fdff2c0 "y"')])
+    saved_calls(store, [(1, "s", '0x000000016fdff3a0 "y"'), (2, "s", '0x000000016fdff3c0 "x"')])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(f"{REORDER}runs 1 and 2 saw the same values of `s` in another order")
+    saved_calls(store, [(1, "o", "Item@57 {k=1}"), (2, "o", "Item@58 {k=2}")])
+    saved_calls(store, [(1, "o", "Item@61 {k=2}"), (2, "o", "Item@62 {k=1}")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(f"{REORDER}runs 3 and 4 saw the same values of `o` in another order")
+
+
+def test_diff_says_when_values_line_up_at_other_hits(store):
+    # Review of M6 (PR #189), (c): a call left out shifts the rest, values changing too.
+    from peeky import evidence
+
+    saved_calls(store, [(1, "k", "'A'"), (2, "k", "'B'"), (3, "k", "'C'")])
+    saved_calls(store, [(1, "k", "'A'"), (2, "k", "'C'"), (3, "k", "'D'")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(
+        f"{REORDER}runs 1 and 2 saw `k`'s values at other hits (run 2's hit 2 matches run 1's "
+        "hit 3: 'C')\n"
+    ), note
+
+
+def test_diff_says_when_values_cannot_show_the_hits_pair(store):
+    # Review of M6 (PR #189): where most hits' values differ and nothing lines them up,
+    # the note says so plainly rather than nothing.
+    from peeky import evidence
+
+    saved_calls(store, [(1, "v", "1"), (2, "v", "2"), (3, "v", "3")])
+    saved_calls(store, [(1, "v", "1"), (2, "v", "7"), (3, "v", "8")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(
+        f"{MAY_NOT}the runs' values differ at 2 of 3 hits\n- so they cannot show that a hit is "
+        "the same moment in both\n- if the edit changed which calls reach the line, pair hits "
+        "by a value"
+    ), note
+    # One hit of three: no note.
+    saved_calls(store, [(1, "v", "1"), (2, "v", "7"), (3, "v", "9")])
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_diff_compares_each_hits_values_by_selector(store):
+    # Review 2 of PR #189: the fallback compared each hit's values as one multiset, so
+    # `left=A, right=B` against `left=B, right=A` at every hit gave no note; and a value
+    # missing from a hit counted as the text "None".
+    from peeky import evidence
+
+    saved_calls(
+        store, [(n, s, v) for n in (1, 2, 3) for s, v in (("left", "'A'"), ("right", "'B'"))]
+    )
+    saved_calls(
+        store, [(n, s, v) for n in (1, 2, 3) for s, v in (("left", "'B'"), ("right", "'A'"))]
+    )
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(f"{MAY_NOT}the runs' values differ at 3 of 3 hits\n"), note
+    saved_calls(store, [(1, "v", "1"), (2, "v", "1"), (2, "x", "None"), (3, "v", "1")])
+    saved_calls(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1"), (3, "x", "None")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(f"{MAY_NOT}the runs' values differ at 2 of 3 hits\n"), note
+    # A selector only one run captured is not a difference at every hit (review 3).
+    saved_calls(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1")])
+    saved_calls(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("v", "1"), ("w", "5"))])
+    assert "notes" not in evidence.run_query(store, "diff")
+    # The same values in the same order at other hits are not "in another order".
+    saved_calls(store, [(1, "x", "2"), (2, "x", "3"), (3, "v", "1")])
+    saved_calls(store, [(1, "v", "1"), (2, "x", "2"), (3, "x", "3")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(f"{REORDER}runs 7 and 8 saw `x`'s values at other hits"), note
+
+
+def test_diff_and_compare_name_the_runs_labels(store):
+    # L17: `queries diff` named runs by number only.
+    from peeky import evidence
+
+    saved_calls(store, [(1, "x", "1")], label="mapped-public")
+    saved_calls(store, [(1, "x", "2")], label="mapped-private")
+    for name in ("diff", "compare"):
+        notes = evidence.run_query(store, name)["notes"]
+        assert "labels: run 1 is 'mapped-public'; run 2 is 'mapped-private'" in notes, notes
+    saved_calls(store, [(1, "x", "3")])
+    notes = evidence.run_query(store, "diff")["notes"]
+    assert "labels: run 2 is 'mapped-private'; run 3 has no label" in notes, notes
+    saved_calls(store, [(1, "x", "4")])
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_a_query_leaves_out_a_stop_column_no_row_fills(store):
+    # L7: `queries set_effect` showed an empty `stop` column for a Python run.
+    from peeky import evidence
+
+    result = calc_result([(1, "key", "'hello-world-'")], set=[["key", "'hello-world'"]])
+    result["rows"].append({**result["rows"][0], "phase": "after-set", "value": "'hello-world'"})
+    result["interventions"] = [
+        {"hit": 1, "name": "key", "before": "'hello-world-'", "after": "'hello-world'"}
+    ]
+    evidence.record(store, result, language="python")
+    for name in ("set_effect", "run"):
+        assert "stop" not in evidence.run_query(store, name)["columns"], name
+
+
+def sets_result(sets=(), set_at=(), set_hit=1, output="out\n"):
+    return {
+        "probe": {
+            "program": "a.py",
+            "line": 34,
+            "capture": ["gap"],
+            "set": [list(change) for change in sets],
+            "set_at": [list(point) for point in set_at],
+            "set_hit": set_hit,
+            "hits": 6,
+        },
+        "status": "completed",
+        "hits": 6,
+        "rows": [dict(hit=1, phase="observed", line=34, selector="gap", value="1")],
+        "output": output,
+    }
+
+
+def test_outputs_and_diff_say_where_each_change_was_requested(store):
+    # sessions 4: `queries outputs` showed `set_hit NULL` for `--set-at` runs, which
+    # reads as no change; rechnung 5: `diff`'s `(sets)` row gave `[["gleich", "true"]]`
+    # with no hit, so the same --set at hits 3 and 4 differed in nothing it showed.
+    # runs.sets holds requests (review of PR #214): see test_probe for one not made.
+    evidence.record(store, sets_result(set_at=((35, 4, "gap", "20"), (35, 6, "gap", "20"))))
+    evidence.record(store, sets_result(sets=(("gap", "20"),), set_hit=4))
+    outputs = evidence.run_query(store, "outputs")["rows"]
+    assert [json.loads(row["sets"]) for row in outputs] == [
+        [["gap", "20", "requested at 35@4"], ["gap", "20", "requested at 35@6"]],
+        [["gap", "20", "requested at 34@4"]],
+    ]
+    assert "set_hit" not in outputs[0]
+    evidence.record(store, sets_result(sets=(("gap", "20"),), set_hit=3))
+    (row,) = [r for r in evidence.run_query(store, "diff")["rows"] if r["selector"] == "(sets)"]
+    assert (json.loads(row["value_a"]), json.loads(row["value_b"])) == (
+        [["gap", "20", "requested at 34@4"]],
+        [["gap", "20", "requested at 34@3"]],
+    )
+    # No intervention: `[]`, as before.
+    evidence.record(store, sets_result())
+    (row,) = [r for r in evidence.run_query(store, "diff")["rows"] if r["selector"] == "(sets)"]
+    assert row["value_b"] == "[]"
+
+
+def typed_views(rows, language="rust"):
+    """A probe result of (hit, selector, type, value, view[, debugger_type]) observed
+    rows."""
+    return {
+        "status": "completed",
+        "hits": max(row[0] for row in rows),
+        "probe": {
+            "program": "src/main.rs",
+            "line": 39,
+            "capture": list(dict.fromkeys(row[1] for row in rows)),
+        },
+        "output": "",
+        "rows": [
+            dict(hit=hit, phase="observed", line=39, selector=s, type=t, value=v, view=view)
+            | ({"debugger_type": more[0]} if more else {})
+            for hit, s, t, v, view, *more in rows
+        ],
+    }
+
+
+MOVED = "its addresses differ too: it may point at another element; compare offsets with "
+
+
+def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
+    # Prep 16: rota's candidate stored `l` as a raw pointer, `[unproven]`, and `diff` said
+    # `qualified (run b: unproven): not evidence by itself` at each of 6 hits, though its
+    # address is the pointer's own value (COOKBOOK 4.8), and gave each hit a row.
+    store = tmp_path / "evidence.db"
+    for heap, stack, kind, view in (
+        (0x1004151E0, 0x16B846B10, "&rota::Engineer", None),
+        (0x1046AD1E0, None, "*const rota::Engineer", "unproven"),
+    ):
+        rows = []
+        for hit in range(1, 4):
+            e = f"0x{heap + 0x38 * hit:016x}"
+            debugger = "rota::Engineer *"
+            rows += [
+                (hit, "e", "&rota::Engineer", e, None, debugger),
+                (hit, "l", kind, f"0x{stack or heap:016x}", view, debugger),
+            ]
+        evidence.record(store, typed_views(rows), language="rust")
+    rows = evidence.run_query(store, "diff")["rows"]
+    # The edit made `l` a raw pointer: a real difference, first, in one row (review of PR
+    # #315: as an address difference, it ranked after later real differences).
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (
+            1,
+            "l",
+            "type &rota::Engineer -> *const rota::Engineer at 3 hits (one row per selector: "
+            f"its first hit); {MOVED}address() (COOKBOOK 4.8)",
+        ),
+        (1, "e", "addresses differ at 3 hits (one row per selector: its first hit): " + POINTS),
+    ]
+    # Both runs' raw pointers: one row too, never qualified.
+    for heap in (0x1004151E0, 0x1046AD1E0):
+        rows = [(h, "l", "*const u32", f"0x{heap + 4 * h:016x}", "unproven") for h in (1, 2)]
+        evidence.record(store, typed_views(rows), language="rust")
+    [row] = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == "addresses differ at 2 hits (one row per selector: its first hit): " + (
+        POINTS
+    )
+    hits = evidence.run_query(store, "hits")["rows"]
+    assert [row["caveat"] for row in hits] == [None, None]
+
+
+def test_a_pointers_type_change_is_the_first_divergence(tmp_path):
+    # Review of PR #315: `p`'s type changed at hit 1 (`int *` -> `long *`), and its values
+    # differ only in addresses; `n` differs at hit 2. As an address difference, `p` came
+    # after `n`, so the first divergence was hit 2's.
+    store = tmp_path / "evidence.db"
+    for base, kind, counts in ((0x16B42B028, "int *", "0"), (0x16F527038, "long *", "1")):
+        rows = [
+            (1, "p", kind, f"0x{base:016x}", None),
+            (1, "n", "int", "0", None),
+            (2, "p", kind, f"0x{base + 8:016x}", None),
+            (2, "n", "int", counts, None),
+        ]
+        evidence.record(store, typed_views(rows), language="c")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (
+            1,
+            "p",
+            "type int * -> long * at 2 hits (one row per selector: its first hit); "
+            f"{MOVED}address() (COOKBOOK 4.8)",
+        ),
+        (2, "n", None),
+    ]
+    # A value that differs beyond its address keeps a row per hit.
+    for value in ('0x000000016b42b028 "ab"', '0x000000016f527038 "cd"'):
+        rows = [
+            (h, "s", "char *" if "ab" in value else "const char *", value, None) for h in (1, 2)
+        ]
+        evidence.record(store, typed_views(rows), language="c")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["note"]) for r in rows] == [
+        (1, "type char * -> const char *"),
+        (2, "type char * -> const char *"),
+    ]
+
+
+def _as_schema_17(store):
+    """The store as schema 17 saved it: no captures.debugger_type."""
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; ALTER TABLE captures DROP COLUMN "
+        "debugger_type; PRAGMA user_version = 17;"
+    )
+    connection.close()
+
+
+UNTOLD = "the older run predates Rust type spellings, so Peeky can't tell whether the type changed"
+
+
+@pytest.mark.parametrize("kind", ["&rota::Engineer", "*const rota::Engineer"])
+def test_a_rust_type_spelled_before_schema_18_is_said_to_be_untold(tmp_path, kind):
+    # Review of PR #315: a run saved before Rust references were spelled as Rust spells
+    # them stored `rota::Engineer *`, for a reference and a raw pointer alike; a new run
+    # `&rota::Engineer`. `diff` said the type changed, though only its spelling may have;
+    # then (round 2) it said nothing, though an old raw pointer may now be a reference.
+    store = tmp_path / "evidence.db"
+    old = []
+    for h in (1, 2):
+        old += [
+            (h, "e", "rota::Engineer *", f"0x{0x1004151E0 + 0x38 * h:016x}", None),
+            (h, "n", "u32", "0", None),
+        ]
+    evidence.record(store, typed_views(old), language="rust")
+    _as_schema_17(store)
+    view = "unproven" if kind.startswith("*") else None
+    new = []
+    for h in (1, 2):
+        new += [
+            (h, "e", kind, f"0x{0x1046AD1E0 + 0x38 * h:016x}", view, "rota::Engineer *"),
+            (h, "n", "u32", str(h - 1), None, "unsigned int"),
+        ]
+    evidence.record(store, typed_views(new), language="rust")
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    connection.close()
+    stored = evidence.query(store, "SELECT run_id, type, debugger_type FROM evidence")["rows"]
+    assert {(r["run_id"], r["type"], r["debugger_type"]) for r in stored} == {
+        (1, "rota::Engineer *", None),
+        (1, "u32", None),
+        (2, kind, "rota::Engineer *"),
+        (2, "u32", "unsigned int"),
+    }
+    rows = evidence.run_query(store, "diff")["rows"]
+    # Visible, right after the real differences: `n` at hit 2 stays the first divergence.
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (2, "n", None),
+        (
+            1,
+            "e",
+            f"{UNTOLD} (`rota::Engineer *` then, `{kind}` now) at 2 hits (one row per "
+            f"selector: its first hit); {MOVED}address() (COOKBOOK 4.8)",
+        ),
+    ]
+    # The other way round, the older run named first as run b.
+    rows = evidence.run_query(store, "diff", {"a": 2, "b": 1})["rows"]
+    assert rows[1]["note"].startswith(f"{UNTOLD} (`rota::Engineer *` then, `{kind}` now)")
+    # Two new runs: a raw pointer where a reference was is a type change.
+    other = "*const rota::Engineer" if kind.startswith("&") else "&rota::Engineer"
+    raw = [(h, "e", other, f"0x{0x1046AD1E0:016x}", None, "rota::Engineer *") for h in (1, 2)]
+    evidence.record(store, typed_views(raw), language="rust")
+    rows = evidence.run_query(store, "diff", {"a": 2, "b": 3})["rows"]
+    assert rows[0]["note"].startswith(f"type {kind} -> {other} at 2 hits")
+
+
+def test_another_languages_type_change_is_never_taken_for_a_spelling(tmp_path):
+    # Round 2 review of PR #315: a schema-17 C++ row of type `long &&` (a structured
+    # binding's reference), against a newer row of type `long` whose debugger type is
+    # `long &&`, with values 1 and 2, lost its type change.
+    store = tmp_path / "evidence.db"
+    evidence.record(store, typed_views([(1, "t", "long &&", "1", None)]), language="cpp")
+    _as_schema_17(store)
+    evidence.record(store, typed_views([(1, "t", "long", "2", None, "long &&")]), language="cpp")
+    [row] = evidence.run_query(store, "diff")["rows"]
+    assert (row["selector"], row["note"]) == ("t", "type long && -> long"), row
+
+
+def test_unproven_text_beyond_an_address_stays_qualified(tmp_path):
+    # A Box or reference past its proof shows only its pointer too, but is no raw pointer
+    # by its type: still qualified. So is a raw pointer's row whose value is no address.
+    store = tmp_path / "evidence.db"
+    for heap in (0x1004151E0, 0x1046AD1E0):
+        rows = [
+            (1, "b", "int *", f"0x{heap:016x}", "unproven"),
+            (1, "r", "*const u8", f"0x{heap:016x} junk", "unproven"),
+        ]
+        evidence.record(store, typed_views(rows), language="rust")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert all("qualified (run a: unproven, run b: unproven)" in r["note"] for r in rows), rows
+
+
+def test_queries_runs_shows_the_end_of_a_long_output(tmp_path):
+    # seats 7: output_start cut both runs at `…;FREE`, hiding `=39` against `=32`.
+    store = tmp_path / "evidence.sqlite"
+    outputs = (
+        "SEATS:Kim=C3-6,Okafor=C5-7,Lund=C7-11,Ng=C1-2,Sato=D2-7;FREE=39\n",
+        "SEATS:Kim=D4-7,Okafor=C1-3,Lund=B1-5,Ng=C6-7,Sato=B6-11;FREE=32\n",
+        "PAGE: [1]\n",
+    )
+    for output in outputs:
+        evidence.record(
+            store,
+            {
+                "probe": {"program": "app/Seats.java", "line": 26, "capture": ["free"]},
+                "status": "completed",
+                "hits": 0,
+                "seconds": 0.1,
+                "rows": [],
+                "interventions": [],
+                "output": output,
+            },
+        )
+    short, fixed, broken = evidence.run_query(store, "runs")["rows"]
+    assert broken["output_start"].endswith(";FREE") and fixed["output_start"].endswith(";FREE")
+    # Its last 40 characters, without the final newline.
+    for run, output in ((broken, outputs[0]), (fixed, outputs[1])):
+        assert run["output_end"] == "…" + output.rstrip("\n")[-40:]
+        assert run["output_end"].endswith(output.strip()[-7:])
+    assert short["output_start"] == "PAGE: [1]\n" and short["output_end"] is None
+
+
+REASON = (
+    "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds an "
+    "element of `by_hour` by reference, and Peeky proves only standard vectors, maps and sets of "
+    "numbers, with the default allocator and order. Read it where the code names that object"
+)
+
+
+def _run(rows, *, candidate=False, output="BUSIEST:3\n"):
+    return {
+        "probe": {
+            "program": "nightlot.cpp",
+            "line": 40,
+            "capture": list(dict.fromkeys(row["selector"] for row in rows)),
+            "set": [],
+            "hits": "all",
+            "set_hit": 1,
+            "args": ["18:30+"],
+        },
+        "status": "completed",
+        "hits": max(row["hit"] for row in rows),
+        "seconds": 1.0,
+        "pauses_ms": [1.0],
+        "output": output,
+        "rows": rows,
+        "interventions": [],
+        "warnings": [],
+        "target_identity": {"language": "cpp"},
+        **({"candidate": {"diff": "--- a\n+++ b\n", "sha256": "1" * 64}} if candidate else {}),
+    }
+
+
+def _bindings(withheld, inside):
+    rows = []
+    for hit, (hour, cars) in enumerate([(0, 3), (1, -1), (2, -2), (18, 1)], 1):
+        for selector, value in (("hour", hour), ("cars", cars)):
+            row = {"hit": hit, "phase": "observed", "line": 40, "selector": selector}
+            if withheld:
+                row.update(type="const int", unavailable=True, error=REASON.format(selector))
+            else:
+                row.update(type="const int", value=str(value))
+            rows.append(row)
+        rows.append(
+            {
+                "hit": hit,
+                "phase": "observed",
+                "line": 40,
+                "selector": "inside",
+                "type": "long",
+                "value": str(inside[hit - 1]),
+            }
+        )
+    return rows
+
+
+def test_a_value_one_run_has_none_of_is_no_difference(store, capsys):
+    # nightlot: in a candidate whose structured bindings were `not shown`, 18 of 25 `diff`
+    # rows said `differs 1` only because one side was withheld, and the note said `hour`
+    # and `cars` "differ after the edit".
+    evidence.record(store, _run(_bindings(False, [0, 3, 2, 0])), language="cpp")
+    evidence.record(
+        store, _run(_bindings(True, [0, 1, 2, 5]), candidate=True, output="BUSIEST:5\n")
+    )
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
+    shape = [(row["selector"], row["hit"], row["differs"], row["note"]) for row in rows]
+    real = [row for row in shape if row[0] == "inside"]
+    assert real == [("inside", 2, 1, None), ("inside", 4, 1, None)], shape
+    # After the real differences: one row per selector, its first hit's, saying how many.
+    assert shape[-2:] == [
+        (
+            selector,
+            1,
+            None,
+            "no value in run b at 4 hits (one row per selector: its first hit), so not a value "
+            "difference",
+        )
+        for selector in ("hour", "cars")
+    ], shape
+    assert [row["selector"] for row in rows].index("hour") > max(
+        index for index, row in enumerate(rows) if row["selector"] == "inside"
+    )
+    notes = evidence.run_query(store, "diff", {"a": 1, "b": 2})["notes"]
+    assert (
+        "not compared: run 2 has no value for `hour` and `cars` (8 values in all, withheld or "
+        "unavailable), so they are no value differences; their rows come after the real "
+        "differences, and `queries run --param run=2` says why"
+    ) in notes, notes
+    # Nothing calls them differences after the edit.
+    assert not any("`hour`" in note and "differ after" in note for note in notes), notes
+    # `compare` says the same per row, with differs unknown.
+    compared = evidence.run_query(store, "compare", {"a": 1, "b": 2})["rows"]
+    hour = [row for row in compared if row["selector"] == "hour"]
+    assert {(row["differs"], row["note"]) for row in hour} == {
+        (None, "no value in run b, so not a value difference")
+    }, hour
+    # The text table shows the reason's label alone; `--json` keeps it whole.
+    _, text = evidence.canned(store, "diff", {"a": 1, "b": 2}, table=True)
+    assert "<not shown: …>" in text and "can't prove is still alive" not in text, text
+    assert rows[-1]["value_b"].startswith("<not shown: the binding refers"), rows[-1]
+
+
+def test_both_runs_with_no_value_and_a_qualified_one(store):
+    # Each run's reason differs: no value in either run, never a difference.
+    first = _bindings(True, [0, 0, 0, 0])
+    second = [
+        {**row, "error": "no value yet: declared below the stop"} if "error" in row else row
+        for row in first
+    ]
+    evidence.record(store, _run(first))
+    evidence.record(store, _run(second))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert {row["note"] for row in rows} == {
+        "no value in either run at 4 hits (one row per selector: its first hit), so not a value "
+        "difference"
+    }, rows
+    assert {row["differs"] for row in rows} == {None}
+
+
+def _n_row(hit, value=None, kind="int", error=None):
+    row = {"hit": hit, "phase": "observed", "line": 40, "selector": "n", "type": kind}
+    return {**row, "unavailable": True, "error": error} if error else {**row, "value": value}
+
+
+OPTIMIZED = "no value here: optimized out or not live (debugger: variable not available)"
+
+
+@pytest.mark.parametrize("withheld", ["a", "b"])
+@pytest.mark.parametrize("error", [REASON.format("n"), OPTIMIZED], ids=["withheld", "optimized"])
+def test_a_type_change_stays_a_difference_where_a_run_has_no_value(store, withheld, error):
+    # Review of PR #389: `type int -> long` with one side withheld read `no value in run b,
+    # so not a value difference`, with differs NULL, which hid a real difference.
+    one = [_n_row(1, "3"), _n_row(2, "4")]
+    other = [_n_row(1, kind="long", error=error), _n_row(2, "4", kind="long")]
+    first, second = (other, one) if withheld == "a" else (one, other)
+    evidence.record(store, _run(first))
+    evidence.record(store, _run(second))
+    rows = evidence.run_query(store, "diff")["rows"]
+    types = "long -> int" if withheld == "a" else "int -> long"
+    assert [(row["hit"], row["differs"], row["note"]) for row in rows] == [
+        (1, 1, f"type {types}; no value in run {withheld}, so the values were not compared"),
+    ], rows
+    notes = evidence.run_query(store, "diff").get("notes", [])
+    assert not any(note.startswith("not compared:") for note in notes), notes
+    compared = evidence.run_query(store, "compare")["rows"]
+    assert (compared[0]["differs"], compared[0]["note"]) == (1, rows[0]["note"]), compared
+    # The table shows the missing value's label alone, as for any value a run has none of.
+    _, text = evidence.canned(store, "diff", table=True)
+    assert error.split(":")[0] + ": …>" in text and error[20:60] not in text, text
+
+
+def test_a_value_one_run_lacks_beside_a_type_change_elsewhere(store):
+    # A type change at one hit leaves the selector's other no-value rows in their tier.
+    one = [_n_row(1, "3"), _n_row(2, "4")]
+    other = [_n_row(1, kind="long", error=OPTIMIZED), _n_row(2, kind="int", error=OPTIMIZED)]
+    evidence.record(store, _run(one))
+    evidence.record(store, _run(other))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(row["hit"], row["differs"], row["note"]) for row in rows] == [
+        (1, 1, "type int -> long; no value in run b, so the values were not compared"),
+        (2, None, "no value in run b, so not a value difference"),
+    ], rows
+
+
+def test_a_type_peeky_cant_tell_changed_is_no_difference_where_a_run_has_no_value(store):
+    # Review 2 of PR #389: a Rust run saved before Rust type spellings (no debugger_type)
+    # against a newer one whose value is unavailable got differs 1 and ranked first, though
+    # its note says Peeky can't tell whether the type changed.
+    import sqlite3
+
+    def rust(kind, **value):
+        rows = [
+            {"hit": 1, "phase": "observed", "line": 40, "selector": "n", "type": "u32", **n}
+            for n in ({"value": "0"} if "value" in value else {"value": "1"},)
+        ]
+        rows.append({"hit": 1, "phase": "observed", "line": 40, "selector": "e", "type": kind})
+        rows[-1].update(value)
+        return {**_run(rows), "target_identity": {"language": "rust"}}
+
+    evidence.record(store, rust("rota::Engineer *", value="0x00000001004151e0"), language="rust")
+    connection = sqlite3.connect(store)
+    connection.execute("UPDATE captures SET debugger_type = NULL WHERE run_id = 1")
+    connection.commit()
+    connection.close()
+    evidence.record(
+        store,
+        rust(
+            "&rota::Engineer",
+            debugger_type="rota::Engineer *",
+            unavailable=True,
+            error=OPTIMIZED,
+        ),
+        language="rust",
+    )
+    untold = (
+        "the older run predates Rust type spellings, so Peeky can't tell whether the type "
+        "changed (`rota::Engineer *` then, `&rota::Engineer` now)"
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(row["selector"], row["differs"], row["note"]) for row in rows] == [
+        ("n", 1, None),
+        ("e", None, f"no value in run b, so the values were not compared; {untold}"),
+    ], rows
+    compared = {row["selector"]: row for row in evidence.run_query(store, "compare")["rows"]}
+    assert (compared["e"]["differs"], compared["e"]["note"]) == (None, rows[1]["note"])
+    # A proven type change still is one.
+    evidence.record(store, rust("&rota::Engineer", value="0x00000001004151e0"), language="rust")
+    evidence.record(
+        store, rust("*const rota::Engineer", unavailable=True, error=OPTIMIZED), language="rust"
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(row["selector"], row["differs"], row["note"]) for row in rows] == [
+        ("n", 1, None),
+        (
+            "e",
+            1,
+            "type &rota::Engineer -> *const rota::Engineer; no value in run b, so the values "
+            "were not compared",
+        ),
+    ], rows
+
+
+def test_a_note_on_left_out_selectors_says_their_rows_still_show():
+    # bill: "`tariff` and `over_peak` differ after the edit and may follow from it, so this
+    # check leaves them out" read as contradicting the rows it came under.
+    note = evidence._after_change(
+        ["wh"],
+        ["hits pair by `wh`"],
+        None,
+        None,
+        {1: [], 2: []},
+        True,
+        ["tariff", "over_peak"],
+        None,
+        "join",
+    )
+    assert "leaves" not in note, note
+    assert (
+        "- `tariff` and `over_peak` differ after the edit and may follow from it, so they say "
+        "nothing of how the hits pair (their rows above still show where they differ)"
+    ) in note, note
+
+
+def test_the_output_row_does_not_widen_the_other_rows(store, capsys):
+    # depot: every column was padded to the (output) row's 118 characters.
+    long = "SHIPPED:CL-17,GS-5,BR-204,AX-1,AX-2,AX-3;REFUSED:HX-88,GS-5,QQ-1,QQ-2;AVERAGE:{}\n"
+    evidence.record(store, _run(_bindings(False, [0, 3, 2, 0]), output=long.format("5.00")))
+    evidence.record(store, _run(_bindings(False, [0, 1, 2, 5]), output=long.format("6.67")))
+    _, text = evidence.canned(store, "diff", table=True)
+    lines = text.splitlines()
+    (output,) = [line for line in lines if "(output)" in line]
+    assert "AVERAGE:5.00\\n  …" in output and output.endswith(
+        "6.67\\n  1        output differs at line 1, column 79"
+    ), text
+    rows = [line for line in lines if "  inside  " in line]
+    assert rows and all(len(line) < 100 for line in rows), text
+
+
+def _identified(rows, candidate=False):
+    result = _run(rows)
+    result["probe"]["program"] = "a.cpp"
+    result.update(
+        target_identity={"language": "cpp", "optimization": "O0"},
+        source_sha256="0" * 64,
+        inputs_sha256="a" * 64,
+    )
+    if candidate:
+        # The edited text's digest, as the build that ran it reports it.
+        result["candidate"] = {"sha256": hashlib.sha256(b"int main() { return 1; }\n").hexdigest()}
+    return result
+
+
+def test_compare_finds_the_run_past_newer_runs_of_other_selectors(store):
+    # Review of PR #389: only the newest 20 runs whose captures differed were looked at, so
+    # 21 newer runs of other selectors hid the one run sharing a selector.
+    def saved(capture, candidate=False):
+        rows = [
+            {"hit": 1, "phase": "observed", "line": 40, "selector": name, "value": "1"}
+            for name in capture
+        ]
+        result = _identified(rows, candidate)
+        if candidate:
+            # As the store keeps a candidate: its edit, and the unedited source's digest.
+            result["candidate"]["diff"] = "--- a.cpp\n+++ a.cpp\n"
+        return evidence.record(store, result, language="cpp", target="/t")
+
+    first = saved(["hour", "inside"])
+    for n in range(21):
+        saved([f"other{n}"])
+    candidate = saved(["hour", "cars", "inside"], candidate=True)
+    assert evidence.baseline(store, candidate, "0" * 64) is None
+    assert evidence.near_baseline(store, candidate, "0" * 64) == (
+        first,
+        ["hour", "inside"],
+        ["hour", "cars", "inside"],
+    )
+    # With none sharing a selector, none is named.
+    lone = saved(["elsewhere"], candidate=True)
+    assert evidence.near_baseline(store, lone, "0" * 64) is None

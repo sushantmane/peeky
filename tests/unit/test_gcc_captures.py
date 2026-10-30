@@ -8,7 +8,7 @@ import pytest
 
 from peeky.dap import RequestFailed, ResponseTimeout
 from peeky.native import NativeSession, _gcc_capture_members
-from peeky.probe import unproven_text
+from peeky.probe import _root, unproven_text
 from peeky.worker import _CLOSURE_HOVER, CAPTURES_SCOPE, DebugWorker
 
 
@@ -615,3 +615,51 @@ def test_describe_lists_this_once_as_the_lambdas_capture_of_the_object():
     ), copied
     held = text({"this": {"type": "Acc *", "how": "by reference"}})
     assert "this (Acc *, capture of the object by reference)" in held and held.count("this (") == 1
+
+
+def test_a_gcc_lambdas_capture_says_why_it_is_not_found():
+    # Prep 8: GCC's lambda read `grade` as `<not found; visible: a, b, ga, gb>`, with no
+    # reason; the C cookbook said why.
+    snapshot = {
+        "scopes": [{"name": "Locals", "variables": [{"name": n} for n in ("a", "b", "ga", "gb")]}],
+        "closure_captures": ["grade"],
+    }
+    with pytest.raises(ValueError) as raised:
+        _root(None, {}, snapshot, "grade")
+    assert str(raised.value) == (
+        "not found: 'grade' is a capture of this lambda, which GCC passes through `__closure`, "
+        "and Peeky didn't read it here; read it where the lambda is created, or print it from "
+        "the program; visible: a, b, ga, gb"
+    )
+    with pytest.raises(ValueError) as raised:
+        _root(None, {}, snapshot, "nosuch")
+    assert str(raised.value) == "not found; visible: a, b, ga, gb"
+
+
+def test_a_gcc_lambdas_captures_are_its_artificial_variables():
+    from peeky.native import _gcc_captures
+
+    dies = {
+        1: die("DW_TAG_compile_unit"),
+        2: die("DW_TAG_subprogram", 1, (3, 4, 5, 6, 7), DW_AT_object_pointer="0x00000003"),
+        3: die("DW_TAG_formal_parameter", 2, DW_AT_name='"__closure"', DW_AT_artificial="(true)"),
+        4: die("DW_TAG_formal_parameter", 2, DW_AT_name='"a"'),
+        5: die("DW_TAG_variable", 2, DW_AT_name='"grade"', DW_AT_artificial="(true)"),
+        # lldb-dap lists GCC's `this` of `[this]`, which it reads through `__closure`.
+        6: die(
+            "DW_TAG_variable",
+            2,
+            DW_AT_name='"this"',
+            DW_AT_artificial="(true)",
+            DW_AT_location="DW_OP_fbreg -24, DW_OP_deref",
+        ),
+        7: die("DW_TAG_variable", 2, DW_AT_name='"ga"'),
+        # clang names a lambda's object pointer `this`, and declares no such variables.
+        8: die("DW_TAG_subprogram", 1, (9,), DW_AT_object_pointer="0x00000009"),
+        9: die("DW_TAG_formal_parameter", 8, DW_AT_name='"this"', DW_AT_artificial="(true)"),
+    }
+    assert _gcc_captures(dies, {"chain": [2], "bodies": [2]}) == ("grade",)
+    assert _gcc_captures(dies, {"chain": [8], "bodies": [8]}) == ()
+    # `[*this]`'s `this` GCC gives no location: its copy is the lambda's (#361).
+    del dies[6]["attrs"]["DW_AT_location"]
+    assert _gcc_captures(dies, {"chain": [2], "bodies": [2]}) == ("grade", "this")

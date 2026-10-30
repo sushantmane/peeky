@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from peeky.native import NativeSession, NativeTarget, elf_build_id, parse_lines
+from peeky.native import NativeSession, NativeTarget, _type_name, elf_build_id, parse_lines
 
 
 def line_dump(name="main.c", line=2, version=4):
@@ -4033,3 +4033,37 @@ def test_an_inlined_call_with_no_code_left_holds_no_address():
     # An offset (dwarfdump writes the attribute's data, at most 8 digits).
     assert _code_ranges(die("0x00000020")) == [(0x878, 0x898)]
     assert _code_ranges(die("0x00000000")) == []
+
+
+def die(tag, parent=None, children=(), **attrs):
+    return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+
+RUST_TYPES = {
+    1: die("DW_TAG_compile_unit"),
+    2: die("DW_TAG_structure_type", 1, DW_AT_name='"Engineer"'),
+    3: die("DW_TAG_pointer_type", 1, DW_AT_name='"&rota::Engineer"', DW_AT_type="0x00000002"),
+    4: die("DW_TAG_structure_type", 1, DW_AT_name='"&str"'),
+    5: die("DW_TAG_pointer_type", 1, DW_AT_name='"&&str"', DW_AT_type="0x00000004"),
+    6: die("DW_TAG_pointer_type", 1, DW_AT_name='"*const u32"', DW_AT_type="0x00000007"),
+    7: die("DW_TAG_base_type", 1, DW_AT_name='"u32"'),
+    8: die("DW_TAG_pointer_type", 1, DW_AT_name='"&mut rota::Engineer"', DW_AT_type="0x00000002"),
+    # C's pointers have no name.
+    9: die("DW_TAG_pointer_type", 1, DW_AT_type="0x00000007"),
+}
+
+
+@pytest.mark.parametrize(
+    "reference, shown",
+    [
+        ('0x00000003 "rota::Engineer *"', "&rota::Engineer"),
+        ('0x00000005 "&str *"', "&&str"),
+        ('0x00000006 "u32 *"', "*const u32"),
+        ('0x00000008 "rota::Engineer *"', "&mut rota::Engineer"),
+        ('0x00000009 "u32 *"', "u32 *"),
+    ],
+)
+def test_describe_spells_a_rust_reference_as_the_program_does(reference, shown):
+    # rota 3: `describe` said `e (rota::Engineer *)` and `w (&str *)`, as dwarfdump writes
+    # the pointer's type, though the debug information names it `&rota::Engineer`.
+    assert _type_name(RUST_TYPES, reference) == shown

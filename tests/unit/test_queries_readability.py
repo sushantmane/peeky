@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from peeky import evidence
+from peeky import cli, evidence
 from peeky.cli import main
 
 
@@ -604,3 +604,105 @@ def test_a_run_gone_before_the_notes_is_said_never_silent(store, monkeypatch):
         "alignment, labels and older-run warnings could not be checked: run 1 was removed "
         "after the rows were read; run the query again"
     ]
+
+
+LONG_NAME = "laps::summary::h3ba6f5e90fc2267c"
+
+
+def _row(selector, value, phase="observed", hit=1, type="u32", **fields):
+    row = {"hit": hit, "phase": phase, "line": 63, "function": "tally::count"}
+    return {**row, "selector": selector, "type": type, "value": value, **fields}
+
+
+def _probe_result(args=(), function=LONG_NAME):
+    return {
+        "probe": {
+            "program": "a.py",
+            "line": 1,
+            "capture": ["i"],
+            "set": [],
+            "hits": 1,
+            "set_hit": 1,
+            "args": list(args),
+        },
+        "status": "completed",
+        "hits": 1,
+        "seconds": 0.5,
+        "pauses_ms": [1.0],
+        "rows": [_row("i", "1", function=function)],
+        "by_hit": [],
+        "interventions": [],
+        "warnings": [],
+        "output": "",
+        "target_identity": {"language": "python"},
+        "source_sha256": "0" * 64,
+        "inputs_sha256": "a" * 64,
+    }
+
+
+@pytest.fixture
+def probe(tmp_path, monkeypatch):
+    """`peeky probe` of a stand-in result, saved to a state directory of its own."""
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "a.py").write_text("x = 1\n")
+    shown = {}
+    monkeypatch.setattr(cli, "run_probe", lambda *args, **kwargs: dict(shown["result"]))
+
+    def run(result, *extra):
+        shown["result"] = result
+        return cli.main(["probe", str(tmp_path / "a.py"), "--at", "1", *extra])
+
+    return run
+
+
+def test_a_query_table_notes_short_frame_names_once_per_saved_run(probe, capsys):
+    # laps 6: `note: function shows short frame names; …` came under every query's table.
+    # Review of PR #350: a state directory's one note, used up by an earlier unrelated
+    # run, left a later run's tables with none.
+    note = "note: function shows short frame names"
+    assert probe(_probe_result(function="other::main::h0123456789abcdef")) == 0
+    assert note in capsys.readouterr().out  # run 1, of other code: its probe said it
+    assert probe(_probe_result()) == 0
+    assert note not in capsys.readouterr().out  # run 2: the probe's note is once only
+    # A query of run 2 says it, once; run 1's probe said it already.
+    for query, said in (
+        (["queries", "run"], True),
+        (["sql", "SELECT * FROM last_run"], False),
+        (["queries", "run", "--param", "run=2"], False),
+        (["queries", "run", "--param", "run=1"], False),
+    ):
+        assert cli.main(query) == 0
+        out = capsys.readouterr().out
+        assert (note in out) == said, out
+    # A table of both runs, by run_id, says it only where one of them has not had it.
+    both = "SELECT run_id, function FROM evidence"
+    assert cli.main(["sql", both]) == 0 and note not in capsys.readouterr().out
+    assert probe(_probe_result(), "--quiet") == 0 and probe(_probe_result(), "--json") == 0
+    capsys.readouterr()
+    assert cli.main(["sql", both]) == 0 and note in capsys.readouterr().out
+    assert cli.main(["sql", both]) == 0 and note not in capsys.readouterr().out
+    # A table that names no run says it each time.
+    named = "SELECT DISTINCT function FROM captures"
+    for _ in range(2):
+        assert cli.main(["sql", named]) == 0 and note in capsys.readouterr().out
+
+
+def test_outputs_lists_run_a_first_with_short_arguments_whole(probe, capsys):
+    # laps 4: `queries outputs --param a=3 --param b=2` listed run 2 first, and cut both
+    # runs' 12 reads at 120 characters.
+    reads = [f"{car}@{at}.{n}" for car, at, n in zip([7, 12, 33] * 4, range(80, 92), range(12))]
+    other = [*reads[:-1], "33@249.9"]
+    assert probe(_probe_result(reads)) == 0 and probe(_probe_result(other)) == 0
+    capsys.readouterr()
+    assert cli.main(["queries", "outputs", "--param", "a=2", "--param", "b=1"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith("2 ") and lines[2].startswith("1 "), lines
+    assert json.dumps(other, ensure_ascii=False) in lines[1], lines
+    assert json.dumps(reads, ensure_ascii=False) in lines[2], lines
+    # Past 300 characters, both show from where they differ.
+    many = [f"r{n}" for n in range(120)]
+    assert probe(_probe_result(many)) == 0 and probe(_probe_result([*many[:-1], "x"])) == 0
+    capsys.readouterr()
+    assert cli.main(["queries", "outputs"]) == 0
+    out = capsys.readouterr().out
+    assert '"r118", "r119"]' in out and '"r118", "x"]' in out, out

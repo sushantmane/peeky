@@ -80,3 +80,22 @@ def test_a_missing_name_hints_what_reads_and_changes_take():
     assert "changes take the frame's own locals" in payload["hint"], payload["hint"]
     assert "in Java, Rust, C and C++ their fields and elements" in payload["hint"], payload
     assert len(payload["hint"]) <= 150, payload["hint"]
+
+
+def test_a_python_sessions_field_set_hint_names_no_settable_rows():
+    # The same refusal in a session, from the worker.
+    error = classify(
+        ValueError(
+            "Only the stopped function's own locals can be changed for this language "
+            "(fields and elements cannot)"
+        )
+    )
+    assert error["code"] == "MUTATION_REJECTED" and "[settable]" not in error["hint"], error
+    # A native debugger too old for field changes keeps the hint: its rows are marked.
+    old = classify(
+        ValueError(
+            "Only the stopped function's own locals can be changed for this language with "
+            "this debugger, which cannot change fields and elements"
+        )
+    )
+    assert "[settable]" in old["hint"], old
