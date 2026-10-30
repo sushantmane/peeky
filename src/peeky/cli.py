@@ -530,7 +530,7 @@ def _python_scopes(path):
 
     Static: lists parameters and assigned locals, not values or attributes, and the
     module globals a function reads that the module assigns (`globals`: a probe reads them,
-    `[module global]`; ninth evaluation): names the module binds (`MAX_GAP = 30`, not
+    `[module global]`): names the module binds (`MAX_GAP = 30`, not
     `globals()["x"] = 1`) that the function's compiled code loads as globals (its generator
     expressions' and comprehensions' too), so not in code the compiler drops (`if False:`);
     nothing runs. Methods are qualified by class
@@ -573,7 +573,7 @@ def _python_scopes(path):
     except (SyntaxError, ValueError):
         compiled = None
     # A generator expression's code is its own (a comprehension's too, before 3.12), but
-    # it is the enclosing function's: its loads count there (review of PR #214).
+    # it is the enclosing function's: its loads count there.
     loads, codes = {}, [(compiled, None)] if compiled is not None else []
     while codes:
         code, into = codes.pop()
@@ -665,8 +665,8 @@ def _default_program(program, data, command):
         # Breakpoint lines cover every declared source; any one prepares the target.
         return sources[0]
     if command == "verify" and len(sources) == 1:
-        # The one source is the only file an edit can change (eleventh evaluation: a Java
-        # verify without --at was refused, though its config declares one source).
+        # The one source is the only file an edit can change (a Java config that declares
+        # one source needs no --at).
         return sources[0]
     listed = f" (one of: {', '.join(sources[:10])})" if sources else ""
     raise ValueError(
@@ -880,7 +880,7 @@ def _describe_text(manifest):
         lines.append(f"function names: unavailable ({reason})")
     spell = str
     if manifest["language"] == "rust":
-        # As the program spells them (#183): `Vec<u32>`, `String`.
+        # As the program spells them: `Vec<u32>`, `String`.
         from peeky.rust import rust_spelling as spell
     for scope in manifest.get("scopes", ()):
         if scope.get("omitted"):
@@ -898,12 +898,12 @@ def _describe_text(manifest):
         ambiguous = scope.get("ambiguous") or {}
         for name in scope["names"]:
             if name in ambiguous:
-                # Bindings no selector tells apart (#215 review): `let x = 1; let x = "a";`.
+                # Bindings no selector tells apart: `let x = 1; let x = "a";`.
                 count = ambiguous[name]
                 shown.append(f"{name} ({count} bindings on this line: not selectable by line)")
                 continue
             if isinstance(typed.get(name), list):
-                # One name declared with different types (#264): each with its own lines.
+                # One name declared with different types: each with its own lines.
                 shown += [
                     f"{name} ({spell(each['type'])}, {_block_span_text(each['spans'])})"
                     for each in typed[name]
@@ -916,14 +916,14 @@ def _describe_text(manifest):
             if name in scope.get("globals", ()):
                 parts.append("module global")
             if name in scope.get("statics", ()):
-                # In static storage: read where the code names it, never changed (#364).
+                # In static storage: read where the code names it, never changed.
                 parts.append("static")
             if name == "this" and name in captures:
                 # A lambda's `this` is its capture of the object, said of the one name.
                 parts = _capture_parts(captures[name], name, spell)
             shown.append(f"{name} ({', '.join(parts)})" if parts else name)
         # A GCC lambda's other captures, which a selector names inside it, and how each
-        # is captured (eval 13); among the names, in order.
+        # is captured; among the names, in order.
         for name, capture in captures.items():
             if name != "this" or name not in scope["names"]:
                 shown.append(f"{name} ({', '.join(_capture_parts(capture, name, spell))})")
@@ -941,7 +941,7 @@ def _describe_text(manifest):
     if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
     rust = manifest["language"] == "rust" and not manifest.get("optimized")
-    # #183: the root local types `--set` changes, as the build declares them.
+    # The root local types `--set` changes, as the build declares them.
     settable = ("i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize")
     settable += ("alloc::string::String",)
 
@@ -955,8 +955,7 @@ def _describe_text(manifest):
             and not isinstance((scope.get("typed_spans") or {}).get(name), list)
         ]
 
-    # Each function's root locals of those types (twelfth evaluation, laps 3: the line
-    # named fields and registers, never `start` or `total`).
+    # Each function's root locals of those types (`start`, `total`).
     with_roots = [
         f"{scope['scope']}: {_shown_paths(names)}"
         for scope in manifest.get("scopes", ())
@@ -969,8 +968,8 @@ def _describe_text(manifest):
             + "; ".join(with_roots[:12])
             + (f"; and {len(with_roots) - 12} more functions" if len(with_roots) > 12 else "")
         )
-    # The fields and elements of struct and array locals `set` may change, per function
-    # (seventh evaluation, finding 16; #183: the paths, `board.entries`, not `board`).
+    # The fields and elements of struct and array locals `set` may change, per function:
+    # the paths (`board.entries`), not `board`.
     with_parts = [
         f"{scope['scope']}: {', '.join(_shown_paths(paths) for paths in scope['settable_parts'].values())}"
         for scope in manifest.get("scopes", ())
@@ -982,8 +981,8 @@ def _describe_text(manifest):
             + "; ".join(with_parts[:12])
             + (f"; and {len(with_parts) - 12} more functions" if len(with_parts) > 12 else "")
         )
-    # Locals no stop can change, per function and why (#138); `probe --set` refuses them
-    # before the program runs.
+    # Locals no stop can change, per function and why; `probe --set` refuses them before
+    # the program runs.
     whys = {
         "register": "kept in a register (a candidate edit with `std::hint::black_box(&mut x)` "
         "keeps one in memory, rust-cookbook 6.6)",
@@ -1021,7 +1020,7 @@ def _describe_text(manifest):
                 + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
             )
     if rust:
-        # #183: where nothing can change, the way around it (an edit that keeps a local in
+        # Where nothing can change, the way around it (an edit that keeps a local in
         # memory, or changes what the program computes).
         nothing = [
             scope["scope"]
@@ -1049,8 +1048,8 @@ def _describe_text(manifest):
             "`std::hint::black_box(&mut x)` after a `let` keeps a local in memory: rust-cookbook 6.6)"
         )
     if manifest["language"] in ("c", "cpp"):
-        # Two blocks declaring one name with different types (#158): a change follows
-        # the one in scope at the stop.
+        # Two blocks declaring one name with different types: a change follows the one
+        # in scope at the stop.
         twice = [
             f"{scope['scope']}: {', '.join(names)}"
             for scope in manifest.get("scopes", ())
@@ -1076,7 +1075,7 @@ def _describe_text(manifest):
 
 
 def _capture_parts(capture, name, spell):
-    """`describe`'s words on a GCC lambda's capture (eval 13): its type, as the lambda's
+    """`describe`'s words on a GCC lambda's capture: its type, as the lambda's
     object holds it, and how it is captured; `this` is the object, by reference
     (`[this]`) or by value (`[*this]`)."""
     parts = [spell(capture["type"])] if capture.get("type") else []
@@ -1096,7 +1095,7 @@ def _block_span_text(spans):
 
 def _shown_paths(paths, limit=8):
     """A local's settable paths for `describe`'s line: the first ``limit``, then how
-    many more (#192 review: never cut silently)."""
+    many more (never cut silently)."""
     paths = list(paths)
     marked = paths and str(paths[-1]).startswith("… and ")
     more = paths.pop() if marked else None
@@ -1122,7 +1121,7 @@ def _ranges(numbers):
     return ", ".join(spans)
 
 
-# Notes every result of this command carries: a remote Python session's (#249).
+# Notes every result of this command carries: a remote Python session's.
 _NOTES = []
 
 
@@ -1171,11 +1170,11 @@ def probe(args):
             client, request, expected = _remote_probe(args, root, request)
     except Exception as exc:
         # Refused before the probe request was sent (here, or in the worker's version
-        # handshake; #190): the debugger's launch or attach request was not sent.
+        # handshake): the debugger's launch or attach request was not sent.
         exc.before_launch = True
         if isinstance(exc, Refused) and exc.code == "MUTATION_REJECTED":
             # A change refused here (Python's field `--set`) reads as the worker's
-            # refusals before launch do: `error [MUTATION_REJECTED]: …` (tenth evaluation).
+            # refusals before launch do: `error [MUTATION_REJECTED]: …`.
             result = {
                 "status": "failed",
                 "error": classify(exc, session_closed=False),
@@ -1271,10 +1270,10 @@ def _probe_result(args, root, result, edit, original, program, language):
         if (inputs := _python_inputs(root)) is not None:
             result["inputs_sha256"] = inputs
     if not args.no_save and not result.get("refused_before_launch"):
-        # A probe refused before it ran (#138) leaves no run to compare.
+        # A probe refused before it ran leaves no run to compare.
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, lambda shown: _probe_text(shown, quiet=args.quiet))
-    # 2 for a probe refused before it ran (finding 14), 4 for a change not made (#151).
+    # 2 for a probe refused before it ran, 4 for a change not made.
     return probe_exit_code(result)
 
 
@@ -1302,7 +1301,7 @@ def _misplaced_options(args):
 
 def _set_at(args, root, program):
     """`--set-at [<path>:]<line>[@<hit>] name=value` as Probe.set_at: in the --at file,
-    where the probe's breakpoints are (#137)."""
+    where the probe's breakpoints are."""
     points = []
     for where, assignment in getattr(args, "set_at", None) or ():
         path, line, hit, name, value = parse_set_at(where, assignment)
@@ -1352,7 +1351,7 @@ CANDIDATE_LOCATIONS = (
     "In the edited file, locations name the candidate's copy, since the line numbers are "
     "the candidate's"
 )
-# An edit that adds or removes no line (twelfth evaluation, playlist 5).
+# An edit that adds or removes no line.
 CANDIDATE_SAME_LINES = "The edit keeps the line numbers: the candidate's lines are the original's"
 
 
@@ -1363,7 +1362,7 @@ def _bind_candidate(result, original, edit, program):
     (result.get("probe") or {}).pop("edit", None)
     info = result.setdefault("candidate", {})
     info["diff"] = _diff(original, candidate, program)
-    # Its frames, breakpoint and locations are the copy that ran (#252), whose numbers
+    # Its frames, breakpoint and locations are the copy that ran, whose numbers
     # differ only where the edit adds or removes a line.
     info["note"] = CANDIDATE_SAME_LINES if keeps_lines(original, edit) else CANDIDATE_LOCATIONS
     ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
@@ -1414,19 +1413,19 @@ def _keep_evidence(args, result, root, language):
     }
     if result.get("candidate"):
         # A plain `queries diff` compares with the run before, whatever it was: name the
-        # run that is this probe without the edit (seventh evaluation, finding 12).
+        # run that is this probe without the edit.
         try:
             # The unedited source as the run read it (the candidate's own is the edit's).
             before = evidence.baseline(path, run_id, result.get("source_sha256"))
             # The run to compare with makes no change: a candidate's --set (perhaps of a
-            # variable only the edit declares) is left out too (eighth evaluation, L21).
+            # variable only the edit declares) is left out too.
             probe = result.get("probe") or {}
             without = (
                 " and without its --set/--set-at" if probe.get("set") or probe.get("set_at") else ""
             )
             apart = evidence.stops_apart(path, before, run_id) if before is not None else None
-            # The same probe with other captures (thirteenth evaluation): named, with what
-            # differs, since `diff` compares the selectors both captured.
+            # The same probe with other captures: named, with what differs, since `diff`
+            # compares the selectors both captured.
             near = (
                 evidence.near_baseline(path, run_id, result.get("source_sha256"))
                 if before is None and result.get("inputs_sha256")
@@ -1439,7 +1438,7 @@ def _keep_evidence(args, result, root, language):
         result["evidence"]["compare"] = (
             {"run": before, "command": f"peeky queries diff --param a={before} --param b={run_id}"}
             if before is not None and apart is None
-            # Its hits are at other breakpoint locations of the line (#157): the edit
+            # Its hits are at other breakpoint locations of the line: the edit
             # changed how often the line stops per pass, or it predates stop labels.
             else {
                 "run": None,
@@ -1507,7 +1506,7 @@ def _runs_noted(store, runs):
     evidence store at ``store``) adds the note on them: where one of them has not had it
     yet, which marks them all; and for a table of no known runs, every time. Once per
     saved run, not per state directory, which an earlier run of other code could use up
-    for good (review of PR #350; twelfth evaluation, laps 6: it came with every query)."""
+    for good."""
     if not runs:
         return True
     from peeky import evidence
@@ -1530,7 +1529,7 @@ def _runs_noted(store, runs):
 
 
 # More probe rows than this, of several selectors, get a pointer to `queries wide`; so do
-# this many selectors at 3 hits or more (twelfth evaluation, rainfall 5: 6 at 6 hits).
+# this many selectors at 3 hits or more.
 _WIDE_ROWS, _WIDE_SELECTORS = 40, 4
 
 
@@ -1538,15 +1537,15 @@ def _probe_text(result, quiet=False):
     from peeky.probe import _short_note
 
     # The note on short frame names and instance labels, once per state directory and
-    # never with --quiet (seventh evaluation, finding 8): `peeky sql --help` and `--schema`
+    # never with --quiet: `peeky sql --help` and `--schema`
     # say it too, and so does a query's table of a run that has not had it (`_runs_noted`).
     noted = not result.get("refused_before_launch") and _short_note(result) is not None
     short_names = not quiet and noted and _first_time("short-names")
     if short_names and (saved := result.get("evidence")):
         # Said with the run it is about: a query's table of that run leaves it out.
         _runs_noted(saved.get("store"), [saved.get("run_id")])
-    # A Python candidate's note on its copied root (eighth evaluation, L6): once per
-    # root and state directory, never with --quiet; `--json` always has it.
+    # A Python candidate's note on its copied root: once per root and state directory,
+    # never with --quiet; `--json` always has it.
     warnings = [
         warning
         for warning in result.get("warnings", ())
@@ -1557,8 +1556,8 @@ def _probe_text(result, quiet=False):
         )
     ]
     # lldb-dap 18's lines about a GCC build's debug information, and the text it sends as
-    # it ends, come with every probe of the build (thirteenth evaluation): whole the first
-    # time for that build in this state directory, then in short. A build is its
+    # it ends, come with every probe of the build: whole the first time for that build
+    # in this state directory, then in short. A build is its
     # `build_id`, the digest of its recipe, staged sources (an edit included) and tools;
     # without one (an older worker), they are whole every time. `--json` has them whole.
     build = result.get("build_id")
@@ -1611,7 +1610,7 @@ def _probe_text(result, quiet=False):
             len(result.get("rows", ())) > _WIDE_ROWS
             or (len(selectors) >= _WIDE_SELECTORS and len(hits) >= 3)
         ):
-            # A long table, a row per selector per hit (debounce 3, tenth evaluation).
+            # A long table, a row per selector per hit.
             text += (
                 f"\nevidence: one line per hit, a column per selector: "
                 f"`peeky queries wide --param run={saved['run_id']}`"
@@ -1635,7 +1634,7 @@ def sql(args):
             raise ValueError("Pass either SQL or --schema, not both")
         manifest = evidence.schema(path)
         if not args.schema:
-            # Text: a short index; --json: the whole manifest, as before.
+            # Text: a short index; --json: the whole manifest.
             _emit(manifest, args.json, evidence.schema_index)
             return 0
         part = evidence.schema_part(manifest, args.schema)
@@ -1749,7 +1748,7 @@ def _load(name):
 
 
 def _local_session(name, record):
-    """A local session's client (#374 review). Its record names the protocol its worker
+    """A local session's client. Its record names the protocol its worker
     speaks; where it names another, or none (a Peeky before protocol 10), the client asks
     the worker's `version` before it sends anything else (``Client._preflight``)."""
     verified = record.get("protocol") == PROTOCOL_VERSION
@@ -1758,8 +1757,7 @@ def _local_session(name, record):
 
 def _remote_session(name, record):
     """A remote session's client, once the worker still speaks the protocol the session
-    was started with: one that compares every source (#249), and marks which paths are
-    yours (#252)."""
+    was started with: one that compares every source, and marks which paths are yours."""
     forget = (
         f"Drop this record with `peeky session close --forget --name {name}`; the worker ends "
         "the old session after its idle timeout"
@@ -1790,7 +1788,7 @@ def _remote_session(name, record):
 
 
 class _RemoteClient(Client):
-    """A remote worker's client (#252). The worker marks each location that is one of the
+    """A remote worker's client. The worker marks each location that is one of the
     sources you both compared (`source:src/main.rs:5`): it is shown as your copy of that
     file, once you have it among the files you hashed. Any other path is the worker
     host's, and is shown as such: `worker:/srv/app/.venv/lib/pkg.py:12`."""
@@ -1864,7 +1862,7 @@ def _own_copy(name, client_root, names):
 
 class _RemoteSession(_RemoteClient):
     """A remote session's client: your checkout is rehashed before and after every
-    request, and must still be what the session compared at its start (#249)."""
+    request, and must still be what the session compared at its start."""
 
     def __init__(self, record):
         super().__init__(record["url"], record["token"], client_root=record.get("root"))
@@ -1926,7 +1924,7 @@ class _LocalClient(Client):
     the session's record names this client's protocol, which its worker's `version` said
     at its start, the worker is known to speak it (``verified``); else ``Client`` asks
     its `version` before anything else, and sends nothing more to a worker of another
-    protocol (#374 review). ``name``: the session's, which says what to do then."""
+    protocol. ``name``: the session's, which says what to do then."""
 
     def __init__(self, url, token, pid, name=None, verified=False):
         super().__init__(url, token)
@@ -2008,7 +2006,7 @@ _OPTIMIZED_NOTE = (
 def _named(text, name):
     """``text`` with `--name NAME` added to each session command it names (`peeky session
     wait`, `session continue --to 17`), for a session other than `default`: pasted, a
-    command acts on the session it came from (eighth evaluation, L1)."""
+    command acts on the session it came from."""
     if not name or name == "default":
         return text
     return re.sub(
@@ -2021,10 +2019,8 @@ def _named(text, name):
 def _relative_location(location, base=None):
     """`path:line`, the path relative to ``base`` (a session's: the directory its `session
     start` ran in), else the working directory, where the file is below it, as a probe
-    names its program (ninth evaluation: session states printed absolute paths); else as
-    given. A session's commands so name a file as its start did, from any directory
-    (eleventh evaluation: `grades.cpp:61`, then `outputs/…/grades.cpp:26`). Text only:
-    JSON keeps the path whole."""
+    names its program; else as given. A session's commands so name a file as its start
+    did, from any directory. Text only: JSON keeps the path whole."""
     if not isinstance(location, str):
         return location
     path, sep, line = location.rpartition(":")
@@ -2039,7 +2035,7 @@ def _relative_location(location, base=None):
 
 def _call_text(change, since=False):
     """How a session step's stop differs from where the step started, as the stacks show
-    it (#262), never that a call returned (it may have thrown, yielded or been unwound):
+    it, never that a call returned (it may have thrown, yielded or been unwound):
     "left `rename`; now in `run`", "now in `walk`, one call deeper, called from `walk`".
     ``since``: the same for `session get`'s place note, "after a step from `rename`".
     None for the same function at the same depth, or a kind this client does not know."""
@@ -2081,7 +2077,7 @@ def _state_text(state, name="default", base=None):
     if where and type(state.get("hit")) is int:
         where += f", hit {state['hit']}"
     if where and type(state.get("place")) is int and type(state.get("places")) is int:
-        # One of the line's several breakpoint locations in this function (#157).
+        # One of the line's several breakpoint locations in this function.
         where += f", stop {state['place']} of {state['places']}"
     hint = ""
     if state["state"] == "running":
@@ -2105,7 +2101,7 @@ def _state_text(state, name="default", base=None):
     elif isinstance(crash := state.get("crash"), dict):
         from peeky.probe import crash_text
 
-        # The program crashed (#342): what the debugger says, and where in its code.
+        # The program crashed: what the debugger says, and where in its code.
         if isinstance(crash.get("location"), str):
             crash = {**crash, "location": _relative_location(crash["location"], base)}
         nearest = crash.get("frame")
@@ -2129,7 +2125,8 @@ def _state_text(state, name="default", base=None):
         text += (
             f"\nnote: thread {unreported.get('thread_name')!r} was seen paused at "
             f"{unreported.get('breakpoint')}, but the debugger never reported that stop "
-            "(java-debug, issue #27); `peeky session report --json` has its debugger_events"
+            "(java-debug sometimes loses a stop event); `peeky session report --json` has its "
+            "debugger_events"
         )
     if state.get("note"):
         text += f"\nnote: {state['note']}"
@@ -2137,7 +2134,7 @@ def _state_text(state, name="default", base=None):
         text += f"\nwarning: {warning}"
     if state.get("auto_resumed"):
         last = state.get("last_auto_resumed") or {}
-        # A stop resumed before the debugger said where it was has no location (#356).
+        # A stop resumed before the debugger said where it was has no location.
         where = f"at {last['location']}" if last.get("location") else "at a place not read in time"
         text += (
             f"\nnote: {state['auto_resumed']} breakpoint stop(s) were auto-resumed after the "
@@ -2148,8 +2145,7 @@ def _state_text(state, name="default", base=None):
 
 def _step_onto_breakpoint(record, state):
     """The note for a step's stop (over or into, which end at a line's start) on the line
-    `session start` put the session's breakpoint on, in its program, or None (eleventh
-    evaluation: a step onto it showed no hit, and nothing said whether it counted). Hits,
+    `session start` put the session's breakpoint on, in its program, or None. Hits,
     `--hit` and `continue --count` count only the stops the debugger reports as the
     breakpoint's: debugpy reports such a stop so (a hit), java-debug and LLDB as the
     step's. java-debug's next `continue` runs on to the line's next pass; Xcode's LLDB stops
@@ -2180,8 +2176,7 @@ def _step_onto_breakpoint(record, state):
 
 def _step_line_note(record, state):
     """What a step's stop on a line of only `continue`, `} else {` or `} else if …` means,
-    or None (twelfth evaluation, laps 7 and playlist 7: such a stop came with no word).
-    Steps land where the code jumps (AGENT_GUIDE rule 10): `continue` has not yet left the
+    or None. Steps land where the code jumps (AGENT_GUIDE rule 10): `continue` has not yet left the
     pass; a `} else` line's code is often the jump that ends the branch above it, and an
     `else if`'s holds its test too."""
     path, _, line = str(state.get("location") or "").rpartition(":")
@@ -2218,8 +2213,7 @@ def _report_text(report, base=None):
     """`session report` text: the state, where the program is stopped, the session's hits
     and steps so far as its worker counted them (an older worker's report has neither),
     and the program's output. The worker's request history (`history`, several per
-    command) is JSON only: a bare count of it read as the commands run (sixth evaluation,
-    finding 14)."""
+    command) is JSON only: a bare count of it would read as the commands run."""
     from peeky.names import display_function
 
     where = ""
@@ -2332,7 +2326,7 @@ def _variables_text(snapshot, name="default", base=None):
                 else ""
             )
             if more and variable.get("whole"):
-                # A Java String or boxed number (#204): a value, not its class's fields.
+                # A Java String or boxed number: a value, not its class's fields.
                 more = (
                     ""
                     if str(variable.get("value")).startswith('"')
@@ -2347,22 +2341,22 @@ def _variables_text(snapshot, name="default", base=None):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
             if variable["name"] in alike:
-                # Two rows that look the same: which spelling each is (#195).
+                # Two rows that look the same: which spelling each is.
                 more += (
                     f" [written {ascii(variable['name'])}: another name here differs from it "
                     "only by Unicode normalization]"
                 )
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             if pointed := pointed_text(variable):
-                # Which element's address a C or C++ pointer holds (#302), as `get` says.
+                # Which element's address a C or C++ pointer holds, as `get` says.
                 view = f"  [{pointed}]" + view
             if variable.get("stale"):
-                # May be moved or dropped: its fields are what it left behind (#108).
+                # May be moved or dropped: its fields are what it left behind.
                 view += "  [stale]"
             if variable.get("settable"):
                 view += "  [settable]"
             elif variable.get("not_settable"):
-                # No stop of this build can change it (#138), or this one (Java, #261).
+                # No stop of this build can change it, or this one (Java).
                 view += f"  [not settable: {variable['not_settable']}]"
             elif variable.get("maybe_settable"):
                 view += f"  [maybe settable: {variable['maybe_settable']}]"
@@ -2382,7 +2376,7 @@ def _variables_text(snapshot, name="default", base=None):
                 "most 50 per scope): `session get NAME` reads one by name"
             )
     if returned := snapshot.get("returned"):
-        # What the function the step left returned (#155), apart from the locals.
+        # What the function the step left returned, apart from the locals.
         lines.append("[Returned]")
         lines.append(f"  {_returned_text(returned)}  (session get return)")
         if returned.get("view") == "unproven" and isinstance(returned.get("note"), str):
@@ -2419,20 +2413,9 @@ def _returned_text(returned):
         return f"{who} returned: <withheld: {returned.get('reason')}>"
     pointed = f"  [{pointed_text(returned)}]" if returned.get("past_end") else ""
     if returned.get("view") == "unproven" and isinstance(returned.get("note"), str):
-        # Text read through a pointer Peeky can't show points at a live object (#339).
+        # Text read through a pointer Peeky can't show points at a live object.
         pointed += "  [unproven]"
     return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}{pointed}"
-
-
-def _require_stepping(record, client):
-    """Remote workers built before `step` silently ignore `continue --to`: refuse."""
-    if not record.get("remote"):
-        return
-    if "step" not in client.call("version").get("operations", ()):
-        raise ValueError(
-            "This remote worker predates `session step` and `continue --to`; update Peeky "
-            "on the worker host"
-        )
 
 
 def _stop_place(record, row):
@@ -2466,8 +2449,8 @@ def _read_frame(row, base=None):
 def _shell_word(text):
     """``text`` as one shell word to paste: as is where plain; in double quotes where it
     holds a single quote but nothing a shell reads inside double quotes (`"`, `$`, a
-    backtick, a backslash, `!`); else as shlex quotes it (ninth evaluation:
-    `'history['"'"'alice'"'"'][0]'` for `history['alice'][0]`)."""
+    backtick, a backslash, `!`); else as shlex quotes it. Double quotes keep
+    `history['alice'][0]` readable, where shlex gives `'history['"'"'alice'"'"'][0]'`."""
     quoted = shlex.quote(text)
     if quoted == text or "'" not in text or re.search(r'["$`\\!]', text):
         return quoted
@@ -2490,7 +2473,7 @@ def _element_count(row):
     """An array's length where its type or value states it: C and C++ `Track[100]`, Rust
     `[u32; 100]`, Java `int[100]@55 …`; a C++ container's count its value states
     (`size=700 {…}`, which Peeky checked against the chain of one it read from its
-    nodes, #374); else None."""
+    nodes); else None."""
     kind, value = str(row.get("type") or ""), str(row.get("value") or "")
     found = (
         re.fullmatch(r"[^\[\]]+\[([0-9]+)\]", kind)
@@ -2523,8 +2506,8 @@ def _get_lines(row, session="default"):
             + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
         ]
     children = row.get("children", [])
-    # An array's elements past the first few, as a probe's preview shows them (twelfth
-    # evaluation, playlist 4: all 32 of `queue`'s, each with its hint). `--json` lists all.
+    # An array's elements past the first few, as a probe's preview shows them; `--json`
+    # lists all.
     elements = [
         child
         for child in children
@@ -2554,7 +2537,7 @@ def _get_lines(row, session="default"):
         if (child.get("past_end") or child.get("read_through")) and (
             pointed := pointed_text(child)
         ):
-            # One past an array's end: nothing it points at is read (#336). Or read at
+            # One past an array's end: nothing it points at is read. Or read at
             # the address another pointer `session get` was given holds.
             shown += f"  [{pointed}]"
         if child.get("view") == "unproven":
@@ -2568,17 +2551,16 @@ def _get_lines(row, session="default"):
         elif child.get("maybe_settable"):
             shown += f"  [maybe settable: {child['maybe_settable']}]"
         if child.get("note") and not child.get("unavailable") and child.get("view") != "unproven":
-            # Read through a local shown with a note, given below (#148); `[unproven]`
-            # says it for one read through a pointer (#339).
+            # Read through a local shown with a note, given below; `[unproven]` says it
+            # for one read through a pointer.
             shown += "  [note]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if hidden and row.get("children_truncated"):
         # The listing is one page of the debugger's (64): JSON has no more, and the count
-        # is of that page; the whole length only where the type gives it (review of PR
-        # #350).
+        # is of that page; the whole length only where the type gives it.
         first, last = hidden[0]["selector"], hidden[-1]["selector"]
         size = _element_count(row)
-        # A C++ container's count (`size=700 {…}`): how many more, and of what (#374).
+        # A C++ container's count (`size=700 {…}`): how many more, and of what.
         counted = str(row.get("value") or "").startswith("size=") and size
         keyed = counted and "{" in str(row["value"])
         lines.append(
@@ -2604,8 +2586,8 @@ def _get_lines(row, session="default"):
             else "  ... more children; select one by name or index"
         )
     if row.get("children_grouped") and not row.get("children"):
-        # Said only where nothing else is listed (ninth evaluation: on every dataclass,
-        # it was noise); `--json` always has `children_grouped`.
+        # Said only where nothing else is listed (on every dataclass it would be noise);
+        # `--json` always has `children_grouped`.
         lines.append(
             f"  (debugpy groups more members under {', '.join(row['children_grouped'])}: "
             f"select one by name, as {row['selector']}.__class__)"
@@ -2619,7 +2601,7 @@ def _get_lines(row, session="default"):
         if isinstance(child.get("raw_reason"), str):
             raw.setdefault(child["raw_reason"], []).append(child.get("selector") or child["name"])
     for reason, names in raw.items():
-        # Why a Rust Vec or String field shows LLDB's summary, not its contents (#156).
+        # Why a Rust Vec or String field shows LLDB's summary, not its contents.
         verb = "shows" if len(names) == 1 else "show"
         lines.append(f"  note: {', '.join(names)} {verb} LLDB's summary, not contents: {reason}")
     return lines
@@ -2668,12 +2650,6 @@ def session(args):
             # Which element's address a C or C++ pointer holds, as `session get` says.
             **({"extents": True} if record.get("language") in ("c", "cpp") else {}),
         )
-        if snapshot.get("frame", 0) != args.frame:
-            # A worker that predates `frame` ignores it and shows the innermost frame.
-            raise ValueError(
-                "This worker cannot read a caller's frame (it predates --frame); update "
-                "Peeky on the worker host"
-            )
         if args.globals and "globals" not in snapshot:
             raise ValueError(
                 "This worker cannot list module globals (it predates --globals); update "
@@ -2710,7 +2686,7 @@ def session(args):
         place = None
         if unresolved and not args.frame:
             # A name read at the wrong stop (a caller's, a callee's): say which stop this
-            # is (seventh evaluation, finding 15). `--frame N` names its frame already.
+            # is. `--frame N` names its frame already.
             place = _stop_place(record, unresolved[0])
             change = record.get("call_change")
             call = _call_text(change, since=True) if isinstance(change, dict) else None
@@ -2733,9 +2709,8 @@ def session(args):
         )
         if failed := [row["selector"] for row in rows if "error" in row]:
             # Every row was still printed; the exit status says one selector failed, and
-            # this line which (ninth evaluation: exit 1 with no word of which, or why).
-            # The rows first: a pipe buffers stdout, so the line it calls "above" came
-            # before them where both streams share one (tenth evaluation).
+            # this line which. The rows first: a pipe buffers stdout, so the line it calls
+            # "above" would come before them where both streams share one.
             sys.stdout.flush()
             print(
                 f"peeky: no value for {', '.join(failed[:10])}"
@@ -2772,8 +2747,6 @@ def session(args):
         if args.count != 1 and (args.to is not None or args.to_exit):
             raise ValueError("--count counts breakpoint stops; it cannot go with --to or --to-exit")
         stop = _stop(record)
-        if args.to is not None:
-            _require_stepping(record, client)
         # --to-exit clears the breakpoints in the same worker operation, after it
         # confirms this stop is still current (it may have been auto-resumed).
         client.call(
@@ -2814,12 +2787,11 @@ def session(args):
             return 3
     elif args.action == "step":
         kind = "in" if args.into else "out" if args.out else "over"
-        _require_stepping(record, client)
         client.call("step", **_stop(record), kind=kind, calls=True)
         state = _wait(record, client, args.timeout)
         if _counted(state) and state.get("reason") == "breakpoint":
             # The code the step ran reached the session's breakpoint first (a recursive call,
-            # or the rest of the function on `--out`): the step is over (eighth evaluation, L3).
+            # or the rest of the function on `--out`): the step is over.
             state["note"] = (
                 f"the session's breakpoint (hit {state['hit']}) stopped the step before it "
                 "ended, and the step is over"
@@ -2833,7 +2805,7 @@ def session(args):
         returned = None
         if kind == "out" and state["state"] == "stopped" and record.get("language") != "python":
             # What the function returned, as `session get return` reads it, shown with the
-            # stop (eighth evaluation, L2); none where the step did not end at a return.
+            # stop; none where the step did not end at a return.
             from peeky.probe import RETURN
 
             try:
@@ -2886,7 +2858,7 @@ def session(args):
                 if log.is_file() and not log.is_symlink():
                     # Kept for post-mortem diagnosis until the next session of this name.
                     os.replace(log, _state_dir() / f"{args.name}.last.log")
-        # What became of the program the session started (#143).
+        # What became of the program the session started.
         cleanup = closed.get("cleanup") if isinstance(closed, dict) else None
         _emit(
             {"closed": args.name, **({"cleanup": cleanup} if cleanup else {})},
@@ -3037,8 +3009,8 @@ def _probe_remote(args, root, request, client, expected):
         edit=request.edit,
         set_at=request.set_at,
     )
-    # A probe answer has one of these statuses, or is a probe child's bare error (#190
-    # review: any JSON object was taken for one).
+    # A probe answer has one of these statuses, or is a probe child's bare error; not
+    # just any JSON object.
     error = result.get("error") if isinstance(result, dict) else None
     bare_error = isinstance(error, dict) and isinstance(error.get("code"), str)
     if not isinstance(result, dict) or (
@@ -3101,7 +3073,7 @@ def _probe_remote(args, root, request, client, expected):
             _source_matches(root, request.entry, result.get("entry_sha256"), "entry script")
         if ran or result.get("source_sha256") is not None:
             _inputs_match(root, client, dict(request.expect_inputs), result)
-        # Your own checkout must still be what was compared (#249).
+        # Your own checkout must still be what was compared.
         _checkout_unchanged(root, client.sources, dict(request.expect_inputs))
         if (getattr(client, "sources", None) or {}).get("kind") == "python":
             result["warnings"].append(REMOTE_PYTHON_NOTE)
@@ -3159,7 +3131,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         raise
     record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
     record.update(root=str(root), program=program, language=language, cwd=os.getcwd(), line=line)
-    # What a later command checks again before it uses this session (#249).
+    # What a later command checks again before it uses this session.
     record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
     if (client.sources or {}).get("kind") == "python":
         record["note"] = REMOTE_PYTHON_NOTE
@@ -3325,7 +3297,7 @@ def _start_local(args, root, program, line, language, data, max_pause):
             root=str(root), program=program, language=language, cwd=os.getcwd(), line=line
         )
         # Its worker's protocol, asked before anything runs and kept: each later command
-        # checks it before it sends a request (#374 review).
+        # checks it before it sends a request.
         version = client.call("version")
         protocol = version.get("protocol") if isinstance(version, dict) else None
         if protocol != PROTOCOL_VERSION:
@@ -3386,13 +3358,8 @@ def _frame_index(text):
 
 
 def _counted(state):
-    """Whether a stop is one of the session's numbered breakpoint stops. A worker that
-    does not number hits (older Peeky) counts its breakpoint stops by reason."""
-    if state["state"] != "stopped":
-        return False
-    if "numbered" in state:
-        return type(state.get("hit")) is int
-    return state.get("reason") == "breakpoint"
+    """Whether a stop is one of the session's numbered breakpoint stops."""
+    return state["state"] == "stopped" and type(state.get("hit")) is int
 
 
 def _run_on(record, client, state, more, deadline, target):
@@ -3425,7 +3392,7 @@ def _run_on(record, client, state, more, deadline, target):
 
 def _reached_line(state, line):
     """Whether `continue --to LINE` stopped at LINE; if not, a note says where it stopped
-    first, as `--count` and `--hit` do (seventh evaluation, finding 5): the `--to` line
+    first, as `--count` and `--hit` do: the `--to` line
     is removed at the next stop, whatever it is, so the session's own breakpoint can
     come first."""
     if state["state"] == "stopped":
@@ -3459,11 +3426,8 @@ def _until_hit(record, client, hit, timeout):
         return state, not hit or state["state"] == "stopped"
     if not state.get("numbered") or type(state.get("hit")) is not int:
         state["note"] = (
-            "this stop has no hit number (the worker predates hit numbers: update Peeky on "
-            "the worker host)"
-            if "numbered" not in state
-            else "this stop has no hit number"
-        ) + f"; stopped at the first stop instead of hit {hit}"
+            f"this stop has no hit number; stopped at the first stop instead of hit {hit}"
+        )
         return state, False
     state, _, complete = _run_on(record, client, state, hit - state["hit"], deadline, f"hit {hit}")
     return state, complete
@@ -3677,7 +3641,7 @@ def _verify_text(result, keep=False):
     output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
     shown = "\n".join(text.strip() for text in output if text.strip())
     if reason and shown and shown == re.sub(r" \(SystemExit: [^)]*\)$", "", reason):
-        # The checker printed only the line `reason` shows (eighth evaluation, L5).
+        # The checker printed only the line `reason` shows.
         lines.append("output: the checker printed only the `reason:` line above")
     elif any(output):
         lines.extend(("output:", *output))
@@ -3740,8 +3704,8 @@ def _verify_reason(result):
     """Why a verify did not pass, in one line: the build's diagnostic, a timeout, or the
     checker's error; for a checker that exited with a status alone (`sys.exit(1)`,
     unittest's `sys.exit(True)`), the first line of its stdout that says what failed
-    (``_FAILURE``), else stdout's last line; with no stdout, the same of stderr
-    (seventh evaluation, finding 11). The status stays in `checker exit` (and
+    (``_FAILURE``), else stdout's last line; with no stdout, the same of stderr. The
+    status stays in `checker exit` (and
     `checker.error`), and in the reason where it is not that exit code."""
     checker = str((result.get("checker") or {}).get("error") or "")
     reason = result.get("diagnostic") or checker
@@ -4035,7 +3999,7 @@ class _QueriesHelpFormatter(argparse.RawDescriptionHelpFormatter):
 def main(argv=None, _job=False, _edits=None):
     from peeky.processes import keep_children_waitable
 
-    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
+    keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
@@ -4141,13 +4105,13 @@ def main(argv=None, _job=False, _edits=None):
         "from $PEEKY_WORKER_TOKEN; local and worker sources must match",
     )
     sub.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
-    # A worker's probe child: a JSON {path: sha256} of every source its client holds (#249).
+    # A worker's probe child: a JSON {path: sha256} of every source its client holds.
     sub.add_argument("--expect-inputs-file", type=Path, help=argparse.SUPPRESS)
-    # A worker's probe child (#190 review): a launch budget below the worker's watchdog,
+    # A worker's probe child: a launch budget below the worker's watchdog,
     # and a file written just before the debugger is asked to start the program.
     sub.add_argument("--launch-budget", type=float, help=argparse.SUPPRESS)
     sub.add_argument("--launch-marker", type=Path, help=argparse.SUPPRESS)
-    # A worker's probe child: where a remote Python run's bytecode cache goes (#249).
+    # A worker's probe child: where a remote Python run's bytecode cache goes.
     sub.add_argument("--pycache-dir", type=Path, help=argparse.SUPPRESS)
     sub.add_argument(
         "--arg",
@@ -4422,7 +4386,7 @@ def main(argv=None, _job=False, _edits=None):
         if getattr(args, "json", False):
             shown = {"error": payload}
             if getattr(args, "command", None) == "probe" and getattr(exc, "before_launch", False):
-                # As a probe the worker refused (#190): its launch request was not sent.
+                # As a probe the worker refused: its launch request was not sent.
                 shown = {"status": "failed", **shown, "refused_before_launch": True}
             print(json.dumps(shown, indent=2))
         # Whatever the command printed comes before why it failed.

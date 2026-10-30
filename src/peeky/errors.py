@@ -1,4 +1,4 @@
-"""Stable, machine-readable errors for agents (protocol version 1).
+"""Stable, machine-readable errors for agents.
 
 Every failure carries a `code` an agent can branch on, a `hint` saying what to do
 next, whether retrying the same request can help, and whether the session was
@@ -12,23 +12,23 @@ from urllib.error import HTTPError
 
 from peeky.textlines import split_lines
 
-# 4 (#305): a probe's `--set-at` value `@before` restores the value from before a change;
+# 4: a probe's `--set-at` value `@before` restores the value from before a change;
 # the worker's `launch` takes `entry_lines` and its `set_variable` `restorable` and
 # `target`, and returns `restore`. A protocol 3 worker would take `@before` for a value.
-# 5 (#336): the worker withholds what a C or C++ pointer one past an array's end points
+# 5: the worker withholds what a C or C++ pointer one past an array's end points
 # at (`past_end`); a protocol 4 worker reads `end[0]` and LLDB's text there as values.
-# 6 (#339): what is read through a C or C++ pointer Peeky can't show points at a live
+# 6: what is read through a C or C++ pointer Peeky can't show points at a live
 # object is marked `unproven`, with why (`unproven_read`); a protocol 5 worker shows it
 # as a plain value, and a protocol 5 client would take the mark for a Rust pointer's.
-# 7 (#344): a C or C++ pointer's value extent says `indirect` where it points at a
+# 7: a C or C++ pointer's value extent says `indirect` where it points at a
 # pointer; a protocol 6 worker leaves it out, so `pp[0].uses` of an `Item **pp` would be
 # said to be read at the address `pp`'s alias holds.
-# 8 (#361): a GCC lambda's captures come in a `Captures` scope, and a stop says why each
+# 8: a GCC lambda's captures come in a `Captures` scope, and a stop says why each
 # one it doesn't list isn't read (`closure_unread`); a protocol 7 worker reads none, and
 # a protocol 7 client would say lldb-dap doesn't list one where Peeky read none.
-# 9 (#382): a probe's `1:i` reads `i` in caller frame 1, and its rows say `frame` and
+# 9: a probe's `1:i` reads `i` in caller frame 1, and its rows say `frame` and
 # `stop_line`; a protocol 8 worker refuses `1:i` as no selector.
-# 10 (#374): `expand` takes `key`, the entry of that key among those Peeky read from an
+# 10: `expand` takes `key`, the entry of that key among those Peeky read from an
 # unordered container's nodes, past 256 entries too; a protocol 9 worker ignores `key`
 # and gives the first entries, which a client would take for the key's. Each request
 # names its client's protocol (`X-Peeky-Protocol`), which the worker checks before it
@@ -38,7 +38,7 @@ PROTOCOL_VERSION = 10
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
-        # A stop's read that timed out (#356): before the rule that takes any "breakpoint".
+        # A stop's read that timed out: before the rule that takes any "breakpoint".
         r"^A stop is never shown without (its line and function|the breakpoint it is at):",
         "TIMEOUT",
         "The debugger stalled at a stop. Start again once the machine is less busy; nothing "
@@ -360,65 +360,65 @@ def _build_failure(exc):
 _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 
 
-# The one action each MUTATION_REJECTED rule leaves (sixth evaluation, finding 6): the
+# The one action each MUTATION_REJECTED rule leaves: the
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
     (
-        # A `@before` restore Peeky cannot vouch for (#305).
+        # A `@before` restore Peeky cannot vouch for.
         r"@before",
         "Give the value itself at each hit (--set-at LINE@HIT name=VALUE), or try the change "
         "as a candidate edit (--old/--new) and verify it.",
     ),
     (
-        # Python's field or element `--set` (tenth evaluation): Python shows no [settable].
+        # Python's field or element `--set`: Python shows no [settable].
         r"which only Java, Rust, C and C\+\+ targets allow"
         r"|can be changed for this language \(fields and elements cannot\)",
         "Set a local of the stopped function instead, or add one with a candidate edit "
         "(`--old`/`--new`) and set it in the same probe.",
     ),
     (
-        # The debugger's own refusal, whatever it quotes (#261): a row's mark can't foresee it.
+        # The debugger's own refusal, whatever it quotes: a row's mark can't foresee it.
         r"[Tt]he debugger refused to change",
         "Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger "
         "itself refused this write, which no [settable] mark can promise.",
     ),
     (
-        # #329: a static or thread-local may keep what was computed from it, out of reach.
+        # A static or thread-local may keep what was computed from it, out of reach.
         r"a static or thread-local may hold state derived from",
         "Change it before the program uses it (a stop on an earlier line, or `--set-at` there).",
     ),
     (
-        # #329: a static or thread-local may keep the copy, which no change Peeky makes reaches.
+        # A static or thread-local may keep the copy, which no change Peeky makes reaches.
         r"a static or thread-local may hold a copy of",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
     ),
     (
-        # #320 review: a binding a call returned may hold a copy or only point into it.
+        # A binding a call returned may hold a copy or only point into it.
         r"may hold a copy of (?:it|`[^`]+`) that it goes on with, unless [^.:]* only points? "
         r"into it",
         "Change it before the program copies or borrows it (a stop on an earlier line, or "
         "`--set-at` there).",
     ),
     (
-        # #321 review: what a binding keeps behind a cell may be computed from it, no copy.
+        # What a binding keeps behind a cell may be computed from it, no copy.
         r"may hold state derived from (?:it|`[^`]+`) that it goes on with",
         "Change it before the program uses it (a stop on an earlier line, or `--set-at` there).",
     ),
     (
-        # #321: a binding that may keep the copy behind a cell or a channel, out of reach.
+        # A binding that may keep the copy behind a cell or a channel, out of reach.
         r"may hold a copy of (?:it|`[^`]+`) that it goes on with, which may be out of Peeky's "
         r"reach",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
     ),
     (
-        # #300 review: or a binding's copy that a call since may have changed.
+        # A copy already made, or a binding's copy that a call since may have changed.
         r"has already copied (?:its value|`[^`]+`) into"
         r"|^(?:(?!statement under way).)*may hold a copy of (?:it|`[^`]+`) that it goes on with",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` "
         "there), or change the copy the message names instead.",
     ),
     (
-        # Rust (#330): no path from the stop reads it before it is overwritten or ends.
+        # Rust: no path from the stop reads it before it is overwritten or ends.
         r"(?:does|may) not read (?:it|`[^`]+`) after (?:this stop|any stop of line [0-9]+), so a "
         r"change",
         "Change it where the program still reads it: after the line that overwrites it, or "
@@ -436,26 +436,26 @@ _MUTATION_HINTS = (
         "it is [settable].",
     ),
     (
-        # A stop in a function's prologue (a GCC build's one-line function, #279).
+        # A stop in a function's prologue (a GCC build's one-line function).
         r"before (?:the prologue stores|it has stored) the parameters"
         r"|whether the stop is before or after its function's prologue",
         "Change the argument at the call (a stop on the caller's line), or at a stop past the "
         "function's prologue, as the message says.",
     ),
     (
-        # A frame whose function Peeky cannot place (#167: GCC's lambdas, a `#line`).
+        # A frame whose function Peeky cannot place (GCC's lambdas, a `#line`).
         r"cannot place this function's declarations",
         "Change the value in a function `peeky describe` lists (the caller, before the call), "
         "or edit the source with `--old`/`--new`.",
     ),
     (
-        # #324 review: code inlined just before the stop that Peeky can't place.
+        # Code inlined just before the stop that Peeky can't place.
         r"code may already have read `[^`]+` before this stop: .*Peeky cannot tell",
         "Change it at a stop on an earlier line (`--at`, `session continue --to LINE`), "
         "where `inspect` marks it [settable].",
     ),
     (
-        # #324: code the build inlined from a call on the line ran before the breakpoint.
+        # Code the build inlined from a call on the line ran before the breakpoint.
         r"code may already have read `[^`]+` before this stop",
         "Change it at a stop on an earlier line (`--at`, `session continue --to LINE`), or "
         "`session step` onto the line from the one before it.",
@@ -466,13 +466,13 @@ _MUTATION_HINTS = (
         "`session step` to it.",
     ),
     (
-        # A GCC lambda's capture (eval 13): the lambda's own copy, or what it refers to.
+        # A GCC lambda's capture: the lambda's own copy, or what it refers to.
         r"is a capture of this lambda",
         "Change it where the message says (the lambda's own copy, or what a capture by "
         "reference refers to), or edit the source with `--old`/`--new`.",
     ),
     (
-        # A structured binding by reference (eval 13): no call passed it.
+        # A structured binding by reference: no call passed it.
         r"is a structured binding by reference",
         "Change what the binding refers to where it is [settable], or what fills it, before "
         "this line; or edit the source with `--old`/`--new`.",
@@ -500,7 +500,7 @@ _MUTATION_HINTS = (
         "Edit the source with `--old`/`--new`: Peeky never changes a slice's or Vec's elements.",
     ),
     (
-        # A pointer not proven a parameter (tenth evaluation): no call is named.
+        # A pointer not proven a parameter: no call is named.
         r"not a parameter, so no call passed it|proven a parameter here, so Peeky names no call",
         "If what it points at is a root local in some frame, change it there; otherwise edit "
         "the source with `--old`/`--new`.",
@@ -613,7 +613,7 @@ class Refused(ValueError):
 
 class UnplacedStop(ValueError):
     """An inspection's refusal of a frame the runtime can't place among its function's
-    lines, of which nothing is read (#326: the debugger shows a Rust stop inside a macro's
+    lines, of which nothing is read (the debugger shows a Rust stop inside a macro's
     definition). The session is kept. ``frame``: the frame, as an inspection lists it."""
 
     def __init__(self, message, frame=None):
@@ -625,7 +625,7 @@ def classify(exc, *, session_closed=None):
     """Map an exception to the protocol error object.
 
     An error that ended a session says what became of the processes it started
-    (``cleanup``, #143): "terminated pid N", "nothing Peeky could identify was still running", or
+    (``cleanup``): "terminated pid N", "nothing Peeky could identify was still running", or
     why not.
     """
     payload = _classify(exc, session_closed)

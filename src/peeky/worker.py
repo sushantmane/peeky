@@ -38,11 +38,11 @@ from peeky.text_sets import held_in_place, parse_text, text_kind
 from peeky.textlines import split_lines
 
 VIEW_SECONDS = 10
-# C and C++ previews (#136): their own budget per inspection or expansion, so that
-# they never take the one value views and string checks use (#128).
+# C and C++ previews: their own budget per inspection or expansion, so that
+# they never take the one value views and string checks use.
 PREVIEW_FETCHES = 256
 PREVIEW_SECONDS = 3
-# Reads of an unordered container's nodes (#360): their own budget per inspection or
+# Reads of an unordered container's nodes: their own budget per inspection or
 # expansion, within the value view's time. Without `readMemory` (lldb-dap 18), each node
 # costs a read per 8 bytes, each well under a millisecond.
 NODE_READS = 4096
@@ -72,16 +72,16 @@ OPERATIONS = frozenset(
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
 RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
 # How long a read of a stop (its frame, its place) waits for the debugger, as `inspect`
-# does; never past the stop's pause budget (#356).
+# does; never past the stop's pause budget.
 STOP_READ_S = 15
 # Stops where a user's step left the thread, maybe outside the program's sources: its
-# end, or (LLDB) the point another thread's stop at the same time caught it (#162).
+# end, or (LLDB) the point another thread's stop at the same time caught it.
 STEP_STOPS = frozenset({"step", "interrupted"})
-# Stops that may be a crash (#342): lldb-dap calls every signal stop `exception`, as it
+# Stops that may be a crash: lldb-dap calls every signal stop `exception`, as it
 # does a C++ throw or catch filter's. Only some are crashes (``fatal_signal``).
 CRASH_STOPS = frozenset({"exception", "signal"})
 # Signals whose default action ends the program, raised by its own fault or `abort`: a stop
-# on one is a crash where the program neither handles nor ignores it (review of #342).
+# on one is a crash where the program neither handles nor ignores it.
 FATAL_SIGNALS = ("SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE")
 # A macOS Mach exception, as LLDB describes it, and the signals it becomes.
 MACH_SIGNALS = {
@@ -93,11 +93,11 @@ MACH_SIGNALS = {
 # up to frame N; a crash's nearest frame of the program's own code is looked for in these.
 MAX_FRAMES = 64
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
-# The frames a step's start is compared by with the stop it returns to (#155).
+# The frames a step's start is compared by with the stop it returns to.
 ORIGIN_LEVELS = 10
-# The deepest stack a session step's note compares (#262): deeper ones get no note.
+# The deepest stack a session step's note compares: deeper ones get no note.
 CALL_FRAMES = 256
-# Why a step out's function shows no value (#155).
+# Why a step out's function shows no value.
 ABANDONED = (
     "it never returned: its caller went on without its return (an exception, longjmp or "
     "panic ended it), so a value the debugger lists would be another call's"
@@ -107,7 +107,7 @@ INLINED = (
 )
 # A C or C++ function its debug information gives no return type (`void`).
 RETURNS_NOTHING = "the function returns nothing"
-# Lost `stopped` events on attached JVMs (#27): see find_lost_stop. java-debug reports a
+# Lost `stopped` events on attached JVMs: see find_lost_stop. java-debug reports a
 # breakpoint stop within milliseconds. Polls start LOST_STOP_POLL_S after a resume and
 # run at most that often. Each is one `threads` request and one-frame `stackTrace`
 # requests: at most LOST_STOP_THREADS threads, the JVM's own threads and rechecks of a
@@ -128,7 +128,7 @@ class SessionFailed(RuntimeError):
 
 
 class LostStop(SessionFailed):
-    """The debugger made a stop it never reported (#27); the session was detached."""
+    """The debugger made a stop it never reported; the session was detached."""
 
 
 # Debugger placeholders for a local that has no value at this point (optimized out,
@@ -140,11 +140,11 @@ _UNAVAILABLE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 # The debugger's type of a pointer or an array (`const int *`, `char *const`, `int[96]`):
-# a field or an element of these alone says what its address can tell (#302).
+# a field or an element of these alone says what its address can tell.
 _POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
 # A C or C++ pointer's value that holds an address (`0x000000016f29b050`, `0x… "text"`).
 _NONZERO_ADDRESS = re.compile(r"0x0*[1-9a-fA-F][0-9a-fA-F]{0,15}(?![0-9a-zA-Z_])")
-# The scope a GCC lambda's captures are listed in (#361): no debugger's, so its values
+# The scope a GCC lambda's captures are listed in: no debugger's, so its values
 # are found again through `__closure` (DebugWorker.closure_members), never by a scope.
 CAPTURES_SCOPE = ("Captures", "peekyCaptures")
 # A hover of `__closure`: lldb-dap 18 writes `(const (unnamed struct) *const) __closure =
@@ -162,21 +162,21 @@ _CHARACTER_SIZES = {
 }
 
 
-# What the rule on reading through a C or C++ pointer (#339) reads at most per stop: how
+# What the rule on reading through a C or C++ pointer reads at most per stop: how
 # many of the listed frames' locals it asks the debugger to place (`&name`), and how many
 # of `main`'s argument and environment strings (`argv[N]`).
 PLACED_HOVERS = 32
 ARGUMENT_STRINGS = 64
-# How far above the stack pointer a local Peeky didn't place may be (#339): only for
+# How far above the stack pointer a local Peeky didn't place may be: only for
 # which locals it asks to place, never for what a note says.
 STACK_NEAR = 8 << 20
-# A local's name as a `&name` hover reads it (#339).
+# A local's name as a `&name` hover reads it.
 _PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,255}")
 
 
 def _selector_path(names):
     """The selector that reads the value the debugger names by ``names`` from its root
-    local, as a note names a pointer (#339): `p`, `s.next`, `nodes[2]`, and `pp[0]` for
+    local, as a note names a pointer: `p`, `s.next`, `nodes[2]`, and `pp[0]` for
     LLDB's `*pp`."""
     path = str(names[0]) if names else ""
     for name in names[1:]:
@@ -193,7 +193,7 @@ def _selector_path(names):
 def _string_span(result):
     """(start, end) of the C string a hover of `argv[N]` gives (`(char *) argv[1] =
     0x… "text"` from lldb-dap 18, `0x… "text"` from later ones), from its first byte to
-    its NUL, or to the last byte shown where LLDB cut the text (#339). None for NULL, or
+    its NUL, or to the last byte shown where LLDB cut the text. None for NULL, or
     a value with no text."""
     from peeky.cxx_strings import summary_units
 
@@ -267,7 +267,7 @@ def _process_alive(pid):
 class StackPage(list):
     """The frames of one `stackTrace` reply, innermost first, and whether they are the
     whole stack (``complete``): fewer than ``levels`` asked for (DAP: a shorter reply
-    ends the stack), and no more in its `totalFrames` (#187 review: a partial page is
+    ends the stack), and no more in its `totalFrames` (a partial page is
     never taken for the whole stack)."""
 
     def __init__(self, frames, levels, total, failed=False):
@@ -278,11 +278,11 @@ class StackPage(list):
 
 
 # Operations that resume the program or return its values: a remote Python session's
-# sources are rechecked before and after each (#249).
+# sources are rechecked before and after each.
 SOURCE_CHECKED = frozenset(
     {"wait", "continue", "step", "inspect", "expand", "preview", "set_variable", "report"}
 )
-# A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
+# A remote client's request holds the sha256 of every source: up to 4096 of them.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 # Each read of a request (its line, headers and body) waits at most this long: a
 # connection that sends nothing holds a thread no longer, even before it authenticates.
@@ -290,10 +290,10 @@ REQUEST_READ_TIMEOUT_S = 10
 
 
 class _NodePaths:
-    """A variable path's text for a walk of an unordered container's nodes (#360), read
+    """A variable path's text for a walk of an unordered container's nodes, read
     as a hover on the node-read budget and cached for the stop. ``forget`` drops the
     paths a walk read where it failed: node N's path holds N steps, so a long walk's
-    paths hold O(N²) text, none of which a failed walk keeps (#374 review)."""
+    paths hold O(N²) text, none of which a failed walk keeps."""
 
     def __init__(self, worker, frame):
         self.worker, self.frame, self.asked = worker, frame, []
@@ -317,13 +317,13 @@ class DebugWorker:
         # Adapter configuration is trusted startup input, never HTTP request data.
         self.adapter = adapter if adapter is not None else PythonAdapter()
         self.runtime = None
-        # A remote Python session's sources as accepted at launch (#249): rechecked around
+        # A remote Python session's sources as accepted at launch: rechecked around
         # every later operation, since the program may import any of them at any time.
         self.accepted_sources = None
-        # The sources a remote client compared at launch (#249): their names mark its
-        # results' locations (#252).
+        # The sources a remote client compared at launch: their names mark its
+        # results' locations.
         self.remote_names = None
-        # A stack frame in a file under the root that was not compared (#249): it taints
+        # A stack frame in a file under the root that was not compared: it taints
         # the session until it is closed.
         self.foreign_frame = None
         # A remote Python run's bytecode cache: outside the root, removed at close; a probe
@@ -345,17 +345,17 @@ class DebugWorker:
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
         self.global_handles = set()
-        # Scope handles of a GCC lambda's captures (#361): read through `__closure`,
+        # Scope handles of a GCC lambda's captures: read through `__closure`,
         # never changed; and the note on what is read through each listed frame's
         # `__closure`, by frame id, for the stop of ``pointee_stop``. Each handle's frame.
         self.capture_handles = {}
         self.closure_notes = {}
-        # Scope handles of a frame's variables in static storage (C, C++, #364), with the
+        # Scope handles of a frame's variables in static storage (C, C++), with the
         # frame: read, never changed.
         self.static_handles = {}
         self.launched_at = None
         # Whether the current launch has asked the debugger to start (or attach to) the
-        # program: an error before that is one before launch (#190).
+        # program: an error before that is one before launch.
         self.launch_requested = False
         # A file written just before that request, for a probe child's watchdog.
         self.launch_marker = None
@@ -366,8 +366,8 @@ class DebugWorker:
         # {handle: taint}: values inside a local whose pointers may reach freed memory
         # (a runtime's aggregate_taint), passed on to everything inside them.
         self.taints = {}
-        # {handle: (note, refuses)}: values inside a local shown with a note (#140), which
-        # everything read through it carries (#148).
+        # {handle: (note, refuses)}: values inside a local shown with a note, which
+        # everything read through it carries.
         self.notes = {}
         # (name, why) for roots a rule left unmarked in the last inspection (unsettable_here).
         self.unsettable_reasons = []
@@ -379,21 +379,21 @@ class DebugWorker:
         self.preview_fetches = 0
         self.preview_deadline = 0.0
         self.previewing = False
-        # Which roots' values say what their addresses can tell (#302): every root's, none,
+        # Which roots' values say what their addresses can tell: every root's, none,
         # or the roots named; fields and elements follow their root.
         self.extents = False
-        # What the stop's frames hold, for the rule on a pointer one past an array's end
-        # (#336): each frame's variables as the debugger listed them, by frame id; the
+        # What the stop's frames hold, for the rule on a pointer one past an array's end:
+        # each frame's variables as the debugger listed them, by frame id; the
         # arrays and objects found in them, read once per inspection; and whether a
         # caller's were fetched, which moves the debugger's scope context.
         self.frame_variables = {}
         self.past_bases = None
         self.frame_scans = 0
-        # What each frame of one stop holds (#336), by frame id: a stop's callers are read
+        # What each frame of one stop holds, by frame id: a stop's callers are read
         # once, however often it is inspected; and the locals there the debugger gave no
-        # address for, with where `main`'s arguments are (#339).
+        # address for, with where `main`'s arguments are.
         self.held_frames, self.held_stop, self.held_extras = {}, None, {}
-        # What the rule on reading through a C or C++ pointer learned at one stop (#339);
+        # What the rule on reading through a C or C++ pointer learned at one stop;
         # whether a caller's locals didn't all come this inspection, and whether a read for
         # the pointer being judged didn't: then its judgement isn't kept.
         self.pointee_stop = None
@@ -401,7 +401,7 @@ class DebugWorker:
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
-        # Seconds the value views spent waiting for the debugger's replies (#156 review).
+        # Seconds the value views spent waiting for the debugger's replies.
         self.view_waited = 0.0
         self.view_timed_out = False
         self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
@@ -440,32 +440,32 @@ class DebugWorker:
         self.stop_outside = self.stop_returns = self.co_served = False
         # Why the stop's frame is not read: the debugger shows it in a macro's definition.
         self.stop_macro = None
-        # What an `exception` or `signal` stop tells (#342): the debugger's description,
+        # What an `exception` or `signal` stop tells: the debugger's description,
         # and the nearest frame of the program's own code; and the same where it is a
         # proven crash.
         self.stop_signal = self.stop_crash = None
-        # Where the last step started (#155): the function it may leave, and the stack
+        # Where the last step started: the function it may leave, and the stack
         # its return must come back to, to tell whose value a debugger lists after it;
         # and, while a step out runs, what watches its caller (NativeSession.watch_return).
         self.step_origin = None
         self.return_watch = None
         # The stop a step out began at, where this stop interrupted it and its watch
-        # proves the caller's frame is the one the step was returning to (#174).
+        # proves the caller's frame is the one the step was returning to.
         self.step_held = None
-        # Breakpoint lines a probe watches only for a function's new calls (#305).
+        # Breakpoint lines a probe watches only for a function's new calls.
         self.watch_lines = set()
         self.reset_calls()
         self.forget_places()
         # {line: stops}: the launch's breakpoint lines that are loop headers stopping
-        # only before their loop, so many times each time it starts (#161).
+        # only before their loop, so many times each time it starts.
         self.loop_lines = {}
         self.stop_place = None
         self.reset_lost_stops()
-        # A session that failed on a lost stop (#27): its id, error and final report.
+        # A session that failed on a lost stop: its id, error and final report.
         self.failed = None
-        # What closing the last session did to the processes it started (#143).
+        # What closing the last session did to the processes it started.
         self.last_cleanup = None
-        # The output closing the last session left, and whether it is whole (#203).
+        # The output closing the last session left, and whether it is whole.
         self.last_final = None
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
@@ -529,7 +529,7 @@ class DebugWorker:
         return bool(getattr(self.runtime, "reports_unavailable_as_text", False))
 
     def debuggee_gone(self, runtime):
-        """Liveness check for launched JVMs whose adapter drops exit events (#27).
+        """Liveness check for launched JVMs whose adapter drops exit events.
 
         java-debug can answer `threads` with an empty list for a live, churning JVM
         (a thread collected mid-lookup), so an empty reply is only a hint. When the
@@ -560,7 +560,7 @@ class DebugWorker:
         return self.empty_thread_replies >= 2
 
     def reset_lost_stops(self):
-        """Forget what lost-stop detection (#27) knows; every session starts clean.
+        """Forget what lost-stop detection knows; every session starts clean.
 
         ``placed``: the session's breakpoints per resolved source path, as the adapter
         placed them (line, id, verified). ``stepping``: threads with a step in flight.
@@ -669,7 +669,7 @@ class DebugWorker:
         )
 
     def find_lost_stop(self, runtime):
-        """Evidence that java-debug made a breakpoint stop and never reported it (#27).
+        """Evidence that java-debug made a breakpoint stop and never reported it.
 
         Only for runtimes that opt in (an attached JVM), while running with nothing
         reported. java-debug lists frames only for threads the debugger suspended. The
@@ -836,7 +836,7 @@ class DebugWorker:
         """Close the session after a debugger failure; returns the error to raise.
 
         When the adapter itself said why it cannot go on (``DAP.fatal``: java-debug's
-        event thread died, #27), the session is kept as a failed one, as for a lost
+        event thread died), the session is kept as a failed one, as for a lost
         stop: its diagnosis goes to the history, later requests repeat the error, and
         `report` returns its final state with the adapter's stderr tail. So is any
         debugger failure met ``unattended`` (by the pause guard): no client was there
@@ -887,7 +887,7 @@ class DebugWorker:
 
         Crash or signal stops may fail runtime validation; that belongs to `inspect`,
         so a debugger's refusal here only omits the location. A debugger that does not
-        answer within STOP_READ_S fails the request (TimeoutError, #356): a stop is never
+        answer within STOP_READ_S fails the request (TimeoutError): a stop is never
         shown as if all of it were read. Under a pause budget (--max-pause), the read
         waits no longer than the budget; a stop that outlives it here is resumed unread
         (``resume_spent``).
@@ -912,7 +912,7 @@ class DebugWorker:
             )
             self.stop_macro = None
             if not self.stop_outside and (note := getattr(self.runtime, "macro_stop_state", None)):
-                # A stop the debugger shows in a macro's definition (#326): never read. Only
+                # A stop the debugger shows in a macro's definition: never read. Only
                 # where the stop's address proves it, which nothing has validated yet.
                 self.stop_macro = note(self.dap, frame)
             path = frame.get("source", {}).get("path")
@@ -955,14 +955,14 @@ class DebugWorker:
 
     def stop_read_limit(self, limit=STOP_READ_S):
         """How long a read of the current stop may wait for the debugger: ``limit``, and
-        never past the stop's pause budget (#356). The pause guard cannot resume the stop
+        never past the stop's pause budget. The pause guard cannot resume the stop
         while a request holds the lock."""
         left = self.pause_left()
         return limit if left is None else min(limit, left)
 
     def resume_spent(self):
         """Resume a stop that outlived its pause budget while it was read, or while the
-        guard waited for the lock (#356), as the guard would have; True if the program
+        guard waited for the lock, as the guard would have; True if the program
         runs again. Not while ``auto_resume`` takes the stops queued behind one."""
         if self.resuming or not self.pause_spent():
             return False
@@ -971,7 +971,7 @@ class DebugWorker:
     def auto_resume(self):
         """Resume the current stop past its pause budget, and keep the record of it; True
         if the program runs again. Where another thread's stop from the same all-threads
-        stop is queued, `continue` serves it next and resumes nothing (review of #367):
+        stop is queued, `continue` serves it next and resumes nothing:
         that stop, made at the same time, is past the budget too, so it is taken (none of
         it is read) and resumed in turn, until a `continue` resumes the program. Only then
         is each recorded as auto-resumed; else none is, and the guard tries again."""
@@ -1007,7 +1007,7 @@ class DebugWorker:
         return True
 
     def read_crash(self, runtime, body):
-        """What an `exception` or `signal` stop tells (#342), for display; nothing of any
+        """What an `exception` or `signal` stop tells, for display; nothing of any
         frame is read. (summary, crashed): ``crashed`` is True only where the stop is a
         fatal signal the program neither handles nor ignores (``fatal_signal``).
 
@@ -1063,7 +1063,7 @@ class DebugWorker:
         return crash, crashed
 
     def fatal_signal(self, kind, description):
-        """Whether an `exception` or `signal` stop is a crash (review of #342): True for a
+        """Whether an `exception` or `signal` stop is a crash: True for a
         signal of FATAL_SIGNALS (a macOS Mach exception that becomes one, or LLDB's
         `hit program assert`) that the program neither handles nor ignores, by its signal
         masks; None where they can't be read; else False: a C++ throw or catch filter's
@@ -1082,7 +1082,7 @@ class DebugWorker:
 
     def crash_refusal(self, frame, index):
         """Why nothing of ``frame``, outside the program's sources, is read at an
-        `exception` or `signal` stop (#342), and which frame of the program's own code to
+        `exception` or `signal` stop, and which frame of the program's own code to
         read instead. Only a proven crash is called one."""
         crash = self.stop_signal or {}
         what = crash.get("description") or f"reason: {self.stop_reason}"
@@ -1109,7 +1109,7 @@ class DebugWorker:
         )
 
     def call_origin(self):
-        """Where a step starts (#155): the thread, the function it may leave, and the
+        """Where a step starts: the thread, the function it may leave, and the
         frames it would return to; None if the debugger does not list them."""
         try:
             stack = self.dap.request(
@@ -1156,7 +1156,7 @@ class DebugWorker:
 
     def same_call(self, frames):
         """The stop a step out began at, where this breakpoint stop interrupted it in the
-        call it was leaving (#174): its watch held (`end_return_watch`), the stopped
+        call it was leaving: its watch held (`end_return_watch`), the stopped
         function is the one it was leaving, and the frames under it are as they were when
         the step began. Else None."""
         origin = self.step_origin
@@ -1171,7 +1171,7 @@ class DebugWorker:
         return self.step_held if after[1:] == list(before[1:]) else None
 
     def returned_value(self, runtime, frames, entry):
-        """What the function a step just left returned (#155), as the debugger lists it in
+        """What the function a step just left returned, as the debugger lists it in
         the frame it returned to (`(Return Value)`, java-debug's `->name()`): {function,
         type, value}, or {function, unavailable, reason} where Peeky cannot vouch for it.
         None if the stop is not such a return, or the debugger never lists one (debugpy:
@@ -1219,8 +1219,7 @@ class DebugWorker:
             entry = by_command(self.dap, self.thread_id)
         void, began = getattr(runtime, "returns_nothing", None), self.step_origin.get("frame")
         if entry is None and void and began and void(began):
-            # Its debug information gives it no return type: nothing was withheld (eleventh
-            # evaluation: `(return):  = <withheld: the debugger reported no value …>`).
+            # Its debug information gives it no return type: nothing was withheld.
             return {**returned, "type": "void", "unavailable": True, "reason": RETURNS_NOTHING}
         if entry is None:
             reason = (
@@ -1252,10 +1251,10 @@ class DebugWorker:
                 # As the language names and prints it (Rust: u8 65, not 'A').
                 kind, value = shown(entry)
             if past := self.returned_past_end(kind, value, frames[0] if frames else None):
-                # A C string one past a character array's end (#336): its address alone.
+                # A C string one past a character array's end: its address alone.
                 returned["past_end"], value = past, _NONZERO_ADDRESS.match(value)[0]
             elif note := self.returned_unproven(kind, value, frames[0] if frames else None):
-                # One Peeky can't show points at a live object (#339): marked, with why.
+                # One Peeky can't show points at a live object: marked, with why.
                 returned.update(view="unproven", unproven_read=True, note=note[:1000])
             return {
                 **returned,
@@ -1265,7 +1264,7 @@ class DebugWorker:
         return {**returned, "unavailable": True, "reason": reason}
 
     def end_return_watch(self, runtime, watch, event):
-        """A step out's watch on its caller ends with the step's first stop (#155). A stop
+        """A step out's watch on its caller ends with the step's first stop. A stop
         at one of its watched instructions, on its thread, in a frame at or above the
         caller's, means the call never returned: the caller went on without it. That stop
         ends the step (it is no breakpoint of the session's, unless one of those is there
@@ -1277,7 +1276,7 @@ class DebugWorker:
         frame's caller is at the stack pointer the call's caller had, and the frames are
         that call's (`inspect` compares them): another call returning to the same place
         in a caller frame there would have had to run the watched call instruction there
-        first (#174). `step_held` names the stop the step began at."""
+        first. `step_held` names the stop the step began at."""
         ids, reason = (event.get("body") or {}).get("hitBreakpointIds"), self.stop_reason
         # lldb-dap names one breakpoint of those at an address: where it is, decides.
         seen = runtime.unwatch_return(
@@ -1299,7 +1298,7 @@ class DebugWorker:
             origin["moved"] = True
         if traps := seen.get("dropped"):
             # A recursion through the caller ran its watched instructions that often,
-            # and LLDB dropped the watch to keep the step's cost bounded (#162).
+            # and LLDB dropped the watch to keep the step's cost bounded.
             origin["unwatched"] = (
                 f"its caller's watched instructions ran over {traps} times in deeper calls "
                 "during the step (a recursion through its caller), so the watch was "
@@ -1322,7 +1321,7 @@ class DebugWorker:
         return len(reply.get("stackFrames", []))
 
     def reset_calls(self):
-        """Forget where the last `session step` started (#262), and what the current
+        """Forget where the last `session step` started, and what the current
         stop's comparison with it found."""
         self.calls_from = None
         self.forget_calls()
@@ -1362,7 +1361,7 @@ class DebugWorker:
 
     def mark_calls(self):
         """Where a session's `step` starts (its request's `calls`), for the step's own stop
-        to be compared with (#262): the whole stack, and the names the innermost frame
+        to be compared with: the whole stack, and the names the innermost frame
         listed here, or at an earlier stop in the same function at the same depth."""
         stack = self.call_stack()
         names, line = self.stop_names, self.stop_line
@@ -1421,7 +1420,7 @@ class DebugWorker:
     def library_stop(self, runtime, frames):
         """A step's stop in a library frame (outside the program's sources) that returned
         from the program's function: where it is and what that function returned, never
-        the library's own locals (#155). None if the step returned from nothing."""
+        the library's own locals. None if the step returned from nothing."""
         if not self.step_origin or getattr(runtime, "return_entry", None) is None:
             return None
         scopes = self.dap.request("scopes", {"frameId": frames[0]["id"]}).get("scopes", [])
@@ -1471,8 +1470,8 @@ class DebugWorker:
         if self.stop_id and self.stop_hit:
             where["hit"] = self.stop_hit
         if self.stop_id and self.stop_place:
-            # Which of the line's breakpoint locations in this function the stop is at
-            # (#157): 1 to `places`, in address order.
+            # Which of the line's breakpoint locations in this function the stop is at:
+            # 1 to `places`, in address order.
             where["place"], where["places"] = self.stop_place
         if self.stop_id:
             # This worker numbers hits (older ones never send `hit`); False once a stop
@@ -1483,16 +1482,16 @@ class DebugWorker:
             where["outside_program"] = True
             where["returns_to_program"] = self.stop_returns
         if self.stop_id and self.stop_macro:
-            # Why `inspect` reads no value of the stop's frame (#326).
+            # Why `inspect` reads no value of the stop's frame.
             where["macro_stop"] = self.stop_macro
         if self.stop_id and self.stop_crash is not None:
-            # The program crashed (#342): what the debugger says, and where in its code.
+            # The program crashed: what the debugger says, and where in its code.
             where["crash"] = dict(self.stop_crash)
         elif self.stop_id and self.stop_signal is not None:
-            # Another `exception` or `signal` stop: the same, and no crash (review of #348).
+            # Another `exception` or `signal` stop: the same, and no crash.
             where["signal_stop"] = dict(self.stop_signal)
         if self.stop_id and self.call_change:
-            # Another function or depth than where the session's step started (#262).
+            # Another function or depth than where the session's step started.
             where["call_change"] = dict(self.call_change)
         return {**where, "reason": self.stop_reason} if self.stop_id else where
 
@@ -1518,15 +1517,15 @@ class DebugWorker:
                 return
             try:
                 if fatal := getattr(self.dap, "fatal", None):
-                    # The adapter said it cannot go on (java-debug's event thread died,
-                    # #27): close now, keeping the failed session (abandon), whoever waits.
+                    # The adapter said it cannot go on (java-debug's event thread died):
+                    # close now, keeping the failed session (abandon), whoever waits.
                     raise RuntimeError(fatal)
                 if not self.max_pause:
                     return
                 if self.state == "running":
                     pending = self.dap.pending_stop(self.cursor)
                     if pending is None:
-                        # No reported stop; one whose report was lost (#27) is found by
+                        # No reported stop; one whose report was lost is found by
                         # the same bounded poll `wait` uses, and then budgeted like any.
                         # The poll needs a verified breakpoint, and a pending one is only
                         # verified by a `breakpoint` event no client may be there to take.
@@ -1548,8 +1547,6 @@ class DebugWorker:
                     return
                 self.auto_resume()
             except Exception as exc:
-                import sys
-
                 failure = self.abandon(exc, unattended=True)
                 if isinstance(failure, SessionFailed):
                     # Closed; requests on the session get the same error.
@@ -1570,10 +1567,10 @@ class DebugWorker:
         with self.lock:
             failed = self.failed
             if operation != "launch" and failed and args.get("session_id") == failed["session"]:
-                # A session that failed for good (#27: a lost stop, a dead adapter event
+                # A session that failed for good (a lost stop, a dead adapter event
                 # thread) is already closed: it only reports what it knew, closes, or
                 # repeats its error. Nothing is served.
-                # What ending it did to the processes it started (#143), as on any error.
+                # What ending it did to the processes it started, as on any error.
                 cleanup = (failed["report"] or {}).get("cleanup")
                 if operation == "close":
                     self.failed = None
@@ -1616,7 +1613,7 @@ class DebugWorker:
                     exc.cleanup = self.last_cleanup
                 if operation == "launch" and not self.launch_requested:
                     # Before launch: the build, its checks or the debugger's start failed
-                    # before the program was asked to start (#190).
+                    # before the program was asked to start.
                     exc.before_launch = True
                 raise
             finally:
@@ -1689,7 +1686,7 @@ class DebugWorker:
 
     def forget_places(self):
         # {line: [(function, its locations' addresses, ascending)]}: where the debugger
-        # placed the session program's breakpoints (#157), by the code holding them.
+        # placed the session program's breakpoints, by the code holding them.
         self.places = {}
         # What they were asked from (runtime, request, reply): a stop at an address none
         # of them names asks once more (placed before the program loaded, unslid).
@@ -1697,18 +1694,18 @@ class DebugWorker:
         self.places_renewed = False
         # Some were listed before the program loaded (`m[0x…], unresolved`): their counts
         # hold, but their addresses are the module's, which a stop's pc may match by
-        # chance once the program is slid. No stop is labelled from them (review 2 of
-        # #160): the first stop asks again.
+        # chance once the program is slid. No stop is labelled from them: the first
+        # stop asks again.
         self.places_unresolved = False
 
     def note_places(self, runtime, requested, placed, deadline=None):
-        """Ask the runtime where the debugger placed the session program's breakpoints
-        (#157): a line can have several locations in one function (a macro's or a
+        """Ask the runtime where the debugger placed the session program's breakpoints:
+        a line can have several locations in one function (a macro's or a
         block's own code, a loop header's), and it stops at each. Where the debugger
         cannot say, none known means no warning and no `place`. ``deadline`` (monotonic
         seconds): when its answer is due (the launch's, a stop's read limit); else the
         runtime's own wait. A debugger that does not answer by then fails the request
-        (TimeoutError, #356), and what was known before is kept."""
+        (TimeoutError), and what was known before is kept."""
         asked = (runtime, list(requested), placed)
         hook = getattr(runtime, "breakpoint_locations", None)
         replies = (placed.get("breakpoints") or []) if isinstance(placed, dict) else []
@@ -1745,11 +1742,11 @@ class DebugWorker:
 
     def loop_headers(self, runtime, deadline=None):
         """{line: stops} of the session's breakpoint lines that are loop headers whose
-        every location runs once each time the loop starts, before it (#161): a C, C++
+        every location runs once each time the loop starts, before it: a C, C++
         `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
         runtime once, at launch, before the program runs (the debugger's disassembly and
         line table, kept for the launch), within the launch's ``deadline``; never again
-        when breakpoints are set again or their places asked again (review of #166). Best
+        when breakpoints are set again or their places asked again. Best
         effort."""
         hook = getattr(runtime, "loop_header_stops", None)
         if hook is None or self.dap is None or not self.places:
@@ -1765,7 +1762,7 @@ class DebugWorker:
             try:
                 count = hook(self.dap, source, line, groups, cache, **within)
             except TimeoutError:
-                # Past the launch's deadline (#356): the launch fails, never its note alone.
+                # Past the launch's deadline: the launch fails, never its note alone.
                 raise
             except Exception:
                 count = None
@@ -1775,7 +1772,7 @@ class DebugWorker:
 
     def loop_warnings(self):
         """The note for each breakpoint line that is a loop header stopping only before
-        its loop (#161)."""
+        its loop."""
         from peeky.loop_headers import loop_header_note
 
         notes = []
@@ -1791,8 +1788,8 @@ class DebugWorker:
 
     def place_of(self, frame):
         """(index, count) of the breakpoint location a stop's ``frame`` is at among its
-        line's locations in the same code, in address order, where there are several
-        (#157); else None."""
+        line's locations in the same code, in address order, where there are several;
+        else None."""
         if self.stop_reason != "breakpoint" or frame.get("line") not in self.places:
             return None
         text = frame.get("instructionPointerReference")
@@ -1810,7 +1807,7 @@ class DebugWorker:
                 return None
             # Placed before the program loaded, at addresses it may no longer have (listed
             # as unresolved, or none matches): asked once more, now that it runs, within
-            # the stop's own read limit (#356).
+            # the stop's own read limit.
             limit = self.stop_read_limit()
             if limit <= 0:
                 return None
@@ -1819,8 +1816,8 @@ class DebugWorker:
         return None
 
     def place_warnings(self):
-        """A warning for each line that stops more than once per pass in a function
-        (#157): --hits, --set-hit and --set-at's @HIT count stops. Inlined copies of one
+        """A warning for each line that stops more than once per pass in a function:
+        --hits, --set-hit and --set-at's @HIT count stops. Inlined copies of one
         function, which read alike, are said once."""
         labels = self.place_labels(
             function for groups in self.places.values() for function, _ in groups
@@ -1829,7 +1826,7 @@ class DebugWorker:
         for line in sorted(self.places):
             if line in self.loop_lines or line in self.watch_lines:
                 # Its loop note says more: none of those stops is at a pass. A line
-                # watched only for new calls (#305) was not asked for.
+                # watched only for new calls was not asked for.
                 continue
             for function, addresses in self.places[line]:
                 if len(addresses) > 1:
@@ -1845,7 +1842,7 @@ class DebugWorker:
 
     def place_labels(self, names):
         """{debugger function name: how a warning names it}: as tables show it, a Rust
-        generic's instance with its type arguments (`r1::gener<i32>`, #151) where the
+        generic's instance with its type arguments (`r1::gener<i32>`) where the
         shortened names would read alike; the whole name where that still does."""
         names = list(dict.fromkeys(names))
         shown = {name: display_function(name) for name in names}
@@ -1993,7 +1990,7 @@ class DebugWorker:
 
     def check_sources(self):
         """Raise (closing the session) if a remote Python session's sources changed on
-        this host since launch (#249). A file changed and restored between two checks is
+        this host since launch. A file changed and restored between two checks is
         not seen."""
         accepted = self.accepted_sources
         if accepted is None or not self.dap:
@@ -2018,7 +2015,7 @@ class DebugWorker:
 
     def check_frames(self, body):
         """Raise (closing the session) for a stack frame in a file under the root that is
-        not a compared .py file (#249). Frames outside the root, and in a virtual
+        not a compared .py file. Frames outside the root, and in a virtual
         environment inside it (installed packages), are not compared."""
         accepted = self.accepted_sources
         if accepted is None:
@@ -2042,7 +2039,7 @@ class DebugWorker:
             raise RuntimeError(self.foreign_message(name))
 
     def make_pycache(self):
-        """A fresh, empty directory for a remote Python run's bytecode (#249): never in the
+        """A fresh, empty directory for a remote Python run's bytecode: never in the
         target's root, or under ~/Documents. A probe child's is in its parent's scratch;
         otherwise the system's temporary directory, then the worker's own scratch."""
         documents = (Path.home() / "Documents").resolve()
@@ -2066,7 +2063,7 @@ class DebugWorker:
 
     def check_stack(self):
         """At a stop of a remote Python session, read the whole stack: check_frames
-        refuses a frame in a file that was not compared (#249)."""
+        refuses a frame in a file that was not compared."""
         if self.accepted_sources is None or not self.dap or self.state != "stopped":
             return
         if self.thread_id is None:
@@ -2145,7 +2142,7 @@ class DebugWorker:
                 raise ValueError("args must be a list of strings")
             _check_args(tuple(args["args"]))
         if operation == "launch" and args.get("sets") is not None:
-            # Each change with the line whose stops make it (#137: a --set-at's own).
+            # Each change with the line whose stops make it (a --set-at's own).
             changes = args["sets"]
             if (
                 not isinstance(changes, list)
@@ -2176,7 +2173,7 @@ class DebugWorker:
                 except ValueError as exc:
                     raise ValueError(f"sets: {exc}") from None
         if operation == "launch" and args.get("entry_lines") is not None:
-            # The lines a probe restores a value at (`@before`, #305): the first line of
+            # The lines a probe restores a value at (`@before`): the first line of
             # each function with code there is watched too, for new calls.
             lines = args["entry_lines"]
             if (
@@ -2253,7 +2250,7 @@ class DebugWorker:
                 if type(value) is not int or value < low or (high is not None and value > high):
                     raise ValueError(f"Invalid expansion {key}")
         if operation == "expand" and "key" in args:
-            # A map's key as the debugger shows one (#374), for entries a view read.
+            # A map's key as the debugger shows one, for entries a view read.
             if not isinstance(args["key"], str) or not 0 < len(args["key"]) <= 600:
                 raise ValueError("Invalid expansion key")
             if "start" in args or "index" in args or "count" in args:
@@ -2272,7 +2269,7 @@ class DebugWorker:
                 not isinstance(args["target"], str) or not 0 < len(args["target"]) <= 500
             ):
                 raise ValueError("target must be a nonempty string of at most 500 characters")
-            # Only what a selector can name (#195): a change never reaches a variable the
+            # Only what a selector can name: a change never reaches a variable the
             # CLI could not select, such as one whose name holds an invisible character.
             name = args["name"]
             if "reference" in args and not changeable(name):
@@ -2330,7 +2327,7 @@ class DebugWorker:
                         f"{path.relative_to(self.root).as_posix()}: refused "
                         "before launching. Sync sources before debugging remotely"
                     )
-            # And every other source the target reads (#249): what this worker's trusted
+            # And every other source the target reads: what this worker's trusted
             # target names, or every .py file under the root for Python.
             inputs_checked = inputs_python = None
             self.accepted_sources = self.foreign_frame = self.remote_names = None
@@ -2372,7 +2369,7 @@ class DebugWorker:
             # The session's own breakpoints in its program, restored after a one-shot
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
-            # Lines watched only for a function's new calls (#305): never warned about.
+            # Lines watched only for a function's new calls: never warned about.
             self.watch_lines = set()
             self.temporary_line = None
             self.hits, self.stop_hit, self.stop_line, self.steps = 0, None, None, 0
@@ -2392,9 +2389,9 @@ class DebugWorker:
             deadline = time.monotonic() + self.launch_deadline_s
 
             def left(limit=None):
-                # Every launch step gets what remains of the one deadline (#356): a step
-                # capped below it (15 s) failed a debuggee slow to start on a loaded
-                # machine while most of the launch's time was left.
+                # Every launch step gets what remains of the one deadline: a step
+                # capped below it (15 s) would fail a debuggee slow to start on a
+                # loaded machine while most of the launch's time was left.
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Launch exceeded its deadline; session discarded")
@@ -2410,13 +2407,13 @@ class DebugWorker:
                     prepared = self.adapter.prepare(program, self.root, **staging)
                 self.runtime = runtime = prepared
                 # A candidate's copy is written while it is prepared: it is what runs, so
-                # the sources' clock starts once it is written (#182).
+                # the sources' clock starts once it is written.
                 self.launched_at = time.time()
                 runtime.assert_current()
                 built = getattr(runtime, "source_manifest", None)
                 if expected_inputs is not None and isinstance(built, dict):
                     # What the build read, compared again before the debugger's launch
-                    # request: a source changed after the check above is refused (#249).
+                    # request: a source changed after the check above is refused.
                     from peeky.sources import difference, refusal
 
                     if what := difference(expected_inputs, built):
@@ -2433,7 +2430,7 @@ class DebugWorker:
                     self.refuse_never_settable(runtime, program, args["sets"])
                 watched = None
                 if args.get("entry_lines"):
-                    # Set before the program runs, so every call's start is seen (#305).
+                    # Set before the program runs, so every call's start is seen.
                     watched = self.watch_entries(runtime, program, args["entry_lines"])
                     requested = args.get("breakpoints", [])
                     extra = sorted(
@@ -2466,7 +2463,7 @@ class DebugWorker:
                 )
                 if self.accepted_sources is not None:
                     # A remote Python run reads no bytecode from the root (a stale .pyc is
-                    # not the compared source): its cache is a fresh, empty directory (#249).
+                    # not the compared source): its cache is a fresh, empty directory.
                     self.pycache = str(self.make_pycache())
                     launch_args["env"] = {
                         **launch_args.get("env", {}),
@@ -2486,8 +2483,8 @@ class DebugWorker:
                 except TimeoutError as exc:
                     if getattr(runtime, "dap_request", "launch") != "launch":
                         raise
-                    # Its launcher ran, but the program never reached the debugger (#143:
-                    # pydevd blocked listing a directory above it).
+                    # Its launcher ran, but the program never reached the debugger
+                    # (pydevd blocked listing a directory above it).
                     raise TimeoutError(
                         "The debuggee did not start: the debugger never initialized it "
                         f"within the launch's {round(budget, 1)} s"
@@ -2504,10 +2501,10 @@ class DebugWorker:
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
-                # Within the launch's deadline, as its other steps (#356): a stall past a
-                # shorter wait of their own left out their notes without a word.
+                # Within the launch's deadline, as its other steps: a stall past a
+                # shorter wait of their own would leave out their notes without a word.
                 self.note_places(runtime, args.get("breakpoints", []), points, deadline=deadline)
-                # Once, before the program runs (#161): breakpoints set again later keep it.
+                # Once, before the program runs: breakpoints set again later keep it.
                 self.loop_lines = self.loop_headers(runtime, deadline=deadline)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
@@ -2547,7 +2544,7 @@ class DebugWorker:
                     # Fields and array elements too (Java), not only root locals.
                     "supports_member_set": self.member_set(),
                     "supports_expand": True,
-                    # [[restore line, [the first lines watched for it]], ...] (#305).
+                    # [[restore line, [the first lines watched for it]], ...].
                     **({"entry_lines": watched} if watched is not None else {}),
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
@@ -2585,7 +2582,7 @@ class DebugWorker:
         if operation == "wait":
             timeout = max(0.1, min(float(args.get("timeout", 2)), 2))
             if self.state == "stopped":
-                # Past its pause budget while a request held the lock (#356): never
+                # Past its pause budget while a request held the lock: never
                 # returned as a live stop.
                 self.resume_spent()
             updates = {}
@@ -2680,7 +2677,7 @@ class DebugWorker:
                 watch, self.return_watch = self.return_watch, None
                 self.end_return_watch(runtime, watch, event)
             if self.stop_id and (discard := getattr(runtime, "discard_steps", None)):
-                # Every step under way at this stop is over (#162): LLDB keeps one a stop
+                # Every step under way at this stop is over: LLDB keeps one a stop
                 # interrupted, and would end it at a later `continue` with a step stop no
                 # one asked for. A step that ended left nothing to discard.
                 for thread in list(was_stepping):
@@ -2694,7 +2691,7 @@ class DebugWorker:
             if self.stop_id and self.sighted and self.sighted["thread"] == self.thread_id:
                 self.sighted = None  # it was reported after all
             if self.state == "terminated" and self.sighted:
-                # The program ended while a stop it made was never reported (#27).
+                # The program ended while a stop it made was never reported.
                 self.unreported = self.diagnose(runtime, self.sighted)
                 self.record(
                     {
@@ -2719,7 +2716,7 @@ class DebugWorker:
                 self.set_points(runtime, self.points)
             served = self.stop_id
             if self.stop_id and self.resume_spent():
-                # The stop outlived its pause budget while it was read (#356): resumed, as
+                # The stop outlived its pause budget while it was read: resumed, as
                 # the pause guard would have, and never returned as a live stop.
                 return {
                     "state": self.state,
@@ -2747,10 +2744,10 @@ class DebugWorker:
             self.reset_views()
             self.view_timed_out = False
             self.reset_previews()
-            # C and C++ previews (#136): of every root, none, or the roots named.
+            # C and C++ previews: of every root, none, or the roots named.
             wanted = args.get("previews", True)
             self.previewing = wanted if type(wanted) is bool else frozenset(wanted)
-            # What a C or C++ value's address can tell (#302), for the roots a probe or
+            # What a C or C++ value's address can tell, for the roots a probe or
             # `session get` reads, and what is read through them until the next inspection.
             wanted = args.get("extents", False)
             self.extents = wanted if type(wanted) is bool else frozenset(wanted)
@@ -2765,7 +2762,7 @@ class DebugWorker:
             drained = getattr(self.dap, "drained", None)
             quiescent = drained(1) if drained else True
             # Ten frames, or up to the one asked for (a crash's nearest frame of the
-            # program's own code is often deeper, #342).
+            # program's own code is often deeper).
             levels = min(max(10, args.get("frame", 0) + 1), MAX_FRAMES)
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": levels})
             frames = stack.get("stackFrames", [])[:levels]
@@ -2814,7 +2811,7 @@ class DebugWorker:
                         "program's sources: read one of your program's frames"
                     )
                 if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
-                    # What the function the step left returned is still shown (#155).
+                    # What the function the step left returned is still shown.
                     return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
                 # The user's own step left the program (into a library, or out of main):
                 # nothing there is read or changed, and the session stays usable.
@@ -2838,7 +2835,7 @@ class DebugWorker:
                     )
                 )
             if self.stop_reason in CRASH_STOPS and not _inside_program(runtime, selected_frame):
-                # The program crashed in a library, or in `abort` (#342): nothing there is
+                # The program crashed in a library, or in `abort`: nothing there is
                 # read, and the session is kept. Its own code's frames are read as callers.
                 raise ValueError(self.crash_refusal(selected_frame, index))
             try:
@@ -2859,7 +2856,7 @@ class DebugWorker:
                 why := note(selected_frame, index)
             ):
                 # The debugger shows the frame in a macro's definition, not on a line of its
-                # function (#326): nothing there is read, and the session is kept.
+                # function: nothing there is read, and the session is kept.
                 raise UnplacedStop(why, _public_sources(runtime, [selected_frame])[0])
             # Adapters may reuse raw scope IDs for different selected frames.
             # A new inspection revokes all earlier client scope handles.
@@ -2879,7 +2876,7 @@ class DebugWorker:
             pending, own, proof, given = [], [], None, None
             # Why a rule left roots unmarked (a stop part-way through a statement).
             self.unsettable_reasons, roots = [], []
-            # How each capture of a GCC lambda is read here (#361), and the names its
+            # How each capture of a GCC lambda is read here, and the names its
             # captures list in place of what the debugger lists (`[*this]`'s `this`, which
             # it gives no value; a local whose scope hasn't begun there).
             plan = self.capture_plan(runtime, selected_frame)
@@ -2888,7 +2885,7 @@ class DebugWorker:
             for scope in listed:
                 module = bool(is_global) and is_global(scope)
                 # The frame's variables in static storage, which lldb-dap lists apart from
-                # its locals, among its unit's globals (C, C++, #364).
+                # its locals, among its unit's globals (C, C++).
                 static = callable(in_statics) and in_statics(scope, selected_frame)
                 if module and not wanted:
                     continue
@@ -2903,7 +2900,7 @@ class DebugWorker:
                     validate_children(variables)
                 if static:
                     # Only those the code at the stop names, with no local of their name,
-                    # nor a capture's the frame reads in its place (#361).
+                    # nor a capture's the frame reads in its place.
                     variables = runtime.static_rows(
                         variables,
                         selected_frame,
@@ -2911,7 +2908,7 @@ class DebugWorker:
                         command=self.debugger_command,
                     )
                 elif (taken := self.take_returned(runtime, variables)) is not None:
-                    # Shown apart, as `returned`, and only if it is the function's (#155).
+                    # Shown apart, as `returned`, and only if it is the function's.
                     variables, found = taken
                     if index == 0 and given is None:
                         given = found
@@ -2932,7 +2929,7 @@ class DebugWorker:
                         and v["name"] not in groups
                     ]
                     # A local of a GCC lambda's whose scope hasn't begun, or has ended, where
-                    # the code names the capture of that name (#361): the capture is listed
+                    # the code names the capture of that name: the capture is listed
                     # instead, and that local's storage is no live object.
                     variables = [
                         v
@@ -2961,7 +2958,7 @@ class DebugWorker:
                 if not module:
                     roots += shown
                 pending.append((handle, scope, exposed, len(variables)))
-            # A GCC lambda's captures, which lldb-dap doesn't list (#361): read through
+            # A GCC lambda's captures, which lldb-dap doesn't list: read through
             # `__closure`, in a scope of their own that no change is made through.
             self.capture_handles = {}
             captured, unread = self.read_captures(runtime, selected_frame, plan)
@@ -2970,9 +2967,9 @@ class DebugWorker:
                 and self.stop_reason == "step"
                 and getattr(runtime, "checks_past_ends", False) is True
             ):
-                # What a step out returned is judged against the stop's arrays (#336): read
+                # What a step out returned is judged against the stop's arrays: read
                 # them before the scopes are bound for changes; so are what proves a C
-                # string it returned live (#339: the stack pointer, a local's `&name`).
+                # string it returned live (the stack pointer, a local's `&name`).
                 self.stop_bases(selected_frame)
                 if isinstance(given, dict) and isinstance(given.get("value"), str):
                     self.returned_unproven(given.get("type"), given["value"], selected_frame)
@@ -2991,8 +2988,8 @@ class DebugWorker:
                     entry["globals"] = True
                     self.global_handles.add(handle)
                 elif callable(in_statics) and in_statics(scope, selected_frame):
-                    # The frame's variables in static storage, read and never changed
-                    # (#364): named apart from the globals lldb-dap lists with them.
+                    # The frame's variables in static storage, read and never changed:
+                    # named apart from the globals lldb-dap lists with them.
                     entry.update(name="Statics", static_storage=True)
                     self.static_handles[handle] = selected_frame
                 elif writable:
@@ -3027,7 +3024,7 @@ class DebugWorker:
                 "frame": index,
                 # Which stop at the session's breakpoint this is, as state lines say.
                 **({"hit": self.stop_hit} if self.stop_hit else {}),
-                # Which of the line's breakpoint locations in its function (#157).
+                # Which of the line's breakpoint locations in its function.
                 **(
                     {"place": self.stop_place[0], "places": self.stop_place[1]}
                     if self.stop_place
@@ -3042,7 +3039,7 @@ class DebugWorker:
                     else {}
                 ),
                 # What the function keeps in static storage, which lldb-dap does not list
-                # among a frame's locals (C, C++), and is not read here; and why (#364).
+                # among a frame's locals (C, C++), and is not read here; and why.
                 **(
                     {"statics": statics}
                     if (lister := getattr(runtime, "static_locals", None))
@@ -3057,7 +3054,7 @@ class DebugWorker:
                 ),
                 # The captures a GCC lambda reads through `__closure`, which lldb-dap
                 # does not list either, and why each one not in its `Captures` scope isn't
-                # read here (#361).
+                # read here.
                 **(
                     {"closure_captures": captures}
                     if (listing := getattr(runtime, "closure_captures", None))
@@ -3078,11 +3075,11 @@ class DebugWorker:
                 snapshot["returned"] = returned
             if args.get("depth"):
                 # How many frames the thread has: a probe tells a recursive call from
-                # the same call's next stop by it (#155).
+                # the same call's next stop by it.
                 snapshot["depth"] = self.stack_depth()
                 if index == 0 and (began := self.same_call(frames)):
                     # This stop is in the call a step out that began at `began` was
-                    # leaving, proven by that step's watch (#174).
+                    # leaving, proven by that step's watch.
                     snapshot["same_call_as"] = began
             if index:
                 # Where the program is stopped, which a caller frame's location is not.
@@ -3099,7 +3096,7 @@ class DebugWorker:
                 # A name missing from the locals may be a module global (`globals`).
                 snapshot["globals_available"] = True
             if index == 0:
-                # Kept for a session step's stop in this function at this depth (#262).
+                # Kept for a session step's stop in this function at this depth.
                 self.stop_names.update(own)
                 before = self.names_before
                 gone = sorted(set(before["names"]) - set(own)) if before else []
@@ -3173,11 +3170,11 @@ class DebugWorker:
             if ref in self.capture_handles and (
                 refusal := getattr(runtime, "capture_refusal", None)
             ):
-                # A GCC lambda's capture (#361): its object holds it, read through a pointer.
+                # A GCC lambda's capture: its object holds it, read through a pointer.
                 why = refusal(args["name"], frame=self.capture_handles[ref])
                 raise ValueError(f"{args['name']!r} cannot be changed: {why}")
             if ref in self.static_handles:
-                # A C or C++ variable in static storage (#364).
+                # A C or C++ variable in static storage.
                 raise ValueError(
                     _STATIC_SET.format(
                         name=repr((split_located(str(args["name"])) or (args["name"],))[0]),
@@ -3190,7 +3187,7 @@ class DebugWorker:
             if (self.reference_frames.get(ref) or {}).get("id") != self.innermost_frame:
                 raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
             adapter_ref = self.reference_adapter[ref]
-            # Text in double quotes (#137): C, C++ and Rust strings are written in place.
+            # Text in double quotes: C, C++ and Rust strings are written in place.
             text = parse_text(args["value"]) if getattr(runtime, "text_language", None) else None
             if text is None:
                 runtime.validate_value(args["value"])
@@ -3244,7 +3241,7 @@ class DebugWorker:
                 validate_target(variable, self.reference_frames.get(ref), **self.since_launch())
             unread_note = None
             if read_after := getattr(runtime, "read_after", None):
-                # Java (#164): a local the code never reads again is never changed.
+                # Java: a local the code never reads again is never changed.
                 verdict = read_after(variable, self.reference_frames.get(ref), self.stop_reason)
                 if verdict is False:
                     raise ValueError(_UNREAD.format(name=repr(args["name"])))
@@ -3337,7 +3334,7 @@ class DebugWorker:
             return _public_placed(runtime, placed)
         if operation == "continue":
             self.stopped(args)
-            # A continue's stop is never compared with this one (#262): the program may
+            # A continue's stop is never compared with this one: the program may
             # have left this call and made another that looks the same.
             self.calls_from = None
             pending = None if args.get("to_exit") else self.co_stopped()
@@ -3349,7 +3346,7 @@ class DebugWorker:
                 self.forget_stop()
                 # Those threads keep their old stops in the debugger until a real resume.
                 self.co_served = True
-                # Nothing was resumed: the program did not go on (review of #348).
+                # Nothing was resumed: the program did not go on.
                 return {"state": self.state, "resumed": False}
             if args.get("to_exit"):
                 # Checked and applied under one lock: clear the launch breakpoints only
@@ -3398,7 +3395,7 @@ class DebugWorker:
                     "`session continue` serves and resumes them before stepping"
                 )
             kind = args.get("kind", "over")
-            # A session's own step (`calls`): its stop is compared with this one (#262).
+            # A session's own step (`calls`): its stop is compared with this one.
             self.calls_from = None
             if args.get("calls"):
                 self.mark_calls()
@@ -3415,7 +3412,7 @@ class DebugWorker:
                     # Its function, to tell one that returns nothing (`returned_value`).
                     origin["frame"] = listed[0]
             if before_step := getattr(runtime, "before_step", None):
-                # LLDB: a step out leaves one frame, not the library frames above (#155).
+                # LLDB: a step out leaves one frame, not the library frames above.
                 before_step(self.dap)
             watch = None
             if (
@@ -3448,7 +3445,7 @@ class DebugWorker:
                 self.cursor = max(self.cursor, consumed)
             self.steps += 1
             # Until this thread reports a stop, it may sit suspended anywhere the step
-            # ends, a breakpoint line included: never a lost-stop candidate (#27).
+            # ends, a breakpoint line included: never a lost-stop candidate.
             self.stepping.add(self.thread_id)
             self.mark_resumed()
             self.forget_stop()
@@ -3469,14 +3466,13 @@ class DebugWorker:
             "session_id": self.session,
             "state": self.state,
             # Where it is stopped, and how far the session has come: its breakpoint stops
-            # (`hits`, while they are numbered) and steps (eleventh evaluation: a report
-            # gave only its state and output).
+            # (`hits`, while they are numbered) and steps.
             **self.location(),
             **({"hits": self.hits} if type(self.hits) is int else {}),
             "steps": self.steps,
             "output": output,
             "output_truncated": truncated,
-            # The debugger's own lines, left out of the output (#167).
+            # The debugger's own lines, left out of the output.
             **({"debugger_diagnostics": lines, "diagnostic_count": count} if count else {}),
             **(
                 {"exit_code": code}
@@ -3516,7 +3512,7 @@ class DebugWorker:
     def frame_scopes(runtime, frame, scopes):
         """The scopes an inspection of ``frame`` lists, at most 16: and, in C and C++,
         lldb-dap's list of static storage where the frame's function declares a variable
-        there (#364)."""
+        there."""
         listed = runtime.local_scopes(scopes)
         is_global = getattr(runtime, "global_scope", None)
         if is_global and frame.get("name") == "<module>":
@@ -3527,7 +3523,7 @@ class DebugWorker:
         return listed[:16]
 
     def preview_stack(self):
-        """The stop for a preview's rule on standard containers (#181): its frames as
+        """The stop for a preview's rule on standard containers: its frames as
         listed, a way to read more, and how many threads the program has."""
         return {
             "stack": getattr(self, "listed_frames", None),
@@ -3537,8 +3533,8 @@ class DebugWorker:
 
     def whole_stack(self, levels):
         """The stop's first ``levels`` frames (a ``StackPage``), fetched once per
-        inspection, for the rule on standard containers a library call may be changing
-        (#181, #187); none, and not the whole stack, if the debugger refuses."""
+        inspection, for the rule on standard containers a library call may be changing;
+        none, and not the whole stack, if the debugger refuses."""
         cached = getattr(self, "whole_frames", None)
         if cached is None or cached[0] < levels:
             try:
@@ -3555,7 +3551,7 @@ class DebugWorker:
 
     def threads_at_stop(self):
         """How many threads the program has at this stop, read once per inspection, or
-        None where that is not sure (#181 review). The threads every source names: two
+        None where that is not sure. The threads every source names: two
         `threads` replies (lldb-dap answers its first with the threads the program had
         at launch), the `thread` events that said a thread started since launch, and
         the runtime's own list where it has one (LLDB's `thread list`); a source that
@@ -3606,8 +3602,8 @@ class DebugWorker:
         )
 
     def listed_levels(self):
-        """How many frames the stop's inspection listed: 10, or up to the frame it read
-        (#342), whose value views and expansions find that frame again among as many."""
+        """How many frames the stop's inspection listed: 10, or up to the frame it read,
+        whose value views and expansions find that frame again among as many."""
         return min(max(10, len(getattr(self, "listed_frames", None) or ())), MAX_FRAMES)
 
     def reacquire_scopes(self, runtime, frame, pending):
@@ -3642,8 +3638,8 @@ class DebugWorker:
         self.view_deadline = time.monotonic() + VIEW_SECONDS
 
     def view_exhausted(self, why=None):
-        """The budget's error, saying which limit ran out (#156 review: Peeky's own checks
-        once took the whole time, and the rows blamed an enum's view)."""
+        """The budget's error, saying which limit ran out and how much of the time the
+        debugger's reads took, since Peeky's own checks may take most of it."""
         if why is None and self.view_fetches >= 128:
             why = "128 debugger reads"
         elif why is None:
@@ -3662,12 +3658,12 @@ class DebugWorker:
             self.view_waited += time.monotonic() - started
 
     def raw_value(self, frame, path, nodes=False):
-        """The debugger's text for the variable path ``path`` in ``frame`` (#167: an
+        """The debugger's text for the variable path ``path`` in ``frame`` (an
         unordered container's own count, `us._M_h._M_element_count`), asked as a hover:
         lldb-dap then reads the path's variables and members as they are, past any
         formatter, and never evaluates it as an expression, so nothing runs in the
         program. Cached for the stop; counted against the value-view budget, or with
-        ``nodes`` against the node-read budget (#360: a word of a container's node)."""
+        ``nodes`` against the node-read budget (a word of a container's node)."""
         cache = getattr(self, "raw_values", None)
         if cache is None or cache[0] != self.stop_id:
             cache = self.raw_values = (self.stop_id, {})
@@ -3736,7 +3732,7 @@ class DebugWorker:
 
     def preview_fetch(self, reference, count, start=0):
         """The first ``count`` children of a raw debugger value (from ``start``), for a
-        runtime's preview (#136). Bounded per inspection or expansion (PREVIEW_FETCHES
+        runtime's preview. Bounded per inspection or expansion (PREVIEW_FETCHES
         requests within PREVIEW_SECONDS), apart from the value-view budget; exhaustion
         leaves the remaining values as the debugger shows them."""
         remaining = self.preview_deadline - time.monotonic()
@@ -3798,8 +3794,8 @@ class DebugWorker:
 
     def type_keys(self, kind):
         """What a C or C++ row's type names, where a typedef hides it: "typedef_kind" (a
-        pointer indexes as C does, a reference as its referent, #102), "pointee_type",
-        "aliased_type" (the class behind it: a C++ map by another name, #119) and
+        pointer indexes as C does, a reference as its referent), "pointee_type",
+        "aliased_type" (the class behind it: a C++ map by another name) and
         "pointee_aliased_type" (behind what a pointer points at: `IntSet *`)."""
         keys = {}
         resolve = getattr(self.runtime, "typedef_kind", None)
@@ -3816,7 +3812,7 @@ class DebugWorker:
         return keys
 
     def node_memory(self, reference, count):
-        """A memory read of an unordered container's nodes (#360), on the node-read
+        """A memory read of an unordered container's nodes, on the node-read
         budget (NODE_READS requests and 4 MiB per inspection or expansion)."""
         remaining = self.view_deadline - time.monotonic()
         if getattr(self, "node_reads", 0) >= NODE_READS or remaining <= 0:
@@ -3848,15 +3844,15 @@ class DebugWorker:
 
     def nodes_reachable(self, frame, trail, names):
         """Whether Peeky may read the nodes of an unordered container reached by ``names``
-        in ``frame`` (#360): ``nodes_unreached`` finds no step that stops it."""
+        in ``frame``: ``nodes_unreached`` finds no step that stops it."""
         return self.nodes_unreached(frame, trail, names) is None
 
     def nodes_unreached(self, frame, trail, names):
         """None where Peeky may read the nodes of an unordered container reached by
-        ``names`` in ``frame`` (#360): ``trail`` holds the debugger's variable for each
+        ``names`` in ``frame``: ``trail`` holds the debugger's variable for each
         name, the container (or a pointer or reference to it) last. Every C or C++
         pointer and C++ reference on the way (``indirections``) must be judged to refer
-        to a live object (#339's rule), never left unjudged: a live heap block, or the
+        to a live object (``judge_pointee``'s rule), never left unjudged: a live heap block, or the
         dead frame a dangling one holds, may hold bytes that read as entries. Else which
         step stops it: (its name, "pointer" or "reference", the locals Peeky couldn't place
         that may be what it refers to, ``unplaced_holders``), or () where the build can't
@@ -3874,12 +3870,12 @@ class DebugWorker:
 
     def unplaced_holders(self, variable, frame, steps, kind):
         """The listed frames' locals Peeky couldn't place (the debugger gave no address
-        for them, as lldb-dap 18 gives none for a container, #339) that may hold what the
+        for them, as lldb-dap 18 gives none for a container) that may hold what the
         pointer or reference ``variable`` refers to, where its address is near the stack
         pointer and above it, in a live call's frame: [(frame index, its function, the
         local's name)] of those whose own type is what it refers to, and which read
         there (``container_reads``): candidates to inspect, which nothing proves it refers
-        to (eval 13 prep, finding 2). At most three."""
+        to. At most three."""
         value = variable.get("value")
         held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
         sp = self.stop_stack_pointer() if held is not None else None
@@ -3919,7 +3915,7 @@ class DebugWorker:
     def container_reads(self, variable, frame, name):
         """Whether the unordered container local ``name`` of the listed ``frame`` (the
         debugger's ``variable``) reads at this stop, as its row there would: the debugger
-        lists it right, or Peeky reads its entries from its own nodes (#360). Only then
+        lists it right, or Peeky reads its entries from its own nodes. Only then
         does a row send the reader there (``unplaced_holders``)."""
         runtime = self.runtime
         unlisted = getattr(runtime, "unlisted_container", None)
@@ -3941,8 +3937,8 @@ class DebugWorker:
     def referent_proven(self, variable, frame, steps):
         """Whether the C++ reference ``variable`` (whose value the debugger gives as the
         address it refers to) is judged to refer to a live object, by the rule for what
-        a pointer points at (``judge_pointee``, #339): for reading an unordered
-        container's nodes through it (#360). Never where nothing is judged."""
+        a pointer points at (``judge_pointee``): for reading an unordered
+        container's nodes through it. Never where nothing is judged."""
         runtime = self.runtime
         if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
             return False
@@ -3971,7 +3967,7 @@ class DebugWorker:
 
     def pointee_proven(self, variable, frame, steps):
         """Whether the C or C++ pointer ``variable`` is judged to point at a live object
-        (``pointee_unproven``, #339): never where nothing is judged (a type the build
+        (``pointee_unproven``): never where nothing is judged (a type the build
         doesn't size, a runtime that judges none)."""
         runtime = self.runtime
         if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
@@ -3989,15 +3985,15 @@ class DebugWorker:
 
     def bytes_reachable(self, frame, trail, names):
         """Whether a C or C++ character array reached by ``names`` (``trail``: the
-        debugger's variable for each) may have its bytes after LLDB's summary read again
-        (#390 review): only where every pointer and reference on the way is judged to
+        debugger's variable for each) may have its bytes after LLDB's summary read again:
+        only where every pointer and reference on the way is judged to
         refer to a live object (``nodes_reachable``), in an unoptimized build. Its caller
         also requires no note on it and no taint: what such a value holds may be
         leftovers, and a read at its address would prove nothing of it."""
         return not self.optimized() and self.nodes_reachable(frame, trail, names)
 
     def node_reader(self, frame):
-        """How a runtime reads an unordered container's nodes in ``frame`` (#360):
+        """How a runtime reads an unordered container's nodes in ``frame``:
         (a variable path's text, a memory read or None without `readMemory`)."""
         reads = self.node_memory if self.capabilities.get("supports_read_memory") else None
         return _NodePaths(self, frame), reads
@@ -4020,14 +4016,14 @@ class DebugWorker:
         the debugger's variable for the root local of ``ancestry``, whose fields and
         elements are marked settable where `set` would change them (C, C++, Rust).
         ``noted``: the parent's (note, refuses) (see ``self.notes``): every child shows
-        that note, and none is settable where it refuses (#148). ``trail``: the
+        that note, and none is settable where it refuses. ``trail``: the
         debugger's variable for each step of ``ancestry`` (Java: what holds an array).
         ``through``: the note of a C or C++ pointer on the way that Peeky can't show
-        points at a live object (#339, ``unproven_through``): every value read through
+        points at a live object (``unproven_through``): every value read through
         it is marked `unproven` with it, and so is a pointer's own text read through
-        one (a `char *`'s); never one with a note already (#148), which says why."""
+        one (a `char *`'s); never one with a note already, which says why."""
         result = []
-        # What holds an array whose elements this listing shows (#261), asked once here.
+        # What holds an array whose elements this listing shows, asked once here.
         listing = {}
         member_rule = (
             self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
@@ -4054,14 +4050,14 @@ class DebugWorker:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
                 raise RuntimeError("Malformed debugger variable identity")
-            # A GCC lambda's capture, read through `__closure` (#361, read_captures). The
+            # A GCC lambda's capture, read through `__closure` (read_captures). The
             # mark is the worker's own: a debugger's variable never carries it.
             captured = not ancestry and scope == CAPTURES_SCOPE
             if "peekyCapture" in variable and not captured:
                 variable = {k: v for k, v in variable.items() if k != "peekyCapture"}
             # Read through a standard container something may be part-way through
-            # changing (an element `clear()` has destroyed, another thread's `push_back`,
-            # #187): withheld, and so is everything below it, whatever its identity.
+            # changing (an element `clear()` has destroyed, another thread's `push_back`):
+            # withheld, and so is everything below it, whatever its identity.
             changing = (
                 changing_container(
                     frame, [step for step, _ in ancestry] + [name], **self.preview_stack()
@@ -4069,12 +4065,12 @@ class DebugWorker:
                 if ancestry and changing_container
                 else None
             )
-            # A C or C++ pointer one past an array's end (#336): nothing it points at is
+            # A C or C++ pointer one past an array's end: nothing it points at is
             # read below, not even a container's own count.
             past = self.past_end_of(variable, frame, [step for step, _ in ancestry] + [name])
             # An unordered container the debugger counts otherwise than its own count says
-            # (GCC's, read as empty, #167): withheld, its entries never listed, unless
-            # Peeky reads them from its own nodes, once nothing else withholds it (#360).
+            # (GCC's, read as empty): withheld, its entries never listed, unless
+            # Peeky reads them from its own nodes, once nothing else withholds it.
             unlisted = (
                 unlisted_container(
                     variable,
@@ -4102,7 +4098,7 @@ class DebugWorker:
                     "identity_truncated": True,
                 }
                 # Shown without a view: never the debugger's miscount of an unordered
-                # container, even one Peeky read from its nodes (#360).
+                # container, even one Peeky read from its nodes.
                 if held := changing or unlisted:
                     shown.update(value=None, unavailable=True, reason=held[:300])
                     shown.update(withheld=True, settable=False)
@@ -4139,16 +4135,16 @@ class DebugWorker:
                 else None
             )
             # The plain name a selector reads this local by, where the debugger names it
-            # with where it is declared (`t @ two.c:20`, #158).
+            # with where it is declared (`t @ two.c:20`).
             alias = getattr(self.runtime, "selected_as", None) if not ancestry else None
             plain = alias(variable, frame, variables) if alias else None
             # Where a local the debugger lists by its plain name is declared, where its
-            # function declares several of that name (`entry @ main.rs:81`, #206): the
+            # function declares several of that name (`entry @ main.rs:81`): the
             # selector `describe` lists it by reads it too.
             located = getattr(self.runtime, "declared_at", None) if not ancestry else None
             declared_at, sharing = (located(variable, frame) if located else None) or (None, 0)
             # A value shown though the runtime cannot vouch for it: a note on its row, and
-            # on everything read through it (#148), which says through what.
+            # on everything read through it, which says through what.
             note = getattr(reason, "note", None)
             carried = None
             if isinstance(note, str):
@@ -4158,9 +4154,9 @@ class DebugWorker:
                 note, carried = noted[0], noted
             lister = getattr(self.runtime, "listed_container", None)
             if lister and withheld_only and not reason and note is None and through is None:
-                # Its entries as Peeky reads them from its own nodes (#360): shown, as a
+                # Its entries as Peeky reads them from its own nodes: shown, as a
                 # value view. Never with a note (its count may be leftovers too), nor
-                # through a pointer not proven to point at a live object (#339).
+                # through a pointer not proven to point at a live object.
                 way = [*trail[: len(ancestry)], variable]
                 unreached = self.nodes_unreached(
                     frame, way, [step for step, _ in ancestry] + [name]
@@ -4176,7 +4172,7 @@ class DebugWorker:
                     )
                 elif unreached and (said := getattr(self.runtime, "unreached_container", None)):
                     # Withheld all the same, with why Peeky reads no node through that
-                    # step and where it does (eval 13 prep, finding 2).
+                    # step and where it does.
                     listed = said(
                         unlisted, *unreached, frame=frame, steps=[*ancestry, (name, kind)]
                     )
@@ -4193,7 +4189,7 @@ class DebugWorker:
                 # Its count is wrong, so no note makes its listing true.
                 reason, note, carried = unlisted, None, None
             # A structured binding the build holds as a reference to its element (GCC's,
-            # of a pair or tuple, #291), which the debugger shows as the element's
+            # of a pair or tuple), which the debugger shows as the element's
             # address: the element is shown instead, or the row withheld.
             bound = (
                 getattr(self.runtime, "bound_element", None)
@@ -4206,7 +4202,7 @@ class DebugWorker:
                     frame,
                     self.preview_fetch,
                     note=note,
-                    # Where what it binds is kept, to check it there (#297).
+                    # Where what it binds is kept, to check it there.
                     siblings=variables,
                     raw=lambda path: self.raw_value(frame, path),
                 )
@@ -4241,7 +4237,7 @@ class DebugWorker:
                 if declared_at:
                     output["declared_at"] = declared_at
                     if sharing > 1:
-                        # Bindings on one line it cannot tell apart (#215 review).
+                        # Bindings on one line it cannot tell apart.
                         output["declared_at_shared"] = sharing
                 if kind is not None:
                     output["type"] = kind
@@ -4263,7 +4259,7 @@ class DebugWorker:
                     # The scope's other variables: rows a debugger shows under one name.
                     siblings=None if ancestry else variables,
                     **({"taint": taint} if taint else {}),
-                    # A field's way from its root local (#156).
+                    # A field's way from its root local.
                     **({"ancestry": ancestry} if ancestry else {}),
                 )
                 if view_variable
@@ -4271,12 +4267,12 @@ class DebugWorker:
             )
             raw_reason, tainted = None, None
             if view is not None and "rust_view" not in view:
-                # Left as the debugger shows it, with why (a Rust Vec or String, #156), and
-                # how much of what it holds reads (a Vec of references, #205).
+                # Left as the debugger shows it, with why (a Rust Vec or String), and
+                # how much of what it holds reads (a Vec of references).
                 raw_reason, tainted = view.get("raw_reason"), view.get("taint")
                 if view.get("carry") and isinstance(raw_reason, str) and not carried:
-                    # What a call may be changing says so on each value read through it
-                    # (#260), as a value shown with a note does (#148).
+                    # What a call may be changing says so on each value read through it,
+                    # as a value shown with a note does.
                     carried = (f"read through `{name}`: {raw_reason}"[:500], True)
                 view = None
             if view is not None:
@@ -4289,8 +4285,8 @@ class DebugWorker:
                 if view.get("children"):
                     self.reference_counter += 1
                     handle = self.reference_counter
-                    # A preview of the value's own fields (#106) also keeps where the
-                    # debugger lists it, which a change to a field walks again (#105).
+                    # A preview of the value's own fields also keeps where the
+                    # debugger lists it, which a change to a field walks again.
                     writable = getattr(self.runtime, "view_writable", None)
                     raw = variable.get("variablesReference", 0)
                     source = (
@@ -4300,12 +4296,12 @@ class DebugWorker:
                     )
                     entries = view["children"]
                     # An unordered container's entries past those read with its listing
-                    # are read when asked for (#374): kept as they are.
+                    # are read when asked for: kept as they are.
                     kept = list(entries[:512]) if isinstance(entries, list) else entries
                     self.children[handle] = ("view", kept, source)
                     if isinstance(view.get("pointee"), str):
                         # What a pointer points at, shown whole where a selector reads it
-                        # (`p[0]`, #360).
+                        # (`p[0]`).
                         self.children[handle] += (None, view["pointee"][:2000])
                     if carried:
                         self.notes[handle] = carried
@@ -4318,22 +4314,22 @@ class DebugWorker:
                 if type(view.get("length")) is int:
                     output["length"] = view["length"]
                 if view["rust_view"] == "unproven" and isinstance(view.get("why"), str):
-                    # Why only the pointer shows, where the runtime says (#205).
+                    # Why only the pointer shows, where the runtime says.
                     output["unproven_reason"] = view["why"][:500]
                 if view["rust_view"] == "opaque" and isinstance(view.get("why"), str):
                     # Why a Rust enum is not decoded, where it is stored and what to read
-                    # instead (#303).
+                    # instead.
                     output["opaque_reason"] = view["why"][:500]
                 if view["rust_view"] == "unproven" and view.get("pointer") in ("raw", "unknown"):
-                    # A Rust raw pointer, or one the build does not tell from one (#255).
+                    # A Rust raw pointer, or one the build does not tell from one.
                     output["unproven_pointer"] = view["pointer"]
                 if taint == "stale" and view["rust_view"] != "unproven":
-                    # A decoded enum inside a moved-from value: its stack bytes (#108).
+                    # A decoded enum inside a moved-from value: its stack bytes.
                     output["stale"] = True
                 if kind is not None:
                     output["type"] = kind
                 if listed is not None:
-                    # An unordered container read from its nodes (#360): what its type
+                    # An unordered container read from its nodes: what its type
                     # names, as for a row the debugger lists (a map by another name).
                     output.update(self.type_keys(kind))
                 shown = getattr(self.runtime, "display_type", None)
@@ -4347,14 +4343,14 @@ class DebugWorker:
                     not ancestry
                     and (marked := self.view_settable(variable, frame, withheld)) is not None
                 ):
-                    # A Rust String's text (#137), shown as read from memory.
+                    # A Rust String's text, shown as read from memory.
                     output["settable"] = marked and reachable({"name": name, "selected_as": plain})
                     if (
                         withheld
                         and (row := getattr(withheld[0], "row", None))
                         and reachable({"name": name, "selected_as": plain})
                     ):
-                        # Why a statement under way withholds it, as other rows say (#300).
+                        # Why a statement under way withholds it, as other rows say.
                         output["not_settable"] = row
                 elif (
                     not ancestry
@@ -4370,7 +4366,7 @@ class DebugWorker:
                 if declared_at:
                     output["declared_at"] = declared_at
                     if sharing > 1:
-                        # Bindings on one line it cannot tell apart (#215 review).
+                        # Bindings on one line it cannot tell apart.
                         output["declared_at_shared"] = sharing
                 result.append(output)
                 self.inspection_nodes += 1
@@ -4380,7 +4376,7 @@ class DebugWorker:
             # Only the stopped frame's values change: a caller's are read-only.
             innermost = frame.get("id") == self.innermost_frame
             if not ancestry and captured:
-                # A GCC lambda's capture (#361), which its object holds: never changed,
+                # A GCC lambda's capture, which its object holds: never changed,
                 # and the row says so (never_settable_row).
                 settable = False
             elif not ancestry and (check := getattr(self.runtime, "settable", None)):
@@ -4391,24 +4387,24 @@ class DebugWorker:
                     self.capabilities.get("supports_set_variable", False) is True
                     and innermost
                     and not self.optimized()
-                    # An element read through a reference (#291) is never changed.
+                    # An element read through a reference is never changed.
                     and reference_kind is None
                     and self.has_memory_location(variable)
                     and (bool(check(variable, frame)) or self.text_settable(variable, frame))
-                    # Marked only where a selector reaches it (#195): `t` for LLDB's
+                    # Marked only where a selector reaches it: `t` for LLDB's
                     # `t @ my file.c:3`, never a row no selector names.
                     and reachable({"name": name, "selected_as": plain})
                 )
-                # Not a value shown with a note whose declaration still runs here (#140),
-                # nor one a statement under way may hold a copy of (#105); why, for
-                # inspect's note (sixth evaluation, finding 8).
+                # Not a value shown with a note whose declaration still runs here,
+                # nor one a statement under way may hold a copy of; why, for
+                # inspect's note.
                 if settable and getattr(reason, "refuses", False):
                     settable = False
                     self.unsettable_reasons.append((name, str(reason)))
                 elif settable and mid and (why := mid(variable, frame, self.stop_reason)):
                     settable = False
                     self.unsettable_reasons.append((name, why))
-                    # Its short form, where the runtime gives one, for the row too (#300).
+                    # Its short form, where the runtime gives one, for the row too.
                     never = getattr(why, "row", None)
                 elif (
                     settable
@@ -4418,12 +4414,12 @@ class DebugWorker:
                     settable, unread = False, True
                     self.unsettable_reasons.append((name, _UNREAD_WHY))
             elif ancestry and member_rule is not None:
-                # A field or element `set` would change (#105), judged as `set` judges it
-                # (sixth evaluation, finding 7); never one reached through a pointer.
+                # A field or element `set` would change, judged as `set` judges it;
+                # never one reached through a pointer.
                 steps = [step for step, _ in ancestry[1:]] + [name]
                 settable = member_rule(variable, steps)
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
-                # A JDK class's own state (#204), never changed: why, on the row too.
+                # A JDK class's own state, never changed: why, on the row too.
                 internal = getattr(self.runtime, "internal_member", None)
                 jdk = internal(variable, parent=ancestry[-1][1], trail=trail) if internal else None
                 settable = (
@@ -4435,7 +4431,7 @@ class DebugWorker:
                 )
                 never = getattr(jdk, "row", None)
                 if settable and (held := self.array_held(trail, listing)):
-                    # An array a JDK class's field holds, whatever path reaches it (#261):
+                    # An array a JDK class's field holds, whatever path reaches it:
                     # the write would be refused, so the row says why instead; or why
                     # that is not known, where the write may yet be made.
                     settable = False
@@ -4444,9 +4440,9 @@ class DebugWorker:
                     else:
                         never = held
             if ancestry and settable and noted and noted[1]:
-                # Inside a local whose change is refused (#140): so is a change to this.
+                # Inside a local whose change is refused: so is a change to this.
                 settable = False
-            # A value no stop of this build can change (#138: a Rust local the IR keeps in
+            # A value no stop of this build can change (a Rust local the IR keeps in
             # a register), and why, so no probe waits for a hit to learn it.
             if (
                 settable is False
@@ -4464,7 +4460,7 @@ class DebugWorker:
                 and not maybe
                 and (why_not := getattr(self.runtime, "unsettable_row", None))
             ):
-                # Why a row of a type `set` changes is not marked (#261: Java).
+                # Why a row of a type `set` changes is not marked (Java).
                 never = why_not(
                     variable,
                     frame,
@@ -4481,7 +4477,7 @@ class DebugWorker:
             raw = variable.get("variablesReference", 0)
             own = taint
             if not ancestry and aggregate_taint and type(raw) is int and raw > 0:
-                # #108: a struct, tuple or array local that may be moved or dropped.
+                # A struct, tuple or array local that may be moved or dropped.
                 own = aggregate_taint(variable, frame, innermost=innermost)
             if tainted in ("pointers", "stale") and own != "stale":
                 own = tainted
@@ -4503,7 +4499,7 @@ class DebugWorker:
             if reference_kind is not None:
                 past = None
             if past is not None:
-                # A C or C++ pointer one past an array's end (#336): nothing there belongs
+                # A C or C++ pointer one past an array's end: nothing there belongs
                 # to the array, so only its address shows, never what LLDB read there.
                 output["value"] = _NONZERO_ADDRESS.match(output["value"])[0]
                 output["past_end"] = past
@@ -4512,7 +4508,7 @@ class DebugWorker:
                 self.notes.pop(handle, None)
                 output["variablesReference"] = handle = raw = 0
             if handle and (whole := getattr(self.runtime, "whole_value", None)) and whole(variable):
-                # A Java String or boxed number (#204): a value, its class's own fields
+                # A Java String or boxed number: a value, its class's own fields
                 # listed only when selected by name.
                 output["whole"] = True
             if (
@@ -4520,7 +4516,7 @@ class DebugWorker:
                 and past is None
                 and not (self.placeholders() and is_unavailable(output["value"]))
             ):
-                # A string the debugger shows only up to a NUL byte (#128); never one it
+                # A string the debugger shows only up to a NUL byte; never one it
                 # has no value for (optimized out).
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
                 way, steps = [*trail[: len(ancestry)], variable], [s for s, _ in ancestry] + [name]
@@ -4543,7 +4539,7 @@ class DebugWorker:
                             output[key] = shown[key]
                     if shown.get("text") is True:
                         # A C++ string is its text: its members are the library's own
-                        # (`(anonymous struct)`, `_M_dataplus`), never listed (eval 6).
+                        # (`(anonymous struct)`, `_M_dataplus`), never listed.
                         output["text"] = True
                         self.children.pop(handle, None)
                         self.taints.pop(handle, None)
@@ -4556,7 +4552,7 @@ class DebugWorker:
                 output["value"] = None
                 unlocated = getattr(self.runtime, "unlocated", None) if not ancestry else None
                 if unlocated and (why := unlocated(variable, frame)):
-                    # Why no stop reads it, where the build says (#167).
+                    # Why no stop reads it, where the build says.
                     output.update(reason=why[:300], withheld=True, withheld_as="not readable")
             elif isinstance(note, str):
                 output["note"] = note[:500]
@@ -4566,7 +4562,7 @@ class DebugWorker:
                 and not output.get("unavailable")
                 and (fixed := member_value(variable, frame, [s for s, _ in ancestry] + [name]))
             ):
-                # A field LLDB reads wrongly (a char-typed bitfield, #136): its number,
+                # A field LLDB reads wrongly (a char-typed bitfield): its number,
                 # or no value with the reason (a wide character bitfield).
                 if fixed.get("unavailable"):
                     # Peeky's own reason, not the debugger's.
@@ -4586,7 +4582,7 @@ class DebugWorker:
                 and type(raw) is int
                 and raw > 0
             ):
-                # A C or C++ struct or array, shown by its members (#136); its fields
+                # A C or C++ struct or array, shown by its members; its fields
                 # stay selectable through the same handle.
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
                 steps = [step for step, _ in ancestry] + [name]
@@ -4629,7 +4625,7 @@ class DebugWorker:
                 and not output.get("unavailable")
                 and (text := getattr(self.runtime, "element_text", None))
             ):
-                # The element's own text, never the reference's address (#291).
+                # The element's own text, never the reference's address.
                 shown = text(variable, frame, output["value"])
                 if hasattr(shown, "label"):
                     # Withheld (a Withholding): never the address alone.
@@ -4648,8 +4644,8 @@ class DebugWorker:
                 and (marked := through or self.unproven_text_of(variable, frame, ancestry, output))
             ):
                 # Read through a C or C++ pointer Peeky can't show points at a live
-                # object (#339): still shown, marked, with why. A value already noted
-                # (#148: leftovers, maybe) says why it may not be current; so does what
+                # object: still shown, marked, with why. A value already noted
+                # (leftovers, maybe) says why it may not be current; so does what
                 # is read through it, where the pointer is no better.
                 output["view"], output["unproven_read"] = "unproven", True
                 output["note"] = marked[:1000]
@@ -4661,7 +4657,7 @@ class DebugWorker:
                 # The language's own name; the debugger's stays alongside.
                 output.update(type=rust, debugger_type=kind)
             if reference_kind is not None and output.get("type") != reference_kind:
-                # The element's type; the debugger's, of the reference, alongside (#291).
+                # The element's type; the debugger's, of the reference, alongside.
                 output["debugger_type"] = reference_kind
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
                 # Only whether the debugger could name it as an expression; the expression
@@ -4699,13 +4695,13 @@ class DebugWorker:
             if never:
                 output["not_settable"] = never
             if maybe:
-                # Neither mark can be promised (#261): `set` decides when it is made.
+                # Neither mark can be promised: `set` decides when it is made.
                 output["maybe_settable"] = maybe[:500]
             if own == "stale":
-                # Not proven initialized: the bytes a move or drop left (#108).
+                # Not proven initialized: the bytes a move or drop left.
                 output["stale"] = True
                 if getattr(own, "pointer_free", False):
-                    # Its type holds no pointer: its note says so (twelfth evaluation).
+                    # Its type holds no pointer: its note says so.
                     output["pointer_free"] = True
             if isinstance(raw_reason, str) and not output.get("unavailable"):
                 output["raw_reason"] = raw_reason[:500]
@@ -4723,8 +4719,8 @@ class DebugWorker:
         return result
 
     def value_extent(self, variable, frame, ancestry, name, kind):
-        """The runtime's ``value_extent`` of a value a probe or `session get` reads
-        (#302): a root it names, or a pointer or an array read through one, which alone
+        """The runtime's ``value_extent`` of a value a probe or `session get` reads:
+        a root it names, or a pointer or an array read through one, which alone
         an offset can be proven into or from. None otherwise."""
         hook = getattr(self.runtime, "value_extent", None)
         root = ancestry[0][0] if ancestry else name
@@ -4741,7 +4737,7 @@ class DebugWorker:
 
     def past_end_of(self, variable, frame, steps):
         """The ``past_end`` of a C or C++ pointer the debugger lists in ``frame`` by the
-        names ``steps`` (#336, ``probe.past_end``): where it holds the address one past the
+        names ``steps`` (``probe.past_end``): where it holds the address one past the
         end of an array a listed frame holds, nothing it points at is read. Else None."""
         runtime = self.runtime
         value = variable.get("value")
@@ -4763,7 +4759,7 @@ class DebugWorker:
         return past_end(value, pointer, self.stop_bases(frame))
 
     def returned_past_end(self, kind, value, frame):
-        """``past_end`` of a character pointer a function returned (#336), whose text LLDB
+        """``past_end`` of a character pointer a function returned, whose text LLDB
         read from where it points, against the arrays of the stop's frames (``frame``
         is the one it returned to); its type is only LLDB's name, so a character type
         stands for every one of its size, as C lets them alias. None otherwise."""
@@ -4785,7 +4781,7 @@ class DebugWorker:
 
     def stop_bases(self, frame):
         """The arrays and objects the locals of each frame of the program the inspection
-        listed hold, where the debugger places them (#336, ``held_extents``), as
+        listed hold, where the debugger places them (``held_extents``), as
         ``probe.past_end`` takes them: ``frame``'s first, then the others' innermost first,
         with their place ({"frame": index, "function"}). Read once per inspection, and
         each frame's kept for its stop (``held_frames``), so another inspection of that
@@ -4813,7 +4809,7 @@ class DebugWorker:
                         variables, whole, cut = self.frame_locals(listed)
                     held, bounded = self.frame_held(variables, listed)
                     extras = self.frame_unplaced(variables, listed)
-                    # Whether a bound left some of its locals unplaced (#339).
+                    # Whether a bound left some of its locals unplaced.
                     extras["cut"] = extras["cut"] or cut or bounded
                     self.held_extras[identity] = {**extras, "index": index}
                     if whole:
@@ -4842,7 +4838,7 @@ class DebugWorker:
 
     def frame_held(self, variables, frame):
         """``held_extents`` of a frame's locals, at most 512, and whether a bound cut it
-        short (#339): more than 256 locals, 512 in all, or a local's own bound."""
+        short: more than 256 locals, 512 in all, or a local's own bound."""
         from peeky.native import HELD_EXTENTS
 
         held, cut = [], len(variables) > 256
@@ -4860,7 +4856,7 @@ class DebugWorker:
         return held[:512], cut or len(held) > 512
 
     def frame_unplaced(self, variables, frame):
-        """What ``held_extents`` can't place of a frame's locals (#339): those the debugger
+        """What ``held_extents`` can't place of a frame's locals: those the debugger
         gave no address for (lldb-dap 18: a number, a `char` array, a pointer), which a
         `&name` hover can place, [(name, variable)], at most 64, each named once in the
         frame, and whether that bound cut them short (`cut`); and in `main`, the names of
@@ -4909,8 +4905,8 @@ class DebugWorker:
         }
 
     def pointee_state(self):
-        """What the rule on reading through a C or C++ pointer learned at this stop
-        (#339): each pointer's judgement, the stack pointer, and the locals placed by a
+        """What the rule on reading through a C or C++ pointer learned at this stop:
+        each pointer's judgement, the stack pointer, and the locals placed by a
         `&name` hover, with how many were asked."""
         if not isinstance(self.pointee_stop, dict) or self.pointee_stop["stop"] != self.stop_id:
             self.pointee_stop = {"stop": self.stop_id, "judged": {}, "placed": {}, "hovers": 0}
@@ -4918,12 +4914,12 @@ class DebugWorker:
 
     def pointee_unproven(self, variable, frame, steps, pointer=None):
         """Why what the C or C++ pointer ``variable`` (the debugger's, by the names
-        ``steps`` in ``frame``) points at isn't proven to be a live object (#339):
+        ``steps`` in ``frame``) points at isn't proven to be a live object:
         ``probe.pointee_past``'s, or {"kind": ``probe.pointee_place``'s, "statics"}. None
         where it is proven, and where nothing is judged: not C or C++, a NULL pointer, or
         what the build's debug information doesn't size (`void *`, a function). Judged
         once per stop. ``pointer``: what it points at, where the runtime's ``pointee_of``
-        doesn't say (a GCC lambda's capture by reference, #361)."""
+        doesn't say (a GCC lambda's capture by reference)."""
         runtime = self.runtime
         if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
             return None
@@ -4959,7 +4955,7 @@ class DebugWorker:
         return state["judged"][key]
 
     def judge_pointee(self, address, pointer, frame):
-        """``pointee_unproven`` of an address (#339). Proven inside an array or object a
+        """``pointee_unproven`` of an address. Proven inside an array or object a
         listed frame holds (``stop_bases``; never one only C++'s `this` reaches, which
         may be gone itself, nor a union's member), or one of the program's variables in
         static storage, of its type; for a character pointer, also in a string literal
@@ -5023,7 +5019,7 @@ class DebugWorker:
 
     def argument_strings(self):
         """Each of `main`'s argument and environment strings, from its first byte to its
-        NUL (#339): [(start, end)], read once per stop by asking the debugger for
+        NUL: [(start, end)], read once per stop by asking the debugger for
         `argv[N]` as a hover (it reads the variable, and runs nothing), at most
         ``ARGUMENT_STRINGS``; and whether that bound cut them short."""
         state = self.pointee_state()
@@ -5061,7 +5057,7 @@ class DebugWorker:
 
     def debugger_command(self, text):
         """The text of a read-only LLDB command, run through lldb-dap's command escape
-        (#364: `memory read` of a C++ `static` local's guard variable); counted as one
+        (`memory read` of a C++ `static` local's guard variable); counted as one
         of the frame's scans, so scopes are bound for changes only afresh after."""
         self.frame_scans += 1
         try:
@@ -5076,7 +5072,7 @@ class DebugWorker:
         return result if isinstance(result, str) else None
 
     def stop_stack_pointer(self):
-        """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or
+        """The innermost frame's stack pointer at this stop, as LLDB reads it, or
         None where the debugger doesn't give it; asked once per stop."""
         state = self.pointee_state()
         if "sp" not in state:
@@ -5098,7 +5094,7 @@ class DebugWorker:
 
     def placed_locals(self, pointer, frame, red=False):
         """The listed frames' locals the debugger gave no address for (``frame_unplaced``),
-        placed by asking it for `&name` as a hover (#339): it reads the frame's variables
+        placed by asking it for `&name` as a hover: it reads the frame's variables
         and runs nothing. Only those that may hold what ``pointer`` points at, and with
         ``red`` all of the innermost frame's, at most ``PLACED_HOVERS`` per stop. The
         arrays and objects they hold, as ``stop_bases`` gives them (``frame``'s with no
@@ -5136,8 +5132,8 @@ class DebugWorker:
         return placed, settled, cut
 
     def may_hold(self, variable, frame, name, pointer):
-        """Whether a local Peeky has no address for may hold what ``pointer`` points at
-        (#339): any, for a character type; else an array or object of its type inside."""
+        """Whether a local Peeky has no address for may hold what ``pointer`` points at:
+        any, for a character type; else an array or object of its type inside."""
         if pointer.get("character") is True:
             return True
         try:
@@ -5148,7 +5144,7 @@ class DebugWorker:
 
     def hover_place(self, runtime, variable, frame, name):
         """``held_extents`` of a local at the address the debugger gives for `&name` as a
-        hover (#339), or None where it gives none; TimeoutError where it didn't answer in
+        hover, or None where it gives none; TimeoutError where it didn't answer in
         time. lldb-dap 18 shows a summary in place
         of that address where the type has one (`&s = "text"` for a `std::string`): a
         struct's is then where its members are, less their offsets."""
@@ -5187,10 +5183,10 @@ class DebugWorker:
 
     def unproven_through(self, frame, trail, ancestry, scope=None):
         """The note on every value read through the debugger's variables ``trail`` (each
-        step ``ancestry`` names from a root local of ``frame``) (#339): of the first C or
+        step ``ancestry`` names from a root local of ``frame``): of the first C or
         C++ pointer on the way that Peeky can't show points at a live object. None where
-        each does, or none is judged. A GCC lambda's capture (``scope`` the captures',
-        #361) is read through `__closure` first, and one by reference through what it
+        each does, or none is judged. A GCC lambda's capture (``scope`` the captures')
+        is read through `__closure` first, and one by reference through what it
         refers to."""
         names = [name for name, _ in ancestry]
         if scope == CAPTURES_SCOPE and trail:
@@ -5209,7 +5205,7 @@ class DebugWorker:
 
     @staticmethod
     def capture_plan(runtime, frame):
-        """The runtime's ``capture_plan`` of the GCC lambda ``frame`` runs (#361):
+        """The runtime's ``capture_plan`` of the GCC lambda ``frame`` runs:
         [(capture, how, member, why)]; empty for any other frame or runtime."""
         plan = getattr(runtime, "capture_plan", None)
         found = plan(frame) if callable(plan) else ()
@@ -5217,14 +5213,14 @@ class DebugWorker:
 
     def read_captures(self, runtime, frame, plan):
         """(the scope of the captures of the GCC lambda ``frame`` runs, as `inspect` lists
-        a scope, or None; {capture: why it isn't read here}) (#361). lldb-dap lists neither
+        a scope, or None; {capture: why it isn't read here}). lldb-dap lists neither
         `__closure` nor the variables GCC declares for the captures, but a hover of
         `__closure` reads it (the debugger reads the frame's variable, and runs nothing),
         and its members are the captures (``plan``: the runtime's ``capture_plan``). A
         selector of a capture with no row is `not found`, saying why
         (``closure_unread``).
 
-        What is read through `__closure` is judged as through any pointer (#339), and
+        What is read through `__closure` is judged as through any pointer, and
         what a capture by reference refers to as through a pointer to it: shown, and
         marked where Peeky can't show it is a live object. No capture is ever changed."""
         if self.closure_notes.get("stop") != self.stop_id:
@@ -5257,7 +5253,7 @@ class DebugWorker:
             rows = self.expose_variables([variable], frame, CAPTURES_SCOPE, (), through=through)
             for row in rows if not through else ():
                 # A pointer captured by reference, shown as its value: a `char *`'s text
-                # is read through it, as through a pointer local's (#339).
+                # is read through it, as through a pointer local's.
                 if not row.get("unavailable") and "note" not in row:
                     if (marked := self.captured_text_note(frame, name, row)) is not None:
                         row.update(view="unproven", unproven_read=True, note=marked[:1000])
@@ -5274,7 +5270,7 @@ class DebugWorker:
 
     def closure_members(self, runtime, frame):
         """(`__closure` as a variable: {"name", "value": its address}, {member name: the
-        debugger's variable}) for the GCC lambda ``frame`` runs (#361), read by a hover
+        debugger's variable}) for the GCC lambda ``frame`` runs, read by a hover
         of `__closure` and a listing of what it points at; else why not, as text for
         ``closure_unread``: the hover or the listing failed or didn't answer in time, the
         hover gave no address, or the listing is malformed or past 512 members. A member
@@ -5327,7 +5323,7 @@ class DebugWorker:
     def referent_note(self, frame, variable):
         """The note on what is read through the GCC lambda capture ``variable`` (the
         debugger's, named as the capture), where the lambda captures it by reference and
-        Peeky can't show it refers to a live object (#361), as through a pointer (#339).
+        Peeky can't show it refers to a live object, as through a pointer.
         None otherwise."""
         referent = getattr(self.runtime, "capture_referent", None)
         name = variable.get("name")
@@ -5342,7 +5338,7 @@ class DebugWorker:
 
     def captured_text_note(self, frame, name, row):
         """The note on the row of a GCC lambda capture ``name`` that is a pointer captured
-        by reference (#361), where its value holds text LLDB read through that pointer
+        by reference, where its value holds text LLDB read through that pointer
         (`0x… "abc"`) and Peeky can't show it points at a live object, as
         ``unproven_text_of`` says it of a pointer local. None otherwise."""
         pointed = getattr(self.runtime, "captured_pointer", None)
@@ -5363,8 +5359,8 @@ class DebugWorker:
     def unproven_text_of(self, variable, frame, ancestry, output):
         """The note on a C or C++ pointer's own row whose value holds text LLDB read
         through it (`0x… "abc"`: a `char *`, a `std::string *`), where Peeky can't show it
-        points at a live object (#339). None otherwise: for a pointer one past an array's
-        end, whose text is never shown (#336), and where what follows the address is no
+        points at a live object. None otherwise: for a pointer one past an array's
+        end, whose text is never shown, and where what follows the address is no
         text read there but why there is none (`<no text: …>`)."""
         value = output.get("value")
         held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
@@ -5379,7 +5375,7 @@ class DebugWorker:
         return unproven_text(_selector_path(steps), why, text=True)
 
     def returned_unproven(self, kind, value, frame):
-        """The note on a character pointer a function returned (#339), whose text LLDB
+        """The note on a character pointer a function returned, whose text LLDB
         read from where it points, where Peeky can't show it points at a live object (a
         `char` array of the call that returned, a heap block); as ``returned_past_end``
         takes its type, any byte-sized character type. None otherwise."""
@@ -5403,7 +5399,7 @@ class DebugWorker:
 
     def frame_locals(self, frame):
         """A caller frame's locals as the debugger lists them, whether they all came
-        (``stop_bases``), and whether a bound cut them short (#339: 4 scopes of 256): none
+        (``stop_bases``), and whether a bound cut them short (4 scopes of 256): none
         where the debugger refuses or doesn't answer in time; a request that times out
         leaves the inspection read-only."""
         variables, cut = [], False
@@ -5446,7 +5442,7 @@ class DebugWorker:
             variables = self.bounded_variables(reference, indexed)
         if validate_children:
             validate_children(variables)
-        # The worker's own mark of a GCC lambda's capture (#361) is never a debugger's.
+        # The worker's own mark of a GCC lambda's capture is never a debugger's.
         return [
             {key: value for key, value in v.items() if key != "peekyCapture"}
             for v in variables
@@ -5490,12 +5486,12 @@ class DebugWorker:
             runtime.assert_current()
             elements = record[1]
             if not isinstance(elements, list):
-                # Entries read from an unordered container's nodes when first asked for
-                # (#374): on this expansion's own budget.
+                # Entries read from an unordered container's nodes when first asked for:
+                # on this expansion's own budget.
                 self.reset_views()
             keyed = None
             if "key" in args:
-                # The entry with this key, wherever it is in the map (#374).
+                # The entry with this key, wherever it is in the map.
                 keyed = self.keyed_entry(elements, args["key"])
                 start, count = keyed["index"] or 0, int(keyed["index"] is not None)
             else:
@@ -5507,9 +5503,9 @@ class DebugWorker:
                 )
             settable = self.preview_settable(record, runtime, elements[start : start + count])
             # LLDB's names for the fields of a value read from memory, as a field it lists
-            # raw shows beside the language's (seventh evaluation, review of finding 18).
+            # raw shows beside the language's.
             listed = self.preview_kinds(record, runtime)
-            # Fields of a preview whose root no stop can change (#138), and why; a nested
+            # Fields of a preview whose root no stop can change, and why; a nested
             # preview's keep its root's.
             source = record[2] if len(record) > 2 else None
             never = record[3] if len(record) > 3 else None
@@ -5531,14 +5527,14 @@ class DebugWorker:
                     if noted:
                         self.notes[handle] = noted
                 shown = {key: value for key, value in element.items() if key != "children"}
-                # A field the view did not read (#260) is withheld, not read from memory.
+                # A field the view did not read is withheld, not read from memory.
                 read = {} if shown.get("unavailable") else {"view": "memory"}
                 page.append({**shown, "variablesReference": handle, **read})
                 kind = listed.get(element.get("name"))
                 if isinstance(kind, str) and kind != shown.get("type"):
                     page[-1]["debugger_type"] = kind
                 if noted and not shown.get("unavailable"):
-                    # Read through a local shown with a note (#148).
+                    # Read through a local shown with a note.
                     page[-1]["note"] = noted[0]
                 if settable is not None:
                     page[-1]["settable"] = settable(element.get("name")) and not (
@@ -5552,7 +5548,7 @@ class DebugWorker:
                 "start": start,
                 "truncated": start + len(page) < len(elements),
                 "remaining_nodes": 512 - self.inspection_nodes,
-                # The key it compared, which the client checks it asked for (#374 review).
+                # The key it compared, which the client checks it asked for.
                 **(
                     {"key": args["key"], "compared": keyed["compared"], "keys": keyed["keys"]}
                     if keyed
@@ -5566,7 +5562,7 @@ class DebugWorker:
         start = args.get("start", 0)
         count = min(args.get("count", 64), 512 - self.inspection_nodes)
         if "index" in args:
-            # The one element `[N]`, fetched alone however long the array (#105).
+            # The one element `[N]`, fetched alone however long the array.
             variables = self.named_children(reference, indexed, f"[{args['index']}]", runtime)
             start, count = 0, 1
         else:
@@ -5580,7 +5576,7 @@ class DebugWorker:
         # selector walking to a field needs none (its value is previewed alone).
         self.previewing = args.get("previews", False) is True
         # What is read through a C or C++ pointer on the way that Peeky can't show
-        # points at a live object (#339); not below a value with a note (#148), whose
+        # points at a live object; not below a value with a note, whose
         # pointers may be leftovers themselves, as that note says.
         noted = self.notes.get(args["handle"])
         through = None if noted else self.unproven_through(frame, trail, ancestry, scope_identity)
@@ -5609,7 +5605,7 @@ class DebugWorker:
     @staticmethod
     def keyed_entry(elements, key):
         """Where the entry whose key the debugger would show as ``key`` (`5`, `"al"`) is
-        among a map's entries a value view read (#374), comparing each key as a selector
+        among a map's entries a value view read, comparing each key as a selector
         does (an integer by its number, a string by its text): {"index": its position,
         or None, "compared": how many keys, "keys": the first 20}. Refused where an
         entry's key is not read, or reads as no key of ``key``'s kind."""
@@ -5643,7 +5639,7 @@ class DebugWorker:
         return {"index": found[0] if found else None, "compared": len(elements), "keys": keys}
 
     def preview(self, args, runtime):
-        """The preview of the value an expansion handle names (#136), as `inspect` would
+        """The preview of the value an expansion handle names, as `inspect` would
         show it: {"value": text}, or {} where it has none. A selector that walks to a
         field or element reads it alone, so the listings it walks through need none."""
         self.stopped(args)
@@ -5656,7 +5652,7 @@ class DebugWorker:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         hook = getattr(runtime, "preview_value", None)
         if record[0] == "view":
-            # What a pointer whose entries Peeky read from memory points at (#360).
+            # What a pointer whose entries Peeky read from memory points at.
             held = record[4] if len(record) > 4 else None
             return {"value": held} if args.get("pointee") is True and held else {}
         if hook is None:
@@ -5668,7 +5664,7 @@ class DebugWorker:
         variable = trail[-1]
         steps = [step for step, _ in ancestry]
         self.reset_previews()
-        # Its strings' memory reads (#128) count as an expansion's.
+        # Its strings' memory reads count as an expansion's.
         self.reset_views()
         reads = self.view_read if self.capabilities.get("supports_read_memory") else None
         if self.placeholders() and is_unavailable(variable.get("value")):
@@ -5685,7 +5681,7 @@ class DebugWorker:
                 steps=steps,
                 kinds=[kind for _, kind in ancestry],
                 raw=lambda path: self.raw_value(frame, path),
-                # Nodes are read only where nothing on the way is in doubt (#360).
+                # Nodes are read only where nothing on the way is in doubt.
                 nodes=(
                     self.node_reader(frame)
                     if not self.notes.get(args["handle"])
@@ -5705,8 +5701,8 @@ class DebugWorker:
         return {"value": str(shown)[:2000]} if shown is not None else {}
 
     def unsettable_here(self, runtime, frame, roots, scopes):
-        """Why nothing is settable at this stop, where a rule says so (sixth evaluation,
-        finding 8): the stop is part-way through a statement (a loop header's later
+        """Why nothing is settable at this stop, where a rule says so: the stop is
+        part-way through a statement (a loop header's later
         pass, back from a call) or at one that makes an inlined call. Each reason names
         the locals it holds for. Given only when nothing is: no root is marked, and no
         field or element of a struct, tuple or array local would be (one whose rule
@@ -5788,8 +5784,8 @@ class DebugWorker:
 
     def array_held(self, trail, listing):
         """Why the elements of the array a listing shows (``trail``'s last step) are not
-        marked [settable], where the runtime asks the debugger what holds it (#261:
-        Java, a JDK class's field, under any name), else None; within what is left of
+        marked [settable], where the runtime asks the debugger what holds it (Java,
+        a JDK class's field, under any name), else None; within what is left of
         the pause budget. A verdict is kept for the rest of the stop only where the
         runtime says it holds that long (every thread suspended); while another thread
         runs, only for this listing (``listing``, a dict) and asked again at the next."""
@@ -5815,7 +5811,7 @@ class DebugWorker:
         if mid is None:
             return None
         key = ("root", self.mark_place(), str(root.get("name")), str(root.get("type")))
-        # A copy of the program's own is judged per member (#192 review).
+        # A copy of the program's own is judged per member.
         every = {"members": True} if getattr(runtime, "projected_copies", False) else {}
         return self.remember(key, lambda: mid(root, frame, self.stop_reason, **every))
 
@@ -5843,7 +5839,7 @@ class DebugWorker:
         return self.remember(key, read)
 
     def preview_settable(self, record, runtime, elements):
-        """For the fields of a value shown as a preview read from memory (#106): a check
+        """For the fields of a value shown as a preview read from memory: a check
         name -> whether `set` would change that field, judged on the debugger's own
         listing of it, walked again from the frame (once per place: see mark_place).
         What a view decodes without such a source (a container's elements and length,
@@ -5908,7 +5904,7 @@ class DebugWorker:
             return lambda variable, steps: False
         stack = getattr(self, "listed_frames", None)
         place = (self.mark_place(), str(root.get("name")), str(root.get("type")))
-        # A copy of the program's own is judged by the part a change makes (#192 review).
+        # A copy of the program's own is judged by the part a change makes.
         projected = getattr(runtime, "projected_copies", False)
         mid = getattr(runtime, "mid_statement", None) if projected else None
 
@@ -5954,7 +5950,7 @@ class DebugWorker:
     def set_member(self, args, runtime):
         """Change a field or element of a value an expansion handle names (Java; and in
         C, C++ and Rust a scalar the runtime's ``validate_member`` proves the frame holds
-        itself, #105).
+        itself).
 
         The handle only locates the parent: it is walked again from its frame and scope,
         the member must be listed exactly once, and the runtime decides what may change.
@@ -5993,8 +5989,8 @@ class DebugWorker:
                     "itself (such as a Rust Vec, String, Box or enum), whose storage Peeky "
                     "does not write"
                 )
-            # A #106 preview of a struct's or tuple's own fields: changed as the debugger
-            # lists it, under every rule a field there has (#105).
+            # A preview read from memory of a struct's or tuple's own fields: changed as
+            # the debugger lists it, under every rule a field there has.
             record = record[2]
         if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
@@ -6003,7 +5999,7 @@ class DebugWorker:
             and record[2]
             and (refusal := getattr(runtime, "capture_refusal", None))
         ):
-            # Inside a GCC lambda's capture (#361), which the lambda's object holds.
+            # Inside a GCC lambda's capture, which the lambda's object holds.
             selector = member_selector(record[2], args["name"])
             why = refusal(record[2][0][0], frame=record[0], selector=selector)
             raise ValueError(f"`{selector}` cannot be changed: {why}")
@@ -6033,11 +6029,11 @@ class DebugWorker:
                 record, runtime, frame, ancestry, trail, reference, variable, args, previewed
             )
         parent = ancestry[-1][1] if ancestry else None
-        # The whole selector, not the debugger's name alone (`ranking[1]`, not `1`; #261).
+        # The whole selector, not the debugger's name alone (`ranking[1]`, not `1`).
         selector = member_selector(ancestry, name)
         internal = getattr(runtime, "internal_member", None)
         if internal and (reason := internal(variable, parent=parent, trail=trail)):
-            # A JDK class's own state (#204), or a launcher that cannot tell.
+            # A JDK class's own state, or a launcher that cannot tell.
             raise ValueError(f"`{selector}` cannot be changed: {reason}")
         if reason := check(variable, parent=parent):
             raise ValueError(f"`{selector}` cannot be changed: {reason}")
@@ -6058,7 +6054,7 @@ class DebugWorker:
             "value": literal(value, variable=variable) if literal else value,
         }
         if getattr(runtime, "pause_budget_writes", False) and self.max_pause and self.stopped_at:
-            # What the launcher may spend searching what refers to an array (#204).
+            # What the launcher may spend searching what refers to an array.
             left = self.max_pause - (time.monotonic() - self.stopped_at)
             request["peekyPauseLeftMs"] = max(0, int(left * 1000))
         try:
@@ -6097,10 +6093,10 @@ class DebugWorker:
     def _set_scalar_member(
         self, record, runtime, frame, ancestry, trail, reference, variable, args, previewed=False
     ):
-        """set_member for C, C++ and Rust (#105): the runtime proves the change reaches
+        """set_member for C, C++ and Rust: the runtime proves the change reaches
         the program (``validate_member``), and the value read back, walked again from the
         frame, must be the one asked; anything else is never reported as a change.
-        ``previewed``: the parent is shown as a preview read from memory (#106), which
+        ``previewed``: the parent is shown as a preview read from memory, which
         must show the same value afterwards."""
         name, value = args["name"], args["value"]
         root, steps = trail[0], [step for step, _ in ancestry[1:]] + [name]
@@ -6190,16 +6186,16 @@ class DebugWorker:
         }
 
     def text_stop(self):
-        """The stop's reason as a text change judges where in its line the stop is
-        (#164): a breakpoint at a later one of its line's locations in the function
-        (#157: a loop header's) is not before the line's first code, so every place of
+        """The stop's reason as a text change judges where in its line the stop is:
+        a breakpoint at a later one of its line's locations in the function
+        (a loop header's) is not before the line's first code, so every place of
         the line counts."""
         if self.stop_reason == "breakpoint" and self.stop_place and self.stop_place[0] > 1:
             return "breakpoint-later"
         return self.stop_reason
 
     def text_storage(self, runtime, variable, frame):
-        """(kind, shape) of the root string a text change (#137) writes: the runtime's,
+        """(kind, shape) of the root string a text change writes: the runtime's,
         where it reads the build's debug information, else text_sets.text_kind's by the
         debugger's type name; ValueError naming why it is none."""
         hook = getattr(runtime, "text_storage", None)
@@ -6208,7 +6204,7 @@ class DebugWorker:
         return text_kind(variable, runtime.text_language), None
 
     def text_settable(self, variable, frame):
-        """Whether a text change (#137) could be made to this root string here, for its
+        """Whether a text change could be made to this root string here, for its
         `[settable]` mark: a char array always (by element where the debugger cannot
         write memory); a std::string where the debugger writes memory, or where it reads
         it and the text is in the string's own buffer; a Rust String where it reads and
@@ -6255,10 +6251,10 @@ class DebugWorker:
             raise RuntimeError(" ".join(said)[:200])
 
     def view_settable(self, variable, frame, why=None):
-        """The `[settable]` mark of a root string a runtime's view shows (a Rust String,
-        #137), as for a root listed as the debugger shows it; None for other values.
+        """The `[settable]` mark of a root string a runtime's view shows (a Rust String),
+        as for a root listed as the debugger shows it; None for other values.
         Where only a statement under way withholds it, ``why`` (a list, if given) gets
-        the runtime's reason (#300: its row says so)."""
+        the runtime's reason (its row says so)."""
         if not getattr(self.runtime, "text_language", None):
             return None
         try:
@@ -6281,7 +6277,7 @@ class DebugWorker:
 
     def set_text(self, runtime, variable, reference, kind, text, shape=None):
         """Write ``text`` into the string ``variable``, a root local listed under the
-        scope ``reference`` (#137, see text_sets): only within its storage, and read
+        scope ``reference`` (see text_sets): only within its storage, and read
         back. A refusal (ValueError) changed nothing; anything written that cannot be
         confirmed closes the session."""
         name = variable.get("name")
@@ -6341,12 +6337,12 @@ class DebugWorker:
         runtime.assert_current()
         result = {"name": name, "before": changed["before"], "after": changed["after"]}
         if kind == "std":
-            # What the program took from it before cannot be seen, nor changed (#164).
+            # What the program took from it before cannot be seen, nor changed.
             result["note"] = STRING_VIEW_NOTE
         return result
 
     def _confirm_preview(self, record, runtime, name, after):
-        """After a change to a field of a value shown as a preview read from memory (#106),
+        """After a change to a field of a value shown as a preview read from memory,
         read the preview again as `inspect` and `get` would: the field must show what the
         debugger read back. A preview that no longer reads is shown as the debugger lists
         the value, which matched; one that shows anything else closes the session."""
@@ -6382,7 +6378,7 @@ class DebugWorker:
     @staticmethod
     def typed_at(ancestry, name):
         """display_type's arguments for the value ``name`` under ``ancestry``: a root
-        local's, or a field's or element's with its path from the root (finding 18)."""
+        local's, or a field's or element's with its path from the root."""
         if not ancestry:
             return {"top": True}
         return {"top": False, "path": [step for step, _ in ancestry] + [name]}
@@ -6390,7 +6386,7 @@ class DebugWorker:
     def storage_target(self, runtime, args, variable, shown, **where):
         """(identity, why not): which storage a change writes (the runtime's
         ``storage_identity``: a local's declaration, or the object holding a field), only
-        where a probe asks (`restorable`, `target`; #305), else (None, None). A restore
+        where a probe asks (`restorable`, `target`), else (None, None). A restore
         names the storage its change wrote (``target``): it is refused, before anything is
         written, where this one is another, or Peeky cannot tell which it is."""
         if not args.get("restorable") and "target" not in args:
@@ -6419,7 +6415,7 @@ class DebugWorker:
 
     def watch_entries(self, runtime, program, lines):
         """[[line, [first lines]], ...]: for each line a probe restores a value at
-        (`@before`, #305), the first line of each function with code there, which the
+        (`@before`), the first line of each function with code there, which the
         probe watches for that function's new calls (``entry_lines``). A restore is made
         only in the call that made the change, so where a function's calls cannot be
         watched, it is refused before the program runs."""
@@ -6448,7 +6444,7 @@ class DebugWorker:
     @staticmethod
     def refuse_unplaceable(runtime, program, points):
         """Refuse, before it is placed, a breakpoint on a line the runtime says a stop
-        can't be on as asked (#326: a Rust line whose only code is a call the build
+        can't be on as asked (a Rust line whose only code is a call the build
         inlined, which the debugger reports on the called function's lines)."""
         if check := getattr(runtime, "unplaceable_line", None):
             for point in points:
@@ -6457,8 +6453,8 @@ class DebugWorker:
 
     def refuse_never_settable(self, runtime, program, changes):
         """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at
-        its `--at` line, a `--set-at` at its own, #137) that no stop of its line can make
-        in this build (#138): every change in an optimized build, and what the runtime's
+        its `--at` line, a `--set-at` at its own) that no stop of its line can make
+        in this build: every change in an optimized build, and what the runtime's
         build facts rule out in every function with code on that line
         (``never_settable``: a Rust local the IR keeps in a register, a field reached
         through a pointer). What depends on the stop (a statement under way, a local not
@@ -6484,14 +6480,14 @@ class DebugWorker:
                 + _BEFORE_LAUNCH
             )
         elif check := getattr(runtime, "launch_refusal", None):
-            # Java (#183): each change from the class files' declared types, its value too.
+            # Java: each change from the class files' declared types, its value too.
             for change in changes:
                 if refusal := check(program, change["line"], change["name"], change.get("value")):
                     break
         elif check := getattr(runtime, "never_settable", None):
             lines, texts = {}, {}
             for change in changes:
-                # A text (#137) is judged as a string's change, an integer as a number's.
+                # A text is judged as a string's change, an integer as a number's.
                 group = texts if change.get("text") else lines
                 group.setdefault(change["line"], []).append(change["name"])
             for line, names in lines.items():
@@ -6513,13 +6509,13 @@ class DebugWorker:
     def refuse_mid_statement(self, runtime, root, frame, selector, steps=None):
         """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it:
         the debugger's child names ``steps``) where the runtime says a statement under
-        way at the stop may hold a copy of its old value (#105): the change would miss
+        way at the stop may hold a copy of its old value: the change would miss
         that statement. The session is kept."""
         check = getattr(runtime, "mid_statement", None)
         part = {"steps": list(steps)} if steps and getattr(runtime, "projected_copies", 0) else {}
         if check and (reason := check(root, frame or {}, self.stop_reason, **part)):
             if advice := getattr(reason, "advice", None):
-                # The program's own binding holds the copy (#192): its own way around.
+                # The program's own binding holds the copy: its own way around.
                 raise ValueError(f"{selector!r} cannot be changed here: {reason}. {advice}")
             if getattr(reason, "everywhere", False):
                 # No stop of this run allows one: no advice to stop elsewhere.
@@ -6556,7 +6552,7 @@ class DebugWorker:
             runtime, frame, self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
         )
         if scope_identity == CAPTURES_SCOPE:
-            # A GCC lambda's capture (#361): found again through `__closure`, as the
+            # A GCC lambda's capture: found again through `__closure`, as the
             # member of what it points at that holds it.
             return self.walk_capture(runtime, frame, ancestry, trail)
         matches = [scope for scope in scopes if self.scope_identity(scope) == scope_identity]
@@ -6575,7 +6571,7 @@ class DebugWorker:
         return frame, scope_identity, ancestry, reference, indexed
 
     def walk_capture(self, runtime, frame, ancestry, trail=None):
-        """``walk`` from the GCC lambda capture ``ancestry`` starts at (#361): its member
+        """``walk`` from the GCC lambda capture ``ancestry`` starts at: its member
         of what `__closure` points at, by ``capture_members``, of the type it had, then
         each further step by its name and type."""
         if not ancestry:
@@ -6641,9 +6637,9 @@ class DebugWorker:
                     cleanup = adapter.close(terminate=False)
                 else:
                     cleanup = adapter.close()
-                # What ending the session did to the processes it started (#143).
+                # What ending the session did to the processes it started.
                 self.last_cleanup = cleanup if isinstance(cleanup, str) else None
-                # The output as the session's end left it, and whether it is whole (#203).
+                # The output as the session's end left it, and whether it is whole.
                 final = getattr(adapter, "final", None)
                 self.last_final = final if isinstance(final, dict) else None
         finally:
@@ -6651,7 +6647,7 @@ class DebugWorker:
                 if runtime:
                     runtime.close()
             finally:
-                # Once the adapter and the debuggee are gone (#249).
+                # Once the adapter and the debuggee are gone.
                 if pycache is not None:
                     shutil.rmtree(pycache, ignore_errors=True)
         return self.last_cleanup if adapter else None
@@ -6709,7 +6705,7 @@ _TEXT_NOT_RESTORED = "it holds a text, and Peeky writes back only a number, true
 
 
 def _restorable(runtime, variable, before, frame, root, steps):
-    """What a probe's `@before` may write back for this change (#305), read at this
+    """What a probe's `@before` may write back for this change, read at this
     write: {"value": the literal}, only where the runtime proves the text read before it
     is all of the value (``restore_literal``); else {"refused": why}."""
     hook = getattr(runtime, "restore_literal", None)
@@ -6737,7 +6733,7 @@ def _frame_identity(frame):
 
 def call_change(before, after):
     """How a stop's whole stack (``after``) differs from the one a session's step started
-    from (``before``), each a list of `_frame_identity`s, innermost first (#262). A caller
+    from (``before``), each a list of `_frame_identity`s, innermost first. A caller
     waiting on a call keeps its line and instruction; the innermost frame's line moves, so
     only its name counts. Depths count too, so a recursive call is told from its caller.
 
@@ -6794,7 +6790,7 @@ def member_selector(ancestry, name):
     return text
 
 
-# A C or C++ variable in static storage (#364).
+# A C or C++ variable in static storage.
 _STATIC_SET = (
     "{name} cannot be changed: {function} keeps it in the program's static storage, not in "
     "its frame's own memory, and Peeky changes only values a frame holds itself; edit the "
@@ -6804,7 +6800,7 @@ _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"
 )
-# Java (#164): a local no path from the stop reads again; or where that is not known.
+# Java: a local no path from the stop reads again; or where that is not known.
 _UNREAD_WHY = (
     "the program does not read it after this stop (a lambda or inner class that captured "
     "it before keeps its own copy; javac compiles a constant local into its uses)"
@@ -6816,14 +6812,14 @@ _UNREAD_UNKNOWN = (
     "Peeky could not tell whether the program reads it after this stop; a lambda or inner "
     "class that captured it before keeps its own copy, which the change does not reach"
 )
-# A std::string's text changes in place (#164): a view the program took before the
+# A std::string's text changes in place: a view the program took before the
 # change keeps the old size.
 STRING_VIEW_NOTE = (
     "a std::string_view, c_str() or data() pointer or iterator the program took from the "
     "string before the change still has its old size, and reads a mix of old and new text "
     "(Peeky cannot see those)"
 )
-# C, C++ and Rust (#137): a text changes a string local, not a field or element.
+# C, C++ and Rust: a text changes a string local, not a field or element.
 _TEXT_MEMBER = (
     "`{name}` cannot be changed to a text: copy it into a local with a candidate edit "
     "(`--old`/`--new`), or edit the source. Peeky writes text only into a string local "
@@ -6837,7 +6833,7 @@ _BEFORE_LAUNCH = (
 
 def _name_list(value):
     """A request's list of at most 32 names a selector can write (a Unicode identifier
-    with no invisible character, #195), or names LLDB gives a local with where it is
+    with no invisible character), or names LLDB gives a local with where it is
     declared (`s @ main.rs:81`, when several of that name are in scope)."""
     return (
         isinstance(value, list)
@@ -6868,7 +6864,7 @@ _SET_MEMBER = (
 
 def _public_sources(runtime, items):
     """Breakpoints or frames as answered: copies, with a build copy's source shown as the
-    user's file, as `location` is (#252). The debugger's own frames are left as they are,
+    user's file, as `location` is. The debugger's own frames are left as they are,
     for the rules that compare them."""
     shown = []
     for item in items or []:
@@ -6887,7 +6883,7 @@ def _public_placed(runtime, placed):
 
 
 def _source_names(value, root, names, parent=None):
-    """A remote client's view of a result (#252): each `location`, and each `source`'s
+    """A remote client's view of a result: each `location`, and each `source`'s
     `path`, that is one of the sources it compared becomes `source:NAME` (with its
     `:LINE`), NAME relative to the root. The client shows its own copy of NAME there;
     any other path stays this host's."""
@@ -6967,7 +6963,7 @@ def _display_path(runtime, path):
 
 
 def _stop_signals(description):
-    """The signals a stop's description names (review of #342): LLDB's `signal SIGABRT…`,
+    """The signals a stop's description names: LLDB's `signal SIGABRT…`,
     its assert recognizer's `hit program assert` (SIGABRT), or the signals a macOS Mach
     exception becomes; () for anything else (a C++ throw filter's `C++ Throw`)."""
     text = str(description or "").strip()
@@ -7218,7 +7214,7 @@ def make_server(root, token, port=8765, *, adapter=None):
                 spoken = self.headers.get("X-Peeky-Protocol")
                 if operation != "version" and (spoken or "").strip() != str(PROTOCOL_VERSION):
                     # A client of another protocol, or one that doesn't say: refused before
-                    # it runs anything, as it would read the answer otherwise (#374 review).
+                    # it runs anything, as it would read the answer otherwise.
                     raise ValueError(
                         f"Client speaks protocol {str(spoken).strip()[:20] if spoken else 'none'}"
                         f" (its X-Peeky-Protocol header), this worker {PROTOCOL_VERSION}: install "
@@ -7230,7 +7226,7 @@ def make_server(root, token, port=8765, *, adapter=None):
                     and args.get("expect_inputs") is None
                 ):
                     # A remote client that checks only the program would get values from
-                    # other code without a note (#249).
+                    # other code without a note.
                     raise ValueError(
                         "This client sent no sha256 for the target's other sources "
                         "(expect_inputs), so the worker cannot compare them: install the same "
@@ -7240,7 +7236,7 @@ def make_server(root, token, port=8765, *, adapter=None):
                     declared = args.pop("protocol", None)
                     if args.get("expect_inputs") is not None and declared != PROTOCOL_VERSION:
                         # A client of protocol 2 sends expect_inputs and no protocol; it would
-                        # show this worker's `source:` names as paths (#252).
+                        # show this worker's `source:` names as paths.
                         spoken = declared if type(declared) is int else 2
                         raise ValueError(
                             f"Client speaks protocol {spoken}, this worker {PROTOCOL_VERSION}: "
@@ -7251,9 +7247,9 @@ def make_server(root, token, port=8765, *, adapter=None):
 
                     result = {
                         "protocol": PROTOCOL_VERSION,
-                        # Which sources a client hashes for expect_inputs (#249).
+                        # Which sources a client hashes for expect_inputs.
                         "sources": describe(worker.adapter),
-                        # Where its paths start: a remote client shows them as its own (#252).
+                        # Where its paths start: a remote client shows them as its own.
                         "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(
@@ -7305,16 +7301,13 @@ def make_server(root, token, port=8765, *, adapter=None):
 
 
 # A probe child's launch budget is the HTTP cap less this, so that a slow launch (a
-# build) ends in the child's own answer, before the watchdog at ``cap - 5`` (#190 review).
+# build) ends in the child's own answer, before the watchdog at ``cap - 5``.
 PROBE_LAUNCH_MARGIN_S = 10
 
 
 def _run_probe_process(root, request, adapter, cap):
     import dataclasses
-    import signal
     import subprocess
-    import sys
-    import tempfile
 
     import peeky
 
@@ -7366,7 +7359,7 @@ def _run_probe_process(root, request, adapter, cap):
             config.chmod(0o600)
             command += ["--config", str(config)]
         # A remote Python run's bytecode cache, removed with the scratch whatever ends the
-        # child (#249).
+        # child.
         pycache = Path(scratch) / "pycache"
         pycache.mkdir(mode=0o700)
         command += ["--pycache-dir", str(pycache)]
@@ -7395,7 +7388,7 @@ def _run_probe_process(root, request, adapter, cap):
                 process.communicate()
             stdout, stderr = None, b""
         # Whether the debugger was asked to start the program: an answer made up here
-        # says so (#190 review), as the child's own would.
+        # says so, as the child's own would.
         requested = marker.exists()
     if stdout is None:
         before = "" if requested else " before the debugger's launch/attach request was sent"
@@ -7416,8 +7409,6 @@ def _run_probe_process(root, request, adapter, cap):
 def _probe_failure(status, exc, requested=True):
     """A probe child's failure as its result; ``requested``: whether the debugger was
     asked to start the program (if not, it is one before launch)."""
-    from peeky.errors import classify
-
     failure = {"status": status, "error": classify(exc, session_closed=True)}
     if not requested:
         failure["refused_before_launch"] = True
@@ -7532,7 +7523,7 @@ def load_java_attach_target(path):
 def main():
     from peeky.processes import keep_children_waitable
 
-    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
+    keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(prog="peeky-worker")
     add_version(parser)
     parser.add_argument("--root", default=".")
