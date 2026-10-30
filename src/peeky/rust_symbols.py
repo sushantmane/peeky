@@ -47,7 +47,6 @@ from peeky.native import (
     parse_lines,
     symbol_limit,
 )
-from peeky.native import _RANGE as _NATIVE_RANGE
 from peeky.rust_chars import ESCAPED
 from peeky.rust_lexer import code_only
 from peeky.textlines import octal_string, split_lines
@@ -266,20 +265,20 @@ def parse_dies(text, *, units, tally=None):
             ranged = match.end(2) - match.start(2) == len("DW_AT_ranges") and raw.startswith(
                 "DW_AT_ranges", match.start(2)
             )
+            # As native._parse_dies counts the ranges it reads from such a value: at most
+            # one a `[`.
+            spans = raw.count("[", match.start(3)) if ranged else 0
             room(
                 _NAME_BYTES
                 + _held(raw, match.start(2), match.end(2))
                 + _held(raw, match.start(3), match.end(3))
-                # As native._parse_dies counts the ranges it reads from such a value.
-                + (raw.count("[", match.start(3)) * _RANGE_BYTES if ranged else 0)
+                + spans * _RANGE_BYTES
             )
             if match[2] in last.attributes:
                 raise ValueError("Duplicate DWARF attribute")
             attribute, value = one(match[2]), one(match[3])
             last.attributes[attribute] = value
-            size += _NAME_BYTES
-            if ranged:
-                size += len(_NATIVE_RANGE.findall(value)) * _RANGE_BYTES
+            size += _NAME_BYTES + spans * _RANGE_BYTES
             continue
         if last is not None and last.attributes and _CONTINUATION.fullmatch(raw):
             new = attribute not in last.continued

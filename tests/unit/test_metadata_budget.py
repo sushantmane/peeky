@@ -333,3 +333,28 @@ def test_a_line_over_max_line_is_refused_as_it_is_read(tmp_path, monkeypatch):
         "Peeky reads at most 1 MiB of one line of a build's debug information", ""
     )
     assert classify(refused)["code"] == "BUDGET_EXHAUSTED"
+
+
+@pytest.mark.parametrize("one_line", [True, False])
+def test_ranges_near_the_bound_are_read_within_it(monkeypatch, one_line):
+    # Accepted, a line's ranges are read one at a time (review): all 30,000 of a line's
+    # matches at once took a parse with an 8 MiB bound to 10.7 MB.
+    import tracemalloc
+
+    from peeky.native import DieMap
+
+    ranges = [f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(30_000)]
+    if one_line:
+        lines = [*HEAD, f"                DW_AT_ranges\t(0x00000000 {' '.join(ranges)})"]
+    else:
+        rows = [f"                   {each}" for each in ranges]
+        lines = [*HEAD, "                DW_AT_ranges\t(0x00000000", *rows[:-1], rows[-1] + ")"]
+    monkeypatch.setattr("peeky.native.MAX_KEPT", 8 << 20)
+    tracemalloc.start()
+    try:
+        dies = _parse_dies(iter(lines), DieMap())
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert len(dies[0x20]["ranges"]) == 30_000 and 5 << 20 < dies.kept <= 8 << 20
+    assert peak < 8 << 20, peak

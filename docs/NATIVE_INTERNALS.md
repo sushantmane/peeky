@@ -63,11 +63,12 @@ The bounds are on what is kept, and on the time:
   unit whose every value differs. On these programs it overstates what is held by 25-70%.
 - Each line's cost is reckoned before anything of it is kept or copied out of it: a value at 4
   bytes a character unless its line is ASCII, a range for each `[`. So a value or a block of ranges
-  past what is left is refused before it is kept, and the bound is never passed. Tests check
-  that with `tracemalloc` too.
-- Reading holds one line at most 4 MiB long (`MAX_LINE`), and one 1 MiB read. A longer line is
-  refused as it is read, with `BUDGET_EXHAUSTED`. So a parse holds at most `MAX_KEPT`, and
-  reading and a line's matching a few MiB more.
+  past what is left is refused before it is kept, and the bound is never passed. A line's ranges
+  are then read one at a time (`finditer`), never all its matches at once. Tests check both with
+  `tracemalloc`, refused and accepted near the bound.
+- `MAX_KEPT` bounds what the parse keeps. Reading one line uses memory past it for a while: the
+  line, at most 4 MiB long (`MAX_LINE`), its 1 MiB read, and what matching it copies. A longer line
+  is refused as it is read, with `BUDGET_EXHAUSTED`. The longest real lines are about 1.6 KB.
 - An 8-file C++ program using the STL keeps 57-136 MB by it; the Rust crate using BTreeMap, 94-98
   MB.
 - 400,000 debug-information entries (`MAX_DIES`). These programs have 59,000-130,000.
@@ -84,7 +85,7 @@ Over a bound (`SymbolLimit`), the message names the bound and says to probe a sm
 - C or C++ debug information over its bounds isn't read. The program runs, but every local is
   marked not judged, with the bound, and no value can be changed. So is debug information the
   parse can't read.
-- A Rust unit over them is refused with `BUDGET_EXHAUSTED`.
+- The crate's application units together over a bound are refused with `BUDGET_EXHAUSTED`.
 - A read that takes too long is a `TIMEOUT`. A dwarfdump that fails (`SymbolToolError`) is a
   `DEBUGGER_ERROR`. Either fails the launch: neither is taken for unreadable debug information.
 - `SYMBOL_FAILURES` are these three. A later read that falls back without its text lets them

@@ -380,6 +380,40 @@ def test_rust_refuses_what_is_over_what_is_left_before_it_is_kept(monkeypatch, k
     assert 30_000 * _RANGE_BYTES > 4 << 20 and peak < 1 << 20, peak
 
 
+@pytest.mark.parametrize("one_line", [True, False])
+def test_rust_reads_ranges_near_the_bound_within_it(monkeypatch, one_line):
+    # Accepted, a value's ranges are counted by its `[`s, never matched all at once.
+    import tracemalloc
+
+    from peeky.native import Kept
+
+    lines = [
+        *entry(0x0B, 0, "DW_TAG_compile_unit", ("DW_AT_name", json.dumps(APP))),
+        *entry(0x20, 1, "DW_TAG_subprogram", ("DW_AT_name", '"main"')),
+    ]
+    # Near the bound: a row also keeps its text, a range on one line only its count.
+    count = 30_000 if one_line else 27_000
+    ranges = [f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(count)]
+    if one_line:
+        lines += [" " * 16 + f"DW_AT_ranges\t(0x00000000 {' '.join(ranges)})"]
+    else:
+        lines += [" " * 16 + "DW_AT_ranges\t(0x00000000"]
+        lines += [" " * 19 + each for each in ranges]
+    lines += null(0x30, 2) + null(0x40, 1)
+    monkeypatch.setattr("peeky.rust_symbols.MAX_KEPT", 8 << 20)
+    tally = Kept()
+    tracemalloc.start()
+    try:
+        (root,) = parse_dies(iter(lines), units=False, tally=tally)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    (main,) = root.children
+    assert "DW_AT_ranges" in main.attributes and 6 << 20 < tally.bytes <= 8 << 20
+    assert len(main.continued.get("DW_AT_ranges", ())) == (0 if one_line else count)
+    assert peak < 8 << 20, peak
+
+
 def test_enum_layouts_follow_compiler_discriminants_and_qualify_only_i32():
     layouts = enum_layouts(option_dump(), UNIT)
     assert layouts == {

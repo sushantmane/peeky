@@ -68,8 +68,9 @@ MAX_METADATA = 2 * 1024 * 1024
 # (75,000-100,000 entries), as has a Rust crate using BTreeMap.
 MAX_LINE_TEXT = 64 * 1024 * 1024
 MAX_DEBUG_INFO = 256 * 1024 * 1024
-# The longest line of that text Peeky reads (a type's name may run to tens of kilobytes):
-# what reading holds past what a parse keeps (MAX_KEPT) is a line or two and one read.
+# The longest line of that text Peeky reads (the longest real ones are about 1.6 KB). MAX_KEPT
+# bounds what a parse keeps; reading one line uses memory past it for a while, bounded by
+# this: the line, its read, and what matching it copies.
 MAX_LINE = 4 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
 CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
@@ -723,11 +724,12 @@ def _parse_dies(text, into=None):
         if not tail_calls and "tail_call" in raw and _TAIL_CALL.search(raw):
             tail_calls = True
         if ranges is not None:
-            # At most one range a `[`, each counted before it is read.
+            # At most one range a `[`, each counted before it is read, then read one at a
+            # time: never all of a line's matches at once.
             room(raw.count("[") * _RANGE_BYTES)
-            found = _RANGE.findall(raw)
-            size += len(found) * _RANGE_BYTES
-            ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
+            for found in _RANGE.finditer(raw):
+                ranges.append((int(found[1], 16), int(found[2], 16)))
+                size += _RANGE_BYTES
             if raw.rstrip().endswith("))") or not _RANGE.search(raw):
                 ranges = None
         elif match := _DIE.match(raw):
@@ -771,9 +773,10 @@ def _parse_dies(text, into=None):
             size += _NAME_BYTES
             dies[stack[-1]]["attrs"].setdefault(name, value)
             if ranged:
-                found = _RANGE.findall(value)
-                size += len(found) * _RANGE_BYTES
-                dies[stack[-1]]["ranges"].extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
+                spans = dies[stack[-1]]["ranges"]
+                for found in _RANGE.finditer(value):
+                    spans.append((int(found[1], 16), int(found[2], 16)))
+                    size += _RANGE_BYTES
     dies.tail_calls, dies.kept = tail_calls, size
     return dies
 
