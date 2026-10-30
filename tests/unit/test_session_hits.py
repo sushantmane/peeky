@@ -94,3 +94,8 @@ def test_a_deadline_short_of_the_target_says_how_far_it_got(record):
     )
     assert not complete and client.calls == []
     assert state["note"] == "reached 0 of 5 stops before --timeout (hit 7); last hit 2"
+    # One stop to go: it said "of 1 stops".
+    state, reached, complete = cli._run_on(
+        record, client, numbered("a", hit=6), 1, time.monotonic() - 1, "hit 7"
+    )
+    assert state["note"] == "reached 0 of 1 stop before --timeout (hit 7); last hit 6"

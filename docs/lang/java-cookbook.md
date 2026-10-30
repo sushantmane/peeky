@@ -695,8 +695,8 @@ peeky probe ~/workspace/venice --config attach.json --at $T:85 \
 - Attaching never kills the JVM. Closing detaches.
 - Provenance is labelled `attached`.
 - `--arg` is refused, because the program is already running.
-- Candidates and `verify` don't work: edits can't be verified this way. Verify them with a
-  launched target.
+- Candidates and `verify` don't work: edits can't be verified this way, and `describe` lists
+  neither command. Verify them with a launched target.
 - Values show plain, to keep the JVM's pauses short.
 - A session's `--max-pause` defaults to 10 s.
 

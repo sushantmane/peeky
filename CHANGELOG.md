@@ -27,6 +27,8 @@
 
 ### Other changes
 
+- **A rare failure closing a session:** closing a session just as its program started a
+  process could fail with "cannot join thread before it is started". It no longer does.
 - **Faster C and C++ builds:** sources preprocess and compile in parallel, the checks of
   preprocessed text are 4× faster, and a new process doesn't rehash the toolchain binaries. An
   8-file C++ probe takes 2.3 s on macOS, down from 6.1 s (#398).
@@ -82,6 +84,15 @@
   `peeky-worker` and `peeky-agent` take the token out of their environment first. A session's
   own worker runs isolated, and `peeky-agent --url` takes only loopback. A worker bounds each
   request at 30 s, and answers `BUSY` past 32 connections.
+- **Probe and describe fixes:** a handled signal's or exception's stop no longer starts a line's
+  count of stops again, so `--set-at LINE@HIT` is made at that line's HIT-th stop. A probe whose
+  debugger lost a stop, with a `--set-at` never made, no longer fails with an internal error.
+  Where that stop was at the change's line, it says the line's count of stops is unknown, not
+  that its hit never came, and an `@all` there is listed in `unapplied`. A stop lost at another
+  line no longer marks an `@all` incomplete; one Peeky can't match to a line counts for every
+  pending change. The evidence store is schema 22: a change at one hit can end `lost_stop`.
+  `describe` lists no `verify` command for an attached JVM, which `verify` refuses. One stop is
+  `1 stop`, not `1 stops` (#408, #422, #424).
   Protocol 11 also covers the Rust withheld-value labels and notes, and `NonNull` rows (#431).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
