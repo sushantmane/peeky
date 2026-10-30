@@ -63,7 +63,7 @@ language: java
 ...
 names in MergeBug.main (demo/MergeBug.java:22-35): args (String[]), input (java.util.List), merged (java.util.List), current (demo.MergeBug$Interval), next (demo.MergeBug$Interval, lines 26-30)
 mutable: root locals, fields (not final or static) and array elements (current.end, xs[0]) of type byte, short, int, long, char, boolean, float or double, and String ones; a char takes a char in single quotes ('+') or a code point (43), a String a text in double quotes (--set 'name="apple"'); never a boxed value (Integer), another object or an ArrayList's elements, nor a field a JDK class declares (a String's hash, an ArrayList's size) or an element of an array one holds. Field, char and String changes need an adapter bundle built by this version of scripts/setup_java_adapter.py. Rows mark what can change [settable]
-probe: peeky probe examples/java --config examples/java/merge.json --at demo/MergeBug.java:<line> [--arg A ...] --capture <a,b.c> [--set name=value] [--set-hit N] [--set-at LINE@HIT name=value] [--hits N] [--json]
+probe: peeky probe examples/java --config examples/java/merge.json --at demo/MergeBug.java:<line> [--arg A ...] --capture <a,b.c> [--set name=value] [--set-hit N] [--set-at LINE@HIT|LINE@all name=value] [--hits N] [--json]
 ...
 ```
 
@@ -136,8 +136,9 @@ peeky sql "SELECT b.hit, object_ref(b.value) AS best, object_ref(w.value) AS lis
 
 ```
 hit  best                   list_a                 same
-1    BalanceBug$Worker@56   BalanceBug$Worker@100  0
-2    BalanceBug$Worker@102  BalanceBug$Worker@100  0
+1    BalanceBug$Worker@56   BalanceBug$Worker@103  0
+2    BalanceBug$Worker@107  BalanceBug$Worker@103  0
+(2 rows)
 ```
 
 At both hits, `best` is a different object from the list's worker `a`. Read object numbers this way:
@@ -294,7 +295,7 @@ hit  phase      line  function                      selector  type   value
 1    observed   13    PaginationBug.main(String[])  items     int[]  int[8]@51 [10, 20, 30, 40, 50, 60, 70, 80]
 ...
 set start: 3 -> 0
-status: completed  hits: 1  seconds: 0.54
+status: completed  hits: 1  seconds: 1.187  max pause: 137.8 ms
 output:
   PAGE:[10, 20, 30]
 ```
@@ -315,10 +316,12 @@ hit  phase      line  function                 selector  type               valu
 1    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
 1    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@58 {end=5, start=2}
 2    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=5, start=1}
-2    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
+2    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@66 {end=14, start=12}
 2    after-set  26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
-2    after-set  26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
+2    after-set  26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@66 {end=14, start=12}
 set current.end: 5 -> 10
+status: completed  hits: 2  seconds: 1.061  max pause: 68.6 ms
+warning: Interventions are applied once, at hit 2; other hits observe without re-applying.
 output:
   MERGED:[[1,10], [12,14]]
 ```
@@ -365,7 +368,7 @@ peeky probe examples/java --config examples/java/balance.json --at demo/BalanceB
 
 ```
 hit  phase     line  function                       selector        type    value
-1    observed  30    BalanceBug.assign(List,int[])  best.name       String  "a"
+1    observed  30    BalanceBug.assign(List,int[])  best.name       String  "a"  [not settable: final]
 1    observed  30    BalanceBug.assign(List,int[])  best.name.hash  int     0  [not settable: declared by java.lang.String (the JDK's own state)]
 ...
 ```
@@ -373,8 +376,8 @@ hit  phase     line  function                       selector        type    valu
 With an adapter bundle that doesn't name a field's class, Peeky changes no field at all.
 
 A change at a stop is refused, naming the class:
-`'size' cannot be changed: it is declared by java.util.ArrayList, a JDK class`. Where the class
-files show it, the change is refused before the run
+`` `merged.size` cannot be changed: it is declared by java.util.ArrayList, a JDK class ``. Where
+the class files show it, the change is refused before the run
 ([below](#changes-refused-before-the-run)):
 
 ```sh
@@ -391,7 +394,7 @@ What counts as a JDK class:
 
 - A class in a JDK module, such as `java.base`.
 - Also a class in `jdk.jshell` or `jdk.compiler`, though the application class loader loads them.
-- On Java 8, a class that the bootstrap or platform class loader loaded.
+- On Java 8, a class that the bootstrap or extension class loader loaded.
 - Never a class judged by its package alone. A class of the program in `javax.foo` is the
   program's.
 
@@ -645,8 +648,8 @@ Other details:
 
 - `ArrayList` selectors index like arrays, within the list's `size`: `merged[0]`,
   `merged[-1].end`. This doesn't work if the backing array holds more than 512 slots.
-- String and char fields show as Java literals: `name="say \"hi\""`, `quote='"'`. A String is cut
-  after 38 characters, with `…`.
+- String and char fields show as Java literals: `name="say \"hi\""`, `quote='"'`. A String longer
+  than 38 characters shows its first 37, then `…`.
 - Object numbers, like `@143`, follow the order in which the debugger first touched the objects.
   So `queries diff` treats them like addresses in Java runs.
 - A `step` from a block's last statement stops on its closing `}`, or on the loop's header. There
@@ -664,6 +667,11 @@ Gradle starts a Venice test with `--debug-jvm`:
 ./gradlew :internal:venice-test-common:integrationTests_32 \
   --tests 'com.linkedin.venice.endToEnd.TestEmptyPush.testEmptyPushWithZstdWithDictCompression' --debug-jvm
 ```
+
+To reproduce it, you need a Venice checkout at the commit the line numbers match, JDK 17, and on
+Apple Silicon without Rosetta a native gRPC code generator. The
+[Venice walkthrough](../JAVA_ATTACH.md#venice-walkthrough-verified-2026-10-14-apple-silicon-jdk-17)
+lists them.
 
 The config gives the JVM's `port` instead of a `main_class`. `class_roots` lists the directories
 with the class files:
