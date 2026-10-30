@@ -9,7 +9,7 @@ change's details are in its pull request on GitHub.
 
 - The Python bootstrap: debugpy, a worker with session and stop identities, verification in a
   fresh process, and parallel CI.
-- The [five-language plan](LANGUAGES.md): Python first, then Java, C, C++ and Rust.
+- The five-language plan: Python first, then Java, C, C++ and Rust.
 - Java through java-debug, run headless, with an HTTP worker and verified repairs.
 - C through LLDB, read-only C++ inspection, and a first Rust worker.
 
@@ -27,8 +27,7 @@ change's details are in its pull request on GitHub.
 ### 2026-10-16: the evidence store and a whole-code review
 
 - `peeky sql` and `peeky queries`, over every saved run ([ADR 0004](adr/0004-stateless-probes.md)).
-- A [whole-code review](reviews/WHOLE_CODE_REVIEW_2026-10-16.md), with each finding and its
-  disposition recorded.
+- A whole-code review, with each finding and its disposition recorded.
 - Remote workers tested on a second host: a Linux container, reached over SSH.
 - The [COOKBOOK](COOKBOOK.md), and stepping in sessions.
 
@@ -62,7 +61,8 @@ change's details are in its pull request on GitHub.
 ## Live agent evaluations
 
 In each round, independent coding agents got the docs, the `peeky` command and a new bug. They
-couldn't read Peeky's source. Each report lists what the agents found and what was fixed.
+couldn't read Peeky's source. Each report lists what the agents found and what was fixed. Each
+describes Peeky as it was on its date ([evaluations/](evaluations/README.md)).
 
 | Round | Report |
 | --- | --- |
@@ -82,8 +82,6 @@ couldn't read Peeky's source. Each report lists what the agents found and what w
 | Twelfth | [2026-10-25: Python rainfall, Rust laps, a C++ playlist and Java desks](evaluations/2026-10-25-agent-twelfth-round.md) |
 | Thirteenth | [2026-10-29: a GCC stock depot, a lambda's stale tariff, a static's leftovers and a night car park](evaluations/2026-10-29-agent-thirteenth-round.md) |
 
-## Reviews and decisions
+## Decisions
 
-- [reviews/](reviews/) holds the independent reviews, with each finding's disposition.
-- [adr/](adr/) holds the architecture decision records.
-- [archive/](archive/README.md) holds early plans, kept as they were.
+[adr/](adr/) holds the architecture decision records.

@@ -1,9 +1,8 @@
 # Peeky design
 
 Status: Python, Java, C, C++ and Rust each have an experimental investigation loop, with explicit
-limits. The product MVP needs all five. [LANGUAGES.md](LANGUAGES.md) has the implementation order,
-and the language and remote acceptance work that remains. This document specifies the intended MVP
-contract. The [roadmap](ROADMAP.md) tells delivered foundations from remaining acceptance work.
+limits. The [roadmap](ROADMAP.md) has where each language stands, what a language needs before
+Peeky claims it, what is delivered and what comes next. This document specifies the MVP contract.
 
 ## Problem and outcome
 
@@ -109,8 +108,9 @@ stateDiagram-v2
   Never retry a mutation transparently.
 - A worker serializes operations. `wait` polls in short, bounded steps, which limits how long
   polling delays another request. Other adapter operations keep their own request deadlines.
-- The CLI worker expires inactive sessions. A graceful disconnect is followed by cleanup of the
-  owned process group, on supported POSIX hosts.
+- The CLI worker expires inactive sessions. A graceful disconnect is followed by ending the
+  processes the session started, on supported POSIX hosts. An attached JVM is only detached
+  ([ERRORS.md](ERRORS.md#how-peeky-ends-a-sessions-processes)).
 - Lifecycle events are kept apart from output buffers, so noisy stdout can't push out a stop or
   termination event.
 
@@ -156,12 +156,12 @@ Without the token, the reply is `401`:
 
 | Operation | Required input | Result |
 | --- | --- | --- |
-| launch | worker-relative program, breakpoint list; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256` |
+| launch | worker-relative program, breakpoint list (at most 100); optional `args`, `entry` (Python's `--run` script), `edit` (a candidate), `sets` and `entry_lines` (a probe's changes and restores), `max_pause`; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256` |
 | wait | session ID, bounded timeout | stopped, terminated, or still running; at a `calls` step's own end, `call_change` (`left`, `deeper` or `other`) where its stack, read whole up to 256 frames, differs in function or depth; `macro_stop` (Rust) where the debugger shows the stop on a line with no code of its own in its function that is in a macro's definition, or may be one (Peeky can't read the source as rustc does; the text says which), why `inspect` reads none of that frame; where the function's DWARF blocks are known, only once the stop's address proves it; `crash` where a C or C++ program crashed (SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE, from a fault or `abort`, that its signal masks show it neither handles nor ignores; not another signal, or a C++ throw or catch filter's stop): the debugger's `description`, `outside_program`, the nearest frame of the program's own code among the first 64 (`frame`, `function`, `location`), checked against the build as `inspect` checks a frame, and `uncaught_exception` where `__cxa_throw` called `std::terminate`, and `kind`, `exceptionInfo`'s `exceptionId` (`signal`, `exception`, or a filter's name, `cpp_throw`); `signal_stop` with the same fields at any other `exception` or `signal` stop; `inspect` reads nothing in a frame outside the program's sources at any `exception` or `signal` stop |
-| inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost; 10 frames are listed, or up to `frame`, at most 64) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity`; `no_longer_visible`: after a `calls` step that stayed in the function at its depth, names listed at an earlier stop and not here, with `same_call` where the debugger's steps prove it (Java); not Python |
-| expand | session ID, stop ID, opaque child handle, start/count, or `index`; or `key` (a map's key as the debugger shows one, for entries Peeky read from an unordered container's nodes) | bounded read-only children; for `key`, the entry with that key, if any, with the `key`, `compared` (how many keys) and `keys` (the first 20) |
+| inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost; 10 frames are listed, or up to `frame`, at most 64) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`); optional `previews` and `extents` (C and C++: `true`, `false` or up to 32 root names), and `depth` (`true` adds the stack's `depth`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity`; `no_longer_visible`: after a `calls` step that stayed in the function at its depth, names listed at an earlier stop and not here, with `same_call` where the debugger's steps prove it (Java); not Python |
+| expand | session ID, stop ID, opaque child handle, start/count, or `index`; or `key` (a map's key as the debugger shows one, for entries Peeky read from an unordered container's nodes); optional `previews` | bounded read-only children; for `key`, the entry with that key, if any, with the `key`, `compared` (how many keys) and `keys` (the first 20) |
 | preview | session ID, stop ID, child handle; optional `pointee` | the value's preview, as `inspect` shows it, or none |
-| set_variable | session ID, stop ID, scope reference, name, expression value (the innermost frame's only) | before/after |
+| set_variable | session ID, stop ID, name, a literal value, and a scope `reference` (a root local of the innermost frame) or an expansion `handle` (a field or element of one); optional `restorable` and `target`, for `@before` restores | before/after; `restore` where `restorable` |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |
 | continue | session ID, stop ID; optional `to_line` or `to_exit` | running, and `resumed`: false where another thread's breakpoint stop from the same all-threads stop is served next, and nothing was resumed |
 | step | session ID, stop ID; `kind`: `over`, `in` or `out`; optional `calls` (the step's own end is compared with this stop) | running |
@@ -212,7 +212,7 @@ The configured verifier gets the candidate's path in `argv[1]`.
 - It must return normally after checking the candidate. An explicit `sys.exit(0)` is rejected on
   purpose.
 - A trusted wrapper requires explicit completion, instead of taking every zero exit as success.
-  Catching a premature `SystemExit` prevents the exit-zero bypass that was demonstrated.
+  Catching a premature `SystemExit` prevents that exit-zero bypass.
 - Hash checks gate acceptance. They are not only notes in the report.
 
 This is not adversarially secure verification. The target and the verifier run with local OS
@@ -273,7 +273,7 @@ worker and controller. C++ adds qualified class, reference and array inspection,
 verification. Rust has a worker for one dependency-free Cargo binary
 ([RUST_AGENT.md](RUST_AGENT.md#the-cargo-build)), and an investigation loop
 ([AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates)).
-[LANGUAGES.md](LANGUAGES.md) has the full acceptance criteria per language.
+[ROADMAP.md](ROADMAP.md#what-a-language-needs-before-peeky-claims-it) has the full acceptance criteria per language.
 
 How the languages plug in:
 
@@ -285,8 +285,8 @@ How the languages plug in:
   validates selected stopped frames, and cleans its workspace after the debugger's teardown.
 - The worker keeps ownership of sessions and stops, and exposes the debugger's later
   breakpoint-verification events.
-- Java and C candidate acceptance use the shared `CompiledVerification` lifecycle, with thin
-  language wrappers, fresh prepared builds and the unchanged trusted checker.
+- Java, C, C++ and Rust candidate acceptance use the shared `CompiledVerification` lifecycle, with
+  thin language wrappers, fresh prepared builds and the unchanged trusted checker.
 
 [Java 7.3](lang/java-cookbook.md#what-peeky-checks-about-a-java-build) has the restrictions, and the
 limits of provenance for trusted development.
@@ -294,7 +294,7 @@ limits of provenance for trusted development.
 ## Open questions
 
 - How should compiled candidate verification extend the source-patch controller? (Answered for
-  Java and C by `CompiledVerification`, above.)
+  Java, C, C++ and Rust by `CompiledVerification`, above.)
 - Should a future agent receive stable evidence IDs, beside opaque worker scope handles?
 - What needs to stay inside customer infrastructure before remote production use?
 - Which regression corpus gives evidence beyond synthetic examples?
@@ -316,7 +316,9 @@ Limits:
 - A page holds at most 64 values. Depth is at most four.
 - An inspection has a 512-node budget, which includes the initial locals.
 - A collection beyond 512 entries is rejected. Backend paging can't silently get around these
-  limits.
+  limits. Two reads go past them, one entry at a time: `index`, an element of a longer array, and
+  `key`, an entry Peeky read from a GCC build's unordered container. Such a container, read from
+  its own nodes, may also be paged past 512.
 - Values and identity strings are bounded.
 - Child handles never authorize mutation.
 

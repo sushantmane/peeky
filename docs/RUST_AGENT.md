@@ -3,8 +3,7 @@
 This page is for maintainers. It explains how Peeky builds a Rust target, reads its values, and
 proves what it reads and changes. The rules themselves, with examples, are in
 [rust.md](lang/rust.md) and the [Rust cookbook](lang/rust-cookbook.md#72-rust-a-cargo-crate). The
-investigation loop is in [AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates). The first engineering
-gate's record is in the [archive](archive/RUST_GATE.md).
+investigation loop is in [AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates).
 
 ## The Cargo build
 

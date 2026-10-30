@@ -112,7 +112,7 @@ the commands.
 | `peeky session start <target> --at <path>:<line> [--hit N]` | one run | Several looks at the same stop (`--hit N`: the Nth). |
 | `peeky session inspect` / `get a.b 'c[0]' "d['k']"` / `set x=0` | instant | List, read and change values at the stop. |
 | `peeky session step [--into\|--out]` / `continue [--to LINE\|--count N\|--to-exit]` / `wait` | instant | Move the program on; `wait` waits for a running one to stop. |
-| `peeky session report` / `list` / `close` | instant | What happened; the open sessions; end one. Always `close`. |
+| `peeky session report` / `list` / `close` | instant | What happened; the open sessions; end one. |
 | `peeky verify <target> [--at <file>] --check <checker.py> --old '...' --new '...'` / `--baseline` | one build | Verify an edit on a fresh build; `--baseline` checks the unedited program. |
 | `peeky job wait <id>` | instant | Collect a `--background` probe or verify. |
 
@@ -203,9 +203,9 @@ probe, read its JSON.
 
 - `peeky sql --schema` lists the tables and views. `--schema NAME ...` (or `all`) prints them
   in full (4.1). Read it before writing SQL.
-- `peeky queries` needs no SQL: `run`, `wide`, `hits`, `compare`, `join` (hits paired by values:
-  `key=v` or `key=a,b`; its table drops selectors that agree at every paired hit), `diff` (what
-  differs, real differences first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
+- `peeky queries` needs no SQL: `runs`, `run`, `wide`, `hits`, `compare`, `join` (hits paired by
+  values: `key=v` or `key=a,b`; its table drops selectors that agree at every paired hit), `diff`
+  (what differs, real differences first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
   `failures`. `compare`, `diff`, `outputs` and `join` take `--param a=1 --param b=5` (default: the
   last two); `run`, `wide`, `hits`, `set_effect` and `unreadable` take `run=3`. `queries --help`
   lists their parameters. `diff`, `compare` and `set_effect` tables show long values from
