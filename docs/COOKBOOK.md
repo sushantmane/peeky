@@ -56,7 +56,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
 ## Table of Contents
 
 0. [Setup](#0-setup): install Peeky and the debugger or toolchain each language needs
-   - [Install Peeky](#install-peeky): Python 3.11 or later; `pip install` brings debugpy
+   - [Install Peeky](#install-peeky): Python 3.11 or later; pipx or uv, or pip for a program's own environment
    - [What each language also needs](#what-each-language-also-needs): the tools for C, C++, Rust and Java, and how Peeky finds them
    - [Keep a task's runs apart](#keep-a-tasks-runs-apart): `PEEKY_STATE_DIR`
    - [How Peeky tells the language](#how-peeky-tells-the-language): from the target's path, or `--config`
@@ -120,17 +120,24 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
 
 ### Install Peeky
 
-Peeky needs Python 3.11 or later. `pip install` also brings debugpy, the debugger Peeky uses for
-Python targets:
+Peeky needs Python 3.11 or later. Installing it also brings debugpy, the debugger Peeky uses for
+Python targets. Install it as a tool, in an environment of its own, from the repository root:
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .
+pipx install .    # or: uv tool install .
 ```
 
-From a release, install the wheel instead: `pip install peeky-0.1.0-py3-none-any.whl`. The wheel
-has no examples or scripts. Run the recipes from the unpacked source archive,
-`peeky-0.1.0.tar.gz` ([README](../README.md#from-a-release)).
+A Python program runs on the interpreter running `peeky`. If the program imports packages from
+its own environment, install Peeky there instead:
+
+```sh
+. .venv/bin/activate          # the program's environment
+pip install /path/to/peeky    # the clone
+```
+
+From a release, install the wheel, `peeky_debug-VERSION-py3-none-any.whl`, instead. The wheel has
+no examples or scripts. Run the recipes from the unpacked source archive,
+`peeky_debug-VERSION.tar.gz` ([README](../README.md#from-a-release)).
 
 ### What each language also needs
 
