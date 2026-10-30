@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from peeky import add_version
-from peeky.client import Client
+from peeky.client import LOOPBACK_URL, Client
 from peeky.errors import PeekyError
 from peeky.processes import without_credentials
 from peeky.textlines import read_source, source_lines, split_lines
@@ -550,8 +550,10 @@ class Investigation:
 
 
 def main():
-    from peeky.processes import keep_children_waitable
+    from peeky.processes import keep_children_waitable, take_credentials
 
+    # Out of the environment first: no checker, candidate or model inherits the token.
+    given = take_credentials().get("DEBUG_TOKEN")
     keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(prog="peeky-agent")
     add_version(parser)
@@ -588,6 +590,12 @@ def main():
         "--root", default=str(ROOT), help="Local source root; also worker root when local"
     )
     args = parser.parse_args()
+    if args.url is not None and not LOOPBACK_URL.fullmatch(args.url):
+        # The token goes in plain HTTP: only to this host's loopback, or an SSH tunnel's end.
+        parser.error(
+            "--url must be a loopback URL (http://127.0.0.1:PORT); for a remote worker, "
+            "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
+        )
     if not shutil.which("codex"):
         parser.error("Install Codex CLI and run codex login first")
     if not 1 <= args.max_steps <= 20:
@@ -631,10 +639,10 @@ def main():
     if destination.exists() and any(destination.iterdir()):
         parser.error("Choose a new empty --output directory to preserve earlier evidence")
     destination.mkdir(parents=True, exist_ok=True)
-    token = os.environ.get("DEBUG_TOKEN") or secrets.token_urlsafe(32)
+    token = given or secrets.token_urlsafe(32)
     server = None
     if args.url:
-        if not os.environ.get("DEBUG_TOKEN"):
+        if not given:
             parser.error("Set DEBUG_TOKEN for the existing worker")
         url = args.url
     else:

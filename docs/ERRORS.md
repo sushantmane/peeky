@@ -1,4 +1,4 @@
-# Error codes (protocol 10)
+# Error codes (protocol 11)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -38,7 +38,7 @@ The last column is the `retryable` field.
 | `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
 | `BUSY` | Another probe is running on this worker. | Retry later. | yes |
 | `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
-| `UNAUTHORIZED` | The bearer token is missing or wrong. | Use the worker's `DEBUG_TOKEN`. | no |
+| `UNAUTHORIZED` | The bearer token is missing or wrong, or the process at the worker's URL didn't prove it holds yours. | Use the worker's `DEBUG_TOKEN`. If it is, check which process holds the port. | no |
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
 | `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
@@ -498,7 +498,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 10`, and so does every request a client sends.
+HTTP response carries `X-Peeky-Protocol: 11`, and so does every request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
@@ -529,15 +529,17 @@ HTTP response carries `X-Peeky-Protocol: 10`, and so does every request a client
   too. The worker's `expand` takes `key`, and its answer names the key. A protocol 9 worker
   ignores it and gives the first entries
   ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
+- **Protocol 11** adds `hello`. A client sends a worker nothing, and not the token, before the
+  worker proves it holds the token ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundaries)). A
+  protocol 10 worker has no `hello`: it asks for the token, and is refused as another protocol.
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
-  refuses any request but `version` that names another protocol, or none, before it runs it.
-- A client asks a worker's `version` before its first other request, and again after any lost
-  connection. It sends nothing else to a worker of another protocol: a session's, a remote
-  probe's, or the `Client` SDK's (`python -m peeky.client`).
-- A local session keeps the protocol its worker's `version` said at `session start`, so later
-  commands don't ask again. A record that names another protocol, or none, is asked again.
-- A client reads no answer whose `X-Peeky-Protocol` names another protocol. Only `version`'s
-  answer is read, since its caller compares the protocol it states.
+  refuses any request but `version` and `hello` that names another protocol, or none, before it
+  runs it.
+- A client says `hello` before its first other request, and again after any lost connection. It
+  sends nothing else to a worker of another protocol: a session's, a remote probe's, or the
+  `Client` SDK's (`python -m peeky.client`). Each later `session` command says `hello` too.
+- A client reads no answer whose `X-Peeky-Protocol` names another protocol. Only the answers to
+  `hello` and `version` are read, since their caller compares the protocol they state.
 - A worker before protocol 10 doesn't check the request's header. One swapped in at the same
   address between two requests runs the next one. Only its answer's header shows that, after it
   ran.

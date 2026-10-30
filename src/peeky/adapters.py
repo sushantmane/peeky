@@ -939,7 +939,7 @@ def _git_environment():
     # Git variables that would point git at another repository than the one asked for.
     return {
         key: value
-        for key, value in os.environ.items()
+        for key, value in without_credentials(os.environ).items()
         if not key.startswith("GIT_")
         or key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM")
     }

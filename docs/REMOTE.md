@@ -15,14 +15,20 @@ page. The error codes are in [ERRORS.md](ERRORS.md).
 
 ## Separate-host procedure
 
-On the **target host**, use the interpreter and toolchain that run the program:
+On the **target host**, use the interpreter and toolchain that run the program. Each start gets
+a fresh token, which only the worker's environment holds:
 
 ```sh
-export DEBUG_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-echo "$DEBUG_TOKEN"            # copy it over a trusted channel; never commit it
-python3 -m peeky.worker --root /srv/app --port 8765 [--idle-timeout 300] \
+token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+echo "$token"                  # copy it over a trusted channel; never commit it
+DEBUG_TOKEN=$token python3 -m peeky.worker --root /srv/app --port 8765 [--idle-timeout 300] \
     [--rust-config|--native-config|--java-config|--java-attach-config trusted.json]
+unset token
 ```
+
+- To restart the worker, run all four lines again, and give the client the new token.
+- Don't `export DEBUG_TOKEN` in the shell. A worker restarted from it would reuse the old token,
+  and so would every program the shell starts.
 
 On **your machine**, in a checkout with the same sources:
 
@@ -275,21 +281,23 @@ packages, any directory holding a pyvenv.cfg, the standard library, and compiled
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 10.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
+**Protocol 11.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
 Protocol 4 adds restores (`@before`). Protocol 5 withholds what a C or C++ pointer one past an
 array's end points at, which a protocol 4 worker reads as a value. Protocol 6 marks what is read
 through a C or C++ pointer `unproven` where Peeky can't show it points at a live object. A
 protocol 5 worker shows it unmarked. Protocol 7 says which C or C++ pointers point at a pointer,
 for the note on a value read through one. Protocol 8 reads a GCC lambda's captures, and says why
 it doesn't read one. Protocol 9 reads a caller frame's values in a probe (`1:i`). Protocol 10
-reads a key of a GCC build's unordered container past its first 256 entries. Both hosts need the
-same protocol. A client and a worker of different protocols refuse each other:
+reads a key of a GCC build's unordered container past its first 256 entries. Protocol 11 adds
+`hello`: a client sends nothing else, and not the token, before the worker proves it holds the
+token. Both hosts need the same protocol. A client and a worker of different protocols refuse
+each other:
 
-- A client refuses a worker of another protocol before sending anything: `Worker speaks protocol 9,
-  this client 10: install the same Peeky version on both hosts`. That holds for a probe and a
-  `session start`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 10: `Client
-  speaks protocol 9, this worker 10: install the same Peeky version on both hosts`.
+- A client refuses a worker of another protocol before sending anything but a `hello`, which
+  carries no token: `Worker speaks protocol 10, this client 11: install the same Peeky version on
+  both hosts`. That holds for a probe and a `session start`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 11: `Client
+  speaks protocol 10, this worker 11: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
   the worker's protocol again. A session started with another protocol is refused: start it again.
@@ -297,8 +305,10 @@ same protocol. A client and a worker of different protocols refuse each other:
 
 ### Why `ExitOnForwardFailure=yes`
 
-Without it, ssh only warns when the local port is already taken. The token would then go to
-whatever process holds that port.
+Without it, ssh only warns when the local port is already taken. Then another process holds that
+port, and gets your client's `hello`. It gets no request and no token: a client sends those only
+after the worker proves it holds the token ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundaries)).
+So the client refuses that process with `UNAUTHORIZED`, and ssh's exit says why sooner.
 
 ### Keep the token secret
 
@@ -306,8 +316,12 @@ whatever process holds that port.
   `DEBUG_TOKEN`. Neither accepts it as an argument, so it can't appear in `ps` output.
 - Session records that hold it are private: `0600`, inside a `0700` directory.
 - Probe results, reports and errors never contain it. A test checks this.
-- Neither name reaches a debugger, a debuggee, a build command, a checker, a candidate or a model
-  process. A session's own local worker gets only its own token.
+- `peeky-worker`, `peeky` and `peeky-agent` take both names out of their environment first, so no
+  process they start gets either. A session's own local worker gets only its own token. A
+  `--background` job gets the client's, since it is the same `peeky` command.
+- A client sends it only to `http://127.0.0.1:PORT`, and only after the worker answers its
+  `hello` with a proof that it holds the token. A process on the worker's port without it gets
+  only a `hello`.
 
 ### Closing
 
@@ -352,6 +366,9 @@ TCP relay as a third. Its tests cover:
 - idle reaping, including the debuggee process;
 - refusing a non-loopback URL, a missing token, a wrong token (`UNAUTHORIZED`) and a closed port;
 - the token never appearing in output.
+
+`tests/unit/test_worker_hello.py` checks that a process on the worker's port without the token,
+a worker with another token, and a protocol 10 worker never receive the token.
 
 The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), for Python, Java, C, C++
 and Rust, is repeated by CI on every change. A differing C header and a differing Rust module file

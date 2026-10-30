@@ -264,19 +264,23 @@ def test_the_watchdog_after_the_launch_request_is_no_refusal(tmp_path, monkeypat
 
 
 def answering(status, body):
-    """A loopback worker that answers its version, then every other request with
-    ``status`` and ``body``."""
+    """A loopback worker that answers its hello and version, then every other request
+    with ``status`` and ``body``."""
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from worker_hello import hello_answer
 
     from peeky.errors import PROTOCOL_VERSION
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            version = self.path == "/version"
+            asked = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            version = self.path in ("/version", "/hello")
             hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
             answer = json.dumps(hello).encode() if version else body
+            if self.path == "/hello":
+                answer = hello_answer(asked, "before-launch-token-1234567890")
             self.send_response(200 if version else status)
             self.send_header("Content-Length", str(len(answer)))
             self.end_headers()
