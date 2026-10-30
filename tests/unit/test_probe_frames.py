@@ -235,7 +235,9 @@ def test_a_store_of_schema_20_gains_the_frame_columns(tmp_path):
     assert evidence.query(store, "SELECT selector, frame FROM last_run")["rows"] == [
         {"selector": "x", "frame": None}
     ]
-    assert sqlite3.connect(store).execute("PRAGMA user_version").fetchone() == (21,)
+    assert sqlite3.connect(store).execute("PRAGMA user_version").fetchone() == (
+        evidence.SCHEMA_VERSION,
+    )
 
 
 def test_queries_keep_a_name_and_the_callers_name_apart(monkeypatch, tmp_path):

@@ -443,6 +443,11 @@ then ends before the evidence is complete. The line did run then.
   `The program ended after thread 'main' was seen paused at …`.
 - A session's final state carries `unreported_stop`, and the history gets an `unreported_stop`
   entry.
+- A change the probe never made at that line says so. Its warning says the line's full count of
+  stops is unknown, not that its hit never came. Its `unapplied` entry has `unreported_stop: true`.
+  An `@all` there missed that stop, so it is listed too, with `made`, and the probe exits 4.
+- If Peeky can't match that stop to a line, it may have been any pending change's. Each says so,
+  and is listed without `unreported_stop`.
 
 **Diagnostics.** The polls stay out of `debugger_events.trace`. A single merged `lost-stop poll`
 note there gives the number of polls (`times`), the threads checked, those suspended, and the

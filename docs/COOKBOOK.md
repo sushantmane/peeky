@@ -1344,7 +1344,7 @@ set trend: 1 -> 0  (--set-at line 15@all, stop 2 of line 15, in find_turns)
 set trend: 0 -> 1  (restored, --set-at line 18@all, stop 2 of line 18, in find_turns)
 set trend: -1 -> 0  (--set-at line 15@all, stop 3 of line 15, in find_turns)
 set trend: 0 -> -1  (restored, --set-at line 18@all, stop 3 of line 18, in find_turns)
-status: completed  hits: 3 (all)  seconds: 1.66  max pause: 61.2 ms  watching for new calls: 1 stops, max 119.4 ms
+status: completed  hits: 3 (all)  seconds: 1.66  max pause: 61.2 ms  watching for new calls: 1 stop, max 119.4 ms
 output:
   TRAIL:T@200 455,B@700 400;FLAT=3
 ```
@@ -1524,6 +1524,10 @@ lists each function's stops.
   list as `set_outcomes`. Runs saved before schema 16 say what their warnings did:
   `, not made: that hit never came`, `, not made: its line never stopped`, or
   `, made only at the first 100 stops: the cap`.
+- `ended` is `lost_stop` where the debugger stopped at the change's line without reporting it,
+  or at a breakpoint Peeky can't match to a line.
+  From schema 22, a change at one hit can end so too. An older Peeky refuses such a store, rather
+  than say the hit never came.
 - A run counts as having recorded its outcomes only where each one matches its request: the same
   option, location, name and value, every key, of the right type, and an end that such a request
   can have. Otherwise its changes read as its warnings did.
