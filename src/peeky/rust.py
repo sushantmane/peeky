@@ -2882,7 +2882,7 @@ class RustSession(NativeSession):
                         break
                     failures.append((self._function_name(function), why))
                 else:
-                    return self._never_message(name, root, steps, source, line, failures)
+                    return self._never_message(name, root, source, line, failures)
         return None
 
     @staticmethod
@@ -3089,7 +3089,7 @@ class RustSession(NativeSession):
             "which it uses after the stop, so a change there would not reach it",
         )
 
-    def _never_message(self, name, root, steps, source, line, failures):
+    def _never_message(self, name, root, source, line, failures):
         """The refusal for a `--set` that ``failures`` [(function, (kind, detail))] rule
         out in every function at ``line``, naming each rule and what to do instead."""
         from peeky.fields import FUNCTION, by_function
