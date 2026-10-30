@@ -12,8 +12,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 **GCC's C++ builds have known gaps.** Peeky withholds what LLDB misreads, and the row says why
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
-- unordered containers are read from their own nodes, except entries that hold floating-point
-  numbers, characters, enums, pointers or other containers;
+- unordered containers are read from their own nodes, except entries that hold a `long double`.
+  A container held in an entry, other than a `std::array`, is withheld on its own, as is a
+  string whose text isn't in its own small buffer in the node (`_M_p` not at `_M_local_buf`);
 - a one-line function's parameters can show `no value yet` at a stop on its line;
 - GDB's DAP isn't supported.
 

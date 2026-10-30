@@ -1745,7 +1745,15 @@ def _load(name):
         raise ValueError(f"Session record {path} is malformed; remove it")
     if record.get("remote"):
         return record, _remote_session(name, record)
-    return record, _LocalClient(record["url"], record["token"], record.get("pid"))
+    return record, _local_session(name, record)
+
+
+def _local_session(name, record):
+    """A local session's client (#374 review). Its record names the protocol its worker
+    speaks; where it names another, or none (a Peeky before protocol 10), the client asks
+    the worker's `version` before it sends anything else (``Client._preflight``)."""
+    verified = record.get("protocol") == PROTOCOL_VERSION
+    return _LocalClient(record["url"], record["token"], record.get("pid"), name, verified)
 
 
 def _remote_session(name, record):
@@ -1914,11 +1922,27 @@ def _checkout_unchanged(root, sources, expected, *, saved=False):
 
 
 class _LocalClient(Client):
-    """A session's own local worker: if its process is gone, the session is lost."""
+    """A session's own local worker: if its process is gone, the session is lost. Where
+    the session's record names this client's protocol, which its worker's `version` said
+    at its start, the worker is known to speak it (``verified``); else ``Client`` asks
+    its `version` before anything else, and sends nothing more to a worker of another
+    protocol (#374 review). ``name``: the session's, which says what to do then."""
 
-    def __init__(self, url, token, pid):
+    def __init__(self, url, token, pid, name=None, verified=False):
         super().__init__(url, token)
-        self.pid = pid
+        self.pid, self.name = pid, name
+        if verified:
+            self.protocol = PROTOCOL_VERSION
+
+    def _refusal(self, operation, spoken):
+        if self.name is None:
+            return super()._refusal(operation, spoken)
+        return (
+            f"Worker speaks protocol {spoken}, this session {PROTOCOL_VERSION}: another "
+            f"Peeky version started session {self.name!r}, so nothing is sent to its worker. "
+            f"Drop the record with `peeky session close --forget --name {self.name}` (its "
+            "worker ends after its idle timeout), then start the session again"
+        )
 
     def call(self, operation, **arguments):
         from peeky.client import TransportLost, WorkerUnreachable
@@ -2464,12 +2488,15 @@ _GET_ELEMENTS = 8
 
 def _element_count(row):
     """An array's length where its type or value states it: C and C++ `Track[100]`, Rust
-    `[u32; 100]`, Java `int[100]@55 …`; else None."""
+    `[u32; 100]`, Java `int[100]@55 …`; a C++ container's count its value states
+    (`size=700 {…}`, which Peeky checked against the chain of one it read from its
+    nodes, #374); else None."""
     kind, value = str(row.get("type") or ""), str(row.get("value") or "")
     found = (
         re.fullmatch(r"[^\[\]]+\[([0-9]+)\]", kind)
         or re.fullmatch(r"\[[^;\[\]]+; ([0-9]+)\]", kind)
         or re.match(r"[\w.$]+\[([0-9]+)\]@[0-9]+ ", value)
+        or re.match(r"(?:0x[0-9a-fA-F]+ )?size=([0-9]{1,9})(?: [\[{]|$)", value)
     )
     return int(found[1]) if found else None
 
@@ -2551,11 +2578,16 @@ def _get_lines(row, session="default"):
         # #350).
         first, last = hidden[0]["selector"], hidden[-1]["selector"]
         size = _element_count(row)
+        # A C++ container's count (`size=700 {…}`): how many more, and of what (#374).
+        counted = str(row.get("value") or "").startswith("size=") and size
+        keyed = counted and "{" in str(row["value"])
         lines.append(
-            f"  ... {len(hidden)} more listed, {first} to {last}, then more"
-            + (f" ({size} elements in all)" if size else "")
-            + f": `--json` has only the first {len(elements)}; read any element by index, "
-            f"as `peeky session get {_shell_word(first)}{options}`"
+            f"  ... {len(hidden)} more listed, {first} to {last}, then "
+            + (f"{size - len(elements)} more" if counted and size > len(elements) else "more")
+            + (f" ({size} {'entries' if keyed else 'elements'} in all)" if size else "")
+            + f": `--json` has only the first {len(elements)}; read any "
+            + ("entry by key" if keyed else "element by index")
+            + f", as `peeky session get {_shell_word(first)}{options}`"
         )
     elif hidden:
         first, last = hidden[0]["selector"], hidden[-1]["selector"]
@@ -2564,7 +2596,13 @@ def _get_lines(row, session="default"):
             f"{_shell_word(first)}{options}` reads one; `--json` lists them all"
         )
     elif row.get("children_truncated"):
-        lines.append("  ... more children; select one by name or index")
+        size = _element_count(row) if str(row.get("value") or "").startswith("size=") else None
+        lines.append(
+            f"  ... {size - len(children)} more entries ({size} in all); select one by name or "
+            "index"
+            if size and size > len(children)
+            else "  ... more children; select one by name or index"
+        )
     if row.get("children_grouped") and not row.get("children"):
         # Said only where nothing else is listed (ninth evaluation: on every dataclass,
         # it was noise); `--json` always has `children_grouped`.
@@ -3286,6 +3324,17 @@ def _start_local(args, root, program, line, language, data, max_pause):
         record.update(
             root=str(root), program=program, language=language, cwd=os.getcwd(), line=line
         )
+        # Its worker's protocol, asked before anything runs and kept: each later command
+        # checks it before it sends a request (#374 review).
+        version = client.call("version")
+        protocol = version.get("protocol") if isinstance(version, dict) else None
+        if protocol != PROTOCOL_VERSION:
+            raise RuntimeError(
+                f"Worker speaks protocol {protocol}, this client {PROTOCOL_VERSION}: the "
+                f"worker `{sys.executable} -m peeky.worker` runs another Peeky version; "
+                "install one Peeky for both"
+            )
+        record["protocol"] = protocol
         launch = client.call(
             "launch",
             program=program,

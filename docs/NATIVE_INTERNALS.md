@@ -497,8 +497,7 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     to inspect, with `--frame N`, and never says which one it refers to: nothing proves it.
   - Where something may be changing the container (`containers_settled`), `_node_listing` gives
     a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to retry
-    after that call returns. A count past 256 by then, or a heap string without `readMemory`,
-    still withholds it.
+    after that call returns. A count past what Peeky walks by then still withholds it.
   - Both say so only where a proven read would succeed now (`_nodes_readable`): an `-O0` build,
     a proven layout, and entry types Peeky reads (`hashed_nodes.readable`).
   - A preview reads nested containers' nodes under the same rule: none below a note, or
@@ -518,28 +517,65 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     (`_Hashtable_traits`) say whether it caches the hash code.
   - No local's type reaches the node type but through a pointer. So the session adds every
     `_Hash_node` the debug information defines to `fields.type_graph` (`hashed_nodes.node_types`).
+    It adds what their pointers point at too, one level, which names an entry's pointer type.
   - `hashed_nodes.layout` proves where a node holds its entry. The node types of that `_Value`
     and cache, one per unit, must all place it alike. Each holds one `_Hash_node_base` at
     offset 0, an 8-byte pointer `_M_nxt`.
   - It also holds one `_Hash_node_value_base` of `_Value`, whose `_M_storage` is an
     `__aligned_buffer` of `_Value`, at least its size. The entry sits there: past the link,
     aligned for `_Value`, inside the node.
-  - The chain must end in a null `_M_nxt` after exactly `_M_element_count` nodes, at most 256.
-    Every node must be aligned.
-  - With `readMemory` (lldb-dap 20), `hashed_nodes.Memory` reads each node, 4,096 bytes a
-    request, so nodes close together cost one request. Without it (lldb-dap 18), `Words` reads
+  - The chain must end in a null `_M_nxt` after exactly `_M_element_count` nodes. Every node
+    must be aligned. A longer chain, a cycle among them, is refused when it passes the count.
+  - By address (`readMemory`), the walk takes at most 16,384 nodes (`MAX_CHAIN`). Through
+    variable paths, at most 512 (`MAX_WORDS`): node N's path holds N steps, which LLDB walks
+    for each word, so a walk's paths hold O(N²) text. A longer one is refused before any path
+    is read.
+  - The worker caches each path's text for the stop (`_NodePaths`). A walk that fails drops
+    the paths it read (`forget`).
+  - The first 256 entries (`MAX_NODES`) are read with the listing. Past them, the walk reads only
+    each node's link. An entry is read when a page, a position or a key asks for it
+    (`hashed_nodes.Paged`), from the node the walk placed, on that expansion's own budget.
+  - Such an entry whose node doesn't read is withheld alone, with why. So is one whose link isn't
+    the one the walk read.
+  - With `readMemory` (lldb-dap 20), `hashed_nodes.Memory` reads 4,096-byte windows aligned to
+    4,096, so nodes close together cost one request. Without it (lldb-dap 18), `Words` reads
     8-byte words through hover paths.
   - The word 8 bytes into the first node is `us._M_h._M_before_begin._M_nxt[1]._M_nxt`. LLDB
     reads `[1]` past a pointer, and `_M_nxt` of what is there, as `frame variable` does.
     Nothing is evaluated in the program. `Words` reads nothing outside the nodes.
-  - `Memory` reads more: each request takes 4,096 bytes from a node's address, and a string's
-    text comes from where its data pointer points. Only bytes at the nodes' own addresses,
-    and at a string's text, are decoded.
-  - The entries must hold integers, `bool`s and libstdc++ strings, in `std::pair`s and the
-    program's structs. A struct has no base class, bitfield or anonymous member.
-  - A string's text is read from its own buffer, or where its data pointer points. Its length
-    must fit that buffer, as `local_buffer` proves it. Up to 1,024 bytes are read, as for any
-    string read from memory.
+  - `Memory` reads more: each request takes the 4,096-byte window around a node. Only bytes at
+    the nodes' own addresses are decoded.
+  - The entries must hold numbers, `bool`s, characters, enums, pointers and libstdc++ strings,
+    in `std::pair`s and the program's structs. A struct has no base class, bitfield or anonymous
+    member. A `long double` isn't read: the debug information doesn't say its format.
+  - Each shows as LLDB shows such a value. `hashed_nodes.float_text` follows LLVM's
+    `APFloat::toString` step by step: 9 or 17 digits, its truncation, its rounding half up, and
+    LLDB's 6 zeros of padding.
+  - `character_text` writes a `char` as LLDB does: `'\xc8'`, `'\e'`. A wide character shows as
+    its literal. A code that is no valid character shows in hex, where LLDB shows U+FFFD or
+    nothing.
+  - An enum shows its one enumerator of that value, else the number. `fields.type_graph` keeps
+    its enumerators and whether it is signed. A pointer shows its address, and is never
+    followed.
+  - A standard container in an entry is read by `_Reader.nested`, or withheld alone, with why
+    (`withheld_as: not read`). The entry around it still reads.
+  - A `std::array` is inside the node, which the walk proves, and is read.
+  - A `std::vector`'s buffer, and a nested unordered container's nodes, are heap blocks. No
+    rule proves a heap block still allocated. A value destroyed in place
+    (`std::destroy_at(&m[1])`), before a new one is built there, keeps its old pointers. So
+    both are withheld.
+  - Any other container in an entry, such as a `std::map`, is withheld.
+  - A string's text is read only where its data pointer `_M_p` points at its own buffer,
+    `_M_local_buf`, 16 bytes into it, inside the node. Its length must fit that buffer, as
+    `local_buffer` proves it.
+  - A string whose pointer points anywhere else is withheld alone, with why: its text is in
+    heap memory, which nothing proves still allocated. One destroyed in place, before a new one
+    is built there, keeps a pointer to its freed text.
+  - A limit that holds for every object: Peeky can't tell that the program ended an object's
+    lifetime with an explicit destructor call (`std::destroy_at`, `p->~T()`) and hasn't yet
+    reused its storage. It shows the bytes the object last held, such as a short string's text
+    in the node. Only what such an object points at in heap memory, which may be freed, is
+    withheld here.
   - The entries come back listed as the debugger lists a container it reads right: `[0]`, a
     pair's `first` and `second`, a struct's members, `T @ 0x…` for a struct. So
     `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.
@@ -547,6 +583,16 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - The reads have their own budget: 4,096 requests and 4 MiB per inspection or expansion
     (`NODE_READS`), within the value view's 10 s. A hover's text is cached for the stop. With
     lldb-dap 18, 333 entries in three containers took about 1,000 hovers and 0.25 s.
+  - `m[K]` sends `expand` a `key`: `DebugWorker.keyed_entry` compares every entry's key, as a
+    selector compares one, however many there are. `m[#N]` past 511 sends `index`. Protocol 10
+    added `key`.
+  - The client takes an entry only from an answer that names the key it asked for, and only
+    where that entry's `first` is the key. `Client.call` asks a worker's `version` before its
+    first other request, under its lock, and again after a lost connection. It sends nothing
+    else to a worker of another protocol (`Client._preflight`). A local session whose record
+    names this protocol skips the ask (`cli._LocalClient`, `verified`).
+  - Each request carries `X-Peeky-Protocol`, which the worker checks before dispatch. Each
+    answer carries the worker's, which `Client` checks too.
   - Otherwise the row stays `not listed`, with the note it had.
 - **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
   `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the
