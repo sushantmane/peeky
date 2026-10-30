@@ -1137,9 +1137,9 @@ The details:
   what it points at still stands."
 - Its row has `unproven_pointer: "raw"`. Where the build's debug information doesn't tell a pointer
   inside a value from a raw pointer, it shows only its address with `unproven_pointer: "unknown"`.
-- A `NonNull` local is a raw pointer that is never null. It shows only its address the same way,
-  with `unproven_pointer: "raw"` and a note that says so. That address is its `pointer` field, so
-  capture `n`, not `n.pointer`.
+- A `NonNull` local, such as `let n = NonNull::from(&*b);`, is a raw pointer that is never null.
+  It shows only its address the same way, with `unproven_pointer: "raw"` and a note that says so.
+  That address is its `pointer` field: capture `n`, since `n.pointer` is refused.
 - A `NonNull` to a slice, `str` or trait object shows nothing, since its pointer has a length or
   vtable too. Its note says so, and how to see its address.
 - An `AtomicPtr` local is never followed either. It shows nothing, and its note says so. So does a

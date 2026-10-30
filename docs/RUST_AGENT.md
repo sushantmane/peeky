@@ -224,8 +224,8 @@ The rules are in the cookbook's
 - A raw pointer local is judged by its MIR type, before any liveness check. An array of them isn't
   collapsed: each element is judged as a raw pointer inside a value.
 - So is a `NonNull` local, a raw pointer that is never null. Its DWARF type must be
-  `core::ptr::non_null::NonNull<T>`, and every binding's MIR type `std::ptr::NonNull<T>`. A
-  crate's own `NonNull` is named under the crate.
+  `core::ptr::non_null::NonNull<T>`, and every binding's MIR type `std::ptr::NonNull<T>` or
+  `core::ptr::NonNull<T>`. A crate's own `NonNull` is named under the crate.
 - Its address is its one field, `pointer`, which LLDB lists as a `T *` (`rust._non_null`). A wide
   one's `pointer` has parts, an address with a length or vtable, so it shows nothing.
 
