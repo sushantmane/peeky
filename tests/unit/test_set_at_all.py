@@ -659,6 +659,44 @@ def test_outcomes_follow_the_runs_sets_order_and_a_set_refused_is_said(monkeypat
     ]
 
 
+def test_a_schema_21_store_is_upgraded_for_one_hit_lost_stop_outcomes(tmp_path):
+    # Schema 22 changes no table: a change at one hit may now end `lost_stop`, which a
+    # schema-21 reader took for no outcome, saying "not made: that hit never came". It
+    # refuses a schema-22 store instead; this one upgrades a schema-21 store in place.
+    import sqlite3
+
+    assert evidence.SCHEMA_VERSION == 22 and evidence._MIGRATIONS[21] == ()
+    store = tmp_path / "evidence.db"
+    run = {
+        "probe": {"program": "a.c", "line": 8, "set_at": [[9, 1, "x", "7"]]},
+        "status": "completed",
+        "set_outcomes": [
+            {"option": "--set-at", "at": "9@1", "name": "x", "value": "7", "made": 0,
+             "ended": "exit", "complete": False}
+        ],
+    }  # fmt: skip
+    evidence.record(store, run)
+    connection = sqlite3.connect(store)
+    connection.execute("PRAGMA user_version = 21")
+    connection.commit()
+    connection.close()
+    lost = {**run, "set_outcomes": [{**run["set_outcomes"][0], "ended": "lost_stop"}]}
+    evidence.record(store, lost)
+    assert sqlite3.connect(store).execute("PRAGMA user_version").fetchone() == (22,)
+    rows = evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+    assert [json.loads(row["sets"]) for row in rows] == [
+        [["x", "7", "requested at 9@1, not made: that hit never came"]],
+        [
+            [
+                "x",
+                "7",
+                "requested at 9@1, not made: the debugger lost a stop of its line, which may "
+                "have been that hit",
+            ]
+        ],
+    ]
+
+
 def test_a_schema_15_store_gains_outcomes_and_its_runs_keep_their_warnings(tmp_path):
     import sqlite3
 

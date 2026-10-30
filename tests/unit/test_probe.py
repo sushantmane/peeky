@@ -1957,6 +1957,57 @@ def test_an_all_or_a_set_whose_line_the_debugger_lost_a_stop_of_says_so(monkeypa
     assert result["set_outcomes"][0]["ended"] == "lost_stop"
 
 
+def test_an_all_is_lost_stop_only_where_its_own_line_lost_one(monkeypatch):
+    # Every LINE@all ended `lost_stop` (complete: false) when the debugger lost a stop at
+    # any line: 9@all, made at its one stop, after a stop lost at line 8.
+    from peeky.probe import ALL
+
+    request = Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),))
+    result = lost_probe(monkeypatch, [8, 9], 8, request)
+    [outcome] = result["set_outcomes"]
+    assert (outcome["made"], outcome["ended"], outcome["complete"]) == (1, "exit", True), outcome
+    assert "unapplied" not in result and probe_module.probe_exit_code(result) == 0, result
+    # Seen at a breakpoint Peeky can't place among the probe's lines: it may have been
+    # line 9's, so the @all is not taken for complete.
+    monkeypatch.setattr(probe_module, "_lost_lines", lambda *args: None)
+    result = lost_probe(monkeypatch, [8, 9], 8, request)
+    assert result["set_outcomes"][0]["ended"] == "lost_stop", result["set_outcomes"]
+
+
+def test_an_all_made_then_a_stop_lost_at_its_line_is_not_made_in_full(monkeypatch):
+    # 9@all made at line 9's one reported stop, then the debugger stopped there without
+    # reporting it: status completed, no `unapplied`, exit 0, while its outcome said
+    # incomplete.
+    from peeky.probe import ALL
+
+    request = Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),))
+    result = lost_probe(monkeypatch, [8, 9], 9, request)
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": "9@all",
+            "name": "x",
+            "value": "5",
+            "stops": 1,
+            "made": 1,
+            "unreported_stop": True,
+        }
+    ]
+    assert probe_module.probe_exit_code(result) == 4
+    assert (
+        "--set-at main.py:9@all x=5 was made at 1 stop of line 9, but the debugger also stopped "
+        "there without reporting it. That stop ran without the change, and the line's full "
+        "count of stops is unknown. Run the probe again." in result["warnings"]
+    ), result["warnings"]
+    [outcome] = result["set_outcomes"]
+    assert (outcome["made"], outcome["ended"], outcome["complete"]) == (1, "lost_stop", False)
+    text = probe_module._table(result)
+    assert "cut short at the cap" not in text, text
+    assert (
+        "status: completed (1 --set-at @all not made at a stop the debugger never reported)" in text
+    ), text
+
+
 def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monkeypatch):
     import subprocess
     import threading

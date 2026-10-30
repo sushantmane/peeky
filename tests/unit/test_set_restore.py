@@ -849,6 +849,62 @@ def test_hits_and_changes_are_named_as_people_read_them():
     )
 
 
+class LostAt(Passes):
+    """Passes, then the program's end after a stop the debugger never reported, seen at
+    main.c:`at`."""
+
+    def __init__(self, stops, at):
+        super().__init__(stops)
+        self.at = at
+
+    def dispatch(self, operation, args):
+        if operation == "wait" and not self.order:
+            self.calls.append(operation)
+            return {
+                "state": "terminated",
+                "unreported_stop": {
+                    "thread_name": "main",
+                    "breakpoint": f"main.c:{self.at}",
+                    "function": "f",
+                    "location": f"main.c:{self.at}",
+                },
+            }
+        return super().dispatch(operation, args)
+
+
+def test_a_stop_lost_at_the_restore_line_leaves_the_guards_all_complete(monkeypatch):
+    # The guard's 5@all ended `lost_stop` (complete: false) though only its @before line,
+    # 8, lost a stop; the restore itself had no `unapplied` entry saying it was made at
+    # one stop only.
+    result = run(monkeypatch, LostAt(passes("1", "1")[:-1], FLAT), flip())
+    guard, restore = result["set_outcomes"]
+    assert (guard["made"], guard["ended"], guard["complete"]) == (2, "exit", True), guard
+    assert (restore["made"], restore["ended"], restore["complete"]) == (1, "lost_stop", False)
+    assert restore["unrestored"] == f"{GUARD}@2", restore
+    # One entry for the restore: made at one stop, at a line that lost one, with the
+    # write it never restored.
+    [entry] = result["unapplied"]
+    assert entry == {
+        "option": "--set-at",
+        "at": f"{FLAT}@all",
+        "name": "x",
+        "value": BEFORE,
+        "stops": 1,
+        "made": 1,
+        "unreported_stop": True,
+        "unrestored": f"{GUARD}@2",
+        "unrestored_all": [f"{GUARD}@2"],
+        "unrestored_kinds": ["change"],
+    }, entry
+    assert probe_exit_code(result) == 4
+    assert any(
+        f"Before the probe ended, the debugger reported 1 stop of line {FLAT}, and also stopped "
+        f"there without reporting it. So the line's full count of stops is unknown, and its hit "
+        "2 may have run without the restore." in w
+        for w in result["warnings"]
+    ), result["warnings"]
+
+
 def test_watch_stops_are_counted_apart(monkeypatch):
     result = run(monkeypatch, Passes(passes("1", "1")), flip())
     # The first line's one stop; the flat line's two (a --set-at's) stay set pauses.

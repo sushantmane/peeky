@@ -1524,6 +1524,9 @@ lists each function's stops.
   list as `set_outcomes`. Runs saved before schema 16 say what their warnings did:
   `, not made: that hit never came`, `, not made: its line never stopped`, or
   `, made only at the first 100 stops: the cap`.
+- `ended` is `lost_stop` where the debugger stopped at the change's line without reporting it.
+  From schema 22, a change at one hit can end so too. An older Peeky refuses such a store, rather
+  than say the hit never came.
 - A run counts as having recorded its outcomes only where each one matches its request: the same
   option, location, name and value, every key, of the right type, and an end that such a request
   can have. Otherwise its changes read as its warnings did.

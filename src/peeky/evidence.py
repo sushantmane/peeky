@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from peeky import stored_values
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -93,8 +93,10 @@ TABLES = {
             "at, ended: made (a change at a hit, made), exit (the program ended), "
             "until_hits (the probe ended after its last hit), cap (a LINE@all's 100 "
             "stops), refused or failed (at hit: its own change there), timeout or failed "
-            "(the probe's, first), or lost_stop (the debugger lost a stop, which may have "
-            "run without it), complete: carried out in full, and, for a restore "
+            "(the probe's, first), or lost_stop (the debugger lost a stop of its line, which "
+            "may have run without it; for an @all, also one it can't place; before schema 22, "
+            "an @all's at any line, and never a change at one hit), complete: carried out in "
+            "full, and, for a restore "
             "(name=@before) that never made some it owed, unrestored: the LINE@HIT of the "
             "latest write it never restored, with unrestored_all: each one's, in the order "
             "made (no restore was made; the program may have written the value since)}; "
@@ -473,6 +475,10 @@ _MIGRATIONS = {
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
+    # No table changes: from schema 22, runs.set_outcomes may end `lost_stop` for a change
+    # at one hit too. A reader of schema 21 would take such an outcome for none recorded,
+    # and say "that hit never came"; it refuses this version instead.
+    21: (),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
