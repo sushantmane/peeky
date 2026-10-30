@@ -169,8 +169,8 @@ class CompiledVerification:
 
                 result = {
                     **exc.result,
-                    # Bounded as before builds kept their whole output; the compiler's
-                    # errors lead the diagnostic.
+                    # Each stream's last 16,000 characters (a build keeps up to
+                    # agent.BUILD_RETAINED); the compiler's errors lead the diagnostic.
                     **{
                         key: str(exc.result.get(key) or "")[-16000:] for key in ("stdout", "stderr")
                     },

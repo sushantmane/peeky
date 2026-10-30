@@ -1,12 +1,12 @@
-"""A C or C++ character array's text, up to its first NUL (thirteenth evaluation).
+"""A C or C++ character array's text, up to its first NUL.
 
 LLDB shows a `char[N]` (`signed char`, `unsigned char`, a `char8_t` typedef) as one
 literal of the bytes it read: the first N, at most SUMMARY_UNITS (1024, where it adds
 `...`). It drops the trailing NULs (`CopyStringDataToBufferSP`'s `rtrim('\\0')`), and
 writes a NUL inside as `\\0`, a byte that starts no UTF-8 character as `\\xNN` and a
 control character as `\\U000000NN`. So a `char name[32]` holding "Adeyemi", a NUL and
-leftovers showed `"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`: the leftovers read as part
-of the text, and a byte had two spellings.
+leftovers shows `"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`: the leftovers read as part
+of the text, and a byte has two spellings.
 
 LLDB's summary also formats whatever part of its read succeeded, and the DAP value
 says nothing of how much that was: an array that runs into an unreadable page shows the
