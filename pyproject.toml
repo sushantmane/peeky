@@ -11,10 +11,45 @@ requires-python = ">=3.11"
 authors = [{ name = "Sushant Mane" }]
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
+keywords = [
+    "debugger",
+    "debugging",
+    "debug adapter protocol",
+    "dap",
+    "coding agents",
+    "ai agents",
+    "lldb",
+    "debugpy",
+    "python",
+    "java",
+    "c",
+    "c++",
+    "rust",
+]
+# The licence is the SPDX `license` above: PEP 639 forbids a licence classifier beside it.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Debuggers",
+]
+# Exact, not `~=`: Peeky's Python behaviour is verified against debugpy 1.8.22 only, down to
+# the adapter's stderr lines it expects at exit (`PythonAdapter` in adapters.py). The README
+# recommends an environment of Peeky's own (pipx or uv), where the pin conflicts with nothing.
 dependencies = ["debugpy==1.8.22"]
 
 [project.urls]
 Homepage = "https://github.com/sushantmane/peeky"
+Documentation = "https://github.com/sushantmane/peeky/blob/main/docs/COOKBOOK.md"
+Issues = "https://github.com/sushantmane/peeky/issues"
+Changelog = "https://github.com/sushantmane/peeky/blob/main/CHANGELOG.md"
 Source = "https://github.com/sushantmane/peeky"
 
 [project.optional-dependencies]

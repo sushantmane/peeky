@@ -1,8 +1,10 @@
 """What a release holds and says: each command's version, from one source; the sdist's
-examples; tool variables that name a program on PATH."""
+examples, and the files its pages link; the metadata PyPI shows; tool variables that name a
+program on PATH."""
 
 import fnmatch
 import json
+import os
 import re
 import socket
 import sys
@@ -78,6 +80,79 @@ def test_the_sdist_holds_every_example_and_the_skill():
     assert {"examples/c/pagination_bug.c", "skills/peeky-debug/SKILL.md"} <= files
     missing = files - _shipped((ROOT / "MANIFEST.in").read_text(), files)
     assert not missing, f"add these to MANIFEST.in: {sorted(missing)}"
+
+
+# Files setuptools puts in every sdist here, beside MANIFEST.in's: the README, the licence
+# files and the project's metadata (and the package's sources, under src/).
+ALWAYS_SHIPPED = {"README.md", "LICENSE", "NOTICE", "pyproject.toml"}
+REPO_URL = re.compile(r"https://github\.com/sushantmane/peeky/(?:blob|tree)/main/([^#]+)(?:#.*)?")
+
+
+def _tree():
+    """Every file here but hidden ones and build outputs, as `/`-separated relative paths."""
+    found = set()
+    for directory, names, files in os.walk(ROOT):
+        names[:] = [
+            name
+            for name in names
+            if not name.startswith(".")
+            and name not in ("target", "__pycache__", "build", "dist")
+            and not name.endswith(".egg-info")
+        ]
+        base = Path(directory).relative_to(ROOT)
+        found |= {(base / name).as_posix() for name in files if not name.startswith(".")}
+    return found
+
+
+def test_the_sdist_holds_every_file_its_pages_link():
+    # The README linked the presentation, the CHANGELOG and the code of conduct, and the sdist
+    # held none of them. Each page the sdist holds must find there each file it links: by a
+    # relative link, or, as the README's are, by a full URL into the repository at main.
+    files = _tree()
+    shipped = _shipped((ROOT / "MANIFEST.in").read_text(), files) | ALWAYS_SHIPPED
+    shipped |= {name for name in files if name.startswith("src/peeky/") and name.endswith(".py")}
+    assert {"docs/presentation/Peeky.pdf", "docs/presentation/Peeky.pptx"} <= shipped
+    missing = []
+    for page in sorted(name for name in shipped if name.endswith(".md")):
+        text = (ROOT / page).read_text()
+        text = re.sub(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", "", text, flags=re.M | re.S)
+        text = re.sub(r"`[^`\n]*`", "", text)
+        targets = re.findall(r"\]\(([^)\s]+)\)", text)
+        targets += re.findall(r"^ {0,3}\[[^\]]+\]:\s*(\S+)", text, flags=re.M)
+        for target in targets:
+            repo = REPO_URL.fullmatch(target)
+            if repo:
+                linked = repo[1]
+            elif re.match(r"[a-z]+:|#", target):
+                continue
+            else:
+                linked = os.path.normpath(os.path.join(os.path.dirname(page), target))
+                linked = linked.partition("#")[0]
+            if linked not in shipped and not any(n.startswith(linked + "/") for n in shipped):
+                missing.append(f"{page} -> {linked}")
+    assert missing == [], "add these to MANIFEST.in"
+
+
+def test_the_package_metadata_pypi_shows():
+    # PyPI shows the README, the classifiers and these links. The licence is the SPDX
+    # `license` alone: PEP 639 forbids a licence classifier beside it.
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert (project["readme"], project["license"]) == ("README.md", "Apache-2.0")
+    classifiers = project["classifiers"]
+    assert [c for c in classifiers if c.startswith("License ::")] == []
+    assert len(set(classifiers)) == len(classifiers)
+    assert "Topic :: Software Development :: Debuggers" in classifiers
+    versions = [c.rpartition(" :: ")[2] for c in classifiers if re.search(r":: 3\.\d+$", c)]
+    assert project["requires-python"] == f">={versions[0]}"
+    assert project["keywords"]
+    urls = project["urls"]
+    assert set(urls) == {"Homepage", "Documentation", "Issues", "Changelog", "Source"}
+    for url in urls.values():
+        assert url.startswith("https://github.com/sushantmane/peeky"), url
+        repo = REPO_URL.fullmatch(url)
+        assert not repo or (ROOT / repo[1]).is_file(), url
+    # Exact: Peeky's Python behaviour is verified against this debugpy only.
+    assert project["dependencies"] == ["debugpy==1.8.22"]
 
 
 def test_the_sdist_leaves_out_a_crates_build_output():

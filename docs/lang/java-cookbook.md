@@ -692,7 +692,7 @@ Gradle starts a Venice test with `--debug-jvm`:
 ```
 
 To reproduce it, you need a Venice checkout at the commit the line numbers match, JDK 17, and on
-Apple Silicon without Rosetta a native gRPC code generator. The
+Apple Silicon, Rosetta 2. The
 [Venice walkthrough](../JAVA_ATTACH.md#venice-walkthrough-verified-2026-10-14-apple-silicon-jdk-17)
 lists them.
 

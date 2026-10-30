@@ -1,4 +1,4 @@
-include requirements-dev.txt CONTRIBUTING.md AGENTS.md SECURITY.md
+include requirements-dev.txt CONTRIBUTING.md AGENTS.md SECURITY.md CHANGELOG.md CODE_OF_CONDUCT.md
 recursive-include examples *.py *.java *.json *.md
 recursive-include examples *.c *.h *.cpp *.hpp *.cu *.rs *.toml *.lock
 # ipaddress39.py's licence (PSF), which has no suffix.
@@ -6,8 +6,8 @@ include examples/real/ipaddress_mapped/LICENSE-PSF
 recursive-include skills *.md
 recursive-include tests *.py
 recursive-include scripts *.py
-recursive-include docs *.md
-recursive-include docs/benchmarks *.json
+# The pages, their measurements, and the presentation the README links.
+recursive-include docs *.md *.json *.pdf *.pptx
 recursive-include src/peeky/java_adapter *.java *.json *.md
 # A crate's build output never ships.
 prune examples/rust/target
