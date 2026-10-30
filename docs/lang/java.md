@@ -36,11 +36,14 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   that holds the `--old` text ([6.1](../COOKBOOK.md#61-check-one-edit-on-a-fresh-build)).
 - Without a bundle, a probe is refused before anything runs: `INVALID_REQUEST`, and the message
   gives the `peeky setup-java` command to run.
-- A bundle is refused before anything runs if it isn't what this Peeky's setup builds with that
-  JDK. Examples are one built before Peeky's java-debug patches, by another Peeky, or with a JDK
-  that changed since. That is `UNSUPPORTED`, exit status 2, no table. Run `peeky setup-java`
-  again. For a bundle a config names, build a new one with `--output`, and point `bundle` at it
-  ([ERRORS](../ERRORS.md)).
+- A bundle is refused before anything runs if it isn't what this Peeky's setup builds. Examples
+  are one built before Peeky's java-debug patches, or by another Peeky. That is `UNSUPPORTED`,
+  exit status 2, no table. Run `peeky setup-java` again. For a bundle a config names, build a new
+  one with `--output`, and point `bundle` at it ([ERRORS](../ERRORS.md)).
+- The bundle is compiled with `--release 17`, so it runs on JDK 17 or later. Peeky doesn't check
+  the JDK that runs it ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- Setup keeps older versions of its bundle for sessions still using them.
+  `peeky setup-java --prune` removes them. A session still using one fails its next step.
 - Starting the JVM takes most of a run's time. A session's commands after `session start` reuse
   its JVM, so they are quicker than a probe.
 - If a probe or `verify` may outlast your tool's timeout, add `--background`. Then run

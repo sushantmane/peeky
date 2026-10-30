@@ -3,9 +3,9 @@ whose config names no bundle find the one it builds. A wheel has no scripts/ or 
 directory: this needs no JDK, network or checkout.
 
 Peeky's own bundle is only yours (every directory on the way, the pointer and the lock),
-each build is an immutable version switched to atomically under a lock, and a bundle is
-used or kept only while its exact recipe (patch text, launcher, lock, flags, JDK) is the one
-this Peeky builds."""
+each build is an immutable version switched to atomically under a lock, versions go only
+with `--prune`, and a bundle runs only while its recipe (patch text, launcher, lock, notices,
+flags) is this Peeky's; setup also rebuilds for another javac."""
 
 import io
 import json
@@ -205,14 +205,9 @@ def test_setup_builds_a_bundle_with_its_provenance_recipe_and_notices(tmp_path, 
     assert json.loads((output / "adapter.json").read_text()) == manifest
     recipe = manifest["recipe"]
     assert manifest["fingerprint"] == java_setup.fingerprint(recipe)
-    assert recipe == java_setup.recipe(
-        {
-            "java": JAVA,
-            "java_version": offline.versions[JAVA],
-            "javac": JAVAC,
-            "javac_version": offline.versions[JAVAC],
-        }
-    )
+    assert recipe == java_setup.recipe({"javac_version": offline.versions[JAVAC]})
+    assert "java" not in recipe and recipe["javac_version"] == offline.versions[JAVAC]
+    assert manifest["java_version"] == offline.versions[JAVA]
     assert (
         recipe["launcher_sha256"]
         == manifest["launcher_sha256"]
@@ -310,19 +305,25 @@ def test_install_keeps_a_version_with_the_same_recipe(state, offline):
     assert forced["built"] and forced["bundle"] != first["bundle"] and offline.builds > builds
 
 
-def test_a_new_version_is_switched_to_once_built_and_the_one_before_is_kept(
-    state, offline, monkeypatch
-):
+def test_versions_stay_until_prune_removes_all_but_the_current_one(state, offline, monkeypatch):
     versions = []
     for schema in (1, 2, 3):
         monkeypatch.setattr(java_setup, "RECIPE_SCHEMA", schema)
-        versions.append(Path(java_setup.install()["bundle"]).name)
+        result = java_setup.install()
+        versions.append(Path(result["bundle"]).name)
+        # Setup removes no version: sessions may still use any of them.
+        assert result["older"] == sorted(versions[:-1])
     container = state / "java-adapter"
-    # The previous version stays for sessions still using it; the one before goes.
-    assert sorted(p.name for p in container.iterdir() if java_setup.VERSION.fullmatch(p.name)) == (
-        sorted(versions[1:])
-    )
+    assert java_setup._versions(container) == sorted(versions)
     assert java_setup.installed().name == versions[2]
+    (container / ".peeky-java-dead").mkdir()
+    pruned = java_setup.prune()
+    assert pruned == {
+        "bundle": str(container.resolve() / versions[2]),
+        "pruned": sorted(versions[:2]),
+    }
+    assert sorted(p.name for p in container.iterdir()) == sorted([".lock", "current", versions[2]])
+    assert java_setup.prune()["pruned"] == []
 
 
 def test_a_session_keeps_the_version_it_started_with(state, offline):
@@ -349,9 +350,10 @@ def test_a_setup_that_dies_before_the_switch_leaves_the_old_version_in_use(
         with pytest.raises(ValueError, match="nothing was installed: killed before the switch"):
             java_setup.install(force=True)
     assert java_setup.installed() == container / old.name
-    assert _verify_bundle(old, JAVA)
+    assert peeky.java._bundle(old, JAVA)
     # What setups that died left: a version built but never switched to, a staging
-    # directory and a pointer draft. The next setup removes them, under the lock.
+    # directory and a pointer draft. The next setup removes the staging and the draft,
+    # under the lock; versions go only with prune.
     (orphan,) = [
         p for p in container.iterdir() if java_setup.VERSION.fullmatch(p.name) and p != old
     ]
@@ -359,9 +361,10 @@ def test_a_setup_that_dies_before_the_switch_leaves_the_old_version_in_use(
     (container / ".current.dead").write_text("x")
     newest = Path(java_setup.install(force=True)["bundle"])
     assert sorted(p.name for p in container.iterdir()) == sorted(
-        [".lock", "current", old.name, newest.name]
+        [".lock", "current", old.name, orphan.name, newest.name]
     )
-    assert not orphan.exists()
+    java_setup.prune()
+    assert java_setup._versions(container) == [newest.name]
 
 
 def test_setups_wait_for_each_other(state, offline):
@@ -463,10 +466,16 @@ def test_the_pointer_must_be_a_file_of_yours_naming_a_version(state, offline, tm
     version = Path(java_setup.install()["bundle"])
     container = state / "java-adapter"
     pointer = container / "current"
-    for text, chmod in ((version.name, 0o644), ("../../elsewhere", 0o600), ("", 0o600)):
+    modes = ((version.name, 0o644), (version.name, 0o400), (version.name, 0o700))
+    for text, chmod in (*modes, ("../../elsewhere", 0o600), ("", 0o600)):
+        pointer.chmod(0o600)
         pointer.write_text(text)
         pointer.chmod(chmod)
         refused("must be a file of yours, mode 0600, naming a version", java_setup.installed)
+    # One this user can't open (root opens any).
+    pointer.chmod(0)
+    refused("must be a file of yours, mode 0600, naming a version", java_setup.installed)
+    pointer.chmod(0o600)
     pointer.unlink()
     pointer.symlink_to(tmp_path / "anywhere")
     refused(str(pointer), java_setup.installed)
@@ -494,6 +503,88 @@ def test_the_state_directory_is_made_only_yours(state):
     assert cli._state_base() == state and mode(state) == 0o700
 
 
+def test_a_state_directory_of_root_or_home_is_refused_never_tightened(
+    tmp_path, offline, monkeypatch
+):
+    # The state directory is checked whenever it exists, before java-adapter is looked for.
+    monkeypatch.setenv("PEEKY_STATE_DIR", "/")
+    before = mode("/")
+    for call in (java_setup.installed, lambda: bundle_directory(Path("/java-adapter"))):
+        refused("/", call)
+    refused("/", java_setup.install)
+    refused("/", java_setup.prune)
+    assert mode("/") == before and not os.path.lexists("/java-adapter")
+    home = tmp_path / "home"
+    home.mkdir()
+    home.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(home))
+    message = refused(str(home), java_setup.install)
+    assert "Peeky doesn't change / or your home directory" in message
+    with pytest.raises(ValueError, match="Peeky doesn't change / or your home directory"):
+        cli._state_base()
+    assert mode(home) == 0o755 and list(home.iterdir()) == []
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads any directory")
+def test_a_state_directory_that_cant_be_read_is_refused(tmp_path, offline, monkeypatch):
+    locked = tmp_path / "locked"
+    (locked / "state").mkdir(parents=True)
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(locked / "state"))
+    locked.chmod(0)
+    try:
+        message = refused(str(locked / "state"), java_setup.installed)
+        assert "can't be read (Permission denied)" in message
+    finally:
+        locked.chmod(0o700)
+
+
+def test_a_lock_that_cant_be_opened_is_refused(state, offline):
+    java_setup.install()
+    lock = state / "java-adapter/.lock"
+    lock.unlink()
+    lock.mkdir()
+    message = refused(str(lock), java_setup.install)
+    assert "is a link, or can't be opened" in message
+
+
+def test_untrusted_directories_are_refused_before_a_target_builds(state, offline, tmp_path):
+    java_setup.install()
+    source = program(tmp_path / "app")
+    (state / "java-adapter").chmod(0o750)
+    refused(
+        str(state / "java-adapter"), lambda: own_target(state).prepare(source, tmp_path / "app")
+    )
+    assert not [c for c in offline.commands if "-g" in c]
+
+
+def test_a_session_on_a_pruned_version_fails_its_next_step(state, offline, monkeypatch, tmp_path):
+    # JavaSession.assert_current, which runs before every operation, as a session that
+    # started on the first version has it.
+    from peeky.java import JavaSession
+
+    first = bundle_directory(Path(java_setup.install()["bundle"]).parent)
+    command, bundle_hash = peeky.java._bundle(first, JAVA)
+    mapping = tmp_path / "map.json"
+    mapping.write_text("{}")
+    session = SimpleNamespace(
+        prepared=None,
+        bundle=first,
+        java=JAVA,
+        bundle_hash=bundle_hash,
+        command=(*command, str(mapping)),
+        mapping_path=mapping,
+        mapping_hash=peeky.java._hash(mapping),
+    )
+    monkeypatch.setattr(peeky.java, "assert_current", lambda prepared: None)
+    java_setup.install(force=True)
+    JavaSession.assert_current(session)
+    assert java_setup.prune()["pruned"] == [first.name]
+    with pytest.raises(RuntimeError, match="Java runtime provenance mismatch") as gone:
+        JavaSession.assert_current(session)
+    assert classify(gone.value)["code"] == "PROVENANCE_CHANGED"
+
+
 # --- the exact recipe: equal or rebuild; the worker checks the same -----------------------
 
 
@@ -501,8 +592,11 @@ def test_the_fingerprint_changes_with_every_input(tmp_path, offline, monkeypatch
     tools = java_setup.toolchain(JAVA, JAVAC)
     base = java_setup.fingerprint(java_setup.recipe(tools))
     changed = []
-    for key in java_setup.TOOL_KEYS:
+    for key in java_setup.JDK_KEYS:
         changed.append(java_setup.fingerprint(java_setup.recipe({**tools, key: tools[key] + "x"})))
+    # java itself, and javac's path, are not part of it: the worker never asks them.
+    other = {**tools, "java": "/elsewhere/java", "java_version": "x", "javac": "/elsewhere/javac"}
+    assert java_setup.fingerprint(java_setup.recipe(other)) == base
 
     def edited(name, path):
         copy = tmp_path / path.name
@@ -522,13 +616,27 @@ def test_the_fingerprint_changes_with_every_input(tmp_path, offline, monkeypatch
         with monkeypatch.context() as patched:
             patched.setattr(java_setup, name, value)
             changed.append(java_setup.fingerprint(java_setup.recipe(tools)))
-    assert base not in changed and len(set(changed)) == len(changed) == 11
+    assert base not in changed and len(set(changed)) == len(changed) == 8
 
 
-def test_a_changed_patch_text_or_jdk_rebuilds_and_the_worker_refuses_the_old_bundle(
-    state, offline, monkeypatch
+def program(root):
+    (root / "demo").mkdir(parents=True)
+    (root / "demo" / "Main.java").write_text("package demo;\nclass Main {}\n")
+    return root / "demo" / "Main.java"
+
+
+def own_target(state):
+    """A target that uses Peeky's own bundle, run by the fake JDK."""
+    return peeky.java.JavaTarget(
+        state / "java-adapter", ("demo/Main.java",), "demo.Main", java=JAVA, javac=JAVAC
+    )
+
+
+def test_a_changed_patch_text_is_refused_by_the_worker_and_rebuilt_by_setup(
+    state, offline, monkeypatch, tmp_path
 ):
     first = Path(java_setup.install()["bundle"])
+    source = program(tmp_path / "app")
     # The patch's text changed, while the compiled class still has the byte probe's marker.
     original, patched = java_setup.EVENT_HUB_ORIGINAL, java_setup.EVENT_HUB_PATCHED
     with monkeypatch.context() as changed:
@@ -537,22 +645,37 @@ def test_a_changed_patch_text_or_jdk_rebuilds_and_the_worker_refuses_the_old_bun
             "eventhub-log-guard",
             (java_setup.EVENT_HUB, original, patched.replace("RuntimeException", "Exception")),
         )
-        with pytest.raises(ValueError, match="is not what this Peeky's setup builds") as other:
-            _verify_bundle(first, JAVA)
-        assert "(it was built by another version of Peeky)" in str(other.value)
-        assert classify(other.value)["code"] == "UNSUPPORTED"
-        wanted = java_setup.recipe(java_setup.toolchain(JAVA, JAVAC))
-        assert java_setup.current(first, wanted) == "it was built by another version of Peeky"
-    assert _verify_bundle(first, JAVA)
-    # The JDK changed: javac's version text differs from the one the bundle records.
-    offline.versions[JAVAC] = "javac 17.0.2"
-    with pytest.raises(ValueError, match="built with another JDK, or the JDK changed since"):
-        _verify_bundle(first, JAVA)
+        for check in (
+            lambda: peeky.java._bundle(first, JAVA),
+            lambda: own_target(state).prepare(source, tmp_path / "app"),
+        ):
+            with pytest.raises(ValueError, match="is not what this Peeky's setup builds") as other:
+                check()
+            assert "(it was built by another version of Peeky)" in str(other.value)
+            assert classify(other.value)["code"] == "UNSUPPORTED"
+        messages = []
+        second = java_setup.install(progress=messages.append)
+        assert second["built"] and "(it was built by another version of Peeky)" in messages[0]
+        assert peeky.java._bundle(Path(second["bundle"]), JAVA)
+
+
+def test_the_worker_asks_no_jdk_but_setup_rebuilds_for_another_javac(state, offline):
+    first = Path(java_setup.install()["bundle"])
+    offline.versions[JAVA] = 'openjdk version "21.0.4"'
+    offline.versions[JAVAC] = "javac 21.0.4"
+    offline.commands.clear()
+    # The worker checks only the bundle's own content: no JDK is asked, and it runs.
+    assert peeky.java._verify_bundle(first, JAVA)[0][-1] == "PeekyJavaAdapter"
+    assert peeky.java.bundle_directory(state / "java-adapter") == first
+    assert offline.commands == []
+    # Setup asks javac afresh, and builds again for another javac.
     messages = []
     second = java_setup.install(progress=messages.append)
     assert second["built"] and Path(second["bundle"]) != first
-    assert "(it was built with another JDK, or the JDK changed since)" in messages[0]
-    assert _verify_bundle(Path(second["bundle"]), JAVA)
+    assert "(it was built with another javac)" in messages[0]
+    assert sum(c == [JAVAC, "-version"] for c in offline.commands) == 1
+    again = java_setup.install()
+    assert not again["built"] and again["bundle"] == second["bundle"]
 
 
 def test_a_bundle_without_an_exact_recipe_is_refused(tmp_path, offline):
@@ -567,50 +690,18 @@ def test_a_bundle_without_an_exact_recipe_is_refused(tmp_path, offline):
         other_flags(edited)
         edited["fingerprint"] = java_setup.fingerprint(edited["recipe"])
 
-    def other_java(edited):
-        edited["recipe"]["java"] = "/elsewhere/java"
-        edited["fingerprint"] = java_setup.fingerprint(edited["recipe"])
-
     for change, why in (
         (lambda m: m.pop("recipe"), "it records no build recipe: an earlier Peeky built it"),
         (lambda m: m.pop("fingerprint"), "its recipe doesn't match its fingerprint"),
         (other_flags, "its recipe doesn't match its fingerprint"),
         (other_flags_and_fingerprint, "it was built by another version of Peeky"),
-        (other_java, "its recipe names another java than its command"),
     ):
         edited = json.loads(json.dumps(manifest))
         change(edited)
         path.write_text(json.dumps(edited))
         with pytest.raises(ValueError, match="is not what this Peeky's setup builds") as other:
-            _verify_bundle(bundle.resolve(), JAVA)
+            peeky.java._bundle(bundle.resolve(), JAVA)
         assert f"({why})" in str(other.value)
-
-
-def test_the_worker_asks_the_jdk_once_per_process_while_its_files_are_unchanged(
-    tmp_path, offline, monkeypatch
-):
-    # A bundle verified before it settles is verified at every operation: the JDK's version
-    # texts are asked once, until java's or javac's file or JAVA_HOME changes.
-    monkeypatch.setattr(java_setup, "_TOOLCHAINS", {})
-    java, javac = tmp_path / "java", tmp_path / "javac"
-    for tool in (java, javac):
-        tool.write_text("tool")
-        offline.versions[str(tool)] = f"{tool.name} 17"
-
-    def asked():
-        return sum(command[-1] == "-version" for command in offline.commands)
-
-    for _ in range(3):
-        java_setup._toolchain_now(str(java), str(javac))
-    assert asked() == 2
-    javac.write_text("a newer tool")
-    java_setup._toolchain_now(str(java), str(javac))
-    monkeypatch.setenv("JAVA_HOME", str(tmp_path))
-    java_setup._toolchain_now(str(java), str(javac))
-    assert asked() == 6
-    monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
-    java_setup._toolchain_now(str(java), str(javac))
-    assert asked() == 8
 
 
 @pytest.mark.parametrize("text", ["[]", '"bundle"', "7", "not json", "null"])
@@ -621,7 +712,9 @@ def test_an_adapter_json_that_is_not_an_object_is_stale_not_an_internal_error(st
         _verify_bundle(version, JAVA)
     assert classify(stale.value)["code"] == "UNSUPPORTED"
     wanted = java_setup.recipe(java_setup.toolchain(JAVA, JAVAC))
-    assert java_setup.current(version, wanted).startswith("it does not verify: its adapter.json")
+    assert java_setup.current(version, wanted, JAVA).startswith(
+        "it does not verify: its adapter.json"
+    )
     assert java_setup.install()["built"]
 
 
@@ -633,7 +726,7 @@ def test_an_unpatched_bundle_is_called_stale_by_setup(state, offline):
     manifest["files"][EVENT_HUB_CLASS] = java_setup.digest(hub)
     (version / "adapter.json").write_text(json.dumps(manifest))
     wanted = java_setup.recipe(java_setup.toolchain(JAVA, JAVAC))
-    assert java_setup.current(version, wanted) == "it predates Peeky's java-debug fixes"
+    assert java_setup.current(version, wanted, JAVA) == "it predates Peeky's java-debug fixes"
 
 
 # --- the command ----------------------------------------------------------------------------
@@ -672,6 +765,36 @@ def test_setup_java_with_output_needs_a_new_directory(tmp_path, state, offline, 
         status, out, err = setup_java(capsys, "--output", str(inside))
         assert status == 2 and "is in Peeky's own bundle's directory" in err
     assert not (state / "java-adapter").exists()
+
+
+def test_setup_java_prune_removes_all_but_the_current_version(state, offline, capsys):
+    status, out, err = setup_java(capsys, "--prune")
+    assert (status, out.strip()) == (0, "Nothing to remove. No version is in use.")
+    java_setup.install()
+    status, out, err = setup_java(capsys, "--force", "--quiet")
+    assert "1 older version(s) kept, for sessions still using them" in out
+    assert "`peeky setup-java --prune` removes them." in out
+    current = java_setup.installed()
+    status, out, err = setup_java(capsys, "--prune", "--json")
+    result = json.loads(out)
+    assert status == 0 and result["bundle"] == str(current) and len(result["pruned"]) == 1
+    assert result["warnings"] == [cli.PRUNED_NOTE]
+    assert "fails its next step (PROVENANCE_CHANGED)" in cli.PRUNED_NOTE
+    status, out, err = setup_java(capsys, "--prune")
+    assert out.strip() == f"Nothing to remove. Kept {current}."
+    for extra in ("--force", "--output=x"):
+        status, out, err = setup_java(capsys, "--prune", extra)
+        assert status == 2 and "--prune takes neither --output nor --force" in err
+
+
+def test_prune_removes_nothing_while_the_pointer_is_refused(state, offline, capsys):
+    java_setup.install()
+    java_setup.install(force=True)
+    container = state / "java-adapter"
+    (container / "current").chmod(0o644)
+    status, out, err = setup_java(capsys, "--prune")
+    assert status == 2 and "[UNSUPPORTED] Peeky's own Java adapter can't be used" in err
+    assert len(java_setup._versions(container)) == 2
 
 
 def test_setup_java_without_a_jdk_installs_nothing(state, monkeypatch, capsys):

@@ -198,3 +198,93 @@ def test_real_bundles_are_told_apart_by_their_compiled_event_hub(tmp_path):
     (forged / "adapter.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="missing: eventhub-log-guard"):
         _verify_bundle(forged, java)
+
+
+MAIN = """package demo;
+public class Main {
+    public static void main(String[] args) {
+        int x = 1;
+        System.out.println(x);
+    }
+}
+"""
+
+
+@pytest.fixture
+def own_bundle(tmp_path, monkeypatch):
+    """Install copies of the real bundle as versions of Peeky's own, as setup does (each
+    command names its version's path), pointing at the last; ``edit`` changes its recipe,
+    with a fingerprint to match."""
+    import os
+    import shutil
+
+    from peeky import java_setup
+
+    configured = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not configured:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")
+    state = tmp_path / "state"
+    container = state / "java-adapter"
+    container.mkdir(parents=True, mode=0o700)
+    state.chmod(0o700)
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(state))
+    (tmp_path / "app" / "demo").mkdir(parents=True)
+    (tmp_path / "app" / "demo" / "Main.java").write_text(MAIN)
+
+    def add(name, edit=None):
+        version = container / name
+        shutil.copytree(configured, version)
+        version.chmod(0o700)
+        manifest = json.loads((version / "adapter.json").read_text())
+        resolved = version.resolve()
+        manifest["command"][2] = f"{resolved}/classes{os.pathsep}{resolved}/lib/*"
+        if edit is not None:
+            edit(manifest["recipe"])
+            manifest["fingerprint"] = java_setup.fingerprint(manifest["recipe"])
+        (version / "adapter.json").write_text(json.dumps(manifest))
+        java_setup._point(container, name)
+        return resolved
+
+    return add
+
+
+def prepare_own(tmp_path):
+    from peeky.java import JavaTarget
+    from peeky.java_setup import default_bundle
+
+    target = JavaTarget(default_bundle(), ("demo/Main.java",), "demo.Main")
+    return target.prepare(tmp_path / "app" / "demo" / "Main.java", tmp_path / "app")
+
+
+def test_a_session_keeps_its_version_until_prune_removes_it(own_bundle, tmp_path):
+    from peeky import java_setup
+    from peeky.errors import classify
+    from peeky.java import bundle_directory
+
+    first = own_bundle("a" * 20 + "-" + "1" * 8)
+    session = prepare_own(tmp_path)
+    try:
+        assert session.bundle == first
+        second = own_bundle("b" * 20 + "-" + "2" * 8)
+        # A new session gets the new version; this one keeps its own, unchanged.
+        assert bundle_directory(java_setup.default_bundle()) == second
+        session.assert_current()
+        assert java_setup.prune()["pruned"] == [first.name]
+        with pytest.raises(RuntimeError, match="provenance mismatch") as gone:
+            session.assert_current()
+        assert classify(gone.value)["code"] == "PROVENANCE_CHANGED"
+    finally:
+        session.prepared.cleanup()
+
+
+def test_the_worker_runs_a_bundle_whatever_javac_it_records_but_not_another_launcher(
+    own_bundle, tmp_path
+):
+    # The JDK isn't asked at run time: the JVM refuses classes it can't run (--release 17).
+    own_bundle("c" * 20 + "-" + "3" * 8, lambda recipe: recipe.update(javac_version="javac 99"))
+    session = prepare_own(tmp_path)
+    session.prepared.cleanup()
+    own_bundle("d" * 20 + "-" + "4" * 8, lambda recipe: recipe.update(launcher_sha256="0" * 64))
+    with pytest.raises(ValueError, match="is not what this Peeky's setup builds") as other:
+        prepare_own(tmp_path)
+    assert "(it was built by another version of Peeky)" in str(other.value)

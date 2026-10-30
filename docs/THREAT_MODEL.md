@@ -136,9 +136,10 @@ A process running as the same user, or as root, isn't covered.
   Peeky runs its own bundle, the one `peeky setup-java` installs, only from directories you own,
   mode 0700, under none that another user can write. A bundle a config names is trusted as the
   config is.
-- Peeky runs a Java adapter bundle only if its recorded recipe is the one this Peeky builds with
-  that JDK. The recipe holds the patches' text, the launcher, the lock, the notices, the compiler
-  flags, and java's and javac's versions.
+- Peeky runs a Java adapter bundle only if its recorded recipe is this Peeky's: the patches'
+  text, the launcher, the lock, the notices and the compiler flags. It doesn't ask the JDK that
+  runs it. The classes are compiled with `--release 17`, and a JVM that can't run them refuses
+  them.
 
 ## Failure handling
 

@@ -8,23 +8,24 @@ place in one step, with its provenance in adapter.json and the upstream licence 
 in notices/. A failure removes only its own staging. Setup never publishes anything.
 
 Each bundle records its recipe: the text of Peeky's patches, the launcher, the lock, the
-notices, the compiler flags, and the JDK (java's and javac's paths and version texts), with
-the recipe's fingerprint. A bundle is used, and kept as up to date, only while its recipe is
-the one this Peeky builds with that JDK (recipe_mismatch).
+notices, the compiler flags (`--release 17`, so any JDK 17 or later runs it) and javac's
+version, with the recipe's fingerprint. The worker runs a bundle only if its recipe, but for
+javac, is this Peeky's (recipe_mismatch); setup keeps one only if javac's version is the
+same too (current).
 
 Without an output directory, setup installs Peeky's own bundle (install). Each build is an
 immutable version directory in $PEEKY_STATE_DIR/java-adapter, and a pointer file there names
 the one in use. Builds are serialized by a lock, and the pointer is switched atomically once
-a version is complete. Every directory on the way is only yours (private_directory). Java
-targets whose configuration names no bundle use the version the pointer names (installed),
-resolved once when they start.
+a version is complete. Versions are removed only by `peeky setup-java --prune` (prune).
+Every directory on the way is only yours (private_directory). Java targets whose
+configuration names no bundle use the version the pointer names (installed), resolved once
+when they start.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
-import errno
 import hashlib
 import io
 import json
@@ -39,7 +40,6 @@ import tarfile
 import tempfile
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from peeky import state_home
@@ -63,7 +63,8 @@ VERSION = re.compile(r"[0-9a-f]{20}-[0-9a-f]{8}\Z")
 # What a build does beyond its inputs; bump it when the steps change.
 RECIPE_SCHEMA = 1
 JAVAC_FLAGS = ("--release", "17")
-TOOL_KEYS = ("java", "java_version", "javac", "javac_version")
+# The recipe's part the JDK gives: setup rebuilds when it differs, the worker doesn't ask.
+JDK_KEYS = ("javac_version",)
 UNUSABLE = "Peeky's own Java adapter can't be used: "
 
 # Source patches to the pinned java-debug, applied before compiling and recorded in
@@ -198,46 +199,20 @@ def run(command: list[str]) -> str:
 
 
 def toolchain(java: str, javac: str) -> dict:
-    """The JDK a bundle is built with and runs on: java's and javac's paths and the version
-    texts they print now."""
-    with ThreadPoolExecutor(2) as pool:
-        java_version, javac_version = pool.map(run, ([java, "-version"], [javac, "-version"]))
+    """The JDK setup builds with: java's and javac's paths and the version texts they print
+    now (asked afresh each time)."""
     return {
         "java": java,
-        "java_version": java_version,
+        "java_version": run([java, "-version"]),
         "javac": javac,
-        "javac_version": javac_version,
+        "javac_version": run([javac, "-version"]),
     }
-
-
-# toolchain() results recipe_mismatch reused in this process: see _toolchain_now.
-_TOOLCHAINS = {}
-
-
-def _toolchain_now(java: str, javac: str) -> dict:
-    """toolchain(), reused in this process while both tools' files (their resolved paths
-    and stat identities) and JAVA_HOME are unchanged, as peeky.java reuses a verified
-    bundle; a bundle verified before it settles (peeky.digest) asks them only once."""
-
-    def identity(path):
-        try:
-            info = os.stat(path)
-        except OSError:
-            return None
-        return os.path.realpath(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
-
-    tools = (identity(java), identity(javac))
-    if None in tools or os.environ.get("PEEKY_NO_DIGEST_CACHE") == "1":
-        return toolchain(java, javac)
-    key = (java, javac, *tools, os.environ.get("JAVA_HOME"))
-    if key not in _TOOLCHAINS:
-        _TOOLCHAINS[key] = toolchain(java, javac)
-    return _TOOLCHAINS[key]
 
 
 def recipe(tools: dict) -> dict:
     """Everything a bundle is built from with the JDK ``tools`` (toolchain): equal recipes
-    build equal bundles."""
+    build equal bundles. All but JDK_KEYS is the bundle's own content, which the worker
+    checks before it runs one (recipe_mismatch); javac's version only setup checks."""
     lock = json.loads(LOCK.read_text())
     return {
         "schema": RECIPE_SCHEMA,
@@ -247,7 +222,7 @@ def recipe(tools: dict) -> dict:
         "launcher_sha256": digest(LAUNCHER),
         "notices_sha256": digest(NOTICES),
         "patches": patch_texts(),
-        **{key: tools[key] for key in TOOL_KEYS},
+        **{key: tools[key] for key in JDK_KEYS},
     }
 
 
@@ -257,36 +232,33 @@ def fingerprint(recorded: dict) -> str:
     ).hexdigest()
 
 
-def _difference(recorded, wanted: dict) -> str:
-    """Why the recipe a bundle records isn't ``wanted``, in a few words."""
+def _difference(recorded, wanted: dict) -> str | None:
+    """Why the recipe a bundle records isn't ``wanted``, in a few words; None if it is."""
     if not isinstance(recorded, dict):
         return "it records no build recipe: an earlier Peeky built it"
     if set(recorded) != set(wanted) or any(
-        recorded[key] != wanted[key] for key in wanted if key not in TOOL_KEYS
+        recorded[key] != wanted[key] for key in wanted if key not in JDK_KEYS
     ):
         return "it was built by another version of Peeky"
-    return "it was built with another JDK, or the JDK changed since"
+    if any(recorded[key] != wanted[key] for key in JDK_KEYS):
+        return "it was built with another javac"
+    return None
 
 
 def recipe_mismatch(manifest: dict) -> str | None:
-    """Why a bundle's manifest doesn't record the recipe this Peeky builds with the JDK it
-    names, as that JDK is now; None when it does. The worker checks this before it runs a
-    bundle, as setup does before it keeps one."""
+    """Why a bundle's manifest doesn't record what this Peeky builds, or None. Only the
+    bundle's own content counts: the recipe must match its fingerprint and, but for the
+    javac it was built with, be this Peeky's (flags, patch texts, launcher, lock, notices).
+    The JDK that runs it is not asked: setup compiles for `--release 17`, and a JVM that
+    can't run such classes refuses them itself. The worker checks this before it runs a
+    bundle; setup also compares javac's version (current)."""
     recorded = manifest.get("recipe")
     if not isinstance(recorded, dict):
         return _difference(None, {})
     if manifest.get("fingerprint") != fingerprint(recorded):
         return "its recipe doesn't match its fingerprint"
-    if recorded.get("java") != (manifest.get("command") or [None])[0]:
-        return "its recipe names another java than its command"
-    try:
-        tools = _toolchain_now(str(recorded["java"]), str(recorded["javac"]))
-    except (KeyError, OSError, RuntimeError, ValueError) as exc:
-        return f"its JDK can't be run now: {str(exc)[:200]}"
-    wanted = recipe(tools)
-    if fingerprint(wanted) != manifest["fingerprint"]:
-        return _difference(recorded, wanted)
-    return None
+    wanted = recipe({key: recorded.get(key) for key in JDK_KEYS})
+    return _difference(recorded, wanted)
 
 
 def read_manifest(bundle: Path) -> dict:
@@ -430,14 +402,36 @@ def _build(output: Path, tools: dict, private: bool) -> dict:
     return manifest
 
 
+def _lstat(path: Path):
+    """os.lstat(path), or None where nothing is there; failing to look is a refusal."""
+    try:
+        return os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise ValueError(
+            f"{UNUSABLE}{path} can't be read ({exc.strerror or exc}). Make it and the "
+            "directories above it yours, or set PEEKY_STATE_DIR to a directory of yours"
+        ) from None
+
+
+def _shared_root(path: Path) -> bool:
+    """Whether ``path`` is / or the home directory, whose mode Peeky never changes."""
+    resolved = Path(path).resolve()
+    return resolved == Path(resolved.anchor) or resolved == Path.home().resolve()
+
+
 def private_directory(path: Path, *, fix: bool = False) -> Path:
     """``path``, checked as a directory only you can use, as Peeky's own bundle must be in:
-    a real directory (not a link) that you own, mode 0700 (made so with ``fix``), under no
-    directory another user can write (peeky.build.writable_by_others). Anyone who could
-    write there could supply a bundle, whose adapter.json vouches only for itself."""
+    a real directory (not a link) that you own, mode 0700 (made so with ``fix``, but never
+    / or the home directory), under no directory another user can write
+    (peeky.build.writable_by_others). Anyone who could write there could supply a bundle,
+    whose adapter.json vouches only for itself."""
     from peeky.build import writable_by_others
 
-    info = os.lstat(path)
+    info = _lstat(path)
+    if info is None:
+        raise ValueError(f"{UNUSABLE}{path} is missing. Run `peeky setup-java`")
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise ValueError(
             f"{UNUSABLE}{path} is a link, a file or another user's, and Peeky runs it only from "
@@ -445,13 +439,25 @@ def private_directory(path: Path, *, fix: bool = False) -> Path:
             "PEEKY_STATE_DIR to a directory of yours"
         )
     if info.st_mode & 0o077:
-        if not fix:
+        if not fix or _shared_root(path):
             raise ValueError(
                 f"{UNUSABLE}{path} has mode {stat.S_IMODE(info.st_mode):o}, open to other "
-                f"users. Run `chmod 700 {path}`, or `peeky setup-java`, which does"
+                + (
+                    "users, and Peeky doesn't change / or your home directory: set "
+                    "PEEKY_STATE_DIR to a directory of Peeky's own"
+                    if _shared_root(path)
+                    else f"users. Run `chmod 700 {path}`, or `peeky setup-java`, which does"
+                )
             )
         os.chmod(path, 0o700)
-    if (shared := writable_by_others(path)) is not None:
+    try:
+        shared = writable_by_others(path)
+    except OSError as exc:
+        raise ValueError(
+            f"{UNUSABLE}a directory above {path} can't be read ({exc.strerror or exc}). Set "
+            "PEEKY_STATE_DIR to a directory of yours"
+        ) from None
+    if shared is not None:
         raise ValueError(
             f"{UNUSABLE}{shared} is writable by other users, who could replace the adapter "
             f"in {path}. If it is yours, run `chmod go-w {shared}`; or set PEEKY_STATE_DIR to "
@@ -462,40 +468,45 @@ def private_directory(path: Path, *, fix: bool = False) -> Path:
 
 def installed(container: Path | None = None) -> Path | None:
     """The version of Peeky's own bundle that its pointer names, or None where none is
-    installed. The state directory, the bundle's directory and the version must be only
-    yours (private_directory), and the pointer a file of yours, mode 0600, naming a
-    version: anything else is refused (ValueError)."""
+    installed. The state directory (checked first, whenever it exists), the bundle's
+    directory and the version must be only yours (private_directory), and the pointer a
+    file of yours, mode 0600 exactly, naming a version: anything else, a pointer that can't
+    be opened or read included, is refused (ValueError)."""
     container = default_bundle() if container is None else container
-    if not os.path.lexists(container.parent) or not os.path.lexists(container):
+    if _lstat(container.parent) is None:
         return None
     private_directory(container.parent)
+    if _lstat(container) is None:
+        return None
     private_directory(container)
     pointer = container / POINTER
+    refusal = ValueError(
+        f"{UNUSABLE}{pointer} must be a file of yours, mode 0600, naming a version. Run "
+        "`peeky setup-java` to replace it"
+    )
     try:
         descriptor = os.open(pointer, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
-    except OSError as exc:
-        if exc.errno != errno.ELOOP:
-            raise
-        info = None
-    else:
+    except OSError:
+        # A link (ELOOP), or one this user can't open.
+        raise refusal from None
+    try:
         with os.fdopen(descriptor, "rb") as stream:
             info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise refusal
             name = stream.read(100).decode("ascii", "replace").strip()
-    if (
-        info is None
-        or not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.getuid()
-        or info.st_mode & 0o077
-        or not VERSION.fullmatch(name)
-    ):
-        raise ValueError(
-            f"{UNUSABLE}{pointer} must be a file of yours, mode 0600, naming a version. Run "
-            "`peeky setup-java` to replace it"
-        )
+    except OSError:
+        raise refusal from None
+    if not VERSION.fullmatch(name):
+        raise refusal
     version = container / name
-    if not os.path.lexists(version):
+    if _lstat(version) is None:
         raise ValueError(
             f"{UNUSABLE}{pointer} names {name}, which is gone. Run `peeky setup-java` to "
             "build it again"
@@ -512,9 +523,9 @@ def _locked(container: Path, progress=None):
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError as exc:
-        if exc.errno != errno.ELOOP:
-            raise
-        raise ValueError(f"{UNUSABLE}{path} is a link. Move it aside") from None
+        raise ValueError(
+            f"{UNUSABLE}{path} is a link, or can't be opened ({exc.strerror or exc}). Move it aside"
+        ) from None
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
@@ -557,24 +568,33 @@ def _point(container: Path, name: str) -> None:
         os.close(directory)
 
 
-def _sweep(container: Path, keep: set[str] | None) -> None:
-    """Under the lock: remove what setups that died left (staging, pointer drafts), and with
-    ``keep``, every version but those."""
+def _remove(entry: Path) -> None:
+    if entry.is_dir() and not entry.is_symlink():
+        shutil.rmtree(entry, ignore_errors=True)
+    else:
+        entry.unlink(missing_ok=True)
+
+
+def _sweep(container: Path) -> None:
+    """Under the lock, so no setup is running: remove what setups that died left, their
+    staging and pointer drafts. Versions stay (prune removes them)."""
     for entry in container.iterdir():
-        name = entry.name
-        leftover = name.startswith((STAGING_PREFIX, f".{POINTER}."))
-        if not (leftover or (keep is not None and VERSION.fullmatch(name) and name not in keep)):
-            continue
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+        if entry.name.startswith((STAGING_PREFIX, f".{POINTER}.")):
+            _remove(entry)
 
 
-def current(bundle: Path, wanted: dict) -> str | None:
-    """Why ``bundle`` is not what this Peeky builds with the recipe ``wanted`` (recipe), or
-    None when it is: the same fingerprint, and it verifies as the worker verifies it before
-    every use, with the `java` it names."""
+def _versions(container: Path, but: str | None = None) -> list[str]:
+    return sorted(
+        entry.name
+        for entry in container.iterdir()
+        if VERSION.fullmatch(entry.name) and entry.name != but
+    )
+
+
+def current(bundle: Path, wanted: dict, java: str) -> str | None:
+    """Why ``bundle`` is not what this Peeky builds now, with the recipe ``wanted`` (recipe,
+    with javac's version asked afresh), or None when it is: the same fingerprint, and it
+    verifies as the worker verifies it before every use, run by ``java``."""
     from peeky.java import _tool, _verify_bundle
 
     try:
@@ -583,9 +603,9 @@ def current(bundle: Path, wanted: dict) -> str | None:
     except (OSError, ValueError) as exc:
         return f"it does not verify: {str(exc)[:200] or type(exc).__name__}"
     if manifest.get("fingerprint") != fingerprint(wanted):
-        return _difference(manifest.get("recipe"), wanted)
+        return _difference(manifest.get("recipe"), wanted) or "its fingerprint differs"
     try:
-        _verify_bundle(resolved, _tool(wanted["java"]))
+        _verify_bundle(resolved, _tool(java))
     except (OSError, ValueError) as exc:
         if "predates Peeky's java-debug fixes" in str(exc):
             return "it predates Peeky's java-debug fixes"
@@ -593,20 +613,31 @@ def current(bundle: Path, wanted: dict) -> str | None:
     return None
 
 
+def _own_directories(*, create: bool) -> Path | None:
+    """Peeky's own bundle's directory, after the state directory's and its own checks (made
+    0700 where they are yours); None where there is none and ``create`` is false."""
+    container = default_bundle()
+    if _lstat(container.parent) is None:
+        if not create:
+            return None
+        container.parent.mkdir(parents=True, mode=0o700)
+    private_directory(container.parent, fix=True)
+    if _lstat(container) is None:
+        if not create:
+            return None
+        container.mkdir(mode=0o700)
+    return private_directory(container, fix=True)
+
+
 def install(*, force: bool = False, progress=None) -> dict:
     """Install Peeky's own bundle: keep the version the pointer names while it is current
     (unless ``force``), else build a new version and switch the pointer to it once it is
-    complete. The version before stays, for sessions still using it; older ones go.
-    ``progress`` takes one-line messages."""
-    container = default_bundle()
-    container.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    private_directory(container.parent, fix=True)
-    if not os.path.lexists(container):
-        container.mkdir(mode=0o700)
-    private_directory(container, fix=True)
+    complete. Older versions stay, for sessions still using them, until prune. ``progress``
+    takes one-line messages."""
+    container = _own_directories(create=True)
     java, javac = _jdk()
     with _locked(container, progress):
-        _sweep(container, keep=None)
+        _sweep(container)
         try:
             tools = toolchain(java, javac)
         except Exception as exc:
@@ -619,10 +650,14 @@ def install(*, force: bool = False, progress=None) -> dict:
         except ValueError as exc:
             previous, why = None, str(exc).removeprefix(UNUSABLE).split(". ")[0]
         if previous is not None and not force:
-            why = current(previous, wanted)
+            why = current(previous, wanted, java)
             if why is None:
-                manifest = read_manifest(previous)
-                return {"bundle": str(previous.resolve()), "built": False, "adapter": manifest}
+                return {
+                    "bundle": str(previous.resolve()),
+                    "built": False,
+                    "older": _versions(container, but=previous.name),
+                    "adapter": read_manifest(previous),
+                }
         version = container.resolve() / f"{fingerprint(wanted)[:20]}-{secrets.token_hex(4)}"
         if progress is not None:
             action = "Rebuilding" if force else "Replacing" if why else "Building"
@@ -638,8 +673,29 @@ def install(*, force: bool = False, progress=None) -> dict:
             raise ValueError(
                 f"Java adapter setup failed, and nothing was installed: {exc}"
             ) from exc
-        _sweep(container, keep={version.name} | ({previous.name} if previous else set()))
-        return {"bundle": str(version), "built": True, "adapter": manifest}
+        return {
+            "bundle": str(version),
+            "built": True,
+            "older": _versions(container, but=version.name),
+            "adapter": manifest,
+        }
+
+
+def prune(progress=None) -> dict:
+    """`peeky setup-java --prune`: remove every version of Peeky's own bundle but the one
+    the pointer names, and what setups that died left. A session still using a removed
+    version fails its next step (its bundle is gone). A pointer that is refused (installed)
+    stops it: then which version is current isn't known."""
+    container = _own_directories(create=False)
+    if container is None:
+        return {"bundle": None, "pruned": []}
+    with _locked(container, progress):
+        _sweep(container)
+        keep = installed(container)
+        pruned = _versions(container, but=keep.name if keep else None)
+        for name in pruned:
+            _remove(container / name)
+    return {"bundle": str(keep.resolve()) if keep else None, "pruned": pruned}
 
 
 def main() -> None:

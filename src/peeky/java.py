@@ -459,8 +459,8 @@ STALE_BUNDLE = (
     "one a config names, add `--output <a new directory>` and point the config's bundle at "
     "it. Without eventhub-log-guard, java-debug can stop reporting stops and exits"
 )
-# A bundle whose recorded recipe (peeky.java_setup.recipe) isn't the one this Peeky builds
-# with the JDK it names: its patches' text, launcher, lock, notices, compiler flags or JDK.
+# A bundle whose recorded recipe (peeky.java_setup.recipe_mismatch) isn't this Peeky's: its
+# patches' text, launcher, lock, notices or compiler flags. The JDK that runs it isn't asked.
 OTHER_BUILD = (
     "The Java adapter bundle at {bundle} is not what this Peeky's setup builds ({why}): "
     "rebuild it with `peeky setup-java`, which replaces Peeky's own bundle; for one a config "

@@ -234,29 +234,40 @@ directory: `$PEEKY_STATE_DIR`, else `~/.peeky`.
   there, `current`, names the version in use. Setup switches it in one step, once the new version
   is complete.
 - A session uses the version `current` named when it started, to its end.
-- Setup keeps the version before the new one, for sessions still using it. It removes older ones.
 - One setup runs at a time. Another waits for it, for up to 10 minutes.
 - Run it again after you upgrade Peeky. A version that is up to date is kept. `--force` builds a
   new one anyway.
+- Setup never removes a version, since a session may still use it. It says how many older ones
+  there are.
+- `peeky setup-java --prune` removes every version but the current one. A session still using a
+  removed version fails its next step with `PROVENANCE_CHANGED`. Start it again.
+- Setup removes what an interrupted setup left in staging, by itself.
 
 Peeky runs its own bundle only where no other user can change it. A bundle's `adapter.json`
 lists its files' hashes, so it vouches only for itself.
 
 - The state directory, `java-adapter` and the version must be directories you own, not links,
   with mode 0700. No directory above them may be writable by another user.
-- `current` must be a file of yours, with mode 0600, that names a version.
+- `current` must be a file of yours, with mode 0600 exactly, that names a version.
 - Otherwise Peeky refuses before anything runs: `UNSUPPORTED`, with
-  `Peeky's own Java adapter can't be used: …`. The message names the path, and what to do.
-- Setup makes the state directory and `java-adapter` mode 0700 itself.
+  `Peeky's own Java adapter can't be used: …`. The message names the path, and what to do. So
+  does a path that can't be opened or read.
+- Setup makes the state directory and `java-adapter` mode 0700 itself. It never changes `/` or
+  your home directory: with `PEEKY_STATE_DIR` set to one of those, Peeky refuses.
 
 A bundle records its recipe, and that recipe's fingerprint, in `adapter.json`. The recipe is
 the text of each patch, and the hashes of the launcher, the dependency lock and the notices. It
-is also the compiler flags, and java's and javac's paths and version texts.
+is also the compiler flags, and javac's version text.
 
-- Setup keeps a version only if its fingerprint is the one it would build now.
-- Peeky checks the same before it runs any bundle, one a config names too. A bundle from another
-  Peeky, or from a JDK that changed since, is refused before anything runs. That is
-  `UNSUPPORTED`, with `… is not what this Peeky's setup builds (…)` and the rebuild command.
+- Setup compiles with `--release 17`. So the bundle's classes run on JDK 17 or later. That is the
+  contract with the JDK that runs it. An older JVM refuses the classes itself: the debugger fails
+  to start, with `DEBUGGER_ERROR` and `Debugger adapter closed`.
+- Before it runs any bundle, one a config names too, Peeky checks the bundle's own content. That
+  is its files' hashes, and its recipe but for javac. It doesn't ask the JDK.
+- A bundle from another Peeky is refused before anything runs. That is `UNSUPPORTED`, with
+  `… is not what this Peeky's setup builds (…)` and the rebuild command.
+- Setup asks javac its version each time it runs. It keeps a version only if the whole recipe is
+  the one it would build now, javac's version included. Otherwise it builds a new one.
 - The patches are applied to java-debug before compiling, and listed in `adapter.json`, under
   `patches`. The upstream licence and notices are in the bundle's `notices`.
 - One patch, `eventhub-log-guard`, keeps java-debug's event thread alive. Without it, that thread

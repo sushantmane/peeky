@@ -77,6 +77,12 @@ def _state_base():
             "it aside, or set PEEKY_STATE_DIR to a directory of yours"
         )
     if info.st_mode & 0o077:
+        resolved = base.resolve()
+        if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+            raise ValueError(
+                f"Peeky's state directory, {base}, is open to other users, and Peeky doesn't "
+                "change / or your home directory: set PEEKY_STATE_DIR to a directory of its own"
+            )
         base.chmod(0o700)
     return base
 
@@ -4054,16 +4060,40 @@ def _job_text(spec, out):
     return text + "\n"
 
 
+PRUNED_NOTE = (
+    "A session still using a removed version fails its next step (PROVENANCE_CHANGED): start "
+    "it again."
+)
+
+
 def setup_java(args):
     """`peeky setup-java`: build the Java adapter bundle (peeky.java_setup). Without
     --output, install Peeky's own: kept while it is up to date, otherwise a new version,
-    switched to once it is complete."""
+    switched to once it is complete. --prune removes every version but the current one."""
     from peeky import java_setup
 
     def progress(message):
         if not args.quiet:
             print(message, file=sys.stderr, flush=True)
 
+    if args.prune:
+        if args.output is not None or args.force:
+            raise ValueError("--prune takes neither --output nor --force; run it on its own")
+        result = {**java_setup.prune(progress), "default": True}
+        if result["pruned"]:
+            result["warnings"] = [PRUNED_NOTE]
+
+        def pruned(result):
+            kept = f"Kept {result['bundle']}." if result["bundle"] else "No version is in use."
+            if not result["pruned"]:
+                return f"Nothing to remove. {kept}"
+            names = ", ".join(result["pruned"])
+            return (
+                f"Removed {len(result['pruned'])} older version(s): {names}. {kept}\n{PRUNED_NOTE}"
+            )
+
+        _emit(result, args.json, pruned)
+        return 0
     if args.output is None:
         result = {**java_setup.install(force=args.force, progress=progress), "default": True}
     elif args.force:
@@ -4088,10 +4118,16 @@ def setup_java(args):
 
     def text(result):
         adapter = result["adapter"]
+        older = (
+            f"\n{len(result['older'])} older version(s) kept, for sessions still using them: "
+            "`peeky setup-java --prune` removes them."
+            if result.get("older")
+            else ""
+        )
         if not result["built"]:
             return (
                 f"The Java adapter at {result['bundle']} is up to date: nothing to do "
-                "(--force rebuilds it)."
+                f"(--force rebuilds it).{older}"
             )
         use = (
             'Java configs without "bundle" use it.'
@@ -4101,7 +4137,7 @@ def setup_java(args):
         return (
             f"Built the Java adapter at {result['bundle']} in {adapter['setup_seconds']:.1f} s: "
             f"java-debug {adapter['source_commit'][:12]} with Peeky's patches "
-            f"({', '.join(sorted(adapter['patches']))}).\n{use}"
+            f"({', '.join(sorted(adapter['patches']))}).\n{use}{older}"
         )
 
     _emit(result, args.json, text)
@@ -4496,7 +4532,8 @@ def _main(argv, _job, _edits):
         "downloaded and checked against pinned SHA-256s, patched, and compiled with Peeky's "
         "launcher. Without --output it goes to $PEEKY_STATE_DIR/java-adapter "
         '(~/.peeky/java-adapter), which Java configs without "bundle" use. One there that is '
-        "up to date is kept; an older one is replaced once the new one is built.",
+        "up to date is kept; otherwise a new version is built and switched to. Older versions "
+        "stay, for sessions using them, until --prune.",
     )
     sub.add_argument(
         "--output",
@@ -4505,6 +4542,12 @@ def _main(argv, _job, _edits):
     )
     sub.add_argument(
         "--force", action="store_true", help="Rebuild Peeky's own bundle even if up to date"
+    )
+    sub.add_argument(
+        "--prune",
+        action="store_true",
+        help="Remove every version of Peeky's own bundle but the current one (a session "
+        "still using one fails its next step)",
     )
     sub.add_argument("--quiet", action="store_true", help="No progress message")
     common(sub, target=False)
