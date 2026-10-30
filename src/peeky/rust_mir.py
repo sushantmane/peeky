@@ -1,4 +1,4 @@
-"""Which owned Rust locals are initialized at a stop, from the compiler's own MIR (#53).
+"""Which owned Rust locals are initialized at a stop, from the compiler's own MIR.
 
 A dropped, moved or not-yet-assigned `Vec`/`String` local keeps a header that passes
 every sanity check while its pointer reaches freed or reused memory, so its contents
@@ -28,7 +28,7 @@ block of unknown origin, a stop in another file. Unsafe code that duplicates own
 
 A coroutine (an async body) is a body like any other once each local its state keeps
 across a suspension is renamed a local of its own, and each suspension flows into the
-block resuming it (#116). A function LLVM inlined everywhere (`#[inline(always)]`) has
+block resuming it. A function LLVM inlined everywhere (`#[inline(always)]`) has
 no IR of its own: its MIR body is found by the lines of its inlined copies, and every
 statement of the stop line is a place the stop can be.
 """
@@ -117,11 +117,11 @@ _STORAGE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_([0-9]+)\);$")
 _DROP = re.compile(r"^drop\([(*]*_([0-9]+)\b")
 # Terminators that branch on a value at run time: an instruction at the line's address.
 _BRANCHES = re.compile(r"^(?:assert\(!?(?:move|copy) |switchInt\((?:move|copy) )")
-# A borrow of a local's own storage: no `*` before the local in the place.
+# A string constant, blanked before a statement is matched (its text may look like a local).
 _STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 _DROP_PLACE = re.compile(r"^drop\((.+)\) -> ")
 # A place of a local's own, no deref in it: a field (`(_1.1: Box<Pt>)`, `((_1.0: S).2:
-# T)`) or an element (`_1[_5]`) of the local `_1` itself (#108).
+# T)`) or an element (`_1[_5]`) of the local `_1` itself.
 _DIRECT_PLACE = re.compile(r"^\(*_([0-9]+)[.\[]")
 # A constant stored in a local (`_20 = const false;`, a drop flag).
 _CONSTANT_STORE = re.compile(r"^_([0-9]+) = const [^;]*;$")
@@ -129,7 +129,7 @@ _CONSTANT_STORE = re.compile(r"^_([0-9]+) = const [^;]*;$")
 _CONSTANT_THROUGH = re.compile(r"^\(+\*[^=]* = const [^;]*;$")
 _STORE = re.compile(r"^(\(+\*_[0-9]+\).*?|\(\*_[0-9]+\)) = ")
 # A write through a pointer, and the local its place starts from: `_35` of `((*_35).1:
-# T) = …`, `_6` of `(*((*_6).0: &mut u32)) = …` (#311).
+# T) = …`, `_6` of `(*((*_6).0: &mut u32)) = …`.
 _STORE_BASE = re.compile(r"^\(+\*[(*]*_([0-9]+)\b")
 _BOX_TYPE = re.compile(r"^(?:(?:std|alloc)::boxed::)?Box<")
 # `copy_nonoverlapping(dst = move _5, src = move _6, count = const 1_usize);`: a store
@@ -137,9 +137,6 @@ _BOX_TYPE = re.compile(r"^(?:(?:std|alloc)::boxed::)?Box<")
 _COPY_NONOVERLAPPING = re.compile(
     r"^copy_nonoverlapping\(dst = (?:copy|move) _([0-9]+), src = (?:copy|move) _([0-9]+),"
 )
-# A raw pointer, which a callee may write through even where it reaches it only through a
-# shared `&` (#311 review round 4).
-_RAW_POINTER_SYNTAX = re.compile(r"\*mut |\*const ")
 # A reference in a type: `&`, `&mut `, `&'a `, `&'static mut ` (group 1 for `mut`).
 _REFERENCE = re.compile(r"&(?:'[\w?]+ )?(mut )?")
 # A reference or raw pointer itself (`&mut [u32]`, `*mut u32`, `NonNull<T>`).
@@ -159,7 +156,7 @@ _BOX_COPY = re.compile(
 _DROP_THROUGH = re.compile(r"^drop\(\(*\*\(*_([0-9]+)\b")
 # A call's arguments (`f(move _7, copy _8) -> [return: ...]`).
 _CALL_ARGUMENTS = re.compile(r"^(?:.*? = )?[^ (][^(]*?\((.*)\) -> ")
-# Types a shared reference can still change through (#164), and the words of a type
+# Types a shared reference can still change through, and the words of a type
 # name: a primitive, or a path in the standard library.
 _INTERIOR = re.compile(r"Cell<|Mutex<|RwLock<|Atomic|Once|Lazy|UnsafeCell<|Rc<|Arc<")
 _TYPE_WORDS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
@@ -172,8 +169,8 @@ _STD_PATHS = ("std::", "core::", "alloc::")
 # The roots of those paths (``OwnedLocals._std_crates``: which the crate gives nothing of
 # its own).
 _STD_CRATES = frozenset({"std", "core", "alloc"})
-# Standard-library types that hold no pointer but what their type arguments hold
-# (#164): with such arguments only, a value of them holds no borrow.
+# Standard-library types that hold no pointer but what their type arguments hold:
+# with such arguments only, a value of them holds no borrow.
 _FREE_PATHS = frozenset(
     f"{crate}::{path}"
     for crate, paths in (
@@ -196,7 +193,7 @@ _FREE_PATHS = frozenset(
 )
 
 
-# Standard views whose drop does nothing with what they borrow (#164); `Drain`,
+# Standard views whose drop does nothing with what they borrow; `Drain`,
 # `Splice`, `PeekMut` and guards are not among them.
 _QUIET_PATHS = frozenset(
     f"{crate}::{path}"
@@ -215,7 +212,7 @@ _QUIET_PATHS = frozenset(
 
 def _pointer_free(kind, generics, free_types=frozenset()):
     """Whether a value of ``kind`` (a type as the MIR prints it) provably holds no
-    pointer, so no borrow (#164): primitives, `String`, and arrays, tuples and the
+    pointer, so no borrow: primitives, `String`, and arrays, tuples and the
     standard containers of these, and the crate's own types ``free_types`` names (whose
     fields the debug information shows hold none, see rust.RustSession._free_types). Not
     a reference, a raw pointer, a lifetime, a trait object (`dyn Fn()`: the MIR prints no
@@ -233,7 +230,7 @@ def _pointer_free(kind, generics, free_types=frozenset()):
 
 
 # The standard library's views and guards that write through a `&mut` their types don't
-# show (#311 review rounds 2 and 3), by the last segment of their path: an `Entry`, the
+# show, by the last segment of their path: an `Entry`, the
 # `IterMut` family, `RefMut`, `Drain`, `ChunksMut` and the like. A view not listed only
 # reads (`ChunksExact`, `btree_map::Iter`, `path::Components`), unless what it was made
 # from shows a writable pointer (``Body._may_write_through``).
@@ -247,42 +244,13 @@ _MUTABLE_VIEWS = frozenset(
 
 def _shared_reference(kind):
     """Whether ``kind`` is a shared reference (`&Hold<'_>`, `&&mut Vec<u32>`), through
-    which safe code writes only into a cell or through a raw pointer (#311 review round
-    4)."""
+    which safe code writes only into a cell or through a raw pointer."""
     found = kind is not None and _REFERENCE.match(kind)
     return bool(found) and not found[1]
 
 
-def _unshared(kind):
-    """``kind`` without what each shared reference in it refers to (#311 review round 4):
-    `&Hold<'_>` is `&`, `(&&mut Vec<u32>, &mut u32)` is `(&, &mut u32)`. A callee writes
-    through no `&mut` or mutable view it reaches only through a `&`."""
-    out, at = [], 0
-    while at < len(kind):
-        found = _REFERENCE.match(kind, at) if kind[at] == "&" else None
-        if not found or found[1]:
-            end = found.end() if found else at + 1
-            out.append(kind[at:end])
-            at = end
-            continue
-        out.append("&")
-        depth, at = 0, found.end()
-        while at < len(kind):
-            if kind.startswith("->", at):
-                at += 2
-                continue
-            if kind[at] in "<([{":
-                depth += 1
-            elif kind[at] in ">)]}" or (kind[at] in ",;" and not depth):
-                if not depth:
-                    break
-                depth -= 1
-            at += 1
-    return "".join(out)
-
-
 # What each standard type holds of the program's values, and how a callee given it may
-# change them (#321), by the module its path names after the root and its last segment.
+# change them, by the module its path names after the root and its last segment.
 # Both the dump's paths (`std::sync::mpsc::Sender`, `std::sync::atomic::Atomic`) and the
 # debug information's (`std::sync::poison::mutex::Mutex`, `core::cell::once::OnceCell`)
 # name the module second. The classes:
@@ -374,9 +342,9 @@ _ATOMIC_VALUES = {
     "AtomicIsize": "isize",
     "AtomicUsize": "usize",
 }
-# The cells that keep nothing but their value (#321 review round 2): of a value with a
+# The cells that keep nothing but their value: of a value with a
 # single state (`()`, `PhantomData<T>`), none. A `RefCell` keeps its borrow flag (a
-# `RefMut` leaked by `mem::forget`, round 3), a lock may be poisoned, a `OnceCell` set.
+# `RefMut` leaked by `mem::forget`), a lock may be poisoned, a `OnceCell` set.
 _PLAIN_CELLS = frozenset("Cell UnsafeCell SyncUnsafeCell".split())
 # The module of each standard short name of ``_STD_BARE`` (`Cell` is `cell::Cell`), for
 # ``_Judge.canon``.
@@ -412,10 +380,6 @@ _STD_BARE_MODULES = {
     "RangeInclusive": "ops",
     "Global": "alloc",
 }
-# The standard types whose module and last segment (``_std_key``) name them alone, which a
-# canonical tree (``_key``) names so: those classed (``_STD_NAMED``), the short names rustc
-# prints for a unique last segment (``_STD_BARE``), and the atomics. Another (`Iter` of
-# `collections`, which `hash_map` and `btree_map` each give) is named by no key.
 # The standard types that hold their type arguments' values by value (`Vec<u32>` a `u32`,
 # not `slice::Iter<'_, u32>`), for ``_Judge.components``.
 _STD_OWNING = frozenset(
@@ -426,6 +390,10 @@ _STD_OWNING = frozenset(
     "sync::ReentrantLock sync::Atomic mem::ManuallyDrop cmp::Reverse num::Wrapping "
     "num::Saturating pin::Pin".split()
 )
+# The standard types whose module and last segment (``_std_key``) name them alone, which a
+# canonical tree (``_key``) names so: those classed (``_STD_NAMED``), the short names rustc
+# prints for a unique last segment (``_STD_BARE``), and the atomics. Another (`Iter` of
+# `collections`, which `hash_map` and `btree_map` each give) is named by no key.
 _STD_KEYS = frozenset(
     {f"{module}::{last}" for module, named in _STD_NAMED.items() for last in named}
     | {f"{_STD_BARE_MODULES[name]}::{name}" for name in _STD_BARE if name in _STD_BARE_MODULES}
@@ -452,7 +420,7 @@ _FIELD_MOVE = re.compile(r"(?:move|copy) (\(+_([0-9]+)\.[^*]*\))")
 # of a type's name and the debug information doesn't.
 _DROPPED_DEFAULTS = frozenset({"alloc::Global", "hash::RandomState"})
 _UNKNOWN = ("unknown",)
-# The crate's global state a place may store a copy in (#329): a `static` with interior
+# The crate's global state a place may store a copy in: a `static` with interior
 # mutability, a `static mut`, a `thread_local!`. Each place that may store one has a
 # pseudo-local of its own in the copy flow, numbered from here, past any local of a body.
 _GLOBAL_BASE = 1 << 20
@@ -471,11 +439,11 @@ _GLOBAL_VALUE = re.compile(
     r"|^&(?:raw (?:const|mut) |mut )?/\*tls\*/ "
 )
 _CLOSURE_TYPE = re.compile(r"\{closure@[^{}]*\}")
-# The standard library's calls that keep what they are given past the call (#340 review 2): a
+# The standard library's calls that keep what they are given past the call: a
 # thread runs a moved closure after it, and a channel hands a sent value to its receiving end.
 # By path, without generic arguments; rustc may leave out a unique name's module
 # (`spawn::<…>`, `Builder::spawn`), so the path may end any of these. Not `mem::forget` or
-# `Box::leak` (review 3): what they are given is reached afterwards only through what the
+# `Box::leak`: what they are given is reached afterwards only through what the
 # leak returns, which the copy and return analyses follow.
 _KEEPING_CALLS = (
     "thread::spawn",
@@ -487,7 +455,7 @@ _KEEPING_CALLS = (
 
 
 def _keeping_call(path, trusted=_STD_CRATES, shadows=None):
-    """Whether the call path ``path`` is proven one of ``_KEEPING_CALLS`` (#340 review 3):
+    """Whether the call path ``path`` is proven one of ``_KEEPING_CALLS``:
     under a root of the standard library's ``trusted`` proves (`std::thread::spawn`), or
     without its module, where the crate defines nothing of its first name (``shadows``: the
     names of its functions and types; `spawn::<…>`, `Builder::spawn`). A function of the
@@ -511,7 +479,7 @@ def _keeping_call(path, trusted=_STD_CRATES, shadows=None):
 _FN_ITEM = re.compile(
     r"(?:for<[^<>]*>\s*)?(?:unsafe\s+)?(?:extern\s+\"[^\"]*\"\s+)?fn\([^{}]*?\)(?:\s*->\s*[^{}]*?)?\s*\{([^{}]+)\}"
 )
-# The standard library's types that hold code of a type they don't name (#329): a formatted
+# The standard library's types that hold code of a type they don't name: a formatted
 # value's `fmt` (`Arguments`, `Argument`) and a `Formatter`'s writer, which run only an `impl`
 # of a formatting trait (``_FORMAT_TRAITS``); a `Waker`'s wake and an `io::Error`'s custom
 # error, which run only a trait's `impl`.
@@ -628,7 +596,7 @@ def _std_tree(key, arguments):
 
 def _cyclic(nodes, start):
     """Whether the graph ``nodes`` ({node: its successors, or None for an end}) has a
-    cycle reachable from ``start``: a loop the program may never leave (#330 review 2)."""
+    cycle reachable from ``start``: a loop the program may never leave."""
     colour, stack = {start: 1}, [(start, iter(nodes.get(start) or ()))]
     while stack:
         node, following = stack[-1]
@@ -647,9 +615,9 @@ def _cyclic(nodes, start):
 
 def _closed_loop(graph, members):
     """Whether some cycle of ``graph`` ({node: its successors}) lies among ``members``, with
-    no edge out of it: a loop the program, once in it, never leaves but by a panic (#330
-    review 4), where ``graph`` leaves out the edges a panic takes, and the places std's
-    panic ends (review 5). Tarjan's strongly connected components, without recursion."""
+    no edge out of it: a loop the program, once in it, never leaves but by a panic,
+    where ``graph`` leaves out the edges a panic takes, and the places std's
+    panic ends. Tarjan's strongly connected components, without recursion."""
     order, low, on, stack = {}, {}, set(), []
     for root in members:
         if root in order:
@@ -885,7 +853,7 @@ def _substituted(node, formals, given):
     """``node`` (a type tree of a declared default) with each of ``formals`` (a type's
     parameters, in order) it names replaced by the argument of ``given`` at its position
     (`T` of `U = Vec<T>`); None where it names one ``given`` has no tree for, or a type it
-    can't name (`T::Item`, `<T as Tr>::Out`) (#321 review round 2)."""
+    can't name (`T::Item`, `<T as Tr>::Out`)."""
     kind = node[0]
     if kind == "path":
         if node[1] in formals:
@@ -970,7 +938,7 @@ def merge_layout(found, name, entry):
 
 @dataclass
 class TypeLayouts:
-    """What the program's own types hold (#321), for ``_may_write``:
+    """What the program's own types hold, for ``_may_write``:
 
     - ``crate``: {a type's path from the crate's root (`Counter`, `m::Inner`, `Gen`), another
       crate's type's path (`mylib::Pool`), and each last segment after `::` (`::Inner`), for a
@@ -1043,7 +1011,7 @@ _ALL_KNOWN = TypeLayouts()
 
 class GlobalState(NamedTuple):
     """What each function of the crate may touch of its global state with interior
-    mutability, itself or through what it calls, however deep (#329: ``global_state``):
+    mutability, itself or through what it calls, however deep (``global_state``):
     each a set of the globals' types, as the MIR prints their address (`&std::sync::
     Mutex<u32>`, `&std::thread::LocalKey<std::cell::Cell<u32>>`, `*mut u32` of a `static
     mut`; ``_ANY_GLOBAL`` for one not known). Empty for a function that touches none.
@@ -1070,8 +1038,8 @@ class GlobalState(NamedTuple):
       (``_may_write``);
     - ``formats``: what any function of an `impl` of a formatting trait (``_FORMAT_TRAITS``),
       or of a trait not known, may touch: all that formatting runs;
-    - ``returns``: the same tables of what each function's return may point into (#340
-      review: ``Body.returned_globals``), for ``returned``; None in that view itself."""
+    - ``returns``: the same tables of what each function's return may point into
+      (``Body.returned_globals``), for ``returned``; None in that view itself."""
 
     names: dict
     closures: dict
@@ -1112,15 +1080,15 @@ class GlobalState(NamedTuple):
         return frozenset(found)
 
     def returned(self, name, kinds, path=""):
-        """What a pointer such a call returns may point into, of the crate's global state
-        (#340 review): what the function it names may return (``Body.returned_globals``),
+        """What a pointer such a call returns may point into, of the crate's global state:
+        what the function it names may return (``Body.returned_globals``),
         or code of the crate's what it is given carries; the standard library's own returns
         point only into what it is given, which ``Body._made_from`` follows."""
         return frozenset() if self.returns is None else self.returns.call(name, kinds, path)
 
     def resolve(self, path):
-        """The keys of ``paths`` the call path ``path`` (as the MIR prints it) may name (#340
-        review): its own, or each it ends (rustc leaves out a module where the name is
+        """The keys of ``paths`` the call path ``path`` (as the MIR prints it) may name:
+        its own, or each it ends (rustc leaves out a module where the name is
         unique: `helper` of `util::helper`); else a method's (`Wrap::keep`) by its type and
         name. None where the path doesn't tell (`<Wrap as Tr>::keep`, a method whose `impl`
         Peeky can't read, a function it can't read): then ``names`` does."""
@@ -1145,7 +1113,7 @@ class GlobalState(NamedTuple):
 
     def named(self, name, path):
         """What a call of the function ``name`` by the path ``path`` may touch, of the
-        crate's functions (#340 review: ``resolve``). Where the path doesn't tell, every
+        crate's functions (``resolve``). Where the path doesn't tell, every
         function so named may be it: where more than one is, and one may touch global state,
         which global it is can't be told (``_ANY_GLOBAL``)."""
         keys = self.resolve(path)
@@ -1236,7 +1204,7 @@ def _impl_header(block, texts):
     """The text the span of the `impl` block ``block`` (`<impl at src/main.rs:12:1: 12:10>`,
     a segment of a function's path) covers in the crate's sources ``texts`` ({file: text}):
     its header (`impl Wrap`, `impl fmt::Display for Wrap`), or a `derive`'s path for a
-    derived one (`Debug`). None where it can't be read (#329)."""
+    derived one (`Debug`). None where it can't be read."""
     found = re.fullmatch(r"<impl at ([^:<>]+):([0-9]+):([0-9]+): ([0-9]+):([0-9]+)>", block)
     text = texts.get(found[1]) if found else None
     if text is None:
@@ -1249,22 +1217,9 @@ def _impl_header(block, texts):
     return header[start - 1 : len(header) - len(lines[last - 1]) + end - 1]
 
 
-def _inherent(block, texts):
-    """Whether the `impl` block ``block`` (`<impl at src/main.rs:12:1: 12:10>`, a segment of a
-    function's path) is an inherent one (`impl Wrap`), whose functions the standard library
-    can't call: its header, from the crate's sources ``texts`` ({file: text}), names no trait
-    (`for`). A derived impl's span is its `derive`'s, never an `impl` (#329)."""
-    header = _impl_header(block, texts)
-    return (
-        header is not None
-        and bool(re.match(r"\s*(?:unsafe\s+)?impl\b", header))
-        and not re.search(r"\bfor\b", header)
-    )
-
-
 def _impl_trait(block, texts):
     """(the path of the trait the `impl` block ``block`` implements, as its header names it,
-    without its arguments; whether a `derive` made it) (#329): (`fmt::Display`, False) of
+    without its arguments; whether a `derive` made it): (`fmt::Display`, False) of
     `impl<T> fmt::Display for Wrap<T>`, (`Debug`, True) of `#[derive(Debug)]`, ("", False) of
     an inherent `impl Wrap`. None where its header can't be read (``_impl_header``)."""
     header = _impl_header(block, texts)
@@ -1303,7 +1258,7 @@ def _impl_trait(block, texts):
 
 
 def _impl_self(block, texts):
-    """The last segment of the type the `impl` block ``block`` is for (#340 review): `Wrap`
+    """The last segment of the type the `impl` block ``block`` is for: `Wrap`
     of `impl<T> Wrap<T>` or of `impl fmt::Display for m::Wrap`. None where its header can't
     be read, or names no plain path (`impl dyn Tr`, a derive's span)."""
     header = _impl_header(block, texts)
@@ -1342,7 +1297,7 @@ def _impl_self(block, texts):
 def _crate_traits(texts):
     """(the names of the traits the crate's sources ``texts`` ({file: text}) define, the
     names each `use` of a path outside the crate mentions, whether such a `use` is a glob)
-    (#329, ``_own_trait``)."""
+    (``_own_trait``)."""
     defined, foreign, glob = set(), set(), False
     for text in texts.values():
         defined |= set(re.findall(r"\btrait\s+([A-Za-z_]\w*)", text))
@@ -1357,7 +1312,7 @@ def _crate_traits(texts):
 def _own_trait(found, traits):
     """Whether the trait ``found`` (``_impl_trait``) is surely one the crate defines, which
     neither the standard library nor a dependency can name, so only the crate's own code
-    calls its `impl`s, by their names (#329). ``traits``: ``_crate_traits``. Its name must be
+    calls its `impl`s, by their names. ``traits``: ``_crate_traits``. Its name must be
     one the crate defines, no `use` of a path outside the crate names, nor the standard
     library's prelude gives (``_PRELUDE_TRAITS``); a path must start at the crate (`crate::`,
     `self::`, `super::`), and a bare name needs no glob `use` of such a path. Never a derived
@@ -1375,7 +1330,7 @@ def _own_trait(found, traits):
 
 
 def _path_types(path):
-    """The types a call's path names besides its function (#329): a qualified path's self
+    """The types a call's path names besides its function: a qualified path's self
     type and its trait's arguments (`u32` and `Wrap` of `<u32 as Into<Wrap>>::into`), and each
     segment's generic arguments (`fn(u32) {direct_set}` of `Iterator::for_each::<fn(u32)
     {direct_set}>`). Lifetimes are left out."""
@@ -1402,7 +1357,7 @@ def _path_types(path):
 
 def _std_callee(path, trusted, layouts):
     """Whether the call path ``path`` (as the MIR prints it) names a function of the
-    standard library's itself, not one of the crate's (#329): under a root ``trusted`` proves
+    standard library's itself, not one of the crate's: under a root ``trusted`` proves
     the standard library's (`std::hint::black_box::<&u32>`), or a method of a primitive or of
     a standard type by a short name the crate gives nothing of its own (`Cell::<u32>::set`,
     `u32::pow`; ``TypeLayouts.bare``), which no crate can add a method to. Not a bare name
@@ -1419,10 +1374,11 @@ def _std_callee(path, trusted, layouts):
 
 
 def global_state(bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=None):
-    """``GlobalState`` of the crate whose MIR bodies are ``bodies`` (#329), or None where
+    """``GlobalState`` of the crate whose MIR bodies are ``bodies``, or None where
     none of them names global state with interior mutability: then no call touches any.
     ``defined``: the path of every function the dump holds (``load_bodies``); ``texts``:
-    the crate's sources ({file: text}), which tell an inherent `impl` block (``_inherent``).
+    the crate's sources ({file: text}), which tell an `impl` block's type and trait
+    (``_impl_self``, ``_impl_trait``).
 
     A function touches what it names (``Body.global_roots``), and what each call and drop
     in it may (``Body.global_touch``), found again until nothing grows. A call reaches a
@@ -1437,7 +1393,7 @@ def global_state(bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=No
     unknown_paths = frozenset(_plain_path(path) for path in defined if path not in read)
     unknown = frozenset((_segments(path) or [""])[-1] for path in unknown_paths)
     touched = [frozenset(found.values()) for found in roots]
-    # #340 review: each function by its path; a method by its module's, its type's and its
+    # Each function by its path; a method by its module's, its type's and its
     # own (`clean::Wrap::keep`), and by its type's and its own (`Wrap::keep`).
     keys, shorts, unkeyed, counts = [], [], set(), {}
     for body in bodies:
@@ -1546,8 +1502,7 @@ def _in_state(flags, shared, handle):
 
 class _Judge:
     """What a value of a type (a ``_parse_type`` tree) holds, with the standard library's
-    paths under the roots of ``trusted`` and the crate's types and closures by ``layouts``
-    (#321)."""
+    paths under the roots of ``trusted`` and the crate's types and closures by ``layouts``."""
 
     def __init__(self, trusted, layouts):
         self.trusted, self.layouts = trusted, layouts
@@ -1612,8 +1567,8 @@ class _Judge:
         return _UNKNOWN
 
     def single(self, node):
-        """Whether a value of ``node`` has a single state, so nothing to keep (#321 review
-        rounds 2 and 3): `()`, `PhantomData<T>`, an empty array, a plain cell of such
+        """Whether a value of ``node`` has a single state, so nothing to keep:
+        `()`, `PhantomData<T>`, an empty array, a plain cell of such
         (`Cell<Cell<()>>`), a crate's struct of such only, or its enum of one such variant."""
         kind = node[0]
         if kind == "tuple":
@@ -1868,7 +1823,7 @@ def _type_flags(kind, trusted, layouts, generics=()):
 
 def _may_write(kind, generics, shared=False, trusted=_STD_CRATES, layouts=None):
     """Whether a callee given a value of the MIR type ``kind`` may store a value through
-    what it holds (#311 review; #321: from its whole layout), with the standard library's
+    what it holds (from its whole layout), with the standard library's
     paths proven under the roots of ``trusted`` (``Body.std_paths``) and the crate's own
     types and closures by ``layouts`` (``TypeLayouts``; every one of them may, without):
 
@@ -1877,13 +1832,13 @@ def _may_write(kind, generics, shared=False, trusted=_STD_CRATES, layouts=None):
       type or closure holding one (`Counter { c: Cell<u32> }`, a `Sender` keeping its
       channel in cells its type doesn't show), a trait object, a type parameter, or a type
       not known;
-    - unless ``shared`` (the value is itself reached only through a `&`, round 4): a `&mut`,
+    - unless ``shared`` (the value is itself reached only through a `&`): a `&mut`,
       one of the standard library's mutable views (``_MUTABLE_VIEWS``), or a crate type or
       closure holding one, that it does not reach only through a shared `&` (`(&mut
       Vec<u32>, u32)`, not `&&mut Vec<u32>` or `&Hold<'_>` with `Hold { p: &mut v }`).
 
-    Not any other type: `slice::ChunksExact<'_, u32>` only reads (round 3), neither a
-    crate's `NotCell<'_>` nor its `Atomicity<'_>` is a cell or an atomic (round 5), and a
+    Not any other type: `slice::ChunksExact<'_, u32>` only reads, neither a
+    crate's `NotCell<'_>` nor its `Atomicity<'_>` is a cell or an atomic, and a
     function type, `PhantomData<Cell<u32>>`, `[Cell<u32>; 0]`, `Cell<()>` or a struct holding
     only such stores nothing."""
     judged = _judged(kind, generics, trusted, layouts)
@@ -1896,7 +1851,7 @@ def _may_write(kind, generics, shared=False, trusted=_STD_CRATES, layouts=None):
 
 def _may_share(kind, generics, trusted=_STD_CRATES, layouts=None):
     """Whether a value of the MIR type ``kind`` may reach what another value reaches, and
-    see what a callee stores there through that other one (#321): a channel's end, a raw
+    see what a callee stores there through that other one: a channel's end, a raw
     pointer, a reference, `Rc`, `Arc`, `Weak` or `LocalKey` to what may be written through a
     `&`, a crate type or closure holding one, or a type not known. Not a cell held by value:
     `let d = c;` before a callee changes `c` holds what `c` held then."""
@@ -1905,7 +1860,7 @@ def _may_share(kind, generics, trusted=_STD_CRATES, layouts=None):
 
 def _copy_level(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
     """What a callee given a `&` to a value of the MIR type ``kind`` may store in it of a
-    value of ``local_kind`` (#321 review rounds 1 to 3): "copy" only where what may be
+    value of ``local_kind``: "copy" only where what may be
     stored there (``_Judge.payloads``), or a value that holds by value (``_Judge.components``:
     `u32` of a `Cell<Vec<u32>>`), is of the very type ``local_kind`` is, whole; else
     "derived", which is always true: what is stored may be computed from it.
@@ -1925,7 +1880,7 @@ def _copy_level(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
 
 def _quiet_drop(kind, generics):
     """Whether dropping a value of ``kind`` provably runs no code that reads what it
-    borrows (#164): references and raw pointers (no drop at all), and the standard
+    borrows: references and raw pointers (no drop at all), and the standard
     containers and views of them (`Vec<&str>`, `Option<&str>`, `std::str::Chars<'_>`),
     whose drop frees only what they own. Not a type of the crate's (it may implement
     `Drop`), a trait object, a closure, an `impl` type, a type parameter, a standard
@@ -1940,10 +1895,10 @@ def _quiet_drop(kind, generics):
     )
 
 
-# What a call returns that may point rather than hold a value (#320): a reference or raw
+# What a call returns that may point rather than hold a value: a reference or raw
 # pointer, a type with a lifetime, a closure or coroutine, a trait object or `impl` type.
 _SHOWS_POINTER = re.compile(rf"{_BORROWING.pattern}|\b(?:dyn|impl)\b")
-# What the standard library's measures and comparisons return (#320): a count, a yes or
+# What the standard library's measures and comparisons return: a count, a yes or
 # no, an ordering; each with the word a local's type shows where it may hold one.
 _ANSWERS = {
     "bool": "bool",
@@ -1953,7 +1908,7 @@ _ANSWERS = {
     "std::option::Option<std::cmp::Ordering>": "Ordering",
     "core::option::Option<core::cmp::Ordering>": "Ordering",
 }
-# The standard library's methods that only measure what they are given (#320): inherent
+# The standard library's methods that only measure what they are given: inherent
 # methods of a standard type (`Vec::<u32>::len`), a slice or `str`
 # (`core::slice::<impl [u32]>::contains`); and its comparison traits' methods
 # (`<u32 as PartialEq>::eq`). `min`, `max` and `clamp` return one of the values.
@@ -1968,13 +1923,13 @@ _COMPARISON_METHOD = re.compile(
 )
 _SLICE_METHOD = re.compile(r"^(core|alloc|std)::(?:slice|str)::<impl (?:\[.+\]|str)>::(\w+)$")
 _INHERENT_METHOD = re.compile(r"^([A-Za-z_]\w*)(?:::<.+>)?::(\w+)$")
-# A proven standard `mem::take` or `mem::replace` (#320): what its first argument surely
+# A proven standard `mem::take` or `mem::replace`: what its first argument surely
 # points at holds the new value after it, and the call returns the old one.
 _STD_REPLACE = re.compile(
     r"^_[0-9]+ = (std|core)::mem::(?:take|replace)::<.+?>\((?:move|copy) _([0-9]+)[,)]"
 )
 # The standard library's views that hold nothing but pointers into what they were made
-# from (#320 review), by their path past `std::`, `core::` or `alloc::`: their type
+# from, by their path past `std::`, `core::` or `alloc::`: their type
 # arguments are what they point at. Not one holding a value it was given (`Split`'s
 # pattern, `Chunks`' size, an `Entry`'s key).
 _POINTER_VIEWS = frozenset(
@@ -1989,7 +1944,7 @@ _POINTER_VIEWS = frozenset(
 )
 _STD_GENERIC = re.compile(r"^(?:std|core|alloc)::((?:\w+::)*\w+)(?:<(.*)>)?$")
 # The standard library's iterator adapters that hold nothing but the iterators they wrap
-# and counters of their own (#320 review): `Rev<I>`, `Fuse<I>`, `Enumerate<I>`,
+# and counters of their own: `Rev<I>`, `Fuse<I>`, `Enumerate<I>`,
 # `Cycle<I>`, `Cloned<I>`, `Copied<I>`, `Zip<A, B>`, `Chain<A, B>`. Not `Skip`, `Take` or
 # `StepBy` (a count they were given), `Peekable` (an item it peeked), nor one holding a
 # closure (`Map`, `Filter`).
@@ -1998,7 +1953,7 @@ _TRANSPARENT = re.compile(
 )
 # The standard library's types a dump may name by their short name alone in a call's path
 # (`String::len`, `Vec::<u32>::len`, `Box::<T>::new`), which the crate may also give an
-# item of its own (#320 review: ``OwnedLocals._trusted_names``).
+# item of its own (``OwnedLocals._trusted_names``).
 _STD_TYPES = (
     "String",
     "Vec",
@@ -2013,18 +1968,18 @@ _STD_TYPES = (
     "Rc",
     "Arc",
 )
-# The standard library's calls that return only what they are given (#320 review), by
-# (the short name of the type, the method) and the types they return: whatever they
-# hold, what they were given held.
 # The standard library's iterator adapters (`<I as Iterator>::rev(move _7)`), which return
-# a value holding only what they were given: the iterator, a count, a closure (#320
-# review, ``Body._only_wraps``). Not `peekable` (it keeps an item it peeked, a `char` of
+# a value holding only what they were given: the iterator, a count, a closure
+# (``Body._only_wraps``). Not `peekable` (it keeps an item it peeked, a `char` of
 # the text for `Chars`), nor `flat_map` or `flatten` (they keep iterators made of items).
 _ADAPTER_CALL = re.compile(
     r"<.+ as (?:(?:std|core)::iter::)?Iterator>::(?:rev|skip|take|step_by|enumerate|fuse"
     r"|cycle|cloned|copied|zip|chain|map|filter|filter_map|take_while|skip_while|map_while"
     r"|inspect|by_ref)"
 )
+# The standard library's calls that return only what they are given, by
+# (the short name of the type, the method) and the types they return: whatever they
+# hold, what they were given held.
 _WRAPPERS = {
     ("Box", "new"): ("std::boxed::Box<", "alloc::boxed::Box<"),
     ("Box", "pin"): ("std::pin::Pin<std::boxed::Box<", "core::pin::Pin<alloc::boxed::Box<"),
@@ -2050,7 +2005,7 @@ def _top_level_items(text):
 
 def _pointer_only(kind, generics, trusted=frozenset()):
     """Whether a value of the MIR type ``kind`` holds nothing but pointers, so no copy of a
-    value (#320 review): a reference, a raw pointer, `()`, a tuple or array of these; and
+    value: a reference, a raw pointer, `()`, a tuple or array of these; and
     under a path root of ``trusted`` (``Body.std_paths``: roots proven the standard
     library's, not a crate's `mod alloc`), `NonNull`, an `Option` of these, one of the
     standard library's views of ``_POINTER_VIEWS``, or an iterator adapter that holds only
@@ -2082,8 +2037,8 @@ def _pointer_only(kind, generics, trusted=frozenset()):
 
 def _call_parts(value):
     """(the path, the arguments' text) of the call ``value`` (`<u32 as PartialEq>::eq(move
-    _5, move _6) -> […]`), or None where it can't be told apart (#320). Not ``_callee``,
-    which gives only the last segment of a call statement's path (#324)."""
+    _5, move _6) -> […]`), or None where it can't be told apart. Not ``_callee``,
+    which gives only the last segment of a call statement's path."""
     depth = 0
     for at, char in enumerate(value):
         if char == "<":
@@ -2126,10 +2081,10 @@ def _plain_path(path):
 
 def _standard_only(kind, generics, trusted=_STD_CRATES):
     """Whether every type the MIR type ``kind`` names is a primitive or the standard
-    library's (#320): no type of the crate's own, type parameter, closure or trait
+    library's: no type of the crate's own, type parameter, closure or trait
     object, so a method of the standard library's traits for it is the standard
-    library's own. A path counts only under a root of ``trusted`` (``Body.std_paths``,
-    #320 review round 3: `std::string::String` where the crate has no `mod std`)."""
+    library's own. A path counts only under a root of ``trusted`` (``Body.std_paths``:
+    `std::string::String` where the crate has no `mod std`)."""
     if kind is None or generics is None or mentions(kind, generics):
         return False
     if re.search(r"[{}]|\b(?:dyn|impl|fn)\b", kind):
@@ -2142,7 +2097,7 @@ def _standard_only(kind, generics, trusted=_STD_CRATES):
 
 def _may_hold_type(kind, generics, word, trusted=_STD_CRATES):
     """Whether a value of the MIR type ``kind`` may hold a value of the type ``word``
-    (`bool`, `usize`, `Ordering`) among its parts (#320): it names that type, or a type
+    (`bool`, `usize`, `Ordering`) among its parts: it names that type, or a type
     of the crate's own, a type parameter, a closure, a trait object, or it is not known.
     A standard type counts by its type arguments only: a `String` holds no `usize`, a
     `Vec<usize>` may. Standard paths count under the roots of ``trusted`` only."""
@@ -2173,7 +2128,7 @@ _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
 _FORMAT_CALL = re.compile(r"(?:(?:core|std)::fmt::(?:rt::)?)?Arguments?::<'_>::new\w*\b")
 _FORMAT_TYPE = re.compile(r"(?:core|std)::fmt::(?:rt::)?Arguments?<'_>")
 # A call that formats the `fmt::Arguments` it is given, as std's own `print!`,
-# `println!`, `eprint!`, `eprintln!` and `format!` write it (#192 review 3), by its full
+# `println!`, `eprint!`, `eprintln!` and `format!` write it, by its full
 # path; MIR names `alloc::fmt::format` `format` alone where no other item is so named
 # (``Body._format_reads`` takes that only where none of the crate's own functions is).
 _FORMAT_SINK = re.compile(
@@ -2193,24 +2148,24 @@ _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _UNWIND_EDGE = re.compile(r"\bunwind: bb([0-9]+)\b")
 _UNWIND_LEAVES = re.compile(r"\bunwind (?:continue|terminate)\b")
 # A call to one of the standard library's panic entry points the macros call, under a
-# root ``Body.std_paths`` proves std's (#330 review 3): `panic!`'s `std::rt::panic_fmt`,
+# root ``Body.std_paths`` proves std's: `panic!`'s `std::rt::panic_fmt`,
 # `assert!`'s `core::panicking::panic`, `assert_eq!`'s `assert_failed`. Each is a name
 # std has twice, or in `core::panicking`, which the MIR always prints with its path.
-# Review 4: not `panic_any` or `resume_unwind`, printed bare unless the crate has an
+# Not `panic_any` or `resume_unwind`, printed bare unless the crate has an
 # item so named: each is a call that never returns, in either spelling. Only these count;
 # any other call that never returns is an exit, which only refuses more. Std's other
 # helpers (`expect_failed`, `panic_bounds_check`, the slice and `str` `*_fail` ones) run
 # inside calls that return (`expect`, `index`), or a check's `assert`, and never appear
-# in a crate's own MIR (review 5, rustc 1.96.0).
+# in a crate's own MIR (rustc 1.96.0).
 _PANIC_CALL = re.compile(
     r"^_[0-9]+ = (std|core)::(?:rt::(?:panic_fmt|panic_display|begin_panic)|panicking::(?:"
     r"panic|panic_fmt|panic_display|panic_str_2015|panic_explicit|assert_failed|"
     r"unreachable_display)|(?:option|result)::unwrap_failed)(?:::<[^()]*>)?\("
 )
-# Standard types whose drop drops nothing they hold (#330 review 2), by ``_std_key``.
+# Standard types whose drop drops nothing they hold, by ``_std_key``.
 _UNDROPPED = frozenset({"mem::ManuallyDrop", "mem::MaybeUninit", "marker::PhantomData"})
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
-# The function's normal return, where every local of its frame ends (#330).
+# The function's normal return, where every local of its frame ends.
 _RETURN = re.compile(r"^return;$")
 _NO_CODE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_[0-9]+\);$|^nop;$")
 _UNSUPPORTED = re.compile(r"^(?:yield|coroutine_drop|falseEdge|falseUnwind|tailcall|asm!)\b")
@@ -2227,11 +2182,11 @@ class Block:
     successors: tuple = ()
     returns: int | None = None  # a call's return edge, the only edge that sets its result
     # The cleanup block a terminator unwinds to where it also has an edge on: taken only
-    # when a call, a drop or a check panics (#330 review). A call that never returns
+    # when a call, a drop or a check panics. A call that never returns
     # (`panic!`, `process::exit`) has no other edge, so its unwind edge is its own path.
     unwinds: frozenset = frozenset()
     # Whether a panic in its terminator leaves the frame with no cleanup block of its own
-    # (`unwind continue`, `unwind terminate(…)`), where it may panic (#330 review 2).
+    # (`unwind continue`, `unwind terminate(…)`), where it may panic.
     leaves: bool = False
 
 
@@ -2260,7 +2215,7 @@ class Body:
     # {(file, line): the scopes of the statements with a span on that line}
     line_scopes: dict = field(default_factory=dict)
     inlined_scopes: set = field(default_factory=set)
-    # A coroutine's (#116): the local pointing at its state (`_34 = copy (_1.0: &mut
+    # A coroutine's: the local pointing at its state (`_34 = copy (_1.0: &mut
     # {async fn body of f()})`; -1 if not found), the locals standing for what its state
     # saves across a suspension (`(((*_34) as variant#3).0: &Pt)`), and {suspending
     # block: the block resuming it}, which the dispatch at bb0 jumps to on a later poll.
@@ -2269,7 +2224,7 @@ class Body:
     # is matched to it): a type named like a primitive (`i8`) may be one of them. None
     # until then (a twin a macro generates): any may be.
     generics: tuple | None = None
-    # Set when an IR function is matched to it (#320 and its review), each proof by the
+    # Set when an IR function is matched to it, each proof by the
     # root it uses: which of the dump's `std::`, `core::` and `alloc::` path roots are the
     # standard library's (OwnedLocals._std_crates); whether its bare `PartialEq`,
     # `PartialOrd` and `Ord` are the standard traits (OwnedLocals._std_traits), and its
@@ -2280,28 +2235,28 @@ class Body:
     std_traits: bool = False
     std_iterator: bool = False
     trusted_names: frozenset = frozenset()
-    # What the crate's own types and closures hold (#321), set when matched
+    # What the crate's own types and closures hold, set when matched
     # (OwnedLocals._layouts); until then, the closures this body builds, and no type of the
     # crate's known (``_layouts``).
     layouts: TypeLayouts | None = None
     _own_layouts: TypeLayouts | None = None
     # The crate's types with a `Drop` impl of their own, by their last path segment: {it:
-    # the body of its `drop`, or None where several types are so named} (#330 review:
-    # ``OwnedLocals._droppers``), and ``_format_reads``'s sinks for those bodies; set when
+    # the body of its `drop`, or None where several types are so named}
+    # (``OwnedLocals._droppers``), and ``_format_reads``'s sinks for those bodies; set when
     # matched. None until then: any drop may run any code.
     droppers: dict | None = None
     sinks: tuple = (frozenset(), frozenset())
-    # What the crate's functions may touch of its global state (#329: ``global_state``), set
+    # What the crate's functions may touch of its global state (``global_state``), set
     # when matched; None until then, or where the crate names none: no call touches any.
     globals: GlobalState | None = None
     # The names of the crate's functions that may keep what they are given past the call
-    # (#340 review 2: ``OwnedLocals._keepers``), set when matched; None until then: any of
+    # (``OwnedLocals._keepers``), set when matched; None until then: any of
     # them may. And the roots under which `ptr::eq` and `addr_eq` are proven the standard
     # library's (``OwnedLocals._std_compares``).
     keepers: frozenset | None = None
     compares: frozenset = frozenset()
     # The names of the crate's functions and types, which a path without its module may be
-    # (review 3: ``_keeping_call``); None until matched.
+    # (``_keeping_call``); None until matched.
     shadows: frozenset | None = None
     _address_cache: frozenset | None = None
     # {pseudo-local (``_GLOBAL_BASE`` on): (the place that may store a copy in global state,
@@ -2343,28 +2298,28 @@ class Body:
     _copies: dict | None = None
     _live: dict | None = None
     _copy_reads: tuple | None = None
-    # {(statement, local): ``_only_measures``}, and {pointer: ``_sure_pointee``} (#320).
+    # {(statement, local): ``_only_measures``}, and {pointer: ``_sure_pointee``}.
     _measure_cache: dict | None = None
     _pointee_cache: dict | None = None
-    # (the ``generics`` it was found for, {pointer: ``_stored_into``'s locals}) (#311).
+    # (the ``generics`` it was found for, {pointer: ``_stored_into``'s locals}).
     _stored_cache: tuple | None = None
     # {(local, formatting): {block: (holds, points) on entry}, or None past the budget}
-    # (#183: ``copies_at``).
+    # (``copies_at``).
     _copy_flows: dict | None = None
-    # {(local, projection): {block: (read, own) on entry}, or None} (#300:
-    # ``read_copies_at``), and the locals a writable borrow is taken of.
+    # {(local, projection): {block: (read, own) on entry}, or None}
+    # (``read_copies_at``), and the locals a writable borrow is taken of.
     _read_flows: dict | None = None
     _writable_borrows: frozenset | None = None
-    # {(local, projection): ``_exposed``} (#300).
+    # {(local, projection): ``_exposed``}.
     _exposed_cache: dict | None = None
-    # {local: ``_pointers_to``'s locals} (#192).
+    # {local: ``_pointers_to``'s locals}.
     _pointer_cache: dict | None = None
-    # ``_format_reads``'s calls and the borrows they format (#192 review 3).
+    # ``_format_reads``'s calls and the borrows they format.
     _format_cache: tuple | None = None
     _lent_from: dict | None = None
     _maybe: dict | None = None
     _moved_cache: set | None = None
-    # #156 review: each local's statements (``_mentions``), and the frozen owners of a
+    # Each local's statements (``_mentions``), and the frozen owners of a
     # reference (``_borrows_frozen``) and iterators only `next` borrows
     # (``_only_iterated``), each found once.
     _mention_index: dict | None = None
@@ -2440,7 +2395,7 @@ class Body:
 
     def scope_chain(self, scope):
         """The names of the variables each DWARF lexical block declares, sorted, from the
-        block of MIR ``scope`` (see ``lexical``) out to the function's own (#115)."""
+        block of MIR ``scope`` (see ``lexical``) out to the function's own."""
         self.lexical(0)
         if self._chains is None:
             self._chains = {}
@@ -2467,7 +2422,7 @@ class Body:
         return self._declared_names
 
     def chain_scopes(self, block, function=None):
-        """The MIR scopes whose bindings lldb-dap shows at a stop in ``block`` (#115): the
+        """The MIR scopes whose bindings lldb-dap shows at a stop in ``block``: the
         scopes with its chain of names and those enclosing them, where the function's
         debug info and IR (``function``) have as many blocks with that chain as the body
         has scopes; else None."""
@@ -2494,7 +2449,7 @@ class Body:
 
     def _in_block(self, found, block, line, function, breakpoint=False):
         """The places of ``found`` ({position: its statements, or None}) whose code is in
-        the lexical block the stop's pc is in (#115), or all of them where that block is
+        the lexical block the stop's pc is in, or all of them where that block is
         not told apart: every MIR scope a statement placed there is in must have as many
         DWARF blocks with its chain of names as the body has scopes with it, just one of
         them the stop's, and the IR (``function``) must have as many blocks with the
@@ -2549,7 +2504,7 @@ class Body:
 
     def _cut(self, function, line, chain):
         """The last place (``_address_order``) a line breakpoint's stop in the lexical
-        block with ``chain`` can be, or None if unknown (#115). LLDB stops at the line's
+        block with ``chain`` can be, or None if unknown. LLDB stops at the line's
         lowest address in the block. The IR's first instruction of the line there that
         surely leaves code (a call, a store of bytes, a branch on a value) is at or after
         it: opt-level 0 keeps the IR's order for addresses. Codegen emits the MIR blocks
@@ -2619,7 +2574,7 @@ class Body:
 
         ``within`` (a ``StopBlock``): the DWARF lexical block the stop's pc is in, which
         keeps only the places in its MIR scope, where it and the IR's ``function`` tell
-        that apart, and at a line breakpoint, only those up to ``_cut`` (#115)."""
+        that apart, and at a line breakpoint, only those up to ``_cut``."""
         found = self._placed(blocks, line, file, foreign, facts, shared, function)
         if found is None:
             return None
@@ -2637,7 +2592,7 @@ class Body:
     def stop_scope(self, blocks, line, file, foreign, within, shared=None, function=None):
         """The MIR scope of the DWARF lexical block a stop on ``line`` is in (``within``,
         a ``StopBlock``), where the line's places tell it apart and no code of the line
-        there goes unexplained (#115); else None. Its bindings and those of the scopes
+        there goes unexplained; else None. Its bindings and those of the scopes
         around it are the ones lldb-dap shows, where two scopes have the same names
         (two `for item in items` loops)."""
         found = self._placed(blocks, line, file, foreign, None, shared, function)
@@ -2656,14 +2611,14 @@ class Body:
         unless the IR's ``function`` places every instruction of the block holding it
         (``IrFunction.call_lines``) and none on this line: `format!`'s call on line 4
         (`label = format!(…)`, its code there or inlined from there) returns into the
-        block of line 5's `println!`, whose stop is past the store (#222)."""
+        block of line 5's `println!`, whose stop is past the store."""
         predecessors, found = self.predecessors(), {}
         explained = set()
 
         def elsewhere(number):
             # The block's call is another line's: every instruction of its IR block (code
             # inlined there by its call's site) says where it is, none is on this line,
-            # and no `invoke` stores its result in the next block (#230 review: an
+            # and no `invoke` stores its result in the next block (an
             # unlocated one could be anywhere).
             if function is None or self.blocks[number].statements[-1][1] in (file, None):
                 return False
@@ -2762,7 +2717,7 @@ class Body:
         return sorted(found)
 
     def covering(self, line, file, foreign):
-        """The blocks holding code of ``line`` that no IR places (#116): with a statement
+        """The blocks holding code of ``line`` that no IR places: with a statement
         that emits code there (one starting on it, or a call spanning it: a method call's
         code is on its name's line), or that spans another file where the line may
         invoke a macro (``foreign``)."""
@@ -2938,7 +2893,7 @@ class Body:
     def copy_undoes(self, copy, root, start, projection=(), sinks=(frozenset(), frozenset())):
         """True if, on some path from ``start`` ((block, index): before that statement),
         the program assigns ``root`` whole or ends it without reading what a change made,
-        and uses ``copy`` (or a pointer to it) before or after that (#192, #330): it goes
+        and uses ``copy`` (or a pointer to it) before or after that: it goes
         on with the value ``copy`` took from ``root``, so a change made at ``start`` is
         never seen (`x = match x { n => … n }` puts the old value back; `let y = x;` … `x
         = y + 1;`; a `move` closure called before `x` goes out of scope unread). Where the
@@ -2947,45 +2902,45 @@ class Body:
         part changed (``_root_access``): only a read that surely covers part of it counts,
         `copy`, `move`, or std's printing or formatting of a borrow of it
         (``_format_reads``, at that call); a borrow given to anything else may never be
-        read through, so the path goes on (#192 review: `ignore(&x)`, `println!("{}",
+        read through, so the path goes on (`ignore(&x)`, `println!("{}",
         x.a)` for a change to `x.b`, `ignore(format_args!("{}", x))`). A write covering the
         whole part counts as an assignment, any other as nothing. ``sinks``:
         ``_format_reads``'s (trusted files, the crate's own function paths).
 
-        A use of the copy after the assignment or end counts as one before it (#330: `u.
+        A use of the copy after the assignment or end counts as one before it (`u.
         push(y); let t = n; y = t;` then `println!("{:?}", u)`; a struct pushed into a Vec
         and then ended, before the Vec is used): the old value is all that is left. The
-        frame's exit ends every local and argument of it (#330 review: an argument has no
+        frame's exit ends every local and argument of it (an argument has no
         `StorageDead`): a return, and a call that never returns other than std's panic
         (`process::exit`, `abort`, a function of the crate's that returns `!`). A drop of
         ``root`` reads it only where a `Drop` impl of the crate's surely reads the part
         (``_drop_effect``); one that only may is told apart by ``doubtful_drops``.
 
-        A mark of settable covers the paths that don't panic (#330 review 3): an edge
+        A mark of settable covers the paths that don't panic: an edge
         taken only where a call, a drop or a check panics (``Block.unwinds``), and std's
         panic (``_panics``), are neither a read nor an end, and the cleanup a panic runs
-        is not followed (review 4: a `Drop` that reads it there doesn't count). A path
+        is not followed (a `Drop` that reads it there doesn't count). A path
         that never leaves a loop, once the copy is used and ``root`` not read, counts too
-        (review 4: `if c { record(z); loop {} } else { use_value(x); }`). So does every
+        (`if c { record(z); loop {} } else { use_value(x); }`). So does every
         path panicking or exiting before reading ``root`` (``exits_unread``), with a use of
         the copy on the way: `let z = x;` … `black_box(z); panic!()`. ``copy_kind`` says
         which: "end", "loop" or "exits".
 
-        ``copy`` may stand for global state a place stored the copy in (#329,
-        ``global_holders``): anything that may touch global state uses it (``global_use``), as
+        ``copy`` may stand for global state a place stored the copy in
+        (``global_holders``): anything that may touch global state uses it (``global_use``), as
         does the frame's return, after which a caller may read it, and it never ends."""
         return self.copy_kind(copy, root, start, projection, sinks) is not None
 
     def copy_kind(self, copy, root, start, projection=(), sinks=(frozenset(), frozenset())):
-        """Why ``copy_undoes`` holds, or None (#330 review 4): "end" (a path assigns or ends
+        """Why ``copy_undoes`` holds, or None: "end" (a path assigns or ends
         ``root`` unread, the copy used before or after), "loop" (a path never leaves a
-        loop but by a panic once the copy is used, reading ``root`` nowhere in it; review
-        5), or "exits" (every path panics, exits or loops before reading ``root``, and the
+        loop but by a panic once the copy is used, reading ``root`` nowhere in it),
+        or "exits" (every path panics, exits or loops before reading ``root``, and the
         copy is used on one)."""
         stored = copy >= _GLOBAL_BASE
         copies = {copy} if stored else self._pointers_to(copy) | {copy}
         formats = self._format_reads(*sinks)
-        # #329: global state is used by what may read it (``global_use``); it never ends.
+        # Global state is used by what may read it (``global_use``); it never ends.
         # It, and what a pointer of the frame's stands for where nothing of the frame does,
         # outlive the frame: a caller may read them once it returns (``_outlives_frame``).
         outlives = self._outlives_frame(copy)
@@ -2994,7 +2949,7 @@ class Body:
         # ``graph``: {such a state: the states it goes on to}.
         pending, seen, used_any, graph = [(start[0], start[1], False, False)], set(), False, {}
         # The states whose path panics in std's panic, or reaches `unreachable`, unread: no
-        # way out of a loop (review 5: `loop { if p { panic!("stop"); } }`).
+        # way out of a loop (`loop { if p { panic!("stop"); } }`).
         panicked = set()
         while pending:
             state = pending.pop()
@@ -3086,7 +3041,7 @@ class Body:
 
     def _outlives_frame(self, copy):
         """Whether what ``copy`` holds may outlive the frame, for a caller to read once it
-        returns (#329): global state (``global_holders``), or what a pointer binding of the
+        returns: global state (``global_holders``), or what a pointer binding of the
         program's own stands for where nothing of the frame does (``_pointees``): an argument
         `p` of `*p = x;`, or `r` of `let r = slot();` with `fn slot() -> &'static
         Mutex<u32>`, which `lock_set(r, x)` stores through."""
@@ -3100,8 +3055,8 @@ class Body:
         )
 
     def _address_only(self):
-        """The places of statements that use what they mention for its address only (#340
-        review 3): a call of the standard library's `ptr::eq` or `addr_eq`, proven so
+        """The places of statements that use what they mention for its address only:
+        a call of the standard library's `ptr::eq` or `addr_eq`, proven so
         (``compares``), and each assignment to a temporary only such calls are given (`_11 =
         &raw const (*_4)` of `ptr::eq(r, q)`). None of them uses a copy what it mentions
         points at, nor makes one (``_copy_verdict``)."""
@@ -3135,7 +3090,7 @@ class Body:
 
     def _reachable_after(self, copy, owners):
         """Whether what the pointer binding ``copy``, made from ``owners``, stands for may be
-        reached once the frame returns (#340 review): the caller's (an argument it was made
+        reached once the frame returns: the caller's (an argument it was made
         from), global state's (a constant address, a pointer a call returned that may point
         into it: ``_returned_kinds``), or what it was handed to (``_escapes``). Not the
         leaked `Box` `fresh()` returned, which only the binding reaches."""
@@ -3153,10 +3108,10 @@ class Body:
 
     def _escapes(self, copy):
         """Whether the pointer binding ``copy``, or what is made from it (``_aliases``), is
-        handed on where it may be kept (#340 review): stored through a pointer into
+        handed on where it may be kept: stored through a pointer into
         anything else, or given to a call with another value that may hold a pointer (it may
         store it there: `out.push(p)`), or to one that may touch global state. Also to a
-        call that keeps what it is given past the call (review 2): the standard library's
+        call that keeps what it is given past the call: the standard library's
         `thread::spawn` or `Sender::send`, proven so (``_keeping_call``), or a function of the
         crate's that may make one (``keepers``). Not to the standard library's `ptr::eq` or
         `addr_eq`, proven so (``compares``), which compare addresses only."""
@@ -3194,11 +3149,11 @@ class Body:
 
     def exits_unread(self, root, start, projection=(), formats=None):
         """Where every path from ``start`` panics, exits or never leaves a loop before it
-        reads the part ``projection`` of ``root``, assigns or ends it (#330 review 3: `let z
+        reads the part ``projection`` of ``root``, assigns or ends it (`let z
         = x;` … `black_box(z); panic!()`): {"stop"} with "loop" where a loop is on the way;
         else None. No path that doesn't panic reaches a read: a change there is never seen.
         An edge only a panic takes is left out, and a call that never returns is a "stop",
-        whose cleanup isn't followed (review 4: a `Drop` that reads it while the program
+        whose cleanup isn't followed (a `Drop` that reads it while the program
         panics doesn't count). ``formats``: ``_format_reads``'s."""
         formats = formats or {}
         # {place a path enters a block at: the places it goes on to, or None where it
@@ -3232,7 +3187,7 @@ class Body:
 
     def _panics(self, number):
         """Whether the block ``number`` ends in a call to std's panic machinery, which
-        never returns (``_PANIC_CALL``; #330 review 3): a path it takes panics."""
+        never returns (``_PANIC_CALL``): a path it takes panics."""
         block = self.blocks[number]
         found = _PANIC_CALL.match(block.terminator)
         return bool(found) and found[1] in self.std_paths and self._diverges(number)
@@ -3250,7 +3205,7 @@ class Body:
     def doubtful_drops(self, root, start, projection=()):
         """The places of the drops of ``root`` on some path from ``start`` before it is
         read, assigned or ended, whose `Drop` impl of the crate's may read the part
-        ``projection``, which Peeky can't tell (``_drop_effect``'s "maybe"; #330 review 2):
+        ``projection``, which Peeky can't tell (``_drop_effect``'s "maybe"):
         a refusal that the copy rule makes past one says so. On the paths ``copy_undoes``
         follows: not an edge only a panic takes, nor the cleanup a panic runs."""
         found, pending, seen = set(), [start], set()
@@ -3276,7 +3231,7 @@ class Body:
         return frozenset(found)
 
     def _frame_exit(self, number):
-        """Whether the block ``number`` ends the frame (#330 review): a `return`, a call
+        """Whether the block ``number`` ends the frame: a `return`, a call
         that never returns (`panic!`'s, `process::exit`), `resume` after one, `abort` or
         `terminate`; not `unreachable`, which never runs."""
         block = self.blocks[number]
@@ -3288,7 +3243,7 @@ class Body:
 
     def _drop_effect(self, text, local, projection=()):
         """What ``text`` does to the part ``projection`` of ``local`` where it drops it, or
-        a place of it not surely apart from the part (#330 review 2): None where it runs no
+        a place of it not surely apart from the part: None where it runs no
         code of the crate's that can reach the part (not a drop of it, a ``_quiet_drop``
         type's, the standard library's drops of what it holds, a `Drop` impl only on
         another field); "read" where a `Drop` impl on its type, or on a type the part is in,
@@ -3341,8 +3296,8 @@ class Body:
         of the build's debug information) may hold, by value, a type of the crate's with
         a `Drop` impl (``droppers``): itself, in a field (``layouts``), a tuple, an array
         or a standard container; not behind a reference or a pointer, nor in
-        `ManuallyDrop`, `MaybeUninit` or `PhantomData`, which drop nothing (#330 review
-        2). True where not known."""
+        `ManuallyDrop`, `MaybeUninit` or `PhantomData`, which drop nothing.
+        True where not known."""
         pending, seen = [node], set()
         while pending:
             node = pending.pop()
@@ -3419,9 +3374,9 @@ class Body:
         ``projection`` of `*_1` on every path that doesn't panic, and some path does,
         before it writes it or lends `self` to anything that could: a `copy` or `move` of
         a place that overlaps it, or std's printing of a borrow of it (``_format_reads``).
-        Not for a type with type parameters, whose body Peeky doesn't match (#330 review
-        2: `impl Drop for D` printing `self.0` reads `d.0`, not `d.1`). That is enough, as
-        a mark of settable covers the paths that don't panic (review 3, ``copy_undoes``):
+        Not for a type with type parameters, whose body Peeky doesn't match
+        (`impl Drop for D` printing `self.0` reads `d.0`, not `d.1`). That is enough, as
+        a mark of settable covers the paths that don't panic (``copy_undoes``):
         an edge only a panic takes, and std's panic (``_PANIC_CALL``), are left out."""
         if "<" in body.types.get(1, "<"):
             return False
@@ -3485,17 +3440,17 @@ class Body:
     def unread_ends(self, local, start, projection=()):
         """Where the part ``projection`` of ``local`` (``_root_access``'s) ends, unread,
         on every path from ``start`` ((block, index): before that statement), so a change
-        made there is never seen (#330): {(kind, (block, index))}, kind "write" (an
+        made there is never seen: {(kind, (block, index))}, kind "write" (an
         assignment covering it, `y = t;`), "scope" (the end of its storage), "return"
         (the function returns), "stop" (the frame may end otherwise: a call that never
         returns, as `panic!` or `process::exit`, ``_frame_exit``, or a terminator that may
         panic, ``Block.leaves`` and ``Block.unwinds``), "drop" (a drop whose `Drop` impl
         may read it, which Peeky can't tell: ``_drop_effect``), or "loop" (at ``start``: a
         loop on the way, which may never end). So each path the program may take ends at
-        one of them, and a refusal names each kind (#330 review 2). None where some path
+        one of them, and a refusal names each kind. None where some path
         may read it first (``_unread_access``). An edge only a panic takes is not followed,
-        as for ``copy_undoes`` (review 3: a mark of settable covers the paths that don't
-        panic), nor the cleanup of a call that never returns (review 4). Pointers made from
+        as for ``copy_undoes`` (a mark of settable covers the paths that don't
+        panic), nor the cleanup of a call that never returns. Pointers made from
         it before ``start`` are the caller's to judge (``OwnedLocals.unread_after``)."""
         # {place a path enters a block at: the places it goes on to, or None where it
         # ends there}.
@@ -3522,7 +3477,7 @@ class Body:
                     ends.add(("stop", last))
                 elif block.successors or number in self.resumes:
                     if block.leaves or block.unwinds:
-                        # It may panic here: a path outside a mark of settable (review 3).
+                        # It may panic here: a path outside a mark of settable.
                         ends.add(("stop", last))
                     resumed = (self.resumes[number],) if number in self.resumes else ()
                     nodes[node] = [
@@ -3554,8 +3509,8 @@ class Body:
         if _NOT_A_USE.match(plain):
             return None
         if dropped := _DROP_PLACE.match(plain):
-            # A drop of the local or of a place of its own, as ``copy_undoes`` judges it
-            # (#330 review 2); a drop through it, or of what it is given to, may read it.
+            # A drop of the local or of a place of its own, as ``copy_undoes`` judges it;
+            # a drop through it, or of what it is given to, may read it.
             head = re.match(rf"\(*_{local}\b", dropped[1])
             place = _place_steps(dropped[1], head.end() - len(f"_{local}")) if head else None
             if place is None or place[2] != len(dropped[1]):
@@ -3585,7 +3540,7 @@ class Body:
     def _format_reads(self, trusted=frozenset(), crate=frozenset()):
         """{a call that formats what it is given (``_FORMAT_SINK``, from std's macros'
         own file): the shared borrows (`&(_1.1: i64)`) whose primitive it formats}, each
-        read at that call (#192 review 3: a borrow given to `Argument::new_display` is
+        read at that call (a borrow given to `Argument::new_display` is
         read only if the `fmt::Arguments` made from it is formatted; `ignore(format_args!
         (…))` and a dropped `format_args!` never are). From the call back through what
         made its `fmt::Arguments`: `Arguments::new` (`_5 = Arguments::<'_>::new::<10, 2>(
@@ -3596,7 +3551,7 @@ class Body:
         (move _7, move _8)`, `_7 = &_1`): only through locals assigned once. Empty where
         the body's type parameters are not known. Only a call whose span is in one of the
         ``trusted`` files (``OwnedLocals.std_macros``: std's own, exactly as the
-        toolchain names them; #192 review 4: a crate's `src/library/std/src/macros.rs`
+        toolchain names them; a crate's `src/library/std/src/macros.rs`
         is not), to a function none of the ``crate``'s own is named as (`format`)."""
         key = (self.generics, trusted, crate)
         if self._format_cache is None or self._format_cache[0] != key:
@@ -3663,8 +3618,8 @@ class Body:
         """The locals any borrow of ``local`` (or of a part, or of such a pointer's
         target) is assigned to anywhere in the body (`_6 = &_2`, `_4 = &mut (*_6)`), and
         what is made from one by a cast, a copy or a call, of a type that may hold a
-        pointer (#311: `p` of `let p = slot.as_mut_ptr();`, through which `*p = x;` stored
-        a copy in `slot`; review: the `Option<&mut u32>` of `v.last_mut()` and `r` of its
+        pointer (`p` of `let p = slot.as_mut_ptr();`, through which `*p = x;` stored
+        a copy in `slot`; the `Option<&mut u32>` of `v.last_mut()` and `r` of its
         `unwrap()`, and an iterator `v.iter_mut()`)."""
         if self._pointer_cache is None:
             self._pointer_cache = {}
@@ -3692,10 +3647,10 @@ class Body:
 
     def live_ahead(self, start, drops=False):
         """A bitset of the locals ``used_ahead`` finds used on some path from ``start``,
-        all at once (#105 judges every copy of a local at every place of a line): each
+        all at once (every copy of a local is judged at every place of a line): each
         statement is read once, and which locals each block's successors use is a
         backward dataflow over the body; a place replays its block from there. With
-        ``drops``, dropping a local uses it too (#164: a `Drop` may read a borrow)."""
+        ``drops``, dropping a local uses it too (a `Drop` may read a borrow)."""
         number, index = start
         if number not in self.blocks:
             return 0
@@ -3764,13 +3719,13 @@ class Body:
     def copies_of(self, local, formatting=True, compares=False, reads="any"):
         """The temporaries (locals no variable names, other than the return place) that
         may hold a value read from ``local``'s storage, which a later change to it does
-        not reach (#105): one assigned from a read of it (`_4 = copy (_1.0: i32)`, not a
+        not reach: one assigned from a read of it (`_4 = copy (_1.0: i32)`, not a
         borrow of it), from a read through any pointer (which may point into it), from a
         call given a pointer that may (`get(&s)`), or from such a temporary. A pointer
         into it is not a copy (reads through it see the change), but makes what a call
         returns one, except `format_args!`'s constructors where ``formatting`` (the crate
         names nothing `core` or `std` that could pass for them). The program's own
-        variables are not counted here: ``copies_at`` follows its direct copies (#192).
+        variables are not counted here: ``copies_at`` follows its direct copies.
         ``compares`` and ``reads`` as for ``_copy_verdict``."""
         if self._copies is None:
             self._copies = {}
@@ -3804,12 +3759,12 @@ class Body:
 
     def lent_from(self, local, generics=None, free_types=frozenset()):
         """The locals that may hold a pointer into ``local``'s storage or into what it
-        owns (#164: a String's buffer): one assigned a borrow of it or of a place of it
+        owns (a String's buffer): one assigned a borrow of it or of a place of it
         (`&_1`, `&mut (_1.0: T)`, `&raw const _1`), or a value that mentions such a local
         (what a call returns from one, `deref`, `index`, `as_str`, `chars`; a copy, a
         struct, a closure holding one); and what a call given one may store it into: what
         another pointer it is given points at (`v.push(&s)` stores it in `v`), through a
-        `&mut` or raw pointer, or a shared one to what may hide a `Cell` (#164). Only
+        `&mut` or raw pointer, or a shared one to what may hide a `Cell`. Only
         locals whose type can hold a pointer count (a reference, a raw pointer, a
         lifetime, a closure or coroutine, a type parameter of ``generics``, or a type not
         known); a `usize` from `s.len()` holds none."""
@@ -3901,7 +3856,7 @@ class Body:
 
     def _copy_parts(self):
         """``copies_of``'s reading of each assignment to a local (a temporary, or one of
-        the program's own bindings, for ``copies_at``'s direct copies, #192: `n` of `x =
+        the program's own bindings, for ``copies_at``'s direct copies: `n` of `x =
         match x { n => … }`), once per body: ([(its target, the locals its value
         mentions, whether it reads through a pointer, is a borrow, is a call, is
         `format_args!`'s constructor, the reference variables it mentions, whether it is
@@ -3914,10 +3869,10 @@ class Body:
         may name it as a line of)}).
 
         A write through a pointer has a part for each local it may write into
-        (``_stored_into``), which it leaves holding what it held too (#311): a store
+        (``_stored_into``), which it leaves holding what it held too: a store
         (`(*_35) = [move _15, const 1_u32]`, as `vec![x, 1]` fills its Box), a
         `copy_nonoverlapping`, and a call given a pointer it may write through
-        (``_may_write_through``), of what else the call is given (#311 review: `Vec::push(move _6,
+        (``_may_write_through``), of what else the call is given (`Vec::push(move _6,
         move _7)` with `_6 = &mut v`, `ptr::write(p, x)`, `mem::replace`, `mem::swap`); not
         of that pointer itself (`Box::new` given a closure holding `&s` copies no `s`). Where no local the
         pointers were made from stands for what they point at (an argument, the Box
@@ -3925,7 +3880,7 @@ class Body:
         (``_pointees``).
 
         A place that may store a value in global state with interior mutability has a part for
-        a pseudo-local of its own (#329, ``global_holders``), holding what else it is given: a
+        a pseudo-local of its own (``global_holders``), holding what else it is given: a
         call given a pointer into it (`local_set(&SLOT, x)`), one that may touch it by what it
         runs (``global_touch``: `direct_set(x)`), a store through such a pointer (`RAW = x;`),
         and a drop that may."""
@@ -3972,7 +3927,7 @@ class Body:
             def through(bases, value, text, carried=True, mentioned=None, called=False):
                 targets = frozenset().union(*(self._stored_into(n) for n in bases)) - {0}
                 owners = frozenset().union(*(self._made_from(n) for n in bases))
-                # A call may store into what what it is given shares (#321: `rx` of `let
+                # A call may store into what what it is given shares (`rx` of `let
                 # (tx, rx) = mpsc::channel();`, given `&tx`).
                 sharers = (
                     frozenset().union(*(self._sharers(n) for n in bases)) & targets
@@ -3998,7 +3953,7 @@ class Body:
             }
 
             def carries(n):
-                # `()` carries nothing, nor does a tuple of constants (#321: `f(0)` calls
+                # `()` carries nothing, nor does a tuple of constants (`f(0)` calls
                 # `Fn::call(&f, (0,))`).
                 return self.types.get(n) != "()" and not (
                     assigned.get(n)
@@ -4007,7 +3962,7 @@ class Body:
                 )
 
             def into_global(number, index, value, text, mentioned, kinds):
-                # #329: a pseudo-local for the global state the place may store in, which
+                # A pseudo-local for the global state the place may store in, which
                 # holds what the value it stores holds.
                 holder = _GLOBAL_BASE + len(holders)
                 holders[holder] = ((number, index), frozenset(kinds))
@@ -4024,7 +3979,7 @@ class Body:
                         continue
                     owners = self._made_from(base)
                     found |= {roots[root] for root in owners & roots.keys()}
-                    # #340 review: a pointer a call returned, where that call may return
+                    # A pointer a call returned, where that call may return
                     # one into global state (``GlobalState.returned``): `slot()` of
                     # `lock_set(slot(), x)` returning `&S`, `registry()`'s `&'static
                     # Mutex<Vec<u32>>`; not `fresh()` returning a leaked `Box`. A binding
@@ -4045,7 +4000,7 @@ class Body:
                     if stored and " = " in text:
                         value = text.split(" = ", 1)[1].removesuffix(";")
                         stores[number, index] = (through({int(stored[1])}, value, text),)
-                        # #329: a store through a pointer into global state (`RAW = x;` of a
+                        # A store through a pointer into global state (`RAW = x;` of a
                         # `static mut`, `*LAZY.lock().unwrap() = x;`).
                         if kinds := reached_roots({int(stored[1])}):
                             mentioned = {int(n) for n in _MENTIONED.findall(value)}
@@ -4078,7 +4033,7 @@ class Body:
                             for base in sorted(bases)
                             if (others := {n for n in given - {base} if carries(n)})
                         )
-                        # #329: a call given a pointer into global state (`local_set(&SLOT,
+                        # A call given a pointer into global state (`local_set(&SLOT,
                         # x)`, `A.store(x, …)`), or one that may touch it by what it runs (a
                         # function of the crate's that names a static, a closure that does),
                         # may store there what else it is given.
@@ -4092,7 +4047,7 @@ class Body:
                         if writes:
                             stores[number, index] = writes
                     elif dropped and (kinds := self.global_touch((number, index))):
-                        # #329: a drop whose `Drop` may store what it drops in global state.
+                        # A drop whose `Drop` may store what it drops in global state.
                         base = _MENTIONED.search(dropped[1])
                         mentioned = {int(base[1])} if base else set()
                         stores[number, index] = (
@@ -4103,7 +4058,7 @@ class Body:
 
     def _pointees(self, owners, aiming):
         """The pointer bindings of ``aiming`` that stand for what a write through them
-        reaches (#311 review): all of them, where no local of ``owners`` (what the pointers
+        reaches: all of them, where no local of ``owners`` (what the pointers
         were made from) does, one not itself a pointer and never moved out of (`slot` of
         `p = slot.as_mut_ptr()`; not the Box `Box::into_raw` was given, nor anything for an
         argument `p`)."""
@@ -4116,7 +4071,7 @@ class Body:
     def _copy_places(self):
         """[((block, index), the index of a part ``_copy_parts`` reads there)], of an
         assignment, and of a write through a pointer for each local the pointer was made
-        from (#311: the Box `vec!` fills, `slot` of `*p = x;`, `v` of `v.push(x)`). Not for
+        from (the Box `vec!` fills, `slot` of `*p = x;`, `v` of `v.push(x)`). Not for
         its other aliases, so `team[pick].shifts += 1;` is never where `p` of `same(p, q)`
         was made."""
         parts, _, _, at, _, stores = self._copy_parts()
@@ -4133,7 +4088,7 @@ class Body:
 
     def global_roots(self, trusted=_STD_CRATES, layouts=None):
         """{each local this body assigns a value standing for global memory a callee may
-        write through (``_GLOBAL_VALUE``): its type} (#329): a static's address with interior
+        write through (``_GLOBAL_VALUE``): its type}: a static's address with interior
         mutability (`const {alloc30: &std::sync::Mutex<u32>}`), a `static mut`'s (`*mut u32`),
         a `thread_local!`'s key (`const local::promoted[1]`, a `&std::thread::LocalKey<std::
         cell::Cell<u32>>`). Not a static that only reads (`&u32`), nor a thread-local of a
@@ -4158,8 +4113,8 @@ class Body:
         return cached[2]
 
     def returned_globals(self, state, touched=frozenset()):
-        """What this body's return may point into, of the crate's global state (#340
-        review: ``global_state``): nothing where its type holds no pointer; else what it is
+        """What this body's return may point into, of the crate's global state
+        (``global_state``): nothing where its type holds no pointer; else what it is
         made from (``_made_from``) of a global it names, what a call it is made from may
         return (``_returned_kinds``), and any global it may touch (``touched``), which may
         keep the pointer it returns. Anything for a body Peeky can't analyze."""
@@ -4175,7 +4130,7 @@ class Body:
 
     def _returned_kinds(self, owners, state=None):
         """What a pointer among ``owners`` that a call returned may point into, of the
-        crate's global state (#340 review: ``GlobalState.returned``)."""
+        crate's global state (``GlobalState.returned``)."""
         state = self.globals if state is None else state
         if state is None:
             return frozenset()
@@ -4197,7 +4152,7 @@ class Body:
     def _global_edges(self):
         """{(block, index): ("call", its function's name (``_callee``), the MIR types of the
         locals it is given and calls, its path), or ("drop", "", (the dropped local's type,),
-        "")} of each call and drop of this body (#329: what may run code of the crate's)."""
+        "")} of each call and drop of this body (what may run code of the crate's)."""
         if self._global_edge_cache is None:
             found = {}
             for number, block in self.blocks.items():
@@ -4228,7 +4183,7 @@ class Body:
     def global_touch(self, place, state=None):
         """The types of the global state (``GlobalState``) the call or drop at ``place``
         ((block, index)) may touch by what it runs: a function of the crate's it names, or
-        code of the crate's what it is given carries (a closure, a type's `impl`) (#329).
+        code of the crate's what it is given carries (a closure, a type's `impl`).
         Not by an address of global memory it is given, which ``global_roots`` finds. Empty
         where the crate names no global state (``globals`` None)."""
         state = self.globals if state is None else state
@@ -4239,7 +4194,7 @@ class Body:
         return state.drop(kinds) if kind == "drop" else state.call(name, kinds, path)
 
     def _global_pointers(self):
-        """{each local that may point into global state: the types of the globals} (#329):
+        """{each local that may point into global state: the types of the globals}:
         a local ``global_roots`` gives, or a call that may return a pointer into it
         (``_returned_kinds``: `r` of `let r = slot();`), and one made from it, back through
         each assignment as ``_made_from`` follows them (`_6 = &(*_7)`, a guard `lock`
@@ -4284,7 +4239,7 @@ class Body:
 
     def global_use(self, number, index):
         """The types of the crate's global state with interior mutability the statement at
-        (``number``, ``index``) may read (#329): of a pointer into it it uses
+        (``number``, ``index``) may read: of a pointer into it it uses
         (``_global_pointers``), and what a call or drop there may touch (``global_touch``).
         Empty where none. A copy a place stored in one of them is the program's own from
         then on (``copy_kind``, ``reads_global``)."""
@@ -4304,7 +4259,7 @@ class Body:
 
     def reads_global(self, holder, number, index):
         """Whether the statement at (``number``, ``index``) may read the global state the
-        pseudo-local ``holder`` stands for (#340 review): a global of a type it may be, or
+        pseudo-local ``holder`` stands for: a global of a type it may be, or
         one not known on either side. Globals are told apart by their types only, so two
         statics of one type count as one."""
         kinds = self.global_use(number, index)
@@ -4315,7 +4270,7 @@ class Body:
         """What the global state ``holder`` (a pseudo-local, ``global_holders``) may hold of
         a value of the MIR type ``local_kind``: "copy" only where each global it may be is
         a cell, a lock, an atomic or a `static mut` that may hold one of its very type
-        (``_copy_level``: a `LocalKey<Cell<u32>>` of a `u32`), else "derived" (#329)."""
+        (``_copy_level``: a `LocalKey<Cell<u32>>` of a `u32`), else "derived"."""
         kinds = self.global_holders.get(holder, (None, frozenset({_ANY_GLOBAL})))[1]
         if local_kind is None or not kinds or _ANY_GLOBAL in kinds:
             return "derived"
@@ -4333,13 +4288,13 @@ class Body:
         return "copy"
 
     def _may_write_through(self, local):
-        """Whether a callee given ``local`` may write through a pointer it holds (#311
-        review round 3): its type shows one (``_may_write``, by its whole layout since
-        #321: `&Counter` with `Counter { c: Cell<u32> }`, `&mpsc::Sender<u32>`), or it may
+        """Whether a callee given ``local`` may write through a pointer it holds:
+        its type shows one (``_may_write``, by its whole layout:
+        `&Counter` with `Counter { c: Cell<u32> }`, `&mpsc::Sender<u32>`), or it may
         hold a pointer and something it was made from shows one (``_made_from``: the `&mut
         v` an `Entry` or a closure was made from). `a.chunks_exact(1)`, made from a shared
         `&[u32]`, writes nothing. What it reaches only through a shared `&` counts only for
-        what may be written through one (round 4, ``_reached``): `&h` of `h = Hold { p:
+        what may be written through one (``_reached``): `&h` of `h = Hold { p:
         &mut v }` writes nothing, `h` itself and `&mut h` may."""
         kind, layouts = self.types.get(local), self._layouts()
         if _may_write(kind, self.generics, False, self.std_paths, layouts):
@@ -4354,16 +4309,16 @@ class Body:
 
     def hides(self, local):
         """Whether what is stored in ``local`` may be kept behind a cell, a lock, a channel
-        or a pointer its type holds (#321, ``OwnedLocals.hidden_holders``)."""
+        or a pointer its type holds (``OwnedLocals.hidden_holders``)."""
         return bool(self.type_flags(local) & {"interior", "shares"})
 
     def type_flags(self, local):
-        """``_type_flags`` of ``local``'s type (#321)."""
+        """``_type_flags`` of ``local``'s type."""
         return _type_flags(self.types.get(local), self.std_paths, self._layouts(), self.generics)
 
     def copy_level(self, local, kind):
         """What a callee given a `&` to ``local`` may store in it of a value of the MIR type
-        ``kind``: "copy" or "derived" (#321 review rounds 1 to 3, ``_copy_level``)."""
+        ``kind``: "copy" or "derived" (``_copy_level``)."""
         return _copy_level(
             self.types.get(local), kind, self.generics, self.std_paths, self._layouts()
         )
@@ -4378,7 +4333,7 @@ class Body:
 
     def closure_captures(self):
         """{the type of each closure this body builds (`{closure@src/main.rs:5:5: 5:13}`):
-        the types of what it captures, or None where one is not known} (#321)."""
+        the types of what it captures, or None where one is not known}."""
         found = {}
         for block in self.blocks.values():
             for text, _, _ in block.statements:
@@ -4404,12 +4359,12 @@ class Body:
 
     def _sharers(self, local):
         """The locals that may reach what a callee given ``local`` may write through a
-        shared `&` (#321), besides what ``local`` was made from, where their type may reach
+        shared `&`, besides what ``local`` was made from, where their type may reach
         what another value does (``_may_share``): one moved or copied, before or after, out
         of what it was made from (`rx` of `let (tx, rx) = mpsc::channel();`, for `send(&tx,
         x)`), returned by a call given one or a pointer to one (`b` of `let b =
         Rc::clone(&a);`, for `rc_set(&a, x)`), or an aggregate, closure or cast built of one
-        (#321 review: `h` of `let h = Hold { c: Rc::clone(&a) };`), and so on from those. Not a
+        (`h` of `let h = Hold { c: Rc::clone(&a) };`), and so on from those. Not a
         `Cell` moved out by value, nor a pointer into one of them, whose uses are its uses
         already (``_pointers_to``)."""
         trusted, layouts = self.std_paths, self._layouts()
@@ -4435,7 +4390,7 @@ class Body:
                         sources = {int(moved[2])}
                     else:
                         # A borrow, a call, a cast, or an aggregate or closure built of it
-                        # (#321 review: `Hold { c: move _7 }` of `Rc::clone(&a)`).
+                        # (`Hold { c: move _7 }` of `Rc::clone(&a)`).
                         sources = {int(n) for n in _MENTIONED.findall(value)}
                     for source in sources - {target}:
                         edges.setdefault(source, []).append((target, borrow))
@@ -4457,12 +4412,12 @@ class Body:
 
     def _reached(self, local):
         """What ``local`` may have been made from (``_made_from``): {(each local, the type
-        its part reached has): whether it reaches it only through a shared `&`} (#311 review
-        round 4). It does past a shared borrow (`_12 = &_7;`, `_11 = &(*_12);`), and past a
+        its part reached has): whether it reaches it only through a shared `&`}.
+        It does past a shared borrow (`_12 = &_7;`, `_11 = &(*_12);`), and past a
         value of a shared reference type (`&Hold<'_>`, a call's result too); not past a
         `&mut`, a raw borrow, or a value moved or copied (`Hold { p: move _8 }`). A field
         moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of
-        ``_6`` only (#321: `rx`, not the `Sender` beside it in `mpsc::channel()`'s tuple),
+        ``_6`` only (`rx`, not the `Sender` beside it in `mpsc::channel()`'s tuple),
         and what ``_6`` was made from."""
         start = self.types.get(local)
         found, pending = {}, [(local, start, _shared_reference(start))]
@@ -4492,7 +4447,7 @@ class Body:
 
     def _made_from(self, pointer):
         """The locals ``pointer`` may have been made from, back through every assignment
-        to it (#311): itself, each local a value assigned to it borrows (`&mut _4`), and
+        to it: itself, each local a value assigned to it borrows (`&mut _4`), and
         each one it mentions that may hold a pointer, and so on (`_10 = copy ((_6.0:
         Unique<…>).0: NonNull<…>) as *const …` is made from the Box `_6`)."""
         found, pending, assigned = set(), [pointer], self._assignments()
@@ -4515,7 +4470,7 @@ class Body:
     def _stored_into(self, pointer):
         """The locals a store through ``pointer`` (the local a written place starts from:
         `_35` of `((*_35).1: T) = …`, `_6` of `(*((*_6).0: &mut u32)) = …`) may write into,
-        or into what they own, flow-insensitively (#311): ``pointer`` and its aliases
+        or into what they own, flow-insensitively: ``pointer`` and its aliases
         (``_aliases``: what it was made from and what was made from it, as the Box `vec!`
         fills and the Vec made from that), and every local one of them borrows itself
         (`&mut _4`, a `u32`'s too, which ``_aliases`` links to no pointer)."""
@@ -4534,8 +4489,8 @@ class Body:
         self, local, position, formatting=True, compares=False, reads="any", projection=()
     ):
         """The temporaries that may hold a value read from ``local``'s current value at
-        ``position`` ((block, index): before that statement), on some path from bb0
-        (#183): ``copies_of``'s reading of each assignment, taken in the order the code
+        ``position`` ((block, index): before that statement), on some path from bb0:
+        ``copies_of``'s reading of each assignment, taken in the order the code
         runs, where an assignment to ``local`` itself, or the start or end of its
         storage, leaves none. A temporary set before ``local`` took its current value
         holds an earlier one, which a change to it does not touch either (`for entry in
@@ -4550,17 +4505,17 @@ class Body:
         self, local, position, formatting=True, projection=(), compares=False, reads="any"
     ):
         """The locals, the program's own bindings among them, that hold a value taken
-        from ``local``'s current value at ``position`` by value (#192): a copy or move of
+        from ``local``'s current value at ``position`` by value: a copy or move of
         it or of a part (`n` of `x = match x { n => … }`, `let y = x;`), a value computed
         from one (`v` of `while let Some(v) = (x > 0).then_some(x)`), a closure or
         aggregate holding one (`move || x`), or a read through a pointer to it (`*r` of
         `let r = &x;`); and what a call given a pointer into it, or to what may hold a copy
-        of it, returns (#320: `x.clone()`, `x.to_string()`, `ptr::read(&x)`,
+        of it, returns (`x.clone()`, `x.to_string()`, `ptr::read(&x)`,
         `mem::take(&mut a)` after `let mut a = x;`), unless it only points
         (``_copy_assign``) or the call is the standard library's that only measures or
-        compares (``_only_measures``: `x.len()`, as #192 has it). With ``projection``
-        (``_root_access``), only what may have been taken from that part counts (#192
-        review: `seen = r.end` holds none of `o.marks`). None where the flow is past its
+        compares (``_only_measures``: `x.len()`). With ``projection``
+        (``_root_access``), only what may have been taken from that part counts
+        (`seen = r.end` holds none of `o.marks`). None where the flow is past its
         budget. ``compares`` and ``reads`` (``_copy_verdict``) change none of these, only
         the flow's key."""
         state = self._copy_state(local, position, formatting, projection, compares, reads)
@@ -4568,7 +4523,7 @@ class Body:
 
     def pointing_copies_at(self, local, position, formatting=True, projection=(), compares=False):
         """The locals that may point into ``local`` at ``position`` by way of a call or
-        what is made of its result (the flow's `aims`, #320 review): a direct copy among
+        what is made of its result (the flow's `aims`): a direct copy among
         them may hold a copy of it or only point into it, which Peeky can't tell apart.
         Empty where the flow is past its budget."""
         state = self._copy_state(local, position, formatting, projection, compares, "any")
@@ -4601,9 +4556,9 @@ class Body:
         aims) after it: ``copies_of``'s holds and points, for temporaries; and the locals,
         named or not, holding a direct copy (``direct_copies_at``), the pointers made from
         a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct, the
-        locals that hold a direct copy or point at one (#311 review: `&a` of `let a =
+        locals that hold a direct copy or point at one (`&a` of `let a =
         [x];`, casts and aggregates of it, and a pointer a call returns from one, as
-        `a.iter()`), and those that may point into ``local`` by way of a call (#320: what
+        `a.iter()`), and those that may point into ``local`` by way of a call (what
         `s.as_str()`, `v.iter()` or `format_args!`'s `Argument` return, and what is made
         of them). Where the standard library's `mem::take` or `mem::replace` surely writes
         into a local (``_sure_pointee``), it holds no copy after, but what is written.
@@ -4651,21 +4606,21 @@ class Body:
     ):
         """``_copy_step`` over an assignment's own target, ``part``. What a call given a
         pointer into the local, or to what may hold or point at a copy of it, returns may
-        hold a copy, where its type may hold a value (#320: `x.clone()`, `x.to_string()`,
+        hold a copy, where its type may hold a value (`x.clone()`, `x.to_string()`,
         `ptr::read(&x)`, `w.push(v)` given `&mut w`), unless the call is the standard
         library's that only measures or compares (``_only_measures``: `x.len()`,
         `x.cmp(&5)`), or that returns only what it is given (``_only_wraps``: `Box::new`).
         Where its type may point (a reference, an iterator, a type with a lifetime), it
         points into the local too (`aims`), as a cast, copy or aggregate of such a
         pointer, or a borrow of one, does. Only a type holding nothing but pointers
-        (``_pointer_only``: `&str`, `Option<&u32>`, `slice::Iter`) holds no copy (#311
-        review: `&s[2..]`); a tuple or struct holding a value besides a reference may
-        (#320 review: `(u32, &'static ())`). A read through such a pointer may be one."""
+        (``_pointer_only``: `&str`, `Option<&u32>`, `slice::Iter`) holds no copy
+        (`&s[2..]`); a tuple or struct holding a value besides a reference may
+        (`(u32, &'static ())`). A read through such a pointer may be one."""
         holds, points, direct, own, kept, aims = state
         target, mentioned, through, borrow, called, _, _, _ = part
         if target == local:
             return state
-        # A place of it that may hold part of ``projection`` (#192 review).
+        # A place of it that may hold part of ``projection``.
         touched = local in mentioned and _touches(text, local, projection)
         kind = self.types.get(target)
         generic = kind is None or self.generics is None or mentions(kind, self.generics)
@@ -4728,7 +4683,7 @@ class Body:
 
     def _only_measures(self, text, local):
         """Whether the call ``text`` is the standard library's that only measures or
-        compares what it is given, into what the type of ``local`` can't hold (#320): a
+        compares what it is given, into what the type of ``local`` can't hold: a
         method of `_MEASURES` (`len`, `is_empty`, `contains`, `starts_with`) of a standard
         type, a slice or `str` (`Vec::<u32>::len`, `core::slice::<impl [u32]>::contains`),
         or one of `_COMPARISONS` (`eq`, `lt`, `cmp`, `partial_cmp`) of `PartialEq`,
@@ -4737,7 +4692,7 @@ class Body:
         (``_standard_only``), so the method is the standard library's own (a crate can't
         add one to its types, nor implement its traits between them), the inherent one's
         type is the one its first argument points at. Each proof is by the root it uses
-        (#320 review round 3, ``std_paths``): `core::slice::<impl [u32]>::len` needs
+        (``std_paths``): `core::slice::<impl [u32]>::len` needs
         `core` only, a short `Vec::<u32>::len` the root of the type it is given and
         ``trusted_names``, a comparison its trait's root, if named, and ``std_traits``.
         Never by name alone; and a `usize` local, a `Vec<bool>` or a type of the crate's
@@ -4784,7 +4739,7 @@ class Body:
                 and pointees[0].startswith(("[", "str"))
             )
         # A short name (`String::len`) is the standard library's type only where the crate
-        # gives that name nothing of its own (#320 review: `struct String;` with `fn
+        # gives that name nothing of its own (`struct String;` with `fn
         # len(s: &std::string::String)`).
         inherent = _INHERENT_METHOD.match(path)
         return (
@@ -4797,12 +4752,12 @@ class Body:
 
     def _only_wraps(self, text):
         """Whether the call ``text`` is the standard library's that returns only what it
-        is given, by value: what it returns holds a copy only where what it was given did
-        (#320 review). That is `Box::<T>::new(move _7)`, `Box::pin`, `Rc::new` and
+        is given, by value: what it returns holds a copy only where what it was given did.
+        That is `Box::<T>::new(move _7)`, `Box::pin`, `Rc::new` and
         `Arc::new` (``_WRAPPERS``), whose short name must be one the crate gives nothing
         of its own (``trusted_names``), returning the standard type under a trusted root
         (``std_paths``). It is also an
-        iterator adapter of ``_ADAPTERS`` (`<std::str::Chars<'_> as Iterator>::rev`,
+        iterator adapter of ``_ADAPTER_CALL`` (`<std::str::Chars<'_> as Iterator>::rev`,
         `…::map::<u32, {closure@…}>(move _6, move _9)`): `Iterator` the standard trait
         (``std_iterator``), on a standard type (its root in ``std_paths``: its impl is the
         standard library's). A closure it is given holds a copy where the flow says it
@@ -4841,7 +4796,7 @@ class Body:
         )
 
     def _sure_pointee(self, pointer):
-        """The local ``pointer`` surely points at (#320: `a` of `mem::take(&mut a)`):
+        """The local ``pointer`` surely points at (`a` of `mem::take(&mut a)`):
         assigned once, a `&mut` of that local, or a reborrow, copy or move of such a
         pointer, each assigned once, none with its own storage borrowed (which could
         retarget it); else None."""
@@ -4868,7 +4823,7 @@ class Body:
     def _copy_store(
         self, local, text, stored, state, after, formatting, projection, compares, reads
     ):
-        """``_copy_step`` over a write through a pointer (#311: `((*_35).1: …) = [move
+        """``_copy_step`` over a write through a pointer (`((*_35).1: …) = [move
         _15, const 1_u32]`, as `vec![x, 1]` fills its Box; a call given `&mut v` and `x`):
         each local it may write into (``stored``: its parts, those locals, the pointer
         bindings among them, what they were made from, the pointer bindings standing for
@@ -4877,25 +4832,25 @@ class Body:
         among them holds a copy the statement uses where it is used again (the Box, the Vec
         made from it, the pointer); a binding of the program's own holds a direct copy, as
         `slot` of `*p = x;` and `v` of `v.push(x)` do; a call, only into what its pointers
-        were made from (#320: `v` of `&mut v`), and what shares what those hold (#321,
-        ``_sharers``: `rx` of `let (tx, rx) = mpsc::channel();`, given `&tx`). A pointer
+        were made from (`v` of `&mut v`), and what shares what those hold
+        (``_sharers``: `rx` of `let (tx, rx) = mpsc::channel();`, given `&tx`). A pointer
         binding (`p`) holds none,
         but what is read through it does, as through a pointer made from a borrow; where
         nothing else stands for what it points at, it does (an argument `p`). A source that
-        holds or points at a copy counts (``kept``, #311 review: `&a` given to
+        holds or points at a copy counts (``kept``: `&a` given to
         `v.extend_from_slice`), as does a pointer into the local itself. So does one that
-        points into it by way of a call (``aims``, #320: `out.push_str(&name)` is given
+        points into it by way of a call (``aims``: `out.push_str(&name)` is given
         what `deref` returns), read through, or given to a call storing into what holds no
         pointer (`out`, a `String`): into what may hold one, it may have stored the
-        pointer itself (#164: `v.push(&s[2..])`)."""
+        pointer itself (`v.push(&s[2..])`)."""
         holds, points, direct, own, kept, aims = state
         parts, _, _, _, named, _ = self._copy_parts()
         made, targets, pointers, owners, pointees, _, sharers = stored
         first = parts[made[0]]
         _, mentioned, through, borrow, called, _, _, compare = first
         if compare and _trusts(compares, compare):
-            # The standard library's `ptr::eq` or `addr_eq` writes nothing (#300): what a
-            # pointer it is given stands for would outlive the frame holding no copy (#329).
+            # The standard library's `ptr::eq` or `addr_eq` writes nothing: what a
+            # pointer it is given stands for would outlive the frame holding no copy.
             return after
         touched = local in mentioned and _touches(text, local, projection)
         # A call given a pointer into the local may copy what it points at.
@@ -4914,9 +4869,9 @@ class Body:
         if called:
             # A call writes where the pointers it is given were made from (`v` of `&mut v`),
             # not into every alias the flow-insensitive ``_stored_into`` links to them, as
-            # a pointer `format_args!` puts in the same tuple (#320: what a call returns
+            # a pointer `format_args!` puts in the same tuple (what a call returns
             # is a copy now, and more calls store one); and into what shares what those
-            # hold (#321: the channel's `rx`, given `&tx`).
+            # hold (the channel's `rx`, given `&tx`).
             targets = targets & (owners | sharers)
         if taken:
             direct = direct | (targets - pointers) | (pointees - {local})
@@ -4924,14 +4879,14 @@ class Body:
             kept = kept | targets
         elif lent:
             # Global state a call may store in holds what it reads through such a pointer
-            # too (#329).
+            # too.
             valued = frozenset(
                 n
                 for n in targets
                 if n >= _GLOBAL_BASE or _pointer_free(self.types.get(n), self.generics)
             )
             direct, kept = direct | valued, kept | valued
-        # Global state is no temporary a statement under way holds (#329): its copy is the
+        # Global state is no temporary a statement under way holds: its copy is the
         # program's own, judged by ``copy_kind``.
         temporaries = frozenset(n for n in targets - named if n < _GLOBAL_BASE)
         return (
@@ -4945,24 +4900,24 @@ class Body:
 
     def read_copies_at(self, local, position, projection=(), transfers=False):
         """What surely holds a value read from ``local``'s current value (or from its part
-        ``projection``) at ``position``, on every path from bb0 (#300: what a refusal may
+        ``projection``) at ``position``, on every path from bb0 (what a refusal may
         say the statement has read): (the temporaries that read it, the locals, the
         program's own bindings among them, that took it by value, and (each such local
         taken through a binding's copy, a binding it was computed from)), or None where
         that is not known (past the budget). A read is a `copy` or `move` of it or of an
         overlapping place (``_reads_part``), a read through a pointer made from a borrow of
         it (the whole local only), or a value computed from what holds one; a temporary
-        computed from a binding's copy took it, but the statement did not read it (#192).
+        computed from a binding's copy took it, but the statement did not read it.
         A pointer a call returns or an aggregate holds, a local a writable borrow is ever
         taken of, and a coroutine's body are not followed. Where a writable borrow of a
         place that may overlap the part is taken anywhere in the body (``_exposed``), a
         call or drop, or a write through a pointer not surely elsewhere, may change it: what
-        was read before may hold an earlier value, so it is known no more (#300). A store
+        was read before may hold an earlier value, so it is known no more. A store
         through a pointer surely into a local, or into what it owns (`vec![x, 1]` fills its
         Box so), of what holds a read makes that local hold it; one, or a call given a
-        pointer, that may write into what holds a read leaves it holding it no more (#311:
-        ``_read_store``, ``_read_clobber``). A call's result holds no sure copy, and what
-        it is given holds none after it (#311 review: `discard(vec![x, 1])` may return
+        pointer, that may write into what holds a read leaves it holding it no more
+        (``_read_store``, ``_read_clobber``). A call's result holds no sure copy, and what
+        it is given holds none after it (`discard(vec![x, 1])` may return
         anything), but for the standard library's Box-to-Vec conversion `vec!` makes, where
         ``transfers`` (``OwnedLocals._std_transfers``) proves it is."""
         if self.coroutine is not None:
@@ -4992,7 +4947,7 @@ class Body:
         another local, a part of it apart from ``projection``, or the caller's), and (a
         pointer, a local it surely points into or into what that owns) for each pointer
         made from a borrow of a local or a Box's own pointer, which a store through it
-        fills (#311: ``_read_store``). ``transfers`` as for ``read_copies_at``."""
+        fills (``_read_store``). ``transfers`` as for ``read_copies_at``."""
         empty = (frozenset(),) * 6
         text = _STRING.sub('""', self.blocks[number].statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
@@ -5016,7 +4971,7 @@ class Body:
             into = frozenset(pair for pair in into if gone not in pair)
             return read - {gone}, taken - {gone}, own - {gone}, kept, apart - {gone}, into
         # A write to a part of it that may overlap the part a change makes, or through a
-        # pointer that may point there: what was read before holds an earlier value (#300).
+        # pointer that may point there: what was read before holds an earlier value.
         steps = _written_place(text, local)
         if steps is not None and not _apart(steps, projection):
             return empty
@@ -5049,8 +5004,8 @@ class Body:
         aimed = target not in self._borrowed()
         value, whole_local = whole[2], projection == ()
         if "->" in value and not _NOT_A_CALL.match(value):
-            # A call's result holds no sure copy: the callee may return anything (#311
-            # review: `discard(vec![x, 1])` returns `vec![7, 1]`). Only the standard
+            # A call's result holds no sure copy: the callee may return anything
+            # (`discard(vec![x, 1])` returns `vec![7, 1]`). Only the standard
             # library's Box-to-Vec conversion `vec!` makes gives the Vec what its Box held.
             transfer = _STD_TRANSFER.match(value)
             if transfer and _trusts(transfers, transfer[1]):
@@ -5118,7 +5073,7 @@ class Body:
         return self._writable_borrows
 
     def _read_store(self, local, projection, text, pointer, state):
-        """``_read_step`` over a store through a pointer (#311). What it may write into
+        """``_read_step`` over a store through a pointer. What it may write into
         (``_stored_into``; anything, through a pointer loaded from memory) no longer surely
         holds what it held. Where the pointer surely points into a local, or into what that
         owns (``into``; a Box written through itself, as `ShallowInitBox`'s is), which no
@@ -5160,16 +5115,16 @@ class Body:
         return read, taken, own, origins, apart, into
 
     def _addressable(self, local):
-        """Whether a pointer may point into ``local``'s storage, or into what it owns
-        (#311): its storage is borrowed somewhere, or its type may hold a pointer (a
+        """Whether a pointer may point into ``local``'s storage, or into what it owns:
+        its storage is borrowed somewhere, or its type may hold a pointer (a
         Box's, a Vec's, an array of them)."""
         kind = self.types.get(local)
         return local in self._borrowed() or (kind is not None and not _POINTERLESS.fullmatch(kind))
 
     def _read_clobber(self, text, state):
         """``state`` (``_read_step``'s) less what a call ``text``, or a
-        `copy_nonoverlapping`, may change, where something holds a read (#311): what it is
-        given, moved or passed (#311 review: what a callee does with it is not known), and
+        `copy_nonoverlapping`, may change, where something holds a read: what it is
+        given, moved or passed (what a callee does with it is not known), and
         a local it is given a pointer that may point into, as `fill(p)` may overwrite the
         Box `p` was made from: an alias of it a callee may write through (``_may_write_through``: a
         `&mut` or raw pointer, a mutable view, or a value made from one)."""
@@ -5199,7 +5154,7 @@ class Body:
     def _read_ends(self, local, projection, text):
         """Whether the statement ``text`` is a call, a drop or a `copy_nonoverlapping` that
         may change the part ``projection`` of ``local``, where a writable borrow of a place
-        overlapping it is taken anywhere in the body (``_exposed``): `keep(&mut x)` (#300)."""
+        overlapping it is taken anywhere in the body (``_exposed``): `keep(&mut x)`."""
         if not re.match(r"(?:drop|copy_nonoverlapping)\(", text) and (
             "->" not in text or text.startswith("goto") or _NOT_A_CALL.match(text)
         ):
@@ -5209,7 +5164,7 @@ class Body:
     def _exposed(self, local, projection):
         """Whether the body takes a writable borrow (`&mut`, `&raw`) of a place of
         ``local`` anywhere that may overlap its part ``projection``: then a call, a drop,
-        or a write through a pointer not surely elsewhere may change that part (#300)."""
+        or a write through a pointer not surely elsewhere may change that part."""
         if self._exposed_cache is None:
             self._exposed_cache = {}
         key = (local, projection)
@@ -5283,8 +5238,8 @@ class Body:
         empty = (frozenset(),) * 6
         entry = dict.fromkeys(self.blocks, empty)
         # Every block the code can reach once, whatever flows into it: a copy made in a
-        # block whose entry holds none must still flow on (#192 review: a `while let`'s
-        # `then_some(x)`); one it cannot reach adds nothing to a join (#192 review 2).
+        # block whose entry holds none must still flow on (a `while let`'s
+        # `then_some(x)`); one it cannot reach adds nothing to a join.
         work = sorted(self._reachable(), reverse=True)
         queued, steps = set(work), 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
@@ -5650,7 +5605,7 @@ class Body:
         `*bx = new` through a Box (`drop(((*_13).1: T))`, then the store to the same
         place through another pointer of the same Box), and `h.b = new` on a local's
         own field or element (`drop((_1.1: Box<Pt>))`, then `(_1.1: Box<Pt>) = move
-        _4;` with nothing but storage markers and drop flags between, #108). The store
+        _4;` with nothing but storage markers and drop flags between). The store
         fills what the drop emptied."""
         if self._replaced is None:
             boxes, drops, found = self._boxes(), {}, {}
@@ -5949,7 +5904,7 @@ class Body:
     def maybe_initialized(self, position):
         """A bitset of the locals that may hold a value at ``position`` ((block, index):
         before that statement), on some path from bb0: assigned and not moved, dropped
-        or ended since (#164: a `drop` of a local moved out on every path drops
+        or ended since (a `drop` of a local moved out on every path drops
         nothing). Every local where the analysis gives up."""
         if self._maybe is None:
             self._maybe = self._maybe_flow() or {}
@@ -5995,14 +5950,14 @@ class Body:
 
     def _assigned_flow(self, resumed=True):
         """{block: bitset of the locals assigned on entry, on every path from bb0} for the
-        blocks reachable from bb0 (#132); None past its budget. A local is assigned from
+        blocks reachable from bb0; None past its budget. A local is assigned from
         a whole assignment (a call's result on its return edge) until its storage begins
         again (`StorageLive`: a loop's next pass, a poll resuming the body), not until a
-        move or drop: those leave a value's bytes, which #108's views judge, and at
-        opt-level 0 a slot keeps what was last stored in it past `StorageDead` (rustc
-        emits no lifetime markers, so no other local shares it). Across a suspension,
-        only what the coroutine's state saves is kept. ``resumed=False``: the first
-        poll's paths only, none through a suspension."""
+        move or drop: those leave a value's bytes, which the checks for moved and dropped
+        values judge, and at opt-level 0 a slot keeps what was last stored in it past
+        `StorageDead` (rustc emits no lifetime markers, so no other local shares it).
+        Across a suspension, only what the coroutine's state saves is kept.
+        ``resumed=False``: the first poll's paths only, none through a suspension."""
         if self._assigned_flows is None:
             self._assigned_flows = {}
         if resumed in self._assigned_flows:
@@ -6142,12 +6097,6 @@ class Body:
                 scope = self.scopes.get(scope)
         return found
 
-    def could_show(self, position, scope, line, file, foreign=True, blocks=None):
-        """False only if lldb-dap cannot show a binding of MIR ``scope`` with the stop at
-        ``position`` (see ``scopes_at``)."""
-        found = self.scopes_at(position, line, file, foreign, blocks)
-        return found is None or scope in found
-
     def returned_into(self, number, line, file, foreign, blocks):
         """The blocks whose call or drop of ``line`` returns into block ``number``, where
         the stop can be at its start only after one of them (``stop_positions``' place
@@ -6249,7 +6198,7 @@ class Body:
 
 _CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
 # What rustc's debug info names a coroutine by its kind; its MIR path says `{closure#N}`
-# with the same disambiguator (#116).
+# with the same disambiguator.
 _COROUTINE_NAME = re.compile(
     r"\{(?:async_fn|async_block|async_closure|coroutine|gen_fn|gen_block|gen_closure"
     r"|async_gen_fn|async_gen_block|async_gen_closure)#([0-9]+)\}"
@@ -6400,7 +6349,7 @@ def _overlaps(steps, projection):
 
 
 def _pointer_kind(kind):
-    """What a variable of the MIR type ``kind`` is, for a refusal naming it (#300): a
+    """What a variable of the MIR type ``kind`` is, for a refusal naming it: a
     "reference", a "raw pointer", a "closure", a "coroutine" (an `async` block's or fn's
     too); None for another type that may hold a pointer (`Option<&T>`, `NonNull<T>`)."""
     kind = kind or ""
@@ -6424,10 +6373,10 @@ def _copy_verdict(
 
     With ``compares`` (the roots under which the dump's `std::ptr::eq` and `addr_eq` are
     the standard library's: ``OwnedLocals._std_compares``), such a call under one of them
-    reads the two addresses it is given and nothing they point at (#300): what it returns
+    reads the two addresses it is given and nothing they point at: what it returns
     holds a copy only where they do. Any other call given a pointer may read through it.
 
-    ``reads`` says which pointers count (#300: what a refusal may say): "any", also one
+    ``reads`` says which pointers count (what a refusal may say): "any", also one
     Peeky does not follow (read through, or a reference variable a call is given), which
     may point anywhere; "traced", only one the flow shows may point into ``local``
     (``points``, ``own``); "value", none: only reads of it by value (``touched``: of a
@@ -6493,7 +6442,7 @@ _WRITE_THROUGH = re.compile(r"^\(+\*_([0-9]+)\)[^=]* = ")
 def _written_place(text, local):
     """The steps of the place of ``local`` the statement ``text`` assigns (`(_1.0: u32)
     = …`: [("field", 0)]; `_1[_5] = …`: [("index", None)]), or None where it assigns
-    none of it (#300)."""
+    none of it."""
     written = re.match(rf"\(*_{local}\b", text)
     if written is None:
         return None
@@ -6517,7 +6466,7 @@ def _apart(steps, projection):
 
 def _root_access(text, local, projection=(), formats=None):
     """What the MIR statement ``text`` surely does to the part ``projection`` of
-    ``local`` (#192 review: ``Body.copy_undoes``): "read" (a `copy` or `move` of a place
+    ``local`` (``Body.copy_undoes``): "read" (a `copy` or `move` of a place
     that overlaps it, or std's printing or formatting of a borrow of one: ``formats``,
     ``Body._format_reads``), "end" (an assignment to the whole local or to a place
     covering the part, or the end of its storage), or None (anything else: a borrow, a
@@ -6550,7 +6499,7 @@ def _root_access(text, local, projection=(), formats=None):
 
 @dataclass(frozen=True)
 class StopBlock:
-    """Where a stop's pc is (#115): the names of the variables each lexical block
+    """Where a stop's pc is: the names of the variables each lexical block
     declares (sorted), from the innermost DWARF block holding the pc out to the
     function's own scope; and how many of the function's blocks have each such chain."""
 
@@ -6610,12 +6559,12 @@ class LineFacts:
 _MACRO_CALL = re.compile(r"(?<![\w:])((?:::)?(?:\w+::)*\w+)\s*!\s*[(\[{]")
 
 
-# A type nothing can change behind a shared reference, holding no reference of its own
-# (#156): integers, floats, bools, chars, `str`, `String`, and `Vec`s, `Box`es, arrays,
+# A type nothing can change behind a shared reference, holding no reference of its own:
+# integers, floats, bools, chars, `str`, `String`, and `Vec`s, `Box`es, arrays,
 # slices and tuples of them.
 # A function's header prints its arguments' types by their short names (`&Vec<String>`),
 # its locals' by their whole paths: either, where the crate names nothing else so
-# (OwnedLocals._std_names).
+# (OwnedLocals._untrusted_names).
 _FROZEN_LEAF = r"(?:[iu](?:8|16|32|64|128|size)|f32|f64|bool|char|str|(?:std::string::)?String)"
 _FROZEN_TYPE = re.compile(
     rf"(?:(?:std::vec::)?Vec<|(?:std::boxed::)?Box<|\[|\()*"
@@ -6640,7 +6589,7 @@ _FROZEN_NAMES = (
 _NAMING = re.compile(r"(;)|(!\s*[(\[{])|(?:r#)?(\w+)")
 _DECLARING = frozenset({"struct", "enum", "union", "type", "trait", "mod"})
 _MACRO_NAME = re.compile(r"\s*!\s*(?:r#)?(\w+)(?:\s*([({\[]))?")
-# One space (more count as another crate's, as the per-name search had it).
+# One space (more count as another crate's).
 _STD_USE = re.compile(r"\s(?:::)?(?:std|core|alloc)::")
 _TYPE_FOLLOWS = re.compile(r"\s*(?:::|<|\()")
 
@@ -6657,15 +6606,9 @@ def _closings(code):
     return closing
 
 
-def _passes_std(code):
-    """True if a macro invocation in ``code`` (comments and strings blanked) has `std`,
-    `core` or `alloc` among its arguments other than as a path's start (`make_mod!(std)`)."""
-    return bool(_passed_std(code))
-
-
 def _passed_std(code):
     """Which of `std`, `core` and `alloc` a macro invocation in ``code`` has among its
-    arguments other than as a path's start (``_passes_std``)."""
+    arguments other than as a path's start (`make_mod!(std)`)."""
     closing, found = _closings(code), set()
     for opening in _MACRO_OPENING.finditer(code):
         start = opening.start(1)
@@ -6982,7 +6925,7 @@ def _target(block):
 
 def _covers(block, index, column, line, file, facts):
     """True if code LLVM inlined from a call at DWARF ``column`` (bytes; 0 where not
-    given) of ``line`` may be call statement ``index``'s of ``block`` (#324): its span
+    given) of ``line`` may be call statement ``index``'s of ``block``: its span
     holds the column, or it spans another file or none, where a macro's path on the line
     (``facts.macros``, rustc collapsing the macro's code there) is at the column or the
     line's text is not known."""
@@ -7037,7 +6980,7 @@ def _scope(block, index):
         return None
 
 
-# #259: the standard library's address comparisons, which read the two pointers they are
+# The standard library's address comparisons, which read the two pointers they are
 # given and nothing else. The dump names `core::ptr::eq` `std::ptr::eq` (never `eq`
 # alone: many items are), and `addr_eq` alone where no other item is so named
 # (``OwnedLocals._std_compares`` says when those names are the standard library's).
@@ -7051,7 +6994,7 @@ def _comparison_root(text):
     """The root of the address comparison ``text`` calls (``_ADDRESS_COMPARISON``):
     `std` or `core` as the dump names it, `core` for a bare `addr_eq` (where the dump
     names the standard library's `core::ptr::addr_eq`); None for any other statement
-    (#320 review round 3: each proof by the root it uses)."""
+    (each proof by the root it uses)."""
     found = _ADDRESS_COMPARISON.match(text)
     return None if found is None else found[2] or found[3] or "core"
 
@@ -7065,7 +7008,7 @@ def _trusts(roots, root):
 # A function of the crate's own that a call could be dumped under one of those names
 # (`fn std::ptr::eq`, `fn inner::addr_eq`): its header's path, any prefix.
 _COMPARISON_NAME = re.compile(r"(?:^|::)(?:ptr::eq|addr_eq)$")
-# The standard library's conversion of the Box `vec!` fills into the Vec it gives (#311):
+# The standard library's conversion of the Box `vec!` fills into the Vec it gives:
 # what the Box holds, the Vec holds. Only where ``OwnedLocals._std_transfers`` proves it.
 _STD_TRANSFER = re.compile(
     r"^(std|alloc)::boxed::box_assume_init_into_vec_unsafe::<.+>\(move _([0-9]+)\) -> "
@@ -7110,7 +7053,7 @@ def _harmless(text, borrowed, types=None, roots=True):
     whole assignment (not a call) to a local never borrowed itself; with ``types`` (the
     body's {local: type}, given where the dump's `std::ptr::eq` and `addr_eq` are the
     standard library's, under ``roots``), a call of one of them on two raw pointer locals
-    whose result goes to such a local (#259: `ptr::eq(f, e.payer)` only compares two
+    whose result goes to such a local (`ptr::eq(f, e.payer)` only compares two
     addresses)."""
     if _BRANCHES.match(text) or text.startswith("goto ") or _NOT_A_USE.match(text):
         return True
@@ -7150,7 +7093,7 @@ def _transfer(text, state):
     return state
 
 
-# Where a local's storage begins anew, its bytes are what the slot last held (#132).
+# Where a local's storage begins anew, its bytes are what the slot last held.
 _STORAGE_BEGINS = re.compile(r"^(?:StorageLive|Deinit)\(_([0-9]+)\);$")
 
 
@@ -7276,7 +7219,7 @@ _STATE = re.compile(r"^        _([0-9]+) = copy \(_1\.0: &mut \{.+\}\); +// ")
 
 
 def _saved_locals(body, lines, start):
-    """A coroutine's body (an `async fn`'s or block's, #116) keeps the locals it holds
+    """A coroutine's body (an `async fn`'s or block's) keeps the locals it holds
     across a suspension in its state, as fields of the suspension's variant (`(((*_34)
     as variant#3).0: &Pt)`), which the debug info binds and the code reads and writes as
     it would the local. Each is renamed a local of its own, numbered past the body's,
@@ -7392,7 +7335,7 @@ def load_bodies(directory, crate, defined=None):
         return []
     bodies = []
     for path in files:
-        # As rustc wrote it: no newline translation, and no byte read as another (#188).
+        # As rustc wrote it: no newline translation, and no byte read as another.
         text = path.read_bytes().decode("utf-8", errors="surrogateescape")
         if defined is not None:
             defined.update(found[1] for found in _FUNCTION_HEADER.finditer(text))
@@ -7439,7 +7382,7 @@ _META_LIST = re.compile(r"^(![0-9]+) = (?:distinct )?!\{((?:![0-9]+(?:, )?){0,64
 # which may lower to nothing) or a conditional branch.
 _IR_CALL = re.compile(r"^\s*(?:%\S+ = )?(?:tail |musttail |notail )?(?:call|invoke) (?!.*@llvm\.)")
 _IR_BRANCH = re.compile(r"^\s*(?:br i1 |switch )")
-# Code opt-level 0 surely emits at the instruction's location (#115): a branch on a value
+# Code opt-level 0 surely emits at the instruction's location: a branch on a value
 # (not a constant), a store of bytes (not of nothing, nor of an undefined value).
 _IR_SURE_BRANCH = re.compile(r"^\s*br i1 %")
 _IR_STORE = re.compile(r"^\s*store (?:volatile )?(.+) (\S+), ptr ")
@@ -7470,7 +7413,7 @@ class IrFunction:
     # inlined (where their code's `inlinedAt` chain leaves this function).
     events: dict = field(default_factory=dict)
     inlined: dict = field(default_factory=dict)
-    # Lines LLVM inlined code of this function into other functions on (#116): a frame
+    # Lines LLVM inlined code of this function into other functions on: a frame
     # with this hash may be such a copy (`#[inline(always)]`), whose layout ``blocks``
     # does not describe. ``inline_only``: it has no IR function of its own at all.
     copies: frozenset = frozenset()
@@ -7483,7 +7426,7 @@ class IrFunction:
     # is generic in a way not understood (a const parameter). Its MIR body is generic,
     # so any type it declares may name one of them, whatever the name (`i8`).
     generics: tuple | None = ()
-    # Its own lexical blocks (#115), each named as the DWARF names a block holding a stop
+    # Its own lexical blocks, each named as the DWARF names a block holding a stop
     # (`StopBlock.chain`): {chain: how many blocks with it have code, LLVM emitting a
     # DWARF block for each}, {(line, chain): how many have code of the line}, {label:
     # ((line, chain, the calls before it in the label), ...) for each instruction that
@@ -7501,7 +7444,7 @@ class IrFunction:
     # is called from (a `#[inline(always)]` callee's `inlinedAt` chain leaving it).
     sites: dict = field(default_factory=dict)
     # {label: ((instruction kind, line of its own file or None, known), ...)}: where each
-    # instruction is, in order (see _placed_at), unlocated ones included (#230 review).
+    # instruction is, in order (see _placed_at), unlocated ones included.
     provenance: dict = field(default_factory=dict)
     # The labels an `invoke` ends: its result is stored in its normal successor.
     invokes: frozenset = frozenset()
@@ -7514,7 +7457,7 @@ class IrFunction:
         or where the IR names no block for it (codegen merged it into another). The
         whole block counts, not a call within it: which LLVM call is the MIR
         terminator's is not told (a helper may follow it, an inlined callee may call
-        others, the call may be gone) (#230 review, round 2)."""
+        others, the call may be gone)."""
         label = "start" if number == 0 else f"bb{number}"
         found = self.provenance.get(label)
         if label not in self.blocks or not found or label in self.invokes:
@@ -7594,7 +7537,7 @@ def ir_functions(path, files):
                             key: value
                             for key, pattern in _METAFIELDS.items()
                             if (m := pattern.search(found[3]))
-                            # A string LLVM does not write names nothing (#188 review).
+                            # A string LLVM does not write names nothing.
                             and (value := _unquote(m[1])) is not None
                         },
                     )
@@ -7606,7 +7549,7 @@ def ir_functions(path, files):
                 continue
             if line.startswith("}"):
                 if pending:
-                    # An `invoke` or branch whose location never came: unknown (#230 review).
+                    # An `invoke` or branch whose location never came: unknown.
                     current[2].setdefault(current[4][0], []).append((None, pending))
                     pending = ""
                 raw.append(current)
@@ -7647,10 +7590,10 @@ def ir_functions(path, files):
             elif kind in ("c", "b", "B"):
                 pending = kind
             elif _IR_INSTRUCTION.match(line):
-                # Code with no location: where it is cannot be told (#230 review).
+                # Code with no location: where it is cannot be told.
                 current[2].setdefault(current[4][0], []).append((None, kind))
     wanted = _source_names(meta, set(files))
-    # {lexical block or subprogram: the names of the variables it declares} (#115).
+    # {lexical block or subprogram: the names of the variables it declares}.
     names = {}
     for kind, fields in meta.values():
         if kind == "DILocalVariable" and "name" in fields:
@@ -7658,7 +7601,7 @@ def ir_functions(path, files):
             if block is not None:
                 names.setdefault(block, []).append(fields["name"])
     # {subprogram: lines} of code LLVM inlined from each function into another, in the
-    # inlined function's own file (#116).
+    # inlined function's own file.
     copies = {}
     for _, _, blocks, _, _, _ in raw:
         for refs in blocks.values():
@@ -7683,7 +7626,7 @@ def ir_functions(path, files):
         if file not in wanted:
             continue
         lines, events, inlined, sites, provenance = {}, {}, {}, {}, {}
-        # #115: the named blocks with code (an inlined call's site counts), those with
+        # The named blocks with code (an inlined call's site counts), those with
         # code of each line, and each label's sure instructions and calls.
         active, line_blocks, sure, calls = set(), {}, {}, {}
         for label, refs in blocks.items():
@@ -7691,7 +7634,7 @@ def ir_functions(path, files):
             found_events = ([], [])
             found_sure, before = [], 0
             # (instruction, its line in the file or None, whether where it is is known)
-            # for each instruction, in order (#230 review).
+            # for each instruction, in order.
             placed = provenance.setdefault(label, [])
             for ref, instruction in refs:
                 kind, location = meta.get(ref, (None, {}))
@@ -7961,7 +7904,7 @@ def _placed_at(meta, location, file, kind):
     function of ``file``: the line of the file it is on (an inlined call's site line for
     code inlined there; None for another file's), and whether that is known. Not known:
     no location, line 0, a scope naming no file, an `inlinedAt` chain that does not
-    resolve (#230 review)."""
+    resolve."""
     if kind != "DILocation":
         return None, False
     if "inlinedAt" in location:
@@ -7977,8 +7920,8 @@ def _placed_at(meta, location, file, kind):
 
 def _file(meta, scope):
     """The file a scope's code is in: its DIFile's directory and name as one normalized
-    path (`/crate/src/a/mod.rs`), so files of one name in two directories differ (#230
-    review); None where the scope names none."""
+    path (`/crate/src/a/mod.rs`), so files of one name in two directories differ;
+    None where the scope names none."""
     for _ in range(256):
         kind, fields = meta.get(scope, (None, {}))
         if kind is None:
@@ -8028,14 +7971,14 @@ class OwnedLocals:
     """Proofs that an owned local is initialized at a stop (see the module docstring)."""
 
     # Why the crate may have unsafe code (rust.unsafe_source; set by `prepare`): the
-    # frozen-owner rule does not apply (#156 review).
+    # frozen-owner rule does not apply.
     unsafe_code = None
     # The exact files std's printing macros are written in (rust.std_macro_files; set by
-    # `prepare`): a call there that formats reads what it is given (#192 review 4).
+    # `prepare`): a call there that formats reads what it is given.
     std_macros = frozenset()
     # What the crate's own types hold, read from the build's debug information
     # (rust_symbols.interior_types; set by `prepare`), or None where not read: then every
-    # type of the crate's may hold anything (#321, ``TypeLayouts.crate``).
+    # type of the crate's may hold anything (``TypeLayouts.crate``).
     interior = None
 
     def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None, defined=()):
@@ -8069,11 +8012,11 @@ class OwnedLocals:
             return self._matched[hashed]
         function = self.functions.get(hashed)
         found = None
-        # A function inlined everywhere has only the lines of its inlined copies (#116).
+        # A function inlined everywhere has only the lines of its inlined copies.
         lines = (function.copies if function.inline_only else function.lines()) if function else ()
         if lines:
             # A coroutine's debug info names its kind (`{async_fn#0}`, `{async_block#1}`);
-            # its MIR names it as a closure, by the same disambiguator (#116).
+            # its MIR names it as a closure, by the same disambiguator.
             name = _mir_name(function.name)
             # Positive identification, never by elimination: exactly one body of this
             # name and file (and parent) has a span on the line the function is declared
@@ -8110,7 +8053,7 @@ class OwnedLocals:
                     ]
             elif not candidates and function.inline_only:
                 # Not identified, and no IR describes its code either: its borrowing
-                # bindings are those of the bodies it may be (#116).
+                # bindings are those of the bodies it may be.
                 self._unanalyzed[hashed] = [
                     body for body in self.bodies if body.file == function.file and body.name == name
                 ]
@@ -8118,7 +8061,7 @@ class OwnedLocals:
             if found is not None and not (
                 found.supported and found._dataflow() is not None
                 if function.inline_only
-                # A coroutine whose state is not understood can hold anything (#116).
+                # A coroutine whose state is not understood can hold anything.
                 else (found.supported or found.coroutine is None) and _covered(found, function)
             ):
                 # Identified, but its layout or dataflow is not understood.
@@ -8152,8 +8095,8 @@ class OwnedLocals:
         A line that may invoke a macro runs code whose spans are in another file
         (`eprintln!`'s, collapsed onto the line), in scopes no statement of this file
         there shows: the stop can be in one of those. Where the DWARF lexical block the
-        stop's pc is in (``block``) is told apart, only it and its enclosing scopes
-        (#115): by the stop line's places (of ``site``) where several scopes have its
+        stop's pc is in (``block``) is told apart, only it and its enclosing scopes:
+        by the stop line's places (of ``site``) where several scopes have its
         names, else every scope with them. A name none of whose ``bindings`` are there
         (lldb-dap shows none at the stop) is judged as without the block."""
         visible = self._line_visible(body, line, path)
@@ -8301,32 +8244,6 @@ class OwnedLocals:
         local = self._local(site[0], variable_name, line, path)
         return local is not None and self._initialized(site, local, line)
 
-    def copied_in_progress(
-        self,
-        hashed,
-        variable_name,
-        line,
-        path,
-        breakpoint=False,
-        column=None,
-        block=None,
-        projection=(),
-    ):
-        """For the frame's local ``variable_name``: False if, from every place the stop
-        can be on ``line`` of ``path``, no temporary that may hold a value read from it
-        (``Body.copies_at``) is used again: a statement under way has not read it yet,
-        so a change made here reaches what the program reads of it from now on. True if
-        one may be (`let t = s.a + f();` back from `f`: `s.a` is in a temporary); None if
-        not understood. ``breakpoint``, ``column`` and ``block`` as for
-        ``reference_valid``: a line breakpoint (or a step that ends at its line's lowest
-        address) stops before the line's first code in its lexical block; any other
-        stop can be at any place of the line. Each temporary as ``Body.copies_at``
-        finds it: one set before the local took its current value holds an earlier one."""
-        found = self.copy_hazards(
-            hashed, variable_name, line, path, breakpoint, column, block, projection
-        )
-        return None if found is None else any(hazards for _, hazards in found)
-
     def copy_hazards(
         self,
         hashed,
@@ -8340,21 +8257,28 @@ class OwnedLocals:
         named=True,
         reads="any",
     ):
-        """``copied_in_progress``'s finding: [(a place the stop can be, the temporaries
-        that may hold a value read from the local's current value and are used again
-        from there)], or None if not understood (#183: the refusal names where those
-        temporaries were made). ``projection``: the part of the local a change makes
+        """For the frame's local ``variable_name``: [(a place the stop can be on ``line`` of
+        ``path``, the temporaries that may hold a value read from the local's current value
+        and are used again from there)], or None if not understood (the refusal names where
+        those temporaries were made). Where no place has one, a statement under way has not
+        read it yet, so a change made here reaches what the program reads of it from now on
+        (`let t = s.a + f();` back from `f` has one: `s.a` is in a temporary).
+        ``breakpoint``, ``column`` and ``block`` as for ``reference_valid``: a line
+        breakpoint (or a step that ends at its line's lowest address) stops before the
+        line's first code in its lexical block; any other stop can be at any place of the
+        line. Each temporary as ``Body.copies_at`` finds it: one set before the local took
+        its current value holds an earlier one. ``projection``: the part of the local a change makes
         (``_root_access``; () for all of it, None where not known), which a binding's
-        copy is judged by (#192 review); without ``named``, those copies are left out
+        copy is judged by; without ``named``, those copies are left out
         (what holds for every part of an aggregate, whose parts are judged each). The
-        standard library's `ptr::eq` reads no pointee (#300, ``_std_compares``).
+        standard library's `ptr::eq` reads no pointee (``_std_compares``).
         ``reads``: which pointers count ("any", "traced", "value": ``_copy_verdict``; and
-        "whole", as "value" for the whole local), or what a refusal may say of each (#300):
+        "whole", as "value" for the whole local), or what a refusal may say of each:
         "explicit", the temporaries that surely read it; "taken", what a binding's copy of
         it surely gave (``Body.read_copies_at``), and "sources", not hazards but the
         bindings those surely came from; "copied", what may hold such a copy, of "any";
         "bindings", not hazards but the bindings that may hold a direct copy; "pointing",
-        those of them that may also point into it (#320 review: what a call returns, where
+        those of them that may also point into it (what a call returns, where
         Peeky can't tell which it holds), for the refusal to say so."""
         placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
         if placed is None:
@@ -8362,19 +8286,19 @@ class OwnedLocals:
         body, local, positions = placed
         formatting, bindings = self._formatting(), body.named_locals()
         compares, transfers = self._std_compares(), self._std_transfers()
-        # "whole": as "value", for a change to the whole local (#300: another part read);
+        # "whole": as "value", for a change to the whole local (another part read);
         # "copied", "bindings": of "any"'s flow.
         flow = {"whole": "value", "copied": "any", "bindings": "any", "pointing": "any"}.get(
             reads, reads
         )
         part = projection if reads == "value" else ()
-        # What a call std's printing makes reads (#192 review 4: by its file and path).
+        # What a call std's printing makes reads (by its file and path).
         sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
 
         def hazards(position):
             # A temporary that read the local, used again; a binding of the program's own
             # holding a direct copy (or a temporary taken from one) the program goes on
-            # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
+            # with, never reading the local (`n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
             if reads in ("explicit", "taken", "sources"):
                 sure = body.read_copies_at(local, position, projection, transfers)
@@ -8403,7 +8327,7 @@ class OwnedLocals:
             temporaries -= bindings
             # The direct copies "any" judges by their use are left out of every reading,
             # so each finds the same: a value a call made from a binding's copy is no read
-            # of the local where only "any" holds it (#320: `format!("{:.1}", mean)`).
+            # of the local where only "any" holds it (`format!("{:.1}", mean)`).
             judged = (
                 temporaries
                 if flow == "any"
@@ -8460,14 +8384,14 @@ class OwnedLocals:
     ):
         """Where the frame's local ``variable_name`` (the part ``projection`` of it, as for
         ``copy_hazards``) ends unread on every path from every place the stop can be on
-        ``line`` of ``path`` (#330: `y = t;` before any read of `y`; the end of its scope):
+        ``line`` of ``path`` (`y = t;` before any read of `y`; the end of its scope):
         [(kind, file, line)], sorted, kind as for ``Body.unread_ends`` ("stop" and "loop"
         with no file or line: ("stop", "", 0)). A change there is never seen. None where the
         program may read it, or that is not understood: a pointer into it may still be
         used (``Body.lent_from``, or a borrow ``_pointers_to`` follows), a coroutine's body
         (its state outlives a suspension), or a crate with unsafe code (a pointer may be
         kept where Peeky can't see); and where it may hold no value yet. ``breakpoint``,
-        ``column`` and ``block`` as for ``copied_in_progress``; with ``coded``, only the
+        ``column`` and ``block`` as for ``copy_hazards``; with ``coded``, only the
         places before a statement that emits code, as ``coded_hazards``."""
         if self.unsafe_code:
             return None
@@ -8525,7 +8449,7 @@ class OwnedLocals:
         """{(file, line)} of each drop of the frame's local ``variable_name`` on some path
         from a place the stop can be on ``line`` of ``path``, before the local is read,
         assigned or ended, whose `Drop` impl of the crate's may read the part
-        ``projection``, which Peeky can't tell (``Body.doubtful_drops``; #330 review 2): a
+        ``projection``, which Peeky can't tell (``Body.doubtful_drops``): a
         refusal by the program's own copy names them, and says no more than that a change
         may not be seen. Arguments as for ``unread_after``."""
         placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
@@ -8560,7 +8484,7 @@ class OwnedLocals:
     ):
         """{``Body.copy_kind``} of the program's own bindings that hold a direct copy of the
         part ``projection`` of the frame's local ``variable_name`` at a place the stop can
-        be on ``line`` of ``path``, and refuse it (#330 review 4): where each is "loop", a
+        be on ``line`` of ``path``, and refuse it: where each is "loop", a
         refusal says the program may loop forever instead of proving no read first.
         Arguments as for ``unread_after``."""
         placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
@@ -8601,7 +8525,7 @@ class OwnedLocals:
         """{"stop"}, with "loop" where a loop is on the way, where from every place the stop
         can be on ``line`` of ``path`` every path panics, exits or never leaves a loop
         before it reads the part ``projection`` of the frame's local ``variable_name``,
-        assigns or ends it (``Body.exits_unread``; #330 review 3): a refusal by the
+        assigns or ends it (``Body.exits_unread``): a refusal by the
         program's own copy says so. Else an empty set. Arguments as for ``unread_after``."""
         placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
         if placed is None:
@@ -8624,9 +8548,9 @@ class OwnedLocals:
 
     def copy_lines(self, hashed, temporaries, named_only=False):
         """The source lines where the code assigns any of ``temporaries`` in the body of
-        ``hashed`` ({(file, line)}), for a refusal to name (#183); with ``named_only``,
-        only the program's own bindings among them (#192), where they are not assigned a
-        constant (#300: `week = 0` after its copy is no copy; #311: nor `b[0] = 7;`)."""
+        ``hashed`` ({(file, line)}), for a refusal to name; with ``named_only``,
+        only the program's own bindings among them, where they are not assigned a
+        constant (`week = 0` after its copy is no copy; nor `b[0] = 7;`)."""
         body = self.body(hashed)
         if body is None:
             return set()
@@ -8646,7 +8570,7 @@ class OwnedLocals:
     def copy_sources(self, hashed, temporaries, among):
         """The bindings of ``among`` that ``temporaries`` are computed from, walking back
         through what each assignment to them mentions to the program's own bindings
-        (#300: a binding's copy a refusal names, `week` of `let week = weeks;` for
+        (a binding's copy a refusal names, `week` of `let week = weeks;` for
         `same(week + 1)`); a binding among ``temporaries`` is its own."""
         body = self.body(hashed)
         if body is None:
@@ -8671,7 +8595,7 @@ class OwnedLocals:
 
     def untraced_reads(self, hashed, temporaries):
         """Where ``temporaries`` (``copy_hazards``'s, only with ``reads="any"``) may have
-        read the local through a pointer Peeky does not follow (#300): ({(file, line)} of
+        read the local through a pointer Peeky does not follow: ({(file, line)} of
         each read through a pointer, or use of a variable whose type holds one, they are
         made from; [(the program's own name of each such variable, what it is:
         "reference", "raw pointer", "closure", "coroutine", or None for another value
@@ -8708,7 +8632,7 @@ class OwnedLocals:
 
     def pointer_bindings(self, hashed, locals_):
         """Those of ``locals_`` that are the program's own references or raw pointers in the
-        body of ``hashed`` (#311 review: `p` of `*p = x;`, which stands for what it points
+        body of ``hashed`` (`p` of `*p = x;`, which stands for what it points
         at, where nothing else does)."""
         body = self.body(hashed)
         if body is None:
@@ -8722,8 +8646,8 @@ class OwnedLocals:
     def holder_kinds(self, hashed, locals_, kind):
         """Of ``locals_``: ({each: what a callee given a `&` to it may store in it of a value
         of the MIR type ``kind``, ``_copy_level``'s "copy" or "derived"}, those whose
-        type is a crate's of which instance it is can't be told) (#321 review rounds 1 and
-        2): a `Cell<bool>` takes no copy of a `u32`, only what was computed from one."""
+        type is a crate's of which instance it is can't be told):
+        a `Cell<bool>` takes no copy of a `u32`, only what was computed from one."""
         body = self.body(hashed)
         if body is None:
             return dict.fromkeys(locals_, "derived"), frozenset()
@@ -8734,13 +8658,13 @@ class OwnedLocals:
 
     def global_holders(self, hashed, locals_):
         """Those of ``locals_`` that stand for the crate's global state a place may have
-        stored a copy in (#329: a `static` with interior mutability, a `static mut`, a
+        stored a copy in (a `static` with interior mutability, a `static mut`, a
         `thread_local!`; ``Body.global_holders``), which no change Peeky makes reaches."""
         return frozenset(local for local in locals_ if local >= _GLOBAL_BASE)
 
     def global_levels(self, hashed, locals_, kind):
         """{each of ``locals_`` that stands for global state: what it may hold of a value of
-        the MIR type ``kind``, "copy" or "derived"} (#329, ``Body.global_level``)."""
+        the MIR type ``kind``, "copy" or "derived"} (``Body.global_level``)."""
         body = self.body(hashed)
         holders = self.global_holders(hashed, locals_)
         if body is None:
@@ -8749,7 +8673,7 @@ class OwnedLocals:
 
     def hidden_holders(self, hashed, locals_):
         """Those of ``locals_`` whose type may keep what a callee stores in them behind a
-        cell, a lock, a channel or a pointer in the body of ``hashed`` (#321: `c` of
+        cell, a lock, a channel or a pointer in the body of ``hashed`` (`c` of
         `Counter { c: Cell<u32> }`, a channel's `rx`), where no change Peeky makes reaches
         it (a field of a standard type is the library's)."""
         body = self.body(hashed)
@@ -8759,7 +8683,7 @@ class OwnedLocals:
 
     def copy_names(self, hashed, locals_):
         """The program's own names (sorted) of those of ``locals_`` a binding names in the
-        body of ``hashed`` (#192: `n`, where `x = match x { n => … }` copied `x`)."""
+        body of ``hashed`` (`n`, where `x = match x { n => … }` copied `x`)."""
         body = self.body(hashed)
         if body is None:
             return []
@@ -8793,7 +8717,7 @@ class OwnedLocals:
     def copied_everywhere(self, hashed, variable_name, line, path, projection=()):
         """The temporaries (a frozenset) that hold a value read from the frame's local
         ``variable_name`` at every place of ``line`` and are used again from each, so no
-        stop on the line can change it for the statement under way (#183: refused before
+        stop on the line can change it for the statement under way (refused before
         the program runs); None where some place has none, or that is not understood.
         ``projection`` as for ``copy_hazards``."""
         found = self.coded_hazards(hashed, variable_name, line, path, projection)
@@ -8814,13 +8738,13 @@ class OwnedLocals:
         block=None,
         free_types=frozenset(),
     ):
-        """For the frame's owned local ``variable_name`` (a String a text change writes,
-        #164): False if, from every place the stop can be on ``line`` of ``path``, no
+        """For the frame's owned local ``variable_name`` (a String a text change writes):
+        False if, from every place the stop can be on ``line`` of ``path``, no
         local that may hold a pointer into it (``Body.lent_from``: a `&str` of it, an
         iterator over it, anything built from one) is used again; True if one may be;
         None if not understood. A borrow still in use would read the new bytes with the
         old length: a mix of texts, or bytes that are not UTF-8. ``breakpoint``,
-        ``column`` and ``block`` as for ``copied_in_progress``."""
+        ``column`` and ``block`` as for ``copy_hazards``."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -8841,7 +8765,7 @@ class OwnedLocals:
         generics = self.type_parameters(hashed)
         found = body.lent_from(local, generics, free_types)
         lent = _mask(found)
-        # A drop uses what it drops where its code may read a borrow (#164: a guard's
+        # A drop uses what it drops where its code may read a borrow (a guard's
         # `Drop`; not a `Vec<&str>`'s), unless what it would drop was moved out before the
         # stop (`drop(b);` then the scope's end).
         dropped = _mask(n for n in found if not _quiet_drop(body.types.get(n), generics))
@@ -8863,8 +8787,8 @@ class OwnedLocals:
         everywhere=None,
     ):
         """For the frame's local ``variable_name``, at a stop where its line starts but
-        code LLVM inlined from calls on ``line`` runs below the stop's address (#324:
-        `let y = x.clone();`, whose inlined `clone` reads `x` before the line's first row
+        code LLVM inlined from calls on ``line`` runs below the stop's address
+        (`let y = x.clone();`, whose inlined `clone` reads `x` before the line's first row
         of its own, where LLDB stops): ([the names of the functions called], why) where one
         of those calls may read it, else ([], None); None if not understood.
 
@@ -8872,8 +8796,8 @@ class OwnedLocals:
         (``Body.lent_from``, which the borrow rules keep sound in safe code: a pointer into
         a local is made in its own frame; in unsafe code any raw pointer too). It is
         "unsafe" where the crate has unsafe code and a call is not the standard library's
-        `ptr::eq`, which reads no pointee (#300): such code may read the local through a
-        pointer it isn't given (a `static mut`), so every local is withheld (#324 review).
+        `ptr::eq`, which reads no pointee: such code may read the local through a
+        pointer it isn't given (a `static mut`), so every local is withheld.
 
         ``inlined``: (DWARF column on the line in bytes, 0 where not given; the function's
         name, "" where not read) of each call below the stop, or None where the stop's
@@ -8886,8 +8810,8 @@ class OwnedLocals:
 
         ``everywhere``: the DWARF columns of every call made from the line that LLVM
         inlined into the function, where known. Where those are not the IR's own
-        (``IrFunction.inlined``), the two disagree, and nothing is understood (#324
-        review). ``block`` and ``free_types`` as for ``borrow_live``."""
+        (``IrFunction.inlined``), the two disagree, and nothing is understood.
+        ``block`` and ``free_types`` as for ``borrow_live``."""
         function = self.functions.get(hashed)
         if function is None:
             return None
@@ -8942,8 +8866,8 @@ class OwnedLocals:
             if local in given:
                 given_names.append(_callee(text))
             elif _trusts(self._std_compares(), _comparison_root(_STRING.sub('""', text))):
-                # The standard library's `ptr::eq` reads no pointee (#300), under the root
-                # the dump names it by (#320 review round 3).
+                # The standard library's `ptr::eq` reads no pointee, under the root
+                # the dump names it by.
                 continue
             elif given & lent or (
                 self.unsafe_code
@@ -8960,7 +8884,7 @@ class OwnedLocals:
 
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns
-        their type) is theirs (#105): the crate names nothing `core` or `std` but the
+        their type) is theirs: the crate names nothing `core` or `std` but the
         standard library's paths (`core::fmt::...`), in every source's code, and has no
         MIR body under either (its own `mod core { pub mod fmt { ... } }` prints just
         like the real one). Unknown text counts as naming one."""
@@ -8995,14 +8919,14 @@ class OwnedLocals:
     ):
         """For the frame's local ``variable_name`` whose type borrows (a reference, `&str`,
         a tuple, `Vec` or closure holding one, a raw pointer): True if what it points into
-        is shown to stand at ``line`` of ``path``, False if not (#110), None if this does
+        is shown to stand at ``line`` of ``path``, False if not, None if this does
         not apply (another type, the site or the local not understood). ``breakpoint``:
         the stop is a line breakpoint's, at ``column`` (lldb-dap's, in bytes) if known.
 
         True where, from every place the stop can be on the line, the code still uses it
         ahead, or used it last with nothing since that can move, drop or write (no call,
         no drop; a call of `std::ptr::eq` or `addr_eq`, which only compares addresses, is
-        none, #259): the borrow checker keeps what it borrows alive and unchanged until its
+        none): the borrow checker keeps what it borrows alive and unchanged until its
         last use. Past a call or drop after its last use, what it pointed into may be
         moved, dropped or reallocated, which no simpler reading of the MIR can rule out
         (interior mutability, `&mut` aliases, loops), so then it is False. Also True: a
@@ -9013,11 +8937,11 @@ class OwnedLocals:
         and a local only ever assigned constants (`"text"`, a promoted `&[1, 2]`); a
         local never borrowed itself, for the last two. A raw pointer keeps no borrow, so
         it is False (a tuple holding one is judged as a tuple, and the raw pointer in it
-        shows only its address, #255). A value not yet assigned (its declaration line)
+        shows only its address). A value not yet assigned (its declaration line)
         is False. A name bound more than once that the stop cannot tell apart is judged
         by every binding. ``block`` (a ``StopBlock``): the
-        DWARF lexical block the stop's pc is in, if known (#115). Where False, ``why`` (a
-        list, if given) gets the reason (#259): ``_judge``'s, ("elsewhere",) for a stop
+        DWARF lexical block the stop's pc is in, if known. Where False, ``why`` (a
+        list, if given) gets the reason: ``_judge``'s, ("elsewhere",) for a stop
         the function's own lines cannot place, or ("captured",) for a capture whose
         closure or future may be dropped."""
         site = self._site(hashed, line, path)
@@ -9042,7 +8966,7 @@ class OwnedLocals:
             # A capture (`(*((*_1).0: &mut Holder))`) has no local of its own: what it
             # points at is dropped through the environment it is reached by. A value a
             # coroutine's state holds itself (`((*_34).1: i64)`, an `async fn`'s
-            # parameter) points nowhere unless its type borrows (#116).
+            # parameter) points nowhere unless its type borrows.
             captures = [
                 int(root[1])
                 for b in bindings
@@ -9056,7 +8980,7 @@ class OwnedLocals:
                 and (root := _ANY_LOCAL.search(place))
             ]
         # A breakpoint's place in the line comes from the IR function's layout, which an
-        # inlined copy of it (#116) need not share: then any place of the line counts.
+        # inlined copy of it need not share: then any place of the line counts.
         facts = self._facts(function, line, column) if breakpoint and not function.copies else None
         if captures:
             positions = self._positions(site, line, facts, block) or ()
@@ -9076,7 +9000,7 @@ class OwnedLocals:
     def lent_copies(
         self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
     ):
-        """For a name an `async fn`'s body binds twice to one parameter (#116): the
+        """For a name an `async fn`'s body binds twice to one parameter: the
         field its state keeps it in (`debug v => ((*_34).0: &Pt)`), which holds what the
         caller lent for as long as the future lives, and the poll's own copy of it (`_3 =
         copy ((*_34).0: &Pt)`), which a later poll leaves unassigned. lldb-dap shows both
@@ -9134,11 +9058,11 @@ class OwnedLocals:
         block=None,
         shown=None,
     ):
-        """#132: which of the rows lldb-dap shows as the frame's ``variable_name`` hold
+        """Which of the rows lldb-dap shows as the frame's ``variable_name`` hold
         no value of their own at ``line`` of ``path``: (how many rows the name has,
         {row: why}), rows in lldb-dap's order, or None where none is told (or nothing
         can be: the site, the binding or the body not understood). For a type that does
-        not borrow: a reference's are #110's (an unassigned one is not read through).
+        not borrow: a reference's are ``reference_valid``'s (an unassigned one is not read through).
 
         A row is the frame's own local where some path to a place the stop can be on
         the line (``breakpoint``, ``column``, ``block``: see reference_valid), of those
@@ -9152,7 +9076,7 @@ class OwnedLocals:
         body does not use it again), else "unassigned" (a `let` without a value, a
         loop's next pass before its `let`).
 
-        An `async fn`'s parameter is bound twice (#116): the state's field, in the
+        An `async fn`'s parameter is bound twice: the state's field, in the
         function's own scope, whose variables lldb-dap lists before any lexical
         block's, and the poll's own copy (`_3 = copy ((*_29).0: u32)`) in a scope
         within it, row 1 where both are shown. The field (row 0) is "passed" where a
@@ -9330,7 +9254,7 @@ class OwnedLocals:
 
     def _positions(self, site, line, facts, block=None):
         """Where in the line's blocks the stop can be; in the DWARF lexical block the
-        stop's pc is in, where ``block`` tells it apart (#115)."""
+        stop's pc is in, where ``block`` tells it apart."""
         return self._memo(
             "positions", site, line, facts, block, lambda: self._places(site, line, facts, block)
         )
@@ -9380,7 +9304,7 @@ class OwnedLocals:
             return True
         # A raw pointer (or an array of them) keeps no borrow. A tuple or a generic
         # holding one is judged as a value is (the MIR names no field types); the raw
-        # pointer inside it shows only its address (#255).
+        # pointer inside it shows only its address.
         if _RAW_POINTER.match(kind.lstrip("[")):
             return _false(why, ("raw",))
         assigned = body._assignments().get(local, [])
@@ -9388,7 +9312,7 @@ class OwnedLocals:
         # assignment of its own shows.
         free = local not in body._written_through()
         # A parameter's references point at what the caller lent for the whole call; an
-        # `async fn`'s, for as long as its future lives (#116), though a copy of one in
+        # `async fn`'s, for as long as its future lives, though a copy of one in
         # a local of the body's own frame is gone at a later poll.
         lent = local in body._lent()
         argument = (
@@ -9411,7 +9335,7 @@ class OwnedLocals:
         if free and assigned and all(value.startswith("const ") for value in assigned):
             return True
         # Not yet assigned (its declaration line), it holds whatever its slot last held.
-        # Where the stop's pc tells its places apart (#115), initialized at those.
+        # Where the stop's pc tells its places apart, initialized at those.
         if not self._initialized(site, local, line) and not (
             block is not None
             and positions != self._positions(site, line, facts)
@@ -9424,7 +9348,7 @@ class OwnedLocals:
             return True
         if free and self._borrows_frozen(site, local, line):
             return True
-        # #259: `ptr::eq(f, e.payer)` makes `f` a raw pointer (its last use) before the
+        # `ptr::eq(f, e.payer)` makes `f` a raw pointer (its last use) before the
         # call, which a stop on the line may be past; the call only compares addresses.
         compares = self._std_compares()
 
@@ -9447,7 +9371,7 @@ class OwnedLocals:
 
     def _borrows_frozen(self, site, local, line):
         """True if the shared reference ``local`` (`&str`) points only into what frozen
-        owners hold (#156): its every value is made from shared borrows of them, through
+        owners hold: its every value is made from shared borrows of them, through
         shared reborrows, copies, and calls whose borrowing operands are those (`&_1`,
         `<Vec<String> as Index<usize>>::index(move _21, 2)`, `<String as
         Deref>::deref`, `split`, `into_iter`; and `Iterator::next` on an iterator only
@@ -9467,7 +9391,7 @@ class OwnedLocals:
             not kind.startswith("&")
             or kind.startswith("&mut ")
             or _RAW_POINTER.search(kind)
-            # An async body's later poll holds what its state saved (#116, #132): not
+            # An async body's later poll holds what its state saved: not
             # judged here.
             or body.coroutine is not None
         ):
@@ -9502,7 +9426,7 @@ class OwnedLocals:
         arguments' types so, `&Vec<String>`) may be the crate's own: one it declares
         (`struct Vec`), imports under that name (`use x::Vec`, `as String`), passes bare
         to a macro (`mk!(String)`), or whose `macro_rules!` body names it (a macro may
-        declare it, #156 review). A crate whose sources do not lex trusts none."""
+        declare it). A crate whose sources do not lex trusts none."""
         if "_untrusted_known" not in self.__dict__:
             from peeky.rust_lexer import code_only
 
@@ -9539,7 +9463,7 @@ class OwnedLocals:
     def _std_compares(self):
         """The roots under which the calls the dump names `std::ptr::eq`, `core::ptr::eq`
         and `addr_eq` (``_ADDRESS_COMPARISON``; `core` for the bare one) are the standard
-        library's (#259; a frozenset, per root since #320 review round 3). A `mod std` of
+        library's (a frozenset, per root). A `mod std` of
         the crate's own, a macro's too (`make_mod!(std)`), is dumped `std::ptr::eq` as
         well, so all of these must hold:
 
@@ -9580,9 +9504,9 @@ class OwnedLocals:
     def _std_crates(self):
         """Which of `std`, `core` and `alloc` a path the dump starts with is the standard
         library's under: the crate's sources lex, and none names an item or import of that
-        name of its own (``_named_own``: `mod alloc { pub mod str { … } }`, #320 review),
-        renames an `extern crate` so, or passes it to a macro other than as a path's start
-        (#259, #311). A crate's `mod alloc` leaves `std::` paths the standard library's."""
+        name of its own (``_named_own``: `mod alloc { pub mod str { … } }`),
+        renames an `extern crate` so, or passes it to a macro other than as a path's start.
+        A crate's `mod alloc` leaves `std::` paths the standard library's."""
         if "_std_crates_known" not in self.__dict__:
             codes, own = self._crate_codes(), set()
             for code in codes:
@@ -9597,10 +9521,10 @@ class OwnedLocals:
 
     def _std_traits(self):
         """Whether the dump's bare `PartialEq`, `PartialOrd` and `Ord` (`<u32 as
-        PartialEq>::eq`) are the standard traits (#320, ``Body.std_traits``): the crate's
+        PartialEq>::eq`) are the standard traits (``Body.std_traits``): the crate's
         sources lex, and none names an item or import of those names of its own
         (``_named_own``). A trait the dump names with its root (`std::cmp::PartialEq`) also
-        needs that root (``_std_crates``, review round 3)."""
+        needs that root (``_std_crates``)."""
         if "_std_traits_known" not in self.__dict__:
             codes = self._crate_codes()
             self._std_traits_known = bool(codes) and all(
@@ -9611,7 +9535,7 @@ class OwnedLocals:
     def _trusted_names(self):
         """The short names of ``_STD_TYPES`` the crate gives no item of its own, so a call
         the dump names by one (`String::len`, `Box::<T>::new`) is a method of the standard
-        library's type (#320 review): none it declares (`struct String;`), imports under
+        library's type: none it declares (`struct String;`), imports under
         that name (`use x::Vec`, `as String`), passes bare to a macro (`mk!(Vec)`), or
         names in a `macro_rules!` body (``_named_own``). None where a source doesn't lex.
         The type's root is proven where it is used (``Body.std_paths``)."""
@@ -9625,7 +9549,7 @@ class OwnedLocals:
         return self._trusted_known
 
     def _trusted_bare(self):
-        """The short names of ``_STD_BARE`` the crate gives no item of its own (#321), as
+        """The short names of ``_STD_BARE`` the crate gives no item of its own, as
         ``_trusted_names``: a signature's `Cell<u32>` is the standard library's `Cell`.
         None where a source doesn't lex."""
         if "_bare_known" not in self.__dict__:
@@ -9639,7 +9563,7 @@ class OwnedLocals:
 
     def _droppers(self):
         """{the last path segment of each type the crate gives a `Drop` impl: the body of
-        its `drop`, or None where several types are so named} (#330 review): the type of
+        its `drop`, or None where several types are so named}: the type of
         `self` (`_1: &mut D`) of a `drop` method of an impl in the dump (`<impl at
         src/main.rs:5:1: 5:17>::drop`). An inherent `drop(&mut self)` counts too, as if it
         were one."""
@@ -9657,7 +9581,7 @@ class OwnedLocals:
         return self._droppers_known
 
     def _shadows(self):
-        """The names of the crate's functions and types (#340 review 3), which a path the
+        """The names of the crate's functions and types, which a path the
         MIR prints without its module may be (``_keeping_call``): each function's in the
         dump, and each `struct`, `enum`, `union`, `type` or `trait` its sources name."""
         if "_shadows_known" not in self.__dict__:
@@ -9672,7 +9596,7 @@ class OwnedLocals:
 
     def _keepers(self):
         """The names of the crate's functions that may keep what they are given past the
-        call (#340 review 2): one that calls the standard library's `thread::spawn` or
+        call: one that calls the standard library's `thread::spawn` or
         `Sender::send`, proven so (``_keeping_call``), or a function of the crate's so named,
         however deep. By name, so a namesake counts too. A closure's body counts for
         any call of a closure (`call`, `call_mut`, `call_once`), and a call by a function
@@ -9703,7 +9627,7 @@ class OwnedLocals:
         return self._keepers_known
 
     def _globals(self):
-        """``GlobalState`` of the crate (#329: ``global_state``), or None where it names no
+        """``GlobalState`` of the crate (``global_state``), or None where it names no
         global state with interior mutability."""
         if "_globals_known" not in self.__dict__:
             self._globals_known = global_state(
@@ -9712,7 +9636,7 @@ class OwnedLocals:
         return self._globals_known
 
     def _layouts(self):
-        """What the crate's own types and closures hold (#321, ``TypeLayouts``): its types
+        """What the crate's own types and closures hold (``TypeLayouts``): its types
         by the debug information (``interior``), its closures by what each body that builds
         one captures, and the standard short names it gives nothing of its own."""
         if "_layouts_known" not in self.__dict__:
@@ -9730,7 +9654,7 @@ class OwnedLocals:
         """{the name of each struct, enum or union the crate declares with type arguments:
         each parameter's name and the default it declares, in order, a lifetime left out
         (`("T", "u32")` of `struct Gen<T = u32>`, `("U", "T")` of `struct Pair<T, U = T>`, None
-        for none)}, from its sources (#321 review rounds 1 and 2). A name declared twice
+        for none)}, from its sources. A name declared twice
         with different ones gives None for those; a source that doesn't lex, nothing."""
         if "_defaults_known" not in self.__dict__:
             found = {}
@@ -9772,7 +9696,7 @@ class OwnedLocals:
     def _std_transfers(self):
         """The roots under which the calls the dump names as the Box-to-Vec conversion
         `vec!` makes (``_STD_TRANSFER``: `std::boxed::box_assume_init_into_vec_unsafe`) are
-        the standard library's (#311; per root since #320 review round 3), as
+        the standard library's (per root), as
         ``_std_compares`` proves `ptr::eq`: `std` or `alloc` where the crate gives that
         name nothing of its own (``_std_crates``), and no function the crate's MIR dump
         holds is so named."""
@@ -9862,7 +9786,7 @@ class OwnedLocals:
         if [source for source in self.sources if shown.endswith("/" + source)] != [function.file]:
             return None
         if function.inline_only:
-            # No IR shows where its inlined copies' code is (#116): every block with a
+            # No IR shows where its inlined copies' code is: every block with a
             # statement of the line, or with code another file's macro may put on it,
             # and with `#[collapse_debuginfo]` any block, on a line that may invoke one.
             foreign = may_invoke_macro(self.texts.get(function.file), line)
@@ -10001,7 +9925,7 @@ def macro_definitions(text):
 def macro_lines(text):
     """The lines of ``text`` (from 1) a macro's definition spans, from its name to its
     body's end: code there may be any invocation's, which LLVM's inlined calls name as
-    their site (#324 review: `$v.clone()` in `macro_rules! mclone`). None where the text
+    their site (`$v.clone()` in `macro_rules! mclone`). None where the text
     is not known, or not read as rustc reads it (rust_lexer.code_only)."""
     spans = macro_definitions(text)
     if spans is None:

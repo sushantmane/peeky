@@ -2629,9 +2629,7 @@ def test_a_breakpoints_place_on_its_line_is_told_by_its_column_or_not_at_all():
     )
 
     def judged(column):
-        return owned.copied_in_progress(
-            "h0", "s", 9, "/w/src/main.rs", breakpoint=True, column=column
-        )
+        return in_progress(owned, "h0", "s", 9, "/w/src/main.rs", breakpoint=True, column=column)
 
     assert judged(13) is True  # the tuple's column: `s.a` is in `_5`
     assert judged(14) is False  # `&k`'s: nothing of `s` read yet
@@ -2805,8 +2803,15 @@ def raw_eq_session(owned, projection=()):
     return why
 
 
+def in_progress(owned, *args, **kwargs):
+    """Whether a temporary holding a read of the local is used again from some place the
+    stop can be (``OwnedLocals.copy_hazards``); None if not understood."""
+    found = owned.copy_hazards(*args, **kwargs)
+    return None if found is None else any(hazards for _, hazards in found)
+
+
 def withheld(owned, names=ALL_NAMES):
-    return [owned.copied_in_progress(HASH, name, 39, "/w/src/main.rs") for name in names]
+    return [in_progress(owned, HASH, name, 39, "/w/src/main.rs") for name in names]
 
 
 def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local():

@@ -38,7 +38,7 @@ _FIELD = {
     "type": re.compile(r"(?:^|, )type: (![0-9]+)"),
 }
 # A local's IR name: plain (`%x.dbg.spill`), or quoted where it holds another character
-# (`%"gr\C3\B6\C3\9Fe"` for `größe`, its bytes in hex; #191); ir_string reads the
+# (`%"gr\C3\B6\C3\9Fe"` for `größe`, its bytes in hex); ir_string reads the
 # quoted one, or refuses it.
 _POINTER = r'%([-\w.$]+|"(?:[^"\\]|\\.)*")'
 # (pointer, variable, expression, location); the location is the record's last operand.
@@ -65,9 +65,8 @@ def ir_string(text):
     """An LLVM IR string's text (without its quotes), or None where it is none LLVM
     writes: LLVM writes a quote, a backslash and every unprintable byte (any non-ASCII
     one) as `\\` and two hex digits (`src/x\\E2\\80\\A8y.rs`, a variable
-    `gr\\C3\\B6\\C3\\9Fe`; #179), so any other `\\` (`\\q`), anything else unescaped, and
-    bytes that are not UTF-8 (`\\FF`) are refused, never read as another name (#188
-    review)."""
+    `gr\\C3\\B6\\C3\\9Fe`), so any other `\\` (`\\q`), anything else unescaped, and
+    bytes that are not UTF-8 (`\\FF`) are refused, never read as another name."""
     found, at = bytearray(), 0
     while True:
         plain = _IR_PLAIN.match(text, at)
@@ -87,11 +86,6 @@ def ir_string(text):
 _HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 
 
-def memory_locals(path):
-    """{(function hash, local name): True only if every declaration is a real slot}."""
-    return ir_locals(path)[0]
-
-
 def ir_locals(path, declarations=None):
     """(memory locals, reference parameters), read in one pass over the IR.
 
@@ -100,13 +94,13 @@ def ir_locals(path, declarations=None):
     "line": last line before the body}} for parameters whose only declaration is a
     non-inlined slot of their own (`<name>` or `<name>.dbg.spill`), and the only
     variable so named in the function's debug information, declared or not: a shadow
-    never stored (`let é: &Vec<i64>;`) has no declaration (#194 review).
+    never stored (`let é: &Vec<i64>;`) has no declaration.
 
     ``declarations``, a dict if given, receives what the memory proof covers, per name:
     {(function hash, local name): [(line declared, "slot" | "copy" | "inlined" |
     "unknown")]}, one per declaration (a piece of a variable is one): a real slot, a
     `.dbg.spill` copy of a value kept in a register, a declaration in a copy inlined into
-    another function (#138: why a name is not proven in memory), or one that says
+    another function (why a name is not proven in memory), or one that says
     nothing Peeky reads of where the variable is (reached through a pointer, as a
     closure's capture is; no slot it can name; a location it doesn't recognize).
 
@@ -130,7 +124,7 @@ def ir_locals(path, declarations=None):
                         for key, found in fields.items()
                         if found
                     }
-                    # A name LLVM does not write proves nothing (#188 review), and
+                    # A name LLVM does not write proves nothing, and
                     # could be any variable's (`refused`).
                     kept = {key: value for key, value in values.items() if value is not None}
                     if len(kept) != len(values) or ("name" not in kept and _NAMED.search(line)):
