@@ -12,9 +12,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 **GCC's C++ builds have known gaps.** Peeky withholds what LLDB misreads, and the row says why
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
-- unordered containers are read from their own nodes, except entries that hold a `long double`.
-  A container held in an entry, other than a `std::array`, is withheld on its own, as is a
-  string whose text isn't in its own small buffer in the node (`_M_p` not at `_M_local_buf`);
+- unordered containers are read from their own nodes, except entries that hold a `long double`,
+  and containers longer than Peeky walks. A container held in an entry, other than a
+  `std::array`, is withheld on its own, as is a string whose text isn't in its own small buffer
+  in the node (`_M_p` not at `_M_local_buf`);
 - a one-line function's parameters can show `no value yet` at a stop on its line;
 - GDB's DAP isn't supported.
 
@@ -162,9 +163,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - An unordered map or set is read from its own nodes, as `[memory]`: `on_hand  Stock  size=4
   {"HX-88": 0, "GS-5": 0, …}`. LLDB alone would count it as empty
   ([C and C++ 7.1](c-cpp-cookbook.md#standard-containers)).
-- That holds for entries of integers, bools and strings, alone or in pairs and structs, up to 256
-  entries. Otherwise the row is `not listed`, with why. Then print the entries from the program,
-  or try an edit.
+- That holds for entries of numbers, `bool`s, characters, enums, pointers and strings, alone or in
+  pairs and structs, but not a `long double`. Peeky walks up to 16,384 entries with lldb-dap 20,
+  and 512 with lldb-dap 18. Otherwise the row is `not listed`, with why. Then print the entries
+  from the program, or try an edit.
 - Read one entry by key, `on_hand["GS-5"]`, or by position, `on_hand[#0]`. A preview shows the
   first few entries. A `preview:` line under the table says how to read the rest
   ([C and C++ 7.1](c-cpp-cookbook.md#read-a-c-map-or-set-by-key)).

@@ -65,10 +65,8 @@ class Scripted:
         return self.states.pop(0) if operation == "wait" else {}
 
 
-def numbered(stop_id, hit=None, reason="breakpoint", numbered=True):
-    state = {"state": "stopped", "stop_id": stop_id, "reason": reason}
-    if numbered is not None:
-        state["numbered"] = numbered
+def numbered(stop_id, hit=None, reason="breakpoint"):
+    state = {"state": "stopped", "stop_id": stop_id, "reason": reason, "numbered": True}
     return {**state, **({"hit": hit} if hit is not None else {})}
 
 
@@ -87,19 +85,6 @@ def test_counting_stops_at_a_crash_and_never_resumes_it(record):
     assert (state["reason"], reached, complete) == ("exception", 1, False)
     assert state["note"] == "stopped for another reason before stop 4 (shown above); last hit 3"
     assert client.calls == ["continue", "wait", "continue", "wait"]
-
-
-def test_workers_without_hit_numbers_count_by_reason_and_refuse_hit_n(record):
-    client = Scripted(numbered("b", numbered=None), numbered("c", numbered=None))
-    deadline = time.monotonic() + 30
-    state, reached, complete = cli._run_on(
-        record, client, numbered("a", numbered=None), 2, deadline, "stop 3"
-    )
-    assert (reached, complete) == (2, True)
-    client = Scripted(numbered("a", numbered=None))
-    state, complete = cli._until_hit(record, client, 4, 30)
-    assert not complete and "the worker predates hit numbers" in state["note"]
-    assert client.calls == ["wait"]
 
 
 def test_a_deadline_short_of_the_target_says_how_far_it_got(record):

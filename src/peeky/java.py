@@ -130,14 +130,14 @@ def java_preview(variable, fetch):
     return f"{value} {{{shown}{', …' if len(fields) > PREVIEW_ITEMS else ''}}}"
 
 
-# A String (#137): java-debug makes a new one of a text, and the variable refers to it.
+# A String: java-debug makes a new one of a text, and the variable refers to it.
 _STRING_DESCRIPTOR = "Ljava/lang/String;"
 _JAVA_STRINGS = ("String", "java.lang.String")
 
 
 def _settable_kinds(session):
     """The non-integer types `--set` changes: a char and a String only where the
-    launcher allows them (#183, #137)."""
+    launcher allows them."""
     kinds = ("boolean", "float", "double")
     if getattr(session, "char_set", False):
         kinds += ("char",)
@@ -148,13 +148,13 @@ def _settable_kinds(session):
 
 # A JDK class's fields hold state other code relies on (a String's cached hash must match
 # its text in every HashMap holding it, an ArrayList's size its elements), so Peeky never
-# changes one (#204). A JDK class is one the JDK's own class loaders loaded (as the
+# changes one. A JDK class is one the JDK's own class loaders loaded (as the
 # launcher reports it), or, judged from the class files, any class not the program's.
 _JDK_WHY = (
     "Peeky never changes a JDK class's fields (a String's cached hash, an ArrayList's size): "
     "other code relies on them, so a change could corrupt the program's state behind its back"
 )
-# The JDK fields whose array holds the program's own values as its elements (#204): the
+# The JDK fields whose array holds the program's own values as its elements: the
 # backing arrays of ArrayList, Vector and ArrayDeque, and Arrays.asList's (the caller's own
 # array); as the launcher's USER_ELEMENTS.
 _USER_ELEMENTS = frozenset(
@@ -166,13 +166,13 @@ _USER_ELEMENTS = frozenset(
         "java.util.Arrays$ArrayItr.a",
     }
 )
-# Values shown whole, their fields listed only when selected by name (#204): a String
+# Values shown whole, their fields listed only when selected by name: a String
 # (java-debug shows its text) and the boxed primitives (`Integer@57 {value=1001}`).
 _BOXED = ("Integer", "Long", "Short", "Byte", "Character", "Boolean", "Float", "Double")
 
 
 def _may_be(declared, name, holder):
-    """Whether the program's class ``name`` may be a ``holder`` (#204): ``holder`` is
+    """Whether the program's class ``name`` may be a ``holder``: ``holder`` is
     among the supertypes its class files list, or, for a ``holder`` not of the program,
     one of them is a JDK type whose own supertypes Peeky does not read
     (java.lang.Object's excepted)."""
@@ -194,7 +194,7 @@ def _may_be(declared, name, holder):
 
 def _may_declare(declared, holder, field):
     """Whether a class of the program that may be a ``holder`` declares, or inherits
-    from a class of the program, a field named ``field`` (#204)."""
+    from a class of the program, a field named ``field``."""
     for name in declared:
         if not _may_be(declared, name, holder):
             continue
@@ -219,7 +219,7 @@ def _jdk_field(variable):
 
 def _jdk_state(trail, index):
     """Whether the value at ``trail[index]`` (the debugger's variables from a root local)
-    is a JDK class's state (#204): (declaring class, field, whether that field holds it
+    is a JDK class's state: (declaring class, field, whether that field holds it
     directly) of the JDK field holding it, or an array holding it, whatever that array's
     type (an Object[] is no proof of whose its elements are); None where it is the
     program's: a root local's, a field of the program's, or a JDK list's element (its
@@ -244,16 +244,16 @@ def _jdk_state(trail, index):
     return None
 
 
-# The short form a row shows (#261) of why `set` refuses a field (member_settable).
+# The short form a row shows of why `set` refuses a field (member_settable).
 _MEMBER_ROWS = {"it is final": "final", "it is static (shared by every instance)": "static"}
 
 
-# Why no element is promised [settable] while other threads run (#261 review).
+# Why no element is promised [settable] while other threads run.
 _THREADS_RUNNING = "other threads, the JVM's own included, are running; set checks again"
 
 
 class Unproven(str):
-    """Why an element's mark can be promised neither way (#261): the launcher could not
+    """Why an element's mark can be promised neither way: the launcher could not
     tell in time whether a JDK class holds its array, or cannot tell before a change (an
     older bundle). `set` checks again when the change is made."""
 
@@ -261,7 +261,7 @@ class Unproven(str):
 
 
 class JdkState(str):
-    """Why a field or element is a JDK class's own state, which no change reaches (#204);
+    """Why a field or element is a JDK class's own state, which no change reaches;
     ``row``: the short form a row's `[not settable: ...]` shows, for a value of a type
     `set` changes elsewhere (None for an object or array)."""
 
@@ -271,14 +271,14 @@ class JdkState(str):
         return made
 
 
-# Why a local the code never reads after a line's start cannot be changed there (#164),
-# judged before the program runs too (#183).
+# Why a local the code never reads after a line's start cannot be changed there,
+# judged before the program runs too.
 _UNREAD_REASON = (
     "is never read after a stop at this line's start (a lambda or inner class that "
     "captured it before keeps its own copy; javac compiles a constant local into its uses), "
     "so a change would never be seen"
 )
-# A local variable table's descriptors of what `--set` can change (#183).
+# A local variable table's descriptors of what `--set` can change.
 _DESCRIPTORS = {
     "B": "byte",
     "S": "short",
@@ -381,7 +381,7 @@ _CHAR_LITERAL = re.compile(
 
 
 def java_char(value, code_points=True):
-    """The char a value names for a char variable (#183): a char literal as Java writes
+    """The char a value names for a char variable: a char literal as Java writes
     one (`'+'`, `'\n'`, `'\''`, `'\u0041'`, `'\101'`), or, with ``code_points``, a
     decimal code point from 0 to 65535 (as `char op = 43;` is `'+'`); None if neither.
     One UTF-16 unit: a character outside the BMP is two chars in Java."""
@@ -440,7 +440,7 @@ def _member(root, name):
 _BUNDLES = {}
 # Patches scripts/setup_java_adapter.py applies to java-debug (also listed, for people, in
 # the bundle's adapter.json), each proven by the compiled class it changes: the class and
-# bytes only the patched code has. eventhub-log-guard (#27): without it java-debug's
+# bytes only the patched code has. eventhub-log-guard: without it java-debug's
 # event thread can die on a finished thread's name, and the adapter reports no stop,
 # step or exit ever again; the patched EventHub calls Logger.isLoggable, the old one not.
 JAVA_DEBUG_PATCHES = {
@@ -649,31 +649,31 @@ class JavaSession:
     ranges_only_for_indexed = True
     # Selectors name fields of `this` without it, as Java code does.
     implicit_receiver = "this"
-    # Every class but the JDK's is the program's, read from its class files (#204).
+    # Every class but the JDK's is the program's, read from its class files.
     knows_every_class = True
     # Set from the launcher's capabilities: whether it names fields' declaring classes.
     field_owners = False
-    # And whether it says what holds an array, before its elements are marked (#261).
+    # And whether it says what holds an array, before its elements are marked.
     array_holders = False
     # And whether it changes fields and elements at all.
     field_set = False
     # A field or element change tells the launcher what is left of the pause budget, for
-    # its search of what refers to an array (#204).
+    # its search of what refers to an array.
     pause_budget_writes = True
-    # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
+    # java-debug occasionally drops VM-death events; infer exit from no threads.
     liveness_by_threads = True
     # A JDI step ends in its own call: one an exception ends stops at the caller's catch, so
-    # a step's stop in the same method, at the same depth, is the same call (#262).
+    # a step's stop in the same method, at the same depth, is the same call.
     steps_end_in_their_call = True
     # java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps and
-    # exits. If it dies (an unpatched bundle, #27), or an exception escapes one of its
+    # exits. If it dies (an unpatched bundle), or an exception escapes one of its
     # handlers, nothing is ever reported again: end the session at once.
     fatal_stderr = {
         r'Exception in thread "Event Hub"': (
             "java-debug's event thread died ({excerpt}); it reports no more stops, steps or "
             "exits, so the session cannot continue: close it and retry"
         ),
-        # The launcher suspends every thread across a change to an element (#261). One it
+        # The launcher suspends every thread across a change to an element. One it
         # cannot resume ends it: the debugger's connection closes, which lets the JVM run.
         r"Peeky experimental Java adapter: could not resume the JVM": (
             "The session is closed: the Java adapter could not resume the JVM's threads after "
@@ -755,7 +755,7 @@ class JavaSession:
                     "one of those, put the breakpoint on a line of its own, or `session step "
                     "--into` from this line (a method reference has no line of its own)"
                 )
-            # A loop header bound before its loop stops once per loop, not per pass (#161).
+            # A loop header bound before its loop stops once per loop, not per pass.
             prepared = getattr(getattr(self, "prepared", None), "workspace", None)
             try:
                 classes = Path(prepared) / "classes" if prepared else None
@@ -807,7 +807,7 @@ class JavaSession:
     @staticmethod
     def return_entry(variable):
         """The method's name where java-debug lists what the method a step left returned
-        (`⎯►name()` on macOS and Windows, `->name()` elsewhere), else None (#155). JDI
+        (`⎯►name()` on macOS and Windows, `->name()` elsewhere), else None. JDI
         reports the value itself, exactly, whatever its type."""
         found = re.fullmatch(r"(?:\u23af\u25ba|->)([^\s()]+)\(\)", str(variable.get("name") or ""))
         return found[1] if found else None
@@ -824,13 +824,13 @@ class JavaSession:
 
     def normalize_capabilities(self, raw):
         if self is not None:
-            # A String takes a text only through a launcher that allows it (#137).
+            # A String takes a text only through a launcher that allows it.
             self.text_set = raw.get("peekyTextSet") is True
-            # And a char a quoted char (#183).
+            # And a char a quoted char.
             self.char_set = raw.get("peekyCharSet") is True
-            # A launcher that names each listed field's declaring class (#204).
+            # A launcher that names each listed field's declaring class.
             self.field_owners = raw.get("peekyJdkOwners") is True
-            # And says whether a JDK class's field holds an array (#261).
+            # And says whether a JDK class's field holds an array.
             self.array_holders = raw.get("peekyArrayHolders") is True
             self.field_set = raw.get("peekyFieldSet") is True
         return {
@@ -839,9 +839,9 @@ class JavaSession:
             "supports_stepping": raw.get("peekySteps") is True,
             # Bundles whose launcher refuses a field name a hiding static field shares.
             "supports_member_set": raw.get("peekyFieldSet") is True,
-            # Bundles whose launcher changes a String to a text (#137).
+            # Bundles whose launcher changes a String to a text.
             "supports_text_set": raw.get("peekyTextSet") is True,
-            # Bundles whose launcher changes a char to a quoted char (#183).
+            # Bundles whose launcher changes a char to a quoted char.
             "supports_char_set": raw.get("peekyCharSet") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
@@ -855,7 +855,7 @@ class JavaSession:
 
     def validate_value(self, value):
         """Only the shape of a literal of some Java type; the variable's own type decides
-        the rest (validate_variable), so a refusal names the real rule (#183)."""
+        the rest (validate_variable), so a refusal names the real rule."""
         if isinstance(value, str) and (
             parse_text(value) is not None
             or SCALAR.fullmatch(value)
@@ -868,9 +868,9 @@ class JavaSession:
         )
 
     def mutation_literal(self, value, variable=None):
-        """What java-debug is sent: a text (#137) between plain quotes, which it takes
+        """What java-debug is sent: a text between plain quotes, which it takes
         off and keeps everything between as the new String (it unescapes nothing); for a
-        char (#183), the char itself between single quotes, which it takes as that char
+        char, the char itself between single quotes, which it takes as that char
         (a code point or an escape is turned into it here)."""
         if variable is not None and variable.get("type") == "char":
             return f"'{java_char(value)}'"
@@ -888,7 +888,7 @@ class JavaSession:
 
     @staticmethod
     def restore_literal(variable, before, **where):
-        """The literal a probe's `@before` writes back (#305): the text read just before
+        """The literal a probe's `@before` writes back: the text read just before
         a change, of a primitive java-debug shows whole (``exact_text``): an integer or
         boolean as read, a char as its code point. A float or double may be shown
         rounded, and a String or other object is a new one when written: ValueError."""
@@ -912,7 +912,7 @@ class JavaSession:
         return before
 
     def storage_identity(self, variable, frame=None, root=None, steps=(), parent=None):
-        """Which storage a change writes, as a `@before` restore compares it (#305): for a
+        """Which storage a change writes, as a `@before` restore compares it: for a
         field or element, the object or array holding it (``parent``, by java-debug's
         object id, `Box@27`, which no other object takes while the program runs); for a
         local, its declaration in the stopped method's local variable table, the one in
@@ -944,7 +944,7 @@ class JavaSession:
         )
 
     def entry_lines(self, program, lines):
-        """{line: the first line of each method with code on it} (#305): the line its
+        """{line: the first line of each method with code on it}: the line its
         code starts at (pc 0), where each call first stops. A probe watches them, so a
         value is restored only in the call that changed it. ValueError where a method's
         calls cannot be seen begin there: the debugger stops on that line in another
@@ -983,8 +983,8 @@ class JavaSession:
         return {line: sorted(starts) for line, starts in found.items()}
 
     def confirm_mutation(self, name, value, before, after, variable=None):
-        """A String (#137) must read back as the text asked, as java-debug shows one
-        (between quotes, nothing escaped), and a char (#183) as the char itself: else
+        """A String must read back as the text asked, as java-debug shows one
+        (between quotes, nothing escaped), and a char as the char itself: else
         the change is not reported."""
         if variable is not None and variable.get("type") == "char":
             if after != java_char(value):
@@ -1003,7 +1003,7 @@ class JavaSession:
     def settable(self, variable, frame=None):
         """Whether `--set` can change this root local: a scalar of a type it accepts, named
         as a selector can name it (not java-debug's `->compute()` return value entry),
-        that the program reads (not a constant javac folds into its uses, #164); a
+        that the program reads (not a constant javac folds into its uses); a
         String only where the class file declares it one (java-debug names the type of
         the value it holds: `Object o = "x"` shows `String`)."""
         name, kind = str(variable.get("name")), variable.get("type")
@@ -1017,7 +1017,7 @@ class JavaSession:
         return True
 
     def validate_mutation_target(self, variable, frame):
-        """Refuse a local the program never reads (#164): javac folds a constant local
+        """Refuse a local the program never reads: javac folds a constant local
         (`final` with a constant initializer: `final int k = 5;`, `final String s =
         "x";`) into the code that uses it, so a change to it would never be seen."""
         name = str(variable.get("name"))
@@ -1054,7 +1054,7 @@ class JavaSession:
     def declared_local(self, frame, name):
         """[(descriptor, whether the code reads it)] for each declaration of the local
         ``name`` the stopped frame's method has in scope on its line, from the class
-        files (#164); None where the method is not found."""
+        files; None where the method is not found."""
         found = self._frame_method(frame)
         if found is None:
             return None
@@ -1066,8 +1066,8 @@ class JavaSession:
         ]
 
     def read_after(self, variable, frame, stop):
-        """Whether the program may read the root local ``variable`` after this stop
-        (#164): False where no path from where the stop's line begins reads its slot
+        """Whether the program may read the root local ``variable`` after this stop:
+        False where no path from where the stop's line begins reads its slot
         before storing into it again, so a change would never be seen (a lambda or
         inner class captured its value before; a constant javac compiled into its
         uses); True where one may; None where that cannot be told (another kind of
@@ -1090,7 +1090,7 @@ class JavaSession:
 
     def _frame_method(self, frame):
         """(the class files' record of the stopped frame's method, its line), or None
-        where it is not found (#164)."""
+        where it is not found."""
         try:
             path = Path(frame["source"]["path"]).resolve()
             workspace = Path(self.declaration_roots()[1]).resolve()
@@ -1115,7 +1115,7 @@ class JavaSession:
         return methods[0], line
 
     def declared_member(self, parent, name):
-        """The descriptor a field or element is declared with (#164): an array's
+        """The descriptor a field or element is declared with: an array's
         component type, from its own type as java-debug names it (`String[]`); a field's
         from the class files of the object's class and its superclasses. None where that
         is not known."""
@@ -1142,7 +1142,7 @@ class JavaSession:
     def member_settable(self, variable, parent=None, proven=False):
         """None if `--set` can change this field or array element, else why not: a scalar
         of a type it accepts, an instance field (not final or static) or an element. A
-        String only where it is declared one (the field's or the array's type, #164;
+        String only where it is declared one (the field's or the array's type;
         ``parent``: the type of what holds it, as java-debug names it); ``proven``, for
         its `[settable]` mark: only where that is known."""
         name, kind = str(variable.get("name")), variable.get("type")
@@ -1170,8 +1170,8 @@ class JavaSession:
         return None
 
     def whole_value(self, variable):
-        """Whether a value is shown whole, its fields listed only when selected by name
-        (#204): a String, which java-debug shows as its text (only a java.lang.String's
+        """Whether a value is shown whole, its fields listed only when selected by name:
+        a String, which java-debug shows as its text (only a java.lang.String's
         value is quoted), and a boxed primitive (`Integer@57`), whose `.value` stays
         readable."""
         kind, value = str(variable.get("type")), str(variable.get("value"))
@@ -1181,7 +1181,7 @@ class JavaSession:
         return short in _BOXED and bool(re.fullmatch(rf"{short}@[0-9]+", value))
 
     def internal_member(self, variable, parent=None, trail=()):
-        """Why `set` never changes this field or element (#204), else None: a field a JDK
+        """Why `set` never changes this field or element, else None: a field a JDK
         class declares (a String's `hash`, an ArrayList's `size`, inherited or not), as
         the launcher names its declaring class and whether it is the JDK's (its module
         or class loader), or an element of an array that is the JDK's state (_jdk_state:
@@ -1227,7 +1227,7 @@ class JavaSession:
 
     def array_holder(self, dap, array, pause_left_ms=None):
         """(why no element of ``array`` is marked [settable], in short, or None; whether
-        that holds for the rest of the stop) (#261). ``array``: the debugger's variable
+        that holds for the rest of the stop). ``array``: the debugger's variable
         for an array whose elements are listed. From the launcher's search of what
         refers to it, which a write makes again (with a longer wait and every thread
         suspended), so a mark promises no more than a write does:
@@ -1287,7 +1287,7 @@ class JavaSession:
         innermost=True,
         unread=False,
     ):
-        """Why a row of a type `set` changes is not marked [settable], in short (#261), or
+        """Why a row of a type `set` changes is not marked [settable], in short, or
         None: for an object or array its type says it, and a name no selector reads is
         never marked. ``member``: a field or element (``parent``: the type of what holds
         it; ``trail``: as for internal_member); ``unread``: a local the program does not
@@ -1343,14 +1343,14 @@ class JavaSession:
         self.validate_value(value)
         name, kind = variable.get("name"), variable.get("type")
         if kind not in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)):
-            # The type first (#183): `op='+'` on a char named the literal, not the rule.
+            # The type first, so a refusal of `op='+'` on a char names the rule, not the literal.
             raise ValueError(f"{name} is {kind}; {self._settable_text(kind)}")
         _value_fits(name, kind, value)
 
     def launch_refusal(self, program, line, name, value=None):
         """Why a probe's `--set` of the local ``name`` (to ``value``, when given) can
         change nothing at any stop of ``line`` of ``program``, judged from the class
-        files before the program runs (#183), or None: in every method that stops on the
+        files before the program runs, or None: in every method that stops on the
         line (the first holding it in its class, as java-debug binds it), it is no local
         of the method there, a type no change reaches, a value its
         declared type cannot hold, or a local the code never reads after the line's start
@@ -1368,7 +1368,7 @@ class JavaSession:
             return None
         # java-debug binds a line to the first method holding it in its class, in
         # class-file order (a lambda's on its method's line, overloads on one line): only
-        # that method's stops can make the change (#192 review).
+        # that method's stops can make the change.
         methods = self._line_methods(source, line)
         if not methods:
             return None
@@ -1421,7 +1421,7 @@ class JavaSession:
 
     def _line_methods(self, source, line):
         """The methods that stop on ``line`` of ``source``: in each class, the first in
-        class-file order holding it, as java-debug binds a line (#192 review)."""
+        class-file order holding it, as java-debug binds a line."""
         methods = []
         for declarations in self._declared().values():
             if declarations.get("source") != source:
@@ -1436,7 +1436,7 @@ class JavaSession:
 
     def _member_refusal(self, program, line, name):
         """Why a change of the field or element ``name`` (`a.text.hash`, `list.size`,
-        `a.text.value[0]`) can never be made at ``line`` (#204), judged from the class
+        `a.text.value[0]`) can never be made at ``line``, judged from the class
         files before the program runs, or None (the stop judges it): a field of a value
         declared a JDK type (any class not in the program's class files), or of a class
         of the program whose superclass is one, that no class of the program which may be
@@ -1515,7 +1515,7 @@ class JavaSession:
 
     def _settable_text(self, kind=None):
         """What a Java change can reach with this launcher; for a ``kind`` an older one
-        lacks (a char, #183; a String, #137), that a current bundle changes it."""
+        lacks (a char or a String), that a current bundle changes it."""
         kinds = ["byte", "short", "int", "long", "boolean", "float", "double"]
         if getattr(self, "char_set", False):
             kinds.insert(4, "char")

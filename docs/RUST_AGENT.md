@@ -177,6 +177,10 @@ The rules are in the cookbook's
 
 ### Fields holding a `Vec`, `String`, `&str` or `Box<str>`
 
+The rules are in the cookbook's
+[Fields holding a `Vec`, `String`, `&str` or `Box<str>`](lang/rust-cookbook.md#fields-holding-a-vec-string-str-or-boxstr).
+How they are proven:
+
 - Such a field reads under the proof of the value that holds it. The build's debug information
   decides the path, never LLDB's names.
 - A shared reference parameter's field reads in every frame, because nothing can change its target
@@ -188,8 +192,6 @@ The rules are in the cookbook's
   `self.cell.value.value` stays raw.
 - An owned `Vec` or `String` local's note gives its own reason, rather than always "may be moved,
   dropped or not yet assigned".
-- `session get self` lists the fields that stay raw, and why. An index into one is refused with
-  that reason, and the length selector to capture: `self.values.len`, `self.name.vec.len`.
 
 ## When a reference reads
 
@@ -210,7 +212,7 @@ The rules are in the cookbook's
 - A reference parameter that is never reassigned stops reading when the function drops what it
   points at: `*h = new`, or `*c.borrow_mut() = new` through a shared `&RefCell`.
 - A raw pointer keeps no borrow, so nothing proves what it points at. One inside a value shows only
-  its address, however live the value is (#255). The build's DWARF tells it from a reference:
+  its address, however live the value is. The build's DWARF tells it from a reference:
   rustc names pointer types `*const T`, `*mut T`, `&T`, `&mut T` and `alloc::boxed::Box<T, A>`.
   LLDB names them all `T *`.
 - The address inside a fat pointer has no DWARF name. The fat pointer's own name says which it is:
@@ -219,8 +221,8 @@ The rules are in the cookbook's
   pointer shows only its address unless that type is made only of primitives, and references,
   tuples and arrays of them, such as `(i64, &i64)`. A struct's name says nothing of its fields.
   Its note then says that the build doesn't tell it from a raw pointer, not that it is one.
-- A raw pointer local is judged by its MIR type, before #110. An array of them isn't collapsed:
-  each element is judged as a raw pointer inside a value.
+- A raw pointer local is judged by its MIR type, before any liveness check. An array of them isn't
+  collapsed: each element is judged as a raw pointer inside a value.
 
 ### Past its last use
 
@@ -228,7 +230,7 @@ The rules are in the cookbook's
   on every path back from the stop to its last use, only branches, assertions and whole assignments
   to locals nothing borrows may run.
 - A call of `std::ptr::eq` or `std::ptr::addr_eq` on two raw pointer locals may run too: it reads
-  the two addresses, and nothing else (#259). The dump names `core::ptr::eq` `std::ptr::eq`, and
+  the two addresses, and nothing else. The dump names `core::ptr::eq` `std::ptr::eq`, and
   `addr_eq` alone where no other item has that name.
 - A crate's own `mod std` is dumped `std::ptr::eq` too, even one a macro declares:
   `make_mod!(std)`. So these names count only where all of these hold:
@@ -295,7 +297,6 @@ These read too, unless written through a `&mut` to them:
 - The `.await`'s column is also where the awaited future is dropped if a panic unwinds. A reference
   handed to the awaited future is past its last use while it is polled. So lines with an `.await`
   hide more than the same code without `async`.
-- The 140-line async program showed up to four stops on every line.
 - lldb-dap lists the function's own variables, such as a parameter's future field, before a
   lexical block's.
 - lldb-dap lists a row only where the stop is inside its binding's lexical block. So places of the
@@ -378,46 +379,46 @@ used again. Such a temporary is:
 - a read through a pointer that may point into it;
 - what a call given such a pointer returns. `format_args!`'s calls don't count, because they keep
   the pointer, unless the crate itself names something `core` or `std` that could pass for them;
-- what a store through a pointer of such a value writes into (#311). `vec![x, 1]` fills its Box by
+- what a store through a pointer of such a value writes into. `vec![x, 1]` fills its Box by
   `((*_10).1: …) = [move _7, const 1_u32]`, then makes the Vec of it. Each local the store may
   write into holds it: the pointer's aliases (`_aliases`, the Box and the Vec) and what they borrow
   (`Body._stored_into`). A binding among them holds the program's own copy; a pointer binding
   (`p` of `*p = x;`) only points at one. `_pointers_to` follows `p = slot.as_mut_ptr()` too.
-- what a call may write through a pointer it is given, of what else it is given (#311 review). An
+- what a call may write through a pointer it is given, of what else it is given. An
   argument counts where a callee may write through it (`_may_write`): a `&mut` or raw pointer,
   `NonNull`, a cell, an aggregate holding one, or a type not known. So
   `Vec::push(move _6, move _7)` with `_6 = &mut v` makes `v` hold `_7`'s copy, as do `ptr::write`,
   `mem::replace`, `mem::swap` and a `copy_nonoverlapping` statement. `Box::new` given a closure
   holding `&s` stores no copy of `s`: nothing else is given.
-- A source counts where it holds a direct copy or points at one (the flow's `kept`, review round
-  2). That is a borrow of such a holder (`&a` after `let a = [x];`), a cast or aggregate of such a
+- A source counts where it holds a direct copy or points at one (the flow's `kept`).
+  That is a borrow of such a holder (`&a` after `let a = [x];`), a cast or aggregate of such a
   pointer, and a pointer a call returns from one or from a pointer into the local (`a.iter()`).
 - What a call returns is a direct copy where the call is given a pointer into the local or into
-  what holds a copy (#320: `x.clone()`, `x.to_string()`, `ptr::read(&x)`, `format!("{}", x)`).
-  Only a result type holding nothing but pointers holds no copy (`_pointer_only`, review): a
+  what holds a copy (`x.clone()`, `x.to_string()`, `ptr::read(&x)`, `format!("{}", x)`).
+  Only a result type holding nothing but pointers holds no copy (`_pointer_only`): a
   reference, a raw pointer, `NonNull`, a tuple, array or `Option` of these, or a standard view of
   `_POINTER_VIEWS` (`slice::Iter`, `str::Chars`, `fmt::Arguments`). `(u32, &'static ())` and a
   struct `Hybrid<'_> { v: u32, r: &u32 }` may hold a copy.
-- An adapter of `_TRANSPARENT` holds only the iterators it wraps (review round 2): `Rev`, `Fuse`,
+- An adapter of `_TRANSPARENT` holds only the iterators it wraps: `Rev`, `Fuse`,
   `Enumerate`, `Cycle`, `Cloned`, `Copied`, `Zip` and `Chain`. So `Rev<Chars<'_>>` holds no copy.
   `Skip`, `Take`, `StepBy`, `Peekable` and those holding a closure (`Map`) may.
 - A standard path counts only under a root the crate gives nothing of its own
-  (`OwnedLocals._std_crates`, set as `Body.std_paths`, review round 2). A `mod alloc` of the
+  (`OwnedLocals._std_crates`, set as `Body.std_paths`). A `mod alloc` of the
   crate's makes `alloc::str::Chars` its own, and leaves `std::` paths the standard library's.
-- Each proof needs only the root its path is under (review round 3). `core::slice::<impl
+- Each proof needs only the root its path is under. `core::slice::<impl
   [u32]>::len` needs `core`, `std::mem::take` needs `std`, and an inherent `Vec::len` needs the
   root of the type its argument points at. So a `mod alloc {}` leaves `a.len()` a measure.
 - A result whose type shows a pointer (a reference, a lifetime, a closure, a trait object) may
   also point into the local (the flow's `aims`), as a cast, copy or aggregate of one does. A read
   through it may be a copy. A call given one may store a copy into what holds no pointer
   (`out.push_str(&name)`). Into what may hold one it may have stored the pointer itself, as
-  #164's `v.push(&s[2..])` does, so that isn't counted.
+  `v.push(&s[2..])` does, so that isn't counted.
 - `Body._only_wraps` proves a call the standard library's that returns only what it is given
   (`_WRAPPERS`: `Box::new`, `Box::pin`, `Rc::new`, `Arc::new`). What it returns holds a copy only
-  where what it was given did. So #164's `Box::new(move || check(t))`, with `t = &s[2..]`, holds
+  where what it was given did. So `Box::new(move || check(t))`, with `t = &s[2..]`, holds
   none.
 - So does an iterator adapter call (`_ADAPTER_CALL`: `<std::str::Chars<'_> as Iterator>::rev`,
-  `map`, `filter`, `skip`, review round 2). `Iterator` must be the standard trait
+  `map`, `filter`, `skip`). `Iterator` must be the standard trait
   (`_std_iterator`), on a type under a trusted standard root. A `map` given a `move` closure that
   holds a copy holds it; one given a closure that borrows the local holds none.
 - A binding that may hold a copy and may point into the local (`Body.pointing_copies_at`) is said
@@ -446,24 +447,24 @@ used again. Such a temporary is:
   (`_sure_pointee`: `&mut a`, reborrowed, each assigned once and never borrowed), that local holds
   no copy after it. Its result holds what it held.
 - A call stores only into what the pointers it is given were made from (`_made_from`: `v` of
-  `&mut v`), since #320. It no longer stores into every alias `_stored_into` links to them, such as
-  a pointer `format_args!` puts in the same tuple. A store statement still writes into them all.
-- A callee may write through an argument where its type may (`Body._may_write_through`, review
-  round 3). That is a `&mut` or raw pointer, a cell, a type parameter, or a mutable standard view
+  `&mut v`), not into every alias `_stored_into` links to them, such as a pointer `format_args!`
+  puts in the same tuple. A store statement still writes into them all.
+- A callee may write through an argument where its type may (`Body._may_write_through`).
+  That is a `&mut` or raw pointer, a cell, a type parameter, or a mutable standard view
   (`_MUTABLE_VIEWS`: `Entry`, the `IterMut` family, `RefMut`, `Drain`, `ChunksMut`). Or something
   it was made from shows one (`_made_from`: a closure or a crate's struct capturing `&mut v`). A
   view that only reads, as `ChunksExact` or `btree_map::Iter`, writes nothing.
 - What a callee reaches only through a shared `&` it writes only if it may take a value through
-  one: a raw pointer, a cell, or what holds one (review round 4, and #321 below). `_may_write`'s `shared`, and `_unshared` within a type: `&&mut Vec<u32>`
-  writes nothing. `_reached` walks what an argument was made from, noting where it passed a
-  shared borrow or a shared reference type. So `look(&h, x)` with `h = Hold { p: &mut v }`
-  writes nothing, while `keep(h, x)`, `poke(&mut h, x)`, and `&h` with a `*mut` or `&Cell`
-  field may.
-- A type counts by everything it holds, however deep (#321, `_may_write`, `_type_flags`). Each
+  one: a raw pointer, a cell, or what holds one (below). `_may_write`'s `shared`, and
+  `_unshared` within a type: `&&mut Vec<u32>` writes nothing. `_reached` walks what an argument
+  was made from, noting where it passed a shared borrow or a shared reference type. So
+  `look(&h, x)` with `h = Hold { p: &mut v }` writes nothing, while `keep(h, x)`,
+  `poke(&mut h, x)`, and `&h` with a `*mut` or `&Cell` field may.
+- A type counts by everything it holds, however deep (`_may_write`, `_type_flags`). Each
   type it names gives flags: "interior" (a `&` to it may take a value), "owned" (by value or
   through a `&mut`, it may) and "shares" (another value may reach what it holds).
 - A type's name is parsed into a tree (`_parse_type`), which `_Judge` walks, noting where it is
-  reached through a shared `&` and behind a pointer others may hold (review). A function
+  reached through a shared `&` and behind a pointer others may hold. A function
   pointer or item (`for<'a> fn(&'a Cell<u32>) -> u32 {read}`) holds nothing, its signature's
   types and `&mut`s included.
 - A standard type counts by its class (`_std_class`, `_STD_NAMED`), by the module its path names
@@ -478,18 +479,18 @@ used again. Such a temporary is:
   `Barrier`, `Once`, `PhantomData`.
 - A plain cell (`_PLAIN_CELLS`: `Cell`, `UnsafeCell`, `SyncUnsafeCell`) of values with a single
   state (`_Judge.single`, `Walk.single`) keeps nothing: `Cell<()>`, `Cell<PhantomData<u32>>`, a
-  cell of a struct with no fields (review round 2).
+  cell of a struct with no fields.
 - Such a cell has a single state itself (`Cell<Cell<()>>`), and so does an enum of one variant
-  whose fields have one, without a discriminant (review round 3).
-- A `RefCell` keeps its borrow flag, which a leaked `RefMut` leaves set (review round 3). A lock,
+  whose fields have one, without a discriminant.
+- A `RefCell` keeps its borrow flag, which a leaked `RefMut` leaves set. A lock,
   a once-cell and a channel keep state of their own too: a poisoned `Mutex<()>`, a set
   `OnceCell<()>`, a `Sender<()>`'s message count.
 - The parser tells a slice (`("slice", T)`) from an array (`("array", T, length)`). An array of
-  length 0 holds nothing; a length that isn't a number counts as its element (review round 2).
+  length 0 holds nothing; a length that isn't a number counts as its element.
   The debug information gives the length as a subrange's count.
 - "plain" is every other type of `_PLAIN_MODULES` (`vec`, `collections`, `slice`, `iter`, `fmt`,
   `path`, `time` and the like): it holds what its arguments hold, which the word scan reads as
-  types of their own. `ChunksExact` and `btree_map::Iter` are plain (review round 3).
+  types of their own. `ChunksExact` and `btree_map::Iter` are plain.
 - A standard type in no class, a trait object, an `impl` type, a coroutine, a raw pointer, or a
   dependency's type may hold anything. The may-analysis only ever says "may hold" of it.
 - rustc 1.96 trims a signature's unique paths (`fn f(_1: &Cell<u32>, _2: &Vec<u32>)`).
@@ -514,15 +515,15 @@ used again. Such a temporary is:
   `struct Gen<T = u32>`). Its default comes from the crate's sources
   (`OwnedLocals._declared_defaults`, set as `TypeLayouts.defaults`).
 - Each parameter's name is kept with its default. A default naming an earlier parameter gets that
-  argument (`_substituted`): `Pair<u32>` of `struct Pair<T, U = T>` is `Pair<u32, u32>` (review
-  round 2). A projection (`T::Item`) can't be resolved, so it gives no argument.
+  argument (`_substituted`): `Pair<u32>` of `struct Pair<T, U = T>` is `Pair<u32, u32>`.
+  A projection (`T::Item`) can't be resolved, so it gives no argument.
 - Where a default can't be found, and the instances' arguments differ, the type may hold
   anything ("unsure"). The refusal says which instance it is can't be told.
 - `payloads` gives the trees of what a callee given a `&` may store, and `parts` the types of
   the fields (`("arg", n)` for argument `n`, `("payloads", n)` for what may be stored in it).
-- `_copy_level` compares whole trees (review round 2). It says "copy" only where a payload, or a
+- `_copy_level` compares whole trees. It says "copy" only where a payload, or a
   value it holds by value (`_Judge.components`), is the local's very type, whole. Anything else
-  gives "derived", which is always true (review round 3: no "a copy of part of").
+  gives "derived", which is always true.
 - `components` follows tuples, arrays, crate fields, and the standard types that own their
   arguments (`_STD_OWNING`). It doesn't follow references or iterators. It is used only on what
   may be stored, never on the local's own type.
@@ -532,8 +533,8 @@ used again. Such a temporary is:
 - A closure counts by what it captures, from the aggregate that builds it
   (`Body.closure_captures`). Where the debug information wasn't read, every type of the crate's may
   hold anything. These make `TypeLayouts`, set as `Body.layouts` when the body is matched.
-- So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`
-  (review round 5), while `Counter { c: Cell<u32> }` does.
+- So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`,
+  while `Counter { c: Cell<u32> }` does.
 - A field moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of `_6`
   only (`_reached`). So `look(&rx, x)` writes nothing, though `mpsc::channel()`'s tuple holds a
   `Sender` beside `rx`.
@@ -579,7 +580,7 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   (`Body._exposed`), a call, a drop or a `copy_nonoverlapping` ends what it knows, on every edge.
   `keep(&mut x)` may change `x`, so `let y = x;` before it no longer surely holds a copy of `x`.
 - A temporary computed from a binding's copy doesn't count as read: the statement read the copy.
-  It counts only as the binding's (#192), through `copy_undoes` (`reads="taken"`, or `"copied"`
+  It counts only as the binding's, through `copy_undoes` (`reads="taken"`, or `"copied"`
   where it may). A refusal names the bindings it was surely computed from (`reads="sources"`),
   which stays true after the binding is assigned again. Where it may be, `copy_sources` walks back.
 - It names them only where every place has such a copy, from bindings common to all. Where each
@@ -596,7 +597,7 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   `_stored_into`, or any, through a pointer loaded from memory. So does a drop through one. Only a
   local whose storage is borrowed, or whose type may hold a pointer, can be reached
   (`_addressable`).
-- A call's result holds no sure copy: the callee may return anything (#311 review). What a call is
+- A call's result holds no sure copy: the callee may return anything. What a call is
   given holds none after it, nor does a holder it is given an alias of that `_may_write` allows
   (`_read_clobber`). The one exception is `std::boxed::box_assume_init_into_vec_unsafe`, the step
   `vec!` makes its Vec with (`_STD_TRANSFER`). Its result holds what its Box held, where
@@ -623,7 +624,7 @@ information shows. Standard types can view a local as another type: `Cell::from_
 
 LLVM inlines `#[inline(always)]` calls even at opt-level 0, such as an integer's `clone`. Their
 rows carry the callee's lines, so their code may run below the line's first row of its own, where
-the breakpoint stops (#324).
+the breakpoint stops.
 
 - `RustSession._inlined_below` finds them. They are the DWARF's inlined calls made from the stop's
   line (`CodeBlock.call`: the call's file, line, column and callee's name), with code below the
@@ -631,7 +632,7 @@ the breakpoint stops (#324).
 - It also reads the code just before the pc (`_window`): back to the last row of another line
   that is a statement's, outside inlined code and macro definitions (`macro_lines`). An inlined
   call there that isn't a statement's is a doubt (`_unplaced`). Its site may be a macro's
-  definition, another file, or not given. A doubt withholds every local (#324 review).
+  definition, another file, or not given. A doubt withholds every local.
 - `OwnedLocals.inlined_reads` matches each column, and name, to the line's MIR calls whose span
   holds it (`_covers`, `_callee`). In safe code, a local given to one, or what may point into it
   (`Body.lent_from`), is withheld. The borrow rules make a pointer into a local in its own frame,
@@ -639,7 +640,7 @@ the breakpoint stops (#324).
 - In unsafe code, a call may read a local through a pointer it isn't given, as a `static mut`
   holds. So every inlined call but the standard library's `ptr::eq` withholds every local.
   That `ptr::eq` must be proven under the root the dump names it by (`_trusts`,
-  `_comparison_root`, #320 review round 3).
+  `_comparison_root`).
 - Where the DWARF's inlined calls made from the line aren't the IR's (`IrFunction.inlined`), or a
   column holds no call, every local is withheld. Where the pc or the DWARF blocks are not known,
   every call the IR shows inlined on the line counts, and a line that may invoke a macro is not
@@ -652,7 +653,7 @@ the breakpoint stops (#324).
 
 At a call the build inlined, LLDB shows the caller's frame on the line the call is made from, the
 DWARF's `DW_AT_call_line`. That line may have no row of its own in the line table, which
-`RustSession.lines` is read from (#326).
+`RustSession.lines` is read from.
 
 - `validate_stop` accepts such a line only where the frame's pc is in the code of a call inlined
   into its function from that line (`_inlined_site`, `CodeBlock.call` and `ranges`). A caller
@@ -675,7 +676,7 @@ DWARF's `DW_AT_call_line`. That line may have no row of its own in the line tabl
   macro's, and the note says Peeky can't tell.
 - A probe that stops there (its breakpoint told by the frame's place) withholds each selector's
   row with that reason and goes on. A change due there is refused (`_unplaced_rows`).
-- A macro statement's own rows on the definition's lines are judged by their line, as before.
+- A macro statement's own rows on the definition's lines are judged by their line.
 - A line of the function's own with no row, as `bump(&mut x);` of an `#[inline(always)] fn bump`,
   starts at the lowest inlined call made from it (`_line_start`, `_site_lows`).
 - `unplaceable_line` refuses a breakpoint on a line with no row where an inlined call is made.
@@ -692,7 +693,7 @@ DWARF's `DW_AT_call_line`. That line may have no row of its own in the line tabl
 - `Body.direct_copies_at` gives the direct copies, from the blocks reachable from `bb0` or a
   coroutine's resumption. That is a copy or move of the local or a part, what is computed from one,
   a closure or aggregate holding one, and a read through a pointer to it. It is also what a call
-  given a pointer into it returns (#320), but not what a standard measure returns, as `x.len()`.
+  given a pointer into it returns, but not what a standard measure returns, as `x.len()`.
 - Every reading of `copy_hazards` judges by `copy_undoes` the same direct copies: those the "any"
   reading doesn't hold as temporaries. So a value `format!` made from a binding's copy is never
   said to read the local.
@@ -708,24 +709,24 @@ A binding of the program's own blocks the change where, on some path, the progra
 the local without reading the changed part, and uses the binding before or after that
 (`Body.copy_undoes`). Only direct copies count for bindings.
 
-- A use after the local is assigned or ends counts too (#330): `u.push(y);`, then `y = t;`, then
+- A use after the local is assigned or ends counts too: `u.push(y);`, then `y = t;`, then
   `u` printed. So does a Vec a struct was pushed into, used after the struct ends. The copy is all
   that is left of the old value.
 - The frame's exit ends every local and argument (`Body._frame_exit`, `_diverges`): a `return`,
   or a call that never returns other than std's panic (`process::exit`, `abort`, a function of the
   crate's that returns `!`). An argument has no `StorageDead`.
 - What a pointer binding stands for, where nothing of the frame does (`_pointees`), outlives the
-  binding and the frame (`Body._outlives_frame`, #329): its end and the frame's `return` use it,
+  binding and the frame (`Body._outlives_frame`): its end and the frame's `return` use it,
   as a caller may read it. That is an argument `p` of `*p = x;`, or `r` of `let r = slot();`
-  returning a `&'static Mutex<u32>`. Something else must reach it (`_reachable_after`, #340
-  review): an argument, a constant address, a call that may return global state, or a call or
-  store it was handed to (`_escapes`). So `r` of `let r = fresh();`, a leaked `Box`, doesn't.
+  returning a `&'static Mutex<u32>`. Something else must reach it (`_reachable_after`): an
+  argument, a constant address, a call that may return global state, or a call or store it was
+  handed to (`_escapes`). So `r` of `let r = fresh();`, a leaked `Box`, doesn't.
   Global state does too ([Global state](#global-state)).
 - `_escapes` counts a call given the binding, or what is made from it, with another value that
   may hold a pointer, or one that may touch global state. It also counts a call that keeps what
-  it is given past the call (review 2). That is the standard library's `thread::spawn`,
+  it is given past the call. That is the standard library's `thread::spawn`,
   `Builder::spawn`, `Scope::spawn` and `Sender::send`, proven by path (`_KEEPING_CALLS`,
-  `_keeping_call`, review 3). The path must be under a proven root, or be one rustc printed
+  `_keeping_call`). The path must be under a proven root, or be one rustc printed
   without its module, whose first name the crate defines nothing of (`OwnedLocals._shadows`,
   `Body.shadows`). A function of the crate's counts if it may make such a call, however deep
   (`OwnedLocals._keepers`, `Body.keepers`, by name), as does a call by a function pointer. So
@@ -734,24 +735,24 @@ the local without reading the changed part, and uses the binding before or after
   afterwards only through what `leak` returns, which the copy and return analyses follow.
 - The standard library's `ptr::eq` and `addr_eq`, proven so (`_std_compares`, `Body.compares`),
   write nothing through the pointers they are given (`_copy_store`), nor keep them (`_escapes`).
-  They use what they are given for its address only (`Body._address_only`, review 3). So does
+  They use what they are given for its address only (`Body._address_only`). So does
   an assignment to a temporary only such calls are given (`_11 = &raw const (*_4)`).
   `copy_kind` counts none of these as a use of a copy.
-- A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
+- A mark of settable covers the paths that don't panic. An edge only a panic takes
   (`Block.unwinds`) is not followed. Std's panic (`Body._panics`) is neither a read nor an end, and
-  its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count (review 4).
+  its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count.
 - `_PANIC_CALL` lists std's panic entry points, under a root `std_paths` proves. Each name is one
   the MIR always prints with its path: `std::rt::panic_fmt`, `core::panicking::panic`,
   `assert_failed`. `panic_any` and `resume_unwind` print bare unless the crate has an item so
-  named, so they are left out: each is any call that never returns (review 4).
+  named, so they are left out: each is any call that never returns.
 - Only the listed entry points count; any other call that never returns is an exit, which only
   refuses more. Std's other helpers (`expect_failed`, `panic_bounds_check`, the slice and `str`
   `*_fail` ones) run inside calls that return or behind an `assert`, and never appear in a crate's
-  own MIR (review 5).
+  own MIR.
 - `Body.copy_kind` says why: "end", "loop" or "exits". "loop": a loop entered with the copy used,
   which reads the local nowhere and has no way out (`_closed_loop`, on the walk's states), even
-  where another path reads it (review 4). A loop with a way out doesn't count. A place from which
-  every path reaches std's panic, or `unreachable`, is no way out (review 5).
+  where another path reads it. A loop with a way out doesn't count. A place from which
+  every path reaches std's panic, or `unreachable`, is no way out.
 - "exits": every path panics, exits or never leaves a loop before a read, assignment or end
   (`Body.exits_unread`), and a use of the copy is on the way: `let z = x; black_box(z); panic!()`.
 - The refusal says so (`OwnedLocals.exits_first`, `copy_kinds`): "every path from here panics or
@@ -793,7 +794,7 @@ the local without reading the changed part, and uses the binding before or after
 
 ### Global state
 
-A call may keep a copy in the crate's global state with interior mutability (#329): a `static`
+A call may keep a copy in the crate's global state with interior mutability: a `static`
 holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_local!`.
 
 - `Body.global_roots` finds where a body names one: a local assigned a constant that stands for
@@ -805,7 +806,7 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
   function touches what it names, and what each call and drop in it may (`_global_edges`), found
   again until nothing grows. `OwnedLocals._globals` sets it as `Body.globals` at match time. It is
   None where the crate names no such state, and then nothing changes.
-- A call reaches the crate's functions by its path (`GlobalState.resolve`, #340 review). A
+- A call reaches the crate's functions by its path (`GlobalState.resolve`). A
   function's key is its path without generic arguments (`clean::note`). A method's is its module's,
   its type's from the `impl` header (`_impl_self`) and its own (`clean::Wrap::keep`), and
   `Wrap::keep` too. A call path matches a key exactly, or as its last segments (rustc leaves out a
@@ -874,16 +875,16 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
 ### Values no path reads again
 
 Where no path from the stop reads the changed part before it is overwritten or ends, a change is
-never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
+never seen, whether or not a copy is kept. The rule is in the cookbook's
 [When the program never reads it again](lang/rust-cookbook.md#when-the-program-never-reads-it-again).
 
 - `Body.unread_ends` walks every path from each place, as `copy_undoes` does. It returns where the
   part ends: "write", "scope" (`StorageDead`), "return", "drop" (a drop that may read it), or
   "stop", where the frame may exit otherwise or panic (an exit, `Block.leaves`, `Block.unwinds`).
   It returns None where a statement may read it first. It doesn't follow an edge only a panic
-  takes (#330 review 3), nor the cleanup of a call that never returns (review 4).
+  takes, nor the cleanup of a call that never returns.
 - Each path the program may take must reach one of them. Where a loop lies on the way (`_cyclic`),
-  it adds "loop": Peeky doesn't prove that a loop ends (#330 review 2).
+  it adds "loop": Peeky doesn't prove that a loop ends.
 - `Body._unread_access` judges each statement strictly, unlike `_root_access`. A borrow, a
   dereference, a `discriminant`, a call given the local, and a drop that may run code are reads. A
   `copy` or `move` of a place `_apart` from the part isn't, nor is a drop `_quiet_drop` allows.
@@ -1078,17 +1079,15 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
   container's contents only in an unoptimized build".
 - A local with no value is reported as `unavailable`.
 - Every result carries `optimized` and a warning, because optimized code can show wrong values
-  that LLDB doesn't flag. In a real run, `start` read `1` at opt-level 2, and `3` unoptimized.
-  See [COOKBOOK 7.5](COOKBOOK.md#75-optimized-builds).
+  that LLDB doesn't flag ([COOKBOOK 7.5](COOKBOOK.md#75-optimized-builds)).
 
 ## Limits and qualification
 
 - dwarfdump's octal escapes and the LLVM IR's hex escapes read back. rustc's MIR and Cargo's
   messages are split at `\n` alone. So a source's name may hold any character.
-- Edition 2024 was qualified by running the whole Rust suite, 56 tests with every owned-local proof,
+- Edition 2024 was qualified by running the whole Rust suite, every owned-local proof included,
   with its example crate switched to 2024.
 - Test processes share OS permissions with the checker, and are trusted code.
-- No live-model Rust evaluation has been recorded.
 - Not delivered yet: any `Option` payload other than `i32`, a tuple or a crate struct, and any
   other data-carrying enum.
 - A crate can be debugged on a separate host, through a worker started with `--rust-config`

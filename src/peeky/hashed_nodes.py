@@ -1,8 +1,8 @@
-"""A libstdc++ unordered container's entries, read from its own nodes (#360, #374).
+"""A libstdc++ unordered container's entries, read from its own nodes.
 
 LLDB's libstdc++ formatter takes an unordered container's element type from its
 allocator's first template argument. GCC's debug information gives `std::allocator<T>`
-none, so the formatter counts each one as empty and lists nothing (#167). Peeky then
+none, so the formatter counts each one as empty and lists nothing. Peeky then
 reads the entries itself, where the build's debug information proves how:
 
 - the hashtable's `_Value` is the type each node holds. Its `_Traits` say whether a node
@@ -570,7 +570,7 @@ class _Reader:
         return {**shown, "value": f"{name} @ 0x{address:x}", "variablesReference": reference}
 
     def nested(self, node, data, address, depth):
-        """The elements of a standard container held in a node (#374): a `std::array`'s,
+        """The elements of a standard container held in a node: a `std::array`'s,
         inside it. Any other is _Withheld, with why: a `std::vector`'s buffer, or a nested
         unordered container's nodes, are heap blocks that nothing proves still allocated.
         A value destroyed in place (`std::destroy_at(&m[1])`), before a new one is built
@@ -639,11 +639,11 @@ class _Reader:
         return self.elements(held[2], data, address, size, count[3], depth)
 
     def string(self, node, data, address):
-        """A libstdc++ string's text, as Peeky shows one read from memory (#128), where its
+        """A libstdc++ string's text, as Peeky shows one read from memory, where its
         data pointer points into its own buffer, right after its pointer and length,
         inside the node. Else _Withheld: its text is in heap memory, which nothing proves
         still allocated. A string destroyed in place (`std::destroy_at(&m[1])`), before a
-        new one is built there, keeps a pointer to its freed text (#374 review)."""
+        new one is built there, keeps a pointer to its freed text."""
         from peeky.native import local_buffer
 
         buffer = local_buffer(self.graph, node)
@@ -835,7 +835,7 @@ def readable(graph, offset, depth=0):
     whose enumerators were read, a pointer, a libstdc++ string Peeky places, a standard
     container or string (each read, or withheld on its own: a string whose text is
     outside its node), or a pair or a struct of them. For a row's advice to read a
-    container once nothing may be changing it (eval 13 prep, finding 3)."""
+    container once nothing may be changing it."""
     node, name = _under(graph, offset), _type_name(graph, offset)
     if node is None or not name:
         return False

@@ -1,12 +1,10 @@
 """Bounded Rust symbol evidence scoped to the application's own compile units.
 
-Rust executables link precompiled standard-library line tables whose combined
-dump exceeds the native parser budget (4.8 MB on the pinned Linux pair). This
-module does not loosen that budget. It selects only compile units whose recorded
-compilation directory is the fresh workspace and whose name binds them to the
-declared crate root, dumps exactly their line tables, and reuses the unchanged
-fail-closed DWARF4 line parser. Units that claim one property but not the other
-are ambiguous and rejected.
+Rust executables link precompiled standard-library compile units. This module
+selects only compile units whose recorded compilation directory is the fresh
+workspace and whose name binds them to the declared crate root, dumps exactly
+their line tables, and reuses the native fail-closed DWARF4 line parser. Units
+that claim one property but not the other are ambiguous and rejected.
 
 Enum layouts come from the same units, so active-variant inspection follows the
 compiler-emitted discriminant values for this build rather than an assumed ABI.
@@ -52,7 +50,7 @@ from peeky.rust_lexer import code_only
 from peeky.textlines import octal_string, split_lines
 
 # The text of the units' index, and of a unit given as text. An application unit's own
-# DWARF is read as llvm-dwarfdump writes it (#397), within native.MAX_DEBUG_INFO and
+# DWARF is read as llvm-dwarfdump writes it, within native.MAX_DEBUG_INFO and
 # MAX_DIES: a crate using std's collections has megabytes of monomorphized types (33 MB
 # of text, 95,000 entries, for one using BTreeMap).
 RUST_METADATA = 16 * 1024 * 1024
@@ -74,8 +72,7 @@ BUDGET = "<Rust value view budget exhausted; expand or inspect a narrower scope>
 
 
 def _budget(exc):
-    """What a view the worker's budget stopped shows: which limit ran out (#156 review:
-    Peeky's own checks once took its whole time, and a `&str` blamed an enum's view)."""
+    """What a view the worker's budget stopped shows: which limit ran out."""
     cause = str(exc).partition(": ")[2]
     return BUDGET.replace("exhausted;", f"exhausted ({cause});") if cause else BUDGET
 
@@ -139,7 +136,7 @@ def _string(raw):
     match = re.fullmatch(r'(".*")\)', raw or "")
     if not match:
         raise ValueError("Expected a quoted DWARF string attribute")
-    # dwarfdump writes an unprintable byte (any non-ASCII one) in octal (#179).
+    # dwarfdump writes an unprintable byte (any non-ASCII one) in octal.
     value = octal_string(match[1][1:-1])
     if value is None:
         raise ValueError("Unsupported DWARF string escape")
@@ -172,7 +169,7 @@ def _close_deeper(stack, depth):
 
 def parse_dies(text, *, units, tally=None):
     """Parse llvm-dwarfdump DIE output by indentation; unknown rows fail closed.
-    ``text``: its text, or its lines as llvm-dwarfdump writes them (#397). At most
+    ``text``: its text, or its lines as llvm-dwarfdump writes them. At most
     MAX_DIES entries and MAX_KEPT bytes kept (SymbolLimit), with ``tally`` (a native.Kept:
     what other units of the build keep, added to here): each line's cost is reckoned, at
     most, before anything of it is kept or copied.
@@ -731,13 +728,13 @@ QUALIFIED_CONTAINERS = {
     "alloc::string::String": ("string", ("u8", 1, "DW_ATE_unsigned")),
     "&str": ("str", ("u8", 1, "DW_ATE_unsigned")),
     "&mut str": ("str", ("u8", 1, "DW_ATE_unsigned")),
-    # Read only as a field (#156): a `Box<str>` local is the Box gate's (#101).
+    # Read only as a field: a `Box<str>` local is the Box gate's.
     "alloc::boxed::Box<str, alloc::alloc::Global>": ("str", ("u8", 1, "DW_ATE_unsigned")),
 }
 # Reference parameters whose contents Peeky reads, by their declared (DWARF/IR) type:
 # (LLDB's names for the parameter's type, qualified container, read through a pointer).
-# Only parameters qualify: their referent outlives the call (see rust_ir).
-_VEC = _vec_name("i32")
+# A parameter's referent outlives the call (see rust_ir); a reference local's is read only
+# where the MIR shows it still stands.
 REFERENCE_PARAMETERS = {
     **{
         declared: entry
@@ -757,7 +754,7 @@ REFERENCE_PARAMETERS = {
     },
     "&str": (("&str",), "&str", False),
     "&mut str": (("&mut str",), "&mut str", False),
-    # A `for cell in cells` item of a `&[&str]` (#205): LLDB's `&str *`. What the `&str`
+    # A `for cell in cells` item of a `&[&str]`: LLDB's `&str *`. What the `&str`
     # borrows outlives the reference to it (`&'b &'a str` needs `'a: 'b`).
     "&&str": (("&str *",), "&str", True),
     "&alloc::string::String": (("alloc::string::String *",), "alloc::string::String", True),
@@ -936,7 +933,7 @@ def _qualified_names(root):
 
 
 def _element_field(target, by_offset, names):
-    """How a field of a container's element is read (#260): a `String`'s text, by its
+    """How a field of a container's element is read: a `String`'s text, by its
     validated layout ({"string": layout}), or not at all ({"unread": its type's name or
     None})."""
     if target is not None and names.get(target.offset) == _STRING:
@@ -951,7 +948,7 @@ def _composite(die, by_offset, names=None):
     size, fields (name, offset, scalar) in declaration order, and how Rust's derived
     `{:?}` shows it (`(a, b)`, `Point(a, b)`, `Interval { start: a, end: b }`).
 
-    With ``names`` (_qualified_names), a container's element (#260): a field may also
+    With ``names`` (_qualified_names), a container's element: a field may also
     be a `String` (name, offset, `alloc::string::String`; its layout under "string"),
     read as text, or any other type (name, offset, None, its type's name), not read;
     at least one field must be read."""
@@ -1116,7 +1113,7 @@ STRUCT_PREFIX = "struct:"
 
 
 def _struct_layout(die, by_offset):
-    """A tuple's or struct's layout for its preview (#106): its fields are qualified
+    """A tuple's or struct's layout for its preview: its fields are qualified
     scalars (see _composite); a unit struct (`struct Marker;`) has none. _UNREAD for any
     other, so that a struct of the same name is not read either."""
     plain = all(
@@ -1162,7 +1159,7 @@ def container_layouts(text, unit, root=None):
                 if (
                     qualified.startswith("(") or qualified.startswith(f"{crate}::")
                 ) and "DW_AT_declaration" not in child.attributes:
-                    # A tuple or a struct of the crate's own, for its preview (#106).
+                    # A tuple or a struct of the crate's own, for its preview.
                     layout = _struct_layout(child, by_offset)
                     if structs.get(qualified, layout) != layout:
                         layout = {"kind": "unqualified"}
@@ -1230,7 +1227,7 @@ def enum_layouts(text, unit, root=None):
 
 _INTERIOR_ALL = frozenset({"interior", "owned", "shares"})
 _STD_ROOTS = ("std::", "core::", "alloc::")
-# A function pointer's or item's type, which holds nothing (#321 review).
+# A function pointer's or item's type, which holds nothing.
 _UNNAMED_POINTERS = ("fn(", "unsafe ", "extern ", "for<")
 _NOTHING_HELD = (
     "DW_TAG_base_type",
@@ -1242,8 +1239,8 @@ _WRAPPING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type")
 
 
 def _array_lengths(die):
-    """An array type's lengths, outermost first, from its subranges' counts (#321 review
-    round 2); None for one not given as a number."""
+    """An array type's lengths, outermost first, from its subranges' counts; None for
+    one not given as a number."""
     found = []
     for child in die.children:
         if child.tag != "DW_TAG_subrange_type":
@@ -1259,7 +1256,7 @@ def _array_lengths(die):
 
 
 def interior_types(root, crate):
-    """What each struct, enum and union outside the standard library holds (#321), from one
+    """What each struct, enum and union outside the standard library holds, from one
     application unit's DWARF (``root``): {its path without its type arguments, from the root
     of ``crate`` for the crate's own (`Counter`, `m::Inner`, `Gen`) and with its crate's name
     for another's (`mylib::Pool`), and its last segment after `::` (`::Inner`, every type so
@@ -1405,7 +1402,7 @@ def interior_types(root, crate):
             if tag in _WRAPPING or tag == "DW_TAG_array_type":
                 inner = target(die)
                 if tag == "DW_TAG_array_type" and 0 in _array_lengths(die):
-                    # #321 review round 2: an empty array holds nothing.
+                    # An empty array holds nothing.
                     return
                 if inner is None:
                     out |= _INTERIOR_ALL
@@ -1455,7 +1452,7 @@ def interior_types(root, crate):
 
         def plain_cell(self, die, path, seen=frozenset()):
             """Whether it is a plain cell of values with a single state (`Cell<()>`), which
-            keeps nothing (#321 review round 2)."""
+            keeps nothing."""
             given = self.given(die)
             return (
                 _std_class(path) == "cell"
@@ -1498,7 +1495,7 @@ def interior_types(root, crate):
         def single(self, offset, seen=frozenset()):
             """Whether a value of the type at ``offset`` has a single state: `()`,
             `PhantomData`, an empty array, a plain cell of such (`Cell<Cell<()>>`), a struct or
-            tuple of such only, an enum of one such variant (#321 review rounds 2 and 3). An
+            tuple of such only, an enum of one such variant. An
             argument of the type's own counts as not."""
             die = by_offset.get(offset)
             if offset in self.covered or offset in seen or die is None:
@@ -1761,12 +1758,12 @@ def application_symbols(
             raise ValueError("Rust symbol extraction exceeded its shared deadline")
         return min(15, left)
 
-    # The bounds hold for all the units together (#397), as when the session reads
+    # The bounds hold for all the units together, as when the session reads
     # them again in one go (RustSession._unit_symbols): what passes here passes there.
     tally, line_text, info_text = Kept(), [0], [0]
 
     def stream(arguments, what, limit, spent):
-        # Read as llvm-dwarfdump writes it (#397): never the whole text at once.
+        # Read as llvm-dwarfdump writes it: never the whole text at once.
         return _symbol_text(
             dwarfdump,
             [arguments],
@@ -1806,12 +1803,12 @@ def application_symbols(
         try:
             functions = code_blocks(root, unit)
         except ValueError:
-            # Only a refinement (#115): without them every stop of a line counts.
+            # Only a refinement: without them every stop of a line counts.
             functions = {}
         for hashed, function in functions.items():
             blocks[hashed] = None if hashed in blocks else function
         try:
-            # Only withholds less where read (#321): without it, every type of the crate's
+            # Only withholds less where read: without it, every type of the crate's
             # may hold anything.
             types = interior_types(root, crate) if interior is not None else {}
         except (KeyError, ValueError, RecursionError):
@@ -1831,7 +1828,7 @@ _TOMBSTONE = 0xFFFF_FFFF_0000_0000
 @dataclass(frozen=True)
 class CodeBlock:
     """A function's own scope, one of its DWARF lexical blocks, or an inlined call in
-    it: where its code is, and the names of the variables it declares (#115)."""
+    it: where its code is, and the names of the variables it declares."""
 
     parent: int | None  # the enclosing block's index; None for the function's own
     ranges: tuple  # ((low, high), ...), addresses as the symbols number them
@@ -1839,7 +1836,7 @@ class CodeBlock:
     inlined: bool = False
     # An inlined call's site: (DW_AT_call_file as written, line, column in bytes or 0
     # where not given, the called function's name without generic arguments or ""); ()
-    # where its file or line cannot be read, or for other blocks (#324).
+    # where its file or line cannot be read, or for other blocks.
     call: tuple = ()
 
 
@@ -2098,7 +2095,7 @@ def option_view(variable, read, layout):
     """A local `Option` of a tuple or struct read from memory by its proven layout (see
     _composite_option_layout), as Rust's derived `{:?}` shows it: `None`, or
     `Some(Engineer { name: "Björn", shifts: 1, .. })` with the payload as its child
-    `__0`, whose fields are its children as a container element's are (#260). A tag
+    `__0`, whose fields are its children as a container element's are. A tag
     holding neither variant's value, or a payload that does not read (a String's length
     past its capacity), is withheld as UNVERIFIED, never a guess.
 
@@ -2242,7 +2239,7 @@ def active_variant(variable, fetch, layouts, *, top=False):
 
 # Why a caller frame's container is not trusted (rust.py's reasons name it in these
 # words): the call under way may be part-way through changing it, so a note never offers
-# one of its fields as its length (#260).
+# one of its fields as its length.
 CALLER_CHANGING = "the call under way"
 MAX_ELEMENTS = 256
 MAX_TEXT_BYTES = 4096
@@ -2372,7 +2369,7 @@ def _composite_decoder(layout):
 
 
 MAX_READ = 4096
-# The text fields of a container's elements read per view (#260): each is a memory read of
+# The text fields of a container's elements read per view: each is a memory read of
 # its own, out of the 128 one inspection has for every value it shows.
 MAX_ELEMENT_TEXTS = 16
 MAX_FIELD_TEXT = 1024
@@ -2385,7 +2382,7 @@ _NOT_UTF8 = (
 
 
 def _partial(layout):
-    """Whether a container's element has a field other than a scalar (#260)."""
+    """Whether a container's element has a field other than a scalar."""
     return any(kind not in ELEMENT_TYPES for _, _, kind, *_ in layout.get("fields", ()))
 
 
@@ -2420,9 +2417,9 @@ def _withheld_field(field, kind, reason):
 
 
 def _through_element(field, item, place=None):
-    """Where to read an element's ``field`` that a container's view does not (#260): through
+    """Where to read an element's ``field`` that a container's view does not: through
     a reference to the element, such as the `for` loop's item ``item`` in scope where there
-    is one (eleventh evaluation: `e.leave` read where `team[1].leave` did not). Nothing
+    is one (`e.leave` read where `team[1].leave` did not). Nothing
     proves the loop goes over this container, nor which element ``item`` is at a stop, so
     the note says so; ``place`` names the element (`team[1]`)."""
     if item is None:
@@ -2475,7 +2472,7 @@ def _text_field(field, raw, layout, read, left, item=None, place=None):
 
 
 def _unread_field(field, kind, through=None, item=None, place=None):
-    """A field of an element Peeky does not read (#260), with why and what to do; or of
+    """A field of an element Peeky does not read, with why and what to do; or of
     what an `Option` holds, read ``through`` a binding (`x` of `if let Some(x) = &last`).
     ``item``, ``place``: see _through_element."""
     from peeky.rust import rust_spelling
@@ -2509,8 +2506,8 @@ def _partial_debug(shape, shown, parts):
 
 
 def _partial_elements(layout, raws, read, through=None, item=None, holder=None):
-    """(values, children) of elements with a `String` field or one Peeky does not read
-    (#260): scalars as for any element, each String's text read from memory (the first
+    """(values, children) of elements with a `String` field or one Peeky does not read:
+    scalars as for any element, each String's text read from memory (the first
     MAX_ELEMENT_TEXTS), and every other field withheld with why (``through``, ``item``:
     see _unread_field; ``holder``: the container's name, which names each element)."""
     left = [MAX_ELEMENT_TEXTS]
@@ -2804,7 +2801,7 @@ def struct_name(declared, shown, layouts):
 def struct_view(variable, read, layouts, *, parameter=None, owned=False, declared=None):
     """A tuple or struct of qualified scalars read from memory, as Rust's derived `{:?}`
     shows it (`Span { start: 2, end: 3 }`, `Point(1, 2)`, `(7,)`, `Marker`), with its
-    fields as children (#106); None leaves it raw.
+    fields as children; None leaves it raw.
 
     Under the same proofs as containers: ``parameter`` is the declared (IR) type of a
     reference parameter the IR proves live (`&demo::Span`, read through the pointer
@@ -2853,18 +2850,18 @@ def struct_view(variable, read, layouts, *, parameter=None, owned=False, declare
                 {"name": field, "type": scalar, "value": value}
                 for field, scalar, value in composite_fields(layout)(raw)
             ],
-            # The layout the fields were read with: the value's own storage (#105 may
+            # The layout the fields were read with: the value's own storage (`set` may
             # change a field there, under its own rules), not a container's contents.
             "struct_layout": STRUCT_PREFIX + name,
         }
     except (ViewBudgetExhausted, ValueError):
-        # Never worse than before: LLDB's own value and fields.
+        # None leaves LLDB's own value and fields.
         return None
 
 
 def unread_elements(name):
     """Why a `Vec` or slice of type ``name`` (its debug information's) is not read by
-    element (#183, #260)."""
+    element."""
     from peeky.rust import rust_spelling
 
     return (
@@ -2892,7 +2889,7 @@ def container_view(
     ``parameter`` is the declared type of a parameter whose liveness the compiler's IR
     proves (rust_ir); ``owned`` says the compiler's MIR proves this owned local
     initialized at the stop (rust_mir); ``field`` is the qualified (DWARF) type of a
-    field the caller proved held by such a value (#156), which picks its layout.
+    field the caller proved held by such a value, which picks its layout.
     Anything else stays raw: a moved, dropped or not-yet-initialized local can hold a
     pointer into freed memory.
     ``read(address, count)`` returns exactly ``count`` bytes or raises. The container
@@ -2929,7 +2926,7 @@ def container_view(
     if layout is None or (layout["kind"] == "unread" and field is not None):
         return None
     if layout["kind"] == "unread":
-        # A proven container whose elements Peeky does not read: why, on its row (#260).
+        # A proven container whose elements Peeky does not read: why, on its row.
         return {"raw_reason": unread_elements(name)} if name else None
     view = {"name": variable.get("name"), "type": variable["type"], "variablesReference": 0}
     if layout["kind"] == "unqualified":
@@ -2984,7 +2981,7 @@ def container_view(
                     payload, final=count == length
                 )
             except UnicodeDecodeError:
-                # Never a prefix of it: LLDB's summary, and why (#260).
+                # Never a prefix of it: LLDB's summary, and why.
                 return {
                     "raw_reason": _NOT_UTF8.format(
                         "String" if layout["kind"] == "string" else "&str"

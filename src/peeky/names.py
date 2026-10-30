@@ -29,7 +29,7 @@ def display_function(name):
     `std::__1::basic_string<char, std::__1::char_traits<char>, ...>`), its parameters
     kept, so overloads stay apart. Other languages are unchanged (Java's
     `lambda$run$0` keeps its `$`). lldb-dap on macOS marks an optimized frame
-    `… [opt]`; Linux's never does, so the mark is dropped. A GCC build's `static`
+    `… [opt]`; Linux's never does, so a Rust frame's mark is dropped. A GCC build's `static`
     function is named from the global namespace (`::list(...)`), which code need not
     write: it reads as clang's (`list(...)`)."""
     name = str(name or "")
