@@ -28,7 +28,8 @@ Peeky debugs Python with debugpy, Python's debugger.
   ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
 - The output says which one ran: `python: …` in text, `python` in `--json`
   ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
-- It must be CPython 3.11 or later, and needs no debugpy. Peeky reads the program's code with it
+- It must be CPython 3.11 or later, and needs no debugpy. Peeky reads the program's code with it,
+  at the program's optimization level (`PYTHONOPTIMIZE`)
   ([Python 0](python-cookbook.md#how-peeky-reads-the-code)).
 
 ## Read values

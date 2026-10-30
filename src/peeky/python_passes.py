@@ -21,9 +21,10 @@ bytecode, compiled from its source, and notes a local only where all of these ho
   end) lets the pass go on without one. An exception's path can only take a note away.
 
 It is compiled by the program's interpreter (python_interpreter): in Peeky's process where
-that one compiles alike (``same_compiler``: the same implementation, exact version and
-build, and bytecode magic number), else in a helper process of it; both as `python`
-and as `python -O` compile it (an `assert` is left out under -O), which must agree. Not
+that one compiles alike (the same implementation, exact version and build, ABI flags,
+cache tag and bytecode magic number), else in a helper process of it; at the program's
+own optimization level (`-O` or `PYTHONOPTIMIZE` leave out an `assert`), or, where that is
+not given, both as `python` and as `python -O` compile it, which must agree. Not
 judged: a module (the whole file) that may run code other than its source says (`exec`,
 `eval`, `compile`, `types.FunctionType`, `__code__`, the `builtins` module) or may read
 or change a frame's locals (`locals()`, `sys._getframe`, `f_locals`, `f_back`, the
@@ -35,17 +36,12 @@ evaluated in the program.
 
 import ast
 import dis
-import importlib.util
 import inspect
-import json
-import os
-import subprocess
 import sys
 import types
 import warnings
 from collections import OrderedDict
 
-from peeky.processes import without_credentials
 from peeky.python_scopes import read_source, source_key
 
 # Functions larger than this are not judged.
@@ -100,8 +96,6 @@ _MODULES = frozenset({"inspect", "marshal", "builtins"})
 # Ways to reach a module or a builtin by a computed name (`globals()["__builtins__"]`,
 # `len.__self__` is the builtins module).
 _DYNAMIC = frozenset({"__builtins__", "__import__", "import_module", "globals", "__self__"})
-# Interpreters checked to compile as this one does: {path: bool}.
-_COMPILERS = {}
 
 
 class Unread(Exception):
@@ -450,53 +444,6 @@ def opaque(tree):
     return None
 
 
-# What a program's interpreter must report to be taken as compiling as this one does: its
-# implementation, exact version and build (`sys.version`), ABI flags, cache tag and
-# bytecode magic number.
-_IDENTITY = (
-    "import importlib.util, json, sys; print(json.dumps([sys.implementation.name, "
-    "sys.version, getattr(sys, 'abiflags', ''), sys.implementation.cache_tag, "
-    "importlib.util.MAGIC_NUMBER.hex()]))"
-)
-
-
-def _identity():
-    return [
-        sys.implementation.name,
-        sys.version,
-        getattr(sys, "abiflags", ""),
-        sys.implementation.cache_tag,
-        importlib.util.MAGIC_NUMBER.hex(),
-    ]
-
-
-def same_compiler(interpreter, timeout=15):
-    """Whether ``interpreter`` (the program's) compiles a source as this one does: the
-    same file, or the same implementation, exact version and build, ABI flags, cache tag
-    and bytecode magic number, asked once; False where it cannot be asked. A 3.11 worker
-    would read a 3.12 program's inlined comprehension as a loop of its own, and one magic
-    number spans patch versions and builds."""
-    if not isinstance(interpreter, str) or not interpreter:
-        return False
-    if interpreter not in _COMPILERS:
-        try:
-            same = os.path.realpath(interpreter) == os.path.realpath(sys.executable)
-            if not same:
-                found = subprocess.run(
-                    [interpreter, "-I", "-c", _IDENTITY],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    check=False,
-                    env=without_credentials(os.environ),
-                )
-                same = found.returncode == 0 and json.loads(found.stdout) == _identity()
-        except (OSError, ValueError, subprocess.SubprocessError):
-            same = False
-        _COMPILERS[interpreter] = same
-    return _COMPILERS[interpreter]
-
-
 def _codes(module):
     pending = [module]
     while pending:
@@ -516,13 +463,15 @@ def _loops(tree):
     return found
 
 
-def _source(path, key):
+def _source(path, key, optimize=None):
     """{"loops", "codes": {optimize: module code}, "flows", "judged", "opaque": why no
-    function of it is judged (see ``opaque``)} for a source, or None where it cannot be
-    read or compiled."""
-    if key in _SOURCES:
-        _SOURCES.move_to_end(key)
-        return _SOURCES[key]
+    function of it is judged (see ``opaque``)} for a source, compiled at the program's
+    ``optimize`` level (else at 0 and 1), or None where it cannot be read or compiled."""
+    levels = (0, 1) if optimize is None else (optimize,)
+    cached = (key, levels)
+    if cached in _SOURCES:
+        _SOURCES.move_to_end(cached)
+        return _SOURCES[cached]
     data, _ = read_source(path, key)
     if data is None:
         return None
@@ -535,12 +484,12 @@ def _source(path, key):
             del tree
             codes = {
                 optimize: compile(data, str(path), "exec", dont_inherit=True, optimize=optimize)
-                for optimize in (0, 1)
+                for optimize in levels
             }
     except (SyntaxError, ValueError, UnicodeDecodeError, RecursionError, MemoryError):
         return None
     source = {"loops": loops, "codes": codes, "flows": {}, "judged": {}, "opaque": why}
-    _SOURCES[key] = source
+    _SOURCES[cached] = source
     while len(_SOURCES) > MAX_SOURCES:
         _SOURCES.popitem(last=False)
     return source
@@ -603,13 +552,13 @@ def _judge(source, function, line, name, entered):
     return verdicts.pop()
 
 
-def stale_pass(path, function, line, name, loaded_by=None, entered=False):
+def stale_pass(path, function, line, name, loaded_by=None, entered=False, optimize=None):
     """``(loop's line, (lines whose stores come first, ...))`` where this pass's code has
     not assigned the local ``name`` of ``function``, stopped at ``line`` of ``path``,
     before the line, and every path through the rest of the pass assigns it before the
     code reads it (see the module's docstring); else None. ``entered``: the stop is where
     the line begins (a breakpoint's). A file changed after ``loaded_by`` (a
-    time.time()) proves nothing."""
+    time.time()) proves nothing. ``optimize``: the program's level (sys.flags.optimize)."""
     if sys.implementation.name != "cpython" or sys.version_info < (3, 11):
         return None
     if not (
@@ -625,7 +574,7 @@ def stale_pass(path, function, line, name, loaded_by=None, entered=False):
     key, _ = source_key(path, loaded_by)
     if key is None:
         return None
-    source = _source(path, key)
+    source = _source(path, key, optimize)
     if source is None:
         return None
     judged, asked = source["judged"], (function, line, name, bool(entered))
@@ -641,11 +590,11 @@ def stale_pass(path, function, line, name, loaded_by=None, entered=False):
     return judged[asked]
 
 
-def stale_note(path, function, line, name, loaded_by=None, entered=False):
+def stale_note(path, function, line, name, loaded_by=None, entered=False, optimize=None):
     """A ``PassNote`` for the local ``name`` (see ``stale_pass``), or None. It says what
     the code does, not what ran: code elsewhere may still reach the frame (a call that
     writes `sys._getframe(1).f_locals`), so the value is only likely an earlier pass's."""
-    found = stale_pass(path, function, line, name, loaded_by, entered)
+    found = stale_pass(path, function, line, name, loaded_by, entered, optimize)
     if found is None:
         return None
     loop, stores = found

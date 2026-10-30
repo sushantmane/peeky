@@ -39,15 +39,17 @@ def sdk(monkeypatch):
 
 
 def calls(tmp_path, monkeypatch):
-    from peeky import adapters, build, cli, native, processes, python_interpreter, python_passes
+    from peeky import adapters, build, cli, native, processes, python_interpreter
 
     (tmp_path / "cc").write_text("")
+    # A program's interpreter: asked, as the program runs, what it is.
+    (tmp_path / "python3").write_text("#!/bin/sh\n")
+    (tmp_path / "python3").chmod(0o755)
     (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(cli.shutil, "which", lambda name, **_: f"/usr/bin/{name}")
     build._xcrun_find.cache_clear()
     build.default_sdk.cache_clear()
-    python_passes._COMPILERS.clear()
     return {
         "compiler --version": lambda: native.compiler_family(str(tmp_path / "cc")),
         "preprocessor": lambda: cli._defines_main(tmp_path / "main.c", {"compiler": "cc"}, "c"),
@@ -58,7 +60,6 @@ def calls(tmp_path, monkeypatch):
         "rustup": lambda: cli._rustup("cargo"),
         "native sdk": lambda: cli.native_tools("c"),
         "git": lambda: adapters._git("git", tmp_path, "status"),
-        "interpreter": lambda: python_passes.same_compiler(str(tmp_path / "python3")),
         "program's interpreter": lambda: python_interpreter.identify(
             str(tmp_path / "python3"), "--python"
         ),

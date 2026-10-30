@@ -3,7 +3,6 @@
 import ast
 import collections
 import dis
-import json
 import os
 import re
 import sys
@@ -484,31 +483,30 @@ def test_ordinary_uses_of_those_names_leave_a_module_judged(tmp_path):
 
 def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, cases):
     # A 3.11 worker read a 3.12 program's inlined comprehension (its
-    # `LOAD_FAST_AND_CLEAR x`) as code that never reads `x`.
-    import importlib.util
-
-    from peeky import python_passes
+    # `LOAD_FAST_AND_CLEAR x`) as code that never reads `x`. Only an interpreter that
+    # reports this one's compiler is read here; another is read by a helper of its own,
+    # which these scripts can't run, so they get no note.
     from peeky.adapters import PythonAdapter
+    from peeky.python_interpreter import identify, own_compiler
 
-    def interpreter(name, says):
+    def interpreter(name, compiler):
         script = tmp_path / name
-        script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{says}\nEOF\n")
+        version = sys.version.split()[0]
+        said = repr([compiler[0], version, list(sys.version_info[:2]), *compiler[1:], 0])
+        script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{said}\nEOF\n")
         script.chmod(0o755)
         return str(script)
 
-    identity = python_passes._identity()
-    same = interpreter("same", json.dumps(identity))
-    other = interpreter("other", json.dumps([*identity[:4], "00000d0a"]))
+    own = own_compiler()
+    same = interpreter("same", own)
+    other = interpreter("other", [*own[:4], "00000d0a"])
     # One magic number spans patch versions and builds; the exact version and
     # build must match too.
-    build = interpreter("build", json.dumps([identity[0], identity[1] + "+", *identity[2:]]))
-    magic = interpreter("magic", f"{sys.implementation.name} {importlib.util.MAGIC_NUMBER.hex()}")
-    assert python_passes.same_compiler(sys.executable) is True
-    assert python_passes.same_compiler(same) is True
-    assert python_passes.same_compiler(other) is False
-    assert python_passes.same_compiler(build) is False
-    assert python_passes.same_compiler(magic) is False
-    assert python_passes.same_compiler(str(tmp_path / "missing")) is False
+    build = interpreter("build", [own[0], own[1] + "+", *own[2:]])
+    assert identify(sys.executable, "peeky").same is True
+    assert identify(same, "--python").same is True
+    assert identify(other, "--python").same is False
+    assert identify(build, "--python").same is False
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "key = slug(title)" in text)
     frame = {"source": {"path": cases}, "name": "group", "line": line}
     variable = {"name": "key", "type": "str", "value": "'a'"}

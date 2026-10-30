@@ -693,11 +693,12 @@ def describe(args):
         "evidence about one run, never a verified fix",
     }
     if language == "python":
-        from peeky.python_interpreter import Unavailable, find, readings
+        from peeky.python_interpreter import Readings, Unavailable, find
 
-        # As the program's interpreter compiles it: lines and scopes differ by version.
+        # As the program's interpreter compiles it: lines and scopes differ by version and
+        # optimization level.
         interpreter = find(root, args.python)
-        read = readings(interpreter.path)
+        read = Readings(interpreter.path, interpreter)
         try:
             manifest["breakpoint_lines"] = {program: read("lines", str(root / program))}
             manifest["scopes"] = read("scopes", str(root / program))
@@ -706,6 +707,8 @@ def describe(args):
                 f"Peeky could not read {program} in the program's interpreter, "
                 f"{interpreter.path} ({exc})"
             ) from None
+        finally:
+            read.close()
         manifest["python"] = interpreter.identity()
         manifest["mutable_types"] = (
             "Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them"

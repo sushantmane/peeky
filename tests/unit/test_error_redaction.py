@@ -241,7 +241,16 @@ def test_a_probe_childs_own_error_loses_the_token_before_it_is_cut(tmp_path, mon
         def communicate(self, timeout=None):
             return self.stdout, b""
 
-    monkeypatch.setattr(subprocess, "Popen", Child)
+    real = subprocess.Popen
+
+    def popen(command, *args, **kwargs):
+        # Only the probe child is this one: the child asks the program's interpreter what
+        # it is (python_interpreter), and that runs.
+        if "probe" not in command:
+            return real(command, *args, **kwargs)
+        return Child(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
     result = worker_module._run_probe_process(root, Probe("main.py", 1), None, 60, secret=ODD)
     message = result["error"]["message"]
     assert result["error"]["code"] == "BUILD_FAILED", result

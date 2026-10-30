@@ -283,6 +283,58 @@ def test_peeky_reads_a_program_with_its_own_interpreters_version(tmp_path, capsy
         assert code == 2 and "generic.py does not parse as Python" in described["error"]["message"]
     else:
         assert code == 0 and described["breakpoint_lines"]["generic.py"], described
+    # The .venv made again at the same path, now with Peeky's own Python: this launch reads
+    # with it, not with the earlier launch's interpreter or verdict.
+    shutil.rmtree(root / ".venv")
+    python = make_venv(root / ".venv")
+    code, out = run(capsys, *argv, "--no-save", "--json")
+    again = json.loads(out.out)
+    assert code == 0 and again["python"]["version"] == own_version(), again["python"]
+    assert not any(row.get("note") for row in again["rows"]), again["rows"]
+    # And back to the other version: its reading again.
+    shutil.rmtree(root / ".venv")
+    python = make_venv(root / ".venv", base)
+    code, out = run(capsys, *argv, "--no-save", "--json")
+    back = json.loads(out.out)
+    held = [row for row in back["rows"] if row["function"] == "pick" and "value" in row]
+    assert [bool(row.get("note")) for row in held] == [version < (3, 12)] * len(held), held
+
+
+def own_version():
+    return ".".join(map(str, sys.version_info[:3]))
+
+
+OPTIMIZED = """\
+def check(total):
+    \"\"\"Checked in development only.\"\"\"
+    assert total < 0, "a total is never negative"
+    return total
+
+
+print(check(3))
+"""
+
+
+def test_peeky_reads_the_program_at_its_optimization_level(project, capsys, monkeypatch):
+    # PYTHONOPTIMIZE reaches the program, which leaves out the `assert`, and every
+    # reading of its code is made at that level, not at Peeky's own.
+    root, python = project
+    (root / "opt.py").write_text(OPTIMIZED)
+    code, out = run(capsys, "describe", root / "opt.py", "--json")
+    assert json.loads(out.out)["breakpoint_lines"] == {"opt.py": [1, 3, 4, 7]}
+    monkeypatch.setenv("PYTHONOPTIMIZE", "1")
+    code, out = run(capsys, "describe", root / "opt.py", "--json")
+    manifest = json.loads(out.out)
+    assert manifest["breakpoint_lines"] == {"opt.py": [1, 4, 7]}, manifest
+    assert manifest["python"]["optimize"] == 1
+    argv = ["probe", root / "opt.py", "--at", "4", "--capture", "total", "--no-save"]
+    code, out = run(capsys, *argv, "--json")
+    result = json.loads(out.out)
+    # The assert would fail: it is left out, as Peeky said.
+    assert code == 0 and result["rows"][0]["value"] == "3", result
+    assert result["python"]["optimize"] == 1 and result["target_identity"]["optimize"] == 1
+    code, out = run(capsys, *argv, "--quiet")
+    assert f"python: {python}, Python {own_version()} -O (the root's .venv)" in out.out, out.out
 
 
 def test_an_interpreter_too_old_for_peeky_is_refused_before_anything_runs(

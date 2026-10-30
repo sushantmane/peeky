@@ -300,24 +300,33 @@ def _parse_error(path, exc):
     return ValueError(f"{path} does not parse as Python: {exc.msg} (line {exc.lineno})")
 
 
-def breakable_lines(path):
-    """The lines of a source the compiler gives code: where a breakpoint can stop."""
-    try:
-        code = compile(path.read_text(), str(path), "exec")
-    except SyntaxError as exc:
-        raise _parse_error(path, exc) from exc
+def code_lines(source, name, optimize=0):
+    """The lines of ``source`` (text or bytes) the compiler gives code at ``optimize``.
+    SyntaxError where it does not compile."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        code = compile(source, name, "exec", dont_inherit=True, optimize=optimize)
     lines, stack = set(), [code]
     while stack:
         item = stack.pop()
         lines.update(line for _, _, line in item.co_lines() if line)
         stack.extend(c for c in item.co_consts if hasattr(c, "co_lines"))
-    return sorted(lines)
+    return lines
+
+
+def breakable_lines(path, optimize=0):
+    """The lines of a source the compiler gives code at the program's ``optimize`` level
+    (`-O` leaves out an `assert`): where a breakpoint can stop."""
+    try:
+        return sorted(code_lines(path.read_text(), str(path), optimize))
+    except SyntaxError as exc:
+        raise _parse_error(path, exc) from exc
 
 
 MAX_SCOPES = 300
 
 
-def function_scopes(path):
+def function_scopes(path, optimize=0):
     """Names each Python function (and the module) can see, for choosing selectors.
 
     Static: lists parameters and assigned locals, not values or attributes, and the
@@ -356,7 +365,7 @@ def function_scopes(path):
         with warnings.catch_warnings():
             # A program's own syntax warnings (`"\d"`) are not describe's to print.
             warnings.simplefilter("ignore")
-            compiled = compile(text, str(path), "exec", dont_inherit=True)
+            compiled = compile(text, str(path), "exec", dont_inherit=True, optimize=optimize)
     except (SyntaxError, ValueError):
         compiled = None
     # A generator expression's code is its own (a comprehension's too, before 3.12), but
@@ -434,3 +443,34 @@ def function_scopes(path):
             {"scope": "...", "lines": None, "names": [], "omitted": len(found) - MAX_SCOPES}
         )
     return scopes
+
+
+# Code objects whose frames the debugger names alike: debugpy's frames give no column.
+_ANONYMOUS = frozenset({"<lambda>", "<genexpr>", "<listcomp>", "<setcomp>", "<dictcomp>"})
+
+
+def anonymous_code(text, lines, optimize=0):
+    """{line: {code name: how many}} of the code objects the debugger names alike (two
+    lambdas, and comprehensions before Python 3.12 inlined them) with code on each of
+    ``lines`` of the source ``text``, compiled at the program's ``optimize`` level, where
+    more than one does; ValueError where it does not compile."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            module = compile(text, "<source>", "exec", dont_inherit=True, optimize=optimize)
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
+        raise ValueError(f"it does not compile ({type(exc).__name__}: {exc})"[:300]) from None
+    wanted, found, pending = set(lines), {}, [module]
+    while pending:
+        code = pending.pop()
+        pending.extend(each for each in code.co_consts if hasattr(each, "co_lines"))
+        if code.co_name not in _ANONYMOUS:
+            continue
+        for number in {at for _, _, at in code.co_lines() if at in wanted}:
+            counts = found.setdefault(number, {})
+            counts[code.co_name] = counts.get(code.co_name, 0) + 1
+    return {
+        number: {name: count for name, count in counts.items() if count > 1}
+        for number, counts in found.items()
+        if any(count > 1 for count in counts.values())
+    }

@@ -842,13 +842,11 @@ class PythonCandidate:
     def _self_contained(self, text):
         """_self_contained, as the program's interpreter imports the standard modules;
         False where it cannot say."""
-        from peeky.python_interpreter import Unavailable, readings
+        from peeky.python_interpreter import Unavailable
 
         try:
             return (
-                readings(self.adapter.interpreter)(
-                    "self_contained", text, timeout=self._interpreter_timeout()
-                )
+                self.adapter.readings("self_contained", text, timeout=self._interpreter_timeout())
                 is True
             )
         except (Unavailable, ValueError):
@@ -927,8 +925,12 @@ class PythonCandidate:
         return launch
 
     def close(self):
-        _make_removable(self.scratch)
-        shutil.rmtree(self.scratch, ignore_errors=True)
+        try:
+            _make_removable(self.scratch)
+            shutil.rmtree(self.scratch, ignore_errors=True)
+        finally:
+            # The launch's readings end with it.
+            self.adapter.close()
 
 
 class _NotPrivate(Exception):
@@ -1120,17 +1122,24 @@ def _resumed(function):
     return False
 
 
-def python_entry_lines(program, lines):
+def python_entry_lines(program, lines, optimize=0):
     """{line: the first line of the function that holds it}: its first
     statement after any docstring, which each call runs first; the module's first
     statement at module level. A probe watches it, so a value is restored only in
     the call that changed it. ValueError where calls cannot be seen begin there: a
     generator or coroutine (each resumption runs on part-way through it), a lambda,
-    comprehension or class body."""
+    comprehension or class body; or, at the program's ``optimize`` level above 0, where
+    that line has no code (`-O` leaves out an `assert`)."""
     path = Path(program)
     try:
         # Bytes: the source's own encoding declaration decides how it reads.
-        tree = ast.parse(path.read_bytes(), str(path))
+        data = path.read_bytes()
+        tree = ast.parse(data, str(path))
+        coded = None
+        if optimize:
+            from peeky.python_scopes import code_lines
+
+            coded = code_lines(data, str(path), optimize)
     except (OSError, SyntaxError, ValueError) as exc:
         raise ValueError(f"Peeky could not read {path.name} ({str(exc)[:200]})") from None
     found = {}
@@ -1168,6 +1177,12 @@ def python_entry_lines(program, lines):
         body = [s for s in body if not isinstance(s, (ast.Global, ast.Nonlocal))]
         if not body:
             raise ValueError(f"Peeky cannot place the first line of the code holding {line}")
+        if coded is not None and body[0].lineno not in coded:
+            raise ValueError(
+                f"the first statement of the code holding line {line} (line "
+                f"{body[0].lineno}) has no code at the program's optimization level "
+                f"({optimize}: -O leaves out an assert), so Peeky cannot watch its calls"
+            )
         found[line] = [body[0].lineno]
     return found
 
@@ -1207,11 +1222,28 @@ class PythonAdapter:
     # A candidate asks the interpreter about imports within the launch's budget.
     supports_deadline = True
 
+    @property
+    def readings(self):
+        """Its readings of the program's code (python_interpreter.Readings), closed with
+        the launch (``close``). Not a field: made at the first reading, where this
+        adapter's interpreter is asked, unless ``on`` identified it."""
+        found = self.__dict__.get("_readings")
+        if found is None:
+            from peeky.python_interpreter import Readings
+
+            found = Readings(self.interpreter)
+            object.__setattr__(self, "_readings", found)
+        return found
+
     @classmethod
     def on(cls, interpreter):
-        """The adapter running a program on ``interpreter`` (an identified
-        python_interpreter.Interpreter)."""
-        return cls(interpreter.path, interpreter.identity())
+        """The adapter running a program on ``interpreter`` (a python_interpreter.Interpreter
+        identified for this launch), whose readings are made as it was identified."""
+        from peeky.python_interpreter import Readings
+
+        made = cls(interpreter.path, interpreter.identity())
+        object.__setattr__(made, "_readings", Readings(interpreter.path, interpreter))
+        return made
 
     @property
     def target_identity(self):
@@ -1290,10 +1322,10 @@ class PythonAdapter:
         """{line: the first line of the function that holds it} (python_entry_lines), as
         the program's interpreter parses its source; ValueError where calls cannot be
         seen to begin there, or that interpreter could not read it."""
-        from peeky.python_interpreter import Unavailable, readings
+        from peeky.python_interpreter import Unavailable
 
         try:
-            found = readings(self.interpreter)("entry_lines", str(program), list(lines))
+            found = self.readings("entry_lines", str(program), list(lines))
         except Unavailable as exc:
             raise ValueError(
                 f"Peeky could not read {Path(program).name} in the program's interpreter ({exc})"
@@ -1301,7 +1333,9 @@ class PythonAdapter:
         return {line: first for line, first in found}
 
     def close(self):
-        pass
+        """End the launch's readings (and their helper)."""
+        if (found := self.__dict__.get("_readings")) is not None:
+            found.close()
 
     @property
     def command(self):
@@ -1326,7 +1360,7 @@ class PythonAdapter:
             "redirectOutput": True,
             "justMyCode": True,
             "subProcess": False,
-            # A debugged run writes no __pycache__ into the root.
+            # A debugged run writes no __pycache__ into the root (PROGRAM_ENV).
             "env": {"PYTHONDONTWRITEBYTECODE": "1"},
             # debugpy runs its launcher and the program on it, from Peeky's own install.
             **({"python": [self.interpreter]} if self.interpreter != sys.executable else {}),
@@ -1388,12 +1422,12 @@ class PythonAdapter:
         earlier pass's (see python_passes); else None. Its string says why a change to
         it is refused. Judged by the program's interpreter (python_interpreter), and none
         where it cannot judge; a breakpoint's stop is where its line begins."""
-        from peeky.python_interpreter import Unavailable, readings
+        from peeky.python_interpreter import Unavailable
         from peeky.python_passes import PassNote
 
         frame = frame or {}
         try:
-            found = readings(self.interpreter)(
+            found = self.readings(
                 "stale_note",
                 (frame.get("source") or {}).get("path"),
                 str(frame.get("name") or ""),
@@ -1419,13 +1453,13 @@ class PythonAdapter:
         from its module's globals (see python_scopes.classify, as the program's
         interpreter makes its scopes); or `{"unproven": reason}`. ``loaded_by``: when the
         program started (a source changed since may not be the code running)."""
-        from peeky.python_interpreter import Unavailable, readings
+        from peeky.python_interpreter import Unavailable
 
         path, line = (frame.get("source") or {}).get("path"), frame.get("line")
         if not isinstance(path, str) or not path or type(line) is not int:
             return {"unproven": "the debugger gave no source line for this frame"}
         try:
-            found, reason = readings(self.interpreter)(
+            found, reason = self.readings(
                 "classify",
                 path,
                 str(frame.get("name") or ""),
