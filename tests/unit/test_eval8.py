@@ -439,6 +439,7 @@ def test_an_inferred_exit_says_what_it_costs_and_what_to_do(monkeypatch):
     assert result["status"] == "completed", result
     (warning,) = [w for w in result["warnings"] if "never reported" in w]
     assert "exit code is unknown" in warning and "nothing to do" in warning, warning
+    assert "as java-debug sometimes doesn't" in warning and "#27" not in warning, warning
 
 
 def test_a_python_candidates_copy_note_is_short_once_and_quiet(tmp_path, monkeypatch, capsys):

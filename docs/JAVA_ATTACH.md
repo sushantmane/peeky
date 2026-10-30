@@ -45,16 +45,9 @@ It never changes JDK state:
   `ArrayList`, `Vector`, `ArrayDeque` and `Arrays.asList` lists are the exception.
 
 To tell who holds an array, Peeky asks the JVM what refers to it. It refuses the change when it
-can't tell ([details](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)):
-
-- more than 64 objects refer to the array and the arrays holding it;
-- the array is more than 4 arrays deep;
-- the JVM can't list what refers to it;
-- the search takes more than 2 s, or more than the session's pause budget leaves. For an attached
-  JVM, the budget is 10 s by default. Peeky keeps 1 s of it for the rest of the change.
-
-When too little of the budget is left, change the element at a fresh stop. The JVM's search itself
-runs on until it ends, even after Peeky refuses.
+can't tell, as the [Java cookbook](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)
+details. The search must also fit in the session's pause budget, which is 10 s by default for an
+attached JVM.
 
 ### A small example
 
@@ -100,13 +93,13 @@ Then probe it:
 ```
 $ peeky probe . --config attach.json --at demo/Loop.java:6 --capture n,doubled --hits 3
 hit  phase     line  function         selector  type  value
-1    observed  6     Loop.twice(int)  n         int   1
+1    observed  6     Loop.twice(int)  n         int   1  [not settable: not read again after this stop]
 1    observed  6     Loop.twice(int)  doubled   int   2  [settable]
-2    observed  6     Loop.twice(int)  n         int   2
+2    observed  6     Loop.twice(int)  n         int   2  [not settable: not read again after this stop]
 2    observed  6     Loop.twice(int)  doubled   int   4  [settable]
-3    observed  6     Loop.twice(int)  n         int   3
+3    observed  6     Loop.twice(int)  n         int   3  [not settable: not read again after this stop]
 3    observed  6     Loop.twice(int)  doubled   int   6  [settable]
-status: completed  hits: 3  seconds: 0.288  max pause: 18.7 ms
+status: completed  hits: 3  seconds: 0.543  max pause: 43.6 ms
 evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
 ```
 
@@ -129,6 +122,17 @@ peeky: [UNSUPPORTED] Attached JVMs cannot verify edits; verify with a fresh buil
 - A probe that ends without stopping reports `no-stop`.
 
 ## Venice walkthrough (verified 2026-10-14, Apple Silicon, JDK 17)
+
+[Venice](https://github.com/linkedin/venice) is LinkedIn's open-source derived-data platform. To
+reproduce the runs on this page, you need:
+
+- a Venice checkout at `~/workspace/venice`, at commit `ba78edda8`. Every run here used it, and
+  the line numbers below match it;
+- JDK 17, and Venice's own Gradle wrapper, which downloads Venice's dependencies on its first
+  build;
+- on Apple Silicon without Rosetta, Homebrew's `protobuf` and `abseil` (step 2);
+- port 5005 free;
+- Peeky's repository or source archive, to build the adapter bundle (step 1).
 
 1. Build the adapter once, with an absolute path:
    `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"`. Bundles built before
@@ -204,7 +208,7 @@ JVM. `peeky describe` without `--at` lists the breakpoint lines of every declare
 
 ```json
 {
-  "bundle": "/absolute/path/to/peeky/work/java-adapter-attach",
+  "bundle": "/absolute/path/to/peeky/work/java-adapter",
   "port": 5005,
   "sources": [
     "internal/venice-common/src/main/java/com/linkedin/venice/controllerapi/ControllerClient.java",
@@ -225,10 +229,10 @@ hit. Both tests PASSED.
 | `ControllerClient.java:594` (client library, inside `createNewStore`) | `storeName`, `owner` | 145–153 ms | 18.3 s |
 | `CreateStore.java:64` (controller HTTP handler, on a Jetty thread) | `clusterName`, `storeName`, `owner`, `isSystemStore=false` | 178–186 ms | 21.4 s |
 
-In one earlier run, the worker got no `stopped` event for about 200 s, while the test thread sat
-at the breakpoint. So both tests timed out. Two identical attempts didn't reproduce it.
+java-debug can fail to report a stop: the test thread then sits at the breakpoint until the test
+times out.
 
-- The cause was java-debug's event thread dying
+- The cause is java-debug's event thread dying
   ([root cause](#root-cause-java-debugs-event-thread-died)).
 - The adapter is patched. If it happens anyway, Peeky fails fast with a diagnosis
   ([Lost stop events](#lost-stop-events)).
@@ -238,9 +242,9 @@ at the breakpoint. So both tests timed out. Two identical attempts didn't reprod
 
 ## Dropped exit events
 
-java-debug sometimes never sends `exited` or `terminated` after a **launched** JVM finishes. In
-stress runs, this happened in about 1 of 50–100 runs. The program's output had arrived, and the
-adapter was alive but silent. So Peeky checks liveness for launched Java targets. What you see is
+java-debug can fail to send `exited` or `terminated` after a **launched** JVM finishes. The
+program's output has arrived, and the adapter is alive but silent. So Peeky checks liveness for
+launched Java targets. What you see is
 in [Java: when java-debug itself fails](lang/java.md#when-java-debug-itself-fails).
 
 - **When it checks:** after 2 quiet seconds, Peeky asks the adapter for `threads`.
@@ -259,25 +263,21 @@ in [Java: when java-debug itself fails](lang/java.md#when-java-debug-itself-fail
 - **Attached JVMs are left out:** their death closes the JDWP connection, and a false inference
   would detach a live JVM.
 
-Evidence:
-
-- 200 of 200 stress runs completed, and one dropped exit was resolved in 2.8 s.
-- A real-JDK regression test runs an extreme-churn JVM. A rule of one empty reply declared it
-  exited after about 6 s. It is never reported as exited.
+A real-JDK test (`tests/java/test_java_liveness.py`) runs a JVM whose threads churn hard. A rule of
+one empty reply would declare it exited. Peeky never reports it as exited.
 
 An attached JVM's lost `stopped` event is handled separately, below.
 
 ## Lost stop events
 
-java-debug sometimes never sent `stopped` for an **attached** JVM, although the thread sat
-suspended at the breakpoint. This was seen once on Venice, and twice in this repository's attach
-tests under heavy machine load. A probe or session then waited out its whole timeout, 60 s or
-more. What you see, and what to do, is in
+java-debug can fail to send `stopped` for an **attached** JVM, although the thread is suspended at
+the breakpoint. Without a check, a probe or session would wait out its whole timeout: 60 s by
+default for a probe. What you see, and what to do, is in
 [ERRORS: Two Java debugger failures](ERRORS.md#two-java-debugger-failures).
 
 ### Root cause: java-debug's event thread died
 
-A review reproduced it naturally, and found the cause:
+The cause:
 
 - java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps, thread and exit
   events.
@@ -305,9 +305,7 @@ A review reproduced it naturally, and found the cause:
   `Logger.isLoggable`, and the old one doesn't.
 - Peeky refuses a bundle without the patch, with `UNSUPPORTED` and the rebuild command. This holds
   whatever the bundle's `adapter.json` lists under `patches`, which is kept as documentation.
-- With the patch, the review's churn runs completed 18 of 18 times, with stops reported in
-  16–812 ms.
-- The CI lanes build a fresh bundle with the script, so they use the patched adapter.
+- CI builds a fresh bundle with the script, so it tests the patched adapter.
 
 ### Two detectors fail fast if it happens anyway
 
@@ -343,7 +341,7 @@ This applies to launched and attached JVMs.
 
 This applies to attached JVMs. Peeky detects a stop that java-debug made but never reported. It
 **fails fast with `DEBUGGER_ERROR`**, naming the evidence. It never serves such a stop: a stop the
-debugger didn't report can't be trusted. Serving one led to wrong hits in an earlier review.
+debugger didn't report can't be trusted.
 
 **What java-debug suspends.** java-debug lists stack frames only for threads the debugger
 suspended. A running thread's `stackTrace` is empty. Two things suspend threads:
@@ -387,17 +385,16 @@ served as usual, and starts the count again. So does a poll that isn't a sightin
   exists.
 - Each poll is one `threads` request, plus one-frame `stackTrace` requests, all within 1 s. They
   cover at most 256 threads, in a rotating window in larger JVMs, plus the JVM's own threads and
-  the rechecks. With about 300 threads, a poll took 40–90 ms.
+  the rechecks.
 - A slow or failed poll is no evidence.
 - Launched JVMs aren't polled: the loss has only been seen on attach.
 - This fails closed. java-debug may keep suspending every thread, as under heavy class loading of
   the breakpoint's nested classes. Then a truly lost stop may never get 3 clean sightings, and the
   run times out, as without the detector.
 
-**Timing.** A real report arrives within milliseconds of the stop: an attached probe takes about
-0.2 s end to end. So polls never run during a normal stop. A stop counts as lost only after at
-least 4 s without its report. The error comes 4–8 s after the stop: 6.6 s for an attached probe
-whose first stop is lost.
+**Timing.** A real report arrives within milliseconds of the stop. So polls never run during a
+normal stop. A stop counts as lost only after at least 4 s without its report. The error comes
+4–8 s after the stop.
 
 **The error** is `DEBUGGER_ERROR`. Its message names:
 
@@ -456,7 +453,7 @@ suspect.
 The lost-stop tests drop the `stopped` event at Peeky's DAP client
 (`tests/java/test_java_attach.py`, `tests/unit/test_lost_stop.py`):
 
-- An attached probe fails in about 6.6 s with the diagnosis, and the JVM runs to completion
+- An attached probe fails in under 9 s with the diagnosis, and the JVM runs to completion
   unchanged.
 - A session fails the same way after a served hit. It repeats its error, reports and closes, and
   the JVM completes.

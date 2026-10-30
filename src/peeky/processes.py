@@ -1,11 +1,11 @@
-"""The host's process table, to end every process a debug session started (#143).
+"""The host's process table, to end every process a debug session started.
 
 A debugger adapter starts the debuggee itself, often in a process group of its own
 (debugpy's launcher, debugserver), so ending the adapter's group does not reach it, and
 an adapter that never answers `disconnect` cannot end it either. Peeky ends what the
 session started (``Family``): the processes it listed as descended from the adapter or
 from the debuggee the adapter announced while they ran, still the same processes, every
-process still in the adapter's own session (#168), and every member of their process
+process still in the adapter's own session, and every member of their process
 groups.
 """
 
@@ -56,7 +56,7 @@ def _ps(*arguments):
 
 
 def keep_children_waitable():
-    """Undo an inherited ignored SIGCHLD (#170): with it, the kernel reaps every child
+    """Undo an inherited ignored SIGCHLD: with it, the kernel reaps every child
     as it exits, behind `Popen`, so a dead adapter's pid, and its process group's and
     session's ids, are free for another's while Peeky still names them. Called first by
     every command that starts adapters (`peeky`, `peeky-worker`, `peeky-probe`,
@@ -157,7 +157,7 @@ def alive(entry):
 
 
 class Family:
-    """The processes one debug session started, as far as Peeky can tell (#143).
+    """The processes one debug session started, as far as Peeky can tell.
 
     ``record`` lists, from a process table, the adapter's descendants (while it runs)
     and those of every one listed before that is still the same process (same start):
@@ -172,7 +172,7 @@ class Family:
     ``session`` is the adapter's own session, when it leads one (Peeky starts it so):
     a process can only inherit its session, never join one, so every process still in
     it was started from the adapter, whatever became of its parents, and is kin too
-    (#168: a listing that comes only after the adapter died still finds them). Only
+    (a listing that comes only after the adapter died still finds them). Only
     processes started after the last listing, in a session of their own, whose parent
     is gone, cannot be told from anyone else's.
     """
