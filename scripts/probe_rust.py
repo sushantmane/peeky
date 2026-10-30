@@ -161,9 +161,9 @@ def probe(args):
                 "lines": lines,
                 "observe_line": line,
                 "layouts": layouts,
-                # Functions whose DWARF lexical blocks tell a line's stops apart (#115).
+                # Functions whose DWARF lexical blocks tell a line's stops apart.
                 "functions_with_blocks": sum(1 for found in blocks.values() if found),
-                # The crate's own types whose holdings the debug information gives (#321).
+                # The crate's own types whose holdings the debug information gives.
                 "interior_types": None if interior is None else sorted(interior),
             }
             assert line in lines["src/main.rs"], lines
@@ -172,7 +172,7 @@ def probe(args):
             assert all(
                 layout["kind"]
                 in (
-                    # Tuples and the crate's structs, for previews (#106).
+                    # Tuples and the crate's structs, for previews.
                     ("composite", "unit", "unread", "unqualified")
                     if name.startswith(STRUCT_PREFIX)
                     else ("option", "unqualified", *CONTAINER_KINDS)

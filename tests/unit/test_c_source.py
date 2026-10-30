@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from peeky.c_source import Statements, blank, macro_hazards, unsafe_macros
+from peeky.c_source import Statements, blank, macro_hazards
 
 TRIO = """long run(long seed) {
     struct trio t = { seed,
@@ -138,7 +138,7 @@ def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():
         "#define SEMI(x) x;\n#define CAT(a, b) a##b\n#define OPEN \\\n    (\n"
         "/* #define COMMENTED { */\n%:define SPACED (x) {\n"
     )
-    unsafe = unsafe_macros([header])
+    unsafe = macro_hazards([header])["brackets"]
     assert unsafe == {
         *("INIT_BEGIN", "INIT_END", "LAMBDA_BEGIN", "LAMBDA_END"),
         *("WRAP", "SEMI", "CAT", "OPEN", "SPACED"),
@@ -150,11 +150,12 @@ def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():
     )
     # The text alone ends it at `twice(20);`.
     assert Statements(source).end(1, "u") == 1
-    assert Statements(source, macros=unsafe).end(1, "u") is None
-    assert Statements("long k = FINE(\n    2);\n", macros=unsafe).end(1, "k") == 2
+    assert Statements(source, hazards={"brackets": unsafe}).end(1, "u") is None
+    assert Statements("long k = FINE(\n    2);\n", hazards={"brackets": unsafe}).end(1, "k") == 2
     # Trigraphs as C reads them; C++17 has none.
-    assert unsafe_macros(["#define Q(x) ??<x\n#define K 1\n"], raw_strings=False) == {"Q"}
-    assert unsafe_macros(["#define Q(x) ??<x\n#define K 1\n"]) == set()
+    trigraph = ["#define Q(x) ??<x\n#define K 1\n"]
+    assert macro_hazards(trigraph, raw_strings=False)["brackets"] == {"Q"}
+    assert macro_hazards(trigraph)["brackets"] == set()
 
 
 def test_c_has_no_raw_strings():
@@ -198,9 +199,9 @@ def test_a_splice_before_newline_and_carriage_return_is_unreadable():
     # Clang's lexer takes `\n\r` after a backslash as one newline, joining the line after
     # the `\r`; GCC does not.
     assert end("long t = f(\n    1);\nlong u = x\\\n\ry;\n", 1, "t") is None
-    assert unsafe_macros(["#define M(x) x\\\n\r\n#define N 1\n"]) == {"M", "N"}
+    assert macro_hazards(["#define M(x) x\\\n\r\n#define N 1\n"])["brackets"] == {"M", "N"}
     # Each `#define` ends at its line's break.
-    assert unsafe_macros(["#define N 1\r#define O {\r\n#define P 2\n\r"]) == {"O"}
+    assert macro_hazards(["#define N 1\r#define O {\r\n#define P 2\n\r"])["brackets"] == {"O"}
 
 
 # #121: the frame stopped in. A declaration has run once its own part has, so a body's
@@ -402,8 +403,8 @@ def test_a_statement_expression_macro_keeps_its_semicolons_inside():
         "#define max(a, b) ({ __typeof__(a) _a = (a); __typeof__(b) _b = (b); _a > _b ? _a : _b; })\n"
         "#define END ;\n#define PAIR {1, 2}\n"
     )
-    assert unsafe_macros([header]) == {"END"}
     hazards = macro_hazards([header])
+    assert hazards["brackets"] == {"END"}
     source = "int m = max(n,\n    3);\nlong s = m;\n"
     assert Statements(source, hazards=hazards).declared_through(1, "m") == 2
 
@@ -878,7 +879,7 @@ def test_a_functions_first_line_holds_the_statements_after_its_body_opens():
 def test_begins_is_unknown_where_the_compiler_may_read_the_text_otherwise():
     assert Statements("int f(void) {\n  int a = 1 + \\\n  2;\n}\n").begins(3) is None
     assert Statements("int f(void) {\n  int a = (1;\n}\n").begins(2) is None
-    hidden = Statements("int f(void) {\n  OPEN 1;\n  g();\n}\n", macros={"OPEN"})
+    hidden = Statements("int f(void) {\n  OPEN 1;\n  g();\n}\n", hazards={"brackets": {"OPEN"}})
     assert hidden.begins(3) is None
 
 
