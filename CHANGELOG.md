@@ -22,6 +22,9 @@
 
 ### Other changes
 
+- **Faster C and C++ builds:** sources preprocess and compile in parallel, the checks of
+  preprocessed text are 4× faster, and a new process doesn't rehash the toolchain binaries. An
+  8-file C++ probe takes 2.3 s on macOS, down from 6.1 s (#398).
 - **Bigger C, C++ and Rust programs:** Peeky reads a build's symbols as llvm-dwarfdump writes
   them, keeping at most 300 MiB, not 2 MiB and 16 MiB of text. An 8-file C++ program using the
   STL, and a Rust crate using BTreeMap, are no longer refused or read without their checks. A

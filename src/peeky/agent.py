@@ -5,6 +5,7 @@ executes actions, and verifies a proposed fix in a fresh process.
 """
 
 import argparse
+import contextlib
 import difflib
 import hashlib
 import json
@@ -100,25 +101,38 @@ BUILD_RETAINED = 1048576
 
 
 def execute(
-    command, cwd, timeout=20, *, input_text=None, env=None, output_limit=1048576, retain=16000
+    command,
+    cwd,
+    timeout=20,
+    *,
+    input_text=None,
+    env=None,
+    output_limit=1048576,
+    retain=16000,
+    stop=None,
+    gate=None,
 ):
     """Bound output and kill the owned POSIX process group, including descendants.
 
     The first ``retain`` bytes of each stream are kept; more than ``output_limit`` kills it.
+    Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code.
+    ``gate()``, a context manager, is held while the process is started; it may raise
+    to keep the process from starting.
 
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
     """
     child_env = without_credentials(os.environ if env is None else env)
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=child_env,
-        stdin=subprocess.PIPE if input_text else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=os.name == "posix",
-    )
+    with gate() if gate is not None else contextlib.nullcontext():
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=child_env,
+            stdin=subprocess.PIPE if input_text else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
     buffers = [bytearray(), bytearray()]
     overflow = threading.Event()
 
@@ -151,11 +165,14 @@ def execute(
         writer = threading.Thread(target=feed, daemon=True)
         writer.start()
     deadline = time.monotonic() + timeout
-    timed_out = False
+    timed_out = stopped = False
     try:
         while process.poll() is None and not overflow.is_set():
             if time.monotonic() >= deadline:
                 timed_out = True
+                break
+            if stop is not None and stop.is_set():
+                stopped = True
                 break
             time.sleep(0.01)
     finally:
@@ -171,7 +188,7 @@ def execute(
         process.stdout.close()
         process.stderr.close()
     return {
-        "exit_code": None if timed_out or overflow.is_set() else process.returncode,
+        "exit_code": None if timed_out or stopped or overflow.is_set() else process.returncode,
         "stdout": buffers[0].decode(errors="replace"),
         "stderr": buffers[1].decode(errors="replace"),
         "timed_out": timed_out,

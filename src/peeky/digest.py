@@ -8,12 +8,18 @@ changes. This is the change detection git, make and Cargo rely on, and it matche
 Peeky's threat model: trusted code, accidental changes (see THREAT_MODEL.md). Files
 whose timestamps are recent are always rehashed, so filesystems with coarse
 timestamps cannot hide a second write in the same tick, and a file that changes
-while it is being hashed is never cached. Set PEEKY_NO_DIGEST_CACHE=1 to hash every
-time (for example on filesystems whose timestamps are unreliable).
+while it is being hashed is never cached. A caller may also keep a digest in a
+``store`` directory, so that a new process reuses it under the same rules (toolchain
+binaries: clang's 125 MB took 40 ms in each new process). Set PEEKY_NO_DIGEST_CACHE=1
+to hash every time (for example on filesystems whose timestamps are unreliable).
 """
 
+import contextlib
 import hashlib
+import json
 import os
+import re
+import secrets
 import stat
 import threading
 import time
@@ -23,6 +29,9 @@ MAX_ENTRIES = 4096
 _CHUNK = 1024 * 1024
 _cache = {}
 _lock = threading.Lock()
+_HEX = re.compile(r"[0-9a-f]{64}")
+# The most bytes of a kept digest's entry that are read.
+_MAX_ENTRY = 64 * 1024
 
 
 def _key(info):
@@ -34,8 +43,65 @@ def _settled(info):
     return time.time() - newest > SETTLE_SECONDS
 
 
-def sha256_file(path):
-    """Hex SHA-256 of the regular file at ``path`` (symlinks followed, as open does)."""
+def _remember(name, key, digest):
+    with _lock:
+        if len(_cache) >= MAX_ENTRIES:
+            _cache.clear()
+        _cache[name] = (key, digest)
+
+
+def _stored(store, name):
+    return os.path.join(store, hashlib.sha256(name.encode("utf-8", "surrogateescape")).hexdigest())
+
+
+def _kept(store, name, current):
+    """The digest ``store`` keeps for ``name`` while its identity is ``current``'s, or None.
+    An entry that is not a regular file of this user's, closed to others, is not read."""
+    try:
+        # Neither a link followed nor a FIFO waited on.
+        descriptor = os.open(
+            _stored(store, name) + ".json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        )
+    except OSError:
+        return None
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                return None
+            data = stream.read(_MAX_ENTRY + 1)
+        entry = json.loads(data) if len(data) <= _MAX_ENTRY else None
+    except (OSError, ValueError):
+        return None
+    if (
+        isinstance(entry, dict)
+        and entry.get("path") == name
+        and entry.get("key") == list(_key(current))
+        and isinstance(digest := entry.get("sha256"), str)
+        and _HEX.fullmatch(digest)
+        and _settled(current)
+    ):
+        return digest
+    return None
+
+
+def _keep(store, name, key, digest):
+    """Writes ``digest`` to ``store``, atomically; a store that cannot be written is skipped."""
+    target = _stored(store, name)
+    temporary = f"{target}.{secrets.token_hex(4)}.tmp"
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"path": name, "key": list(key), "sha256": digest}, stream)
+        os.replace(temporary, target + ".json")
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+
+
+def sha256_file(path, *, store=None):
+    """Hex SHA-256 of the regular file at ``path`` (symlinks followed, as open does).
+    ``store``: a directory that keeps the digest for later processes too."""
     name = os.path.abspath(os.fspath(path))
     current = os.stat(name)
     if not stat.S_ISREG(current.st_mode):
@@ -47,6 +113,9 @@ def sha256_file(path):
             cached = _cache.get(name)
         if cached is not None and cached[0] == _key(current):
             return cached[1]
+        if store is not None and (kept := _kept(store, name, current)) is not None:
+            _remember(name, _key(current), kept)
+            return kept
     with open(name, "rb") as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode):
@@ -58,10 +127,9 @@ def sha256_file(path):
     result = digest.hexdigest()
     key = _key(before)
     if caching and key == _key(after) and key == _key(os.stat(name)) and _settled(before):
-        with _lock:
-            if len(_cache) >= MAX_ENTRIES:
-                _cache.clear()
-            _cache[name] = (key, result)
+        _remember(name, key, result)
+        if store is not None:
+            _keep(store, name, key, result)
     return result
 
 
