@@ -4106,7 +4106,7 @@ On the host, make a fresh token each time you start the worker, and give it to t
 ```sh
 token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 echo "$token"                  # copy it over a trusted channel; never commit it
-DEBUG_TOKEN=$token python3 -m peeky.worker --root /srv/app --port 8765
+DEBUG_TOKEN=$token peeky-worker --root /srv/app --port 8765
 unset token
 ```
 

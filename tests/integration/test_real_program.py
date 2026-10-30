@@ -103,10 +103,12 @@ def test_run_is_confined_and_python_only(case, capsys, tmp_path):
 
 def test_http_probe_and_worker_accept_an_entry(case):
     root, data = case
-    server = make_server(root, "real-program-token-123456", 0)
+    server = make_server(root, "real-program-token-123456-0123456789abcdef", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = Client(f"http://127.0.0.1:{server.server_port}", "real-program-token-123456")
+    client = Client(
+        f"http://127.0.0.1:{server.server_port}", "real-program-token-123456-0123456789abcdef"
+    )
     try:
         result = client.call(
             "probe",

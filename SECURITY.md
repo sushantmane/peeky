@@ -29,7 +29,8 @@ release is out.
 ## In scope
 
 - **The worker's authentication.** A request that the worker carries out without the right token,
-  or a worker that listens anywhere but `127.0.0.1`.
+  or from a web page, or a worker that listens anywhere but `127.0.0.1`. A token under 32
+  characters is refused.
 - **The worker's proof.** A client that sends the token, or any request, to a process that hasn't
   proven it holds the token. Or a client that sends it to anything but `http://127.0.0.1:PORT`.
 - **The worker's root check.** A request that names a program or `--run` script outside `--root`,
@@ -37,6 +38,8 @@ release is out.
   then runs.
 - **Other users on the same host.** Another local user who gets the token, or makes Peeky run
   their code: through a shared directory such as `/tmp`, or the port of a worker that stopped.
+  This holds for every language's build, a Python candidate's copy and `peeky verify`'s
+  candidate.
 - **Path handling.** A path in a request, a result or a session record that reaches a file it
   shouldn't, for example through `..` or a link.
 - **`peeky sql` confinement.** A query that changes saved runs, writes a file, loads an extension,

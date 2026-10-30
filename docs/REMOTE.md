@@ -6,7 +6,7 @@ authentication. The worker binds to loopback only, and it also requires its bear
 
 ```
 your machine                                target host
-peeky probe/session --worker URL  ──ssh -L──▶  python -m peeky.worker (127.0.0.1 only)
+peeky probe/session --worker URL  ──ssh -L──▶  peeky-worker (127.0.0.1 only)
 local checkout (same sources)                  target checkout, target interpreter/toolchain
 ```
 
@@ -15,16 +15,21 @@ page. The error codes are in [ERRORS.md](ERRORS.md).
 
 ## Separate-host procedure
 
-On the **target host**, use the interpreter and toolchain that run the program. Each start gets
-a fresh token, which only the worker's environment holds:
+On the **target host**, use the toolchain that runs the program, and the `peeky-worker` of the
+Python interpreter that runs it. Each start gets a fresh token, which only the worker's
+environment holds:
 
 ```sh
 token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 echo "$token"                  # copy it over a trusted channel; never commit it
-DEBUG_TOKEN=$token python3 -m peeky.worker --root /srv/app --port 8765 [--idle-timeout 300] \
+DEBUG_TOKEN=$token peeky-worker --root /srv/app --port 8765 [--idle-timeout 300] \
     [--rust-config|--native-config|--java-config|--java-attach-config trusted.json]
 unset token
 ```
+
+- Run the `peeky-worker` command, not `python3 -m peeky.worker`. That form imports a `peeky`
+  package in the current directory first.
+- The token must be at least 32 characters. The line above makes 43 random ones.
 
 - To restart the worker, run all four lines again, and give the client the new token.
 - Don't `export DEBUG_TOKEN` in the shell. A worker restarted from it would reuse the old token,
@@ -306,9 +311,14 @@ each other:
 ### Why `ExitOnForwardFailure=yes`
 
 Without it, ssh only warns when the local port is already taken. Then another process holds that
-port, and gets your client's `hello`. It gets no request and no token: a client sends those only
-after the worker proves it holds the token ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundaries)).
-So the client refuses that process with `UNAUTHORIZED`, and ssh's exit says why sooner.
+port, and gets your client's `hello`. A client sends a request and the token only after the
+worker proves it holds the token ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundaries)). So
+the client refuses that process with `UNAUTHORIZED`, and ssh's exit says why sooner.
+
+A client checks the proof once, and again after a lost connection. Each `peeky` command is a
+client of its own. But a long-lived one, such as `peeky-agent` or a program using `Client`,
+isn't caught if another process takes the port between two of its requests, with no failure
+between them.
 
 ### Keep the token secret
 
@@ -321,7 +331,10 @@ So the client refuses that process with `UNAUTHORIZED`, and ssh's exit says why 
   `--background` job gets the client's, since it is the same `peeky` command.
 - A client sends it only to `http://127.0.0.1:PORT`, and only after the worker answers its
   `hello` with a proof that it holds the token. A process on the worker's port without it gets
-  only a `hello`.
+  only a `hello`, except between two requests of a long-lived client
+  ([above](#why-exitonforwardfailureyes)).
+- The worker refuses a token under 32 characters: anyone who can connect can test guesses of it
+  offline, with `hello`.
 
 ### Closing
 

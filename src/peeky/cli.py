@@ -29,7 +29,7 @@ from pathlib import Path
 
 from peeky import add_version
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
-from peeky.client import LOOPBACK_URL, Client
+from peeky.client import LOOPBACK_URL, MIN_TOKEN_CHARS, Client
 from peeky.errors import PROTOCOL_VERSION
 from peeky.identifiers import is_name, look_alike, reachable
 from peeky.probe import (
@@ -1759,7 +1759,7 @@ def _load(name):
         or record.get("name") != name
         or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", str(record.get("url")))
         or not isinstance(record.get("token"), str)
-        or len(record["token"]) < 16
+        or len(record["token"]) < MIN_TOKEN_CHARS
         or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("session_id")))
     ):
         raise ValueError(f"Session record {path} is malformed; remove it")
@@ -2935,10 +2935,10 @@ def _remote(url):
             "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
         )
     token = _CREDENTIALS.get(WORKER_TOKEN_ENV) or os.environ.get(WORKER_TOKEN_ENV, "")
-    if len(token) < 16:
+    if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(
-            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN; tokens are never accepted "
-            "as arguments"
+            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN, of at least {MIN_TOKEN_CHARS} "
+            "characters; tokens are never accepted as arguments"
         )
     client = _RemoteClient(url, token)
     version = client.call("version")
@@ -3620,7 +3620,11 @@ def verify(args):
         # Several edits are verified as the one edit with their combined effect.
         args.old, args.new = combine_edits(original, _checked_edit(original, _edit_pairs(args)))
     edited = original if args.baseline else original.replace(args.old, args.new, 1)
-    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
+    from peeky.build import private_base
+
+    # Where no other user can write: a candidate that reaches above its folder finds
+    # nothing of theirs there.
+    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-", dir=private_base()))
     try:
         result = _verify_candidate(
             args, root, program, language, data, source, check, destination, deadline

@@ -32,7 +32,7 @@ def cpp_investigation(tmp_path):
         dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
         sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
     )
-    token = "native-agent-tests-token-123456"
+    token = "native-agent-tests-token-123456-0123456789abcdef"
     worker_root = tmp_path / "worker-inputs"
     shutil.copytree(root, worker_root)
     server = make_server(worker_root, token, 0, adapter=target)

@@ -17,7 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from peeky.adapters import PythonAdapter
-from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
+from peeky.build import (
+    ArtifactSpec,
+    BuildRecipe,
+    Command,
+    assert_current,
+    prepare,
+    private_base,
+)
 from peeky.dap import RequestFailed
 from peeky.digest import sha256_file, tree_fingerprint
 from peeky.identifiers import is_name
@@ -609,7 +616,9 @@ class JavaTarget:
             artifacts=(ArtifactSpec("classes", "directory", "jvm-classes"),),
             toolchain_probes=(Command((java, "-version")), Command((javac, "-version"))),
         )
-        prepared = prepare(recipe, root, edit=edit, deadline=deadline)
+        # Not where others can write: the program runs in the build's folder, and may read
+        # above it (`../`).
+        prepared = prepare(recipe, root, parent=private_base(), edit=edit, deadline=deadline)
         try:
             source_paths = tuple(prepared.workspace / name for name in self.sources)
             mapping = generate_source_map(

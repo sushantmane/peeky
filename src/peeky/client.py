@@ -32,6 +32,8 @@ PROTOCOL_HEADER = "X-Peeky-Protocol"
 # The only worker URLs a client sends the token to, in plain HTTP: this host's loopback,
 # where an SSH tunnel's local end is.
 LOOPBACK_URL = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}")
+# A token's least length: `hello` lets anyone who can connect test guesses of it offline.
+MIN_TOKEN_CHARS = 32
 # What a worker's `hello` proof is a MAC of, before the client's nonce: no other message
 # of Peeky's starts so.
 HELLO_LABEL = b"peeky worker hello v1\x00"
@@ -123,8 +125,9 @@ class Client:
         try:
             answer = self._request("hello", {"nonce": nonce.hex()}, authorized=False)
         except PeekyError as error:
-            if not getattr(error, "from_worker", False):
-                # Not as a worker answers (a tunnel's or a proxy's page): said as it is.
+            if not getattr(error, "from_worker", False) or error.error_code == "BUSY":
+                # Not as a worker answers (a tunnel's or a proxy's page), or a worker past
+                # its connections, which ran nothing: said as it is.
                 raise
             if (spoken := _stated(error)) != PROTOCOL_VERSION:
                 return spoken

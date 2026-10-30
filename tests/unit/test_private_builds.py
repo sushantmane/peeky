@@ -160,3 +160,77 @@ def test_a_crate_builds_in_the_runtime_directory_if_cargo_reads_configuration_ab
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     assert private_base(_cargo_free) == private_base() == runtime.resolve()
+
+
+# Imports whatever a module two directories above it holds: in a candidate's copy, the
+# directory the copy is made in.
+REACHES_UP = """\
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+try:
+    import planted_module
+    found = planted_module.VALUE
+except ImportError:
+    found = "none"
+x = 1
+print("FOUND:" + found)
+"""
+
+
+def planted(shared):
+    (shared / "planted_module.py").write_text('VALUE = "planted"\n')
+
+
+def test_a_python_candidate_is_copied_where_no_other_user_can_write(tmp_path, shared, monkeypatch):
+    # Re-review: the copy was made in the system's /tmp, and a program that reaches above
+    # its root imported a module another user put there.
+    from peeky.probe import Probe, run_probe
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    planted(shared)
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "app.py").write_text(REACHES_UP)
+    probe = Probe("app.py", 11, ("found", "x"), edit=("x = 1", "x = 2"))
+    result = run_probe(root, probe)
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row["value"] for row in result["rows"]}
+    assert rows == {"found": "'none'", "x": "2"}, rows
+    assert "FOUND:none" in result["output"]
+
+
+def test_a_python_candidate_is_never_copied_inside_its_target(tmp_path, shared, monkeypatch):
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "app.py").write_text("x = 1\n")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(home / ".peeky"))
+    edit = SourceEdit("app.py", "x = 1", "x = 2")
+    with pytest.raises(ValueError, match="A Python candidate is copied outside its target"):
+        PythonCandidate(PythonAdapter(sys.executable), home / "app.py", home, edit)
+
+
+def test_verify_writes_its_candidate_where_no_other_user_can_write(
+    tmp_path, shared, monkeypatch, capsys
+):
+    import json
+
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    planted(shared)
+    (tmp_path / "app.py").write_text(REACHES_UP)
+    (tmp_path / "check.py").write_text(
+        "import runpy, sys\nfound = runpy.run_path(sys.argv[1])['found']\n"
+        "assert found == 'none', found\n"
+    )
+    command = ["verify", str(tmp_path / "app.py"), "--check", str(tmp_path / "check.py")]
+    code = main([*command, "--old", "x = 1", "--new", "x = 2", "--keep", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["passed"] is True, result.get("checker")
+    kept = Path(result["kept"])
+    assert kept.is_relative_to((tmp_path / "state" / "scratch").resolve()), kept

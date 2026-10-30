@@ -23,7 +23,7 @@ int main(void) {
   return 0;
 }
 """
-TOKEN = "set-at-test-secret-token-1234"
+TOKEN = "set-at-test-secret-token-1234-0123456789abcdef"
 
 
 def line_of(marker):

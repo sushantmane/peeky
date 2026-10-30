@@ -59,10 +59,14 @@ public class BranchBug {
             main_class="demo.BranchBug",
             arguments=("hang",) if hang else arguments,
         )
-        server = make_server(tmp_path, "java-test-token-1234567890", port=0, adapter=target)
+        server = make_server(
+            tmp_path, "java-test-token-1234567890-0123456789abcdef", port=0, adapter=target
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        client = Client(f"http://127.0.0.1:{server.server_port}", "java-test-token-1234567890")
+        client = Client(
+            f"http://127.0.0.1:{server.server_port}", "java-test-token-1234567890-0123456789abcdef"
+        )
         servers.append((server, thread))
         return client, server.worker
 
@@ -133,7 +137,7 @@ def launch_stopped(client, first, second=None):
 
 
 def test_java_http_intervention_second_stop_and_fresh_build(java_worker, monkeypatch):
-    monkeypatch.setenv("DEBUG_TOKEN", "must-not-reach-jvm")
+    monkeypatch.setenv("DEBUG_TOKEN", "must-not-reach-jvm-0123456789abcdef")
     start, source, first, second = java_worker
     original = hashlib.sha256(source.read_bytes()).hexdigest()
     client, worker = start()
@@ -577,10 +581,14 @@ def test_a_launched_jvm_whose_adapter_dies_runs_its_shutdown_hooks(tmp_path, jav
         main_class="demo.Hook",
         arguments=(str(marks),),
     )
-    server = make_server(tmp_path, "java-test-token-1234567890", port=0, adapter=target)
+    server = make_server(
+        tmp_path, "java-test-token-1234567890-0123456789abcdef", port=0, adapter=target
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = Client(f"http://127.0.0.1:{server.server_port}", "java-test-token-1234567890")
+    client = Client(
+        f"http://127.0.0.1:{server.server_port}", "java-test-token-1234567890-0123456789abcdef"
+    )
     child = None
     try:
         launch = client.call("launch", program="demo/Hook.java", breakpoints=[{"line": line}])

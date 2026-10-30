@@ -15,7 +15,7 @@ from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION, PeekyError, classify
 from peeky.worker import make_server
 
-TOKEN = "lifecycle-test-token-123456"
+TOKEN = "lifecycle-test-token-123456-0123456789abcdef"
 
 
 @pytest.fixture

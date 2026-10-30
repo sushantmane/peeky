@@ -21,7 +21,7 @@ from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION, classify
 from peeky.worker import make_server
 
-TOKEN = "hello-test-token-1234567890"
+TOKEN = "hello-test-token-1234567890-0123456789abcdef"
 
 
 @pytest.fixture
@@ -119,7 +119,7 @@ def test_the_worker_answers_hello_with_its_proof_and_nothing_else(worker):
         "protocol": PROTOCOL_VERSION,
         "proof": hello_proof(TOKEN, nonce),
     }
-    assert hello_proof("another-token-1234567890", nonce) != answer["proof"]
+    assert hello_proof("another-token-1234567890-0123456789abcdef", nonce) != answer["proof"]
     for body in ({}, {"nonce": "zz"}, {"nonce": "ab" * 16}, {"nonce": nonce.hex(), "x": 1}):
         status, answer = hello(url, body)
         assert status == 400 and answer["error"]["code"] == "INVALID_REQUEST"
@@ -173,7 +173,7 @@ def test_an_impostor_that_asks_for_the_token_never_receives_it(app):
 
 
 def test_a_worker_with_another_token_is_refused_before_any_request(app, capsys):
-    server = make_server(app, "another-token-1234567890", 0)
+    server = make_server(app, "another-token-1234567890-0123456789abcdef", 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}"
     try:
@@ -216,3 +216,68 @@ def test_a_protocol_10_worker_is_refused_before_any_request(app, capsys):
         assert not impostor.saw_token()
     finally:
         impostor.close()
+
+
+def post(port, path, headers, body=b"{}"):
+    """A request with exactly ``headers`` (Host too, or none)."""
+    import http.client
+
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    connection.putrequest("POST", path, skip_host=True, skip_accept_encoding=True)
+    for name, value in {**headers, "Content-Length": str(len(body))}.items():
+        connection.putheader(name, value)
+    connection.endheaders(body)
+    response = connection.getresponse()
+    return response.status, json.loads(response.read())
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Host": "attacker.example:8765"},
+        {"Host": "localhost:8765"},
+        {},
+        {"Host": "127.0.0.1", "Origin": "http://attacker.example"},
+        {"Host": "127.0.0.1", "Origin": "null"},
+    ],
+    ids=["rebound-host", "localhost", "no-host", "origin", "null-origin"],
+)
+def test_a_browsers_request_is_refused_before_hello_or_the_token(worker, headers):
+    # Re-review: a page whose name a DNS rebinding pointed at 127.0.0.1 could read `hello`
+    # (to test token guesses offline) and, with a guessed token, call every operation.
+    # A browser always sends its page's Host, and Origin with a POST.
+    port = worker.server_port
+    nonce = json.dumps({"nonce": secrets.token_hex(32)}).encode()
+    authorized = {"Authorization": f"Bearer {TOKEN}", "X-Peeky-Protocol": str(PROTOCOL_VERSION)}
+    for path, extra, body in (("/hello", {}, nonce), ("/version", authorized, b"{}")):
+        status, answer = post(port, path, {**headers, **extra}, body)
+        assert status == 403 and answer["error"]["code"] == "INVALID_REQUEST", answer
+        assert "not a browser's" in answer["error"]["message"]
+        assert set(answer) == {"error", "protocol"}
+    # 127.0.0.1 at any port is a client's: an SSH tunnel's local port may differ.
+    for host in ("127.0.0.1", "127.0.0.1:18765", f"127.0.0.1:{port}"):
+        status, answer = post(port, "/hello", {"Host": host}, nonce)
+        assert status == 200 and set(answer) == {"protocol", "proof"}, (host, answer)
+    assert worker.worker.dap is None
+
+
+def test_a_token_is_at_least_32_characters(tmp_path, monkeypatch, capsys):
+    # `hello` lets anyone who can connect test guesses of the token offline.
+    import sys
+
+    from peeky import worker as worker_module
+    from peeky.cli import _remote
+
+    short = "s" * 31
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        make_server(tmp_path, short, 0)
+    make_server(tmp_path, "s" * 32, 0).server_close()
+    monkeypatch.setenv("DEBUG_TOKEN", short)
+    monkeypatch.setattr(sys, "argv", ["peeky-worker", "--port", "0"])
+    monkeypatch.setattr(worker_module, "make_server", lambda *a, **k: pytest.fail("started"))
+    with pytest.raises(SystemExit) as stopped:
+        worker_module.main()
+    assert stopped.value.code == 2 and "at least 32 characters" in capsys.readouterr().err
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", short)
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        _remote("http://127.0.0.1:9")

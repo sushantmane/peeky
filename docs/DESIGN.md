@@ -123,7 +123,9 @@ Requests are JSON objects with `Authorization: Bearer <token>`. Each also names 
 protocol in `X-Peeky-Protocol: 11`. The worker refuses any request but `version` and `hello` that
 names another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protocol-version)).
 
-- The worker binds only to `127.0.0.1`.
+- The worker binds only to `127.0.0.1`. It refuses a request whose `Host` isn't 127.0.0.1, or
+  that has an `Origin` header: a web page's ([THREAT_MODEL.md](THREAT_MODEL.md)).
+- The token is at least 32 characters.
 - The token authorizes control of that worker. It is not a per-target policy.
 - Request sizes are bounded: at most 4 MiB, enough for a remote client's source hashes.
 - Each read of a request waits at most 10 s. When the request line or headers stall, the worker

@@ -173,7 +173,7 @@ class Host:
                 *self.ssh_options(),
                 "peeky@127.0.0.1",
                 "read -r DEBUG_TOKEN && export DEBUG_TOKEN && echo $$ > /tmp/worker.pid && "
-                f"exec python3 -m peeky.worker --port {WORKER_PORT} --idle-timeout 120 "
+                f"exec peeky-worker --port {WORKER_PORT} --idle-timeout 120 "
                 + " ".join(self.worker_args),
             ],
             stdin=subprocess.PIPE,

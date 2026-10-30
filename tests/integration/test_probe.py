@@ -100,10 +100,12 @@ def test_probe_cli_prints_a_table_and_exit_status(program, capsys):
 
 
 def test_http_probe_is_stateless_and_single_flight(program, monkeypatch):
-    server = make_server(program, "probe-test-token-123456", 0)
+    server = make_server(program, "probe-test-token-123456-0123456789abcdef", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = Client(f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456")
+    client = Client(
+        f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456-0123456789abcdef"
+    )
     try:
         result = client.probe("pagination_bug.py:8", ["start"], {"start": "0"})
         assert result["status"] == "completed" and "PAGE: [10, 20, 30]" in result["output"]
@@ -216,10 +218,12 @@ def test_interventions_can_target_a_later_hit_and_results_group_by_hit(tmp_path)
 
 def test_http_probe_accepts_until_and_set_hit(tmp_path):
     (tmp_path / "loop.py").write_text(LOOP)
-    server = make_server(tmp_path, "probe-test-token-123456", 0)
+    server = make_server(tmp_path, "probe-test-token-123456-0123456789abcdef", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    client = Client(f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456")
+    client = Client(
+        f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456-0123456789abcdef"
+    )
     try:
         result = client.probe("loop.py:4", ["best"], {"best": "50"}, hits=2, set_hit=2)
         assert result["status"] == "completed" and "BEST 50" in result["output"]
@@ -247,11 +251,13 @@ def test_hits_all_captures_every_stop_up_to_the_cap(tmp_path, capsys):
         main(["--root", str(tmp_path), "--at", "few.py:2", "--capture", "i", "--hits", "all"]) == 0
     )
     assert "hits: 3 (all)" in capsys.readouterr().out
-    server = make_server(tmp_path, "probe-test-token-123456", 0)
+    server = make_server(tmp_path, "probe-test-token-123456-0123456789abcdef", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = Client(f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456")
+        client = Client(
+            f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456-0123456789abcdef"
+        )
         result = client.probe("few.py:2", ["i"], hits="all")
         assert result["status"] == "completed" and result["hits"] == 3
     finally:

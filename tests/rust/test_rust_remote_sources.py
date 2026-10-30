@@ -8,7 +8,7 @@ import pytest
 
 from peeky.cli import WORKER_TOKEN_ENV, main
 
-TOKEN = "rust-remote-sources-token-1234"
+TOKEN = "rust-remote-sources-token-1234-0123456789abcdef"
 MANIFEST = """[package]
 name = "remote-sources"
 version = "0.1.0"

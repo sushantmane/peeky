@@ -288,11 +288,13 @@ def test_the_http_probe_passes_an_all_and_refuses_another_word(tmp_path, monkeyp
     # The probe child reads it back as the same request.
     assert probe_module._own_set_at("x.c", "4@all", "n=0") == (4, ALL, "n", "0")
 
-    server = worker_module.make_server(tmp_path, "unit-test-secret-token-1234", 0)
+    server = worker_module.make_server(tmp_path, "unit-test-secret-token-1234-0123456789abcdef", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = Client(f"http://127.0.0.1:{server.server_port}", "unit-test-secret-token-1234")
+        client = Client(
+            f"http://127.0.0.1:{server.server_port}", "unit-test-secret-token-1234-0123456789abcdef"
+        )
         for set_at in ([[4, "every", "x", "1"]], [[4, "All", "x", "1"]], [["4", "all", "x", "1"]]):
             with pytest.raises(Exception, match="set_at"):
                 client.call("probe", at="x.c:1", set_at=set_at)

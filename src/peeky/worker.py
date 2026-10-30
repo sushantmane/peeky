@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
-from peeky.client import hello_proof
+from peeky.client import MIN_TOKEN_CHARS, hello_proof
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
 from peeky.identifiers import (
@@ -294,6 +294,10 @@ REQUEST_READ_TIMEOUT_S = 10
 # The whole request must arrive within this long: a client that sends a byte at a time
 # holds a thread no longer. Its connection is then closed, and nothing runs.
 REQUEST_DEADLINE_S = 30
+# A connection past MAX_CONNECTIONS: up to SPARE_CONNECTIONS more are read, within
+# BUSY_DEADLINE_S, and answered BUSY (503: not run, retry); any beyond are closed unread.
+SPARE_CONNECTIONS = 16
+BUSY_DEADLINE_S = 2
 # At most this many connections at once; another is closed unread.
 MAX_CONNECTIONS = 32
 
@@ -7084,8 +7088,8 @@ def _inside_program(runtime, frame, *roots):
 
 
 def make_server(root, token, port=8765, *, adapter=None):
-    if not isinstance(token, str) or len(token) < 16:
-        raise ValueError("Token must contain at least 16 characters")
+    if not isinstance(token, str) or len(token) < MIN_TOKEN_CHARS:
+        raise ValueError(f"Token must contain at least {MIN_TOKEN_CHARS} characters")
     worker = DebugWorker(root, adapter=adapter)
     probes = threading.Semaphore(1)
 
@@ -7189,7 +7193,10 @@ def make_server(root, token, port=8765, *, adapter=None):
             # connection, which ends a read waiting on it, and nothing more is read or run.
             self.arrival = threading.Lock()
             self.reading, self.expired = True, False
-            timer = threading.Timer(REQUEST_DEADLINE_S, self.expire)
+            self.busy = self.server.busy()
+            timer = threading.Timer(
+                BUSY_DEADLINE_S if self.busy else REQUEST_DEADLINE_S, self.expire
+            )
             timer.daemon = True
             timer.start()
             try:
@@ -7244,7 +7251,41 @@ def make_server(root, token, port=8765, *, adapter=None):
                 return
             self.reply(200, {"protocol": PROTOCOL_VERSION, "proof": hello_proof(token, nonce)})
 
+        def refuse(self, status, code, message, hint, retryable=False):
+            error = {"code": code, "message": message, "hint": hint}
+            error.update(retryable=retryable, session_closed=False)
+            self.reply(status, {"error": error, "protocol": PROTOCOL_VERSION})
+
         def do_POST(self):
+            if self.busy:
+                # Read whole, so that the answer isn't lost to a reset, then refused.
+                with contextlib.suppress(OSError, ValueError):
+                    size = int(self.headers.get("Content-Length", 0))
+                    if 0 < size <= MAX_REQUEST_BYTES:
+                        self.rfile.read(size)
+                self.refuse(
+                    503,
+                    "BUSY",
+                    f"The worker is serving {MAX_CONNECTIONS} connections, its most: this "
+                    "request was not run",
+                    "Retry once the worker's other requests are done; nothing was run.",
+                    retryable=True,
+                )
+                return
+            host = self.headers.get("Host", "")
+            if self.headers.get("Origin") is not None or not re.fullmatch(
+                r"127\.0\.0\.1(:[0-9]{1,5})?", host
+            ):
+                # A browser sends Origin, and a page that renamed itself 127.0.0.1 (DNS
+                # rebinding) its own Host: its scripts never reach the worker.
+                self.refuse(
+                    403,
+                    "INVALID_REQUEST",
+                    "The worker answers only requests to 127.0.0.1 without an Origin header, "
+                    "not a browser's",
+                    "Call the worker as http://127.0.0.1:PORT, from a program, not a web page.",
+                )
+                return
             if self.path == "/hello":
                 self.hello()
                 return
@@ -7377,28 +7418,46 @@ def make_server(root, token, port=8765, *, adapter=None):
 
 
 class _Server(ThreadingHTTPServer):
-    """At most MAX_CONNECTIONS connections at once: another is closed unread. A
-    connection that its client or its deadline closed is not reported as an error."""
+    """At most MAX_CONNECTIONS connections at once. Up to SPARE_CONNECTIONS more are
+    answered BUSY (``Handler.busy``); any beyond those are closed unread. A connection
+    that its client or its deadline closed is not reported as an error."""
 
     def __init__(self, address, handler):
         self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self.spares = threading.BoundedSemaphore(SPARE_CONNECTIONS)
+        self.serving = threading.local()
         super().__init__(address, handler)
 
+    def busy(self):
+        """Whether this thread's connection is past MAX_CONNECTIONS."""
+        return getattr(self.serving, "slot", None) is self.spares
+
     def process_request(self, request, client_address):
-        if not self.slots.acquire(blocking=False):
+        for slot in (self.slots, self.spares):
+            if slot.acquire(blocking=False):
+                break
+        else:
             self.shutdown_request(request)
             return
+        thread = threading.Thread(
+            target=self.serve_connection, args=(request, client_address, slot), daemon=True
+        )
         try:
-            super().process_request(request, client_address)
+            thread.start()
         except BaseException:
-            self.slots.release()
+            slot.release()
+            self.shutdown_request(request)
             raise
 
-    def process_request_thread(self, request, client_address):
+    def serve_connection(self, request, client_address, slot):
+        self.serving.slot = slot
         try:
-            super().process_request_thread(request, client_address)
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
         finally:
-            self.slots.release()
+            self.shutdown_request(request)
+            slot.release()
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], OSError):
@@ -7660,8 +7719,8 @@ def main():
         "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
     )
     args = parser.parse_args()
-    if not token or len(token) < 16:
-        parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
+    if not token or len(token) < MIN_TOKEN_CHARS:
+        parser.error(f"Set DEBUG_TOKEN to a random secret of at least {MIN_TOKEN_CHARS} characters")
     adapter = None
     if args.java_config or args.native_config or args.rust_config or args.java_attach_config:
         try:

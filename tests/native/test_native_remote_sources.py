@@ -9,7 +9,7 @@ import pytest
 from peeky.cli import WORKER_TOKEN_ENV, main
 from peeky.errors import PROTOCOL_VERSION
 
-TOKEN = "native-remote-sources-token-123"
+TOKEN = "native-remote-sources-token-123-0123456789abcdef"
 MAIN = """#include <stdio.h>
 #include "page.h"
 int main(void) {

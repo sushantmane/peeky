@@ -280,7 +280,7 @@ def answering(status, body):
             hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
             answer = json.dumps(hello).encode() if version else body
             if self.path == "/hello":
-                answer = hello_answer(asked, "before-launch-token-1234567890")
+                answer = hello_answer(asked, "before-launch-token-1234567890-0123456789abcdef")
             self.send_response(200 if version else status)
             self.send_header("Content-Length", str(len(answer)))
             self.end_headers()
@@ -317,7 +317,7 @@ def test_only_a_remote_refusal_the_worker_made_is_one_before_launch(
 ):
     # An answer that was not JSON was taken for a refusal before launch.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890-0123456789abcdef")
     (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")
     server = answering(status, body if isinstance(body, bytes) else body.encode())
     try:
@@ -334,7 +334,7 @@ def test_only_a_remote_refusal_the_worker_made_is_one_before_launch(
 
 def test_a_worker_nobody_answers_at_is_one_before_launch(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890-0123456789abcdef")
     (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")
     argv = ["probe", str(tmp_path / "main.py"), "--at", "2", "--worker", "http://127.0.0.1:1"]
     assert main([*argv, "--json"]) == 2

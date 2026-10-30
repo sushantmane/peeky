@@ -28,8 +28,8 @@ def test_setup_rejects_existing_and_dangling_output(bootstrap, tmp_path):
 
 
 def test_bootstrap_strips_worker_token(bootstrap, monkeypatch):
-    monkeypatch.setenv("DEBUG_TOKEN", "test-worker-secret")
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "test-client-secret")
+    monkeypatch.setenv("DEBUG_TOKEN", "test-worker-secret-0123456789abcdef")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "test-client-secret-0123456789abcdef")
     script = "import os; print(sorted({'DEBUG_TOKEN', 'PEEKY_WORKER_TOKEN'} & set(os.environ)))"
     assert bootstrap.run([sys.executable, "-c", script]) == "[]"
 

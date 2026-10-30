@@ -36,7 +36,7 @@ The last column is the `retryable` field.
 | `DEBUGGER_ERROR` | The adapter, the debugger or llvm-dwarfdump failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
 | `SESSION_ACTIVE` | A session was misused: one is already open. | Close the session. | no |
 | `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
-| `BUSY` | Another probe is running on this worker. | Retry later. | yes |
+| `BUSY` | Another probe is running on this worker, or it is serving its most connections (HTTP 503). Nothing was run. | Retry later. | yes |
 | `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
 | `UNAUTHORIZED` | The bearer token is missing or wrong, or the process at the worker's URL didn't prove it holds yours. | Use the worker's `DEBUG_TOKEN`. If it is, check which process holds the port. | no |
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |

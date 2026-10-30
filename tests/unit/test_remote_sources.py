@@ -14,7 +14,7 @@ from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION, PeekyError
 from peeky.worker import DebugWorker, make_server
 
-TOKEN = "remote-sources-token-1234567890"
+TOKEN = "remote-sources-token-1234567890-0123456789abcdef"
 MAIN = "import helper\nx = helper.page()\nprint(x)\n"
 HELPER = "def page():\n    return 3\n"
 

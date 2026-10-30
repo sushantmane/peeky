@@ -32,6 +32,13 @@ Peeky is not:
 - So a process that took the worker's port after it stopped never gets the token. Nor does a
   worker started with another token. The client refuses both with `UNAUTHORIZED`.
 - `hello` needs no token. It says only the protocol and the proof, and runs nothing.
+- So anyone who can connect can test guesses of the token offline, against a proof. The token
+  must be random, and at least 32 characters: the worker and the client refuse a shorter one.
+  `secrets.token_urlsafe(32)` makes 43.
+- **Browsers:** a web page can't reach the worker. Its scripts send an `Origin` header, and a page
+  whose name was pointed at 127.0.0.1 (DNS rebinding) sends that name as its `Host`. The worker
+  refuses a request with an `Origin` header, or a `Host` other than 127.0.0.1, before `hello` and
+  before the token check.
 - It assumes the token is secret, random and long. A process that can reach a running worker with
   the same token can pass a client's `hello` on to it (a relay). So start each worker with a fresh
   token, and never two with the same one.
@@ -46,7 +53,9 @@ Peeky is not:
 - The worker waits at most 10 s for each read of a request. The whole request must arrive within
   30 s. Both hold before and after the token check. Then the worker closes the connection, and
   runs nothing.
-- It serves at most 32 connections at once, and closes any more unread.
+- It serves at most 32 connections at once. It reads up to 16 more, within 2 s each, and answers
+  each `BUSY` (HTTP 503): not run, retry. It closes any beyond those unread, which a client
+  reads as a lost connection (`TRANSPORT_LOST`).
 - These bound what one process can hold, not what it can deny. Another local process can still
   keep the worker busy, up to those limits. That is a known denial of service.
 
@@ -56,10 +65,14 @@ They are in scope. Another user can connect to the worker's port, and write to a
 directory such as `/tmp`. Peeky defends against them:
 
 - **The token:** a client sends it only to a worker that proved it holds it.
-- **Builds:** a C, C++ or Rust build runs only where no other user can write, along the whole
-  path. Peeky takes the first such place of: the system's temporary directory (macOS gives each
-  user one), your runtime directory on Linux (`$XDG_RUNTIME_DIR`), and `scratch` in Peeky's
-  state directory. It refuses to build where there is none.
+- **Builds and candidates:** a build of any language, a Python candidate's copy of its root, and
+  `peeky verify`'s candidate go only where no other user can write, along the whole path. So a
+  program that reaches above them (`../`, `Path(__file__).parents[2]`) finds nothing of another
+  user's.
+- Peeky takes the first such place of: the system's temporary directory (macOS gives each user
+  one), your runtime directory on Linux (`$XDG_RUNTIME_DIR`), and `scratch` in Peeky's state
+  directory. It refuses to build where there is none. A Python candidate's copy is never made
+  inside its own target.
 - A Rust build also needs a place with no Cargo configuration above it, such as your own
   `~/.cargo/config.toml` above the state directory.
 - Peeky makes its state directory writable by you alone, whatever the umask.

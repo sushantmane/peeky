@@ -174,7 +174,7 @@ def test_java_cli_rejects_non_array_inputs_before_starting_server(
     config[field] = value
     path = tmp_path / "target.json"
     path.write_text(json.dumps(config))
-    monkeypatch.setenv("DEBUG_TOKEN", "test-token-at-least-sixteen")
+    monkeypatch.setenv("DEBUG_TOKEN", "test-token-at-least-sixteen-0123456789abcdef")
     monkeypatch.setattr("sys.argv", ["peeky-worker", "--java-config", str(path)])
     monkeypatch.setattr("peeky.worker.make_server", lambda *a, **k: pytest.fail("must not start"))
     with pytest.raises(SystemExit) as error:
@@ -1459,7 +1459,7 @@ def test_a_connection_that_stalls_before_its_token_is_closed(tmp_path, monkeypat
     from peeky.client import Client
 
     monkeypatch.setattr(worker_module, "REQUEST_READ_TIMEOUT_S", 0.5, raising=False)
-    server = make_server(tmp_path, "t" * 16, 0)
+    server = make_server(tmp_path, "t" * 32, 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with socket.create_connection(("127.0.0.1", server.server_port)) as connection:
@@ -1468,7 +1468,7 @@ def test_a_connection_that_stalls_before_its_token_is_closed(tmp_path, monkeypat
             started = time.monotonic()
             assert connection.recv(1024) == b""
             assert time.monotonic() - started < 4
-        version = Client(f"http://127.0.0.1:{server.server_port}", "t" * 16).call("version")
+        version = Client(f"http://127.0.0.1:{server.server_port}", "t" * 32).call("version")
         assert "protocol" in version
     finally:
         server.shutdown()

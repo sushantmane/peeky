@@ -66,10 +66,11 @@
   `describe` marks statics and lists GCC captures (#380).
 - **Security review before going public (protocol 11):** a client sends the token only after the
   worker proves it holds it, through a new `hello`. A process on a stopped worker's port gets
-  nothing. C, C++ and Rust build only where no other user can write. `peeky`, `peeky-worker` and
-  `peeky-agent` take the token out of their environment first. A session's own worker runs
-  isolated, `peeky-agent --url` takes only loopback, and a worker bounds each request at 30 s and
-  its connections at 32.
+  nothing. The worker refuses a web page's requests, and a token under 32 characters. Builds,
+  Python candidates and `verify` candidates go only where no other user can write. `peeky`,
+  `peeky-worker` and `peeky-agent` take the token out of their environment first. A session's
+  own worker runs isolated, and `peeky-agent --url` takes only loopback. A worker bounds each
+  request at 30 s, and answers `BUSY` past 32 connections.
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.
