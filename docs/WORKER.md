@@ -5,7 +5,8 @@ HTTP. The `peeky` CLI starts and calls a worker for you. This page is for code t
 itself.
 
 - To run a worker on another host, see [REMOTE.md](REMOTE.md).
-- Every operation, with its inputs and results, is in [DESIGN.md](DESIGN.md#http-contract).
+- Every operation, with its inputs and results, is in [DESIGN.md](DESIGN.md#http-contract). So is
+  what each request must carry. The `Client` class used below sends it for you.
 
 ## Start a Python worker
 
@@ -15,6 +16,8 @@ Start a worker with a secret token, from the repository root or the unpacked sou
 export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 peeky-worker --root "$PWD" --port 8765
 ```
+
+A session left idle for `--idle-timeout` seconds (default 300) is closed, and its program ended.
 
 In a second terminal, export the same `DEBUG_TOKEN` value. Then run this with the Python Peeky is
 installed in:
@@ -43,6 +46,11 @@ worker's `--root`:
 print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
 ```
 
+- A worker runs one probe at a time: another gets `BUSY`.
+- Each probe runs in a process of its own. Its `timeout` is at most 30 s. The worker sends it
+  SIGTERM at 35 s and SIGKILL at 40 s, below the client's 45 s.
+- The worker saves no evidence of a probe. The `peeky` CLI saves it on the client's side.
+
 ## What the C and C++ worker does
 
 A native worker runs a fixed C or C++ target through lldb-dap:
@@ -52,18 +60,18 @@ A native worker runs a fixed C or C++ target through lldb-dap:
 - It checks the source's, the binary's and the symbols' identity, and verifies the loaded
   executable and each stopped location.
 - It changes integers and texts, within Peeky's rules
-  ([C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c)). Rust uses the same debugger family.
+  ([C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c)). A Rust worker, started with
+  `--rust-config`, uses the same debugger family ([RUST_AGENT.md](RUST_AGENT.md#the-cargo-build)).
 - The [investigation loop](AGENT_LOOP.md) rebuilds a candidate fix and verifies it
   independently. A change at runtime is an experiment, not a fix to the source.
 
-It doesn't attach to a running program, evaluate expressions, change a pointer, or deploy a remote
-debug server. It writes memory only to set a text
+It doesn't attach to a running program, evaluate a request's expressions, change a pointer, or
+deploy a remote debug server. It writes memory only to set a text
 ([C and C++ 7.1](lang/c-cpp-cookbook.md#change-a-text)).
 
 ## Compare the sources from another host
 
-A client on another host must show that its sources are the worker's. Protocol 3 added this, and
-protocols 4 to 8 keep it.
+A client on another host must show that its sources are the worker's.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
@@ -71,9 +79,9 @@ protocols 4 to 8 keep it.
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 
    Its `root` is the worker's `--root`.
-2. With `launch` or `probe`, send `protocol`: 8, `expect_sha256` (`program`, and `entry` for a
-   `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
-   one.
+2. With `launch` or `probe`, send `protocol`, the protocol your client speaks. It must be the
+   worker's, which `version` gives. Send `expect_sha256` (`program`, and `entry` for a `--run`
+   script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
    side only:
    - before launching;
@@ -123,7 +131,8 @@ peeky-worker --root "$PWD/examples/c" --native-config "$PWD/work/native-target.j
   and the debugger operations Peeky supports.
 - A request can't supply a compiler command, an LLDB initialization command, or a launch
   configuration of its own.
-- `--native-config` and `--java-config` are mutually exclusive.
+- `--java-config`, `--java-attach-config`, `--native-config` and `--rust-config` are mutually
+  exclusive: a worker serves one target. Without any of them, it serves Python.
 - A config field that Peeky doesn't know is refused, and `sources` is required.
 
 ## Inspect and change a C value
@@ -191,7 +200,10 @@ peeky-worker --root /absolute/path/to/java-sources --java-config "$PWD/work/java
 
 The bundled example starts with
 `peeky-worker --root examples/java --java-config examples/java/target.json`, after setting
-`DEBUG_TOKEN`.
+`DEBUG_TOKEN`. Its config names the adapter bundle `work/java-adapter`: build it there first.
+
+A JVM already waiting for a debugger takes `--java-attach-config` instead
+([JAVA_ATTACH.md](JAVA_ATTACH.md), [REMOTE.md](REMOTE.md#java-on-the-worker-host)).
 
 ## Inspect and change a Java value
 
@@ -232,15 +244,19 @@ client.call("close", **session)
 ## Java adapter markers
 
 Peeky's launcher tells the worker what the bundle supports. A bundle without a marker refuses the
-change that needs it.
+step or change that needs it, except where the table says otherwise.
 
 | Marker | What the launcher does |
 | --- | --- |
+| `peekySteps` | Allows `next`, `stepIn` and `stepOut`, with fixed step filters. Without it, `step` is refused (`UNSUPPORTED`) |
+| `peekyFieldSet` | Changes fields and array elements, and refuses a field whose name a hiding or second field shares. Without it, only locals change |
 | `peekyCharSet` | Sends java-debug a char between single quotes, only for a variable declared `char` |
 | `peekyTextSet` | Sends a text, only for a variable declared `String` |
 | `peekyJdkOwners` | Names each listed field's declaring class (`peekyOwner`), and whether it is the JDK's (`peekyJdkOwner`): by its module, or on Java 8 by its class loader |
 | `peekyArrayHolders` | Answers Peeky's `peekyArrayHolder` request: whether a JDK class's field holds an array, and whether every thread is suspended (`allSuspended`), asked before its elements are marked `[settable]`. Suspends every thread while it checks and writes an element. Without it, elements read `[maybe settable: …]`; changes still work ([Java 7.3](lang/java-cookbook.md#arrays-the-jdk-holds)) |
-| `peekyPauseLeftMs` | Bounds the wait for what refers to an array to what the pause budget leaves ([Java 7.3](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)) |
+
+That request's `peekyPauseLeftMs` bounds the wait for what refers to an array to what the pause
+budget leaves ([Java 7.3](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)).
 
 ## Configure a C++ target
 
@@ -263,7 +279,7 @@ config for the C++ fixture, with the worker root set to `examples/cpp`:
   pass the intended `--root`.
 - On macOS, also set `dsymutil` and the SDK's `sysroot`. Take the compiler's and debugger's paths
   from `xcrun --find`.
-- The compiler must be clang
+- The compiler must be clang++ or g++
   ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)).
 - A C++ target gets the same source and build identity checks as C, and the same temporary build
   lifecycle ([what Peeky checks](lang/c-cpp-cookbook.md#what-peeky-checks-about-a-build)).
@@ -273,8 +289,12 @@ config for the C++ fixture, with the worker root set to `examples/cpp`:
 Both operations are read-only.
 
 - **`expand`** takes a variable's opaque `variablesReference` as `handle`, with the current session
-  and stop. It lists up to `count` children, at most 64, from `start`. Instead of `start` and
-  `count`, `index` reads one element of an array of any length.
+  and stop. It lists up to `count` children, at most 64, from `start`, at most 511. Instead of
+  `start` and `count`, `index` reads one element of an array of any length.
+- Or `key`, a map's key as the debugger shows it (`5`, `"al"`), reads that entry among those Peeky
+  read from a GCC build's unordered container, past its first 256 too. The answer names the `key`,
+  how many keys it `compared`, and the first 20 `keys`. Protocol 10
+  ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
 - With `previews: true`, `expand` previews the values it lists.
 - **`inspect`** takes `previews` too: `true` (the default), `false`, or a list of the roots to
   preview, up to 32 names.
@@ -283,7 +303,9 @@ Both operations are read-only.
 - A probe asks `inspect` to preview only the roots it captures (`previews: [names]`). A selector
   walks to a field without previews on its way, and `preview` previews the value it reaches.
 - Collections are bounded to 512 entries, with limits on depth and on inspection nodes
-  ([DESIGN.md](DESIGN.md#bounded-child-inspection)).
+  ([DESIGN.md](DESIGN.md#bounded-child-inspection)). `index` reads one element past that. A GCC
+  build's unordered container, read from its nodes, may hold more: a page, `index` or `key` reads
+  its later entries.
 - Each expansion rechecks the source and build, the frame, the scope and the child's ancestry.
 - Any expansion revokes the mutable scope handles. To change a scalar after one, inspect again.
 - A fresh inspection invalidates earlier child handles too.
@@ -308,4 +330,5 @@ Both operations are read-only.
 | `pointee_aliased_type` | a variable | The same, for what a pointer points at: `IntSet *` |
 | `past_end` | a variable, or a stop's `returned` | A pointer that holds the address one past the end of an array a listed frame holds: `{"selector": "queue", "length": 4}`, with `frame` and `function` where another frame holds it, and `also`, what of its type starts there too. Its value is its address alone, and it gets no handle: nothing there belongs to the array. A returned value says it only for a character pointer one past a character array's end |
 | `view: unproven`, `unproven_read: true` | a variable, or a stop's `returned` | Read through a pointer that Peeky can't show points at a live object, or a pointer whose text LLDB read through it (a `char *`). Its `note` says why and what to do. The value is still shown. Anything read through it is marked too |
+| `extent` | a variable that `inspect`'s `extents` (`true`, or a list of root names) asks for | What its address can tell, from the debug information. A pointer: its `pointee` type and `element_size`, `indirect: true` where that type is a pointer too (protocol 7), and `parameter: true` for a root that is only a parameter. An array or other object: its `address`, `element` and `element_size`, and an array's `length`. Absent where any of it isn't known. A probe and `session get` ask for it for the roots they read, and `session inspect` for all |
 | `unproven_read` | an `expand` reply | The note its values carry, where they are read through such a pointer. A client reading the pointee whole (`p[0]`) marks it with it |

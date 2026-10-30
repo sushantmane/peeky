@@ -24,8 +24,8 @@ checker counts as a repair.
 - Each candidate is rebuilt in a fresh workspace. `NativeVerification` does it for C and C++, and
   `RustVerification` for Rust. Java compiles it into another fresh workspace, and runs fresh JVMs.
 - Only the candidate source can change:
-  - C: the candidate `.c` file. Declared companion headers stay frozen, and are part of the
-    source identity checks.
+  - C and C++: the candidate source file, one of the config's `sources`. Declared companion
+    headers stay frozen, and are part of the source identity checks.
   - Rust: the declared application `.rs` sources. `Cargo.toml`, `Cargo.lock` and the
     integration-test file are frozen inputs, part of every identity check.
 - The original buggy source must fail the checker before the loop can claim a repair.
@@ -55,14 +55,16 @@ failure can't pass for a successful rejection.
 A checker is trusted Python code ([COOKBOOK 6.5](COOKBOOK.md#65-writing-a-checker)). Its
 `sys.argv[1]` is the path of a temporary JSON descriptor:
 
-| Field | C | Java |
-| --- | --- | --- |
-| `schema` | `1` | `1` |
-| `language` | `"c"` | `"java"` |
-| `command` | `[prepared_binary_path]` | an argument vector, such as `[java, "-cp", classes_directory, main_class]` |
-| `arguments` | the baseline application arguments | the configured baseline application arguments |
-| `environment` | the controlled environment for child runs | the same |
-| identity | the source identity and the build evidence | the prepared source identity, the source manifest, the build manifest and the artifact manifest ID |
+| Field | Value |
+| --- | --- |
+| `schema` | `1` |
+| `language` | `"c"`, `"cpp"`, `"java"` or `"rust"` |
+| `command` | the argument vector that runs the fresh build: `[prepared_binary_path]` for C, C++ and Rust, or `[java, "-cp", classes_directory, main_class]` |
+| `arguments` | the configured baseline application arguments |
+| `environment` | the controlled environment for child runs |
+| `source` | the staged candidate's `path` and `sha256` |
+| identity | `source_manifest`, `target_identity`, `artifact_manifest_id` and `build_manifest` |
+| `artifacts_retained` | `false` |
 
 - Run each independent case as `[*command, *case_arguments]`, with `env=environment`.
 - Assert your own expected outputs, then return normally.
@@ -72,7 +74,8 @@ A checker is trusted Python code ([COOKBOOK 6.5](COOKBOOK.md#65-writing-a-checke
 
 ## Rust's two gates
 
-A Rust candidate passes only when both of these pass, on the same fresh build.
+A Rust candidate passes only when both of these pass, on the same fresh build. A crate with no
+integration test has only the second: the checker alone decides.
 
 **1. The compiled Cargo test.**
 
@@ -122,7 +125,8 @@ is `(page - 1) * page_size`, spelled in each language's way.
   `start = page * page_size`.
 - Its companion `pagination.h` defines the item multiplier and the largest fixture size.
 - The independent `verify_pagination.py` checks 12 combinations of page number, page size and input
-  length, against its own expected results.
+  length, against its own expected results. It also checks that 10 invalid argument lists are
+  refused.
 
 ### C++: `pagination_bug.cpp`
 
@@ -159,7 +163,7 @@ language goes through the same sequence:
 | 2 | Change the live integer to `0`. Continuing prints `PAGE:[10, 20, 30]`, with no source change and no rebuild for the experiment | Change the live `i32` to `0`. Continuing prints `PAGE:[10, 20, 30]`, with no rebuild |
 | 3 | Propose invalid syntax. The compile failure returns its diagnostics for another decision | Propose invalid Rust syntax. The compile error returns as a retryable `build` result |
 | 4 | Propose `start = 0`. It fixes the first page, but independent later-page cases reject this overfit candidate | Propose `start = 0`. The Cargo test passes, because it checks only page 1. The independent checker rejects later pages, so the candidate fails |
-| 5 | Propose the fix. A fresh build passes every supplied case: C's 12, C++'s 12 valid and 10 invalid-argument cases, and Java's 12, in fresh JVMs | Propose the fix. The compiled test and every checker case pass on a fresh build: 12 page cases and 10 invalid-argument cases |
+| 5 | Propose the fix. A fresh build passes every supplied case: C's and C++'s 12 valid and 10 invalid-argument cases, and Java's 12, in fresh JVMs | Propose the fix. The compiled test and every checker case pass on a fresh build: 12 page cases and 10 invalid-argument cases |
 
 **C** runs the actual `peeky-agent` entry point. Set the native tools that the worker tests use:
 
@@ -203,9 +207,6 @@ pytest tests/rust
 - On Linux, use the LLVM 18 paths from the Rust CI lane, and leave out `PEEKY_RUST_DSYMUTIL`.
 - A second regression changes the frozen test file mid-investigation. Verification then fails
   fatally, and accepts no fix.
-- A local macOS run (Apple LLVM 21, Rust 1.96.0): the full investigation took 5.05 s, and the
-  frozen-test drift regression 2.34 s. Linux timings, from the hosted lane, are in
-  [TESTING.md](TESTING.md).
 
 ## Run with a live model
 
@@ -237,7 +238,8 @@ peeky-agent \
 ```
 
 **C++.** Save a C++ config ([WORKER.md](WORKER.md#configure-a-c-target)), then run
-`peeky-agent --native-config config.json --program pagination_bug.cpp --check verify_pagination.py`.
+`peeky-agent --root "$PWD/examples/cpp" --native-config config.json --program pagination_bug.cpp
+--check verify_pagination.py`.
 
 **Java.** Create `work/java-agent-target.json`:
 
@@ -271,6 +273,10 @@ For C, C++ and Java:
   inputs, and a suitable native or Java toolchain.
 - A live run sends selected source and runtime evidence to the model, and uses model credits.
   Required CI uses injected decisions only.
+- `--max-steps N` bounds the model's decisions: 8 by default, at most 20. `--issue` replaces the
+  fixture's bug report, the text the model starts from.
+- An optimized build is refused before anything runs: the loop needs a runtime change, which such
+  a build refuses.
 
 For Rust, no live-model run has been recorded. Its frozen inputs, the integration-test file,
 `Cargo.toml` and `Cargo.lock`, are part of every identity check
@@ -293,4 +299,3 @@ For Rust, no live-model run has been recorded. Its frozen inputs, the integratio
   - attaching to production remotely;
   - Java hot code replacement;
   - generating a verifier automatically.
-- No live-model Rust evaluation has been recorded.
