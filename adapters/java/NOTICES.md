@@ -1,6 +1,6 @@
 # Experimental Java adapter provenance
 
-The setup script downloads the exact Microsoft java-debug source archive and five runtime jars pinned by URL and SHA-256 in `dependencies.lock.json`. It compiles only unmodified debugger core sources plus Peeky's launcher. Downloaded source/jars/classes must not be committed.
+The setup script downloads the exact Microsoft java-debug source archive and five runtime jars pinned by URL and SHA-256 in `dependencies.lock.json`. It compiles only the debugger core sources, with the source patch `scripts/setup_java_adapter.py` applies and records in the bundle's `adapter.json`, plus Peeky's launcher. Downloaded source/jars/classes must not be committed.
 
 Microsoft java-debug is EPL-1.0. The produced bundle retains upstream `LICENSE.txt` and `ThirdPartyNotices.txt` in `notices/`. Upstream source: https://github.com/microsoft/java-debug/tree/6a597f2bcccdd0aac7e91631588361826fde11f3 . Sources remain available at the pinned URL in the lock. No JDT LS code is bundled.
 
