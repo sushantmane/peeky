@@ -1,4 +1,4 @@
-"""Owned Rust Vec and String locals read only where the build's MIR proves them live (#53)."""
+"""Owned Rust Vec and String locals read only where the build's MIR proves them live."""
 
 import json
 import os
@@ -141,7 +141,7 @@ def test_a_vector_pushed_in_a_loop_is_read_at_each_hit(crate, capsys):
 @pytest.mark.timeout(300)
 def test_a_vector_from_vec_macro_is_read_at_the_loop_head_after_it(crate, capsys):
     # std's vec! code spans another file; the loop head invokes no macro, so that code
-    # is not on it (eval 3: `counts` was refused here).
+    # is not on it: `counts` reads here.
     result = probe(capsys, crate, "HEAD", "counts", "--hits", "all")
     assert result["rows"]
     if memory_views(result["rows"]):
@@ -152,8 +152,8 @@ def test_a_vector_from_vec_macro_is_read_at_the_loop_head_after_it(crate, capsys
 
 @pytest.mark.timeout(300)
 def test_a_line_where_vec_runs_is_never_read_even_after_a_lone_carriage_return(crate, capsys):
-    # Review of #80: reading the source with universal newlines shifted every later line
-    # by one, so this line looked macro-free and `v` was read before vec! had run.
+    # Read with universal newlines, the source's later lines would shift by one, so this
+    # line would look macro-free and `v` be read before vec! has run.
     result = probe(capsys, crate, "CR", "v", "--hits", "all")
     shown = [row for row in result["rows"] if "value" in row]
     assert shown and all(row.get("view") != "memory" for row in shown), result["rows"]
@@ -175,7 +175,7 @@ def test_a_deferred_local_is_read_only_after_its_assignment(crate, capsys):
 
 @pytest.mark.timeout(300)
 def test_a_callers_owned_locals_are_never_read_through_another_frame(crate, capsys):
-    # #104: `--frame 1` reads main's locals, but the MIR proofs hold only in the innermost
+    # `--frame 1` reads main's locals, but the MIR proofs hold only in the innermost
     # frame, so main's live `acc` and `text` keep their raw fields there.
     assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line('BEFORE')}"]) == 0
     capsys.readouterr()
@@ -296,7 +296,7 @@ fn main() {
     ids=["freed-after-a-call-that-cannot-unwind", "moved-after-it", "same-named-method"],
 )
 @pytest.mark.timeout(300)
-def test_review_false_proofs_stay_refused(crate, capsys, program, marker, selectors):
+def test_false_proofs_stay_refused(crate, capsys, program, marker, selectors):
     (crate / "src/main.rs").write_text(program)
     at = next(i for i, text in enumerate(program.splitlines(), 1) if f"// {marker}" in text)
     code = main(
@@ -304,8 +304,8 @@ def test_review_false_proofs_stay_refused(crate, capsys, program, marker, select
     )
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    # Moved (or moved and freed, its buffer reused by [7, 7, 7]): never read. Before the
-    # fix these read [7, 7, 7] or [1, 2, 3] from memory.
+    # Moved (or moved and freed, its buffer reused by [7, 7, 7]): never read, though memory
+    # holds [7, 7, 7] or [1, 2, 3].
     [row] = result["rows"]
     assert row["selector"] == "v" and row.get("view") != "memory", row
 

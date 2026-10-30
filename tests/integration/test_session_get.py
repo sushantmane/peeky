@@ -1,6 +1,5 @@
-"""The tenth agent evaluation's Python Lows that need debugpy: a failed `session get`'s
-summary line after the rows it calls "above", and a value at the inspection's depth
-limit saying why it lists no children."""
+"""`session get` against real debugpy: a failed get's summary line comes after the rows it
+calls "above", and a value at the inspection's depth limit says why it lists no children."""
 
 import json
 import os
@@ -32,8 +31,8 @@ def _line(marker):
 
 
 def test_a_failed_gets_summary_comes_after_its_rows(tmp_path):
-    # runoff 3, outline 6: with stdout and stderr on one pipe, `peeky: no value for
-    # ranking[1] (each row above says why)…` came before the rows: a pipe buffers stdout.
+    # With stdout and stderr on one pipe, which buffers stdout, `peeky: no value for
+    # ranking[1] (each row above says why)…` still comes after the rows.
     program = tmp_path / "outline.py"
     program.write_text(OUTLINE)
     env = {
@@ -69,9 +68,9 @@ def test_a_failed_gets_summary_comes_after_its_rows(tmp_path):
 
 
 def test_a_value_at_the_depth_limit_says_why_it_lists_no_children(tmp_path, monkeypatch, capsys):
-    # outline 5: `session get 'self.history[-1][2]' 'self.items[2]'` listed the dict's
-    # children only for `self.items[2]`. Each selector is read on its own; the first is 4
-    # levels below `self`, the inspection's depth limit, and listed none, silently.
+    # `session get 'self.history[-1][2]' 'self.items[2]'` lists the dict's children only
+    # for `self.items[2]`: each selector is read on its own, and the first is 4 levels below
+    # `self`, the inspection's depth limit. It says so.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     program = tmp_path / "outline.py"
     program.write_text(OUTLINE)

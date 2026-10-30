@@ -1,4 +1,4 @@
-"""What Java methods return (#155): java-debug lists it after a step out (`⎯►name()`,
+"""What Java methods return: java-debug lists it after a step out (`⎯►name()`,
 JDI's exact value); Peeky shows it labelled with the method, and probes capture it once
 per call, called by the program or by the JDK (a comparator)."""
 
@@ -95,7 +95,7 @@ def test_a_session_step_out_shows_the_methods_return_apart_from_the_locals(java,
         worker.close()
 
 
-# Round 1 of #162: a method that threw was withheld as "a function returning nothing".
+# A method that threw was withheld as "a function returning nothing".
 THROWS = """package demo;
 public class Throws {
   static int f(int n) {
@@ -149,10 +149,9 @@ public class Loops {
 
 @pytest.mark.timeout(120)
 def test_a_line_that_stops_again_before_the_return_claims_no_cause(java, tmp_path):
-    # #174: the line's next stop, at the same depth, before the call returned. Java has
-    # no watch on the caller to prove it is the same call: withheld, and the reason
-    # claimed a loop's next pass ("the line ran again ... (a loop's next pass, or ...)").
-    # It now says Peeky could not tell, and names the possibilities.
+    # The line's next stop, at the same depth, before the call returned. Java has no watch on
+    # the caller to prove it is the same call: withheld, with a reason that claims no loop's
+    # next pass, but says Peeky could not tell, and names the possibilities.
     (tmp_path / "demo/Loops.java").write_text(LOOPS)
     target = JavaTarget(bundle=java.bundle, sources=("demo/Loops.java",), main_class="demo.Loops")
     line = next(i for i, text in enumerate(LOOPS.splitlines(), 1) if "// SUM" in text)

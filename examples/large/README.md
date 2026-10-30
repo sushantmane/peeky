@@ -1,6 +1,6 @@
 # Larger programs
 
-Two programs a little bigger than the evaluations' cases, from a build-cost measurement. Each
+Two programs larger than the other examples, for measuring what a build costs Peeky. Each
 reads a shop's catalog, orders and stock, and prints a report.
 
 - `cpp-shop`: 8 C++ files using the STL (`map`, `set`, `unordered_map`, `optional`, streams).

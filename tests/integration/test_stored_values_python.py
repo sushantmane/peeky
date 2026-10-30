@@ -1,4 +1,4 @@
-"""SQL's text() and elements() against real debugpy (review of PR #347): debugpy names a
+"""SQL's text() and elements() against real debugpy: debugpy names a
 value's type by its `__class__` and shows it by its own `__repr__`, so a class can be
 stored exactly as a `str` is: the same type, value and identity. Nothing stored proves a
 Python value is a builtin `str`, so both functions are NULL for every Python value."""

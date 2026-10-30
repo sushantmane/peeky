@@ -1,8 +1,7 @@
-"""#259: a reference whose last use makes it a raw pointer (`ptr::eq(f, e.payer)`) was
-withheld on that very line, with a note saying a call or drop may have come since its
-last use. A line breakpoint there may be past the call that takes the pointer, which the
-proof counted as able to free what `f` points at. A call of `std::ptr::eq` or
-`std::ptr::addr_eq` only compares addresses, so `f.name` now reads there. Where the proof
+"""A reference whose last use makes it a raw pointer (`ptr::eq(f, e.payer)`) reads on that
+very line. A line breakpoint there may be past the call that takes the pointer, which could
+free what `f` points at; but a call of `std::ptr::eq` or `std::ptr::addr_eq` only compares
+addresses, so `f.name` reads there. Where the proof
 still fails, the note names what may have run since the last use, and where: a call on
 the stop's own line (one of the crate's, which may do anything), or `clear()` on an
 earlier line, which frees what the reference pointed at."""
@@ -176,12 +175,12 @@ def test_a_reference_whose_target_may_be_freed_names_the_call(crate, capsys):
     assert re.search(rf"because `first` is not used ahead, and a call on line {clear} ", note), note
     assert note.endswith("probe a line that still uses `first`."), note
     assert rows["addr"].get("unproven_pointer") == "raw", rows["addr"]
-    # No issue numbers in what Peeky prints (#259).
+    # No issue numbers in what Peeky prints.
     for row in rows.values():
         assert not re.search(r"#[0-9]", json.dumps(row)), row
 
 
-# #272 review: a crate's own `mod std`, which a macro declares from its argument, is
+# A crate's own `mod std`, which a macro declares from its argument, is
 # dumped `std::ptr::eq` as the standard library's is. Its `eq` takes `owner` and drops
 # it, so `f` points at freed memory past the call: nothing in it may be read.
 SHADOWED = """macro_rules! make_mod {

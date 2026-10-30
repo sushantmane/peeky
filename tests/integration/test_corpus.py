@@ -1,4 +1,4 @@
-"""Corpus of varied bugs (issue #7): each checker rejects the original and an overfit
+"""Corpus of varied bugs: each checker rejects the original and an overfit
 candidate and accepts the general fix; every observation line is actually reached."""
 
 import json

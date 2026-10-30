@@ -1,4 +1,4 @@
-"""A real GCC builds a C++ target (#167): without clang's `--driver-mode=g++`, which g++
+"""A real GCC builds a C++ target: without clang's `--driver-mode=g++`, which g++
 does not know, and a probe and `describe` read it. Runs where a `g++` that is GCC exists
 (the Linux lanes); macOS's `g++` is clang."""
 
@@ -38,8 +38,8 @@ def test_gcc_builds_cpp_and_peeky_reads_it(gcc, tmp_path, monkeypatch, capsys):
     command = ["probe", str(path), "--at", str(line), "--capture", "t,name"]
     code = main([*command, "--json", "--quiet"])
     shown = json.loads(capsys.readouterr().out)
-    # Before: UNSUPPORTED, "C++ targets need clang++ ... (.../g++ is GCC)", and before that,
-    # BUILD_FAILED on "unrecognized command-line option '--driver-mode=g++'".
+    # Neither UNSUPPORTED ("C++ targets need clang++ ...") nor BUILD_FAILED on
+    # "unrecognized command-line option '--driver-mode=g++'".
     assert code == 0, shown
     assert "driver-mode" not in json.dumps(shown)
     rows = {row["selector"]: row for row in shown["rows"]}

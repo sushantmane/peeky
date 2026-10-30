@@ -1,8 +1,8 @@
-"""#205: the most common string loop in Rust, `for cell in cells` over a `&[&str]`, and a
-`Vec<&str>` built with `iter().map(..).collect()` (the ninth evaluation's roster). A
-`&&str` item showed only its pointer, a slice's hint named `.len` (it is `length`), and a
-`Vec<&str>` past its last use refused even its own length with a long reason about a
-Box it is not; the probe's warnings did not say which selector each one was about."""
+"""The most common string loop in Rust, `for cell in cells` over a `&[&str]`, and a
+`Vec<&str>` built with `iter().map(..).collect()`. A `&&str` item shows its text, not only
+its pointer; a slice's hint names `length`, not `.len`; a `Vec<&str>` past its last use reads
+its own length, with no reason about a Box it is not; and the probe's warnings say which
+selector each one is about."""
 
 import json
 import os
@@ -172,7 +172,7 @@ def test_a_str_loop_item_reads_through_its_reference(tmp_path, state, capsys):
 
 @pytest.mark.timeout(400)
 def test_a_str_item_past_its_last_use_or_in_unsafe_code_is_not_read(tmp_path, state, capsys):
-    # Past its last use, with a call since (#110), what it points at is not proven.
+    # Past its last use, with a call since, what it points at is not proven.
     past = ROSTER.replace(
         "        width = width.max(cell.len());\n    }",
         "        width = width.max(cell.len());\n        std::hint::black_box(width); // PAST\n    }",
@@ -182,14 +182,14 @@ def test_a_str_item_past_its_last_use_or_in_unsafe_code_is_not_read(tmp_path, st
     cell = rows[(1, "cell")]
     assert cell["value"].startswith("0x") and cell["view"] == "unproven", cell
     assert cell["note"].startswith("This Rust reference shows only its pointer"), cell
-    # The note names what may have run since (#259): the calls on the line before.
+    # The note names what may have run since: the calls on the line before.
     width = line_of(past, "width = width.max(cell.len());")
     assert "Box" not in cell["note"] and "#" not in cell["note"], cell
     assert re.search(
         rf"`cell` is not used ahead, and (a call|calls) on lines? {width}\b", cell["note"]
     )
     assert "this Rust reference shows only its pointer" in rows[(1, "cell.length")]["error"]
-    # In a crate with unsafe code, nothing is read from memory (#156).
+    # In a crate with unsafe code, nothing is read from memory.
     unsafe = (
         ROSTER + "\n#[allow(dead_code)]\nfn first(p: *const u8) -> u8 {\n    unsafe { *p }\n}\n"
     )

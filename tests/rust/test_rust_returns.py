@@ -1,4 +1,4 @@
-"""What Rust functions return (#155): integers, bool and floats as Rust prints them,
+"""What Rust functions return: integers, bool and floats as Rust prints them,
 once per call (a key function std's sort calls, a recursive one); never an enum,
 Option or struct. Real Cargo builds."""
 
@@ -130,7 +130,7 @@ def test_rust_returns_once_per_call_as_rust_prints_them(crate, capsys):
     ), option
 
 
-# Round 1 of #162: f(1) panics, catch_unwind catches it, and the loop's next f(2) is
+# `f(1)` panics, catch_unwind catches it, and the loop's next f(2) is
 # called from the same closure at the same place: LLDB's step out of f(1) ended at
 # f(2)'s return, and its 20 was shown as f(1)'s.
 PANICS = """use std::panic;
@@ -177,7 +177,7 @@ def test_a_call_that_panicked_is_never_credited_with_a_later_calls_value(crate, 
     assert all(hits[hit][RETURN]["value"] == "20" for hit in (2, 3)), hits
 
 
-# #174: `format!` stops at each of its blocks (#160), so each call of `width` stops
+# `format!` stops at each of its blocks, so each call of `width` stops
 # several times at the line before it returns.
 FORMATS = """fn width(v: f64) -> usize {
     let s = format!("{:.1}", v); // FORMAT

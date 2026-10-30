@@ -1,7 +1,7 @@
-"""#203 on a real Rust build: resumed after its last hit, a `--until hits` probe's program
-runs on until the probe ends it. Its output read meanwhile was "so far (the program was
-still running)" with `output_complete: false`, even when it had exited with code 0
-and all of its output was read."""
+"""On a real Rust build: resumed after its last hit, a `--until hits` probe's program runs on
+until the probe ends it. Its output read meanwhile is not "so far (the program was still
+running)" with `output_complete: false` when it has exited with code 0 and all of its
+output was read."""
 
 import json
 import os

@@ -133,9 +133,8 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys):
-    # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a
-    # visible local here, yet the code means the static, not this->calls. #364: the static
-    # is read.
+    # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a visible
+    # local here, yet the code means the static, not this->calls. The static is read.
     (ring / "ring.cpp").write_text(STATIC)
     code = main(
         [
@@ -242,7 +241,7 @@ def test_writes_that_cannot_reach_the_program_are_never_reported_as_done(ring, c
             error = capsys.readouterr().err
             said = ["refused", "did not"]
             if cxx_is_gcc():
-                # GCC gives it no location (#167): neither read nor changed, and said so.
+                # GCC gives it no location: neither read nor changed, and said so.
                 said.append("neither read nor change it")
             assert "MUTATION_REJECTED" in error and any(text in error for text in said), error
         # The session is still usable, and a stored local takes a canonical literal.
@@ -254,3 +253,47 @@ def test_writes_that_cannot_reach_the_program_are_never_reported_as_done(ring, c
         assert "stored 16777216 in 'lossy', not 16777217" in error, error
     finally:
         main(["session", "close"])
+
+
+TYPEDEF = """#include <cstdio>
+
+struct Box {
+    int count;
+    long total;
+};
+
+int main() {
+    typedef float int64_t;
+    int64_t lossy = 1;
+    int plain = 7;
+    Box box{3, 4};
+    std::printf("TD:%d %.0f %d\\n", plain, lossy, box.count); /* STOP */
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_write_is_proven_a_no_op_by_its_debug_type_never_its_name(ring, cxx, capsys, monkeypatch):
+    # `typedef float int64_t;` (as in BITS) reads as an integer by its name, but
+    # `lossy: 1 -> 1` is no proven no-op: the type the debug information gives, through
+    # typedefs, decides, and a float's text proves nothing.
+    (ring / "td.cpp").write_text(TYPEDEF)
+    monkeypatch.chdir(ring)
+    stop = next(i for i, text in enumerate(TYPEDEF.splitlines(), 1) if "/* STOP */" in text)
+    command = ["probe", "td.cpp", "--at", str(stop), "--capture", "plain", "--no-save"]
+    command += ["--set", "lossy=1", "--set", "plain=7", "--set", "box.count=3"]
+    assert main([*command, "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    changes = {change["name"]: change for change in result["interventions"]}
+    assert [(c["before"], c["after"]) for c in changes.values()] == [
+        ("1", "1"),
+        ("7", "7"),
+        ("3", "3"),
+    ]
+    assert "unchanged" not in changes["lossy"], changes
+    assert changes["plain"]["unchanged"] is True and changes["box.count"]["unchanged"] is True
+    assert main(command) == 0
+    text = capsys.readouterr().out
+    assert "\nset lossy: 1 -> 1, same text, not proven unchanged\n" in text, text
+    assert "set plain: 7 -> 7, no change" in text and "set box.count: 3 -> 3, no change" in text

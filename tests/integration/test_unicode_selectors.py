@@ -1,4 +1,4 @@
-"""#195: Python locals and attributes with non-ASCII names are captured, read and set by
+"""Python locals and attributes with non-ASCII names are captured, read and set by
 the name debugpy lists, which is the name Python compiled: NFKC-normalized (an NFD
 `größe` in the source is the NFC `größe`; `ﬁx` is `fix`)."""
 

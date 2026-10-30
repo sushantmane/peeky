@@ -1,4 +1,4 @@
-"""#105: `--set` on scalar fields and elements of C and C++ locals the stopped frame
+"""`--set` on scalar fields and elements of C and C++ locals the stopped frame
 holds itself, read back and seen by the program; everything else refused."""
 
 import json
@@ -155,7 +155,7 @@ def test_c_fields_and_elements_change_and_the_program_sees_them(directory, capsy
         code, result = change(capsys, assignment)
         assert code == 0, (assignment, result)
         assert (result["before"], result["after"]) == (before, after), (assignment, result)
-    # `ps` is `main`'s own local, which no call passed (tenth evaluation, prep 9).
+    # `ps` is `main`'s own local, which no call passed.
     refused(capsys, "ps.start=8", "`ps` is a pointer", "not a parameter, so no call passed it")
     refused(capsys, "b.a=3", "`b.a` is a bitfield")
     refused(capsys, "c.fixed=3", "`c.fixed` is const")
@@ -199,7 +199,7 @@ def test_cpp_fields_change_only_in_objects_the_frame_holds(directory, cxx, capsy
     refused(capsys, "h.ref.end=3", "`h.ref` is a reference")
     refused(capsys, "rs.end=3", "`rs` is a reference")
     # GCC places a `const` aggregate it can build at compile time in read-only data,
-    # which lldb-dap lists among no frame's locals (#167): read from there (#364).
+    # which lldb-dap lists among no frame's locals: read from there.
     refused(capsys, "cs.end=3", "`cs` is const")
     refused(capsys, "pr.first=3", "standard-library type")
     refused(capsys, "v[0]=3", "standard-library type")
@@ -291,8 +291,8 @@ def settable(capsys, name):
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_change_part_way_through_a_statement_is_refused(directory, capsys, language):
-    # Review of #105: back from `f` (`step --out`), `t = x + s.a + f()` already holds
-    # `s.a`, and a change reported `1 -> 50` while the program printed `1001`.
+    # Back from `f` (`step --out`), `t = x + s.a + f()` already holds `s.a`: a change
+    # would report `1 -> 50` while the program prints `1001`.
     path = directory / ("mid.c" if language == "c" else "mid.cpp")
     path.write_text(MID_SOURCE)
     at = line_of(MID_SOURCE, "TEMP_OUT")
@@ -325,7 +325,7 @@ def test_a_change_part_way_through_a_statement_is_refused(directory, capsys, lan
 
 @pytest.mark.timeout(240)
 def test_cpp_a_namespace_named_core_or_alloc_is_the_programs_own(directory, capsys):
-    # Review of #105: `core::Config cfg; --set cfg.level=60` was refused as std's.
+    # `core::Config cfg; --set cfg.level=60` is not refused as std's.
     source = """#include <cstdio>
 
 namespace core {
@@ -383,8 +383,7 @@ def start_shadowed(directory, capsys):
 
 @pytest.mark.timeout(240)
 def test_c_a_shadowed_root_is_selected_by_where_it_is_declared(directory, capsys):
-    # Review of #105: lldb-dap names both `p @ s.c:13` and `p @ s.c:6`, which no
-    # selector could name, and plain `p` is not listed.
+    # lldb-dap names both `p @ s.c:13` and `p @ s.c:6`, and plain `p` is not listed.
     start_shadowed(directory, capsys)
     inner, outer = line_of(SHADOWED, "{ 3, 4 }"), line_of(SHADOWED, "{ 1, 2 }")
     for assignment, after in ((f"p @ s.c:{inner}.x=30", "30"), (f"p@s.c:{outer}.x=20", "20")):
@@ -396,8 +395,7 @@ def test_c_a_shadowed_root_is_selected_by_where_it_is_declared(directory, capsys
 
 @pytest.mark.timeout(240)
 def test_c_an_element_of_a_large_array_local_is_changed(directory, capsys):
-    # Review of #105: `big[700]` of a 1,000-element local exhausted the expansion
-    # budget; the element is now fetched alone.
+    # `big[700]` of a 1,000-element local is fetched alone, within the expansion budget.
     start_shadowed(directory, capsys)
     code, result = change(capsys, "big[700]=7000")
     assert code == 0 and result["after"] == "7000", result
@@ -406,7 +404,7 @@ def test_c_an_element_of_a_large_array_local_is_changed(directory, capsys):
 
 @pytest.mark.timeout(240)
 def test_c_a_variable_length_array_is_refused_as_one(directory, capsys):
-    # Review of #105: it said the VLA was "not kept in this frame's own memory".
+    # The refusal says why: not "not kept in this frame's own memory".
     start_shadowed(directory, capsys)
     refused(capsys, "vla[1]=5", "`vla` is a variable-length array")
     assert "inner 3 1" in output(capsys)
@@ -468,9 +466,8 @@ def continue_to(capsys, source, marker):
 
 @pytest.mark.timeout(240)
 def test_c_a_change_is_refused_unless_at_its_statements_first_instruction(directory, capsys):
-    # Review of #105 (round 2): each stop looked like a statement's start while the
-    # statement was under way, and `set p.x=50` reported `1 -> 50` while the program
-    # printed `1001`:
+    # Each stop looks like a statement's start while the statement is under way, where
+    # `set p.x=50` would report `1 -> 50` while the program prints `1001`:
     # - `t =` / `p.x + g();`: clang emits the second line's code first, so `t =` has
     #   only the final store;
     # - `if (c) {` inside a statement expression `({ ... })`;
@@ -490,9 +487,9 @@ def test_c_a_change_is_refused_unless_at_its_statements_first_instruction(direct
 
 @pytest.mark.timeout(240)
 def test_c_a_one_line_function_allows_a_change_only_after_its_prologue(directory, capsys):
-    # Review of #105 (round 2): back from `g` (`step --out`) in `long one(struct P p) {
-    # return p.x + sink(g(), 1); }`, `set p.x=70` reported `1 -> 70`, and the program
-    # printed `E 1002`: every row of a function's first line counted as its start.
+    # Back from `g` (`step --out`) in `long one(struct P p) { return p.x + sink(g(), 1);
+    # }`, not every row of a function's first line is its start: `set p.x=70` would report
+    # `1 -> 70` while the program prints `E 1002`.
     start_at(directory, capsys, "starts.c", STARTS, "ONE")
     code, result = change(capsys, "p.x=60")
     assert code == 0 and result["after"] == "60", result
@@ -505,8 +502,8 @@ def test_c_a_one_line_function_allows_a_change_only_after_its_prologue(directory
 
 @pytest.mark.timeout(240)
 def test_c_a_multi_statement_macro_leaves_the_lines_after_it_settable(directory, capsys):
-    # Review of #105 (round 2): one `TWICE(p);` (a macro holding a `;`) refused every
-    # change in the rest of its block; only a macro that may hide a bracket does now.
+    # One `TWICE(p);` (a macro holding a `;`) leaves the rest of its block settable; only
+    # a macro that may hide a bracket refuses every change after it.
     start_at(directory, capsys, "starts.c", STARTS, "AFTER_MACRO")
     code, result = change(capsys, "t=5")
     assert code == 0 and result["after"] == "5", result
@@ -538,9 +535,9 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_c_shadowed_root_integers_and_elements_past_512_at_any_step(directory, capsys):
-    # Review of #105 (round 2): `n@s.c:13=99` was refused ("only ... long; has type
-    # 'long'"), `es[699].a` and `g2[599][2]` exhausted the expansion budget, and `get`
-    # read the first of two locals LLDB names alike (`p @ s.c:14`) without a word.
+    # `n@s.c:13=99` changes the shadowed root, `es[699].a` and `g2[599][2]` stay within
+    # the expansion budget, and `get` says so where LLDB names two locals alike
+    # (`p @ s.c:14`).
     start_at(directory, capsys, "s.c", SHADOWS, "STOP")
     inner, outer = line_of(SHADOWS, "INNER"), line_of(SHADOWS, "OUTER")
     for assignment, after in (
@@ -607,9 +604,9 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_cpp_braces_that_are_no_blocks_and_a_lambdas_return_address_are_refused(directory, capsys):
-    # Review of #105 (round 2): `new long[1]{`, `decltype(W{}){` and a `for` body in
-    # `({` passed as blocks of statements, and back from `g` in a one-line lambda
-    # `set q.x=70` reported `1 -> 70` while the program printed `L 1002`.
+    # `new long[1]{`, `decltype(W{}){` and a `for` body in `({` are no blocks of
+    # statements, and back from `g` in a one-line lambda `set q.x=70` would report
+    # `1 -> 70` while the program prints `L 1002`.
     start_at(directory, capsys, "starts.cpp", CPP_STARTS, "NEW")
     refused(capsys, "p.x=50", f"line {line_of(CPP_STARTS, 'NEW')} continues a statement")
     for marker in ("DECLTYPE", "FOR"):
@@ -635,7 +632,7 @@ def test_cpp_braces_that_are_no_blocks_and_a_lambdas_return_address_are_refused(
     assert "D 1061 2" in text, text
 
 
-ROUND3 = """#include <stdio.h>
+SHAPES = """#include <stdio.h>
 
 struct P { long x; long y; };
 
@@ -685,19 +682,19 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_c_a_statement_calling_an_always_inline_function_is_refused(directory, capsys):
-    # Review of #105 (round 3): an `always_inline` callee's code carries its own lines
-    # and runs before the statement's lowest row: at `t = inl(&p) + p.y;`, `set p.x=50`
-    # reported `1 -> 50` and the program printed `A 1003`; `t = getx(&p) + g();`,
-    # `B 1050`. Root integers were marked [settable] there too.
-    start_at(directory, capsys, "r3.c", ROUND3, "INLINED")
+    # An `always_inline` callee's code carries its own lines and runs before the
+    # statement's lowest row: at `t = inl(&p) + p.y;`, `set p.x=50` would report `1 -> 50`
+    # while the program prints `A 1003`; `t = getx(&p) + g();`, `B 1050`. Root integers
+    # are not [settable] there either.
+    start_at(directory, capsys, "shapes.c", SHAPES, "INLINED")
     refused(capsys, "p.x=50", "makes a call the compiler inlined (`always_inline`, `flatten`)")
     assert main(["session", "inspect", "--json"]) == 0
     snapshot = json.loads(capsys.readouterr().out)
     rows = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
     assert not rows["t"].get("settable"), rows["t"]
-    continue_to(capsys, ROUND3, "GETX")
+    continue_to(capsys, SHAPES, "GETX")
     refused(capsys, "p.x=60", "makes a call the compiler inlined")
-    continue_to(capsys, ROUND3, "PLAIN")
+    continue_to(capsys, SHAPES, "PLAIN")
     code, result = change(capsys, "p.x=5")
     assert code == 0 and result["after"] == "5", result
     text = output(capsys)
@@ -706,32 +703,32 @@ def test_c_a_statement_calling_an_always_inline_function_is_refused(directory, c
 
 @pytest.mark.timeout(240)
 def test_c_a_macro_loop_inside_a_statement_expression_is_refused(directory, capsys):
-    # Review of #105 (round 3): `REPEAT(k, 1) {` (a `for` header) inside `t = p.x + ({`
-    # read as a function's body, and `set p.x=50` printed `F 1001`.
-    start_at(directory, capsys, "r3.c", ROUND3, "LOOP_BODY")
+    # `REPEAT(k, 1) {` (a `for` header) inside `t = p.x + ({` is no function's body: read
+    # as one, `set p.x=50` would leave the program printing `F 1001`.
+    start_at(directory, capsys, "shapes.c", SHAPES, "LOOP_BODY")
     refused(capsys, "p.x=50", "continues a statement")
     assert "F 1001" in output(capsys)
 
 
 @pytest.mark.timeout(240)
 def test_c_a_functions_first_line_needs_its_statements_first_instruction(directory, capsys):
-    # Review of #105 (round 3): on `long first(struct P p) { long t =` / `p.x + g();`,
-    # a step from the second line lands on the first line's store, which counted as
-    # the first row after the prologue: `set p.x=50` printed `E 1001`. So did
-    # `{ return` with its expression on the next line.
+    # On `long first(struct P p) { long t =` / `p.x + g();`, a step from the second line
+    # lands on the first line's store, which is not the first row after the prologue:
+    # `set p.x=50` would leave the program printing `E 1001`. So would `{ return` with its
+    # expression on the next line.
     for marker, tag in (("FIRST_2", "E"), ("RETURN_2", "R")):
-        start_at(directory, capsys, "r3.c", ROUND3, marker)
+        start_at(directory, capsys, "shapes.c", SHAPES, marker)
         assert main(["session", "step"]) == 0
         capsys.readouterr()
-        top = line_of(ROUND3, marker) - 1
+        top = line_of(SHAPES, marker) - 1
         refused(capsys, "p.x=50", f"first instruction of the statement on lines {top}-{top + 1}")
         assert f"{tag} 1001" in output(capsys)
 
 
 @pytest.mark.timeout(240)
 def test_c_a_k_and_r_definition_is_refused_as_one(directory, capsys):
-    # Review of #105 (round 3): a K&R body was refused as "line N continues a statement".
-    start_at(directory, capsys, "r3.c", ROUND3, "OLD")
+    # A K&R body is refused as one, not as "line N continues a statement".
+    start_at(directory, capsys, "shapes.c", SHAPES, "OLD")
     refused(capsys, "a=9", "K&R-style definition")
     assert "K 3" in output(capsys)
 
@@ -772,8 +769,8 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_cpp_a_function_try_block_and_its_handler_are_function_bodies(directory, capsys):
-    # Review of #105 (round 4): in `long tryfun(P p) try {`, `t = p.x + g();` was refused
-    # as continuing a statement an earlier line starts; so was a handler's statement.
+    # In `long tryfun(P p) try {`, `t = p.x + g();` doesn't continue a statement an earlier
+    # line starts; nor does a handler's statement.
     start_at(directory, capsys, "ft.cpp", TRY_BLOCKS, "BODY")
     code, result = change(capsys, "p.x=50")
     assert code == 0 and result["after"] == "50", result
@@ -790,8 +787,8 @@ def test_cpp_a_function_try_block_and_its_handler_are_function_bodies(directory,
 
 @pytest.mark.timeout(240)
 def test_c_fields_and_elements_are_marked_where_set_changes_them(directory, capsys):
-    # Sixth evaluation, finding 7: an observation probe could not tell whether
-    # `bins[3].hi` could be changed, and a field read through a pointer looked the same.
+    # An observation probe says whether `bins[3].hi` can be changed, and a field read
+    # through a pointer is marked apart.
     path = directory / "fields.c"
     path.write_text(C_SOURCE)
     at = str(line_of(C_SOURCE, "STOP"))
@@ -843,8 +840,8 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_c_inspect_says_why_nothing_is_settable_on_a_loops_later_pass(directory, capsys):
-    # Sixth evaluation, finding 8: at a loop header's later pass `session inspect`
-    # marked nothing [settable] and gave no reason.
+    # At a loop header's later pass `session inspect` marks nothing [settable], and says
+    # why.
     path = directory / "loop.c"
     path.write_text(LOOP)
     assert main(["session", "start", str(path), "--at", str(line_of(LOOP, "BODY"))]) == 0
@@ -860,7 +857,7 @@ def test_c_inspect_says_why_nothing_is_settable_on_a_loops_later_pass(directory,
             break
     assert main(["session", "inspect"]) == 0
     text = capsys.readouterr().out
-    # Each reason names the locals it holds for (review 1).
+    # Each reason names the locals it holds for.
     assert (
         "note: nothing here is [settable]: `i`, `bins`, `values`: the stop is not at the first "
         f"instruction of the statement on line {header}" in text
@@ -873,7 +870,7 @@ def test_c_inspect_says_why_nothing_is_settable_on_a_loops_later_pass(directory,
 
 @pytest.mark.timeout(240)
 def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, cxx, capsys):
-    # Sixth evaluation, finding 7, in C++: through a reference member, a reference, a
+    # In C++: through a reference member, a reference, a
     # const object or a standard-library type, never marked.
     path = directory / "fields.cpp"
     path.write_text(CPP_SOURCE)
@@ -885,8 +882,8 @@ def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, cxx, c
     code = main(["probe", str(path), "--at", at, "--capture", ",".join(marked), "--json"])
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     if cxx == "gcc":
-        # GCC's `cs` is in read-only data, which lldb-dap does not list (#167): read from
-        # there, and never changed (#364).
+        # GCC's `cs` is in read-only data, which lldb-dap does not list: read from there,
+        # and never changed.
         assert rows["cs.end"]["not_settable"] == "static", rows
     assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
 
@@ -924,7 +921,7 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_c_marks_agree_with_the_refusals_of_locals_with_a_note_or_withheld(directory, capsys):
-    # Merge of #140 into the sixth evaluation's fixes: a local shown with a note that its
+    # A local shown with a note that its
     # declaration runs after the stop (a `do` body's first line), and one withheld as
     # maybe not initialized (a label lets control return above it), refuse `set`, their
     # fields too; their rows and their fields' rows must never say [settable].
@@ -985,11 +982,10 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_c_a_program_using_setjmp_judges_changes_as_any_other(directory, capsys):
-    # Review 2 of the sixth evaluation's PR refused every change in a program using
-    # setjmp, which had no declarations read (#141). Since PR #144 such a program is
-    # read as any other: above the setjmp call (and everywhere in a function making
-    # none), values change where a statement starts; below it, only what is declared at
-    # or below the stop is refused (see test_native_innermost).
+    # A program using setjmp has its declarations read as any other: above the setjmp
+    # call (and everywhere in a function making none), values change where a statement
+    # starts; below it, only what is declared at or below the stop is refused (see
+    # test_native_innermost).
     start_at(directory, capsys, "jump.c", JUMPING, "TOP")
     assert main(["session", "inspect"]) == 0
     text = capsys.readouterr().out
@@ -1022,10 +1018,10 @@ int main(void) {
 
 @pytest.mark.timeout(180)
 def test_a_c_local_reached_through_a_pointer_is_never_changed(directory, capsys):
-    # #186's review, after round 1: clang describes a C `__block` variable (blocks are on
-    # by default only on macOS) at a location read through its forwarding pointer, which
-    # `--set count=9` wrote through. A by-value parameter passed through a hidden pointer
-    # (a struct over 16 bytes on arm64) is the call's own copy, and still changes.
+    # Clang describes a C `__block` variable (blocks are on by default only on macOS) at a
+    # location read through its forwarding pointer, which `--set count=9` would write
+    # through. A by-value parameter passed through a hidden pointer (a struct over 16 bytes
+    # on arm64) is the call's own copy, and still changes.
     if sys.platform != "darwin":
         pytest.skip("C blocks (`__block`) are enabled by default only on macOS")
     path = directory / "blocks.c"

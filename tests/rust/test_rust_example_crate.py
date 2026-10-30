@@ -1,4 +1,5 @@
-"""Rust interventions must reach the program; every compiled file must be declared."""
+"""On the example crate (examples/rust) and the LLVM IR a build emits: Rust interventions
+must reach the program, and every compiled file must be declared."""
 
 import json
 import os
@@ -47,7 +48,7 @@ def test_locals_the_program_keeps_in_registers_cannot_be_changed(crate, capsys):
     )
     at = first + 1  # the println: marker is live and assigned
     code, result = probe(capsys, crate, "--at", at, "--capture", "marker", "--set", "marker=100")
-    # Refused before the run (#138), a refusal exits 2 (seventh evaluation, finding 14).
+    # Refused before the run: a refusal exits 2.
     assert code == 2 and result.get("refused_before_launch") is True, result
     assert result["error"]["code"] == "MUTATION_REJECTED"
     assert "only shows a copy" in result["error"]["message"]
@@ -63,7 +64,7 @@ def test_sources_from_outside_the_crate_fail_the_build(crate, tmp_path, capsys):
     path = crate / "src/main.rs"
     path.write_text(f'#[path = "{helper}"]\nmod helper;\n' + path.read_text())
     code, result = probe(capsys, crate, "--at", "37", "--capture", "start")
-    # Refused before the program started (#190): exit 2, no table.
+    # Refused before the program started: exit 2, no table.
     assert code == 2 and "not a declared source" in result["error"]["message"]
     assert result["refused_before_launch"] is True
     assert str(helper) in result["error"]["message"]
@@ -120,7 +121,7 @@ def test_memory_locals_follow_the_declared_storage(tmp_path):
 
 
 def test_each_declaration_says_why_its_name_is_not_in_memory(tmp_path):
-    # Review of #138: the proof covers every binding of a name, so a refusal names the
+    # The proof covers every binding of a name, so a refusal names the
     # binding kept in a register (a `.dbg.spill` copy), or the inlined copies, by line.
     path = tmp_path / "demo.ll"
     path.write_text(IR)
@@ -251,7 +252,7 @@ def test_rust_reference_parameters_are_read_from_memory_and_locals_never_are(cra
     # `ordered` was dropped and `view` (a reference local) outlived it: their stale
     # pointers can reach reused memory, so they are never read. `s` names two bindings
     # (the second shadows the first), so the plain name finds neither. `other` and
-    # `titled` are owned locals the build's MIR proves initialized here (#53).
+    # `titled` are owned locals the build's MIR proves initialized here.
     # `label` is a parameter that format! borrows: still read.
     for local in ("ordered", "view", "s"):
         assert rows[local].get("view") != "memory", rows[local]
@@ -315,7 +316,7 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
     [warning] = [w for w in result["warnings"] if "stopped in 2 functions" in w]
     # The first call (empty `best`) never runs the closure; later calls stop in it too.
     assert "peeky_pagination::ranked (hits 1, 2, 5)" in warning
-    # The closure as the build's debug information numbers it (#151 review 3).
+    # The closure as the build's debug information numbers it.
     assert "peeky_pagination::ranked::{closure#0} (hits 3, 4" in warning
     # A rejected change names the frame it was tried in.
     code, result = probe(
@@ -333,15 +334,15 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
         "3",
     )
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
-    # The closure captures `score` through its environment: not kept in a register, as was
-    # said, but not proven in memory (review of PR #335).
+    # The closure captures `score` through its environment: not kept in a register, but
+    # not proven in memory.
     message = result["error"]["message"]
     assert "in peeky_pagination::ranked::{{closure}}, the build's IR doesn't prove `score` in " in (
         message
     ), message
     assert "kept in a register" not in message, message
-    # An owned container live at the line is read (#53); without readMemory it stays
-    # raw and says why (that, not a move: #156), and how to read it.
+    # An owned container live at the line is read; without readMemory it stays raw and
+    # says why (that, not a move), and how to read it.
     at = next(i for i, line in enumerate(lines, 1) if "// BEST" in line)
     code, result = probe(capsys, crate, "--at", at, "--capture", "best,best.len")
     assert code == 0, result.get("error")

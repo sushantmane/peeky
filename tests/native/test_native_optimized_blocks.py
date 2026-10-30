@@ -1,13 +1,12 @@
-"""#173: in an optimized build, a block's own declaration of a name (an enumerator, a
-`typedef`, an `extern`) withholds the outer local's row as it does at -O0. The outer
-local there lives in a register or as a constant, not in the frame's memory, and the
-scan (#144) skipped it: plain `n` showed the outer local's value where the code names
-the block's. The structured binding case is in tests/cpp/test_cpp_optimized_blocks.py.
-#286: a one-line statement whose header names the outer local before its block declares
-the name again hedges that local's note, at -O0 too, with clang and GCC; also at a stop
-back inside that header, past the line's first instruction. #293: so does a line that
-names the outer local outside the scope of its block's declaration, before the block or
-after it ends."""
+"""In an optimized build, a block's own declaration of a name (an enumerator, a `typedef`,
+an `extern`) withholds the outer local's row as it does at -O0. The outer local there lives
+in a register or as a constant, not in the frame's memory, where the scan doesn't look:
+plain `n` would show the outer local's value where the code names the block's. The
+structured binding case is in tests/cpp/test_cpp_optimized_blocks.py. A one-line statement
+whose header names the outer local before its block declares the name again hedges that
+local's note, at -O0 too, with clang and GCC; also at a stop back inside that header, past
+the line's first instruction. So does a line that names the outer local outside the scope
+of its block's declaration, before the block or after it ends."""
 
 import json
 import os
@@ -84,7 +83,7 @@ def test_a_blocks_own_declaration_withholds_the_outer_local(tmp_path, optimizati
     found = rows(tmp_path, target(optimization), C_SOURCE, marker, "n")
     assert found, "no stop"
     for row in found:
-        # Before: `n` showed the outer local's value (argc) as what line 8 reads.
+        # Not the outer local's value (argc) as what line 8 reads.
         assert "value" not in row and reason in row["error"], row
 
 
@@ -108,9 +107,9 @@ int main(int argc, char **argv) {
 def test_a_blocks_static_kept_as_a_constant_is_shown_where_the_code_names_it(
     tmp_path, optimization
 ):
-    # Review of PR #175: clang keeps a `static` never changed as a constant, which
-    # lldb-dap lists as a local, `t @ blocks.c:7`. Before: that row was withheld as the
-    # outer local, and the outer one's said the static was not listed.
+    # Clang keeps a `static` never changed as a constant, which lldb-dap lists as a local,
+    # `t @ blocks.c:7`: that row is not withheld as the outer local, and the outer one's
+    # doesn't say the static is not listed.
     adapter = target(optimization)
     (tmp_path / "blocks.c").write_text(STATIC_SOURCE)
     line = next(i for i, row in enumerate(STATIC_SOURCE.splitlines(), 1) if "STATIC" in row)
@@ -127,7 +126,7 @@ def test_a_blocks_static_kept_as_a_constant_is_shown_where_the_code_names_it(
     )
 
 
-# #286: one-line statements whose header names the outer `t` before their block's `static`
+# One-line statements whose header names the outer `t` before their block's `static`
 # `t` exists. A `while`'s condition, and a `for`'s condition, run on each pass.
 HEADER_SOURCE = """#include <stdio.h>
 __attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; }
@@ -175,9 +174,9 @@ def header_line(marker):
 def test_a_statement_header_naming_the_outer_local_hedges_its_note(
     tmp_path, cc, optimization, marker
 ):
-    # #286: on `if (t) { static long t = 5; use(t); }` the outer `t` said "not what the
-    # code reads: the code here names the block's `static`", though the line's first
-    # instruction runs the header, where `t` is the outer local. Whether running it reads
+    # On `if (t) { static long t = 5; use(t); }` the outer `t` is no plain "not what the
+    # code reads: the code here names the block's `static`": the line's first instruction
+    # runs the header, where `t` is the outer local. Whether running it reads
     # `t`, Peeky cannot tell: withheld, hedged. The outer local is selected by its line
     # where the debugger lists several `t`s; plain `t` is whichever it lists.
     adapter = target(optimization)
@@ -214,7 +213,7 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(
             assert row["error"] in plain, row
 
 
-# Review of PR #287: a stop back from a call in a one-line header's condition is past the
+# A stop back from a call in a one-line header's condition is past the
 # line's first instruction, but the rest of the header (`t > 2`) has not run yet.
 STEP_SOURCE = """#include <stdio.h>
 __attribute__((noinline)) long check(long v) { return v + 1; } /* CHECK */
@@ -230,8 +229,8 @@ int main(int argc, char **argv) {
 @pytest.mark.timeout(240)
 def test_a_stop_back_inside_a_header_hedges_its_note(tmp_path, cc, monkeypatch, capsys):
     # Back from `check(t)` (`step --out`), the stop is part-way through the `if`'s
-    # header, before `t > 2` reads the outer `t`: it said "not what the code reads",
-    # since only the line's first instruction was hedged. Back from the body's first
+    # header, before `t > 2` reads the outer `t`: hedged, as the line's first instruction
+    # is, not a plain "not what the code reads". Back from the body's first
     # `use(t)`, the line table's column is past the header's `)`: the plain note stays.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     path = tmp_path / "step.c"
@@ -273,9 +272,9 @@ def test_a_stop_back_inside_a_header_hedges_its_note(tmp_path, cc, monkeypatch, 
         assert outer and all(row["error"] == error for row in outer), (marker, rows)
 
 
-# #293: lines that name the outer `t` outside the scope of their block's `static` `t`:
-# a `do` loop's condition and a call after the block ends, a call before it opens. Review
-# of PR #319: a comma expression after the block, also from a macro, names it too.
+# Lines that name the outer `t` outside the scope of their block's `static` `t`: a `do`
+# loop's condition and a call after the block ends, a call before it opens. A comma
+# expression after the block, also from a macro, names it too.
 SAME_LINE_SOURCE = """#include <stdio.h>
 __attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; }
 #define PAIR use(0), t
@@ -309,18 +308,18 @@ SAME_LINE = {
 def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
     tmp_path, cc, optimization, marker
 ):
-    # #293: on `do { static long t = 5; use(t); } while (t-- > 2);` the outer `t` said
-    # "not what the code reads: the code here names the block's `static`", though the
-    # `while` condition runs after that `static` leaves scope and reads the outer `t`;
-    # and so on `use(t); { static long t = 6; use(t); }`, whose first call reads it before
-    # the block. Withheld still, the note now says where the line names `t` outside. In
+    # On `do { static long t = 5; use(t); } while (t-- > 2);` the `while` condition runs
+    # after that `static` leaves scope and reads the outer `t`; so does the first call of
+    # `use(t); { static long t = 6; use(t); }`, before the block. Withheld still, the outer
+    # `t`'s note says where the line names `t` outside, not only "not what the code reads:
+    # the code here names the block's `static`". In
     # `last` and `paired`, the parameter `t` (1) is the outer one.
     lines = SAME_LINE_SOURCE.splitlines()
     line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"/* {marker} */"))
     outer = next(i for i, row in enumerate(lines, 1) if row.endswith("/* OUTER */"))
     if marker in ("COMMA", "MACRO"):
         # The function's parameter, on the line above: at -O1 LLDB lists it as `t @
-        # blocks.c:N` beside the block's `static` kept as a constant (review round 2).
+        # blocks.c:N` beside the block's `static` kept as a constant.
         outer = line - 1
     (tmp_path / "blocks.c").write_text(SAME_LINE_SOURCE)
     selectors = ("t", f"t @ blocks.c:{outer}")

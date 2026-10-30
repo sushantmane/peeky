@@ -1,6 +1,5 @@
-"""What a change's result says of the value it wrote (review of PR #314, against real
-debugpy): its `type` after the write, and `unchanged` only where a write is proven to
-have left the value as it was."""
+"""What a change's result says of the value it wrote, against real debugpy: its `type` after
+the write, and `unchanged` only where a write is proven to have left the value as it was."""
 
 import json
 

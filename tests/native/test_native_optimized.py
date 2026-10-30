@@ -1,4 +1,4 @@
-"""#12/#13: optimized-out locals are reported as unavailable, never as values."""
+"""Optimized-out locals are reported as unavailable, never as values."""
 
 import os
 

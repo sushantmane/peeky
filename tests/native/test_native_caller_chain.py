@@ -1,4 +1,4 @@
-"""#202, on real builds: a refusal for a field through a C pointer parameter follows the
+"""On real builds: a refusal for a field through a C pointer parameter follows the
 calls that pass the pointer on as is (main -> wrap -> fits) to the frame that owns the
 struct, and names no frame where the change would be refused when it cannot."""
 
@@ -90,8 +90,8 @@ def run(capsys, *argv):
 
 @pytest.mark.timeout(300)
 def test_the_refusal_follows_a_pointer_passed_on_to_the_frame_that_owns_it(c_program, capsys):
-    # #202: the advice named wrap's line 40, where `lay` is a pointer too and a change is
-    # refused as well; main, which owns the struct, is where it can be made.
+    # Not wrap's line 40, where `lay` is a pointer too and a change is refused as well:
+    # main, which owns the struct, is where it can be made.
     source = c_program("m.c", CHAIN)
     at, passed, call = (line_of(CHAIN, mark) for mark in ("/* AT */", "/* PASS */", "/* CALL */"))
     code, out = run(capsys, "probe", source, "--at", at, "--set", "lay.width=4")
@@ -189,7 +189,7 @@ def test_no_frame_is_named_for_the_change_where_the_calls_cannot_be_followed(
         assert "hint: Change what sets it with a candidate edit" in out, out
 
 
-# Review of PR #211, 1: an inline-asm output operand writes through the pointer, which
+# An inline-asm output operand writes through the pointer, which
 # `p->width` inside the asm statement does not show as a write.
 ASM = """#include <stdio.h>
 struct layout { int width; };
@@ -234,7 +234,7 @@ def test_inline_assembly_on_the_way_is_never_followed(c_program, capsys):
     assert result["output"].strip() == "SEEN:5", result["output"]
 
 
-# Review of PR #211, 2: a static function in a header is preprocessed in each unit that
+# A static function in a header is preprocessed in each unit that
 # includes it, and b.c's CLOBBER makes its copy write the width; a.c's copy only reads.
 HEADER = """struct layout { int width; };
 int fits(const struct layout *p);
@@ -287,7 +287,7 @@ def test_a_header_function_is_not_read_from_another_units_copy(c_program, capsys
     assert code == 0 and result["output"].strip() == "SEEN:5", result
 
 
-# Review of PR #211, round 2: a header included inside main is main's code too. keep()
+# A header included inside main is main's code too. keep()
 # saves the pointer, and wrap writes the width through it before fits reads it.
 INCLUDED = """#include <stdio.h>
 struct layout { int width; };
@@ -362,7 +362,7 @@ def test_a_header_included_inside_a_function_on_the_way_is_scanned_too(c_program
     assert "settable" not in message.split("one caller")[1] and "--set-at" not in message, out
 
 
-# Review of PR #211, round 3: addresses no `&` shows. `saved` points at x (pad is its
+# Addresses no `&` shows. `saved` points at x (pad is its
 # first member), and wrap writes the width through it before fits reads it.
 UNSEEN = """#include <stdio.h>
 struct layout { int pad[1]; int width; };
@@ -386,7 +386,6 @@ int main(void) {
 """
 THROUGH = "((struct layout *)saved)->width = 5;"
 ADDRESSES = {
-    # The review's repro.
     "builtin": ("saved = __builtin_addressof(x);", "", THROUGH),
     # An array member is a pointer into x.
     "decayed": ("saved = x.pad;", "", THROUGH),

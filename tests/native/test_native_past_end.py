@@ -1,8 +1,8 @@
-"""Nothing is read through a C or C++ pointer one past an array's end (#336).
+"""Nothing is read through a C or C++ pointer one past an array's end.
 
-With `long queue[4]` and `long *end = queue + 4;`, `session get end` listed `end[0]` with the
-stack's next bytes as its value. C lets a pointer hold that address, but nothing there belongs
-to the array: Peeky shows the pointer's own row and says why it reads nothing through it.
+With `long queue[4]` and `long *end = queue + 4;`, `end[0]` would be the stack's next bytes.
+C lets a pointer hold that address, but nothing there belongs to the array: Peeky shows the
+pointer's own row and says why it reads nothing through it.
 """
 
 import json
@@ -104,7 +104,7 @@ def placed(row):
 
 
 # lldb-dap 20 on gives every value's address; 18 gives none for a `char[N]`, whose text it
-# shows instead (as for #302's elements).
+# shows instead.
 ADDRESSED = bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
 
 
@@ -358,10 +358,9 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_cpp_pointers_at_one_address_say_so_plainly(tmp_path, monkeypatch, cxx, capsys):
-    # Twelfth evaluation, playlist: `end … [now + 0 by address; same array not proven; at
-    # the address one past queue's end]` doubted one array beside a fact that both are one
-    # past `queue`'s end; and `now.title` read `"Coda"` at `end`'s address, with nothing to
-    # tie it to `end`.
+    # Pointers at one address say so plainly, never `+ 0 by address` beside a doubt that
+    # they point into one array; what is read at that address says which pointer it is
+    # read through.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "items.cpp").write_text(TRACKS)
     target = tmp_path / "items.cpp"
@@ -385,7 +384,7 @@ def test_cpp_pointers_at_one_address_say_so_plainly(tmp_path, monkeypatch, cxx, 
     assert "  [same address as `cur`; at the address one past items's end]" in table, table
     assert "  0  [read through `pick`, which holds the same address as `last`]" in table, table
     assert "same array not proven" in table and "+ 0 by address" not in table, table
-    # Review of PR #354: the nearest captured pointer is the one read through. `pp[0].uses`
+    # The nearest captured pointer is the one read through. `pp[0].uses`
     # reads through `pp[0]`, never at `pp`'s address, which `qq` holds.
     rows = probed(capsys, target, at, "pp,qq,last,slots[0],slots[0].uses,pp[0].uses")
     rows = {row["selector"]: row for row in rows}

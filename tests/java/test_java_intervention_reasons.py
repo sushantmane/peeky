@@ -1,4 +1,4 @@
-"""Java interventions with their real reasons (#183, eighth evaluation's `calc`): what
+"""Java interventions with their real reasons: what
 the class files' declared types rule out is refused before the program runs, a char
 takes a quoted char or a code point, and `describe` gives each name's declared type."""
 
@@ -94,7 +94,7 @@ def calc(tmp_path, monkeypatch):
             }
         )
     )
-    # A bundle built before #183's launcher has no marker for char changes.
+    # A bundle whose launcher predates char changes has no marker for them.
     launcher = Path(bundle) / "classes" / "PeekyJavaAdapter.class"
     return root, config, b"peekyCharSet" in launcher.read_bytes()
 
@@ -160,7 +160,7 @@ def test_describe_gives_declared_types_and_the_settable_kinds(calc, capsys):
     assert main(["describe", str(root), "--config", str(config)]) == 0
     out = capsys.readouterr().out
     assert "names in Calc.parseExpr (app/Calc.java:" in out
-    # The `if` block's locals with the lines where a stop sees them (#264).
+    # The `if` block's locals with the lines where a stop sees them.
     assert "): this (app.Calc), left (long), op (char, lines 19-20), right (long, line 20)" in out
     assert "args (String[]), results (StringBuilder), expression (String, lines 50-53)" in out
     [mutable] = [line for line in out.splitlines() if line.startswith("mutable:")]
@@ -183,7 +183,7 @@ public class Over {
 
 @pytest.mark.timeout(300)
 def test_only_the_method_that_gets_the_breakpoint_judges_a_set(calc, capsys):
-    # #192 review: java-debug binds a line two overloads share to the first in the class
+    # java-debug binds a line two overloads share to the first in the class
     # file only. `f(int)` took `x=2`, so the probe ran, and `f(String)`, where it
     # stopped, refused it there.
     root, config, _ = calc

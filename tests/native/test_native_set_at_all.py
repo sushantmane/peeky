@@ -1,6 +1,6 @@
-"""`--set-at LINE@all` on real C builds (#265): a change at every stop of a line, each made
-and checked as one `--set-at LINE@N` is. Tenth evaluation, debounce: testing "reset the
-count whenever the input is back at the accepted level" took six hand-computed hits."""
+"""`--set-at LINE@all` on real C builds: a change at every stop of a line, each made and
+checked as one `--set-at LINE@N` is. Testing "reset the count whenever the input is back at
+the accepted level" takes one change, not one per hand-computed hit."""
 
 import json
 import os
@@ -9,7 +9,6 @@ import pytest
 
 from peeky.cli import main
 
-# The tenth evaluation's debounce case, as it was given (debounce/debounce.c).
 DEBOUNCE = r"""/* debounce: turns a push-button's noisy contact signal into clean presses
  * and releases. The signal has one character per millisecond sample: '1'
  * (contact closed) or '0' (open). The button starts released. A new level

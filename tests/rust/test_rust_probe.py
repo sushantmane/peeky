@@ -38,7 +38,7 @@ def test_pinned_rust_raw_debugger_gate(tmp_path):
     assert set(report["raw_children"]) == {"request", "mode", "some", "none"}
     symbols = report["application_symbols"]
     assert symbols["observe_line"] in symbols["lines"]["src/main.rs"]
-    # The crate's own types, read from the same units (#321).
+    # The crate's own types, read from the same units.
     assert {"Request", "Mode"} <= set(symbols["interior_types"] or ()), symbols["interior_types"]
     assert report["active_variant_qualified"]
     assert report["active_variants"]["views"]["some"]["value"] == "Some(3)"

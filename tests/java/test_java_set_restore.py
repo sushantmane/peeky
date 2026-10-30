@@ -1,4 +1,4 @@
-"""`--set-at LINE@HIT name=@before` on a launched JVM (#305): the guard flip that skips a
+"""`--set-at LINE@HIT name=@before` on a launched JVM: the guard flip that skips a
 statement in two `--set-at`s; a `double`, which java-debug may show rounded, is not written
 back."""
 
@@ -155,7 +155,7 @@ def test_a_double_is_not_written_back(trail, capsys):
 
 @pytest.mark.timeout(300)
 def test_a_field_is_restored_only_in_the_object_its_change_wrote(trail, capsys):
-    # Review of PR #322: `b.n=0`, then `b = new Box(9)`, then `b.n=@before` wrote 1 into
+    # `b.n=0`, then `b = new Box(9)`, then `b.n=@before` wrote 1 into
     # the new Box.
     root, config = trail
     (root / "demo" / "Swap.java").write_text(SWAP)

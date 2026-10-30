@@ -1,4 +1,4 @@
-"""`--set-at LINE@HIT name=@before` on a real Rust build (#305): the guard flip that skips a
+"""`--set-at LINE@HIT name=@before` on a real Rust build: the guard flip that skips a
 statement in two `--set-at`s, each restore in the call that made the change; an async body,
 whose calls Peeky cannot tell apart, is refused before the run."""
 

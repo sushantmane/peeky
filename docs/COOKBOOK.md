@@ -947,14 +947,14 @@ This is a real bug: CPython 3.9's `ipaddress` (CVE-2024-4032) calls the public a
 `::ffff:8.8.8.8` private.
 
 ```sh
-peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classify.py \
+peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2018 --run classify.py \
   --arg ::ffff:8.8.8.8 --capture self,self._ip
 ```
 
 ```
 hit  phase     line  function    selector  type         value
-1    observed  2008  is_private  self      IPv6Address  IPv6Address('::ffff:808:808')  [id 7]
-1    observed  2008  is_private  self._ip  int          281470816487432
+1    observed  2018  is_private  self      IPv6Address  IPv6Address('::ffff:808:808')  [id 7]
+1    observed  2018  is_private  self._ip  int          281470816487432
 status: completed  hits: 1  seconds: 1.193  max pause: 43.6 ms
 output:
   ::ffff:8.8.8.8: private
@@ -1867,7 +1867,7 @@ two saved runs. To compare two others, name them: `--param a=1 --param b=5`. `co
 and `join` take the same two parameters.
 
 ```sh
-p() { peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classify.py --capture self,self._ip "$@"; }
+p() { peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2018 --run classify.py --capture self,self._ip "$@"; }
 p --arg ::ffff:8.8.8.8  --label mapped-public
 p --arg ::ffff:10.0.0.1 --label mapped-private
 peeky queries diff

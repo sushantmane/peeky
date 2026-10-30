@@ -1,7 +1,6 @@
-"""A Rust line that stops several times per pass (#157): the seventh evaluation's
-`movavg`, where `out.push(format!("{:.1}", mean));` stops at each of `format!`'s blocks,
-so `--hits all` gave 12 hits for 4 values with no word that the line stops 3 times per
-pass, and `--hits`/`--set-hit` counted stops where the agent counted passes."""
+"""A Rust line that stops several times per pass says so: in `movavg`,
+`out.push(format!("{:.1}", mean));` stops at each of `format!`'s blocks, so `--hits all`
+gives 12 hits for 4 values, and `--hits`/`--set-hit` count stops, not passes."""
 
 import json
 import os
@@ -118,7 +117,7 @@ def test_formats_line_says_it_stops_three_times_per_pass(movavg, capsys):
 def test_a_for_header_has_two_locations_both_before_the_loop(movavg, capsys):
     # `for v in xs` has two blocks' first code on its line, `into_iter` and the iterator's
     # binding: two stops, both before the first pass, and none at later passes. Its loop
-    # note (#161) says so, in place of the per-pass warning.
+    # note says so, in place of the per-pass warning.
     result = probe(movavg, capsys, at("FOR"), "--hits", "all")
     assert result["hits"] == 2 and not per_pass(result)
     assert [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
@@ -172,10 +171,10 @@ def stall(monkeypatch, when, seconds):
 def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
     movavg, capsys, monkeypatch, when, seconds
 ):
-    # #356: a loaded machine can stall the debugger for seconds. Peeky gave it 5 s to say
-    # where the breakpoint's locations are at launch, and 2 s for the stop's frame, then
-    # left out the loop note, or each hit's stop, without a word. Here lldb-dap is frozen
-    # past each of those waits: everything else still had time.
+    # A loaded machine can stall the debugger for seconds: given too little time to say
+    # where the breakpoint's locations are at launch, or for the stop's frame, the probe
+    # would leave out the loop note, or each hit's stop, without a word. Here lldb-dap is
+    # frozen past waits of 5 s and 2 s: everything still has time.
     timers = stall(monkeypatch, when, seconds)
     try:
         result = probe(movavg, capsys, at("FOR"), "--hits", "all")
@@ -192,9 +191,9 @@ def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
 def test_a_debugger_stalled_past_a_stops_read_fails_the_probe_with_no_stop_shown(
     movavg, capsys, monkeypatch
 ):
-    # Review of #356: frozen past the 15 s a stop's frame is read with, the stop was still
-    # served, its row with no `stop` (and no line or function): as if it were all there
-    # was. The probe now fails with TIMEOUT, and shows no row for it.
+    # Frozen past the 15 s a stop's frame is read with, the probe fails with TIMEOUT, and
+    # shows no row for the stop, rather than one with no `stop` (and no line or function),
+    # as if it were all there was.
     timers = stall(monkeypatch, "stop", 15.5)
     command = ["probe", str(movavg), "--at", at("FOR"), "--capture", "mean", "--hits", "all"]
     try:
@@ -237,9 +236,9 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_inlined_copies_and_generic_instances_are_told_apart(movavg, capsys):
-    # Review of #160: `format!` in an `#[inline(always)]` function called twice stopped 6
-    # times for 2 calls with no warning (each location taken for a copy of its own); two
-    # instances of a generic warned twice as `shapes::gener`, alike.
+    # `format!` in an `#[inline(always)]` function called twice stops 6 times for 2 calls,
+    # and the warning says so: its locations are not taken for inlined copies of their own.
+    # Two instances of a generic each get a warning named with their type arguments.
     (movavg / "src/main.rs").write_text(SHAPES)
     (movavg / "Cargo.toml").write_text(MANIFEST.replace("movavg", "shapes"))
     (movavg / "Cargo.lock").write_text(LOCK.replace("movavg", "shapes"))
@@ -287,9 +286,9 @@ fn main() {
 
 @pytest.mark.timeout(600)
 def test_a_set_at_says_which_stop_its_hit_was(movavg, capsys):
-    # Review 2 of #160: `--set-at 9@2 x=100` on a `format!` line changed x at the line's
-    # 2nd stop, its first pass's 2nd location, but the change, the JSON, the evidence and
-    # `queries wide` said only `9@2`, as if it were the 2nd pass.
+    # `--set-at 9@2 x=100` on a `format!` line changes x at the line's 2nd stop, its first
+    # pass's 2nd location: the change, the JSON, the evidence and `queries wide` say which
+    # stop, not only `9@2`, as if it were the 2nd pass.
     (movavg / "src/main.rs").write_text(SET_AT)
     (movavg / "Cargo.toml").write_text(MANIFEST.replace("movavg", "s1"))
     (movavg / "Cargo.lock").write_text(LOCK.replace("movavg", "s1"))

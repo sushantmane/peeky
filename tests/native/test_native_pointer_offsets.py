@@ -1,8 +1,8 @@
-"""Which element of a captured array a C pointer holds the address of (#302).
+"""Which element of a captured array a C pointer holds the address of.
 
-Eleventh evaluation (tides): `turn const int * 0x…7040` showed nothing that tied it to
-`level`, and `queries diff` sent the agent to address() and a hard-coded `sizeof(int)`
-for a pointer that held element 6's address in one run and element 4's in the other.
+Shown bare, `turn const int * 0x…7040` says nothing that ties it to `level`, and comparing
+runs where it holds element 6's address in one and element 4's in the other needs address()
+and a hard-coded `sizeof(int)`.
 """
 
 import json
@@ -133,8 +133,7 @@ def test_pointers_walking_a_parameter_say_how_far_they_are_from_it(program, caps
     command = ["probe", str(program), "--at", at, "--capture", "top,p,level", "--hits", "1"]
     assert main([*command, *ARGS]) == 0
     table = capsys.readouterr().out
-    # An equal address is said plainly, never as `level + 0` doubted as one array (twelfth
-    # evaluation, playlist 2).
+    # An equal address is said plainly, never as `level + 0` doubted as one array.
     assert "  [same address as `level`]" in table, table
     assert "+ 0 by address" not in table and "'s address]" not in table, table
     sql = "SELECT selector, offset_from, element_offset, at_element_of FROM last_run"
@@ -162,9 +161,8 @@ def test_pointers_walking_a_parameter_say_how_far_they_are_from_it(program, caps
 
 @pytest.mark.timeout(240)
 def test_a_value_read_through_a_pointer_names_the_others_at_its_address(program, capsys):
-    # Twelfth evaluation, playlist 3: `now.title` read `"Coda"` while `now` held `end`'s
-    # address, and nothing tied the read to `end`. Here `p`, `top` and `level` are equal
-    # at the first pass, and apart at the second.
+    # A value read through `now`, which holds `end`'s address, names `end` too. Here `p`,
+    # `top` and `level` are equal at the first pass, and apart at the second.
     result = probed(capsys, program, "WALK", "top,p,level,p[0],top[0]", "--hits", "2")
     rows = [row for row in result["rows"] if row["selector"] in ("p[0]", "top[0]")]
     assert [row.get("read_through") for row in rows] == [
@@ -222,8 +220,7 @@ def test_session_get_says_which_element_a_pointer_holds(program, capsys):
 
 @pytest.mark.timeout(240)
 def test_session_inspect_says_which_element_a_pointer_holds(program, capsys):
-    # Twelfth evaluation's preparation: `session inspect` listed `end` and `level` at the
-    # same stop and named no element, where `session get end level` does.
+    # `session inspect` names the element, as `session get end level` does.
     at = f"levels.c:{line_of('MAIN')}"
     assert main(["session", "start", str(program), "--at", at, *ARGS]) == 0
     capsys.readouterr()
@@ -306,8 +303,8 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_an_address_two_captured_arrays_share_names_neither(program, capsys):
-    # Review of PR #312: `u.a[2]` and `u.b[2]` have one address, which cannot tell which
-    # the pointer designates; the first captured was named.
+    # `u.a[2]` and `u.b[2]` have one address, which cannot tell which the pointer
+    # designates, so neither is named.
     (program / "shared.c").write_text(SHARED)
     at = "shared.c:" + str(next(i for i, t in enumerate(SHARED.splitlines(), 1) if "SHARED" in t))
 

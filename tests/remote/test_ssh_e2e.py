@@ -1,4 +1,4 @@
-"""Remote workers on a separate host, through a real `ssh -L` tunnel (#8, #248).
+"""Remote workers on a separate host, through a real `ssh -L` tunnel.
 
 The second host is a Linux container (scripts/remote_e2e/Dockerfile): its own
 kernel network namespace, filesystem, OS and Python, reached only through sshd
@@ -300,7 +300,7 @@ def _serving(tmp_path_factory, make, before_worker=None, record_suffix=""):
 
 @pytest.fixture
 def program(tmp_path):
-    """The client's checkout: the same sources as the worker host's copy (#249: every .py
+    """The client's checkout: the same sources as the worker host's copy (every .py
     file under the root, not only the program)."""
     for name in ("pagination_bug.py", "verify_pagination.py"):
         shutil.copyfile(ROOT / "examples" / name, tmp_path / name)
@@ -385,7 +385,7 @@ def test_a_session_survives_a_dropped_tunnel(host, capsys, program):
     assert code == 0 and "PAGE: [10, 20, 30]" in result["output"]
     host.records[-1]["result"] = {"output": result["output"].strip()}
     code, result = run(host, capsys, "session close", "session", "close", "--json")
-    # The program ran to its end, so cleanup finds nothing left (#143).
+    # The program ran to its end, so cleanup finds nothing left.
     assert code == 0 and result.get("closed") == "default", result
     assert result.get("cleanup", "nothing").startswith("nothing"), result
 
@@ -448,7 +448,7 @@ def test_a_worker_gone_behind_a_live_tunnel_is_transport_lost(host, capsys, prog
     host.records[-1]["result"] = {k: error[k] for k in ("code", "retryable", "session_closed")}
 
 
-# Java on the other host (#248): the worker's own trusted configuration names the
+# Java on the other host: the worker's own trusted configuration names the
 # adapter bundle and the sources; the client's names only which kind of Java target.
 JAVA_SOURCE = "demo/PaginationBug.java"
 JAVA_LINE = 13  # `int end = …`, after `start` is set
@@ -641,8 +641,8 @@ def test_a_different_java_source_on_the_host_is_refused_before_it_runs(
 def test_a_second_java_source_that_differs_on_the_host_is_refused_by_name(
     java_host, capsys, java_checkout
 ):
-    # #249: only the breakpoint's file was compared, so the host compiled another
-    # Helper.java and the probe completed without a note.
+    # Every declared source is compared, not only the breakpoint's file: the host's
+    # Helper.java differs, so the probe is refused.
     helper = "package demo;\npublic class Helper { static int size() { return 3; } }\n"
     config = dict(JAVA_LAUNCH, sources=[JAVA_SOURCE, "demo/Helper.java"])
     (java_checkout / "demo/Helper.java").write_text(helper)
@@ -766,7 +766,7 @@ def test_an_attached_java_vm_on_the_other_host(waiting_jvm, capsys, java_checkou
     }
 
 
-# C, C++ and Rust on the other host (#252): the image's `native` target holds LLVM 18 and
+# C, C++ and Rust on the other host: the image's `native` target holds LLVM 18 and
 # Rust 1.96.0. Each language has its own root and trusted config there; the worker is
 # restarted with it. The client's checkout holds the same files.
 LLVM = {"adapter": "/usr/bin/lldb-dap-18", "dwarfdump": "/usr/bin/llvm-dwarfdump-18"}

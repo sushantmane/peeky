@@ -1,4 +1,4 @@
-"""A C++ program a little bigger than the evaluations' (#397): eight files using the STL
+"""A larger C++ program: eight files using the STL
 (examples/large/cpp-shop) have 2-4 MB of line tables and 19-45 MB of debug information,
 as llvm-dwarfdump writes them. Peeky reads both as they are written, so the program is
 neither refused nor read without its checks."""
@@ -70,8 +70,8 @@ def run(capsys, *arguments):
 
 @pytest.mark.timeout(300)
 def test_a_local_of_an_stl_heavy_program_is_judged_and_can_be_changed(shop, capsys):
-    # Its debug information is 19-33 MB of text, over the 16 MiB Peeky once read: every
-    # local was "not judged", and no value could be changed in the program.
+    # Its debug information is 19-33 MB of text, over a 16 MiB bound that would leave every
+    # local "not judged", and no value changeable in the program.
     line = line_of(shop / "scheduler.cpp", "plan.push_back")
     code, result = run(
         capsys,
@@ -221,7 +221,7 @@ def stand_in(tmp_path, monkeypatch, mode):
 @pytest.mark.timeout(240)
 def test_reading_debug_information_out_of_time_fails_the_launch(small, capsys, monkeypatch):
     # Only a build over Peeky's bounds is read without its debug information; a read the
-    # time ran out on is a TIMEOUT (it was taken for unreadable debug information).
+    # time ran out on is a TIMEOUT, not unreadable debug information.
     stand_in(small.parent, monkeypatch, "sleep")
     monkeypatch.setattr("peeky.native._remaining", lambda deadline, limit=15: 2)
     code, result = probe_small(capsys, small)

@@ -1,4 +1,5 @@
-"""The CLI on a launched Java program: fields through this; commands carry --config."""
+"""The CLI on a launched Java program: fields through this; commands carry --config; a step
+onto the breakpoint's line is not a hit."""
 
 import json
 import os
@@ -61,18 +62,18 @@ def test_java_fields_are_read_through_this_and_commands_keep_the_config(counter,
     assert main(["describe", *common, "--json"]) == 0
     commands = json.loads(capsys.readouterr().out)["commands"]
     assert f"--config {config}" in commands["probe"] and f"--config {config}" in commands["session"]
-    # #91 (eval 4): Java lists each method's lines and the names it sees, as C and Rust do.
+    # Java lists each method's lines and the names it sees, as C and Rust do.
     assert main(["describe", *common, "--json"]) == 0
     scopes = {s["scope"]: s for s in json.loads(capsys.readouterr().out)["scopes"]}
     assert scopes["Counter.add"]["names"] == ["this", "times", "i"]
     assert scopes["Counter.add"]["source"] == "demo/Counter.java"
     assert scopes["Counter.add"]["lines"] == [10, 13]
     assert scopes["Counter.main"]["names"] == ["args", "counter"]
-    # #264: a local declared only in a block gives the block's lines, as for C and Rust.
+    # A local declared only in a block gives the block's lines, as for C and Rust.
     assert scopes["Counter.add"]["spans"] == {"i": [[11, 11]]}
     assert "spans" not in scopes["Counter.main"]
     assert main(["describe", *common]) == 0
-    # #183: with each name's declared type, as C, C++ and Rust give them; #264: its lines.
+    # With each name's declared type, as C, C++ and Rust give them, and its lines.
     assert (
         "names in Counter.add (demo/Counter.java:10-13): this (demo.Counter), times (int), "
         "i (int, line 11)" in capsys.readouterr().out
@@ -217,7 +218,7 @@ def test_a_shared_line_warns_which_method_stops_and_which_never_does(counter, ca
 
 @pytest.mark.timeout(120)
 def test_rows_say_which_java_locals_set_can_change(counter, capsys):
-    # #77 (eval 3, Java): which locals take --set was only in the docs.
+    # Which locals take --set was only in the docs.
     root, config = counter
     common = ["probe", str(root), "--config", str(config), "--at", "demo/Counter.java:17"]
     code = main([*common, "--capture", "counter,args", "--json", "--no-save", "--quiet"])
@@ -229,7 +230,7 @@ def test_rows_say_which_java_locals_set_can_change(counter, capsys):
     }
     code = main([*common, "--set", "args=1", "--json", "--no-save", "--quiet"])
     result = json.loads(capsys.readouterr().out)
-    # #183: the declared type rules it out before the program runs.
+    # The declared type rules it out before the program runs.
     assert code == 2 and result["error"]["code"] == "MUTATION_REJECTED"
     assert result.get("refused_before_launch") is True, result
     assert (
@@ -270,9 +271,8 @@ public class Blocks {
 
 @pytest.mark.timeout(180)
 def test_a_step_out_of_a_block_or_into_another_method_says_so(counter, capsys):
-    # Tenth evaluation (runoff): a step left the block declaring `ranking`, and the next
-    # `get 'ranking[1]'` said only `<not found …>`; a step into or out of a method said
-    # nothing either.
+    # A step out of the block declaring `ranking` says so, and the next `get 'ranking[1]'`
+    # says more than `<not found …>`; so does a step into or out of a method.
     root, config = counter
     (root / "demo" / "Blocks.java").write_text(BLOCKS)
     data = json.loads(config.read_text())
@@ -321,5 +321,82 @@ def test_a_step_out_of_a_block_or_into_another_method_says_so(counter, capsys):
         out = capsys.readouterr().out
         assert "Blocks.java:8 in Blocks.walk(int)" in out
         assert "note: left `Blocks.walk(int)`; now in `Blocks.walk(int)`" in out
+    finally:
+        main(["session", "close"])
+
+
+LOOP = """package demo;
+
+public class Loop {
+    public static void main(String[] args) {
+        int total = 0;
+        for (int i = 0; i < 4; i++) {
+            total += i; // LOOP
+        }
+        System.out.println("TOTAL:" + total);
+    }
+}
+"""
+
+
+@pytest.fixture
+def loop(tmp_path, monkeypatch):
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a setup_java_adapter.py output directory")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "loop"
+    (root / "demo").mkdir(parents=True)
+    (root / "demo" / "Loop.java").write_text(LOOP)
+    config = root / "loop.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(Path(bundle).resolve()),
+                "sources": ["demo/Loop.java"],
+                "main_class": "demo.Loop",
+                "arguments": [],
+            }
+        )
+    )
+    return root, config
+
+
+def line_of(marker):
+    return next(i for i, text in enumerate(LOOP.splitlines(), 1) if f"// {marker}" in text)
+
+
+def run(capsys, *argv):
+    assert main([*argv, "--json"]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.timeout(120)
+def test_a_step_onto_the_breakpoint_line_is_not_a_hit_and_its_pass_gets_none(loop, capsys):
+    root, config = loop
+    at = line_of("LOOP")
+    start = ["session", "start", str(root), "--config", str(config), "--at", f"demo/Loop.java:{at}"]
+    assert main(start) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(4):
+            state = run(capsys, "session", "step")
+            if state["location"].endswith(f":{at}"):
+                break
+        assert state["location"].endswith(f":{at}") and state["reason"] == "step", state
+        assert "hit" not in state, state
+        assert state["note"].startswith(
+            "not a hit: java-debug reports this stop as the step's, and `session continue` "
+            "runs on to the line's next pass"
+        ), state
+        (row,) = run(capsys, "session", "get", "i")
+        assert row["value"] == "1", row
+        # The pass with i == 1 gets no number: hit 2 is the next pass's.
+        state = run(capsys, "session", "continue")
+        assert state["location"].endswith(f":{at}") and state["hit"] == 2, state
+        (row,) = run(capsys, "session", "get", "i")
+        assert row["value"] == "2", row
+        report = run(capsys, "session", "report")
+        assert (report["hits"], report["steps"], report["hit"]) == (2, 2, 2), report
     finally:
         main(["session", "close"])
