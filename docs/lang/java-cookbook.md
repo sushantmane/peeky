@@ -241,6 +241,8 @@ directory: `$PEEKY_STATE_DIR`, else `~/.peeky`.
   there are.
 - `peeky setup-java --prune` removes every version but the current one. A session still using a
   removed version fails its next step with `PROVENANCE_CHANGED`. Start it again.
+- `--prune` lists the versions it removed, and each it couldn't, with why. If any is left, it
+  exits with status 2. `--json` has them in `pruned` and `failed`.
 - Setup removes what an interrupted setup left in staging, by itself.
 
 Peeky runs its own bundle only where no other user can change it. A bundle's `adapter.json`
@@ -252,8 +254,9 @@ lists its files' hashes, so it vouches only for itself.
 - Otherwise Peeky refuses before anything runs: `UNSUPPORTED`, with
   `Peeky's own Java adapter can't be used: …`. The message names the path, and what to do. So
   does a path that can't be opened or read.
-- Setup makes the state directory and `java-adapter` mode 0700 itself. It never changes `/` or
-  your home directory: with `PEEKY_STATE_DIR` set to one of those, Peeky refuses.
+- Setup makes the state directory and `java-adapter` mode 0700 itself.
+- Peeky never takes `/` or your home directory for its state directory, whatever their mode. With
+  `PEEKY_STATE_DIR` set to one of them, it refuses.
 
 A bundle records its recipe, and that recipe's fingerprint, in `adapter.json`. The recipe is
 the text of each patch, and the hashes of the launcher, the dependency lock and the notices. It

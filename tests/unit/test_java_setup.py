@@ -321,6 +321,7 @@ def test_versions_stay_until_prune_removes_all_but_the_current_one(state, offlin
     assert pruned == {
         "bundle": str(container.resolve() / versions[2]),
         "pruned": sorted(versions[:2]),
+        "failed": {},
     }
     assert sorted(p.name for p in container.iterdir()) == sorted([".lock", "current", versions[2]])
     assert java_setup.prune()["pruned"] == []
@@ -503,8 +504,9 @@ def test_the_state_directory_is_made_only_yours(state):
     assert cli._state_base() == state and mode(state) == 0o700
 
 
+@pytest.mark.parametrize("home_mode", [0o755, 0o700])
 def test_a_state_directory_of_root_or_home_is_refused_never_tightened(
-    tmp_path, offline, monkeypatch
+    tmp_path, offline, monkeypatch, home_mode
 ):
     # The state directory is checked whenever it exists, before java-adapter is looked for.
     monkeypatch.setenv("PEEKY_STATE_DIR", "/")
@@ -514,16 +516,18 @@ def test_a_state_directory_of_root_or_home_is_refused_never_tightened(
     refused("/", java_setup.install)
     refused("/", java_setup.prune)
     assert mode("/") == before and not os.path.lexists("/java-adapter")
+    # The home directory, even only yours (0700): it is never taken for Peeky's own.
     home = tmp_path / "home"
     home.mkdir()
-    home.chmod(0o755)
+    home.chmod(home_mode)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PEEKY_STATE_DIR", str(home))
-    message = refused(str(home), java_setup.install)
-    assert "Peeky doesn't change / or your home directory" in message
-    with pytest.raises(ValueError, match="Peeky doesn't change / or your home directory"):
+    for call in (java_setup.install, java_setup.installed, java_setup.prune):
+        message = refused(str(home), call)
+        assert "is / or your home directory, which Peeky never takes for its own" in message
+    with pytest.raises(ValueError, match="can't be / or your home directory, whatever its mode"):
         cli._state_base()
-    assert mode(home) == 0o755 and list(home.iterdir()) == []
+    assert mode(home) == home_mode and list(home.iterdir()) == []
 
 
 @pytest.mark.skipif(os.getuid() == 0, reason="root reads any directory")
@@ -785,6 +789,60 @@ def test_setup_java_prune_removes_all_but_the_current_version(state, offline, ca
     for extra in ("--force", "--output=x"):
         status, out, err = setup_java(capsys, "--prune", extra)
         assert status == 2 and "--prune takes neither --output nor --force" in err
+
+
+def test_prune_reports_versions_it_could_not_remove_and_fails(state, offline, capsys, monkeypatch):
+    container = state / "java-adapter"
+    versions = []
+    for schema in (1, 2, 3, 4):
+        monkeypatch.setattr(java_setup, "RECIPE_SCHEMA", schema)
+        versions.append(Path(java_setup.install()["bundle"]).name)
+    stuck, kept_anyway, gone = versions[0], versions[1], versions[2]
+    (container / ".peeky-java-dead").mkdir()
+    rmtree = java_setup.shutil.rmtree
+
+    def removing(path, *args, **kwargs):
+        name = Path(path).name
+        if name == stuck:
+            raise PermissionError(13, "Permission denied", str(Path(path) / "classes"))
+        if name in (kept_anyway, ".peeky-java-dead"):
+            return None  # Says nothing, removes nothing.
+        return rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(java_setup.shutil, "rmtree", removing)
+    status, out, err = setup_java(capsys, "--prune", "--json")
+    result = json.loads(out)
+    assert status == 2
+    assert result["pruned"] == [gone]
+    assert result["failed"] == {
+        stuck: f"Permission denied: {container.resolve() / stuck / 'classes'}",
+        kept_anyway: "it is still there",
+    }
+    assert result["warnings"] == [cli.PRUNED_NOTE]
+    assert java_setup._versions(container) == sorted([stuck, kept_anyway, versions[3]])
+    # Staging is best-effort, and never reported.
+    assert (container / ".peeky-java-dead").exists() and ".peeky-java-dead" not in out
+    status, out, err = setup_java(capsys, "--prune")
+    assert status == 2
+    assert f"Could not remove {stuck} (Permission denied: " in out
+    assert f"Could not remove {kept_anyway} (it is still there); what is left" in out
+    assert "Removed" not in out and cli.PRUNED_NOTE in out
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root removes any file")
+def test_prune_fails_on_a_version_it_has_no_permission_to_remove(state, offline, capsys):
+    container = state / "java-adapter"
+    old = Path(java_setup.install()["bundle"])
+    java_setup.install(force=True)
+    (old / "lib").chmod(0o500)
+    try:
+        status, out, err = setup_java(capsys, "--prune")
+        assert status == 2 and f"Could not remove {old.name} (Permission denied: " in out
+        assert old.name in java_setup._versions(container)
+    finally:
+        (old / "lib").chmod(0o700)
+    status, out, err = setup_java(capsys, "--prune")
+    assert status == 0 and f"Removed 1 older version(s): {old.name}." in out
 
 
 def test_prune_removes_nothing_while_the_pointer_is_refused(state, offline, capsys):

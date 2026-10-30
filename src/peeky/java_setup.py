@@ -423,8 +423,8 @@ def _shared_root(path: Path) -> bool:
 
 def private_directory(path: Path, *, fix: bool = False) -> Path:
     """``path``, checked as a directory only you can use, as Peeky's own bundle must be in:
-    a real directory (not a link) that you own, mode 0700 (made so with ``fix``, but never
-    / or the home directory), under no directory another user can write
+    a real directory (not a link) that you own, neither / nor the home directory, mode 0700
+    (made so with ``fix``), under no directory another user can write
     (peeky.build.writable_by_others). Anyone who could write there could supply a bundle,
     whose adapter.json vouches only for itself."""
     from peeky.build import writable_by_others
@@ -438,16 +438,16 @@ def private_directory(path: Path, *, fix: bool = False) -> Path:
             "directories only you can use. Move it aside and run `peeky setup-java`, or set "
             "PEEKY_STATE_DIR to a directory of yours"
         )
+    if _shared_root(path):
+        raise ValueError(
+            f"{UNUSABLE}{path} is / or your home directory, which Peeky never takes for its "
+            "own, whatever its mode: set PEEKY_STATE_DIR to a directory of Peeky's own"
+        )
     if info.st_mode & 0o077:
-        if not fix or _shared_root(path):
+        if not fix:
             raise ValueError(
                 f"{UNUSABLE}{path} has mode {stat.S_IMODE(info.st_mode):o}, open to other "
-                + (
-                    "users, and Peeky doesn't change / or your home directory: set "
-                    "PEEKY_STATE_DIR to a directory of Peeky's own"
-                    if _shared_root(path)
-                    else f"users. Run `chmod 700 {path}`, or `peeky setup-java`, which does"
-                )
+                f"users. Run `chmod 700 {path}`, or `peeky setup-java`, which does"
             )
         os.chmod(path, 0o700)
     try:
@@ -568,19 +568,34 @@ def _point(container: Path, name: str) -> None:
         os.close(directory)
 
 
-def _remove(entry: Path) -> None:
+def _discard(entry: Path) -> None:
+    """Remove ``entry``, best-effort: for leftovers no one uses."""
     if entry.is_dir() and not entry.is_symlink():
         shutil.rmtree(entry, ignore_errors=True)
     else:
         entry.unlink(missing_ok=True)
 
 
+def _remove(entry: Path) -> str | None:
+    """Remove ``entry``; None once it is gone, or why it is still there."""
+    try:
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        return f"{exc.strerror or exc}: {exc.filename or entry}"
+    return "it is still there" if os.path.lexists(entry) else None
+
+
 def _sweep(container: Path) -> None:
-    """Under the lock, so no setup is running: remove what setups that died left, their
-    staging and pointer drafts. Versions stay (prune removes them)."""
+    """Under the lock, so no setup is running: remove, best-effort, what setups that died
+    left, their staging and pointer drafts. Versions stay (prune removes them)."""
     for entry in container.iterdir():
         if entry.name.startswith((STAGING_PREFIX, f".{POINTER}.")):
-            _remove(entry)
+            _discard(entry)
 
 
 def _versions(container: Path, but: str | None = None) -> list[str]:
@@ -685,17 +700,21 @@ def prune(progress=None) -> dict:
     """`peeky setup-java --prune`: remove every version of Peeky's own bundle but the one
     the pointer names, and what setups that died left. A session still using a removed
     version fails its next step (its bundle is gone). A pointer that is refused (installed)
-    stops it: then which version is current isn't known."""
+    stops it: then which version is current isn't known. ``pruned`` lists the versions
+    that are gone; ``failed`` maps each that is still there to why."""
     container = _own_directories(create=False)
     if container is None:
-        return {"bundle": None, "pruned": []}
+        return {"bundle": None, "pruned": [], "failed": {}}
+    pruned, failed = [], {}
     with _locked(container, progress):
         _sweep(container)
         keep = installed(container)
-        pruned = _versions(container, but=keep.name if keep else None)
-        for name in pruned:
-            _remove(container / name)
-    return {"bundle": str(keep.resolve()) if keep else None, "pruned": pruned}
+        for name in _versions(container, but=keep.name if keep else None):
+            if (why := _remove(container / name)) is None:
+                pruned.append(name)
+            else:
+                failed[name] = why
+    return {"bundle": str(keep.resolve()) if keep else None, "pruned": pruned, "failed": failed}
 
 
 def main() -> None:

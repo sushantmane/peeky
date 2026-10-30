@@ -76,13 +76,13 @@ def _state_base():
             f"Peeky's state directory must be a directory you own, not a link: {base}. Move "
             "it aside, or set PEEKY_STATE_DIR to a directory of yours"
         )
+    resolved = base.resolve()
+    if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+        raise ValueError(
+            f"Peeky's state directory can't be / or your home directory, whatever its mode: "
+            f"{base}. Set PEEKY_STATE_DIR to a directory of its own"
+        )
     if info.st_mode & 0o077:
-        resolved = base.resolve()
-        if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
-            raise ValueError(
-                f"Peeky's state directory, {base}, is open to other users, and Peeky doesn't "
-                "change / or your home directory: set PEEKY_STATE_DIR to a directory of its own"
-            )
         base.chmod(0o700)
     return base
 
@@ -4080,20 +4080,26 @@ def setup_java(args):
         if args.output is not None or args.force:
             raise ValueError("--prune takes neither --output nor --force; run it on its own")
         result = {**java_setup.prune(progress), "default": True}
-        if result["pruned"]:
+        if result["pruned"] or result["failed"]:
             result["warnings"] = [PRUNED_NOTE]
 
         def pruned(result):
             kept = f"Kept {result['bundle']}." if result["bundle"] else "No version is in use."
-            if not result["pruned"]:
+            lines = []
+            if result["pruned"]:
+                names = ", ".join(result["pruned"])
+                lines.append(f"Removed {len(result['pruned'])} older version(s): {names}.")
+            for name, why in result["failed"].items():
+                lines.append(f"Could not remove {name} ({why}); what is left of it may be partial.")
+            if not lines:
                 return f"Nothing to remove. {kept}"
-            names = ", ".join(result["pruned"])
-            return (
-                f"Removed {len(result['pruned'])} older version(s): {names}. {kept}\n{PRUNED_NOTE}"
-            )
+            lines.append(kept)
+            lines.append(PRUNED_NOTE)
+            return "\n".join(lines)
 
         _emit(result, args.json, pruned)
-        return 0
+        # Any version still there is a failure, whatever was removed beside it.
+        return 2 if result["failed"] else 0
     if args.output is None:
         result = {**java_setup.install(force=args.force, progress=progress), "default": True}
     elif args.force:
