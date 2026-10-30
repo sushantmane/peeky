@@ -46,17 +46,15 @@ CI execution has its own budget, under five minutes. Timing cutoffs are failure 
 measured speed. The proposed measurements of evidence-collection overhead are in
 [ADR 0002](adr/0002-correlated-evidence.md).
 
-## Java worker and refreshed Python baseline
+## Java worker and a second Python baseline, 2026-10-14
 
-After Java's HTTP integration, run the benchmark against a bundle that the setup script built:
+To benchmark Java, run it against a bundle that the setup script built:
 
 ```sh
 python scripts/benchmark_worker.py --iterations 10 --java-bundle work/java-final
 ```
 
-Replace the bundle path as needed, and leave out `--java-bundle` for Python. Review of this
-benchmark extension's first version restored the missing interpreter, JDK and adapter metadata.
-Both modes were then verified with real runs.
+Replace the bundle path as needed, and leave out `--java-bundle` for Python.
 
 Ten fresh runs each, on the same local host as above, with full integrity checks and real output
 assertions:
@@ -134,7 +132,7 @@ Only Peeky's own CPU could shrink by rewriting Peeky in another language.
 | Java, 8 hits on a loop line, before | 1.61 s | | | 120 ms pause per hit: each check walked and rehashed the 273-file adapter bundle, about 6 checks per hit |
 | Java, after | 0.58 s | | | 9.9 ms pause per hit |
 
-**Provenance checks no longer rehash unchanged toolchain binaries** (`src/peeky/digest.py`):
+**The fix: provenance checks reuse the digests of unchanged toolchain binaries** (`src/peeky/digest.py`):
 
 - Each debugger operation, such as inspect, continue or report, went from 58 ms to 0.8 ms for C++.
 - For Rust, it went from 17 ms to 5 ms.
@@ -165,18 +163,18 @@ Only Peeky's own CPU could shrink by rewriting Peeky in another language.
 
 ## C and C++ build speed, 2026-10-29
 
-Each compiled probe used to spend a third to nine tenths of its time preparing the build. Three
-costs there were Peeky's own, and each build paid them, `verify` too:
+In the "before" runs below, a compiled probe spent a third to nine tenths of its time preparing the
+build. Three costs there were Peeky's own, and each build paid them, `verify` too:
 
 - **Hashing the tools:** each new process hashed clang's 125 MB, and dwarfdump and dsymutil: 58 ms
-  on macOS. Peeky now keeps their digests in its state directory, by the same rules as within one
+  on macOS. Peeky keeps their digests in its state directory, by the same rules as within one
   process.
 - **One unit at a time:** an 8-file program ran 8 `-E` commands, then 8 `-c` commands, in turn.
-  Each group now runs at the same time, up to 8 at once (`PEEKY_BUILD_JOBS`). When sources fail,
-  the first one's error is reported.
+  Each group runs at the same time, up to 8 at once by default (`PEEKY_BUILD_JOBS` sets it). When
+  sources fail, the first one's error is reported.
 - **The checks of preprocessed text:** the inline-assembly scan took 1.16 s for the 8 units on
-  macOS, and the check of the headers they read 0.41 s. They now take 0.25 s and 0.04 s. Both
-  check the same things: tests compare the scan with the earlier one on random text.
+  macOS, and the check of the headers they read 0.41 s. After the change, they take 0.25 s and
+  0.04 s. Both check the same things: tests compare the scan with the earlier one on random text.
 
 Each row is the median wall time of 5 `peeky probe` or `peeky verify` runs, in seconds, after a
 warm-up run. Each before and after pair ran back to back. macOS ran on an Apple M5 Max (Apple
