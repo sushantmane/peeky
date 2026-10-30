@@ -153,11 +153,60 @@ _IMPURE_NAMES = frozenset(
 COPY_NOTE = "This Python candidate ran from a copy of "
 
 
-def _self_contained(text):
+def _shadowed(names, places):
+    """Whether a module of one of ``names`` may not be the standard library's where the
+    program imports it: a module or package of that name (any case: a volume may ignore
+    it) is in one of ``places``, which come before the standard library on the program's
+    path (its script's directory, its working directory, `PYTHONPATH`'s entries), or one
+    of them is a file (a zip archive) or can't be listed; or this interpreter finds it
+    outside its standard library."""
+    import importlib.machinery
+    import importlib.util
+    import sysconfig
+
+    wanted = {name.casefold() for name in names}
+    files = {
+        name + suffix.casefold() for name in wanted for suffix in importlib.machinery.all_suffixes()
+    }
+    for place in places:
+        try:
+            entries = os.listdir(place)
+        except (FileNotFoundError, NotADirectoryError):
+            if os.path.isfile(place):
+                return True
+            continue
+        except OSError:
+            return True
+        for entry in entries:
+            low = entry.casefold()
+            if low in files or (low in wanted and os.path.isdir(os.path.join(place, entry))):
+                return True
+    stdlib = {os.path.realpath(sysconfig.get_paths()[key]) for key in ("stdlib", "platstdlib")}
+    for name in names:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            return True
+        origin = getattr(spec, "origin", None)
+        if spec is None or (
+            origin not in ("built-in", "frozen")
+            and not (
+                isinstance(origin, str)
+                and any(os.path.realpath(origin).startswith(each + os.sep) for each in stdlib)
+                and not {"site-packages", "dist-packages"} & set(Path(origin).parts)
+            )
+        ):
+            return True
+    return False
+
+
+def _self_contained(text, places=()):
     """True only where the script ``text`` cannot reach anything outside its own file:
     it imports only _PURE_MODULES (none of their private names or submodules, and of
     `sys` only _PURE_SYS) and names nothing in _IMPURE_NAMES, `__file__` or another
-    dunder (but `__name__` and `__init__`). False where unsure."""
+    dunder (but `__name__` and `__init__`); and none of the modules it imports may be
+    another of that name than the standard library's (``_shadowed``: a `json.py` in its
+    directory, the root or on `PYTHONPATH`, ``places``). False where unsure."""
     import importlib
     import types
 
@@ -177,16 +226,18 @@ def _self_contained(text):
             return False
         return not isinstance(found, types.ModuleType)
 
-    modules, bases = {}, set()
+    modules, bases, imported = {}, set(), set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name not in _PURE_MODULES or (alias.asname is None and "." in alias.name):
                     return False
                 modules[alias.asname or alias.name] = alias.name
+                imported.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
             if node.level or node.module not in _PURE_MODULES:
                 return False
+            imported.add(node.module.split(".")[0])
             for alias in node.names:
                 if node.module != "__future__" and not public(node.module, alias.name):
                     return False
@@ -212,7 +263,7 @@ def _self_contained(text):
             and not public(modules[node.value.id], node.attr)
         ):
             return False
-    return True
+    return not _shadowed(sorted(imported), places)
 
 
 MAX_COPIED_FILES = 20_000
@@ -840,13 +891,25 @@ class PythonCandidate:
                 )
 
     def _self_contained(self, text):
-        """_self_contained, as the program's interpreter imports the standard modules;
-        False where it cannot say."""
+        """_self_contained, as the program's interpreter imports the standard modules, with
+        what comes before them on the program's path: the copy's script directory and
+        root (its working directory), and its `PYTHONPATH` (relative entries mean the
+        root); False where it cannot say."""
         from peeky.python_interpreter import Unavailable
 
+        pythonpath = self._pythonpath
+        if pythonpath is None:
+            pythonpath = os.environ.get("PYTHONPATH")
+        places = [str(self.staged.parent), str(self.root)]
+        places += [
+            entry if os.path.isabs(entry) else os.path.join(str(self.root), entry)
+            for entry in (pythonpath.split(os.pathsep) if pythonpath else ())
+        ]
         try:
             return (
-                self.adapter.readings("self_contained", text, timeout=self._interpreter_timeout())
+                self.adapter.readings(
+                    "self_contained", text, places, timeout=self._interpreter_timeout()
+                )
                 is True
             )
         except (Unavailable, ValueError):

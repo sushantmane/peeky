@@ -51,6 +51,7 @@ def fake_python(path, version="3.12.4", implementation="cpython", optimize=0, **
     ]
     listed = [implementation, version, [major, minor], compiler[1], *compiler[2:], optimize]
     executable = said.get("executable") or str(path)
+    rest = [executable, f"sys.flags(optimize={optimize})", ["/fake/lib"]]
     if "text" in said:
         body = f"cat <<'EOF'\n{said['text']}\nEOF\n"
     else:
@@ -58,7 +59,7 @@ def fake_python(path, version="3.12.4", implementation="cpython", optimize=0, **
             f'if [ -z "$3" ]; then printf %s "{said.get("before", "")}"; '
             f'echo "{listed!r}"; printf %s "{said.get("after", "")}"; exit 0; fi\n'
             f'printf %s "{said.get("before", "")}"\n'
-            f'printf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{[*listed, executable]!r}"\n'
+            f'printf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{[*listed, *rest]!r}"\n'
             f'printf %s "{said.get("after", "")}"\n'
         )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +211,7 @@ def test_an_interpreter_is_asked_as_the_program_runs_without_the_token(tmp_path,
     python = tmp_path / "python"
     said = repr(
         ["cpython", "3.12.1", [3, 12], "3.12.1 (x)", "", "cpython-312", "ab", 1, str(python)]
+        + ["sys.flags(optimize=1)", []]
     )
     python.write_text(
         f'#!/bin/sh\necho "$@" > {seen}.args\npwd > {seen}.cwd\nenv > {seen}\n'
@@ -234,7 +236,7 @@ SHIM = """#!/bin/sh
 if grep -qs old .python-version; then V=3.9.6; M=9; else V=3.12.4; M=12; fi
 said="['cpython', '$V', [3, $M], '$V (x)', '', 'cpython-3$M', '00', 0"
 if [ -z "$3" ]; then echo "$said]"; exit 0; fi
-printf '\\n<PEEKY-IDENTITY %s> %s\\n' "$3" "$said, '$0']"
+printf '\\n<PEEKY-IDENTITY %s> %s\\n' "$3" "$said, '$0', 'sys.flags()', []]"
 """
 
 
@@ -332,7 +334,7 @@ def test_identify_keeps_a_bounded_output(tmp_path):
 def test_a_helpers_replies_are_read_only_from_its_records(tmp_path, no_active):
     python = tmp_path / "python"
     compiler = ["cpython", "3.12.4 (x)", "", "cpython-312", "00"]
-    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python)])
+    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python), "", []])
     hello = json.dumps({"id": 0, "compiler": compiler})
     answer = json.dumps({"id": 1, "result": [1, 2, 3]})
     python.write_text(
@@ -544,7 +546,7 @@ def test_a_helper_is_bounded_by_the_readings_deadline(tmp_path, no_active):
     # is never sent.
     python = tmp_path / "python"
     compiler = ["cpython", "3.12.4 (x)", "", "cpython-312", "00"]
-    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python)])
+    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python), "", []])
     hello = json.dumps({"id": 0, "compiler": compiler})
     python.write_text(
         '#!/bin/sh\ncase "$1" in\n'
@@ -700,3 +702,91 @@ def test_absolute_option_is_read_where_the_worker_runs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert python_interpreter.absolute_option("other/bin/python") == other
     assert python_interpreter.absolute_option("peeky") == "peeky"
+
+
+@pytest.mark.parametrize(
+    "wrapper, changed",
+    [
+        ('exec "{python}" -O "$@"', "sys.flags.optimize 1, not 0"),
+        ('PYTHONPATH=/nowhere exec "{python}" "$@"', "its import path, sys.path"),
+        ('exec "{python}" -I "$@"', "sys.flags.isolated 1, not 0"),
+    ],
+)
+def test_a_wrapper_that_changes_how_python_runs_is_refused(tmp_path, no_active, wrapper, changed):
+    # debugpy runs the file a wrapper starts: what the wrapper adds (`-O`, an exported
+    # PYTHONPATH) would be lost, and Peeky would read the code at the wrong level.
+    python = os.path.realpath(sys.executable)
+    script = tmp_path / "python"
+    script.write_text("#!/bin/sh\n" + wrapper.format(python=python) + "\n")
+    script.chmod(0o755)
+    with pytest.raises(ValueError) as raised:
+        find(tmp_path, str(script))
+    message = str(raised.value)
+    assert message.startswith(
+        f"The Python interpreter {script} (--python) is a wrapper that changes how Python "
+        f"runs: it runs {python} with other settings than that file has alone ("
+    ), message
+    assert changed in message and f"Pass the interpreter itself, --python {python}," in message
+    error = classify(raised.value)
+    assert error["code"] == "INVALID_REQUEST" and len(error["hint"]) <= 150, error
+    # One that changes nothing is the file it runs.
+    script.write_text(f'#!/bin/sh\nexec "{python}" "$@"\n')
+    assert find(tmp_path, str(script)).executable == python
+
+
+IMPORTS_JSON = "import json\n\ntotal = 0\nprint(json.dumps(total))\n"
+
+
+def test_a_module_a_file_of_its_name_shadows_is_not_self_contained(tmp_path):
+    # The program's own directory, the root and PYTHONPATH come before the standard
+    # library: a `json.py` there is what `import json` loads.
+    from peeky.adapters import _self_contained
+
+    places = [tmp_path / "a", tmp_path / "b"]
+    for place in places:
+        place.mkdir()
+    assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is True
+    for shadow in ("json.py", "JSON.py", "json.pyc", "json/", "json.cpython-313-darwin.so"):
+        made = places[1] / shadow.rstrip("/")
+        made.mkdir() if shadow.endswith("/") else made.write_text("")
+        assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is False, shadow
+        made.rmdir() if shadow.endswith("/") else made.unlink()
+    # A file on the path (a zip archive) may hold one; a missing entry holds none.
+    (tmp_path / "lib.zip").write_text("")
+    assert _self_contained(IMPORTS_JSON, [str(tmp_path / "lib.zip")]) is False
+    assert _self_contained(IMPORTS_JSON, [str(tmp_path / "missing")]) is True
+    # Not a module of that name: a data file, another module.
+    (places[0] / "json.txt").write_text("")
+    (places[0] / "jsonish.py").write_text("")
+    assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is True
+
+
+@pytest.mark.parametrize("where", ["root", "pythonpath"])
+def test_a_candidate_whose_import_is_shadowed_keeps_the_copy_note(
+    tmp_path, monkeypatch, no_active, where
+):
+    # A root-local json.py (or one on PYTHONPATH) is what the candidate's `import json`
+    # loads: it may reach outside the copy, so the note on the copied root stays.
+    from peeky.adapters import COPY_NOTE, PythonCandidate
+    from peeky.build import SourceEdit
+
+    root = tmp_path / "case"
+    root.mkdir()
+    (root / "app.py").write_text(IMPORTS_JSON)
+    edit = SourceEdit("app.py", "total = 0", "total = 1")
+
+    def noted():
+        adapter = PythonAdapter.on(find(root))
+        candidate = PythonCandidate(adapter, root / "app.py", root, edit)
+        try:
+            return any(note.startswith(COPY_NOTE) for note in candidate.warnings)
+        finally:
+            candidate.close()
+
+    assert noted() is False
+    shadow = root if where == "root" else tmp_path / "lib"
+    shadow.mkdir(exist_ok=True)
+    (shadow / "json.py").write_text("import os\ndumps = os.getcwd\n")
+    if where == "pythonpath":
+        monkeypatch.setenv("PYTHONPATH", str(shadow))
+    assert noted() is True

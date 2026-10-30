@@ -112,7 +112,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 - Nothing above the root is copied, and a warning says so. There is no warning when the root is a
   project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) that no repository
   above it holds. Nor when the edited script is self-contained: it imports only standard modules
-  that open no file, and names nothing that could
+  that open no file, and names nothing that could. A file of a module's name in its directory, the
+  root or on `PYTHONPATH`, such as `json.py`, shadows that module, so the warning stays
   ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - Text shows the warning once per root. `--json` always has it
   ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).

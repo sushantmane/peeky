@@ -427,3 +427,22 @@ def test_an_environment_that_prints_at_startup_and_exit_is_read(project, capsys,
     result = json.loads(out.out)
     assert code == 0 and result["rows"][0]["value"] == "'hello ada'", result
     assert "pth says hi" in result["output"]
+
+
+def test_a_wrapper_that_adds_options_is_refused_before_anything_runs(tmp_path, capsys, monkeypatch):
+    # `exec python -O "$@"`: debugpy runs the file the wrapper starts, without its -O, and
+    # Peeky read the program's code at -O.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    python = os.path.realpath(sys.executable)
+    wrapper = tmp_path / "python"
+    wrapper.write_text(f'#!/bin/sh\nexec "{python}" -O "$@"\n')
+    wrapper.chmod(0o755)
+    (tmp_path / "opt.py").write_text("open('RAN', 'w').close()\n" + OPTIMIZED)
+    argv = ["probe", tmp_path / "opt.py", "--at", "5", "--capture", "total", "--json"]
+    code, out = run(capsys, *argv, "--python", wrapper)
+    result = json.loads(out.out)
+    assert code == 2 and result["refused_before_launch"] is True, result
+    assert "is a wrapper that changes how Python runs" in result["error"]["message"]
+    assert "sys.flags.optimize 1, not 0" in result["error"]["message"]
+    assert not (tmp_path / "RAN").exists()

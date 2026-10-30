@@ -55,6 +55,13 @@ _RULES = (
         False,
     ),
     (
+        r"^The Python interpreter .* is a wrapper that changes how Python runs: ",
+        "INVALID_REQUEST",
+        "Pass the interpreter the wrapper runs as --python, and set its options in the "
+        "environment (PYTHONOPTIMIZE, PYTHONPATH).",
+        False,
+    ),
+    (
         r"^(--python .*: no executable file there|Peeky could not (run|ask) the Python "
         r"interpreter )",
         "INVALID_REQUEST",

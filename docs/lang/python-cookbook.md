@@ -60,6 +60,10 @@ installed as a tool, with pipx or uv, can't import those itself. Peeky takes the
 - A shim, such as pyenv's `python`, picks its Python from the directory it runs in. Peeky asks it
   in the root, where debugpy starts the program. debugpy then runs the file it picked, which the
   output names: `python: ~/.pyenv/shims/python (runs …/3.12.4/bin/python3.12), …`.
+- A wrapper that changes how Python runs is refused, such as `exec python -O "$@"` or one that
+  exports `PYTHONPATH`. debugpy runs the file it starts, which would lose those settings. Peeky asks
+  that file too, run alone, and refuses when its flags (`sys.flags`) or import path (`sys.path`)
+  differ. Pass that file as `--python`, and set the options in the environment.
 
 The output says which interpreter ran the program:
 
@@ -561,7 +565,9 @@ There is no warning in two cases:
 - The root is a project's: it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`, and no
   repository above it holds it. A package inside a monorepo still gets the warning.
 - The edited script is self-contained. It imports only standard modules that open no file, start no
-  process and reach no network. It also names nothing that could reach one.
+  process and reach no network. It also names nothing that could reach one. And no file shadows a
+  module it imports: a module or package of that name (`json.py`, `json/`) in its own directory,
+  the root or a `PYTHONPATH` entry comes first on the program's path.
 
 Text output shows the warning once per root and state directory (`~/.peeky`, or
 `PEEKY_STATE_DIR`), and never with `--quiet`. `--json` always has it.

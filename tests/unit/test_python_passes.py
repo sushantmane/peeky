@@ -489,24 +489,27 @@ def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, case
     from peeky.adapters import PythonAdapter
     from peeky.python_interpreter import identify, own_compiler
 
-    def interpreter(name, compiler, executable=None):
+    def interpreter(name, compiler):
         script = tmp_path / name
         version = sys.version.split()[0]
         listed = [compiler[0], version, list(sys.version_info[:2]), *compiler[1:], 0]
-        said = repr([*listed, executable or str(script)])
+        said = repr([*listed, str(script), "sys.flags()", []])
         script.write_text(f'#!/bin/sh\nprintf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{said}"\n')
         script.chmod(0o755)
         return str(script)
 
     own = own_compiler()
-    # Says it runs this very file: read here.
-    same = interpreter("same", own, sys.executable)
+    # Runs this very file, as a shim may: read here.
+    same = tmp_path / "same"
+    same.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    same.chmod(0o755)
+    same = str(same)
     # Another file reporting this compiler: another build may say the same.
     alike = interpreter("alike", own)
-    other = interpreter("other", [*own[:4], "00000d0a"], sys.executable)
+    other = interpreter("other", [*own[:4], "00000d0a"])
     # One magic number spans patch versions and builds; the exact version and
     # build must match too.
-    build = interpreter("build", [own[0], own[1] + "+", *own[2:]], sys.executable)
+    build = interpreter("build", [own[0], own[1] + "+", *own[2:]])
     assert identify(sys.executable, "peeky").same is True
     assert identify(same, "--python").same is True
     assert identify(alike, "--python").same is False

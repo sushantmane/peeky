@@ -28,8 +28,11 @@ on one version is applied to another.
 An interpreter is identified once per launch, run as the program will be: in the
 directory debugpy starts it in (the root: a pyenv shim picks its Python from there), with
 the program's environment. It reports the file it runs (`sys.executable`), which debugpy
-then runs, and which the helper runs: a shim can't choose another Python later. That
-file's place, inode, size and mtime are checked at each reading. What it prints is
+then runs, and which the helper runs: a shim can't choose another Python later. Where
+that file is not the path given, it is asked too, run alone; a wrapper whose file then
+reports other flags (`-O`) or another import path (an exported PYTHONPATH) is refused, as
+debugpy would run it without them. That file's place, inode, size and mtime are checked
+at each reading. What it prints is
 read only from a record of its own, after a newline and with a nonce of the call's, so
 a `.pth` file's or an exit handler's output can't be taken for it. A reading that can't
 be made is not remembered: the next one asks again. A launch's readings, and their
@@ -42,6 +45,7 @@ import atexit
 import importlib.util
 import json
 import os
+import re
 import secrets
 import select
 import shutil
@@ -91,7 +95,8 @@ _IDENTIFY = (
     "sys.stdout.write('\\n<PEEKY-IDENTITY %s> %r\\n' % (sys.argv[1], ["
     "getattr(i, 'name', 'cpython'), sys.version.split()[0], list(sys.version_info[:2]), "
     "sys.version, getattr(sys, 'abiflags', ''), getattr(i, 'cache_tag', None), "
-    "m.hex() if m else '', sys.flags.optimize, sys.executable]))\n"
+    "m.hex() if m else '', sys.flags.optimize, sys.executable, repr(sys.flags), "
+    "list(sys.path)]))\n"
     "sys.stdout.flush()\n"
 )
 _SERVE = (
@@ -333,12 +338,53 @@ def _bounded_run(command, cwd, env, timeout, limit):
     return status, bytes(out), bytes(err)
 
 
+def _flags(text):
+    """{name: value} of a `repr(sys.flags)`."""
+    return dict(re.findall(r"(\w+)=([^,)]*)", str(text)))
+
+
+def _ask(path, cwd):
+    """What ``path`` says of itself, run as the program is, in ``cwd``: (its record as
+    a list, or None, the exit status, its last line of error output or output)."""
+    nonce = secrets.token_hex(8)
+    status, out, err = _bounded_run(
+        [path, "-c", _IDENTIFY, nonce], cwd, program_environment(), IDENTIFY_S, MAX_IDENTIFY_OUTPUT
+    )
+    text = out.decode(errors="replace")
+    said = record("PEEKY-IDENTITY", nonce, text) if status == 0 else None
+    try:
+        said = ast.literal_eval(said) if said is not None else None
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        said = None
+    lines = split_lines((err.decode(errors="replace") or text).strip())
+    return said, status, lines[-1][:200] if lines else ""
+
+
+def _differences(through, direct):
+    """What a wrapper changes: how its record differs from that of the file it runs,
+    run directly."""
+    found = []
+    if through[:7] != direct[:7]:
+        found.append("its build")
+    flags, alone = _flags(through[9]), _flags(direct[9])
+    found += [
+        f"sys.flags.{name} {flags.get(name)}, not {alone.get(name)}"
+        for name in sorted(set(flags) | set(alone))
+        if flags.get(name) != alone.get(name)
+    ]
+    if through[10] != direct[10]:
+        found.append("its import path, sys.path")
+    return found
+
+
 def identify(path, chosen, unused=None, environment=None, cwd=None):
     """The Interpreter at ``path``: asked, as the program will be run (in ``cwd``, the
     directory debugpy starts it in, with its environment, which has no credentials), for
-    its implementation, version, compiler, optimization level and the file it runs.
-    ValueError where it cannot be asked, changes while asked, or is not CPython 3.11 or
-    later."""
+    its implementation, version, compiler, optimization level, flags, import path and the
+    file it runs. That file is what debugpy runs: where ``path`` is another (a shim, a
+    wrapper), the file is asked too, run directly, and must say the same, flags and
+    import path included. ValueError where it cannot be asked, changes while asked, is a
+    wrapper that changes how Python runs, or is not CPython 3.11 or later."""
     shown = f"{path} ({CHOSEN.get(chosen, chosen)})"
     cwd = os.path.abspath(cwd or os.getcwd())
 
@@ -348,51 +394,21 @@ def identify(path, chosen, unused=None, environment=None, cwd=None):
             "program's interpreter with --python, or --python peeky for Peeky's own"
         )
 
-    nonce = secrets.token_hex(8)
     try:
         before = fingerprint(path)
-        status, out, err = _bounded_run(
-            [path, "-c", _IDENTIFY, nonce],
-            cwd,
-            program_environment(),
-            IDENTIFY_S,
-            MAX_IDENTIFY_OUTPUT,
-        )
+        said, status, last = _ask(path, cwd)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise unrunnable(exc) from None
-    text = out.decode(errors="replace")
     try:
-        said = record("PEEKY-IDENTITY", nonce, text) if status == 0 else None
-        said = ast.literal_eval(said)
-        implementation, version, (major, minor), build, flags, tag, magic, level, executable = said
+        implementation, version, (major, minor), build, flags, tag, magic, level = said[:8]
+        executable, _, _ = said[8:]
         if not isinstance(executable, str) or not os.path.isabs(executable):
             raise ValueError("no executable")
-        found = Interpreter(
-            path,
-            chosen,
-            str(version),
-            int(level),
-            (str(implementation), str(build), str(flags), tag, str(magic)),
-            executable,
-            tuple(fingerprint(executable)),
-            cwd,
-            unused,
-            environment,
-        )
         release = (int(major), int(minor))
-    except (
-        OSError,
-        ValueError,
-        TypeError,
-        IndexError,
-        SyntaxError,
-        MemoryError,
-        RecursionError,
-    ):
-        lines = split_lines((err.decode(errors="replace") or text).strip())
+    except (ValueError, TypeError, IndexError):
         raise ValueError(
             f"Peeky could not ask the Python interpreter {shown} its version"
-            + (f" ({lines[-1][:200]})" if lines else f" (exit status {status})")
+            + (f" ({last})" if last else f" (exit status {status})")
             + ". Pass the program's interpreter with --python, or --python peeky for "
             "Peeky's own"
         ) from None
@@ -405,9 +421,41 @@ def identify(path, chosen, unused=None, environment=None, cwd=None):
             f"compile. Pass --python with CPython {MINIMUM[0]}.{MINIMUM[1]} or later, or "
             f"--python peeky for Peeky's own (Python {own_version()})"
         )
+    if executable != path:
+        # debugpy runs the file itself: what a wrapper adds (`-O`, PYTHONPATH) is lost.
+        try:
+            direct, _, why = _ask(executable, cwd)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            direct, why = None, str(exc)
+        if not isinstance(direct, list) or len(direct) != len(said):
+            changes = [f"it does not run alone ({why or 'no answer'})"]
+        else:
+            changes = _differences(said, direct)
+            if direct[8] != executable:
+                changes.append(f"run alone it runs {direct[8]}")
+        if changes:
+            raise ValueError(
+                f"The Python interpreter {shown} is a wrapper that changes how Python runs: "
+                f"it runs {executable} with other settings than that file has alone "
+                f"({'; '.join(changes)[:400]}), and debugpy runs the file itself. Pass the "
+                f"interpreter itself, --python {executable}, and set those options another "
+                "way, such as PYTHONOPTIMIZE or PYTHONPATH in the environment"
+            )
     try:
+        found = Interpreter(
+            path,
+            chosen,
+            str(version),
+            int(level),
+            (str(implementation), str(build), str(flags), tag, str(magic)),
+            executable,
+            tuple(fingerprint(executable)),
+            cwd,
+            unused,
+            environment,
+        )
         changed = fingerprint(path) != before
-    except OSError:
+    except (OSError, ValueError, TypeError):
         changed = True
     if changed or not found.current():
         raise unrunnable("it changed while Peeky asked it its version; start again")
@@ -468,10 +516,10 @@ def _scopes(optimize, path):
     return function_scopes(Path(path), optimize)
 
 
-def _self_contained(optimize, text):
+def _self_contained(optimize, text, places=()):
     from peeky.adapters import _self_contained
 
-    return _self_contained(text)
+    return _self_contained(text, places)
 
 
 def _anonymous(optimize, text, lines):
