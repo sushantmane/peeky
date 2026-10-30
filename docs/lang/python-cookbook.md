@@ -164,6 +164,7 @@ hit  selector                 value       identity  scope
 1    add_tag.__defaults__[0]  ['a']       6         globals
 2    tags                     ['a', 'b']  6         NULL
 2    add_tag.__defaults__[0]  ['a', 'b']  6         globals
+(4 rows)
 ```
 
 Yes: `tags` is the function's default list, not a copy. Read identities this way:
@@ -300,8 +301,9 @@ debugpy puts functions, classes and `__dunder__` names into groups, such as
 ### Read a value inside a loop
 
 Stopped in a loop, a local that this pass assigns *below* the stop still holds an older value. The
-value is from an earlier pass, or from before the loop. For example, back in `group` after
-`step --out` on `key = slug(title)`, `key` is the previous title's key.
+value is from an earlier pass, or from before the loop. For example, a loop runs
+`key = slug(title)` for each title. After `step --out` of `slug` on the second title, `key` is
+still the first title's key.
 
 Peeky shows such a value with a `note`, in `get`, `inspect` and probe rows. Don't trust a value
 marked with a `note`, or anything read through that value:
