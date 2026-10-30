@@ -21,11 +21,13 @@ def fresh(monkeypatch):
 
 @pytest.fixture
 def hashes(monkeypatch):
-    """Counts real hash computations."""
+    """Counts real hash computations of files (a store names its entries by a hash of
+    the path, given at once)."""
     calls = []
 
     def counting(*args):
-        calls.append(1)
+        if not args:
+            calls.append(1)
         return REAL_SHA256(*args)
 
     monkeypatch.setattr(digest.hashlib, "sha256", counting)
@@ -112,6 +114,50 @@ def test_the_cache_can_be_disabled(tmp_path, monkeypatch, hashes):
     digest.sha256_file(path)
     digest.sha256_file(path)
     assert len(hashes) == 2
+
+
+def test_a_kept_digest_is_reused_by_a_new_process(tmp_path, monkeypatch, hashes):
+    # Toolchain binaries are rehashed in each new process without it (clang's 125 MB).
+    monkeypatch.setattr(digest, "SETTLE_SECONDS", -1.0)
+    store = tmp_path / "store"
+    store.mkdir()
+    path = tmp_path / "tool"
+    path.write_bytes(b"a" * 100_000)
+    assert digest.sha256_file(path, store=store) == expected(path)
+    digest.clear()  # a new process
+    assert digest.sha256_file(path, store=store) == expected(path)
+    assert digest.sha256_file(path) == expected(path)
+    assert len(hashes) == 1
+    # Any change to the file is hashed again, by the same rules as in one process.
+    path.write_bytes(b"b" * 100_000)
+    digest.clear()
+    assert digest.sha256_file(path, store=store) == expected(path)
+    assert len(hashes) == 2
+    # A damaged entry, or another file's, is never trusted.
+    for entry in store.iterdir():
+        entry.write_text('{"path": "x", "key": [], "sha256": "00"}')
+    digest.clear()
+    assert digest.sha256_file(path, store=store) == expected(path)
+    assert len(hashes) == 3
+
+
+def test_a_recent_or_uncached_digest_is_not_kept(tmp_path, monkeypatch, hashes):
+    store = tmp_path / "store"
+    store.mkdir()
+    path = tmp_path / "tool"
+    path.write_bytes(b"a")
+    digest.sha256_file(path, store=store)
+    assert list(store.iterdir()) == []
+    monkeypatch.setattr(digest, "SETTLE_SECONDS", -1.0)
+    monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
+    digest.sha256_file(path, store=store)
+    assert list(store.iterdir()) == []
+    monkeypatch.delenv("PEEKY_NO_DIGEST_CACHE")
+    digest.sha256_file(path, store=store)
+    monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
+    digest.clear()
+    digest.sha256_file(path, store=store)
+    assert len(hashes) == 4
 
 
 def test_only_regular_files_are_opened(tmp_path):

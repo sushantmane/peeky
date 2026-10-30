@@ -162,3 +162,39 @@ Only Peeky's own CPU could shrink by rewriting Peeky in another language.
 - Most of the remaining time belongs to compilers, debug adapters and the program. They take the
   same time whichever language calls them.
 - This supports [ADR 0003](adr/0003-measure-before-rewriting.md).
+
+## C and C++ build speed, 2026-10-29
+
+Each compiled probe used to spend a third to nine tenths of its time preparing the build. Three
+costs there were Peeky's own, and each build paid them, `verify` too:
+
+- **Hashing the tools:** each new process hashed clang's 125 MB, and dwarfdump and dsymutil: 58 ms
+  on macOS. Peeky now keeps their digests in its state directory, by the same rules as within one
+  process.
+- **One unit at a time:** an 8-file program ran 8 `-E` commands, then 8 `-c` commands, in turn.
+  Each group now runs at the same time, up to 8 at once (`PEEKY_BUILD_JOBS`). When sources fail,
+  the first one's error is reported.
+- **The checks of preprocessed text:** the inline-assembly scan took 1.16 s for the 8 units on
+  macOS, and the check of the headers they read 0.41 s. They now take 0.25 s and 0.04 s. Both
+  check the same things: tests compare the scan with the earlier one on random text.
+
+Each row is the median wall time of 5 `peeky probe` or `peeky verify` runs, in seconds, after a
+warm-up run. Each before and after pair ran back to back. macOS ran on an Apple M5 Max (Apple
+clang 21), which other work was also using. Linux ran in the CI image, with 4 CPUs (clang 18, g++
+13, lldb-dap 18). The 8-file program has 673 lines and includes about 20 standard library headers
+in each file.
+
+| Run | macOS before | macOS after | Linux before | Linux after |
+| --- | ---: | ---: | ---: | ---: |
+| C probe, `examples/c/pagination_bug.c` | 1.38 | 1.28 | 0.76 | 0.75 |
+| C++ probe, `examples/cpp/pagination_bug.cpp` | 1.68 | 1.47 | 0.80 | 0.78 |
+| C++ probe, 8 files | 6.05 | 2.26 | 3.41 | 1.51 |
+| C++ verify, 8 files | 5.58 | 1.79 | 3.16 | 1.25 |
+| g++ probe, `examples/cpp/pagination_bug.cpp` | | | 0.77 | 0.75 |
+| g++ probe, 8 files | | | 3.45 | 1.56 |
+| g++ verify, 8 files | | | 3.21 | 1.30 |
+
+- The toolchain probes still run on every build. A tool's answer can depend on files its hash
+  doesn't cover: a configuration file, a library, or the program a wrapper runs.
+- On Linux, they are most of a small program's build: `lldb-dap-18 --help` takes 270 ms.
+- On macOS, a small program's probe is mostly the debugger: lldb-dap's launch takes 0.3 s.

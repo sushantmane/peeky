@@ -2432,3 +2432,65 @@ def test_a_unit_that_may_optimize_a_function_on_its_own_is_found(unit, found):
     # Review of PR #366: `__attribute__((optimize(...)))` and `#pragma GCC optimize`
     # optimize a function beyond the build's -O0, where its code may leave source order.
     assert optimizes(unit.encode()) is found
+
+
+# `blank` as it was before its regexes were tuned for speed (#398): what it gives must
+# not change.
+_REFERENCE_OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
+_REFERENCE_LITERAL = {
+    '"': re.compile(r'"(?:[^"\\\n]|\\[ \t\f\v]*\n|\\[\s\S])*"?'),
+    "'": re.compile(r"'(?:[^'\\\n]|\\[ \t\f\v]*\n|\\[\s\S])*'?"),
+}
+
+
+def reference_blank(text, raw_strings=True):
+    from peeky.c_source import (
+        _RAW,
+        _VISIBLE,
+        _continued,
+        _continues_identifier,
+        _digit_separator,
+        normalized,
+    )
+
+    text = normalized(text)
+    pieces, done, size = [], 0, len(text)
+    position = 0
+    while (found := _REFERENCE_OPENING.search(text, position)) is not None:
+        start, token = found.start(), found[0]
+        if token == "//":
+            end = text.find("\n", start)
+            while end > 0 and _continued(text, end):
+                end = text.find("\n", end + 1)
+            end = size if end < 0 else end
+        elif token == "/*":
+            end = text.find("*/", start + 2)
+            end = size if end < 0 else end + 2
+        elif token in _REFERENCE_LITERAL:
+            if token == "'" and _digit_separator(text, start):
+                position = start + 1
+                continue
+            end = _REFERENCE_LITERAL[token].match(text, start).end()
+        else:
+            raw = _RAW.match(text, start) if raw_strings else None
+            if raw is None or _continues_identifier(text, start):
+                position = start + 1
+                continue
+            closing = text.find(f'){raw[1]}"', raw.end())
+            end = size if closing < 0 else closing + len(raw[1]) + 2
+        pieces += [text[done:start], _VISIBLE.sub(" ", text[start:end])]
+        done = position = end
+    pieces.append(text[done:])
+    return "".join(pieces)
+
+
+def test_blanking_is_unchanged_by_its_faster_regexes():
+    import random
+
+    pieces = ['"', "'", "/", "*", "\\", "\n", "\r", " ", "\t", "\v", "R", "u8", "u", "U", "L"]
+    pieces += ["(", ")", "x", "1", ".", "_", "é", "d", "//", "/*", "*/", 'R"x(', ')x"', "\\\n"]
+    pick = random.Random(398)
+    for _ in range(20000):
+        text = "".join(pick.choice(pieces) for _ in range(pick.randint(0, 24)))
+        for raw_strings in (True, False):
+            assert blank(text, raw_strings) == reference_blank(text, raw_strings), repr(text)
