@@ -97,6 +97,10 @@
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.
+- **Packaging:** install Peeky with pipx or uv, in an environment of its own. PyPI's page gets
+  classifiers, keywords and links to the docs, issues and changelog. The README's links are full
+  URLs, so they work there. The source archive has the presentation, the changelog and the code
+  of conduct. `scripts/venice/native-grpc.sh`, a Venice build helper, is gone.
 
 ## 0.1.0 (2026-10-26)
 

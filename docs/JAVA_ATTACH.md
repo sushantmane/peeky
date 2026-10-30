@@ -130,25 +130,24 @@ reproduce the runs on this page, you need:
   the line numbers below match it;
 - JDK 17, and Venice's own Gradle wrapper, which downloads Venice's dependencies on its first
   build;
-- on Apple Silicon without Rosetta, Homebrew's `protobuf` and `abseil` (step 2);
+- on Apple Silicon, Rosetta 2 (step 2);
 - port 5005 free;
 - Peeky's repository or source archive, to build the adapter bundle (step 1).
 
 1. Build the adapter once, with an absolute path:
    `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"`. Bundles built before
    the event-thread patch ([The fix](#the-fix)) are refused. Rebuild them into a new directory.
-2. Apple Silicon without Rosetta needs a native code generator, because grpc-java ships only
-   x86_64 macOS ones. Build one natively. This needs Homebrew's `protobuf` and `abseil`:
+2. Build Venice's tests. On Apple Silicon, this needs Rosetta 2
+   (`softwareupdate --install-rosetta`), because grpc-java ships its macOS code generator for
+   x86_64 only. The runs here used a natively built generator instead, which changes only how
+   Venice is built.
    ```sh
-   scripts/venice/native-grpc.sh            # writes ~/.peeky/venice/native-grpc.init.gradle
-   cd ~/workspace/venice && ./gradlew -I ~/.peeky/venice/native-grpc.init.gradle assemble \
-     :internal:venice-test-common:integrationTestClasses
+   cd ~/workspace/venice && ./gradlew assemble :internal:venice-test-common:integrationTestClasses
    ```
-   With Rosetta installed, leave out `-I ...`.
 3. Start one end-to-end test, suspended on port 5005. This forces a rerun, and bypasses the build
    cache:
    ```sh
-   ./gradlew --no-build-cache -I ~/.peeky/venice/native-grpc.init.gradle \
+   ./gradlew --no-build-cache \
      :internal:venice-test-common:cleanIntegrationTests_32 :internal:venice-test-common:integrationTests_32 \
      --tests 'com.linkedin.venice.endToEnd.TestEmptyPush.testEmptyPushWithZstdWithDictCompression' --debug-jvm
    ```

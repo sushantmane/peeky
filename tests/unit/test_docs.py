@@ -60,19 +60,40 @@ def _headings(path):
     return re.findall(r"^ {0,3}#{1,6} (.+)$", _without_fences(path.read_text()), flags=re.M)
 
 
+# A full URL into the repository at main, as the README's links are: PyPI shows the README,
+# and a relative link breaks there.
+REPO_URL = re.compile(r"https://github\.com/sushantmane/peeky/(blob|tree)/main/([^#]+)(?:#(.*))?")
+
+
+def _links(text):
+    """Each link target outside code: an inline link's or image's, `[text](target)`, and a
+    reference definition's, `[label]: target`."""
+    text = re.sub(r"`[^`\n]*`", "", _without_fences(text))
+    inline = re.findall(r"\]\(([^)\s]+)\)", text)
+    return inline + re.findall(r"^ {0,3}\[[^\]]+\]:\s*(\S+)", text, flags=re.M)
+
+
 def _broken_links(pages):
-    """Each relative link, outside code, whose file or anchor does not exist."""
+    """Each link to a file here, outside code, whose file or anchor does not exist: a relative
+    link, or a full URL into the repository at main (`blob` for a file, `tree` for a folder)."""
     anchors = {}
     broken = []
     checked = 0
     for page in pages:
-        text = re.sub(r"`[^`\n]*`", "", _without_fences(page.read_text()))
-        for target in re.findall(r"\]\(([^)\s]+)\)", text):
-            if re.match(r"[a-z]+:", target):
+        for target in _links(page.read_text()):
+            repo = REPO_URL.fullmatch(target)
+            if repo:
+                kind, path, anchor = repo.groups()
+                linked = (DOCS.parent / path).resolve()
+                if linked.is_dir() != (kind == "tree"):
+                    broken.append((page.name, target))
+                    continue
+            elif re.match(r"[a-z]+:", target):
                 continue
+            else:
+                path, _, anchor = target.partition("#")
+                linked = (page.parent / path).resolve() if path else page.resolve()
             checked += 1
-            path, _, anchor = target.partition("#")
-            linked = (page.parent / path).resolve() if path else page.resolve()
             if not linked.exists():
                 broken.append((page.name, target))
             elif anchor and linked.suffix == ".md":
@@ -175,14 +196,39 @@ def test_anchors_are_githubs_slugs():
 
 def test_the_link_check_finds_a_missing_anchor_or_file(tmp_path):
     page = tmp_path / "a.md"
+    repo = "https://github.com/sushantmane/peeky"
     page.write_text(
         "# Setup\n\n## C slice (1)\n\n## C++ slice (1)\n\n```sh\n# not a heading\n```\n\n"
         "[ok](#setup) [ok](#c-slice-1-1) [bad](#c-slice-1-2) [bad](#not-a-heading) "
-        "[bad](b.md) [ok](a.md#c-slice-1) [web](https://example.com/#x) `[code](#nowhere)`\n"
+        "[bad](b.md) [ok](a.md#c-slice-1) [web](https://example.com/#x) `[code](#nowhere)`\n\n"
+        f"[ok]: {repo}/blob/main/README.md#install\n[ok]: {repo}/tree/main/docs/adr\n"
+        f"[bad]: {repo}/blob/main/README.md#nowhere\n[bad]: {repo}/blob/main/docs/adr\n"
     )
     broken, checked = _broken_links([page])
-    assert checked == 6
-    assert broken == [("a.md", "#c-slice-1-2"), ("a.md", "#not-a-heading"), ("a.md", "b.md")]
+    assert checked == 9
+    assert broken == [
+        ("a.md", "#c-slice-1-2"),
+        ("a.md", "#not-a-heading"),
+        ("a.md", "b.md"),
+        ("a.md", f"{repo}/blob/main/README.md#nowhere"),
+        ("a.md", f"{repo}/blob/main/docs/adr"),
+    ]
+
+
+def test_the_readmes_links_work_on_pypi():
+    # The README is PyPI's long description (pyproject's `readme`), and there a relative link
+    # or image 404s. Each link is a full URL; each one into the repository lands, as checked
+    # above; and each reference has its definition, or it shows as bracketed text.
+    readme = DOCS.parent / "README.md"
+    targets = _links(readme.read_text())
+    assert len(targets) > 40
+    assert [target for target in targets if not target.startswith("https://")] == []
+    assert sum(bool(REPO_URL.fullmatch(target)) for target in targets) > 30
+    text = re.sub(r"`[^`\n]*`", "", _without_fences(readme.read_text()))
+    assert "<img" not in text and "src=" not in text
+    used = set(re.findall(r"\]\[([^\]]+)\]", text))
+    defined = set(re.findall(r"^ {0,3}\[([^\]]+)\]:", text, flags=re.M))
+    assert used == defined
 
 
 def test_each_language_has_a_page_and_a_cookbook_numbered_as_the_cookbook():
