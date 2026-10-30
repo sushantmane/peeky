@@ -776,7 +776,7 @@ withheld instead: `no value yet:`.
   counts it alive until a call or drop runs.
 - A shared borrow of variables that nothing changes reads even later. For example, `v` of
   `for v in args[2].split(',')` reads, because nothing changes `args`.
-- Past that, the local shows only its pointer, and says so. To read it, probe a line that still
+- Past that, the local is not shown, and its note says why. To read it, probe a line that still
   uses it ([When a reference reads](#when-a-reference-reads)).
 - A closure's captured `&str`, such as `name` in `|f| f.name == *name`, keeps LLDB's summary. Its
   note says Peeky doesn't judge what a capture points at. Read it in the function that makes the
@@ -1137,9 +1137,16 @@ The details:
   what it points at still stands."
 - Its row has `unproven_pointer: "raw"`. Where the build's debug information doesn't tell a pointer
   inside a value from a raw pointer, it shows only its address with `unproven_pointer: "unknown"`.
-- A `NonNull` or `AtomicPtr` local is never followed either. Its row has the generic `[unproven]`
-  note, not this one. The raw pointer inside one is a raw pointer inside a
-  value: `o.q.pointer` of a `NonNull` field.
+- A `NonNull` local, such as `let n = NonNull::from(&*b);`, is a raw pointer that is never null.
+  It shows only its address the same way, with `unproven_pointer: "raw"` and a note that says so.
+  That address is its `pointer` field: capture `n`, since `n.pointer` is refused.
+- A `NonNull` to a slice, `str` or trait object shows nothing, since its pointer has a length or
+  vtable too. Its note says so, and how to see its address.
+- An `AtomicPtr` local is never followed either. It shows nothing, and its note says so. So does a
+  tuple or `Option` whose type can hold a reference, past that reference's proof.
+- Such a row shows `<not shown: its type can hold a pointer>`. It speaks of the type, not the
+  value, which Peeky doesn't read: an `Option<&T>` may be `None`.
+- The raw pointer inside a `NonNull` field is a raw pointer inside a value: `o.q.pointer`.
 - A raw pointer inside a value shows only its address too: a field, a tuple or array element, at any
   depth. For example, with `let h = Holder { n: 1, p: &*b as *const i64 };`, `h.p` shows `0x…`
   and lists nothing under it, even while `h` is live. Safe code can free what it points at:
@@ -1599,9 +1606,11 @@ peeky probe examples/rust --at 36 --capture request.page --set request.page=2
 ```
 
 ```
-error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, a statement under way uses `start` (at line 35), which may hold the program's own copy of `request` or reads another part of `request` into a temporary (at line 36), so it may hold a copy, which it uses after the stop, or the program's own `start` (at line 35) may hold a copy of `request` that it goes on with, so a change there may not reach it. Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line); settable here: start (root locals; fields too where rows mark them [settable])
-hint: Observe the value instead, or change the source with a candidate edit (`--old`/`--new`) and verify it; rows marked [settable] can be changed here.
+error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, the program's own `start` (at line 35) may hold a copy of `request` that it goes on with, so a change there may never be seen: Peeky proves no read of the changed part first (a reference lent to a call, or `{:?}`, is not one). Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line), or change the copy instead; settable here: start (root locals; fields too where rows mark them [settable])
+hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there), or change the copy the message names instead.
 ```
+
+To change it, set it before line 35 copies it: `--set-at 35 request.page=2`. Then `start` is 6.
 
 These bindings copy a value:
 

@@ -316,3 +316,81 @@ def test_a_pointer_in_a_value_is_raw_by_its_debug_information_else_by_the_mir(mo
     # pointer points at code.
     for kind in ("long *[2]", "long (*)(long)", "app::Holder", "i64"):
         assert raw(kind) is None, kind
+
+
+def test_a_non_null_local_shows_only_its_address_as_a_raw_pointer_does():
+    # A `NonNull<T>` local was withheld as `<not shown: …>`, its note saying it showed
+    # its pointer. Its one field, `pointer`, is a `*const T`: that address is the local's
+    # own value, shown as a raw pointer local's is (by its MIR type, before any liveness
+    # check), and never followed.
+    from peeky.adapters import ViewBudgetExhausted
+
+    frame = {"name": "app::work::h0123456789abcdef", "line": 9, "source": {"path": "main.rs"}}
+    mir = [["std::ptr::NonNull<app::Pt>"]]
+    session = SimpleNamespace(
+        layouts={},
+        target=SimpleNamespace(opt_level="0"),
+        parameters={},
+        unsafe_code=None,
+        owned=SimpleNamespace(
+            declared_type=lambda *args: mir[0][0],
+            proven=lambda *args: True,
+            type_parameters=lambda hashed: (),
+            reference_valid=lambda *args, **kwargs: False,
+        ),
+        _binding_types=lambda variable, frame: mir[0],
+        _stop_block=lambda hashed, frame: None,
+    )
+    pointer = {"name": "pointer", "type": "app::Pt *", "value": "0x10", "variablesReference": 7}
+    listed = [[pointer]]
+
+    def fetch(reference):
+        assert reference == 3
+        if isinstance(listed[0], Exception):
+            raise listed[0]
+        return listed[0]
+
+    def view(kind="core::ptr::non_null::NonNull<app::Pt>", **frames):
+        variable = {"name": "n", "type": kind, "value": "", "variablesReference": 3}
+        found = RustSession.view_variable(
+            session, variable, fetch, None, frame=frame, top=True, **frames
+        )
+        return found and {key: found.get(key) for key in ("value", "rust_view", "pointer", "why")}
+
+    address = {"value": "0x10", "rust_view": "unproven", "pointer": "raw", "why": None}
+    for frames in ({"innermost": True}, {"innermost": False}):
+        assert view(**frames) == address, frames
+    session.target.opt_level = "2"
+    assert view() == address
+    session.target.opt_level = "0"
+    # LLDB's summary of a `char *` reads through it: only the address shows.
+    pointer.update(type="unsigned char *", value='0x10 "abc"')
+    assert view() == address
+    # A wide one's pointer is listed in parts: nothing shows, saying why.
+    pointer.update(type="*const [i64]", value="*const [i64] @ 0x16f382f38")
+    wide = view()
+    assert wide["value"] == "<not shown: may point at freed memory>", wide
+    assert wide["pointer"] == "raw" and wide["why"].startswith("this one is a wide pointer")
+    listed[0] = ValueError("Variable is not expandable")
+    assert view()["why"] == "the debugger gave no address for this one"
+    listed[0] = ViewBudgetExhausted("Value view budget exhausted: 128 debugger reads")
+    budget = view()
+    assert budget["rust_view"] == "budget-exhausted" and "128 debugger reads" in budget["value"]
+    # Only std's NonNull, which the MIR names too: a crate's own type is not judged so.
+    listed[0] = [{**pointer, "type": "app::Pt *", "value": "0x10"}]
+    mir[0] = ["NonNull<app::Pt>"]
+    assert (view("app::NonNull<app::Pt>") or {}).get("value") != "0x10"
+
+
+def test_a_value_shown_by_no_address_claims_a_pointer_only_where_it_surely_holds_one():
+    # Withheld before its variant is read, an `Option<&T>` that is now `None` showed
+    # `<not shown: may point at freed memory>`. Only a reference or a NonNull, whose
+    # gate says why, surely holds a pointer; anything else is said of its type.
+    from peeky.rust import _unproven
+
+    option = {"name": "o", "type": "core::option::Option<&app::Pt>", "value": "None"}
+    assert _unproven(option)["value"] == "<not shown: its type can hold a pointer>"
+    text = {"name": "s", "type": "&str", "value": '"abc"'}
+    why = "the build's MIR does not show that what it points at still stands here"
+    assert _unproven(text, why)["value"] == "<not shown: may point at freed memory>"
+    assert _unproven({**text, "value": "0x10"}, why)["value"] == "0x10"

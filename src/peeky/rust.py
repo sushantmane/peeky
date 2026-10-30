@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from peeky.adapters import PythonAdapter
+from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.agent import BUILD_RETAINED
 from peeky.assembler import rust_refusal
 from peeky.build import (
@@ -77,6 +77,7 @@ from peeky.rust_symbols import (
     STRUCT_PREFIX,
     UNIQUE_SCALARS,
     UNVERIFIED,
+    _budget,
     _composite_parameter,
     _spelled,
     active_variant,
@@ -1267,7 +1268,16 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
         )
         at |= lines
     own = ", and ".join(owned)
-    if not clauses:
+    # Where such a copy may be held at every place, it alone refuses the change: what a
+    # statement under way holds would add a second, hedged reason. A binding that may only
+    # point into it may hold no copy, so it does not count.
+    pointing = frozenset().union(*(dict(found.get("pointing") or ()).values()))
+    holders = (bound - pointing) | stored
+    copies = dict(found["copied"] or ())
+    if not clauses or all(
+        holders & (frozenset(kept.get(place, ())) | frozenset(copies.get(place, ())))
+        for place in every
+    ):
         return "kept", own, at, None
     return "may", _either(clauses), places | at, own
 
@@ -1892,19 +1902,57 @@ def _unproven(variable, why=None, pointer=None):
     """``variable`` shown only as its pointer; ``why``, where it is a
     reference the MIR does not show still valid, says so. ``pointer``: "raw" for a raw
     pointer, "unknown" for one the build's debug information does not tell from a raw
-    pointer, for the row's note."""
+    pointer, for the row's note. One the debugger gives no address of shows none: where
+    ``why`` is given it surely holds a pointer (a reference, a NonNull); else only its type
+    is known to be able to (an `Option<&T>` may be `None`), and its value says only that."""
     # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read through the
     # pointer too.
     address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
+    unshown = "may point at freed memory" if why else "its type can hold a pointer"
     return {
         "name": variable.get("name"),
         "type": variable.get("type"),
-        "value": address[0] if address else "<not shown: may point at freed memory>",
+        "value": address[0] if address else f"<not shown: {unshown}>",
         "variablesReference": 0,
         "rust_view": "unproven",
         **({"why": why} if why else {}),
         **({"pointer": pointer} if pointer else {}),
     }
+
+
+# std's `NonNull<T>`: DWARF's name (a crate's own type is named under the crate), and the
+# MIR's.
+_NON_NULL = re.compile(r"core::ptr::non_null::NonNull<.+>")
+_MIR_NON_NULL = re.compile(r"(?:std|core)::ptr::NonNull<")
+
+
+def _non_null(variable, fetch):
+    """A std `NonNull` local shown only as its address, as a raw pointer local is: a
+    NonNull is a raw pointer that is never null, its one field `pointer`. That address
+    is the local's own value, never followed. A wide one (to a slice, `str` or trait
+    object), whose pointer the debugger lists in parts, shows none, saying why."""
+    try:
+        children = fetch(variable.get("variablesReference"))
+    except ViewBudgetExhausted as exc:
+        return {**_unproven(variable), "value": _budget(exc), "rust_view": "budget-exhausted"}
+    except ValueError:
+        children = None
+    (pointer,) = children if isinstance(children, list) and len(children) == 1 else (None,)
+    if not isinstance(pointer, dict) or pointer.get("name") != "pointer":
+        pointer = {}
+    # Only the address: LLDB's summary of a `char *` (`NonNull<u8>`) reads through it too.
+    address = re.match(r"(0x[0-9a-fA-F]+)(?:\s|$)", str(pointer.get("value") or ""))
+    if address and _constructors(pointer.get("type"))[:1] == ["pointer"]:
+        return _unproven({**variable, "value": address[1]}, pointer="raw")
+    parts = pointer.get("variablesReference")
+    if type(parts) is int and parts > 0 and str(pointer.get("type")).startswith("*"):
+        why = (
+            "this one is a wide pointer, its address with a length or vtable (to a slice, "
+            "`str` or trait object)"
+        )
+    else:
+        why = "the debugger gave no address for this one"
+    return _unproven({**variable, "value": None}, why, pointer="raw")
 
 
 # What may have run since a reference's last use (rust_mir.OwnedLocals._judge's gaps).
@@ -4465,6 +4513,13 @@ class RustSession(NativeSession):
                 and all(re.match(r"\*(?:const|mut) ", each or "") for each in types)
             ):
                 return _unproven(variable, pointer="raw")
+            if (
+                _NON_NULL.fullmatch(str(kind))
+                and types
+                and all(_MIR_NON_NULL.match(each or "") for each in types)
+            ):
+                # A NonNull is a raw pointer that is never null: only its address, as above.
+                return _non_null(variable, fetch)
             raw_array = (
                 levels[:1] == ["array"]
                 and bool(types)

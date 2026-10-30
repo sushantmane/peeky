@@ -23,6 +23,7 @@
   - In a caller's frame, a struct or array whose declaration's lines have run, in an unoptimized
     build (#366).
   - C++ structured bindings by reference, where Peeky proves what they refer to is alive (#368).
+- **Rust:** a `NonNull<T>` local's address, as a raw pointer's. It is never followed (#420).
 
 ### Other changes
 
@@ -72,6 +73,10 @@
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).
+- **Rust notes:** a value Peeky shows none of says so, not that it shows its pointer. Where its
+  type can hold a pointer but may hold none, as an `Option<&T>`, the note says only that. A change
+  that the program's own copy rules out at every stop gives that one reason, and its hint agrees
+  (#420, #421).
 - **Security review before going public (protocol 11):** a client sends the token only after the
   worker proves it holds it, through a new `hello`. A process on a stopped worker's port gets
   nothing. The worker refuses a web page's requests, and a token under 32 characters. Builds,
@@ -88,6 +93,7 @@
   pending change. The evidence store is schema 22: a change at one hit can end `lost_stop`.
   `describe` lists no `verify` command for an attached JVM, which `verify` refuses. One stop is
   `1 stop`, not `1 stops` (#408, #422, #424).
+  Protocol 11 also covers the Rust withheld-value labels and notes, and `NonNull` rows (#431).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

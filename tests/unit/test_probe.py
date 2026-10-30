@@ -711,6 +711,69 @@ def test_a_raw_pointers_note_says_only_that_peeky_never_follows_one():
     )
 
 
+def test_a_withheld_rust_pointers_note_matches_what_its_row_shows():
+    # A `NonNull` local's row was `<not shown: …>`, but its note said it "shows only its
+    # pointer"; so did a tuple's, an `Option`'s or a `&str`'s past its proof. A NonNull
+    # now shows its address, as a raw pointer does; what shows no address says so.
+    from peeky.probe import _resolve, _rust_note_kind, _unproven_note
+
+    unshown = "<not shown: may point at freed memory>"
+    non_null = {
+        "name": "n",
+        "type": "core::ptr::non_null::NonNull<app::Pt>",
+        "value": "0x10",
+        "view": "unproven",
+        "variablesReference": 0,
+        "unproven_pointer": "raw",
+    }
+    shown = _unproven_note(non_null)
+    assert shown == (
+        "This Rust NonNull shows only its address: a NonNull is a raw pointer that is never "
+        "null, and Peeky never follows a raw pointer, because nothing proves that what it "
+        "points at still stands."
+    )
+    wide = "this one is a wide pointer, its address with a length or vtable (to a slice"
+    hidden = _unproven_note({**non_null, "value": unshown, "unproven_reason": wide})
+    assert hidden.startswith(
+        "This Rust NonNull is not shown: Peeky shows a NonNull, a raw pointer that is never "
+        f"null, only as one address, and {wide}. To see its address, capture a thin pointer"
+    ), hidden
+    tuple_ = {
+        "name": "t",
+        "type": "(i64, &app::Pt)",
+        "value": "<not shown: its type can hold a pointer>",
+        "view": "unproven",
+    }
+    held = _unproven_note(tuple_)
+    assert held == (
+        "This Rust value is not shown: its type can hold a pointer, and Peeky can't prove that "
+        "what it would point at still stands. Read a plain function's own local where it is "
+        "live, or capture what it holds where it is created. Peeky never follows a raw "
+        "pointer, and follows another only to a value the MIR proves live, in the innermost "
+        "frame of an unoptimized build, in a crate with no unsafe code (rust-cookbook 7.2)."
+    ), held
+    # Said of its type, not its value, which is not read: an `Option<&T>` may be `None`.
+    option = {**tuple_, "name": "o", "type": "core::option::Option<&app::Pt>"}
+    assert _unproven_note(option) == held
+    for claim in ("a pointer in it", "what it points at", "moved or dropped", "freed memory"):
+        assert claim not in held, claim
+    why = "the build's MIR does not show that what it points at still stands here"
+    text = {"name": "s", "type": "&str", "value": unshown, "view": "unproven"}
+    lent = _unproven_note({**text, "unproven_reason": why})
+    assert lent == f"This Rust reference is not shown: {why}.", lent
+    for note in (shown, hidden, held, lent):
+        assert _rust_note_kind(note), note
+    assert "only its address" not in hidden and "only its pointer" not in held + lent
+    # A row that does show an address keeps its words.
+    assert _unproven_note({**text, "value": "0x10", "unproven_reason": why}).startswith(
+        "This Rust reference shows only its pointer: "
+    )
+    # Selecting through the NonNull is refused in its row's words: `n` is the address.
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({}), {}, snapshot(non_null), parse_selector("n.pointer"))
+    assert str(caught.value) == "cannot expand 'n': " + shown[0].lower() + shown[1:-1]
+
+
 def test_rust_container_indexes_explain_what_is_unsupported():
     from peeky.probe import _resolve
 

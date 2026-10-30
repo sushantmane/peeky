@@ -3076,6 +3076,34 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     )
 
 
+def test_a_binding_s_copy_at_every_place_is_the_refusal_s_one_reason():
+    # `--set request.page=2` at examples/rust's line 36 joined two hedged reasons: a
+    # statement under way uses `start` or reads another part of `request`, or the
+    # program's own `start` may hold a copy it goes on with. `start` holds it at every
+    # place the stop can be, so that alone is the reason.
+    a, b, none = A, B, NONE
+    held = [(a, {20, 5}), (b, {20, 7})]
+    copied, bindings = [(a, {20, 5}), (b, {20})], [(a, {20}), (b, {20})]
+    others = {"copied": copied, "bindings": bindings, "whole": held, "full": True}
+    assert copy_reason(held, none, copied, held, **others) == (
+        "kept",
+        "the program's own `n` (at line 20) may hold a copy of it that it goes on with",
+        {("src/main.rs", 20)},
+        None,
+    )
+    # Where the binding holds it at only some places, the statement under way may hold
+    # the copy at the others: both, hedged.
+    some = [(a, {20, 5}), (b, set())]
+    others = {"copied": some, "bindings": [(a, {20}), (b, set())], "whole": held}
+    found = copy_reason(held, none, some, held, **others, full=True)
+    assert found[0] == "may" and "reads another part of it" in found[1], found
+    assert found[3].startswith("the program's own `n` (at line 20) may hold a copy"), found
+    # One that may only point into it may hold no copy: not the one reason either.
+    pointing = {"copied": copied, "bindings": bindings, "whole": held, "pointing": bindings}
+    found = copy_reason(held, none, copied, held, **pointing, full=True)
+    assert found[0] == "may" and found[3].endswith(", unless `n` only points into it"), found
+
+
 def test_a_binding_is_named_only_where_it_gave_the_copy_at_every_place():
     # The bindings each place's copy came from were joined, so a
     # read at one place and a binding's copy at the other named the binding, though a
@@ -3181,6 +3209,9 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
     )
     assert why.row == "a statement under way or the program may hold a copy (lines 12 and 32)"
     assert why.advice.startswith("Change it before the program copies it: at a stop on an")
+    # The session's refusal (worker.refuse_mid_statement) hints the same.
+    refusal = f"'week' cannot be changed here: {why}. {why.advice}"
+    assert _mutation_hint(refusal).startswith("Change it before the program copies it (a stop")
     kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
     assert text == (
         "at every place line 39 can stop at, a statement under way reads `week` into a "
@@ -3191,7 +3222,10 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
     failures = [("f", (kind, text))]
     refusal = judge.session._never_message("week", "week", "src/main.rs", 39, failures)
     assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
-    assert not _mutation_hint(refusal).startswith("Change it before the program copies it")
+    # The hint agrees with that advice, and names no one copy to change instead.
+    assert _mutation_hint(refusal) == (
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` there)."
+    )
 
 
 def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
@@ -3592,10 +3626,12 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
         "    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20\n"
         "    let mut _17: u32;                    // in scope 0 at src/main.rs:39:20: 39:33",
     )
+    # The program's own copy is held wherever the stop can be: that alone is the reason,
+    # not also what `e` may have read.
     assert why("same(copy _4, move _17)", shifts, typed, name="weeks") == (
-        "a statement under way at the stop uses `e` (at line 39), a reference Peeky can't "
-        "trace that may point at it" + maybe + ", or the program's own `week` (at line 32) "
-        "may hold a copy of it that it goes on with"
+        "the program's own `week` (at line 32) may hold a copy of it that it goes on with, so "
+        "a change to `weeks` may never be seen: Peeky proves no read of the changed part "
+        "first (a reference lent to a call, or `{:?}`, is not one)"
     )
 
 

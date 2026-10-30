@@ -570,7 +570,7 @@ def test_fields_read_through_a_reference_and_in_a_proven_local(tmp_path, state, 
     names = "named.label,tagged.tag,tagged.counts"
     rows = {row["selector"]: row for row in probe(capsys, crate, FIELDS, "// AFTER", names)["rows"]}
     error = rows["named.label"]["error"]
-    assert "cannot expand 'named'" in error and "can reach freed memory" in error, error
+    assert "cannot expand 'named'" in error and "can't prove that what it would" in error, error
     if reads(rows["tagged.tag"]):
         assert (rows["tagged.tag"]["value"], rows["tagged.counts"]["value"]) == ('"static"', "[1]")
     result = probe(capsys, crate, FIELDS, "// PEEK", "w.items", "--hits", "2")
