@@ -261,23 +261,16 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
 
 def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
     # ERRORS.md's code table has a Retryable column; it must say what Peeky sends.
-    from peeky.errors import _RULES
+    from peeky.errors import _RULES, ERROR_CODES
 
     table = (DOCS / "ERRORS.md").read_text()
     rows = dict(re.findall(r"^\| `([A-Z_]+)`[^|]*\|[^|]*\|[^|]*\| (yes|no) \|$", table, flags=re.M))
     expected = {}
     for _, code, _, retryable in _RULES:
         expected.setdefault(code, set()).add(retryable)
-    # Sent outside the rules: a build's failure, a probe's no-stop or crash, the worker's token check,
-    # and the fallbacks for an unexpected exception.
-    for code in (
-        "BUILD_FAILED",
-        "NO_STOP",
-        "PROGRAM_CRASHED",
-        "UNAUTHORIZED",
-        "INTERNAL_ERROR",
-        "DEBUGGER_ERROR",
-    ):
+    # Sent outside the rules (a build's failure, a probe's no-stop or crash, the worker's token
+    # check, an unexpected exception), never retryable; and the unmatched debugger failure's.
+    for code in (ERROR_CODES - set(expected)) | {"DEBUGGER_ERROR"}:
         expected.setdefault(code, set()).add(False)
     assert set(rows) == set(expected)
     for code, flags in expected.items():
@@ -307,7 +300,7 @@ def test_the_docs_peeky_prints_exist():
 
 # The docs are written in short sentences. A sentence here is prose outside code blocks,
 # tables, headings and quotes, split at a full stop, colon or semicolon and at each list item;
-# inline code counts as one word. History records (evaluations, reviews, ADRs, and pages marked
+# inline code counts as one word. History records (evaluations, ADRs, and pages marked
 # historical) are kept as written.
 LONGEST_SENTENCE = 40
 
