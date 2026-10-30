@@ -38,7 +38,7 @@ The last column is the `retryable` field.
 | `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
 | `BUSY` | Another probe is running on this worker, or it is serving its most connections (HTTP 503). Nothing was run. | Retry later. | yes |
 | `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
-| `UNAUTHORIZED` | The bearer token is missing or wrong, or the process at the worker's URL didn't prove it holds yours. | Use the worker's `DEBUG_TOKEN`. If it is, check which process holds the port. | no |
+| `UNAUTHORIZED` | The bearer token is missing or wrong, or the process at the worker's URL didn't prove it holds yours. | Set `PEEKY_WORKER_TOKEN` to the worker's `DEBUG_TOKEN`. If it is, check which process holds the port. | no |
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
 | `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |

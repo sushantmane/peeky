@@ -10,6 +10,7 @@ first, and those calls pass an environment without them.
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -162,7 +163,62 @@ def test_the_agent_takes_its_token_out_of_its_environment(tmp_path, monkeypatch,
     monkeypatch.setattr(agent, "Client", client)
     with pytest.raises(Started):
         agent.main()
-    assert seen == {"token": CREDENTIALS["DEBUG_TOKEN"], "names": set()}
+    # A client of a worker, as `peeky --worker` is: the client's name for the token.
+    assert seen == {"token": CREDENTIALS["PEEKY_WORKER_TOKEN"], "names": set()}
+
+
+def test_a_client_given_only_the_workers_name_refuses_it(tmp_path, monkeypatch, capsys):
+    # One name per role: `peeky-agent --url` read DEBUG_TOKEN, the worker's own name, where
+    # `peeky` reads PEEKY_WORKER_TOKEN. No client falls back to the other name.
+    from peeky import agent
+    from peeky.cli import _remote
+
+    monkeypatch.setenv("DEBUG_TOKEN", CREDENTIALS["DEBUG_TOKEN"])
+    monkeypatch.delenv("PEEKY_WORKER_TOKEN", raising=False)
+    argv = ["peeky-agent", "--url", "http://127.0.0.1:9", "--output", str(tmp_path / "out")]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/true")
+    monkeypatch.setattr(agent, "Client", lambda *a: pytest.fail("a client was made"))
+    with pytest.raises(SystemExit) as stopped:
+        agent.main()
+    named = "reads the worker's token from PEEKY_WORKER_TOKEN, not DEBUG_TOKEN"
+    assert stopped.value.code == 2 and named in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+    monkeypatch.setenv("DEBUG_TOKEN", CREDENTIALS["DEBUG_TOKEN"])
+    with pytest.raises(ValueError, match=named):
+        _remote("http://127.0.0.1:9")
+    monkeypatch.delenv("DEBUG_TOKEN")
+    with pytest.raises(ValueError, match="^Set PEEKY_WORKER_TOKEN to the worker's token"):
+        _remote("http://127.0.0.1:9")
+    env = {**os.environ, "DEBUG_TOKEN": CREDENTIALS["DEBUG_TOKEN"], "PYTHONDONTWRITEBYTECODE": "1"}
+    env["PYTHONPATH"] = str(Path(agent.__file__).resolve().parents[1])
+    sdk = subprocess.run(
+        [sys.executable, "-m", "peeky.client", "version"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert sdk.returncode == 2 and named in sdk.stderr, sdk.stderr
+
+
+def test_the_agents_own_worker_gets_a_fresh_token(tmp_path, monkeypatch, credentials):
+    from peeky import agent
+
+    seen = {}
+
+    def make_server(root, token, port, adapter=None):
+        seen.update(token=token)
+        raise Started
+
+    argv = ["peeky-agent", "--output", str(tmp_path / "out")]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/true")
+    monkeypatch.setattr(agent, "make_server", make_server)
+    with pytest.raises(Started):
+        agent.main()
+    assert len(seen["token"]) >= 32 and seen["token"] not in CREDENTIALS.values()
 
 
 @pytest.mark.parametrize("url", ["http://10.0.0.5:8765", "http://localhost:8765"])
@@ -170,7 +226,7 @@ def test_the_agent_sends_the_token_only_to_loopback(tmp_path, monkeypatch, capsy
     from peeky import agent
     from peeky.client import Client
 
-    monkeypatch.setenv("DEBUG_TOKEN", CREDENTIALS["DEBUG_TOKEN"])
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", CREDENTIALS["PEEKY_WORKER_TOKEN"])
     argv = ["peeky-agent", "--url", url, "--output", str(tmp_path / "out")]
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/true")
@@ -181,4 +237,4 @@ def test_the_agent_sends_the_token_only_to_loopback(tmp_path, monkeypatch, capsy
     assert "--url must be a loopback URL (http://127.0.0.1:PORT)" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
     with pytest.raises(ValueError, match="must be loopback"):
-        Client(url, CREDENTIALS["DEBUG_TOKEN"])
+        Client(url, CREDENTIALS["PEEKY_WORKER_TOKEN"])

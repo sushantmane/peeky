@@ -130,7 +130,7 @@ def test_rust_agent_rejects_compile_failure_and_test_passing_overfit_before_gene
         lambda name, *a, **kw: "/fixture/codex" if name == "codex" else real_which(name, *a, **kw),
     )
     monkeypatch.setattr(agent_module, "CodexDecision", lambda *a, **kw: decide)
-    monkeypatch.setenv("DEBUG_TOKEN", data["client"].token)
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", data["client"].token)
     monkeypatch.setattr(
         sys,
         "argv",

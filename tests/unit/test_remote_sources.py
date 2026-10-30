@@ -969,12 +969,14 @@ def test_this_worker_refuses_a_request_of_another_protocol_before_it_runs_it(app
         response = connection.getresponse()
         return response.status, json.loads(response.read())
 
+    # Only a number is quoted back: no error echoes a header's text.
+    shown = {None: "none", "9": "9", "eleven": "unknown"}[header]
     try:
         for operation in ("continue", "step", "set_variable", "close", "probe"):
             status, body = post(operation, header)
             assert status == 400 and body["error"]["code"] == "INVALID_REQUEST", body
             assert body["error"]["message"].startswith(
-                f"Client speaks protocol {header or 'none'} (its X-Peeky-Protocol header), "
+                f"Client speaks protocol {shown} (its X-Peeky-Protocol header), "
                 "this worker 11: install the same Peeky version on both hosts"
             ), body
         # `version` is answered whatever the client speaks; this client's requests run.

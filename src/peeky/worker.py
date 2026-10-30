@@ -22,9 +22,9 @@ from pathlib import Path, PurePosixPath
 
 from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
-from peeky.client import MIN_TOKEN_CHARS, hello_proof
+from peeky.client import MAX_TOKEN_CHARS, MIN_TOKEN_CHARS, hello_proof
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
-from peeky.errors import ERROR_CODES, PROTOCOL_VERSION, UnplacedStop, classify
+from peeky.errors import ERROR_CODES, PROTOCOL_VERSION, UnplacedStop, bound, classify, redact
 from peeky.identifiers import (
     changeable,
     is_located,
@@ -7091,8 +7091,8 @@ def _inside_program(runtime, frame, *roots):
 
 
 def make_server(root, token, port=8765, *, adapter=None):
-    if not isinstance(token, str) or len(token) < MIN_TOKEN_CHARS:
-        raise ValueError(f"Token must contain at least {MIN_TOKEN_CHARS} characters")
+    if not isinstance(token, str) or not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
+        raise ValueError(f"Token must contain {MIN_TOKEN_CHARS} to {MAX_TOKEN_CHARS} characters")
     worker = DebugWorker(root, adapter=adapter)
     probes = threading.Semaphore(1)
 
@@ -7180,7 +7180,9 @@ def make_server(root, token, port=8765, *, adapter=None):
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
         try:
-            return _run_probe_process(Path(root).resolve(), request, adapter, HTTP_PROBE_SECONDS)
+            return _run_probe_process(
+                Path(root).resolve(), request, adapter, HTTP_PROBE_SECONDS, secret=token
+            )
         finally:
             probes.release()
 
@@ -7301,7 +7303,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                         "error": {
                             "code": "UNAUTHORIZED",
                             "message": "Missing or wrong bearer token",
-                            "hint": "Use the DEBUG_TOKEN the worker was started with.",
+                            "hint": "Set PEEKY_WORKER_TOKEN to the DEBUG_TOKEN the worker "
+                            "was started with.",
                             "retryable": False,
                             "session_closed": False,
                         },
@@ -7313,7 +7316,10 @@ def make_server(root, token, port=8765, *, adapter=None):
                 # Nothing before dispatch touches the session: its failures are request
                 # errors, never "session closed".
                 try:
-                    size = int(self.headers.get("Content-Length", 0))
+                    try:
+                        size = int(self.headers.get("Content-Length", 0))
+                    except ValueError:
+                        size = 0  # Its text is never quoted: no error echoes a header.
                     if not 0 < size <= MAX_REQUEST_BYTES:
                         raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
                     body = self.rfile.read(size)
@@ -7329,13 +7335,15 @@ def make_server(root, token, port=8765, *, adapter=None):
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
-                spoken = self.headers.get("X-Peeky-Protocol")
-                if operation != "version" and (spoken or "").strip() != str(PROTOCOL_VERSION):
+                spoken = (self.headers.get("X-Peeky-Protocol") or "").strip()
+                if operation != "version" and spoken != str(PROTOCOL_VERSION):
                     # A client of another protocol, or one that doesn't say: refused before
-                    # it runs anything, as it would read the answer otherwise.
+                    # it runs anything, as it would read the answer otherwise. Only a number
+                    # is quoted: no error echoes a header's text.
+                    said = spoken if re.fullmatch(r"[0-9]{1,9}", spoken) else "unknown"
                     raise ValueError(
-                        f"Client speaks protocol {str(spoken).strip()[:20] if spoken else 'none'}"
-                        f" (its X-Peeky-Protocol header), this worker {PROTOCOL_VERSION}: install "
+                        f"Client speaks protocol {said if spoken else 'none'} (its "
+                        f"X-Peeky-Protocol header), this worker {PROTOCOL_VERSION}: install "
                         "the same Peeky version on both hosts"
                     )
                 if (
@@ -7389,16 +7397,20 @@ def make_server(root, token, port=8765, *, adapter=None):
                         result = _source_names(result, worker.root, frozenset(names))
                 self.reply(200, result)
             except (KeyError, TypeError, ValueError) as exc:
-                self.reply(
-                    400,
-                    {"error": classify(exc, session_closed=False), "protocol": PROTOCOL_VERSION},
-                )
+                error = classify(exc, session_closed=False, secret=token)
+                self.reply(400, {"error": error, "protocol": PROTOCOL_VERSION})
             except Exception as exc:
-                self.reply(500, {"error": classify(exc), "protocol": PROTOCOL_VERSION})
+                self.reply(
+                    500, {"error": classify(exc, secret=token), "protocol": PROTOCOL_VERSION}
+                )
 
         def reply(self, status, body):
             if not self.arrived():
                 return
+            if isinstance(body, dict) and isinstance(body.get("error"), dict):
+                # Any error's text, a failed probe's too: never the token, even one a
+                # request carried. Values in a result are never changed.
+                body = {**body, "error": redact(body["error"], token)}
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -7464,7 +7476,10 @@ class _Server(ThreadingHTTPServer):
 PROBE_LAUNCH_MARGIN_S = 10
 
 
-def _run_probe_process(root, request, adapter, cap):
+def _run_probe_process(root, request, adapter, cap, *, secret=None):
+    """A probe in a child process; its result, or its failure. ``secret``: the worker's
+    token, which the child never gets: removed from the child's error and stderr before
+    they are cut."""
     import dataclasses
     import subprocess
 
@@ -7479,8 +7494,9 @@ def _run_probe_process(root, request, adapter, cap):
     )
     # -B: a remote probe never writes bytecode into the worker's root.
     command = [sys.executable, "-I", "-B", "-c", bootstrap, package_parent, "probe", str(root)]
-    # The client records evidence; the worker host keeps none (stateless probes).
-    command += ["--json", "--quiet", "--no-save"]
+    # The client records evidence; the worker host keeps none (stateless probes). The
+    # child's errors keep their text long: the token goes from it here, then it is cut.
+    command += ["--json", "--quiet", "--no-save", "--relay-errors"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout), "--until", request.until]
     command += ["--set-hit", str(request.set_hit)]
@@ -7559,16 +7575,24 @@ def _run_probe_process(root, request, adapter, cap):
             "failed", ValueError("Probe result exceeds limit of 16 MiB"), requested
         )
     try:
-        return json.loads(stdout)
+        result = json.loads(stdout)
     except json.JSONDecodeError:
-        message = stderr[-2000:].decode(errors="replace") or "Probe process failed"
-        return _probe_failure("failed", RuntimeError(message), requested)
+        # The token goes before the tail is cut: a cut never leaves a part of it.
+        message = redact(stderr.decode(errors="replace"), secret)[-2000:]
+        return _probe_failure(
+            "failed", RuntimeError(message or "Probe process failed"), requested, secret=secret
+        )
+    if isinstance(result, dict) and isinstance(result.get("error"), dict):
+        # Classified in the child, which has no token, and cut long (errors.relayed): the
+        # token goes first, so no cut leaves a part of it.
+        result["error"] = bound(result["error"], secret)
+    return result
 
 
-def _probe_failure(status, exc, requested=True):
+def _probe_failure(status, exc, requested=True, *, secret=None):
     """A probe child's failure as its result; ``requested``: whether the debugger was
     asked to start the program (if not, it is one before launch)."""
-    failure = {"status": status, "error": classify(exc, session_closed=True)}
+    failure = {"status": status, "error": classify(exc, session_closed=True, secret=secret)}
     if not requested:
         failure["refused_before_launch"] = True
     return failure
@@ -7724,8 +7748,11 @@ def main():
         "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
     )
     args = parser.parse_args()
-    if not token or len(token) < MIN_TOKEN_CHARS:
-        parser.error(f"Set DEBUG_TOKEN to a random secret of at least {MIN_TOKEN_CHARS} characters")
+    if not token or not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
+        parser.error(
+            f"Set DEBUG_TOKEN to a random secret of {MIN_TOKEN_CHARS} to {MAX_TOKEN_CHARS} "
+            "characters"
+        )
     adapter = None
     if args.java_config or args.native_config or args.rust_config or args.java_attach_config:
         try:

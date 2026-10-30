@@ -67,13 +67,107 @@ The diagram shows Python. Java, C, C++ and Rust use their own adapters behind th
 | `build` | Fresh copied workspaces, explicit trusted build recipes, source/artifact integrity manifests | Automatic language selection or proof of loaded-image identity |
 | verification support | Trusted verifier completion and isolated fresh execution | Editing the verifier |
 
-The table lists the core modules. Others add the command line (`cli`), stateless probes (`probe`),
-the evidence store (`evidence`), error codes (`errors`), and each language's support (`java*`,
-`native*`, `rust*`, `python_*`).
+The table lists the core modules. The [module map](#module-map) lists every module, grouped by
+area.
 
 The model provider is Codex CLI. The controller takes an injected decision callable, which
 deterministic tests replace. Extract a provider protocol when a second provider is added. Don't
 build a registry before it has users.
+
+## Module map
+
+Each module in `src/peeky`, by what it owns.
+
+**CLI and client**
+
+- `cli`: the `peeky` command. It parses arguments, and runs probes, sessions, `--background` jobs
+  and remote clients.
+- `probe`: a stateless probe. One request launches, stops, captures, changes and reports.
+- `client`: the HTTP SDK (`Client`), the check of a worker's `hello`, and the token a client reads.
+- `agent`: `peeky-agent`, the model-driven investigation loop, through Codex CLI.
+- `verification`: runs a trusted checker on a Python candidate, in a fresh process. It is not a
+  sandbox.
+- `__init__`: the version, and `--version`.
+
+**Worker and transport**
+
+- `worker`: `peeky-worker`. `DebugWorker` holds one session's state, checks input and runs every
+  operation. `make_server` is the HTTP server.
+- `dap`: the Debug Adapter Protocol transport. It frames messages, matches answers, queues events
+  and owns the adapter's process.
+- `sources`: the sources a target reads, with their hashes. A remote client and the worker compare
+  them before a launch.
+- `processes`: the process table, to end every process a session started. It also keeps the token
+  out of each environment.
+
+**Python**
+
+- `adapters`: debugpy's launch and scopes (`PythonAdapter`), and a Python candidate's copy
+  (`PythonCandidate`).
+- `python_scopes`: which module globals a stopped function reads.
+- `python_passes`: which locals a loop's pass hasn't assigned yet.
+
+**Java**
+
+- `java`: a standalone target (`JavaTarget`), its fresh build, and its session (`JavaSession`).
+- `java_attach`: attaching to a JVM that waits for a debugger.
+- `java_metadata`: a bounded reader of a class's debug metadata.
+- `java_bytecode`: one decoder of a method's bytecode, for loop headers and a local's later reads.
+- `java_verification`: Java's use of the shared fresh-build check.
+
+**C and C++**
+
+- `native`: a target (`NativeTarget`), symbol evidence from llvm-dwarfdump, and the LLDB session
+  (`NativeSession`). Rust's session builds on it.
+- `c_source`: where a declaration statement ends, from the source text alone.
+- `native_previews`: previews of structs, classes and fixed-size arrays.
+- `char_arrays`: a character array's text, up to its first NUL.
+- `cxx_strings`: a libstdc++ `std::string`, shown as LLDB shows a libc++ one.
+- `hashed_nodes`: a libstdc++ unordered container's entries, read from its own nodes.
+- `assembler`: refuses inline assembly that can read a file, before a build.
+- `native_verification`: C's and C++'s use of the shared fresh-build check.
+
+**Rust**
+
+- `rust`: a Cargo target (`RustTarget`), and its session (`RustSession`, built on
+  `NativeSession`).
+- `rust_manifest`: the strict input contract for a dependency-free crate.
+- `rust_symbols`: symbol evidence from the crate's own compile units.
+- `rust_mir`: which owned locals are initialized at a stop, from the compiler's MIR.
+- `rust_ir`: which locals live in memory, from the compiler's LLVM IR.
+- `rust_lexer`: where comments, strings and char literals are, for the checks that read source text.
+- `rust_chars`: a generated table of the characters `{:?}` escapes. Regenerate it; don't edit it.
+
+**Evidence store**
+
+- `evidence`: the SQLite store of captured runs. `peeky sql` and `peeky queries` read it.
+- `stored_values`: a stored value's elements and text, as SQL functions.
+
+**Shared**
+
+- `errors`: error codes, `classify`, and `PROTOCOL_VERSION`. It removes the token from an error's
+  text.
+- `build`: trusted build recipes, fresh copied workspaces, and integrity manifests.
+- `compiled_verification`: a fresh compiled build, and a trusted checker's run, for Java, C, C++
+  and Rust.
+- `loop_headers`: whether a breakpoint on a loop header stops only before its loop, in C, C++, Rust
+  and Java.
+- `fields`: which field or element of a C, C++ or Rust local `--set` may change.
+- `text_sets`: changing a string's text in place, in C, C++ and Rust.
+- `names`: function names as people read them.
+- `identifiers`: the names a selector can write.
+- `textlines`: lines and quoted names, as tools and compilers write them.
+- `digest`: a file's SHA-256, reused while the file is provably unchanged.
+
+Where to start reading:
+
+- Any language: `cli.main`, then `probe.run_probe` for a probe. A session's operations start at
+  `DebugWorker.dispatch` in `worker`.
+- Python: `adapters.PythonAdapter`.
+- Java: `java.JavaTarget`, then `java.JavaSession`. For attach, `java_attach`.
+- C and C++: `native.NativeTarget`, then `native.NativeSession`.
+  [NATIVE_INTERNALS.md](NATIVE_INTERNALS.md) explains the symbol evidence.
+- Rust: `rust.RustTarget` and `rust.RustSession`, then `rust_mir` for what a stop may show.
 
 ## Session model
 
@@ -125,7 +219,7 @@ names another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protoc
 
 - The worker binds only to `127.0.0.1`. It refuses a request whose `Host` isn't 127.0.0.1, or
   that has an `Origin` header: a web page's ([THREAT_MODEL.md](THREAT_MODEL.md)).
-- The token is at least 32 characters.
+- The token is 32 to 512 characters.
 - The token authorizes control of that worker. It is not a per-target policy.
 - Request sizes are bounded: at most 4 MiB, enough for a remote client's source hashes.
 - Each read of a request waits at most 10 s. When the request line or headers stall, the worker
@@ -153,7 +247,7 @@ must name the worker's protocol: otherwise it is refused with `INVALID_REQUEST` 
 Without the token, the reply is `401`:
 
 ```
-{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 11}
+{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Set PEEKY_WORKER_TOKEN to the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 11}
 ```
 
 `POST /hello` needs no token. It takes `{"nonce": HEX}`, 32 random bytes from the client. The

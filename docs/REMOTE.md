@@ -29,7 +29,7 @@ unset token
 
 - Run the `peeky-worker` command, not `python3 -m peeky.worker`. That form imports a `peeky`
   package in the current directory first.
-- The token must be at least 32 characters. The line above makes 43 random ones.
+- The token must be 32 to 512 characters. The line above makes 43 random ones.
 
 - To restart the worker, run all four lines again, and give the client the new token.
 - Don't `export DEBUG_TOKEN` in the shell. A worker restarted from it would reuse the old token,
@@ -323,19 +323,34 @@ between them.
 
 ### Keep the token secret
 
-- The client reads the token only from `PEEKY_WORKER_TOKEN`, and the worker only from
-  `DEBUG_TOKEN`. Neither accepts it as an argument, so it can't appear in `ps` output.
+- Every client reads the token only from `PEEKY_WORKER_TOKEN`: `peeky`, `peeky-agent --url` and
+  `python -m peeky.client`. The worker reads it only from `DEBUG_TOKEN`. A client given only
+  `DEBUG_TOKEN` refuses it, and names `PEEKY_WORKER_TOKEN`.
+- Neither accepts the token as an argument, so it can't appear in `ps` output.
 - Session records that hold it are private: `0600`, inside a `0700` directory.
-- Probe results, reports and errors never contain it. A test checks this.
-- `peeky-worker`, `peeky` and `peeky-agent` take both names out of their environment first, so no
-  process they start gets either. A session's own local worker gets only its own token. A
-  `--background` job gets the client's, since it is the same `peeky` command.
+- No process that could print the token is given it. Debugger, debuggee, build, checker and model
+  processes never get it, nor does a worker's probe child. Tests check this. So a reply can hold
+  the token only where the client put it in a request.
+- `peeky-worker`, `peeky` and `peeky-agent` take both names out of their environment first. Each
+  process they start gets an environment without them, but for two:
+  - a session's own local worker gets its own token, as `DEBUG_TOKEN`;
+  - a `--background` job gets the client's, as `PEEKY_WORKER_TOKEN`, since it is the same `peeky`
+    command.
+- The worker never adds the token to a reply itself, and no error it sends quotes a request's
+  headers.
+- As a second line of defence, the worker removes its token from the error text it builds, before
+  its own cuts. A probe child's errors reach it uncut for that.
+- That is not a guarantee for text quoted from the debugger or a request. It is passed as sent, and
+  may be cut first, so a part of a token there can remain.
+- Request fields are forwarded and echoed as sent. A client that sends the token as a selector
+  gets it back in its rows and evidence. Program output and values are never changed.
 - A client sends it only to `http://127.0.0.1:PORT`, and only after the worker answers its
   `hello` with a proof that it holds the token. A process on the worker's port without it gets
   only a `hello`, except between two requests of a long-lived client
   ([above](#why-exitonforwardfailureyes)).
-- The worker refuses a token under 32 characters: anyone who can connect can test guesses of it
-  offline, with `hello`.
+- The worker and each client command refuse a token under 32 characters: anyone who can connect
+  can test guesses of it offline, with `hello`. They refuse one over 512 too, so the worker can
+  remove it whole from a probe child's errors.
 
 ### Closing
 

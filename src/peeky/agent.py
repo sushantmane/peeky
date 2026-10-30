@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from peeky import add_version
-from peeky.client import LOOPBACK_URL, Client
+from peeky.client import LOOPBACK_URL, Client, client_token
 from peeky.errors import PeekyError
 from peeky.processes import without_credentials
 from peeky.textlines import read_source, source_lines, split_lines
@@ -553,7 +553,7 @@ def main():
     from peeky.processes import keep_children_waitable, take_credentials
 
     # Out of the environment first: no checker, candidate or model inherits the token.
-    given = take_credentials().get("DEBUG_TOKEN")
+    credentials = take_credentials()
     keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(prog="peeky-agent")
     add_version(parser)
@@ -584,7 +584,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument(
         "--url",
-        help="Existing remote worker URL; same source must be present at --program on worker",
+        help="Existing worker URL (token from $PEEKY_WORKER_TOKEN); it needs the same source",
     )
     parser.add_argument(
         "--root", default=str(ROOT), help="Local source root; also worker root when local"
@@ -596,6 +596,13 @@ def main():
             "--url must be a loopback URL (http://127.0.0.1:PORT); for a remote worker, "
             "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
         )
+    token = None
+    if args.url is not None:
+        # A client of an existing worker: its token, by the name every client reads.
+        try:
+            token = client_token(credentials)
+        except ValueError as exc:
+            parser.error(str(exc))
     if not shutil.which("codex"):
         parser.error("Install Codex CLI and run codex login first")
     if not 1 <= args.max_steps <= 20:
@@ -639,13 +646,12 @@ def main():
     if destination.exists() and any(destination.iterdir()):
         parser.error("Choose a new empty --output directory to preserve earlier evidence")
     destination.mkdir(parents=True, exist_ok=True)
-    token = given or secrets.token_urlsafe(32)
     server = None
     if args.url:
-        if not given:
-            parser.error("Set DEBUG_TOKEN for the existing worker")
         url = args.url
     else:
+        # Its own worker: a fresh token, which only this process holds.
+        token = secrets.token_urlsafe(32)
         server = make_server(source_root, token, 0, adapter=target)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         url = f"http://127.0.0.1:{server.server_port}"

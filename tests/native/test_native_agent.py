@@ -131,7 +131,7 @@ def test_native_agent_retries_compile_failure_and_overfit_before_general_fix(
         lambda name, *a, **kw: "/fixture/codex" if name == "codex" else real_which(name, *a, **kw),
     )
     monkeypatch.setattr(agent_module, "CodexDecision", lambda *a, **kw: decide)
-    monkeypatch.setenv("DEBUG_TOKEN", client.token)
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", client.token)
     monkeypatch.setattr(
         sys,
         "argv",

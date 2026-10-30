@@ -15,13 +15,27 @@ Peeky is not:
 **Worker token**
 
 - It authorizes all operations on one worker.
-- The worker reads it from `DEBUG_TOKEN`, and a client from `PEEKY_WORKER_TOKEN`.
+- The worker reads it from `DEBUG_TOKEN`, and every client from `PEEKY_WORKER_TOKEN`, including
+  `peeky-agent --url`. A client given only `DEBUG_TOKEN` refuses it, and names
+  `PEEKY_WORKER_TOKEN`.
 - `peeky-worker`, `peeky` and `peeky-agent` take both names out of their own environment first.
   Each process Peeky starts also gets an environment without them. So no debugger, debuggee,
   build, tool Peeky asks, checker, candidate, probe process or model process gets the token.
 - Two processes get one on purpose. A session's own local worker gets its own token, as
-  `DEBUG_TOKEN`. A `--background` job gets the client's, since it is the same `peeky` command.
-- Never print it in evidence.
+  `DEBUG_TOKEN`. A `--background` job gets the client's, as `PEEKY_WORKER_TOKEN`, since it is the
+  same `peeky` command.
+- Never print it in evidence. No process that could print it is given it, so a reply can hold the
+  token only where the client put it in a request.
+- The worker never adds the token to a reply itself. No error it sends, and nothing it logs,
+  quotes a request's headers.
+- As a second line of defence, the worker removes its token from the error text it builds, before
+  its own cuts: a build's output, a probe child's errors and stderr, and the message. The child
+  leaves its errors' text long (64 KiB), and the worker cuts it.
+- Limit: text quoted from the debugger or a request is passed as sent, and may be cut first. A
+  part of a token there can remain. A client that sends the token in a field gets its own input
+  back.
+- Request fields are forwarded and echoed as sent, and program output and values are never
+  changed.
 
 **The worker proves it holds the token (protocol 11)**
 
@@ -33,9 +47,11 @@ Peeky is not:
   worker started with another token. The client refuses both with `UNAUTHORIZED`.
 - `hello` needs no token. It says only the protocol and the proof, and runs nothing.
 - So anyone who can connect can test guesses of the token offline, against a proof. The token
-  must be random, and at least 32 characters: the worker and the `peeky` command refuse a
-  shorter one. `secrets.token_urlsafe(32)` makes 43. The `Client` class needs no such check: it
-  never sends the token before the proof.
+  must be random, and 32 to 512 characters: the worker and each client command refuse others.
+  `secrets.token_urlsafe(32)` makes 43. The `Client` class needs no such check: it never sends
+  the token before the proof.
+- The most, 512, is far below the 64 KiB a probe child keeps of an error's text. So the worker
+  can remove a token whole from it.
 - **Browsers:** a web page's requests are refused before anything runs. Its scripts send an
   `Origin` header, and a page whose name was pointed at 127.0.0.1 (DNS rebinding) sends that name
   as its `Host`. The worker refuses a request with an `Origin` header, or a `Host` other than

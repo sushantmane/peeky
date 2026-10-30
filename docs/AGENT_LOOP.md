@@ -267,8 +267,10 @@ peeky-agent \
 
 For C, C++ and Java:
 
-- Without `--url`, the command starts the configured worker locally.
-- `--url http://127.0.0.1:PORT`, with the worker's `DEBUG_TOKEN`, selects an existing worker. Any
+- Without `--url`, the command starts the configured worker locally, with a fresh token of its
+  own.
+- `--url http://127.0.0.1:PORT` selects an existing worker. Set `PEEKY_WORKER_TOKEN` to its token,
+  as for `peeky --worker`. `DEBUG_TOKEN` is the worker's own name: given alone, it is refused. Any
   other URL is refused: the token goes in plain HTTP. The declared sources' identities must match,
   and for C, the frozen headers' too.
 - The candidate's build and the checker run on the controller's host. That host needs the declared
