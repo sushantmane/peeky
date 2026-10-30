@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import socket
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -22,21 +23,93 @@ class TransportLost(OSError):
 # Worker URLs are loopback (or an SSH tunnel's local end): never route them, or the
 # bearer token, through http_proxy/HTTP_PROXY.
 _OPENER = build_opener(ProxyHandler({}))
+# Each request and answer names its sender's protocol.
+PROTOCOL_HEADER = "X-Peeky-Protocol"
+
+
+def _spoken(headers, operation, url):
+    """Refuse a worker's answer where the worker says it speaks another protocol (its
+    `X-Peeky-Protocol` header, on every answer), however the session started: a local
+    session's worker of an older Peeky would ignore what this client sends, such as
+    `expand`'s `key`, and answer something else (#374 review). Not `version`'s answer,
+    whose caller compares the protocol it states and says what to do."""
+    spoken = headers.get(PROTOCOL_HEADER) if headers is not None else None
+    if operation == "version" or spoken is None or spoken.strip() == str(PROTOCOL_VERSION):
+        return
+    raise ValueError(
+        f"Worker speaks protocol {spoken.strip()[:20]}, this client {PROTOCOL_VERSION}: its "
+        f"answer to {operation!r} at {url} is not read. Run the same Peeky version as the "
+        "worker; for a session, close it and start it again"
+    )
 
 
 class Client:
     def __init__(self, url, token):
         self.url = url.rstrip("/")
         self.token = token
+        # The protocol the worker's `version` states, once asked (or vouched for by the
+        # caller): nothing but `version` is sent to a worker before it is this client's
+        # (#374 review). A worker of another protocol would run a step or a change as it
+        # reads the request, and ignore what it doesn't know (`expand`'s `key`). Read,
+        # asked and set under ``lock``; forgotten when a connection is lost, since
+        # another worker may answer at the same address then.
+        self.protocol = None
+        self.lock = threading.Lock()
 
     def call(self, operation, **arguments):
+        try:
+            if operation != "version":
+                self._preflight(operation)
+            answer = self._request(operation, arguments)
+        except (WorkerUnreachable, TransportLost):
+            with self.lock:
+                self.protocol = None
+            raise
+        if (
+            operation == "version"
+            and isinstance(answer, dict)
+            and type(answer.get("protocol")) is int
+        ):
+            with self.lock:
+                self.protocol = answer["protocol"]
+        return answer
+
+    def _preflight(self, operation):
+        """Ask the worker's `version` once, before anything else is sent; refuse
+        ``operation`` where the worker speaks another protocol, or doesn't say. Decided
+        on the protocol held under the lock, which one ask at a time sets."""
+        with self.lock:
+            if self.protocol is None:
+                answer = self._request("version", {})
+                found = answer.get("protocol") if isinstance(answer, dict) else None
+                self.protocol = found if type(found) is int else "unknown"
+            spoken = self.protocol
+        if spoken != PROTOCOL_VERSION:
+            raise ValueError(self._refusal(operation, spoken))
+
+    def _refusal(self, operation, spoken):
+        return (
+            f"Worker speaks protocol {spoken}, this client {PROTOCOL_VERSION}: nothing but its "
+            f"version was sent to the worker at {self.url}, not {operation!r}. Run the same "
+            "Peeky version as the worker"
+        )
+
+    def _request(self, operation, arguments):
+        """One request, as it is: its answer, or the worker's error."""
         request = Request(
             self.url + "/" + operation,
             data=json.dumps(arguments).encode(),
-            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer " + self.token,
+                "Content-Type": "application/json",
+                # A worker of protocol 10 or later refuses any request but `version` that
+                # names another protocol, or none, before it runs it (#374 review).
+                PROTOCOL_HEADER: str(PROTOCOL_VERSION),
+            },
         )
         try:
             with _OPENER.open(request, timeout=45) as response:
+                _spoken(response.headers, operation, self.url)
                 try:
                     return json.load(response)
                 except ValueError:
@@ -47,6 +120,7 @@ class Client:
                         "(its answer is not JSON); its outcome is unknown"
                     ) from None
         except HTTPError as exc:
+            _spoken(exc.headers, operation, self.url)
             return self._http_error(exc)
         except URLError as exc:
             reason = exc.reason

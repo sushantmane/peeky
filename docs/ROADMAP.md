@@ -198,8 +198,10 @@ Sanitizer, Nsight profiling and support for ML workloads.
 ### C++ built by GCC: reading what is withheld
 
 GCC's C++ builds withhold what LLDB misreads ([gaps](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
-What remains is reading more of an unordered container's entries from its own nodes:
-floating-point numbers, characters, enums, pointers and nested containers.
+What remains is reading the last entries an unordered container's nodes hold: a `long double`,
+a `std::vector`, `std::map` or other container held in an entry, and a string whose text isn't
+in its own small buffer in the node (`_M_p` not at `_M_local_buf`). A vector's buffer, and such
+a string's text, are heap blocks: reading one needs a proof that the block is still allocated.
 
 GDB's DAP reads much of this right, but Peeky's native layer is built on lldb-dap. A GDB backend
 would take about 4 to 6 weeks, and is deferred.

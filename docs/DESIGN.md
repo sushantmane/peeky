@@ -119,7 +119,9 @@ transitions. A future event stream may replace polling, without changing what th
 
 ## HTTP contract
 
-Requests are JSON objects with `Authorization: Bearer <token>`.
+Requests are JSON objects with `Authorization: Bearer <token>`. Each also names its client's
+protocol in `X-Peeky-Protocol: 10`. The worker refuses any request but `version` that names
+another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protocol-version)).
 
 - The worker binds only to `127.0.0.1`.
 - The token authorizes control of that worker. It is not a per-target policy.
@@ -134,18 +136,22 @@ Requests are JSON objects with `Authorization: Bearer <token>`.
 and the error codes:
 
 ```
-$ curl -s -i -X POST -H 'Authorization: Bearer …' -d '{}' http://127.0.0.1:18766/version
+$ curl -s -i -X POST -H 'Authorization: Bearer …' -H 'X-Peeky-Protocol: 10' -d '{}' \
+    http://127.0.0.1:18766/version
 HTTP/1.0 200 OK
 ...
-X-Peeky-Protocol: 2
+X-Peeky-Protocol: 10
 ...
-{"protocol": 2, "sources": {"kind": "python"}, "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
+{"protocol": 10, "sources": {"kind": "python"}, "root": "/srv/app", "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
 ```
+
+`version` is answered whatever `X-Peeky-Protocol` a request names, or none. Any other request
+must name the worker's protocol: otherwise it is refused with `INVALID_REQUEST` before it runs.
 
 Without the token, the reply is `401`:
 
 ```
-{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 2}
+{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 10}
 ```
 
 | Operation | Required input | Result |
@@ -153,7 +159,7 @@ Without the token, the reply is `401`:
 | launch | worker-relative program, breakpoint list; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256` |
 | wait | session ID, bounded timeout | stopped, terminated, or still running; at a `calls` step's own end, `call_change` (`left`, `deeper` or `other`) where its stack, read whole up to 256 frames, differs in function or depth; `macro_stop` (Rust) where the debugger shows the stop on a line with no code of its own in its function that is in a macro's definition, or may be one (Peeky can't read the source as rustc does; the text says which), why `inspect` reads none of that frame; where the function's DWARF blocks are known, only once the stop's address proves it; `crash` where a C or C++ program crashed (SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE, from a fault or `abort`, that its signal masks show it neither handles nor ignores; not another signal, or a C++ throw or catch filter's stop): the debugger's `description`, `outside_program`, the nearest frame of the program's own code among the first 64 (`frame`, `function`, `location`), checked against the build as `inspect` checks a frame, and `uncaught_exception` where `__cxa_throw` called `std::terminate`, and `kind`, `exceptionInfo`'s `exceptionId` (`signal`, `exception`, or a filter's name, `cpp_throw`); `signal_stop` with the same fields at any other `exception` or `signal` stop; `inspect` reads nothing in a frame outside the program's sources at any `exception` or `signal` stop |
 | inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost; 10 frames are listed, or up to `frame`, at most 64) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity`; `no_longer_visible`: after a `calls` step that stayed in the function at its depth, names listed at an earlier stop and not here, with `same_call` where the debugger's steps prove it (Java); not Python |
-| expand | session ID, stop ID, opaque child handle, start/count | bounded read-only children |
+| expand | session ID, stop ID, opaque child handle, start/count, or `index`; or `key` (a map's key as the debugger shows one, for entries Peeky read from an unordered container's nodes) | bounded read-only children; for `key`, the entry with that key, if any, with the `key`, `compared` (how many keys) and `keys` (the first 20) |
 | preview | session ID, stop ID, child handle; optional `pointee` | the value's preview, as `inspect` shows it, or none |
 | set_variable | session ID, stop ID, scope reference, name, expression value (the innermost frame's only) | before/after |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |

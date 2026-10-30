@@ -28,7 +28,12 @@ from peeky.textlines import split_lines
 # a protocol 7 client would say lldb-dap doesn't list one where Peeky read none.
 # 9 (#382): a probe's `1:i` reads `i` in caller frame 1, and its rows say `frame` and
 # `stop_line`; a protocol 8 worker refuses `1:i` as no selector.
-PROTOCOL_VERSION = 9
+# 10 (#374): `expand` takes `key`, the entry of that key among those Peeky read from an
+# unordered container's nodes, past 256 entries too; a protocol 9 worker ignores `key`
+# and gives the first entries, which a client would take for the key's. Each request
+# names its client's protocol (`X-Peeky-Protocol`), which the worker checks before it
+# runs anything but `version`.
+PROTOCOL_VERSION = 10
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (

@@ -8,6 +8,10 @@
   - A `std::unordered_map`'s or `std::unordered_set`'s entries, read from the container's own
     nodes where the debug information proves their layout. The entries must be integers, bools
     or strings, alone or in pairs and structs (#371).
+  - More unordered-container entries from their nodes: `float`s and `double`s, characters,
+    enums, pointers, a `std::array` held in one, and more than 256 entries, read by position or
+    key. A string whose text is in heap memory now shows `<not read>`, as a vector there does
+    (#374).
   - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
     changed inside the lambda; its refusal names the lambda's own copy where a change works
     (#369, #380).
@@ -54,6 +58,9 @@
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369), and **9** (#382).
+- **Protocol 10:** `expand` takes `key`, for a map's entries Peeky read from an unordered
+  container's nodes. Every request must carry `X-Peeky-Protocol`. A worker refuses an older
+  client's requests, and a client sends an older worker nothing, except `version` (#374).
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).

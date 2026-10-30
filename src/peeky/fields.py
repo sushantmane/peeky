@@ -246,6 +246,48 @@ def _library(dies, offset, libraries):
     return outer if outer in libraries else None
 
 
+def _enumerators(dies, die):
+    """((name, value), ...) of an enum's enumerators, and whether its values are signed
+    (its `DW_AT_encoding`, else its underlying type's), or None for either where the
+    debug information doesn't say. A value dwarfdump writes in hex is the bits of a
+    constant (GCC's unsigned enumerators); in a signed enum, one whose top bit is set
+    may be negative, so then no value is known."""
+    signed = None
+    encoding = (die["attrs"].get("DW_AT_encoding") or "").strip()
+    if not encoding:
+        under = dies.get(_target(die["attrs"].get("DW_AT_type")))
+        for _ in range(8):
+            if under is None or under["tag"] not in ("DW_TAG_typedef", "DW_TAG_const_type"):
+                break
+            under = dies.get(_target(under["attrs"].get("DW_AT_type")))
+        if under is not None and under["tag"] == "DW_TAG_base_type":
+            encoding = (under["attrs"].get("DW_AT_encoding") or "").strip()
+    if encoding in ("DW_ATE_signed", "DW_ATE_signed_char"):
+        signed = True
+    elif encoding in ("DW_ATE_unsigned", "DW_ATE_unsigned_char", "DW_ATE_boolean"):
+        signed = False
+    values = []
+    for child in die["children"]:
+        member = dies.get(child)
+        if member is None or member["tag"] != "DW_TAG_enumerator":
+            continue
+        name = _text(member["attrs"].get("DW_AT_name"))
+        text = (member["attrs"].get("DW_AT_const_value") or "").strip()
+        if re.fullmatch(r"-?[0-9]{1,20}", text):
+            value = int(text)
+        elif re.fullmatch(r"0x[0-9a-fA-F]{1,16}", text):
+            value = int(text, 16)
+            if signed is not False and value >> (4 * (len(text) - 2) - 1):
+                # The bits of a negative value, or a large one: not told apart here.
+                return None, signed
+        else:
+            return None, signed
+        if not name or len(values) >= 4096:
+            return None, signed
+        values.append((name, value))
+    return tuple(values), signed
+
+
 def _bound(dies, value):
     """A subrange's count or bound, or None if it is not a constant; and whether it is
     a variable-length array's, which names a DIE (an artificial variable,
@@ -328,7 +370,11 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             if pointees and target is not None:
                 pending.append(target)
         elif tag == "DW_TAG_enumeration_type":
-            graph[offset] = ("enum", name, size)
+            # Its enumerators and whether its values are signed, which an entry read
+            # from an unordered container's node is shown by (#374), and its qualified
+            # name.
+            values, signed = _enumerators(dies, die)
+            graph[offset] = ("enum", name, size, values, signed, _qualified(dies, offset) or name)
         elif tag == "DW_TAG_array_type":
             counts, variable = [], False
             for child in die["children"]:

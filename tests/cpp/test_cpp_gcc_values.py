@@ -9,8 +9,10 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   holds, where it holds them: an allocator whose first template argument is another
   type, a 16-byte-aligned `long double`, or (LLDB 18) a map whose type's name holds `set`
   decode wrongly. Otherwise Peeky reads the entries from the container's own nodes
-  (#360), where the debug information proves how and they are integers, bools and
-  strings, in pairs and structs; else no preview, key or position read, or listing.
+  (#360), where the debug information proves how: numbers, characters, enums, pointers
+  and strings, in pairs and structs, a `std::array` in one, any other container there
+  withheld alone (#374), and past 256 entries by position or key; else no preview, key or
+  position read, or listing.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
   length comes from the build's debug information, and lldb-dap 20, which has no
   writeMemory request, writes it with LLDB's `memory write` command.
@@ -257,14 +259,19 @@ KIND_READS = {
 # fails there (`<no value>`).
 TAGGED = {"tagged": 'size=1 {3: {id = 9, name = "nine"}}', "tagged[3].name": '"nine"'}
 LONG = '"' + "x" * 40 + '"'
+HEAP_TEXT = (
+    "not read: Peeky reads a string in an unordered container's node only where its text is in "
+    "the node: this one's is outside it, in heap memory Peeky can't show is still allocated; "
+    "print it from the program"
+)
 
 
 @pytest.mark.timeout(180)
 def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, capsys):
     # #360: with GCC, each of these was `not listed` (LLDB counts them empty). Peeky now
-    # reads integers, bools and strings, in pairs and structs, from the nodes. A string's
-    # text outside its node needs `readMemory` (lldb-dap 20); a `double`, or more than
-    # 256 entries, stays withheld with the note it had.
+    # reads integers, bools and strings, in pairs and structs, from the nodes. #374: a
+    # `double`, and more than 256 entries, read too; a string's text outside its node, in
+    # heap memory, is withheld on its own, with why.
     compiler, root = cpp
     source = root / "kinds.cpp"
     source.write_text(KINDS)
@@ -281,19 +288,18 @@ def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, 
             assert shown is None or shown == value.replace('"nine"', "<no value>"), shown
         else:
             assert rows[selector].get("value") == value, (selector, rows[selector])
-    reads = compiler == "clang" or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
-    if reads or sys.platform != "linux":
+    if compiler == "clang":
         assert rows["longs[7]"].get("value") == LONG, rows["longs[7]"]
         assert rows["longs"].get("value") == 'size=1 {7: "' + "x" * 35 + '"...}', rows["longs"]
     else:
-        assert withheld(rows["longs"], 1) and withheld(rows["longs[7]"], 1), rows
+        # Whatever the debugger: its text is in heap memory, not in the node.
+        assert rows["longs"].get("value") == "size=1 {7: <not read>}", rows["longs"]
+        assert rows["longs[7]"]["error"] == HEAP_TEXT, rows["longs[7]"]
+    assert rows["ratios"].get("value") == "size=1 {1: 0.5}", rows["ratios"]
+    # Where LLDB counts `big` empty (GCC's; clang's with LLDB 18), from its 300 nodes.
+    assert str(rows["big"].get("value")).startswith("size=300 {"), rows["big"]
     if compiler == "gcc":
-        assert withheld(rows["ratios"], 1) and withheld(rows["big"], 300), rows
-    else:
-        assert rows["ratios"].get("value") == "size=1 {1: 0.5}", rows["ratios"]
-        # LLDB 18 counts clang's `big` as empty too: too many entries to read from nodes.
-        big = rows["big"]
-        assert str(big.get("value")).startswith("size=300 {") or withheld(big, 300), big
+        assert rows["ratios"]["view"] == rows["big"]["view"] == "memory", rows
     # A listing names each entry by its key, as for any map.
     assert main(["session", "start", str(source), "--at", str(line_of(KINDS, "// HERE"))]) == 0
     capsys.readouterr()
@@ -308,6 +314,197 @@ def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, 
     children = {c["selector"]: c["value"] for c in listed["tagged"]["children"]}
     if compiler == "gcc":
         assert children == {"tagged[3]": '{id = 9, name = "nine"}'}, listed["tagged"]
+
+
+MORE_KINDS = """#include <cstdio>
+#include <unordered_map>
+#include <unordered_set>
+enum Color { Red, Green = 5, Blue = 5, Teal = 6 };
+enum class Shade : unsigned char { Dark = 1, Light = 200 };
+int main() {
+    double d[8] = {0.1, 1e10, 100.0, 1e-7, -2.5, 1.0 / 3, 5e-324, -0.0};
+    float f[3] = {0.1f, 1e10f, 1e-3f};
+    char c[4] = {'a', '\\n', (char)0xc8, '\\''};
+    std::unordered_map<int, double> ds;
+    for (int i = 0; i < 8; ++i)
+        ds[i] = d[i];
+    std::unordered_map<int, float> fs{{0, f[0]}, {1, f[1]}, {2, f[2]}};
+    std::unordered_map<int, char> cs{{0, c[0]}, {1, c[1]}, {2, c[2]}, {3, c[3]}};
+    std::unordered_set<wchar_t> ws{L'a'};
+    std::unordered_set<char16_t> u16{u'\\n'};
+    std::unordered_set<char32_t> u32{U'\\U0001F600'};
+    std::unordered_map<int, Color> colors{{0, Green}, {1, Teal}, {2, (Color)9}};
+    std::unordered_set<Shade> shades{Shade::Light};
+    int x = 5;
+    int *px = &x;
+    std::unordered_set<int *> ptrs{px};
+    std::printf("MORE:%zu %zu %zu %zu\\n", ds.size(), cs.size(), colors.size(), ptrs.size()); // HERE
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_numbers_characters_enums_and_pointers_are_read_from_the_nodes(cpp, capsys):
+    # #374: with GCC, each of these was `not listed`, though Peeky read the nodes of an
+    # `int` set. Now each value reads as the debugger shows the same value in a local.
+    compiler, root = cpp
+    source = root / "more.cpp"
+    source.write_text(MORE_KINDS)
+    line = line_of(MORE_KINDS, "// HERE")
+    pairs = [(f"ds[{i}]", f"d[{i}]") for i in range(8)] + [
+        (f"fs[{i}]", f"f[{i}]") for i in range(3)
+    ]
+    pairs += [(f"cs[{i}]", f"c[{i}]") for i in range(4)]
+    code, result = probe(source, line, ",".join(x for pair in pairs for x in pair), capsys)
+    assert "MORE:8 4 3 1" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    for read, local in pairs:
+        # The debugger's own text for the same value in a local: `0.10000000000000001`,
+        # `1.0E+10`, `'\xc8'`, `'''`.
+        assert rows[read].get("value") == rows[local]["value"], (read, rows[read], rows[local])
+        if compiler == "gcc":
+            assert rows[read].get("view") == "memory", rows[read]
+    capture = "ws,ws[#0],u16,u32,colors[0],colors[1],colors[2],shades,ptrs,ptrs[#0],px,ptrs[#0][0]"
+    code, result = probe(source, line, capture, capsys)
+    rows = {row["selector"]: row for row in result["rows"]}
+    shown = {selector: rows[selector].get("value") for selector in ("ws", "u16", "u32", "shades")}
+    assert shown == {
+        "ws": "size=1 {L'a'}",
+        "u16": "size=1 {u'\\n'}",
+        "u32": "size=1 {U'\U0001f600'}",
+        "shades": "size=1 {Light}",
+    }, shown
+    # An enum's one enumerator of that value; else the number (two hold 5).
+    colors = [rows[f"colors[{i}]"].get("value") for i in range(3)]
+    assert colors == ["5" if compiler == "gcc" else "Green", "Teal", "9"], colors
+    # A pointer: its address, as the local's; what it points at is never read from a node.
+    assert rows["ptrs[#0]"]["value"] == rows["px"]["value"], rows
+    if compiler == "gcc":
+        assert rows["ws[#0]"]["value"] == "L'a'", rows["ws[#0]"]
+        assert rows["ptrs"]["value"] == "size=1 {" + rows["px"]["value"] + "}", rows["ptrs"]
+        assert rows["ptrs[#0][0]"]["error"] == (
+            "[0] not read: ptrs[#0] (int *) is a pointer read from an unordered container's "
+            "node, shown by its address alone; Peeky never follows one, since nothing shows "
+            "that what it points at is alive; print what it points at from the program"
+        ), rows["ptrs[#0][0]"]
+
+
+IN_NODES = """#include <array>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <new>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+int main() {
+    std::unordered_map<int, std::vector<int>> lists{{1, {2, 3}}};
+    std::unordered_map<int, std::vector<std::string>> names{{1, {"al", std::string(20, 'z')}}};
+    std::unordered_map<int, std::array<int, 2>> pairs{{1, {4, 5}}};
+    std::unordered_map<int, std::unordered_set<int>> groups{{1, {6}}};
+    std::unordered_map<int, std::map<int, int>> trees{{1, {{7, 8}}}};
+    std::unordered_map<int, std::vector<int>> gone{{1, {2, 3}}};
+    std::vector<int> *slot = &gone[1];
+    std::destroy_at(slot);
+    std::unordered_map<int, std::string> lost{{1, std::string(40, 'x')}, {2, "short"}};
+    std::string *text = &lost[1];
+    std::destroy_at(text);
+    std::unordered_map<int, int> big;
+    for (int i = 0; i < 400; ++i)
+        big[i] = 2 * i;
+    std::unordered_map<int, int> huge;
+    for (int i = 0; i < 700; ++i)
+        huge[i] = 2 * i;
+    std::unordered_map<std::string, int> words;
+    for (int i = 0; i < 300; ++i)
+        words["k" + std::to_string(i)] = i;
+    std::printf("NESTED:%zu %zu %zu\\n", lists.size(), big.size(), words.size()); // HERE
+    new (slot) std::vector<int>{9};
+    new (text) std::string("y");
+    return (int)gone[1].size() + (int)lost[1].size() - 2;
+}
+"""
+HEAP_BLOCK = (
+    "not read: Peeky doesn't read a `{}` held in an unordered container's node: its elements "
+    "are in a heap block, which Peeky can't show is still allocated; print it from the program"
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_nested_container_reads_where_proven_and_a_big_one_by_position_or_key(cpp, capsys):
+    # #374: with GCC, each of these was `not listed`. A `std::array` held in a node now
+    # reads from it; any other container held there is withheld alone, with why: a
+    # vector's buffer is a heap block nothing proves still allocated, and `gone[1]`,
+    # destroyed in place, read its freed buffer as `size=2 [2, 3]` (review). A container
+    # of more than 256 entries reads too: its count proven by its whole chain (at most 512
+    # nodes without `readMemory`), an entry past the first 256 read when its position or
+    # key asks for it.
+    compiler, root = cpp
+    source = root / "held.cpp"
+    source.write_text(IN_NODES)
+    line = line_of(IN_NODES, "// HERE")
+    capture = (
+        "lists,lists[1],names,pairs,pairs[1],groups,groups[1],trees,trees[1],gone,gone[1],big,"
+        "big[399],big[#350].second,big[#400],big[5000],huge,huge[699],huge[#650].second,"
+        'words["k299"],words["nope"],lost[1],lost[2]'
+    )
+    code, result = probe(source, line, capture, capsys)
+    assert "NESTED:1 400 300" in result["output"] and result["exit_code"] == 0, result
+    rows = {row["selector"]: row for row in result["rows"]}
+    if compiler == "clang":
+        assert rows["lists"]["value"] == "size=1 {1: size=2 [2, 3]}", rows["lists"]
+        assert rows["names"]["value"] == 'size=1 {1: size=2 ["al", "' + "z" * 20 + '"]}', rows
+        # LLDB 18 reads clang's `groups` as a set (its name holds `set`): from its nodes.
+        groups = "size=1 {1: size=1 {6}}" if placed() else "size=1 {1: <not read>}"
+        assert rows["groups"]["value"] == groups, rows["groups"]
+        assert rows["trees"]["value"] == "size=1 {1: size=1 {7: 8}}", rows["trees"]
+        assert rows["big"]["value"].startswith("size=400 {"), rows["big"]
+        assert rows["huge"]["value"].startswith("size=700 {"), rows["huge"]
+        return
+    # A `std::array` is inside the node; any other container held there is withheld alone.
+    assert rows["pairs"]["value"] == "size=1 {1: size=2 [4, 5]}", rows["pairs"]
+    assert rows["pairs[1]"]["value"] == "size=2 [4, 5]", rows["pairs[1]"]
+    for name, kind in (
+        ("lists", "std::vector"),
+        ("groups", "std::unordered_set"),
+        ("gone", "std::vector"),
+    ):
+        assert rows[name]["value"] == "size=1 {1: <not read>}", rows[name]
+        assert rows[f"{name}[1]"]["error"] == HEAP_BLOCK.format(kind), rows[f"{name}[1]"]
+    assert rows["names"]["value"] == "size=1 {1: <not read>}", rows["names"]
+    # A string destroyed in place, before a new one is built there (review): its text was
+    # in heap memory, now freed; never read. A short one's text is in the node: read.
+    assert rows["lost[1]"]["error"] == HEAP_TEXT, rows["lost[1]"]
+    assert rows["lost[2]"]["value"] == '"short"', rows["lost[2]"]
+    assert rows["trees"]["value"] == "size=1 {1: <not read>}", rows["trees"]
+    assert rows["trees[1]"]["error"] == (
+        "not read: Peeky doesn't read a `std::map` held in an unordered container's node; "
+        "print it from the program"
+    ), rows["trees[1]"]
+    # Past 256 entries: by position and by key.
+    assert rows["big"]["value"].startswith("size=400 {"), rows["big"]
+    assert rows["big[399]"]["value"] == "798", rows["big[399]"]
+    assert int(rows["big[#350].second"]["value"]) % 2 == 0, rows["big[#350].second"]
+    assert rows["big[#400]"]["error"] == (
+        "[#400] not found: big has 400 entries: big[#0] to big[#399]"
+    ), rows["big[#400]"]
+    assert re.fullmatch(
+        r"\[5000\] not found: big has no key 5000 \(keys: (?:[0-9]+, ){20}\.\.\. "
+        r"\(400 total\)\); in C\+\+, big\[5000\] would insert it with a default value",
+        rows["big[5000]"]["error"],
+    ), rows["big[5000]"]
+    if placed():
+        # By address, past the inspection window's 512 too.
+        assert rows["huge"]["value"].startswith("size=700 {"), rows["huge"]
+        assert rows["huge[699]"]["value"] == "1398", rows["huge[699]"]
+        assert int(rows["huge[#650].second"]["value"]) % 2 == 0, rows["huge[#650].second"]
+    else:
+        # Through variable paths, at most 512 nodes: none of its paths is read.
+        assert withheld(rows["huge"], 700) and withheld(rows["huge[699]"], 700), rows
+    assert rows['words["k299"]']["value"] == "299", rows['words["k299"]']
+    assert "(300 total)" in rows['words["nope"]']["error"], rows['words["nope"]']
 
 
 CHANGING = """#include <cstddef>
@@ -522,9 +719,9 @@ struct Move {
 static bool enough(Stock &stock, const std::string &part, int units) {
     return stock.count(part) > 0 && stock.at(part) >= units; // IN_CALLEE
 }
-using Prices = std::unordered_map<int, double>;
+using Prices = std::unordered_map<int, long double>;
 static double priced(const Prices &prices) {
-    return prices.at(1); // IN_PRICED
+    return (double)prices.at(1); // IN_PRICED
 }
 int main() {
     Stock on_hand;
@@ -597,8 +794,8 @@ def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_rea
         capsys.readouterr()
     reads = bool(re.fullmatch(r"size=2 \{.*\}", str(held.get("value"))))
     assert reads or compiler == "clang", held
-    # Entries Peeky never reads from the nodes (a `double`): no pointer or reference is
-    # blamed, whatever proves it (review).
+    # Entries Peeky never reads from the nodes (a `long double`, since #374 a `double`
+    # reads): no pointer or reference is blamed, whatever proves it (review).
     code, result = probe(source, line_of(DEPOT, "// IN_PRICED"), "prices", capsys)
     (row,) = result["rows"]
     if compiler == "gcc":
