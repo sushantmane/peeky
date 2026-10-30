@@ -203,3 +203,9 @@ decisions, through Codex CLI. It is not the main interface.
 part follows the [code of conduct](CODE_OF_CONDUCT.md). Report bugs and ask for features with the
 [issue templates](https://github.com/sushantmane/peeky/issues/new/choose). Report vulnerabilities
 privately instead, as [SECURITY.md](SECURITY.md) describes.
+
+## Licence
+
+Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The Java adapter that
+`scripts/setup_java_adapter.py` builds locally is Microsoft java-debug, under the Eclipse Public
+License 1.0 ([notices](adapters/java/NOTICES.md)).

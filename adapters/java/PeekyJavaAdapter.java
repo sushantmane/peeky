@@ -35,21 +35,21 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         "configurationDone", "threads", "stackTrace", "scopes", "variables", "setVariable",
         "continue", "next", "stepIn", "stepOut", "disconnect", "peekyArrayHolder");
     private static final Set<String> STEPS = Set.of("next", "stepIn", "stepOut");
-    /** The JDK's own class loaders besides the bootstrap one (Peeky #204). */
+    /** The JDK's own class loaders besides the bootstrap one. */
     private static final Set<String> JDK_LOADERS = Set.of(
         "jdk.internal.loader.ClassLoaders$PlatformClassLoader", "sun.misc.Launcher$ExtClassLoader");
-    /** At most this many objects referring to an array are read before writing it (#204). */
+    /** At most this many objects referring to an array are read before writing it. */
     private static final int MAX_REFERRERS = 64;
     /** And through at most this many arrays holding it. */
     private static final int MAX_DEPTH = 4;
     /** The longest wait for the JVM's search for what refers to an array, and the least. */
     private static final long SEARCH_MS = 2000, MIN_SEARCH_MS = 250;
-    /** The same search's longest wait, and least, when a listing asks it (Peeky #261). */
+    /** The same search's longest wait, and least, when a listing asks it. */
     private static final long LIST_SEARCH_MS = 500, MIN_LIST_SEARCH_MS = 50;
     /** What a write keeps of the session's pause budget for its other requests. */
     private static final long PAUSE_MARGIN_MS = 1000;
     /**
-     * The JDK fields whose array holds the program's own values as its elements (#204): the
+     * The JDK fields whose array holds the program's own values as its elements: the
      * backing arrays of ArrayList, Vector and ArrayDeque, and of Arrays.asList's list (the
      * caller's own array) and its iterator. No JDK state depends on what those elements hold.
      */
@@ -76,9 +76,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         return filters;
     }
     private final SourceMap sources;
-    /** The container each pending `variables` request lists, by request seq (#204). */
+    /** The container each pending `variables` request lists, by request seq. */
     private final Map<Integer, Integer> listings = new ConcurrentHashMap<>();
-    /** The JVM a pending change suspended, by request seq (#261): resumed before its reply. */
+    /** The JVM a pending change suspended, by request seq: resumed before its reply. */
     private final Map<Integer, com.sun.jdi.VirtualMachine> paused = new ConcurrentHashMap<>();
 
     private PeekyJavaAdapter(ProviderContext context, SourceMap sources) {
@@ -138,15 +138,15 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             }
             if (request.command.equals("setVariable")) {
                 String value=args.get("value").getAsString();
-                // A text between plain quotes (Peeky #137): java-debug takes them off and makes
+                // A text between plain quotes: java-debug takes them off and makes
                 // a new String of the rest, for a String variable only (checked below).
                 boolean text=value.length()>=2 && value.startsWith("\"") && value.endsWith("\"");
-                // One UTF-16 unit between single quotes (Peeky #183): java-debug sets a char to
+                // One UTF-16 unit between single quotes: java-debug sets a char to
                 // it, for a char variable only (checked below).
                 boolean character=value.length()==3 && value.startsWith("'") && value.endsWith("'");
                 if (!text && !character && !value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
                     throw new IllegalArgumentException("only numeric or boolean scalar literals, a quoted char for a char, or text for a String, supported");
-                // What is left of the session's pause budget (Peeky's worker; #204), never
+                // What is left of the session's pause budget (Peeky's worker), never
                 // passed on to java-debug.
                 long pauseLeftMs=-1;
                 if (args.has("peekyPauseLeftMs")) {
@@ -168,7 +168,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 && args.get("variablesReference").isJsonPrimitive())
                 listings.put(request.seq, args.get("variablesReference").getAsInt());
             if (request.command.equals("peekyArrayHolder")) {
-                // Peeky's own request (#261), never passed on to java-debug.
+                // Peeky's own request, never passed on to java-debug.
                 Messages.Response response=new Messages.Response(request.seq, request.command, true);
                 response.body=arrayHolder(args);
                 sendResponse(response);
@@ -186,7 +186,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     /**
-     * Resume a JVM a change suspended (#261), or end the launcher where that fails: a JVM
+     * Resume a JVM a change suspended, or end the launcher where that fails: a JVM
      * whose every thread stays suspended must never outlive the session silently. Ending
      * closes the debugger's connection, which resumes them in an attached JVM too, and
      * Peeky's worker closes the session with the reason the launcher gave on stderr.
@@ -256,14 +256,14 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         if (visible==null || visible.isStatic() || instances!=1)
             throw new IllegalArgumentException("field " + name + " is hidden by, or shares its name with, "
                 + "another field of " + type.name() + "; it cannot be changed");
-        // A JDK class's own state (#204): a String's cached hash, an ArrayList's size.
+        // A JDK class's own state: a String's cached hash, an ArrayList's size.
         if (jdkLoaded(visible.declaringType()))
             throw new IllegalArgumentException("field " + name + " is declared by "
                 + visible.declaringType().name() + ", a JDK class; Peeky never changes the JDK's own fields");
     }
 
     /**
-     * Whether a class is the JDK's own (#204): one in a named module of the JDK's
+     * Whether a class is the JDK's own: one in a named module of the JDK's
      * (`java.base`, and `jdk.jshell` or `jdk.compiler`, which the application class loader
      * loads), or, before modules (Java 8) or besides them, one the bootstrap or platform
      * class loader loaded. Never judged by its package's name.
@@ -279,7 +279,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
 
     /**
      * Refuse writing an element of an array a JDK class's field holds, by the array's
-     * identity (#204): a reflected or Unsafe alias of a String's bytes is that String's
+     * identity: a reflected or Unsafe alias of a String's bytes is that String's
      * state whatever local or field names it. The JVM searches its heap for what refers
      * to the array, which no request can interrupt, so the wait is bounded: 2 s, less
      * where the session's pause budget leaves less (``pauseLeftMs``, from Peeky's worker);
@@ -338,8 +338,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     /**
-     * Whether a JDK class's field holds the array whose elements a listing shows (Peeky
-     * #261), asked before Peeky marks them `[settable]`: the search a write makes
+     * Whether a JDK class's field holds the array whose elements a listing shows,
+     * asked before Peeky marks them `[settable]`: the search a write makes
      * (checkArrayTarget), with a shorter wait, so a mark promises only what a write does.
      * Body: `holder` (where a JDK class's field holds it), or `unknown` (why that cannot
      * be told) with `timedOut` (whether a longer search, as a write makes, may tell), or
@@ -449,8 +449,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     /**
-     * Name the class that declares each field an object's listing shows (`peekyOwner`,
-     * Peeky #204) and whether the JDK loaded it (`peekyJdkOwner`): java-debug names fields
+     * Name the class that declares each field an object's listing shows (`peekyOwner`)
+     * and whether the JDK loaded it (`peekyJdkOwner`): java-debug names fields
      * only, and Peeky never changes a field a JDK class declares, inherited or not. A name
      * two instance fields share stays unnamed.
      */
@@ -518,7 +518,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     @Override public void sendResponse(Messages.Response response) {
-        // A change's JVM runs again before its reply goes out, or no reply does (#261).
+        // A change's JVM runs again before its reply goes out, or no reply does.
         com.sun.jdi.VirtualMachine suspended=paused.remove(response.request_seq);
         if (suspended!=null) resumeOrEnd(suspended);
         if ("variables".equals(response.command)) {
@@ -535,15 +535,15 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             caps.addProperty("peekySteps", true);
             // And refuses a field write whose name a hiding or second field shares.
             caps.addProperty("peekyFieldSet", true);
-            // And changes a String to a text (#137), only where it is declared a String.
+            // And changes a String to a text, only where it is declared a String.
             caps.addProperty("peekyTextSet", true);
-            // And changes a char to a quoted char (#183), only where it is declared a char.
+            // And changes a char to a quoted char, only where it is declared a char.
             caps.addProperty("peekyCharSet", true);
             // And names each listed field's declaring class and whether the JDK loaded it,
-            // never changing a JDK class's field or an array one holds (#204).
+            // never changing a JDK class's field or an array one holds.
             caps.addProperty("peekyJdkOwners", true);
             // And answers peekyArrayHolder: whether a JDK class's field holds an array, so
-            // its elements are marked [settable] only where a write is made (#261).
+            // its elements are marked [settable] only where a write is made.
             caps.addProperty("peekyArrayHolders", true);
             response.body=caps;
         }
