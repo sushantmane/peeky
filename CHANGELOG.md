@@ -61,9 +61,12 @@
 - **Protocol 10:** `expand` takes `key`, for a map's entries Peeky read from an unordered
   container's nodes. Every request must carry `X-Peeky-Protocol`. A worker refuses an older
   client's requests, and a client sends an older worker nothing, except `version` (#374).
-- **C built by GCC:** a stop on the first line of a declaration over several lines, after its
-  elements' code, withholds the local as still running; it showed leftovers. A row the debugger
-  can't read is never marked `[settable]`. The GCC lane runs two more test files (#425).
+- **`version`'s `error_codes`** lists every code Peeky sends, now with `BUILD_FAILED`, `NO_STOP`
+  and `PROGRAM_CRASHED` (#423).
+- **C built by GCC:** a stop on the first line of a declaration over several lines, after code of
+  its later lines, withholds the local: Peeky can't tell whether it is fully initialized. It
+  showed leftovers. A row the debugger can't read is never marked `[settable]`. The GCC lane runs
+  two more test files (#425).
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).
