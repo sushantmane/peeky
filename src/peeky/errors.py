@@ -418,6 +418,11 @@ _MUTATION_HINTS = (
         "there), or change the copy the message names instead.",
     ),
     (
+        # A statement under way, or else a binding's copy: no one copy to change instead.
+        r"statement under way .*may hold a copy of (?:it|`[^`]+`) that it goes on with",
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
+    ),
+    (
         # Rust: no path from the stop reads it before it is overwritten or ends.
         r"(?:does|may) not read (?:it|`[^`]+`) after (?:this stop|any stop of line [0-9]+), so a "
         r"change",

@@ -223,6 +223,11 @@ The rules are in the cookbook's
   Its note then says that the build doesn't tell it from a raw pointer, not that it is one.
 - A raw pointer local is judged by its MIR type, before any liveness check. An array of them isn't
   collapsed: each element is judged as a raw pointer inside a value.
+- So is a `NonNull` local, a raw pointer that is never null. Its DWARF type must be
+  `core::ptr::non_null::NonNull<T>`, and every binding's MIR type `std::ptr::NonNull<T>`. A
+  crate's own `NonNull` is named under the crate.
+- Its address is its one field, `pointer`, which LLDB lists as a `T *` (`rust._non_null`). A wide
+  one's `pointer` has parts, an address with a length or vtable, so it shows nothing.
 
 ### Past its last use
 
@@ -587,6 +592,8 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   place holds a sure copy, some another way, it says "the program already holds a copy of it".
 - A binding that may hold a copy is named apart from the statement under way, which may not use
   it: "the program's own `y` (at line 34) may hold a copy of it that it goes on with".
+- Where such a binding holds one at every place, that is the refusal's one reason. What the
+  statement under way holds isn't added. One that may only point into it doesn't count.
 - It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
   a coroutine's body. `rust._copy_reason` decides the wording.
 - A store through a pointer surely into a local, or into what it owns, of a value surely holding a

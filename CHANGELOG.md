@@ -23,6 +23,7 @@
   - In a caller's frame, a struct or array whose declaration's lines have run, in an unoptimized
     build (#366).
   - C++ structured bindings by reference, where Peeky proves what they refer to is alive (#368).
+- **Rust:** a `NonNull<T>` local's address, as a raw pointer's. It is never followed (#420).
 
 ### Other changes
 
@@ -64,6 +65,9 @@
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).
+- **Rust notes:** a value Peeky shows none of says so, not that it shows its pointer. A change
+  that the program's own copy rules out at every stop gives that one reason, and its hint agrees
+  (#420, #421).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

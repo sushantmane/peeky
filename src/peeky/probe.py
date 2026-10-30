@@ -1381,18 +1381,40 @@ def _composite_note(variable, selector):
     return _rust_note(_LENT_COMPOSITE_RUST if lent else _COMPOSITE_RUST, variable, selector)
 
 
-_UNPROVEN_RUST = (
-    "this Rust Box, or pointer, shows only its pointer, which can reach freed memory: "
+# What to do about a pointer that can reach freed memory, and how Peeky judges one.
+_UNPROVEN_TAIL = (
     "read a plain function's own local where it is live, or capture what it holds where "
     "it is created. Peeky never follows a raw pointer, and follows another only to a "
     "value the MIR proves live, in the innermost frame of an unoptimized build, in a "
     "crate with no unsafe code. Here what it points at may be moved or dropped, or the "
     "MIR cannot say (rust-cookbook 7.2)"
 )
+_UNPROVEN_RUST = (
+    "this Rust Box, or pointer, shows only its pointer, which can reach freed memory: "
+    + _UNPROVEN_TAIL
+)
+# The same, for a value the debugger gives no address of (a tuple or `Option` of
+# references, a `&str`): none of it shows.
+_UNSHOWN_RUST = (
+    "this Rust value is not shown, because a pointer in it can reach freed memory: "
+    + _UNPROVEN_TAIL
+)
 # A raw pointer is never followed, wherever it is and however live.
 _RAW_RUST = (
     "this Rust raw pointer shows only its address: Peeky never follows a raw pointer, "
     "because nothing proves that what it points at still stands"
+)
+# std's NonNull is one too.
+_NON_NULL_RUST = (
+    "this Rust NonNull shows only its address: a NonNull is a raw pointer that is never "
+    "null, and Peeky never follows a raw pointer, because nothing proves that what it "
+    "points at still stands"
+)
+# One the worker gives no single address of; ``why`` (the worker's) says why.
+_UNSHOWN_NON_NULL_RUST = (
+    "this Rust NonNull is not shown: Peeky shows a NonNull, a raw pointer that is never "
+    "null, only as one address, and {why}. To see its address, capture a thin pointer "
+    "made from it, such as its `.cast::<u8>()`, with a candidate edit (`--old`/`--new`)"
 )
 _MAYBE_RAW_RUST = (
     "this Rust pointer shows only its address: Peeky never follows a raw pointer, and the "
@@ -1448,16 +1470,24 @@ def _unread_note(variable, selector):
 
 
 def _unproven_text(variable):
-    """Why a Rust value shows only its pointer: a raw pointer, or one the build does not
+    """Why a Rust value shows only its pointer, or nothing where the debugger gives no
+    address of it: a raw pointer (std's NonNull is one), or one the build does not
     tell from one; a reference past the worker's liveness proof, where the worker says
     why; else every way that can be."""
+    shown = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
     pointer = variable.get("unproven_pointer")
+    reason = variable.get("unproven_reason")
+    if pointer == "raw" and _lldb_type(variable).startswith("core::ptr::non_null::NonNull<"):
+        if shown:
+            return _NON_NULL_RUST
+        why = reason if isinstance(reason, str) else "the debugger gave no address for this one"
+        return _UNSHOWN_NON_NULL_RUST.format(why=why)
     if pointer in ("raw", "unknown"):
         return _RAW_RUST if pointer == "raw" else _MAYBE_RAW_RUST
-    reason = variable.get("unproven_reason")
     if isinstance(reason, str):
-        return f"this Rust reference shows only its pointer: {reason}"
-    return _UNPROVEN_RUST
+        what = "shows only its pointer" if shown else "is not shown"
+        return f"this Rust reference {what}: {reason}"
+    return _UNPROVEN_RUST if shown else _UNSHOWN_RUST
 
 
 def _unproven_note(variable):
@@ -1492,8 +1522,12 @@ _RUST_NOTE_OPENINGS = tuple(
     )
 ) + (
     "This Rust Box",
+    "This Rust value is not shown",
     "This Rust reference shows only its pointer",
+    "This Rust reference is not shown",
     "This Rust raw pointer shows only its address",
+    "This Rust NonNull shows only its address",
+    "This Rust NonNull is not shown",
     "This Rust pointer shows only its address",
     "Its Rust raw pointers show only their address",
     "Its Rust pointers show only their address",
