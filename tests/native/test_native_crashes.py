@@ -379,7 +379,7 @@ def served(cxx, tmp_path):
         dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
         sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT") if cxx == "clang" else None,
     )
-    token = "native-crash-tests-token-123456"
+    token = "native-crash-tests-token-123456-0123456789abcdef"
     server = make_server(root, token, 0, adapter=target)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

@@ -373,7 +373,7 @@ def test_http_requests_are_held_to_the_name_policy(tmp_path):
     from peeky.client import Client
     from peeky.worker import make_server
 
-    token = "unit-test-secret-token-1234"
+    token = "unit-test-secret-token-1234-0123456789abcdef"
     server = make_server(tmp_path, token, 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

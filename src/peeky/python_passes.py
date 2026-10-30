@@ -45,6 +45,7 @@ import types
 import warnings
 from collections import OrderedDict
 
+from peeky.processes import without_credentials
 from peeky.python_scopes import read_source, source_key
 
 # Functions larger than this are not judged.
@@ -487,6 +488,7 @@ def same_compiler(interpreter):
                     text=True,
                     timeout=15,
                     check=False,
+                    env=without_credentials(os.environ),
                 )
                 same = found.returncode == 0 and json.loads(found.stdout) == _identity()
         except (OSError, ValueError, subprocess.SubprocessError):

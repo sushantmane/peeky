@@ -399,7 +399,7 @@ def test_an_attached_program_is_never_ended(tmp_path, leftovers):
 def test_the_http_error_says_what_became_of_the_program(tmp_path, leftovers):
     record = tmp_path / "started.txt"
     (tmp_path / "main.py").write_text("print('never runs')\n")
-    token = "cleanup-test-token-123456"
+    token = "cleanup-test-token-123456-0123456789abcdef"
     server = make_server(tmp_path, token, 0, adapter=target("hang", record))
     server.worker.launch_deadline_s = 2.0
     thread = threading.Thread(target=server.serve_forever, daemon=True)

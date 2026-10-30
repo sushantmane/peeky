@@ -147,8 +147,8 @@ def test_python_no_build_recipe_works(source):
 
 
 def test_trusted_argv_has_no_shell_and_token_not_inherited(source, monkeypatch):
-    monkeypatch.setenv("DEBUG_TOKEN", "synthetic-secret")
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "synthetic-client-secret")
+    monkeypatch.setenv("DEBUG_TOKEN", "synthetic-secret-0123456789abcdef")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "synthetic-client-secret-0123456789abcdef")
     script = "import os,sys; from pathlib import Path; assert not {'DEBUG_TOKEN', 'PEEKY_WORKER_TOKEN'} & set(os.environ); Path('out.bin').write_text(sys.argv[1])"
     literal = "$(touch unwanted); literal"
     configured = recipe(build_commands=(Command((sys.executable, "-c", script, literal)),))
@@ -184,7 +184,7 @@ def test_prebuilt_artifact_is_not_a_clean_build(source):
 
 def test_ambient_build_flags_not_inherited(source, monkeypatch):
     monkeypatch.setenv("JAVA_TOOL_OPTIONS", "ambient-unrecorded-flags")
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "synthetic-client-secret")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "synthetic-client-secret-0123456789abcdef")
     configured = recipe(
         build_commands=(
             command(

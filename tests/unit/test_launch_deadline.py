@@ -49,12 +49,16 @@ def test_http_prepare_deadline_rejects_without_session_or_runtime_leak(
         pytest.fail("An expired preparation must never start the debugger")
 
     monkeypatch.setattr("peeky.worker.DAP", forbidden_dap)
-    server = make_server(tmp_path, "deadline-test-token-123456", 0, adapter=SlowTarget())
+    server = make_server(
+        tmp_path, "deadline-test-token-123456-0123456789abcdef", 0, adapter=SlowTarget()
+    )
     server.worker.launch_deadline_s = 0.08
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = Client(f"http://127.0.0.1:{server.server_port}", "deadline-test-token-123456")
+        client = Client(
+            f"http://127.0.0.1:{server.server_port}", "deadline-test-token-123456-0123456789abcdef"
+        )
         started = time.monotonic()
         with pytest.raises(HTTPError) as caught:
             client.call("launch", program="target.py", breakpoints=[])
