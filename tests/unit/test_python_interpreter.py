@@ -51,7 +51,7 @@ def fake_python(path, version="3.12.4", implementation="cpython", optimize=0, **
     ]
     listed = [implementation, version, [major, minor], compiler[1], *compiler[2:], optimize]
     executable = said.get("executable") or str(path)
-    rest = [executable, f"sys.flags(optimize={optimize})", ["/fake/lib"]]
+    rest = [executable, f"sys.flags(optimize={optimize})", ["/fake/lib"], []]
     if "text" in said:
         body = f"cat <<'EOF'\n{said['text']}\nEOF\n"
     else:
@@ -211,7 +211,7 @@ def test_an_interpreter_is_asked_as_the_program_runs_without_the_token(tmp_path,
     python = tmp_path / "python"
     said = repr(
         ["cpython", "3.12.1", [3, 12], "3.12.1 (x)", "", "cpython-312", "ab", 1, str(python)]
-        + ["sys.flags(optimize=1)", []]
+        + ["sys.flags(optimize=1)", [], []]
     )
     python.write_text(
         f'#!/bin/sh\necho "$@" > {seen}.args\npwd > {seen}.cwd\nenv > {seen}\n'
@@ -236,7 +236,7 @@ SHIM = """#!/bin/sh
 if grep -qs old .python-version; then V=3.9.6; M=9; else V=3.12.4; M=12; fi
 said="['cpython', '$V', [3, $M], '$V (x)', '', 'cpython-3$M', '00', 0"
 if [ -z "$3" ]; then echo "$said]"; exit 0; fi
-printf '\\n<PEEKY-IDENTITY %s> %s\\n' "$3" "$said, '$0', 'sys.flags()', []]"
+printf '\\n<PEEKY-IDENTITY %s> %s\\n' "$3" "$said, '$0', 'sys.flags()', [], []]"
 """
 
 
@@ -334,7 +334,7 @@ def test_identify_keeps_a_bounded_output(tmp_path):
 def test_a_helpers_replies_are_read_only_from_its_records(tmp_path, no_active):
     python = tmp_path / "python"
     compiler = ["cpython", "3.12.4 (x)", "", "cpython-312", "00"]
-    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python), "", []])
+    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python), "", [], []])
     hello = json.dumps({"id": 0, "compiler": compiler})
     answer = json.dumps({"id": 1, "result": [1, 2, 3]})
     python.write_text(
@@ -546,7 +546,7 @@ def test_a_helper_is_bounded_by_the_readings_deadline(tmp_path, no_active):
     # is never sent.
     python = tmp_path / "python"
     compiler = ["cpython", "3.12.4 (x)", "", "cpython-312", "00"]
-    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python), "", []])
+    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python), "", [], []])
     hello = json.dumps({"id": 0, "compiler": compiler})
     python.write_text(
         '#!/bin/sh\ncase "$1" in\n'
@@ -710,6 +710,12 @@ def test_absolute_option_is_read_where_the_worker_runs(tmp_path, monkeypatch):
         ('exec "{python}" -O "$@"', "sys.flags.optimize 1, not 0"),
         ('PYTHONPATH=/nowhere exec "{python}" "$@"', "its import path, sys.path"),
         ('exec "{python}" -I "$@"', "sys.flags.isolated 1, not 0"),
+        # Python's own variables that change no flag or path (PYTHONHASHSEED=123 keeps
+        # hash_randomization 1).
+        ('PYTHONWARNINGS=error exec "{python}" "$@"', "the environment variable PYTHONWARNINGS"),
+        ('PYTHONBREAKPOINT=0 exec "{python}" "$@"', "the environment variable PYTHONBREAKPOINT"),
+        ('PYTHONIOENCODING=latin-1 exec "{python}" "$@"', "variable PYTHONIOENCODING"),
+        ('PYTHONHASHSEED=123 exec "{python}" "$@"', "the environment variable PYTHONHASHSEED"),
     ],
 )
 def test_a_wrapper_that_changes_how_python_runs_is_refused(tmp_path, no_active, wrapper, changed):
@@ -729,9 +735,11 @@ def test_a_wrapper_that_changes_how_python_runs_is_refused(tmp_path, no_active, 
     assert changed in message and f"Pass the interpreter itself, --python {python}," in message
     error = classify(raised.value)
     assert error["code"] == "INVALID_REQUEST" and len(error["hint"]) <= 150, error
-    # One that changes nothing is the file it runs.
-    script.write_text(f'#!/bin/sh\nexec "{python}" "$@"\n')
-    assert find(tmp_path, str(script)).executable == python
+    # One that changes nothing Python reads as a setting is the file it runs: a shim may
+    # change PATH, or its own variables.
+    for wrapper in ("", "PATH=/nowhere:$PATH PYENV_VERSION=3 "):
+        script.write_text(f'#!/bin/sh\n{wrapper}exec "{python}" "$@"\n')
+        assert find(tmp_path, str(script)).executable == python
 
 
 IMPORTS_JSON = "import json\n\ntotal = 0\nprint(json.dumps(total))\n"
@@ -751,17 +759,21 @@ def test_a_module_a_file_of_its_name_shadows_is_not_self_contained(tmp_path):
         made.mkdir() if shadow.endswith("/") else made.write_text("")
         assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is False, shadow
         made.rmdir() if shadow.endswith("/") else made.unlink()
-    # A file on the path (a zip archive) may hold one; a missing entry holds none.
+    # A file on the path (a zip archive), or an entry inside one, may hold one; a missing
+    # entry holds none.
     (tmp_path / "lib.zip").write_text("")
     assert _self_contained(IMPORTS_JSON, [str(tmp_path / "lib.zip")]) is False
+    assert _self_contained(IMPORTS_JSON, [str(tmp_path / "lib.zip" / "vendor")]) is False
+    assert _self_contained(IMPORTS_JSON, [str(tmp_path / "lib.zip" / "a" / "b")]) is False
     assert _self_contained(IMPORTS_JSON, [str(tmp_path / "missing")]) is True
+    assert _self_contained(IMPORTS_JSON, [str(tmp_path / "missing" / "deeper")]) is True
     # Not a module of that name: a data file, another module.
     (places[0] / "json.txt").write_text("")
     (places[0] / "jsonish.py").write_text("")
     assert _self_contained(IMPORTS_JSON, [str(p) for p in places]) is True
 
 
-@pytest.mark.parametrize("where", ["root", "pythonpath"])
+@pytest.mark.parametrize("where", ["root", "pythonpath", "archive"])
 def test_a_candidate_whose_import_is_shadowed_keeps_the_copy_note(
     tmp_path, monkeypatch, no_active, where
 ):
@@ -784,6 +796,15 @@ def test_a_candidate_whose_import_is_shadowed_keeps_the_copy_note(
             candidate.close()
 
     assert noted() is False
+    if where == "archive":
+        # An entry inside a zip archive: Python imports from it, Peeky can't list it.
+        import zipfile
+
+        with zipfile.ZipFile(tmp_path / "libs.zip", "w") as archive:
+            archive.writestr("vendor/json.py", "import os\ndumps = os.getcwd\n")
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path / "libs.zip" / "vendor"))
+        assert noted() is True
+        return
     shadow = root if where == "root" else tmp_path / "lib"
     shadow.mkdir(exist_ok=True)
     (shadow / "json.py").write_text("import os\ndumps = os.getcwd\n")

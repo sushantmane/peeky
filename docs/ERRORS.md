@@ -182,7 +182,8 @@ file lists what it reads.
   the program's interpreter, or `--python peeky` for Peeky's own. A `--python` with `--worker`, or
   for another language, is refused too: a worker chooses its own.
 - A `--python` wrapper that changes how Python runs: `The Python interpreter … is a wrapper that
-  changes how Python runs: …`. The message names what it changes, such as `sys.flags.optimize`.
+  changes how Python runs: …`. The message names what it changes, such as `sys.flags.optimize` or
+  `the environment variable PYTHONWARNINGS`.
   Pass the file it runs as `--python`, and set the options in the environment
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
 - A Java target without an adapter bundle: `No Java adapter bundle at …`. Run the

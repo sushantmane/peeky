@@ -158,8 +158,8 @@ def _shadowed(names, places):
     program imports it: a module or package of that name (any case: a volume may ignore
     it) is in one of ``places``, which come before the standard library on the program's
     path (its script's directory, its working directory, `PYTHONPATH`'s entries), or one
-    of them is a file (a zip archive) or can't be listed; or this interpreter finds it
-    outside its standard library."""
+    of them is not a directory Peeky can list (a file, an entry inside a zip archive); or
+    this interpreter finds it outside its standard library."""
     import importlib.machinery
     import importlib.util
     import sysconfig
@@ -171,11 +171,17 @@ def _shadowed(names, places):
     for place in places:
         try:
             entries = os.listdir(place)
-        except (FileNotFoundError, NotADirectoryError):
-            if os.path.isfile(place):
+        except FileNotFoundError:
+            # Nothing to import from where nothing is, unless a file on the way (a zip
+            # archive: `libs.zip/vendor`) holds it.
+            above = Path(place).parent
+            while not os.path.lexists(above) and above != above.parent:
+                above = above.parent
+            if not os.path.isdir(above):
                 return True
             continue
         except OSError:
+            # Not a directory Peeky can list (a file, an entry inside an archive).
             return True
         for entry in entries:
             low = entry.casefold()

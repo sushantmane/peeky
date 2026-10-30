@@ -30,8 +30,9 @@ directory debugpy starts it in (the root: a pyenv shim picks its Python from the
 the program's environment. It reports the file it runs (`sys.executable`), which debugpy
 then runs, and which the helper runs: a shim can't choose another Python later. Where
 that file is not the path given, it is asked too, run alone; a wrapper whose file then
-reports other flags (`-O`) or another import path (an exported PYTHONPATH) is refused, as
-debugpy would run it without them. That file's place, inode, size and mtime are checked
+reports other flags (`-O`), another import path (an exported PYTHONPATH) or other PYTHON*
+variables (PYTHONWARNINGS) is refused, as debugpy would run it without them. Other
+variables are not compared (a shim may change PATH), and a wrapper's are not kept. That file's place, inode, size and mtime are checked
 at each reading. What it prints is
 read only from a record of its own, after a newline and with a nonce of the call's, so
 a `.pth` file's or an exit handler's output can't be taken for it. A reading that can't
@@ -85,18 +86,20 @@ MAX_REPLY = 16 * 1024 * 1024
 # What identify keeps of what the interpreter prints, its record and anything else.
 MAX_IDENTIFY_OUTPUT = 1024 * 1024
 # What the interpreter says of itself, run as the program is (no -I, the program's
-# environment) but importing nothing: any Python can run it, so a refusal names it. Its
-# record follows a newline and names the call's nonce (argv[1]): a `.pth` file's output
-# without a newline, or an exit handler's after it, is not part of it.
+# environment) but importing nothing but builtin modules: any Python can run it, so a
+# refusal names it. Its record follows a newline and names the call's nonce (argv[1]): a
+# `.pth` file's output without a newline, or an exit handler's after it, is not part of
+# it. It ends with every PYTHON* variable of its environment, as bytes.
 _IDENTIFY = (
-    "import sys\n"
+    "import sys, posix\n"
     "i = getattr(sys, 'implementation', None)\n"
     "m = getattr(sys.modules.get('_frozen_importlib_external'), 'MAGIC_NUMBER', None)\n"
     "sys.stdout.write('\\n<PEEKY-IDENTITY %s> %r\\n' % (sys.argv[1], ["
     "getattr(i, 'name', 'cpython'), sys.version.split()[0], list(sys.version_info[:2]), "
     "sys.version, getattr(sys, 'abiflags', ''), getattr(i, 'cache_tag', None), "
     "m.hex() if m else '', sys.flags.optimize, sys.executable, repr(sys.flags), "
-    "list(sys.path)]))\n"
+    "list(sys.path), sorted((k, v) for k, v in posix.environ.items() "
+    "if k.startswith(b'PYTHON'))]))\n"
     "sys.stdout.flush()\n"
 )
 _SERVE = (
@@ -374,6 +377,14 @@ def _differences(through, direct):
     ]
     if through[10] != direct[10]:
         found.append("its import path, sys.path")
+    # Only Python's own variables: a shim may change PATH and others, which no Python
+    # reads as one of its settings.
+    variables, alone = dict(through[11]), dict(direct[11])
+    found += [
+        f"the environment variable {name.decode(errors='replace')}"
+        for name in sorted(set(variables) | set(alone))
+        if variables.get(name) != alone.get(name)
+    ]
     return found
 
 
@@ -401,7 +412,9 @@ def identify(path, chosen, unused=None, environment=None, cwd=None):
         raise unrunnable(exc) from None
     try:
         implementation, version, (major, minor), build, flags, tag, magic, level = said[:8]
-        executable, _, _ = said[8:]
+        executable, _, _, variables = said[8:]
+        if not all(isinstance(each, tuple) and len(each) == 2 for each in variables):
+            raise ValueError("no environment")
         if not isinstance(executable, str) or not os.path.isabs(executable):
             raise ValueError("no executable")
         release = (int(major), int(minor))

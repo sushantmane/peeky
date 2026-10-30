@@ -493,7 +493,7 @@ def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, case
         script = tmp_path / name
         version = sys.version.split()[0]
         listed = [compiler[0], version, list(sys.version_info[:2]), *compiler[1:], 0]
-        said = repr([*listed, str(script), "sys.flags()", []])
+        said = repr([*listed, str(script), "sys.flags()", [], []])
         script.write_text(f'#!/bin/sh\nprintf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{said}"\n')
         script.chmod(0o755)
         return str(script)
