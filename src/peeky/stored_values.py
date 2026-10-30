@@ -1,10 +1,10 @@
 """A stored value's elements and text, for SQL: `elements(value, language)` and
-`text(value, language, type)` (twelfth evaluation).
+`text(value, language, type)`.
 
 A captured value is stored as Peeky shows it, in its language's notation: a Java array is
 `int[3]@55 [490, 484, 497]`, a Python string `'Göteborg'`, with its quotes. So
-`json_each(substr(value, instr(value, '[')))` failed (the first `[` is the type's), and
-`value = 'Göteborg'` matched nothing. These read the notation back, and only where it says
+`json_each(substr(value, instr(value, '[')))` fails (the first `[` is the type's), and
+`value = 'Göteborg'` matches nothing. These read the notation back, and only where it says
 exactly what the program holds; anything else is NULL, never a guess:
 
 - a preview cut short (`…`, `...`) or a count that disagrees with its elements;
@@ -14,7 +14,7 @@ exactly what the program holds; anything else is NULL, never a guess:
   byte `\\xff`, a lone surrogate);
 - a C or C++ character array (`char[32]`) whose note disagrees with its size: its text is
   its bytes up to its first NUL (`"Adeyemi" (then a NUL and 24 bytes not shown)` gives
-  `Adeyemi`, thirteenth evaluation), or all of them where it holds none;
+  `Adeyemi`), or all of them where it holds none;
 - an integer outside SQLite's 64 bits, or a decimal that a double does not hold exactly as
   written (a `long double`'s `1e-4000` or `1.0000000000000000001`);
 - any Python value: debugpy names a value's type by its `__class__` and shows it by its

@@ -18,7 +18,7 @@ python -m build
 
 Develop one small milestone at a time. Add a regression test for changed debugger behavior; tests must terminate their subprocesses even on failure. Keep unit tests independent of real debugger processes and model APIs. Integration tests belong in `tests/integration` and use real debugpy with deterministic target programs. Hosted CI must never need model credentials or external model calls. Exercise model behavior through a fake provider in unit tests; opt-in live evaluations are separate from merge checks.
 
-Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Add a line to `CHANGELOG.md` under **Unreleased** for each change a user would notice. Include protocol or architecture changes in the design documents. Record adversarial review findings and their resolution when changing state, permissions, transport, or execution semantics.
+Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Add a line to `CHANGELOG.md` under **Unreleased** for each change a user would notice. Include protocol or architecture changes in the design documents. When changing state, permissions, transport, or execution semantics, record the adversarial review's findings and how each was resolved in the pull request.
 
 ## Security
 
@@ -26,13 +26,13 @@ Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't
 
 ## CI budget
 
-CI starts its jobs in parallel: quality, unit, debugger integration on Python 3.11 and 3.13, Java, C, C++ (clang and GCC), Rust, remote SSH e2e and wheel smoke. Every job has a four-minute timeout, except three: remote SSH e2e and C++ LLVM 18 conformance have six minutes, and C++ GCC 13 conformance has ten ([TESTING.md](docs/TESTING.md)). The desired overall run is under five minutes excluding queue delays. This is a budget and measured target, not a guarantee: hosted-runner scheduling and package download delays are external. Watch the longest job's duration as tests grow. Split independent fixtures or move optional benchmarks to manually triggered jobs before increasing timeouts. Newer pushes cancel obsolete runs for the same branch or pull request.
+CI starts its jobs in parallel. [TESTING.md](docs/TESTING.md#required-ci-parallel-from-the-first-commit) lists them, with their timeouts. The desired overall run is under five minutes excluding queue delays. This is a budget and measured target, not a guarantee: hosted-runner scheduling and package download delays are external. Watch the longest job's duration as tests grow. Split independent fixtures or move optional benchmarks to manually triggered jobs before increasing timeouts. Newer pushes cancel obsolete runs for the same branch or pull request.
 
 Direct runtime and development versions are pinned. Keep the dev extra and `requirements-dev.txt` aligned. Actions are pinned by commit SHA and updated by Dependabot. Transitive pip dependencies are not yet locked; a full lock is a follow-up if reproducibility requires it.
 
 ## CI's Linux lanes on your machine
 
-When hosted CI cannot run, run the Docker mirror, `scripts/ci_linux`. It runs the same checks and test suites as `ci.yml`'s jobs, once each, in its Ubuntu image. It skips remote SSH e2e: run that one on the host, with `PEEKY_E2E_DOCKER=1`. Hosted CI runs the integration tests on Python 3.11 and 3.13; the mirror runs them once, with the image's `python3`. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
+When hosted CI cannot run, run the Docker mirror, `scripts/ci_linux`. [TESTING.md](docs/TESTING.md#the-docker-mirror) says what it runs, and how it differs from hosted CI. It skips remote SSH e2e: run that one on the host, with `PEEKY_E2E_DOCKER=1`. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
 
 ```sh
 docker build -t peeky-ci-linux scripts/ci_linux
@@ -41,7 +41,7 @@ git archive HEAD | docker run --rm -i --cap-add=SYS_PTRACE --security-opt seccom
 PEEKY_E2E_DOCKER=1 pytest tests/remote   # the remote SSH lane, on the host
 ```
 
-It runs against the committed tree (`git archive HEAD`). It adds lanes that hosted CI doesn't have, such as C++ and Rust with LLVM 20's lldb-dap, whose `readMemory` qualifies Rust memory views (hosted CI has only LLVM 18); [TESTING.md](docs/TESTING.md#the-docker-mirror) lists them. It prints one `PASS`/`FAIL` line per lane. Under a `FAIL` line, it prints what each failing test said, bounded, so a failure seen once can be diagnosed. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
+It runs against the committed tree (`git archive HEAD`). It prints one `PASS`/`FAIL` line per lane, with what each failing test said. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
 
 ## Delivery
 

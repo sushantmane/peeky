@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from peeky.cli import main
-from peeky.rust_ir import ir_locals, memory_locals
+from peeky.rust_ir import ir_locals
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -106,7 +106,7 @@ start:
 def test_memory_locals_follow_the_declared_storage(tmp_path):
     path = tmp_path / "demo.ll"
     path.write_text(IR)
-    found = memory_locals(path)
+    found, _ = ir_locals(path)
     function, inner = "h0123456789abcdef", "hfedcba9876543210"
     assert found[(function, "kept")] is True
     assert found[(function, "older")] is True
@@ -127,7 +127,6 @@ def test_each_declaration_says_why_its_name_is_not_in_memory(tmp_path):
     declarations = {}
     memory, _ = ir_locals(path, declarations)
     function, inner = "h0123456789abcdef", "hfedcba9876543210"
-    assert memory == memory_locals(path)
     assert declarations[(function, "kept")] == [(3, "slot")]
     assert declarations[(function, "copy")] == [(4, "copy")]
     assert sorted(declarations[(function, "twice")]) == [(6, "copy"), (7, "slot")]

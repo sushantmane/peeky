@@ -4,9 +4,9 @@
 
 Peeky is a debugger that AI coding agents and people run from the command line. One command stops
 a program at a line, reads its values, can change one to test a hypothesis, and runs the program
-to its end. Another checks a fix with your own checker, on a fresh build. Peeky never shows a
-wrong or guessed value without a note: where it can't prove a value, it withholds it and says why.
-It supports Python, Java, C, C++ and Rust, all experimental. Peeky never calls a model. Your
+to its end. Another checks a fix with your own checker, on a fresh build. Peeky's rule: never show a
+wrong or guessed value without a note. Where it can't prove a value, it withholds it and says why.
+It supports Python, Java, C, C++ and Rust, all experimental. `peeky` never calls a model. Your
 agent, such as Copilot, Claude or Codex, calls Peeky, and so can you.
 
 > **Status:** experimental. Version 0.1.0 is tagged. Peeky isn't on PyPI yet. See
@@ -171,7 +171,7 @@ decisions, through Codex CLI. It is not the main interface.
   [CHANGELOG](CHANGELOG.md) lists what it covers, its known gaps and what changed since.
 - **Release:** a public release, and a package on PyPI, are pending.
 - **Languages:** Python, Java, C, C++ and Rust are all experimental. Each is qualified on narrow
-  fixtures, and twelve rounds of live agent evaluation shaped them
+  fixtures, and rounds of live agent evaluation shaped them
   ([HISTORY.md](docs/HISTORY.md#live-agent-evaluations)). None is general language support.
 - **Also experimental:** Java attach, remote workers and `peeky-agent`.
 - **Not supported:** CUDA ([planned](docs/ROADMAP.md#cuda-61)), Kubernetes workers, several users
@@ -183,17 +183,17 @@ decisions, through Codex CLI. It is not the main interface.
   request. It runs the same checks and test suites as CI's jobs, once each. It skips remote SSH
   e2e, runs the integration tests on one Python, and adds lanes hosted CI doesn't have
   ([TESTING.md](docs/TESTING.md#the-docker-mirror)).
-- **Licence:** none has been chosen yet, so none is included.
+- **Licence:** Apache License 2.0 ([Licence](#licence)).
 
 ## Documentation
 
 - [Design](docs/DESIGN.md): boundaries, lifecycle, protocol, failures and extension points.
-- [Roadmap](docs/ROADMAP.md): what is delivered, what comes next and what stays deferred.
-- [Languages](docs/LANGUAGES.md): the five-language plan and its acceptance gates.
-- [Testing](docs/TESTING.md): CI lanes and measured timings.
-- [Performance](docs/PERFORMANCE.md): a repeatable HTTP and debugger benchmark.
-- [Decision records](docs/adr/) and [reviews](docs/reviews/), with each finding's disposition.
-- [History](docs/HISTORY.md): milestones, evaluation reports and reviews.
+- [Roadmap](docs/ROADMAP.md): what is delivered, what a language needs before Peeky claims it, what
+  comes next and what stays deferred.
+- [Testing](docs/TESTING.md): CI lanes, the Docker mirror and local test commands.
+- [Performance](docs/PERFORMANCE.md): a repeatable worker benchmark, and dated measurements.
+- [Decision records](docs/adr/): the architecture decisions, and why they were made.
+- [History](docs/HISTORY.md): milestones and live agent evaluation reports.
 - [Presentation](docs/presentation/Peeky.pdf): why Peeky exists, what it is and how it works, for
   executives and engineers. The [PowerPoint](docs/presentation/Peeky.pptx) opens in Keynote too.
 

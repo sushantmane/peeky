@@ -1,4 +1,4 @@
-"""Which names a stopped Python function reads from its module's globals (#104).
+"""Which names a stopped Python function reads from its module's globals.
 
 A name missing from a frame's locals is not necessarily a global: before its first
 assignment a local is simply absent, and reading it raises UnboundLocalError

@@ -6,7 +6,8 @@ the first alpha. The other languages followed, one slice at a time.
 The tracked MVP issues, #6 to #13, are delivered and closed. Java, C, C++ and Rust on a separate
 host followed, in [#248][i248] and [#252][i252]. This page lists what each slice delivered, with links, then what comes next and what
 stays deferred.
-[LANGUAGES.md](LANGUAGES.md) has the language priorities and acceptance criteria.
+[What a language needs](#what-a-language-needs-before-peeky-claims-it) lists the tests each language
+passes before Peeky claims it.
 
 ## What is delivered
 
@@ -46,7 +47,7 @@ extend it. Kubernetes stays deferred.
   - the package, under `src/peeky`
   - a GitHub repository and a [contributing guide](../CONTRIBUTING.md)
   - the [design](DESIGN.md) and the [threat model](THREAT_MODEL.md)
-  - an adversarial review record: [INITIAL_REVIEW](reviews/INITIAL_REVIEW.md)
+  - an adversarial review
   - parallel, deterministic CI, and wheel delivery as workflow artifacts
 - **Accepted when:**
   - the installed package imports, and the worker and agent help work
@@ -76,8 +77,7 @@ extend it. Kubernetes stays deferred.
   - consistent, machine-readable error codes and a protocol version: [ERRORS](ERRORS.md)
 - **Accepted:** no retryable code follows an uncertain change, and owned processes are reaped. Each
   documented state transition and error has a regression test.
-- **Review:** [ERRORS_CORPUS_REVIEW](reviews/ERRORS_CORPUS_REVIEW.md) found nothing blocking. All
-  its findings are fixed.
+- **Review:** an independent review found nothing blocking. All its findings are fixed.
 - **Not cited:** the slice also listed broader tests of monotonic event ordering. The note that
   closed #6 doesn't cite one.
 
@@ -102,7 +102,7 @@ extend it. Kubernetes stays deferred.
     and `verified`.
   - A [live evaluation](evaluations/2026-10-15-agent-cli.md) with three agents. All three reached
     verified general fixes, and its ten usability findings are fixed.
-  - A program chosen by the user, not synthetic: CPython 3.9.6's `ipaddress`, with the real
+  - A real program, not synthetic: CPython 3.9.6's `ipaddress`, with the real
     CVE-2024-4032 bug, in `examples/real/ipaddress_mapped` ([#28][p28]). It runs through an
     entry script with `--run`.
   - On that program, a [live agent](evaluations/2026-10-15-real-program.md) verified a fix
@@ -159,6 +159,39 @@ extend it. Kubernetes stays deferred.
   Then each wrong value it found was fixed or withheld, and the tests became compiler-aware. The
   `cpp-gcc` and `cpp-gcc-llvm20` lanes run every C++ case with g++. Its known gaps are in the
   [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
+
+### What a language needs before Peeky claims it
+
+Peeky claims a language, even as experimental, only when tests on its real debug adapter, in Linux
+CI, show each of these:
+
+1. Peeky launches a deterministic program, and checks the requested and actual breakpoint location.
+2. It reads the stack and the locals, including a type particular to the language.
+3. It changes a supported primitive local, continues, and sees a different result. The experiment
+   needs no source edit or rebuild.
+4. It refuses stale identifiers. A timeout, an adapter failure or a close leaves no owned process
+   running.
+5. It writes a candidate source change in a fresh workspace, builds it where needed, and runs the
+   unchanged independent checker in a fresh process.
+6. A compiled program's build records its sources, toolchain, flags, artifacts and debug symbols. A
+   changed source or artifact is refused before any read or change.
+7. The same worker API works across a process or network boundary. It binds source paths across
+   different client and target roots, and refuses a mismatch before any change.
+8. An end-to-end agent test, with injected decisions, observes, changes a value, proposes a fix,
+   builds it and verifies it. CI uses deterministic decisions; live-model runs are manual.
+
+Python, Java, C, C++ and Rust each have these tests. None of them is general language support:
+each language's page lists what Peeky reads and changes.
+
+No language promises these:
+
+- evaluating arbitrary expressions;
+- rewriting pointers;
+- preserving Rust's ownership rules after a change;
+- hot-swapping a Java class's schema;
+- jumping the instruction pointer.
+
+Unsupported behaviour returns an explicit result. It never falls back to editing source silently.
 
 ### Stateless probes (ADR 0004)
 

@@ -1,7 +1,7 @@
 # Peeky design
 
 Status: Python, Java, C, C++ and Rust each have an experimental investigation loop, with explicit
-limits. The product MVP needs all five. [LANGUAGES.md](LANGUAGES.md) has the implementation order,
+limits. The product MVP needs all five. [ROADMAP.md](ROADMAP.md#language-slices-p1-to-p5) has the implementation order,
 and the language and remote acceptance work that remains. This document specifies the intended MVP
 contract. The [roadmap](ROADMAP.md) tells delivered foundations from remaining acceptance work.
 
@@ -273,7 +273,7 @@ worker and controller. C++ adds qualified class, reference and array inspection,
 verification. Rust has a worker for one dependency-free Cargo binary
 ([RUST_AGENT.md](RUST_AGENT.md#the-cargo-build)), and an investigation loop
 ([AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates)).
-[LANGUAGES.md](LANGUAGES.md) has the full acceptance criteria per language.
+[ROADMAP.md](ROADMAP.md#what-a-language-needs-before-peeky-claims-it) has the full acceptance criteria per language.
 
 How the languages plug in:
 

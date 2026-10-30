@@ -347,7 +347,7 @@ peeky probe limiter --at src/main.rs:10 --arg 2 --arg 10 --arg 0,1,10,11 --captu
 ```
 
 ```
-Error [MUTATION_REJECTED]: `width` cannot be changed at src/main.rs:10, at any stop of this build: in limiter::allow, `width` is a parameter kept in a register (the debugger only shows a copy of it, so a change would not affect the program). Refused before the program runs: nothing ran. A candidate edit keeps it in memory, in the same probe (rust-cookbook 6.6): `mut width` in the signature and `std::hint::black_box(&mut width);` as the function's first statement, by `--old`/`--new`, with this `--set`; settable here: no root locals (fields where rows mark them [settable])
+error [MUTATION_REJECTED]: `width` cannot be changed at src/main.rs:10, at any stop of this build: in limiter::allow, `width` is a parameter kept in a register (the debugger only shows a copy of it, so a change would not affect the program). Refused before the program runs: nothing ran. A candidate edit keeps it in memory, in the same probe (rust-cookbook 6.6): `mut width` in the signature and `std::hint::black_box(&mut width);` as the function's first statement, by `--old`/`--new`, with this `--set`; settable here: no root locals (fields where rows mark them [settable])
 hint: Keep it in memory with a candidate edit (`std::hint::black_box(&mut x);` after its `let`, by `--old`/`--new`) and `--set` it in that same probe.
 ```
 
@@ -466,8 +466,8 @@ output:
 
 - `start` is an `i32` local kept in memory, so it is `[settable]`.
 - `request` shows as derived `Debug` prints it, read from memory.
-- `request.page` is not `[settable]` here. The program has already copied it into `start`, on
-  line 35. See [When the program has its own copy](#when-the-program-has-its-own-copy).
+- `request.page` is not `[settable]` here. The program computed `start` from it on line 35, so
+  `start` may hold a copy ([When the program has its own copy](#when-the-program-has-its-own-copy)).
 
 ### What Peeky reads
 
@@ -673,8 +673,7 @@ These stay raw, with a note that says why:
 #### Options of tuples and structs
 
 An `Option` of a tuple or struct your crate defines reads from memory, as derived `Debug` prints
-it. In the eleventh evaluation's `rota` crate, `last: Option<Engineer>` holds a clone of last
-week's engineer:
+it. In a `rota` crate, `last: Option<Engineer>` holds a clone of last week's engineer:
 
 ```sh
 peeky session start rota --at src/main.rs:39 --hit 13 -- 10 Ana:5,6 Björn:1,2,3,4 Chloé Dev:9
@@ -928,8 +927,8 @@ outlives the call.
   ([Containers of structs](#containers-of-structs)).
 - Behind a caller's `&mut` reference parameter, such a field's own fields, such as
   `self.values.len`, show `[stale]`: the call may be changing them.
-- The first such field of a session reads the debug information of the crate's own code once. That
-  takes tens of milliseconds for a small crate, and field changes share it.
+- The first such field of a session reads the debug information of the crate's own code once. Field
+  changes share that read.
 
 Such a field never reads, and stays raw:
 
@@ -1015,10 +1014,10 @@ peeky probe moved --at src/main.rs:8 --capture ordered,label
 
 ```
 hit  phase     line  function     selector  type      value
-1    observed  8     moved::main  ordered   Vec<i32>  alloc::vec::Vec<int, alloc::alloc::Global> @ 0x16fc46ef8  [note]
+1    observed  8     moved::main  ordered   Vec<i32>  alloc::vec::Vec<int, alloc::alloc::Global> @ 0x16fc46ef8  [stale]  [note]
 1    observed  8     moved::main  label     String    <no value yet: not assigned on every path to here (a `let` without a value, or a loop's next pass before its `let`): its slot may hold what an earlier call or pass left; read it once it is assigned>
 ...
-warning: ordered: This Rust Vec shows LLDB's summary (its type and address), not its contents: the build's MIR does not prove `ordered` initialized at this line: it may be moved, dropped or not yet assigned around it (#53). Capture ordered.len for the length, and check contents with `peeky verify`.
+warning: ordered: This Rust Vec shows LLDB's summary (its type and address), not its contents: the build's MIR does not prove `ordered` initialized at this line: it may be moved, dropped or not yet assigned around it. Capture ordered.len for the length, and check contents with `peeky verify`.
 ```
 
 On line 8, the MIR doesn't prove `ordered` initialized, because the line moves it. So it keeps
@@ -1034,7 +1033,7 @@ $ peeky session get ordered
 ordered: Vec<i32> = alloc::vec::Vec<int, alloc::alloc::Global> @ 0x16ce96ef8  [stale]
   ordered.buf: alloc::raw_vec::RawVec<i32> = alloc::raw_vec::RawVec<int, alloc::alloc::Global> @ 0x16ce96ef8  [stale] (children: peeky session get ordered.buf)
   ordered.len: usize = 3  [stale]
-  note: This Rust Vec shows LLDB's summary (its type and address), not its contents: the build's MIR does not prove `ordered` initialized at this line: it may be moved, dropped or not yet assigned around it (#53). Capture ordered.len for the length, and check contents with `peeky verify`.
+  note: This Rust Vec shows LLDB's summary (its type and address), not its contents: the build's MIR does not prove `ordered` initialized at this line: it may be moved, dropped or not yet assigned around it. Capture ordered.len for the length, and check contents with `peeky verify`.
 $ peeky session close
 closed default
 cleanup: terminated pids 17296, 17297
@@ -1138,8 +1137,8 @@ The details:
   what it points at still stands."
 - Its row has `unproven_pointer: "raw"`. Where the build's debug information doesn't tell a pointer
   inside a value from a raw pointer, it shows only its address with `unproven_pointer: "unknown"`.
-- A `NonNull` or `AtomicPtr` local is judged as before. Where it shows only its pointer, it has the
-  generic `[unproven]` note, not this one. The raw pointer inside one is a raw pointer inside a
+- A `NonNull` or `AtomicPtr` local is never followed either. Its row has the generic `[unproven]`
+  note, not this one. The raw pointer inside one is a raw pointer inside a
   value: `o.q.pointer` of a `NonNull` field.
 - A raw pointer inside a value shows only its address too: a field, a tuple or array element, at any
   depth. For example, with `let h = Holder { n: 1, p: &*b as *const i64 };`, `h.p` shows `0x…`
@@ -1175,9 +1174,7 @@ The details:
   what the caller passed.
 - On a line that both the first poll and a resumed one run, such as the `.await` itself or a loop
   around it, a local that the future doesn't keep is withheld in the first poll too.
-- Lines with an `.await` hide more references than the same code without `async`. In a 140-line
-  async program, 145 of 899 reference rows were hidden, 103 of them on lines that hide them in its
-  synchronous twin too.
+- Lines with an `.await` hide more references than the same code without `async`.
 
 How Peeky proves all this: [RUST_AGENT.md](../RUST_AGENT.md#when-a-reference-reads), for
 maintainers.
@@ -1602,8 +1599,8 @@ peeky probe examples/rust --at 36 --capture request.page --set request.page=2
 ```
 
 ```
-Error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, the program has already copied `request` into `start` (at line 35) and goes on with that copy, so a change there may never be seen: Peeky proves no read of the changed part first (a reference lent to a call, or `{:?}`, is not one). Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line), or change the copy instead; settable here: start (root locals; fields too where rows mark them [settable])
-hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there), or change the copy the message names instead.
+error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, a statement under way uses `start` (at line 35), which may hold the program's own copy of `request` or reads another part of `request` into a temporary (at line 36), so it may hold a copy, which it uses after the stop, or the program's own `start` (at line 35) may hold a copy of `request` that it goes on with, so a change there may not reach it. Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line); settable here: start (root locals; fields too where rows mark them [settable])
+hint: Observe the value instead, or change the source with a candidate edit (`--old`/`--new`) and verify it; rows marked [settable] can be changed here.
 ```
 
 These bindings copy a value:

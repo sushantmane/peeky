@@ -149,7 +149,7 @@ _IMPURE_NAMES = frozenset(
         "tb_frame",
     }
 )
-# The opening of the note on a candidate's copy, which `probe` shows once (L6).
+# The opening of the note on a candidate's copy, which `probe` shows once.
 COPY_NOTE = "This Python candidate ran from a copy of "
 
 
@@ -877,7 +877,7 @@ class PythonCandidate:
         return getattr(self.adapter, name)
 
     def entry_lines(self, program, lines):
-        """As PythonAdapter.entry_lines, of the edited copy that runs (#305)."""
+        """As PythonAdapter.entry_lines, of the edited copy that runs."""
         return self.adapter.entry_lines(self.source_path(program), lines)
 
     def source_path(self, original):
@@ -1095,7 +1095,7 @@ class PythonAdapter:
     interpreter: str = sys.executable
     # debugpy's adapter exits 1 when Peeky ends its input as it answers `disconnect`: its
     # handler goes on to report its sockets (debugpy's own event) on the channel that end
-    # closed, and fails (#213). Its stderr (debugpy 1.8.22) shows each of these lines;
+    # closed, and fails. Its stderr (debugpy 1.8.22) shows each of these lines;
     # with all of them, the message it could not send was its own, not the program's.
     provoked_exit = (
         1,
@@ -1151,7 +1151,7 @@ class PythonAdapter:
 
     @staticmethod
     def restore_literal(variable, before, **where):
-        """The literal a probe's `@before` writes back (#305): the text read just before
+        """The literal a probe's `@before` writes back: the text read just before
         a change, where it is all of the value: an int, a float, True, False or None
         whose text reads back as that very value (`repr` of what it parses to). Writing
         it makes an equal value; an int past 256 or a float is a new object, which `is`
@@ -1184,14 +1184,14 @@ class PythonAdapter:
 
     @staticmethod
     def storage_identity(variable, **where):
-        """Which storage a change writes, as a `@before` restore compares it (#305): a
+        """Which storage a change writes, as a `@before` restore compares it: a
         Python function has one local of each name, so its name, in the call proven the
         same. Only locals change in Python."""
         return f"the local `{(variable or {}).get('name')}`"
 
     @staticmethod
     def entry_lines(program, lines):
-        """{line: the first line of the function that holds it} (#305): its first
+        """{line: the first line of the function that holds it}: its first
         statement after any docstring, which each call runs first; the module's first
         statement at module level. A probe watches it, so a value is restored only in
         the call that changed it. ValueError where calls cannot be seen begin there: a
@@ -1266,7 +1266,7 @@ class PythonAdapter:
             "redirectOutput": True,
             "justMyCode": True,
             "subProcess": False,
-            # A debugged run writes no __pycache__ into the root (#249).
+            # A debugged run writes no __pycache__ into the root.
             "env": {"PYTHONDONTWRITEBYTECODE": "1"},
         }
 
@@ -1320,7 +1320,7 @@ class PythonAdapter:
         stop=None,
         loaded_by=None,
     ):
-        """A local shown with a note (#182): one the code of the current pass of the loop
+        """A local shown with a note: one the code of the current pass of the loop
         around the frame's line has not assigned before the line, and assigns on every
         path through the rest of the pass before reading it, so its value is likely an
         earlier pass's (see python_passes); else None. Its string says why a change to
@@ -1341,7 +1341,7 @@ class PythonAdapter:
         )
 
     def validate_mutation_target(self, variable, frame, loaded_by=None):
-        """Refuse a change the code overwrites before reading it (#182), judged as at any
+        """Refuse a change the code overwrites before reading it, judged as at any
         stop on the line (a set is never told where the stop is)."""
         if (stale := self.not_yet_declared(variable, frame, loaded_by=loaded_by)) is not None:
             raise ValueError(f"{variable.get('name')!r} cannot be changed at this stop: {stale}")

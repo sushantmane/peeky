@@ -592,12 +592,18 @@ def test_a_probe_whose_stop_was_seen_but_never_reported_never_says_no_stop(monke
     result = probe_module.run_probe("/w", Probe("Main.java", 8, ("x",), hits=2))
     assert result["debugger_events"]["trace"]
     seen = "thread 'main' was seen paused at Main.java:8 (in Main.main(String[]) at Main.java:8)"
+    # The fact, not an issue number: printed text never cites one.
+    seen += ", a stop the debugger never reported (java-debug sometimes loses a stop event)"
     if hits:
         assert result["status"] == "completed" and result["hits"] == 1
         assert any(seen in warning for warning in result["warnings"])
+        assert not any("#27" in warning for warning in result["warnings"])
     else:
         assert result["status"] == "failed" and result["error"]["code"] == "DEBUGGER_ERROR"
         assert result["error"]["message"].startswith(f"The program ended after {seen}")
+        hint = result["error"]["hint"]
+        assert "keep `debugger_events` for a bug report" in hint and "#27" not in hint
+        assert len(hint) <= 150
         assert "describe" not in result["error"]["message"] + result["error"]["hint"]
 
 
@@ -609,6 +615,7 @@ def test_session_states_name_an_unreported_stop():
     assert "never reported" not in _state_text(state)
     text = _state_text({**state, "unreported_stop": unreported})
     assert "thread 'main' was seen paused at src/Demo.java:5" in text
+    assert "(java-debug sometimes loses a stop event)" in text and "#27" not in text
 
 
 def guard(worker):
