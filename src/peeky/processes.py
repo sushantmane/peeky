@@ -34,6 +34,13 @@ def without_credentials(environment):
     return {key: value for key, value in dict(environment).items() if key not in CREDENTIAL_ENV}
 
 
+def take_credentials():
+    """Both names of the worker's token, taken out of this process's environment, as
+    {name: value} for those set. Every command calls it first, so that no process it
+    starts later can inherit the token, whatever the call that starts it passes."""
+    return {name: os.environ.pop(name) for name in sorted(CREDENTIAL_ENV) if name in os.environ}
+
+
 def _ps(*arguments):
     """``ps`` output with the C locale, or None if it cannot run within 5 s."""
     try:
@@ -43,7 +50,7 @@ def _ps(*arguments):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            env={**os.environ, "LC_ALL": "C"},
+            env={**without_credentials(os.environ), "LC_ALL": "C"},
         ) as process:
             try:
                 return process.communicate(timeout=5)[0]

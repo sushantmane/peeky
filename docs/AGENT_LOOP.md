@@ -267,8 +267,9 @@ peeky-agent \
 For C, C++ and Java:
 
 - Without `--url`, the command starts the configured worker locally.
-- `--url`, with the worker's `DEBUG_TOKEN`, selects an existing worker. The declared sources'
-  identities must match, and for C, the frozen headers' too.
+- `--url http://127.0.0.1:PORT`, with the worker's `DEBUG_TOKEN`, selects an existing worker. Any
+  other URL is refused: the token goes in plain HTTP. The declared sources' identities must match,
+  and for C, the frozen headers' too.
 - The candidate's build and the checker run on the controller's host. That host needs the declared
   inputs, and a suitable native or Java toolchain.
 - A live run sends selected source and runtime evidence to the model, and uses model credits.

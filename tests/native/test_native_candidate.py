@@ -21,7 +21,7 @@ int main(void) {
   return 0;
 }
 """
-TOKEN = "candidate-test-secret-token-123"
+TOKEN = "candidate-test-secret-token-123-0123456789abcdef"
 
 
 @pytest.fixture

@@ -4105,12 +4105,17 @@ Other bounds:
 
 Run the worker next to the program, and reach it through an SSH tunnel.
 
-On the host, make a token and start the worker:
+On the host, make a fresh token each time you start the worker, and give it to the worker alone:
 
 ```sh
-export DEBUG_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-python3 -m peeky.worker --root /srv/app --port 8765
+token=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+echo "$token"                  # copy it over a trusted channel; never commit it
+DEBUG_TOKEN=$token peeky-worker --root /srv/app --port 8765
+unset token
 ```
+
+Don't `export DEBUG_TOKEN`: a restarted worker would reuse the old token
+([REMOTE.md](REMOTE.md#separate-host-procedure)).
 
 On your machine, with the same sources, open the tunnel and give the same token:
 

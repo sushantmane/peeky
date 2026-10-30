@@ -56,9 +56,9 @@ that hosted CI doesn't have:
   Rust memory views, and libstdc++ strings with a NUL byte. In `cpp-llvm20`,
   `PEEKY_EXPECT_READ_MEMORY=1` makes the C++ tests expect libstdc++ strings read whole from memory;
 - `c-gcc-llvm20`: C built by GCC, with LLVM 20's lldb-dap. It runs the `tests/native` files whose
-  cases depend on what GCC builds: prologues, loop headers, `.incbin`, previews and static
-  storage. The rest expect clang's lines and text. The `c` lane runs these files' GCC cases with
-  lldb-dap 18;
+  cases depend on what GCC builds: prologues, loop headers, `.incbin`, previews, static storage,
+  initializers and a block's `extern`, and the caller chains. The rest expect clang's lines and
+  text. The `c` lane runs these files' GCC cases with lldb-dap 18;
 - `cpp-gcc-llvm20`: every C++ case built by GCC, with LLVM 20's lldb-dap, as `cpp-gcc` (the
   `native-cpp-gcc` job) runs them with lldb-dap 18;
 - `gdb-dap`: GDB's DAP, which the CUDA qualification drives (`scripts/cuda/qualify.py`).

@@ -184,7 +184,12 @@ _XCRUN = "/usr/bin/xcrun"
 def _xcrun_find(name):
     try:
         found = subprocess.run(
-            [_XCRUN, "--find", name], capture_output=True, text=True, timeout=20, check=False
+            [_XCRUN, "--find", name],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env=without_credentials(os.environ),
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -198,7 +203,12 @@ def default_sdk():
         return None
     try:
         found = subprocess.run(
-            [_XCRUN, "--show-sdk-path"], capture_output=True, text=True, timeout=20, check=False
+            [_XCRUN, "--show-sdk-path"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env=without_credentials(os.environ),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -528,6 +538,69 @@ def _digest_store():
         return _private_dir("cache/digests")
     except (OSError, ValueError):
         return None
+
+
+def writable_by_others(path):
+    """The first directory on ``path``'s way down from ``/``, ``path`` included, that a
+    user other than you or root can write (another user owns it, or its group or others
+    may write it), or None. A sticky bit, as /tmp has, doesn't count: anyone may still
+    add an entry there, such as a `.cargo` directory."""
+    resolved = Path(path).resolve(strict=True)
+    for directory in (*reversed(resolved.parents), resolved):
+        info = directory.stat()
+        if info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+            return directory
+    return None
+
+
+def require_private(path):
+    """Refuse a build under a directory that another user can write: they could add a
+    file there that a build tool reads (Cargo reads `.cargo/config.toml` in every
+    directory above its build), between Peeky's check and the build."""
+    if (shared := writable_by_others(path)) is not None:
+        raise ValueError(
+            f"Peeky builds only where no other user can write, along the whole path: {shared} "
+            "is writable by others, who could add build configuration there. If it is yours, "
+            f"run `chmod go-w {shared}`; or set PEEKY_STATE_DIR to a directory only you can write"
+        )
+
+
+# Where Linux keeps each user's runtime directory, by uid, when XDG_RUNTIME_DIR isn't set.
+RUNTIME_DIRS = "/run/user"
+
+
+def _bases():
+    """Where a build's own directory may go, in this order: the system's temporary
+    directory (a per-user one on macOS, or TMPDIR), the user's runtime directory (Linux:
+    $XDG_RUNTIME_DIR or /run/user/UID, outside the home directory), then `scratch` in
+    Peeky's state directory."""
+    yield Path(tempfile.gettempdir())
+    for runtime in (os.environ.get("XDG_RUNTIME_DIR"), f"{RUNTIME_DIRS}/{os.getuid()}"):
+        if runtime and os.path.isabs(runtime) and os.path.isdir(runtime):
+            yield Path(runtime)
+    from peeky.cli import _private_dir
+
+    yield _private_dir("scratch")
+
+
+def private_base(suitable=None):
+    """Where a build's own directory goes: the first of ``_bases`` that no other user can
+    write along its whole path (require_private), and that ``suitable(path)`` accepts (it
+    raises ValueError otherwise); the last one's refusal where none is."""
+    refusal = None
+    try:
+        for base in _bases():
+            try:
+                require_private(base)
+                if suitable is not None:
+                    suitable(base)
+            except (OSError, ValueError) as exc:
+                refusal = exc
+                continue
+            return base.resolve()
+    except (OSError, ValueError) as exc:
+        refusal = exc
+    raise refusal
 
 
 def _assert_tools(tools, stage):

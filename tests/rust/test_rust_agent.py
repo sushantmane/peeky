@@ -49,7 +49,7 @@ def rust_investigation(tmp_path):
         dsymutil=os.environ.get("PEEKY_RUST_DSYMUTIL"),
         sysroot=os.environ.get("PEEKY_RUST_SYSROOT"),
     )
-    token = "rust-agent-tests-token-1234567"
+    token = "rust-agent-tests-token-1234567-0123456789abcdef"
     server = make_server(worker_root, token, 0, adapter=target)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

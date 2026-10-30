@@ -1,8 +1,11 @@
 """Puts tests/ on the import path, for the helpers the suites share (native_compilers);
-gives C++ cases whose expectations depend on the compiler a fixture over clang and GCC; and
-marks every C++ case `cpp`, so a lane can run only them (`-m cpp`)."""
+gives C++ cases whose expectations depend on the compiler a fixture over clang and GCC;
+marks every C++ case `cpp`, so a lane can run only them (`-m cpp`); and gives the tests a
+private temporary directory where the system's is shared."""
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,24 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from native_compilers import cxx_for  # noqa: E402
+
+
+def _shared(path):
+    path = Path(path).resolve()
+    return any(
+        (info := directory.stat()).st_uid not in (0, os.getuid()) or info.st_mode & 0o022
+        for directory in (*path.parents, path)
+    )
+
+
+# Peeky builds only where no other user can write (peeky.build.private_base), and tests
+# keep their state under tmp_path. Where the temporary directory is shared (Linux's
+# /tmp), tests use a private one of their own, and so do the processes they start.
+if _shared(tempfile.gettempdir()):
+    _private = Path.home() / ".cache" / "peeky-tests"
+    _private.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not _shared(_private):
+        os.environ["TMPDIR"] = tempfile.tempdir = str(_private)
 
 
 def pytest_collection_modifyitems(items):

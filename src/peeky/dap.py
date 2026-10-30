@@ -176,6 +176,8 @@ class DAP:
             None if hasattr(os, "waitid") else processes.start_time(self.process.pid)
         )
         self.announcing = []
+        # Guards `announcing`, which lists only started threads: close() joins each.
+        self.announce_lock = threading.Lock()
         self.family_wake = threading.Event()
         # What close() did about the processes the session started.
         self.cleanup = None
@@ -628,8 +630,9 @@ class DAP:
             self.family_wake.set()
 
         thread = threading.Thread(target=remember, daemon=True)
-        self.announcing.append(thread)
-        thread.start()
+        with self.announce_lock:
+            thread.start()
+            self.announcing.append(thread)
 
     def _adapter_state(self, table=None):
         """The adapter's state, asked without reaping it: "running", "exited" (a
@@ -839,7 +842,9 @@ class DAP:
             self.family_wake.set()  # the watcher stops
             owned, ran, before = {}, True, self.family.listed
             if terminate:
-                for thread in list(self.announcing):
+                with self.announce_lock:
+                    announced = list(self.announcing)
+                for thread in announced:
                     # A debuggee announced just before the adapter died is still ours.
                     thread.join(timeout=1)
                 try:

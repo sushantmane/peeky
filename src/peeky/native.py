@@ -41,6 +41,7 @@ from peeky.build import (
     default_sdk,
     dependency_paths,
     prepare,
+    private_base,
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
@@ -58,6 +59,7 @@ from peeky.cxx_strings import (
 from peeky.digest import sha256_file
 from peeky.identifiers import changeable, looks_located, split_located
 from peeky.names import standard_type, unicode_escape
+from peeky.processes import without_credentials
 from peeky.text_sets import text_kind
 from peeky.textlines import octal_string, read_source, source_lines, split_lines
 
@@ -119,7 +121,7 @@ def compiler_family(path):
             stderr=subprocess.PIPE,
             text=True,
             errors="replace",
-            env={**os.environ, "LC_ALL": "C"},
+            env={**without_credentials(os.environ), "LC_ALL": "C"},
             start_new_session=True,
         )
     except OSError:
@@ -3628,6 +3630,52 @@ def declared_running(
     return None
 
 
+def declared_after_later_lines(table, name, source, line, address, through, plain, entered=None):
+    """Why a C/C++ local declared on the stop's line ``line`` is withheld where the stop
+    (``address``, unslid) is that line's first row in its block, and the code just before
+    the row, by address, is of a later line of its plain declaration (``plain(source, at,
+    name)``: not a statement's header), through its end (``through``); else None. GCC
+    runs `struct outer o = {` over several lines as its elements' code, then their stores
+    on the first line. The order of the rows says only where the stop is, never what has
+    run: a C++ temporary's cleanup on the first line may follow the whole object, and an
+    optimized build moves code. So the reason says Peeky can't tell, never that the local
+    is not initialized. Not where control comes to the row only from code at or above it
+    (``entered(address)`` False; runs_into): the line's start, which other rules judge."""
+    base, found = _in_scope(table, name, source, line, address)
+    for declared_in, at, function in found:
+        if declared_in != source or at != line:
+            continue
+        end = through(source, at, base)
+        if (
+            end is not None
+            and end > line
+            and _after_own_lines(function, (base, source, line), address, end)
+            and plain(source, at, base)
+            and (entered is None or entered(address) is not False)
+        ):
+            return (
+                f"declared on line {at}, and this stop's instruction lies just after code of "
+                f"a later line of its declaration (lines {at}-{end}), so Peeky can't tell "
+                "whether it is fully initialized yet: its storage may hold leftovers; stop "
+                f"after line {end} to read it"
+            )
+    return None
+
+
+def _after_own_lines(function, key, address, end):
+    """Whether ``address`` is the first row of the declaration line ``key`` ((name,
+    source, line)) in its block, with code of a later line of its statement, through
+    ``end``, just before it (local_declarations ``preceded``)."""
+    if address is None or address not in function.get("preceded", {}).get(key, ()):
+        return False
+    order = function.get("order") or ()
+    index = bisect.bisect_left(order, (address,)) - 1
+    if index < 0:
+        return False
+    _, source, number = order[index]
+    return source == key[1] and type(number) is int and key[2] < number <= end
+
+
 def declared_mid_line(table, name, source, line, address, settled):
     """The stop line, when the C/C++ local is declared on it, the stop is past the
     line's first instruction (``address``, unslid) and the function still has code of
@@ -4935,6 +4983,8 @@ class NativeTarget:
                     tuple(probes),
                 ),
                 root,
+                # Not in a directory others can write: `#include "../x.h"` reads above it.
+                parent=private_base(),
                 edit=edit,
                 deadline=deadline,
                 before_command=before_command,
@@ -8993,9 +9043,11 @@ class NativeSession:
                 )
             return (
                 (
+                    # "may": a C++ temporary's cleanup on a later line runs once the
+                    # object is whole.
                     f"declared on line {at}, and its declaration (lines {at}-{end}) is still "
-                    f"running at this stop: it is not fully initialized yet, and its storage "
-                    f"may hold leftovers; stop after line {end} to read it"
+                    f"running at this stop: it may not be fully initialized yet, and its "
+                    f"storage may hold leftovers; stop after line {end} to read it"
                 )
                 if end is not None
                 else f"declared on line {at}, and Peeky cannot tell from the source where its "
@@ -9003,6 +9055,24 @@ class NativeSession:
                 "stop may be inside it: it may not be initialized yet, and its storage may "
                 "hold leftovers"
             )
+        if (
+            innermost
+            and (here, line) == (stopped, raw_line)
+            and (
+                unsure := declared_after_later_lines(
+                    self.declarations,
+                    name,
+                    here,
+                    line,
+                    address,
+                    self._through,
+                    self._plain,
+                    getattr(self, "runs_into", {}).get,
+                )
+            )
+        ):
+            # The stop's own line only: a line remapped from another says nothing.
+            return unsure
         if building := self._foreign_line(variable, frame, stopped, raw_line):
             return building
         if skipped := declared_skipped(
@@ -9186,6 +9256,13 @@ class NativeSession:
         """Statements.declared_through for the prepared ``source``, or None."""
         statements = self._statements(source)
         return None if statements is None else statements.declared_through(line, name)
+
+    def _plain(self, source, line, name):
+        """Whether a plain declaration statement, not a statement's header, declares
+        ``name`` on ``line`` of the prepared ``source`` (Statements.declaration)."""
+        statements = self._statements(source)
+        found = None if statements is None else statements.declaration(line, name)
+        return found is not None and not found[2]
 
     def _header(self, source, line, name):
         """The keyword of the statement header that declares ``name`` on ``line`` (`for`,

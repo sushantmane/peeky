@@ -1959,6 +1959,52 @@ def test_a_stop_inside_a_declaration_statement_withholds_its_local():
     assert declared_running([run], "o", "t.c", 5, 115, through, site=site) == (17, None, "a.c", 5)
 
 
+def test_a_declarations_first_row_after_its_own_later_lines_says_peeky_cannot_tell():
+    from peeky.native import declared_after_later_lines, declared_running
+
+    # GCC: `struct outer o = {` (17) stores its members after their lines' code (19, 20),
+    # so line 17's first row, 120, follows line 20's.
+    run = _aggregate_run()
+    run["rows"][("a.c", 17)] = (120, 124)
+    order = [(90, "a.c", 16), (100, "a.c", 19), (110, "a.c", 20), (120, "a.c", 17)]
+    order.append((130, "a.c", 23))
+    run["order"], run["preceded"] = tuple(order), {("o", "a.c", 17): {120}}
+    through = _through({("a.c", 17): 22, ("a.c", 16): 16})
+
+    def plain(source, at, name):
+        return True
+
+    def judged(address=120, ends=through, plain=plain, entered=None):
+        return declared_after_later_lines([run], "o", "a.c", 17, address, ends, plain, entered)
+
+    # Where those rows are proves no order of the code that ran, nor what is stored: a C++
+    # temporary's cleanup on line 17 may follow the whole object, and -O1 moves code. So
+    # however control came (runs_into True, or None: unknown), Peeky can't tell.
+    unsure = (
+        "declared on line 17, and this stop's instruction lies just after code of a later "
+        "line of its declaration (lines 17-22), so Peeky can't tell whether it is fully "
+        "initialized yet: its storage may hold leftovers; stop after line 22 to read it"
+    )
+    for entered in (None, {}.get, {120: None}.get, {120: True}.get):
+        assert judged(entered=entered) == unsure
+    assert "still running" not in unsure and "not fully initialized" not in unsure
+    # The rule for a stop below the declaration's first line keeps out of it.
+    assert declared_running([run], "o", "a.c", 17, 120, through) is None
+    # Past the first row, or a header's declaration: other rules.
+    assert judged(address=122) is None
+    assert judged(plain=lambda *_: False) is None
+    # Control comes to the row only from code at or above it: the line's start, which the
+    # rule for a stop where its declaration line starts judges.
+    assert judged(entered={120: False}.get) is None
+    # The code just before it is of a line past its statement (a landing pad's), or its
+    # statement's end is unknown.
+    order[2] = (110, "a.c", 23)
+    run["order"] = tuple(order)
+    assert judged() is None
+    run["order"] = tuple(order[:2] + [(110, "a.c", 20)] + order[3:])
+    assert judged(ends=_through({})) is None
+
+
 def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
     from peeky.native import declared_skipped
 

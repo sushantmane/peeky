@@ -29,7 +29,7 @@ from pathlib import Path
 
 from peeky import add_version
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
-from peeky.client import Client
+from peeky.client import LOOPBACK_URL, MIN_TOKEN_CHARS, Client
 from peeky.errors import PROTOCOL_VERSION
 from peeky.identifiers import is_name, look_alike, reachable
 from peeky.probe import (
@@ -63,8 +63,13 @@ MAX_SESSION_SECONDS = 300
 
 def _private_dir(name):
     # Absolute (not symlink-resolved) so detached children with another cwd agree.
-    base = os.environ.get("PEEKY_STATE_DIR") or str(Path.home() / ".peeky")
-    path = Path(os.path.abspath(base)) / name
+    base = Path(os.path.abspath(os.environ.get("PEEKY_STATE_DIR") or str(Path.home() / ".peeky")))
+    # No other user may write it, whatever the umask (002 where each user has a group of
+    # their own): Peeky builds under it (build.private_base).
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if (info := base.stat()).st_uid == os.getuid() and info.st_mode & 0o022:
+        base.chmod(info.st_mode & 0o7755)
+    path = base / name
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     info = path.lstat()
     if path.is_symlink() or info.st_uid != os.getuid():
@@ -109,7 +114,12 @@ def _xcrun(tool):
     if sys.platform != "darwin" or not shutil.which("xcrun"):
         return None
     result = subprocess.run(
-        ["xcrun", "--find", tool], capture_output=True, text=True, timeout=20, check=False
+        ["xcrun", "--find", tool],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+        env=without_credentials(os.environ),
     )
     return result.stdout.strip() or None if result.returncode == 0 else None
 
@@ -123,6 +133,7 @@ def _rustup(tool):
         text=True,
         timeout=60,
         check=False,
+        env=without_credentials(os.environ),
     )
     return result.stdout.strip() or None if result.returncode == 0 else None
 
@@ -228,7 +239,12 @@ def native_tools(language):
     if sys.platform == "darwin":
         result["dsymutil"] = _env_tool("PEEKY_NATIVE_DSYMUTIL") or _xcrun("dsymutil")
         sdk = subprocess.run(
-            ["xcrun", "--show-sdk-path"], capture_output=True, text=True, timeout=20, check=False
+            ["xcrun", "--show-sdk-path"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env=without_credentials(os.environ),
         )
         result["sysroot"] = env("PEEKY_NATIVE_SYSROOT") or sdk.stdout.strip() or None
     return result
@@ -454,7 +470,12 @@ def _defines_main(path, tools, language):
     command += ["-isysroot", sysroot] if sysroot else []
     try:
         done = subprocess.run(
-            [*command, str(path)], cwd=path.parent, capture_output=True, timeout=20, check=False
+            [*command, str(path)],
+            cwd=path.parent,
+            capture_output=True,
+            timeout=20,
+            check=False,
+            env=without_credentials(os.environ),
         )
     except (OSError, subprocess.SubprocessError):
         return True
@@ -1746,7 +1767,7 @@ def _load(name):
         or record.get("name") != name
         or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", str(record.get("url")))
         or not isinstance(record.get("token"), str)
-        or len(record["token"]) < 16
+        or len(record["token"]) < MIN_TOKEN_CHARS
         or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("session_id")))
     ):
         raise ValueError(f"Session record {path} is malformed; remove it")
@@ -1756,11 +1777,10 @@ def _load(name):
 
 
 def _local_session(name, record):
-    """A local session's client. Its record names the protocol its worker
-    speaks; where it names another, or none (a Peeky before protocol 10), the client asks
-    the worker's `version` before it sends anything else (``Client._preflight``)."""
-    verified = record.get("protocol") == PROTOCOL_VERSION
-    return _LocalClient(record["url"], record["token"], record.get("pid"), name, verified)
+    """A local session's client. Before it sends anything else, or the
+    token, its worker must prove it holds the token, and say its protocol
+    (``Client._hello``): another process may hold the port once the worker is gone."""
+    return _LocalClient(record["url"], record["token"], record.get("pid"), name)
 
 
 def _remote_session(name, record):
@@ -1876,6 +1896,12 @@ class _RemoteSession(_RemoteClient):
         super().__init__(record["url"], record["token"], client_root=record.get("root"))
         self.record = record
 
+    def _refusal(self, operation, spoken):
+        return (
+            f"Worker speaks protocol {spoken}, this session {PROTOCOL_VERSION}: start the "
+            "session again on a worker of the same Peeky version"
+        )
+
     def call(self, operation, **arguments):
         if operation != "close":
             self.unchanged()
@@ -1928,24 +1954,20 @@ def _checkout_unchanged(root, sources, expected, *, saved=False):
 
 
 class _LocalClient(Client):
-    """A session's own local worker: if its process is gone, the session is lost. Where
-    the session's record names this client's protocol, which its worker's `version` said
-    at its start, the worker is known to speak it (``verified``); else ``Client`` asks
-    its `version` before anything else, and sends nothing more to a worker of another
-    protocol. ``name``: the session's, which says what to do then."""
+    """A session's own local worker: if its process is gone, the session is lost.
+    ``Client`` says `hello` before anything else, and sends nothing more to a worker of
+    another protocol. ``name``: the session's, which says what to do then."""
 
-    def __init__(self, url, token, pid, name=None, verified=False):
+    def __init__(self, url, token, pid, name=None):
         super().__init__(url, token)
         self.pid, self.name = pid, name
-        if verified:
-            self.protocol = PROTOCOL_VERSION
 
     def _refusal(self, operation, spoken):
         if self.name is None:
             return super()._refusal(operation, spoken)
         return (
             f"Worker speaks protocol {spoken}, this session {PROTOCOL_VERSION}: another "
-            f"Peeky version started session {self.name!r}, so nothing is sent to its worker. "
+            f"Peeky version started session {self.name!r}, so no request is sent to its worker. "
             f"Drop the record with `peeky session close --forget --name {self.name}` (its "
             "worker ends after its idle timeout), then start the session again"
         )
@@ -2902,6 +2924,8 @@ def _pause_text(state):
 
 
 WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
+# The worker's token, by the names `main` took out of the environment (take_credentials).
+_CREDENTIALS = {}
 
 
 REMOTE_PYTHON_NOTE = (
@@ -2913,16 +2937,16 @@ REMOTE_PYTHON_NOTE = (
 
 def _remote(url):
     """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
-    if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
+    if not LOOPBACK_URL.fullmatch(url or ""):
         raise ValueError(
             "--worker must be a loopback URL (http://127.0.0.1:PORT); for a remote worker, "
             "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
         )
-    token = os.environ.get(WORKER_TOKEN_ENV, "")
-    if len(token) < 16:
+    token = _CREDENTIALS.get(WORKER_TOKEN_ENV) or os.environ.get(WORKER_TOKEN_ENV, "")
+    if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(
-            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN; tokens are never accepted "
-            "as arguments"
+            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN, of at least {MIN_TOKEN_CHARS} "
+            "characters; tokens are never accepted as arguments"
         )
     client = _RemoteClient(url, token)
     version = client.call("version")
@@ -3272,8 +3296,18 @@ def _moved_start(launch, state, line, program):
 
 
 def _start_local(args, root, program, line, language, data, max_pause):
+    import peeky
+
     token = secrets.token_urlsafe(32)
-    command = [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0"]
+    # Isolated, importing this exact Peeky by absolute path, and run in Peeky's own
+    # directory: a `peeky` package in the current directory or on PYTHONPATH never runs.
+    bootstrap = (
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "from peeky.worker import main; sys.exit(main())"
+    )
+    command = [sys.executable, "-I", *(["-B"] if sys.dont_write_bytecode else [])]
+    command += ["-c", bootstrap, str(Path(peeky.__file__).resolve().parents[1])]
+    command += ["--root", str(root), "--port", "0"]
     # A session's own worker ends with the session, including after its idle timeout.
     command.append("--exit-when-idle")
     if data is not None:
@@ -3284,6 +3318,7 @@ def _start_local(args, root, program, line, language, data, max_pause):
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
     process = subprocess.Popen(
         command,
+        cwd=_state_dir(),
         # Its own token, by the name the worker reads; never a remote worker's.
         env={**without_credentials(os.environ), "DEBUG_TOKEN": token},
         stdout=subprocess.PIPE,
@@ -3595,7 +3630,11 @@ def verify(args):
         # Several edits are verified as the one edit with their combined effect.
         args.old, args.new = combine_edits(original, _checked_edit(original, _edit_pairs(args)))
     edited = original if args.baseline else original.replace(args.old, args.new, 1)
-    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
+    from peeky.build import private_base
+
+    # Where no other user can write: a candidate that reaches above its folder finds
+    # nothing of theirs there.
+    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-", dir=private_base()))
     try:
         result = _verify_candidate(
             args, root, program, language, data, source, check, destination, deadline
@@ -3830,11 +3869,16 @@ def _background(argv, command, edits=None):
         "from peeky.cli import run_job; sys.exit(run_job(sys.argv[1]))"
     )
     boot = os.open(path / "boot.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # The job is this command, run later: a remote one needs the client's token.
+    env = without_credentials(os.environ)
+    if token := _CREDENTIALS.get(WORKER_TOKEN_ENV):
+        env[WORKER_TOKEN_ENV] = token
     try:
         subprocess.Popen(
             [sys.executable, "-I", "-c", bootstrap]
             + [str(Path(peeky.__file__).resolve().parents[1]), str(path)],
             cwd=path,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=boot,
             stderr=boot,
@@ -4007,6 +4051,21 @@ class _QueriesHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
 
 def main(argv=None, _job=False, _edits=None):
+    """Both names of the worker's token leave the environment first, so that no process
+    this command starts can inherit them; they come back for a caller in this process."""
+    from peeky.processes import take_credentials
+
+    taken = take_credentials()
+    _CREDENTIALS.update(taken)
+    try:
+        return _main(argv, _job, _edits)
+    finally:
+        for name in taken:
+            _CREDENTIALS.pop(name, None)
+        os.environ.update(taken)
+
+
+def _main(argv, _job, _edits):
     from peeky.processes import keep_children_waitable
 
     keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters

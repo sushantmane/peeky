@@ -264,19 +264,23 @@ def test_the_watchdog_after_the_launch_request_is_no_refusal(tmp_path, monkeypat
 
 
 def answering(status, body):
-    """A loopback worker that answers its version, then every other request with
-    ``status`` and ``body``."""
+    """A loopback worker that answers its hello and version, then every other request
+    with ``status`` and ``body``."""
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from worker_hello import hello_answer
 
     from peeky.errors import PROTOCOL_VERSION
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            version = self.path == "/version"
+            asked = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            version = self.path in ("/version", "/hello")
             hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
             answer = json.dumps(hello).encode() if version else body
+            if self.path == "/hello":
+                answer = hello_answer(asked, "before-launch-token-1234567890-0123456789abcdef")
             self.send_response(200 if version else status)
             self.send_header("Content-Length", str(len(answer)))
             self.end_headers()
@@ -313,7 +317,7 @@ def test_only_a_remote_refusal_the_worker_made_is_one_before_launch(
 ):
     # An answer that was not JSON was taken for a refusal before launch.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890-0123456789abcdef")
     (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")
     server = answering(status, body if isinstance(body, bytes) else body.encode())
     try:
@@ -330,7 +334,7 @@ def test_only_a_remote_refusal_the_worker_made_is_one_before_launch(
 
 def test_a_worker_nobody_answers_at_is_one_before_launch(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890-0123456789abcdef")
     (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")
     argv = ["probe", str(tmp_path / "main.py"), "--at", "2", "--worker", "http://127.0.0.1:1"]
     assert main([*argv, "--json"]) == 2
