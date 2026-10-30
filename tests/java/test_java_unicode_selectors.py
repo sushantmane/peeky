@@ -1,4 +1,4 @@
-"""#195: Java locals and fields with non-ASCII names, captured, read and set through
+"""Java locals and fields with non-ASCII names, captured, read and set through
 real java-debug by the names javac keeps as written: an NFC and an NFD spelling of
 `größe` are two variables, and each selector reads only its own."""
 

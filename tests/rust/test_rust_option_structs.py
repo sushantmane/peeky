@@ -1,10 +1,9 @@
-"""The eleventh evaluation's rota: `last: Option<Engineer>`, the variable at the heart of
-the bug, read `<unqualified Rust enum layout>`, with no address and nothing to read
-instead. An `Option` of a struct the crate defines now reads from memory by its proven
-niche layout, with the payload's fields as children; one Peeky does not decode says
-why, where it is stored and what to read instead. The `shapes` crate covers the other
-layouts rustc gives such an `Option`: a tag of its own, and niches in a `char`, a `Box`
-and a reference."""
+"""A rota's `last: Option<Engineer>`, the variable at the heart of the bug, which LLDB shows
+as `<unqualified Rust enum layout>`, with no address and nothing to read instead. An
+`Option` of a struct the crate defines reads from memory by its proven niche layout, with
+the payload's fields as children; one Peeky does not decode says why, where it is stored
+and what to read instead. The `shapes` crate covers the other layouts rustc gives such an
+`Option`: a tag of its own, and niches in a `char`, a `Box` and a reference."""
 
 import json
 import os

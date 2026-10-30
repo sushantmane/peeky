@@ -32,7 +32,7 @@ def test_probe_captures_intervenes_and_reports_in_one_call(program):
     assert "not found" in observed["missing"]["error"]
     after = {r["selector"]: r for r in result["rows"] if r["phase"] == "after-set"}
     assert after["start"]["value"] == "0"
-    # Where each change was made (#137): its stop's line and hit, and the captured hits.
+    # Where each change was made: its stop's line and hit, and the captured hits.
     assert result["interventions"] == [
         {
             "name": "start",
@@ -208,7 +208,7 @@ def test_interventions_can_target_a_later_hit_and_results_group_by_hit(tmp_path)
     )
     assert result["interventions"] == [] and "BEST 7" in result["output"]
     assert any("--set best=100 was not applied" in warning for warning in result["warnings"])
-    # Ninth evaluation: the message names the option and the way to reach that hit.
+    # The message names the option and the way to reach that hit.
     with pytest.raises(
         ValueError,
         match=r"^--set-hit 3 is past the last hit this probe captures \(2, --hits 2\): raise --hits to 3",
@@ -267,7 +267,7 @@ def test_hits_all_captures_every_stop_up_to_the_cap(tmp_path, capsys):
 
 
 def test_a_set_at_line_with_a_lambda_says_whose_variable_changed(tmp_path):
-    # #151 review: line 7 stops in `main` and in the lambda it declares; @HIT counts both.
+    # Line 7 stops in `main` and in the lambda it declares; @HIT counts both.
     (tmp_path / "lam.py").write_text(
         "def main():\n"
         "    total = 0\n"
@@ -294,7 +294,7 @@ def test_a_set_at_line_with_a_lambda_says_whose_variable_changed(tmp_path):
 
 
 def test_two_lambdas_on_a_set_at_line_are_said_to_read_alike(tmp_path):
-    # #151 review 3: `f = lambda ...; g = lambda ...` stops in two lambdas both named
+    # `f = lambda ...; g = lambda ...` stops in two lambdas both named
     # `<lambda>` (debugpy gives no column), which were listed as one function.
     (tmp_path / "p2.py").write_text(
         "def main():\n"

@@ -1,4 +1,4 @@
-"""#249: a module file that differs on the worker host is refused before Cargo runs."""
+"""A module file that differs on the worker host is refused before Cargo runs."""
 
 import json
 import os

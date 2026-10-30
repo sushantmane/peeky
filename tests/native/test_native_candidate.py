@@ -110,7 +110,7 @@ def test_a_candidate_that_does_not_compile_is_build_failed(loop, capsys):
     code, result = probe(
         capsys, loop, "--at", "loop.c:5", "--old", "total += i;", "--new", "total += ;"
     )
-    # Refused before the launch request (#190): exit 2, no table.
+    # Refused before the launch request: exit 2, no table.
     assert code == 2 and result["error"]["code"] == "BUILD_FAILED"
     assert result["refused_before_launch"] is True
     assert "error" in result["error"]["message"] and "loop.c:5" in result["error"]["message"]
@@ -162,7 +162,7 @@ def test_a_remote_worker_probes_the_candidate(loop, capsys, monkeypatch):
         code, result = probe(capsys, loop, "--at", "loop.c:5", *TWO_EDITS, "--worker", url)
         assert code == 0, result.get("error")
         assert result["candidate"]["line"] == 6 and "TOTAL:103" in result["output"]
-        # The edited file is the worker's copy, whose line 6 this is (#268 review).
+        # The edited file is the worker's copy, whose line 6 this is.
         where = result["breakpoint"]["source"]["path"]
         assert where.startswith("worker:") and where.endswith("/loop.c"), where
         assert "peeky-build-" in where and result["breakpoint"]["line"] == 6
@@ -178,8 +178,8 @@ def test_a_remote_worker_probes_the_candidate(loop, capsys, monkeypatch):
 
 
 def test_a_candidates_breakpoint_names_the_copy_its_line_is_from(loop, capsys):
-    # #268 review: the breakpoint named your loop.c with the candidate's line 6, which is
-    # `}` in your file: an edit that adds a line above moves the line it means.
+    # The breakpoint names the candidate's copy, not your loop.c: the candidate's line 6 is
+    # `}` in your file, as an edit that adds a line above moves the line it means.
     from peeky.cli import CANDIDATE_LOCATIONS
 
     source = loop / "loop.c"
@@ -217,7 +217,7 @@ TWO_EDITS = (
 
 
 def test_a_candidate_with_several_edits_maps_the_line_through_them(loop, capsys):
-    # #76: one edit adds a declaration above the probed line, another uses it below.
+    # One edit adds a declaration above the probed line, another uses it below.
     source = loop / "loop.c"
     before = source.read_bytes()
     code, result = probe(capsys, loop, "--at", "loop.c:5", *TWO_EDITS)
@@ -227,3 +227,72 @@ def test_a_candidate_with_several_edits_maps_the_line_through_them(loop, capsys)
     assert "TOTAL:103" in result["output"] and source.read_bytes() == before
     assert "+  int bonus = 100;" in result["candidate"]["diff"]
     assert '+  printf("TOTAL:%d\\n", total + bonus);' in result["candidate"]["diff"]
+
+
+@pytest.fixture
+def c_program(tmp_path, monkeypatch):
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+
+    def write(name, text):
+        (tmp_path / name).write_text(text)
+        return tmp_path / name
+
+    return write
+
+
+def run(capsys, *argv):
+    code = main([str(arg) for arg in argv])
+    return code, capsys.readouterr().out
+
+
+OTHER_MAIN = """#include <stdio.h>
+#include "ring.h"
+int push(struct ring *r, int v) {
+    r->buf[r->tail % 4] = v; /* AT */
+    r->tail++;
+    return r->tail;
+}
+int main(void) {
+    int total = helper();
+    printf("%d\\n", total);
+    return 0;
+}
+"""
+
+
+OTHER = """#include "ring.h"
+
+int helper(void) {
+    struct ring q = { 0, 0, { 0 } };
+    int t = 0;
+    t += push(&q, 2);
+    return t;
+}
+"""
+
+
+RING_H = """struct ring { int head; int tail; int buf[4]; };
+int push(struct ring *r, int v);
+int helper(void);
+"""
+
+
+@pytest.mark.timeout(240)
+def test_compare_needs_every_source_unchanged(c_program, capsys):
+    # After main.c changes on disk, a candidate on other.c is not paired with a run of the
+    # old main.c, which would credit the change to the edit in `diff`.
+    root = c_program("main.c", OTHER_MAIN.replace("r->tail++;", "r->tail += 100;")).parent
+    c_program("other.c", OTHER)
+    c_program("ring.h", RING_H)
+    probe = ["probe", root, "--at", "other.c:7", "--capture", "t", "--quiet"]
+    edit = ["--old", "t += push(&q, 2);", "--new", "t += push(&q, 3);"]
+    assert run(capsys, *probe)[0] == 0  # run 1
+    main_c = root / "main.c"
+    main_c.write_text(main_c.read_text().replace("r->tail += 100;", "r->tail += 1;"))
+    code, out = run(capsys, *probe, *edit)  # run 2
+    assert code == 0 and "compare: no saved run is this probe without the edit" in out, out
+    assert run(capsys, *probe)[0] == 0  # run 3
+    code, out = run(capsys, *probe, *edit)  # run 4
+    assert "compare: peeky queries diff --param a=3 --param b=4" in out, out

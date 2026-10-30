@@ -1,5 +1,4 @@
-"""`probe --set-at`: several interventions at their own lines and hits, on real C builds
-(#137)."""
+"""`probe --set-at`: several interventions at their own lines and hits, on real C builds."""
 
 import json
 import os
@@ -64,8 +63,8 @@ def changes(result):
 
 @pytest.mark.timeout(240)
 def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsys):
-    # #137 (sixth evaluation, `stock`): two linked changes, one to test and one to undo
-    # it before a later use, took a session of 14 calls.
+    # Two linked changes, one to test and one to undo it before a later use, in one probe
+    # rather than a session of many calls.
     code, plain = probe(capsys, linked, "--capture", "total,width", "--hits", "all")
     assert code == 0 and "TOTAL:10 W:10,20,30,40" in plain["output"]
     # Changed at ADD's 3rd stop and restored at REUSE's 3rd, which is not captured.
@@ -130,10 +129,10 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
     assert json.loads(sets[4, "observed"]) == [f"width: 100 -> 3 (line {REUSE}, hit 3, in main)"]
     assert sets[1, "observed"] is None and sets[3, "observed"] is None
     # diff against the run without them: their (sets) row, the change itself, then its
-    # effect (tenth evaluation: the change came after its effects).
+    # effect (a change that came after its effects would be listed out of order).
     diff = queried(capsys, "diff", "--param", "a=1", "--param", "b=2")
     assert [row["selector"] for row in diff[:2]] == ["(output)", "(sets)"]
-    # runs.sets holds requests: each says where it was asked for (review of PR #214).
+    # runs.sets holds requests: each says where it was asked for.
     assert json.loads(diff[1]["value_b"]) == [
         ["width", "100", f"requested at {ADD}@3"],
         ["width", "3", f"requested at {REUSE}@3"],
@@ -143,7 +142,7 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
         for row in diff[2:]
     ]
     # `total`'s after-set value is its observed one (the change was to `width`): no
-    # difference of its own (seventh evaluation, finding 10).
+    # difference of its own.
     assert shown == [
         (3, "after-set", "width", None, "100", "intervention only in run b"),
         (4, "observed", "total", "6", "103", None),
@@ -155,7 +154,7 @@ def test_a_set_at_its_line_never_reaches_is_reported_not_dropped(linked, capsys)
     code, result = probe(
         capsys, linked, "--capture", "total", "--hits", "2", "--set-at", f"{REUSE}@7", "width=1"
     )
-    # Its values are evidence, but the experiment did not happen: exit code 4 (#151).
+    # Its values are evidence, but the experiment did not happen: exit code 4.
     assert code == 4 and result["status"] == "completed" and result["interventions"] == []
     assert "TOTAL:10 W:10,20,30,40" in result["output"]
     assert result["unapplied"] == [
@@ -168,8 +167,7 @@ def test_a_set_at_its_line_never_reaches_is_reported_not_dropped(linked, capsys)
     # The probe ran past its captured hits for it: line REUSE's stops were all counted.
     assert result["hits"] == 2 and len(result.get("set_pauses_ms", [])) == 4
     runs = queried(capsys, "outputs", "--param", "b=1", "--param", "a=1")
-    # A request whose hit never came says so (review of PR #214); `outputs` no longer
-    # has `set_hit` (ninth evaluation).
+    # A request whose hit never came says so; `outputs` has no `set_hit`.
     assert json.loads(runs[0]["sets"]) == [
         ["width", "1", f"requested at {REUSE}@7, not made: that hit never came"]
     ]
@@ -278,7 +276,7 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_struct_previews_read_at_captures_and_after_set_with_set_at(linked, capsys):
-    # #136's previews in a --set-at probe: captured rows and after-set rows show the
+    # Struct previews in a --set-at probe: captured rows and after-set rows show the
     # struct's fields; the stop at STEP, which captures nothing, reads none.
     (linked / "linked.c").write_text(POINT)
     at = {
@@ -322,7 +320,7 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_an_unmade_set_beside_a_made_set_at_is_named_and_refusals_group(linked, capsys):
-    # #151 review 2: "No intervention was applied" while a --set-at was made.
+    # Never "No intervention was applied" while a --set-at was made.
     code, result = probe(
         capsys,
         linked,
@@ -344,17 +342,17 @@ def test_an_unmade_set_beside_a_made_set_at_is_named_and_refusals_group(linked, 
         f"--set total=5 was not applied: the program stopped 4 time(s) at line {ADD}, before "
         "hit 9." in result["warnings"]
     ), result["warnings"]
-    # A refusal before the run names the functions sharing a reason once (#149's format).
+    # A refusal before the run names the functions sharing a reason once.
     (linked / "linked.c").write_text(THROUGH)
     both = next(i for i, text in enumerate(THROUGH.splitlines(), 1) if "// BOTH" in text)
     call = next(i for i, text in enumerate(THROUGH.splitlines(), 1) if "// CALL" in text)
     argv = ["probe", str(linked), "--at", f"linked.c:{call}", "--set-at", f"{both}@1"]
-    # Refused before it ran: exit 2 (seventh evaluation, finding 14).
+    # Refused before it ran: exit 2.
     assert main([*argv, "a.pp.x=1", "--json", "--quiet"]) == 2
     message = json.loads(capsys.readouterr().out)["error"]["message"]
     assert f"cannot be changed at linked.c:{both}, at any stop of this build: in fc and fd, " in (
         message
     ), message
-    # `a.pp` is a field of a parameter, not one: no call is named (#276), once for both.
+    # `a.pp` is a field of a parameter, not one: no call is named, once for both.
     assert message.count("is a pointer") == 1 and message.count("otherwise edit the source") == 1
     assert "before the call that passed it" not in message, message

@@ -1,4 +1,4 @@
-"""#382 on a Cargo crate: a probe's `1:pass` reads main's loop counter while add_reading
+"""On a Cargo crate, a probe's `1:pass` reads main's loop counter while add_reading
 runs, in one run. A caller's `Vec` keeps LLDB's summary, with the note `session get --frame 1`
 gives: a call under way may be changing what it lent."""
 

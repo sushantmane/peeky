@@ -1,4 +1,4 @@
-"""C++ built by GCC (#167), on real builds with clang and g++: what LLDB misreads in
+"""C++ built by GCC, on real builds with clang and g++: what LLDB misreads in
 GCC's debug information is withheld with a true note or said, never shown as the
 program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on macOS).
 
@@ -8,10 +8,10 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   entries are listed only where the formatter decodes them as the type the container
   holds, where it holds them: an allocator whose first template argument is another
   type, a 16-byte-aligned `long double`, or (LLDB 18) a map whose type's name holds `set`
-  decode wrongly. Otherwise Peeky reads the entries from the container's own nodes
-  (#360), where the debug information proves how: numbers, characters, enums, pointers
+  decode wrongly. Otherwise Peeky reads the entries from the container's own nodes,
+  where the debug information proves how: numbers, characters, enums, pointers
   and strings, in pairs and structs, a `std::array` in one, any other container there
-  withheld alone (#374), and past 256 entries by position or key; else no preview, key or
+  withheld alone, and past 256 entries by position or key; else no preview, key or
   position read, or listing.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
   length comes from the build's debug information, and lldb-dap 20, which has no
@@ -20,9 +20,9 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   program's output: they are a warning, not output.
 - A structured binding of a bitfield, which GCC gives no location: a true note.
 - A structured binding of a pair or tuple, which GCC (and Apple clang 21) hold as a
-  reference to the element: the element, never its address (#291). By reference, only
+  reference to the element: the element, never its address. By reference, only
   where it names an object the frame keeps alive, an element of a local container the
-  code leaves in place, or a call's own result (#297); optimized, never on its own line.
+  code leaves in place, or a call's own result; optimized, never on its own line.
 
 The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
 C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
@@ -119,8 +119,8 @@ MISCOUNTED = (
 
 
 def placed():
-    """Whether Peeky can show a pointer at a local container points at a live object
-    (#339): lldb-dap 20 gives each local's address. lldb-dap 18 gives none for one the
+    """Whether Peeky can show a pointer at a local container points at a live object:
+    lldb-dap 20 gives each local's address. lldb-dap 18 gives none for one the
     debugger shows with a summary, so no node is read through such a pointer there."""
     return sys.platform != "linux" or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
 
@@ -128,7 +128,7 @@ def placed():
 def withheld(row, count):
     """Whether a row is withheld as an unordered container LLDB miscounts: the container
     itself (`not listed: ...`), or a key, position or member read in it. Where Peeky
-    would read its nodes but doesn't at this stop, the row says why (eval 13)."""
+    would read its nodes but doesn't at this stop, the row says why."""
     error = str(row.get("error") or "")
     reason = MISCOUNTED.format(count)
     unread = re.compile(
@@ -149,9 +149,9 @@ def withheld(row, count):
 
 @pytest.mark.timeout(180)
 def test_an_unordered_container_is_read_whole_or_not_listed(cpp, capsys):
-    # #167: with GCC, `us{4}` read `size=0 {}`, `um[1]` "um is empty; in C++, um[1] would
-    # insert the key", and `us[#0]` "us has 0 entries", with no note. Then each was
-    # withheld as `not listed`; #360: each is read from its own nodes.
+    # With GCC, LLDB reads `us{4}` as `size=0 {}`, so `um[1]` would be "um is empty; in
+    # C++, um[1] would insert the key", and `us[#0]` "us has 0 entries": each is read from
+    # its own nodes.
     compiler, root = cpp
     source = root / "unordered.cpp"
     source.write_text(UNORDERED)
@@ -163,7 +163,7 @@ def test_an_unordered_container_is_read_whole_or_not_listed(cpp, capsys):
     assert rows["none"]["value"] == "size=0 {}", rows["none"]
     # Every one reads, by key, by position and inside another value: GCC's from their
     # nodes (and clang's typedef'd one with LLDB 18, which counts it empty). Through a
-    # pointer, only where Peeky can show it points at a live object (review of #360).
+    # pointer, only where Peeky can show it points at a live object.
     pointed = compiler == "gcc" and not placed()
     for selector, (value, count) in READS.items():
         if pointed and selector.startswith("p"):
@@ -207,8 +207,8 @@ def test_a_listing_and_a_callers_reference_follow_the_same_rule(cpp, capsys):
     # A reference shows its address and the container; its entries are listed by key. A
     # pointer shows its address and count, and what it points at is the container.
     if compiler == "gcc" and not placed():
-        # Peeky can't show that `ref` and `ptr` refer to a live object here (#339): no
-        # node is read through either (review of #360).
+        # Peeky can't show that `ref` and `ptr` refer to a live object here: no node is
+        # read through either.
         for selector in ("ref", "ptr", "ptr[0]"):
             assert withheld(rows[selector], 1), (selector, rows[selector])
     else:
@@ -268,10 +268,9 @@ HEAP_TEXT = (
 
 @pytest.mark.timeout(180)
 def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, capsys):
-    # #360: with GCC, each of these was `not listed` (LLDB counts them empty). Peeky now
-    # reads integers, bools and strings, in pairs and structs, from the nodes. #374: a
-    # `double`, and more than 256 entries, read too; a string's text outside its node, in
-    # heap memory, is withheld on its own, with why.
+    # With GCC, LLDB counts each of these empty. Peeky reads integers, bools and strings,
+    # in pairs and structs, from the nodes; a `double`, and more than 256 entries, too; a
+    # string's text outside its node, in heap memory, is withheld on its own, with why.
     compiler, root = cpp
     source = root / "kinds.cpp"
     source.write_text(KINDS)
@@ -346,8 +345,8 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_numbers_characters_enums_and_pointers_are_read_from_the_nodes(cpp, capsys):
-    # #374: with GCC, each of these was `not listed`, though Peeky read the nodes of an
-    # `int` set. Now each value reads as the debugger shows the same value in a local.
+    # With GCC, LLDB counts each of these empty: each value reads from the nodes as the
+    # debugger shows the same value in a local.
     compiler, root = cpp
     source = root / "more.cpp"
     source.write_text(MORE_KINDS)
@@ -434,10 +433,10 @@ HEAP_BLOCK = (
 
 @pytest.mark.timeout(300)
 def test_a_nested_container_reads_where_proven_and_a_big_one_by_position_or_key(cpp, capsys):
-    # #374: with GCC, each of these was `not listed`. A `std::array` held in a node now
-    # reads from it; any other container held there is withheld alone, with why: a
+    # With GCC, LLDB counts each of these empty. A `std::array` held in a node reads from
+    # it; any other container held there is withheld alone, with why: a
     # vector's buffer is a heap block nothing proves still allocated, and `gone[1]`,
-    # destroyed in place, read its freed buffer as `size=2 [2, 3]` (review). A container
+    # destroyed in place, would read its freed buffer as `size=2 [2, 3]`. A container
     # of more than 256 entries reads too: its count proven by its whole chain (at most 512
     # nodes without `readMemory`), an entry past the first 256 read when its position or
     # key asks for it.
@@ -474,8 +473,8 @@ def test_a_nested_container_reads_where_proven_and_a_big_one_by_position_or_key(
         assert rows[name]["value"] == "size=1 {1: <not read>}", rows[name]
         assert rows[f"{name}[1]"]["error"] == HEAP_BLOCK.format(kind), rows[f"{name}[1]"]
     assert rows["names"]["value"] == "size=1 {1: <not read>}", rows["names"]
-    # A string destroyed in place, before a new one is built there (review): its text was
-    # in heap memory, now freed; never read. A short one's text is in the node: read.
+    # A string destroyed in place, before a new one is built there: its text was in heap
+    # memory, now freed; never read. A short one's text is in the node: read.
     assert rows["lost[1]"]["error"] == HEAP_TEXT, rows["lost[1]"]
     assert rows["lost[2]"]["value"] == '"short"', rows["lost[2]"]
     assert rows["trees"]["value"] == "size=1 {1: <not read>}", rows["trees"]
@@ -535,8 +534,8 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_no_entry_is_read_from_the_nodes_while_a_library_call_runs(cpp, capsys):
-    # #360: stopped in a hash function `um.find(1)` calls, `main`'s `um` may be part-way
-    # through a change (#181), so its nodes are not read: GCC's stays withheld as LLDB
+    # Stopped in a hash function `um.find(1)` calls, `main`'s `um` may be part-way through
+    # a change, so its nodes are not read: GCC's stays withheld as LLDB
     # miscounts it, and clang's keeps LLDB's summary.
     compiler, root = cpp
     source = root / "changing.cpp"
@@ -559,7 +558,7 @@ def test_no_entry_is_read_from_the_nodes_while_a_library_call_runs(cpp, capsys):
         capsys.readouterr()
     if compiler == "gcc":
         assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
-        # It names the call it waits for (eval 13 prep, finding 3).
+        # It names the call it waits for.
         assert re.fullmatch(
             r"not listed: the debugger counts 0 of its 1 entries, and Peeky doesn't read them "
             r"from its nodes while a standard-library call below this frame \(std::\S+\) may be "
@@ -593,7 +592,7 @@ int main() {
 }
 """
 # The note on a pointer to an unordered container whose count LLDB gets wrong, where
-# Peeky can't show it points at a live object, to read its nodes (eval 13 prep, finding 2).
+# Peeky can't show it points at a live object, to read its nodes.
 POINTED = (
     "not listed: the debugger counts 0 of the 1 entries it points at, and Peeky reads its "
     "nodes only through a pointer it proves points at a live object, not `{}`; print its "
@@ -603,9 +602,9 @@ POINTED = (
 
 @pytest.mark.timeout(180)
 def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(cpp, capsys):
-    # Review of #360: a heap block's set, and a dead frame's (whose bytes still read as
-    # one), showed their entries from their nodes as `[memory]`, with no note: `heap`
-    # and `dangling` are pointers Peeky can't show point at a live object (#339).
+    # A heap block's set, and a dead frame's (whose bytes still read as one), show no
+    # entries from their nodes: `heap` and `dangling` are pointers Peeky can't show point
+    # at a live object.
     compiler, root = cpp
     source = root / "pointers.cpp"
     source.write_text(POINTERS)
@@ -681,9 +680,9 @@ REFERS = {
 
 @pytest.mark.timeout(180)
 def test_no_node_is_read_through_a_reference_not_proven_to_refer_to_a_live_object(cpp, capsys):
-    # Review 2 of #360: a reference bypassed the rule on pointers, so `onheap` (`*heap`),
-    # `far.seen`, `boxed.us` (through `Holder &` to a heap block) and `dangling` (a dead
-    # frame's set) showed their entries from their nodes as `[memory]`, with no note.
+    # A reference follows the rule on pointers: `onheap` (`*heap`), `far.seen`, `boxed.us`
+    # (through `Holder &` to a heap block) and `dangling` (a dead frame's set) show no
+    # entries from their nodes.
     compiler, root = cpp
     source = root / "references.cpp"
     source.write_text(REFERENCES)
@@ -739,15 +738,15 @@ int main() {
     return 0;
 }
 """
-# Eval 13 prep, finding 2: with lldb-dap 18, which gives a container local no address,
+# With lldb-dap 18, which gives a container local no address,
 # Peeky can't place what a reference parameter refers to; the row offers the caller's
-# local, which reads in its own frame, as a candidate, never as proven (#393 review).
+# local, which reads in its own frame, as a candidate, never as proven.
 UNPLACED = (
     "not listed: the debugger counts 0 of its 2 entries, and Peeky reads its nodes only "
     "through a reference it proves refers to a live object, not `stock`; inspect this "
     "candidate local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to"
 )
-# Finding 3: below a destructor, a caller's container is said to wait for that call.
+# Below a destructor, a caller's container is said to wait for that call.
 BELOW_DESTRUCTOR = (
     "not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from "
     "its nodes while a constructor, destructor or assignment operator below this frame "
@@ -762,10 +761,10 @@ def got(capsys):
 
 @pytest.mark.timeout(240)
 def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_reads(cpp, capsys):
-    # Eval 13 prep, findings 2 and 3: a reference parameter to an unordered container
-    # (lldb-dap 18), and a caller's container below a destructor, were withheld with the
-    # debugger's miscount alone and "print its entries from the program", though the
-    # frame that holds it, or the same frame once the call returns, reads it.
+    # A reference parameter to an unordered container (lldb-dap 18), and a caller's
+    # container below a destructor, are withheld with more than the debugger's miscount
+    # and "print its entries from the program": the note names the frame that holds it,
+    # or the same frame once the call returns, which reads it.
     compiler, root = cpp
     source = root / "depot.cpp"
     source.write_text(DEPOT)
@@ -794,8 +793,8 @@ def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_rea
         capsys.readouterr()
     reads = bool(re.fullmatch(r"size=2 \{.*\}", str(held.get("value"))))
     assert reads or compiler == "clang", held
-    # Entries Peeky never reads from the nodes (a `long double`, since #374 a `double`
-    # reads): no pointer or reference is blamed, whatever proves it (review).
+    # Entries Peeky never reads from the nodes (a `long double`; a `double` reads): no
+    # pointer or reference is blamed, whatever proves it.
     code, result = probe(source, line_of(DEPOT, "// IN_PRICED"), "prices", capsys)
     (row,) = result["rows"]
     if compiler == "gcc":
@@ -822,7 +821,7 @@ def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_rea
     if compiler == "gcc":
         assert below["error"] == BELOW_DESTRUCTOR, below
     elif reads:
-        # The debugger's summary alone: its elements get no preview of their own (#181).
+        # The debugger's summary alone: its elements get no preview of their own.
         assert below.get("value") == "size=2" and "Peeky" not in str(below.get("error")), below
     else:
         # Never "retry after that call returns" where it wouldn't read then either.
@@ -848,7 +847,7 @@ int main(int argc, char **) {
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("optimization", ["O1", "O2"])
 def test_no_node_is_read_in_an_optimized_build(cpp, optimization):
-    # Review of #360: optimized, `slot += argc` may keep `um[1]`'s new value in a
+    # Optimized, `slot += argc` may keep `um[1]`'s new value in a
     # register while its node and the count stay as they were, so the nodes would show
     # a stale value as `[memory]`. No entry is read from them in such a build.
     from peeky.native import NativeTarget
@@ -902,10 +901,9 @@ int main(int argc, char **) {
 
 @pytest.mark.timeout(180)
 def test_no_node_is_read_where_a_using_attribute_asks_gcc_to_optimize(cpp, capsys):
-    # Review 2 of #360: `[[using gnu: optimize("O2")]]` escaped the detector, and GCC 13
-    # optimizes `bump` under -O0. Stopped in `twice`, `bump` has stored 41 in `m[1]`, but
-    # GCC drops that store (`twice` is `const`): `main`'s `um` read `size=1 {1: 2}` from
-    # its node as `[memory]`.
+    # `[[using gnu: optimize("O2")]]` asks GCC 13 to optimize `bump` under -O0. Stopped in
+    # `twice`, `bump` has stored 41 in `m[1]`, but GCC drops that store (`twice` is
+    # `const`): `main`'s `um` would read `size=1 {1: 2}` from its node as `[memory]`.
     compiler, root = cpp
     source = root / "stale.cpp"
     source.write_text(STALE)
@@ -950,7 +948,7 @@ int main() {{
     ],
 )
 def test_no_node_is_read_where_the_source_asks_gcc_to_optimize_a_function(cpp, capsys, ask):
-    # Review of #360: an unoptimized build whose source asks GCC to optimize `bump` (an
+    # An unoptimized build whose source asks GCC to optimize `bump` (an
     # attribute, behind a macro too, or a pragma) may hold a value it stores in a
     # register, as an optimized build does: its nodes are not read.
     compiler, root = cpp
@@ -1007,9 +1005,9 @@ WRONG_PLACE = (
 
 @pytest.mark.timeout(180)
 def test_entries_lldb_would_decode_as_another_type_or_place_are_not_listed(cpp, capsys):
-    # Review of #281: `WeirdAlloc<double, int>` compiles, LLDB counts `size=1` as the
-    # container does, and shows `ws[#0]` as the double 3.4584595208887258E-323. Since
-    # #360, Peeky reads the `int` from the node itself.
+    # `WeirdAlloc<double, int>` compiles, LLDB counts `size=1` as the container does, and
+    # shows `ws[#0]` as the double 3.4584595208887258E-323. Peeky reads the `int` from the
+    # node itself.
     compiler, root = cpp
     source = root / "decoded.cpp"
     source.write_text(DECODED)
@@ -1050,7 +1048,7 @@ def test_entries_lldb_would_decode_as_another_type_or_place_are_not_listed(cpp, 
         assert rows["assets[1].v"]["error"] == f"[1] not read: assets is not listed: {reason}"
     if sys.platform == "linux":
         # libstdc++ here: LLDB's provider decodes `ws` and `ld` wrongly. Peeky reads `ws`'s
-        # `int`s from its nodes (#360), and no `long double`.
+        # `int`s from its nodes, and no `long double`.
         assert rows["ws"].get("view") == "memory" and rows["ws[#0]"]["value"] == "7", rows
         assert rows["ld"].get("value") is None and rows["ld[#0]"].get("value") is None, rows
 
@@ -1073,10 +1071,9 @@ DWARF = re.compile(
 
 @pytest.mark.timeout(240)
 def test_a_string_set_is_made_in_the_buffer_the_debugger_misreads(cpp, capsys):
-    # #167: with lldb-dap 20, GCC's string was refused as "its members are not laid out
-    # as libstdc++'s string's are"; LLDB reads its `_M_local_buf` as `char[0]`. Then as
-    # one whose characters cannot be set one by one: lldb-dap 20 has no writeMemory
-    # request. Its text is now written with LLDB's `memory write`, and read back.
+    # LLDB reads GCC's string's `_M_local_buf` as `char[0]`, so its characters cannot be
+    # set one by one, and lldb-dap 20 has no writeMemory request: its text is written with
+    # LLDB's `memory write`, and read back.
     compiler, root = cpp
     source = root / "text.cpp"
     source.write_text(TEXT)
@@ -1119,8 +1116,8 @@ def test_a_string_set_is_made_in_the_buffer_the_debugger_misreads(cpp, capsys):
 
 @pytest.mark.timeout(180)
 def test_the_debuggers_errors_about_the_debug_information_are_not_program_output(cpp, capsys):
-    # #167: LLDB 18 printed `error: program 0x000000fc: DW_TAG_member '_M_local_buf' ...`
-    # into the program's output, as if the program had printed it.
+    # LLDB 18 prints `error: program 0x000000fc: DW_TAG_member '_M_local_buf' ...` on its
+    # own stderr, which is no part of the program's output.
     compiler, root = cpp
     source = root / "text.cpp"
     source.write_text(TEXT)
@@ -1162,8 +1159,8 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_a_bitfields_binding_with_no_location_says_so(cpp, capsys):
-    # #167: GCC describes `auto [lo, hi] = bits` with no location and a 1-byte
-    # `__unknown__` type; a set was refused with "stop after its declaration has run".
+    # GCC describes `auto [lo, hi] = bits` with no location and a 1-byte `__unknown__`
+    # type; a set is not refused with "stop after its declaration has run".
     compiler, root = cpp
     source = root / "bits.cpp"
     source.write_text(BITS)
@@ -1248,11 +1245,10 @@ def bound_rows(source, marker, capture, capsys):
 
 @pytest.mark.timeout(300)
 def test_a_pair_or_tuple_binding_shows_its_element_never_its_address(cpp, capsys):
-    # #291: GCC holds `t` of `auto [t, u] = make(i)[0];` as a reference to the element
-    # (`std::tuple_element<0, std::pair<long, long> >::type &&`), and every row showed
-    # the element's address (`0x0000fffffffffb70`) as its value: before the declaration
-    # ran (with a note at the loop's next pass, none on a one-line loop), and after. So
-    # did Apple clang 21's (`long &&`) after it ran.
+    # GCC holds `t` of `auto [t, u] = make(i)[0];` as a reference to the element
+    # (`std::tuple_element<0, std::pair<long, long> >::type &&`), and so does Apple clang
+    # 21 (`long &&`): no row shows the element's address (`0x0000fffffffffb70`) as its
+    # value, before the declaration has run or after.
     compiler, root = cpp
     source = root / "tuples.cpp"
     source.write_text(TUPLES)
@@ -1318,12 +1314,12 @@ def test_a_pair_or_tuple_binding_shows_its_element_never_its_address(cpp, capsys
     if compiler == "gcc":
         assert rows["pt.x"].get("not_settable") == "reference", rows["pt.x"]
         message = result["error"]["message"]
-        # Where its value is: what it binds, not the frame of some call (eval 13).
+        # Where its value is: what it binds, not the frame of some call.
         assert "`a` is a structured binding by reference to `three`" in message, result
         assert "Refused before the program runs" in message, result
 
 
-# Review of #296: bindings by reference that outlive what they refer to, and ones that
+# Bindings by reference that outlive what they refer to, and ones that
 # do not; a reference the code declares with the element's type.
 DANGLING = """#include <cstdio>
 #include <tuple>
@@ -1356,8 +1352,8 @@ DEAD = (
 
 @pytest.mark.timeout(180)
 def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, capsys):
-    # Review of #296: `auto &[t, u] = make(0)[0];` refers into a temporary the line
-    # destroyed, and `auto poison = make(7000);` took its memory: `t = 8000, u = 1`, no note.
+    # `auto &[t, u] = make(0)[0];` refers into a temporary the line destroyed, and
+    # `auto poison = make(7000);` takes its memory: `t = 8000, u = 1` is not theirs.
     compiler, root = cpp
     source = root / "dangling.cpp"
     source.write_text(DANGLING)
@@ -1370,7 +1366,7 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     for selector, value in (("a", "5"), ("b", "6")):
         assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
     # `one(argc)`'s result, which `auto &&` keeps alive for its scope, but which the function
-    # called may keep a pointer into (#297, review of #368 round 3): withheld.
+    # called may keep a pointer into: withheld.
     for selector in ("g", "h"):
         row = rows[selector]
         assert row.get("value") is None, row
@@ -1396,9 +1392,9 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     assert re.fullmatch(r"0x[0-9a-f]+", rows["r"]["value"]), rows["r"]
 
 
-# Round 2 of the #296 review: a union's member, whose life ends when another becomes
+# A union's member, whose life ends when another becomes
 # active, and the boundaries checked by hand: a local reassigned, a vector's element, and a
-# map's entries in a range `for` (read since #297: the code leaves both in place).
+# map's entries in a range `for` (read: the code leaves both in place).
 BOUNDARIES = """#include <cstdio>
 #include <map>
 #include <new>
@@ -1438,8 +1434,8 @@ int main(int argc, char **argv) {
 
 @pytest.mark.timeout(180)
 def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(cpp, capsys):
-    # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then a placement new made `u.q`
-    # the union's active member: `a = 7, b = 8`, with no note.
+    # `auto &[a, b] = u.p;`, then a placement new makes `u.q` the union's active member:
+    # `a = 7, b = 8` are no longer the binding's.
     compiler, root = cpp
     source = root / "boundaries.cpp"
     source.write_text(BOUNDARIES)
@@ -1448,7 +1444,7 @@ def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(c
     assert "U=79" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
     # A struct's member, and a local reassigned after the binding: what it holds now. And
-    # since #297, an element of a local vector nothing changes later: `v[0]`.
+    # an element of a local vector nothing changes later: `v[0]`.
     shown = {"c": "31", "d": "32", "e": "41", "f": "51", "g": "11", "k": "12"}
     for selector, value in shown.items():
         assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
@@ -1457,7 +1453,7 @@ def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(c
         row = rows[selector]
         assert row.get("value") is None, row
         assert hidden(compiler, row) or row["error"] == DEAD.format(selector, initializer), row
-    # A map's entry in a range `for` whose body leaves the map alone (#297): each pass's.
+    # A map's entry in a range `for` whose body leaves the map alone: each pass's.
     code, result = probe(
         source, line_of(BOUNDARIES, "// MAP_READ"), "key,value", capsys, "--hits", "all"
     )
@@ -1468,7 +1464,7 @@ def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(c
         assert hidden(compiler, row) or row.get("value") == expected, row
 
 
-# #297: bindings by reference of an element of a local container the code leaves in place
+# Bindings by reference of an element of a local container the code leaves in place
 # (a range `for` over a map, a vector or a set; `v[1]`); and the same forms where the code
 # may change the container, and a call's result, which is never proven.
 HELD = """#include <cstdio>
@@ -1522,7 +1518,7 @@ HELD_ROWS = {
 
 
 def unproven(selector, what, why):
-    # Eval 13: never "bind by value", which breaks a loop that writes through the binding.
+    # Never "bind by value", which breaks a loop that writes through the binding.
     element = re.fullmatch(r"an element of `(.+)`", what)
     instead = (
         f"Read `{element[1]}` itself, or print the value from the program"
@@ -1535,14 +1531,14 @@ def unproven(selector, what, why):
     )
 
 
-# Review of #368, round 3: the function called may keep a pointer into its result.
+# The function called may keep a pointer into its result.
 CALLED = "a call's result, which the function called may keep a pointer into"
 
 
 @pytest.mark.timeout(300)
 def test_a_binding_into_a_local_container_reads_where_proven(cpp, capsys):
-    # #297: these were all `not shown` (only a local, or a member of one, was proven), under
-    # GCC and Apple clang alike: a range `for` over a local map, `v[1]` of a local vector.
+    # Not only a local, or a member of one, is proven, under GCC and Apple clang alike: a
+    # range `for` over a local map, `v[1]` of a local vector.
     compiler, root = cpp
     source = root / "held.cpp"
     source.write_text(HELD)
@@ -1696,15 +1692,15 @@ POLICY = (
 
 @pytest.mark.timeout(300)
 def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(cpp, capsys):
-    # Review of #368: `P *p = v.data(); auto &[a, b] = v[0]; std::destroy_at(p);` showed
-    # `a = 11, b = 12` at a stop before `new (p) P{13, 14}`: the element was dead. And
-    # `auto &&[vx, vy] = view(&held);` showed `held`'s members: `View`'s own `get<I>` names
+    # `P *p = v.data(); auto &[a, b] = v[0]; std::destroy_at(p);`: at a stop before
+    # `new (p) P{13, 14}` the element is dead, so `a = 11, b = 12` are no values. And
+    # `auto &&[vx, vy] = view(&held);` would show `held`'s members: `View`'s own `get<I>` names
     # what a pointer in the call's result points at, not that result's elements.
     compiler, root = cpp
     source = root / "reviewed.cpp"
     source.write_text(REVIEWED)
     reasons = {
-        # Review of #368, round 2: an overloaded operator that keeps the name's address;
+        # An overloaded operator that keeps the name's address;
         # an element whose own constructor keeps its address, or an allocator of the
         # program's, which sees where each element is; a pointer, which may point at
         # another element.
@@ -1717,7 +1713,7 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         "CONSTRUCTED": ("ex,ey", "an element of `es`", POLICY),
         "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
         "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
-        # Review of #368, round 3: with the named return value optimization, `make()` builds
+        # With the named return value optimization, `make()` builds
         # `made` where the caller keeps its result (returned in memory: 32 bytes), and keeps
         # a pointer into it, through which the result is destroyed before the stop.
         "RETURNED": ("na,nb", "`make()`", CALLED),
@@ -1749,7 +1745,7 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         assert hidden(compiler, row) or row.get("value") == {"k": "71", "x": "72"}[row["selector"]]
 
 
-# Review of #368, round 3: `std::allocator` calls the global `operator new`, which this
+# `std::allocator` calls the global `operator new`, which this
 # program replaces to keep where each element is.
 REPLACED = """#include <cstdio>
 #include <cstdlib>
@@ -1777,8 +1773,8 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_a_containers_element_is_withheld_where_the_program_replaces_operator_new(cpp, capsys):
-    # Review of #368, round 3: the map's loop read `k = 151, x = 152`, though the program's
-    # own `operator new` kept where the map's node is.
+    # The program's own `operator new` keeps where the map's node is, so the map's loop's
+    # `k = 151, x = 152` are not proven.
     compiler, root = cpp
     source = root / "replaced.cpp"
     source.write_text(REPLACED)
@@ -1846,7 +1842,7 @@ def test_an_optimized_bindings_own_line_never_reads_through_it(cpp, optimization
 @pytest.mark.timeout(180)
 @pytest.mark.parametrize("optimization", ["O1", "O2"])
 def test_an_optimized_pair_binding_never_shows_its_elements_address(cpp, optimization):
-    # #291: at -O1 GCC keeps the reference `r` in a register; its row was its address.
+    # At -O1 GCC keeps the reference `r` in a register; its row is never its address.
     from peeky.native import NativeTarget
     from peeky.probe import Probe, run_probe
 
@@ -1917,8 +1913,8 @@ def capture_rows(source, marker, names, capsys, hits="1"):
 
 @pytest.mark.timeout(300)
 def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, capsys):
-    # #361: GCC passes a lambda's captures through `__closure`, which lldb-dap doesn't
-    # list, so each was `not found` in the lambda. clang lists them as members of `this`.
+    # GCC passes a lambda's captures through `__closure`, which lldb-dap doesn't list, so
+    # each is read through it. Clang lists them as members of `this`.
     compiler, root = cpp
     source = root / "caps.cpp"
     source.write_text(CAPTURES)
@@ -1981,7 +1977,7 @@ def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, c
             "object, so this value may be left over: it points into the stack"
         ), row
     assert one[1, "bonus"]["value"] == "2" and one[1, "bonus"]["function"] == "main", one
-    # Why, as the worker says it (review of #361: not that lldb-dap doesn't list it).
+    # Why, as the worker says it, not that lldb-dap doesn't list it.
     assert one[2, "bonus"]["error"] == (
         "not found: 'bonus' is a capture of this lambda, which GCC passes through "
         "`__closure`, and Peeky can't read it here: the stop is at the lambda's start, "
@@ -1993,7 +1989,7 @@ def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, c
 
 @pytest.mark.timeout(240)
 def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
-    # #361: a capture, or a member of one, is reached through `__closure`: refused before
+    # A capture, or a member of one, is reached through `__closure`: refused before
     # the program runs, and at a stop, saying so.
     compiler, root = cpp
     source = root / "caps.cpp"
@@ -2002,7 +1998,7 @@ def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
     code, result = probe(source, line, "bonus", capsys, "--set", "bonus=5")
     assert code != 0 and result["status"] == "failed", result
     if compiler == "gcc":
-        # As the row marks it (eval 13), with the lambda's own copy to change instead.
+        # As the row marks it, with the lambda's own copy to change instead.
         assert result["error"]["code"] == "MUTATION_REJECTED", result
         assert result["error"]["message"] == (
             f"`bonus` cannot be changed at caps.cpp:{line}, at any stop of this build: in "
@@ -2075,11 +2071,11 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_a_lambdas_copy_is_changed_where_it_is_held_and_the_refusal_says_so(cpp, capsys):
-    # Eval 13 (bill): in a lambda that isn't `mutable`, a change to a capture by value
-    # was refused as "`tariff` is const", while its rows say `[not settable: capture]`;
-    # and no message said that the lambda's own copy (GCC's `price.__tariff`) is
-    # settable in the function that holds it. Nor did `describe` list the captures, nor
-    # say that GCC makes the lambda on its `};` line.
+    # In a lambda that isn't `mutable`, a change to a capture by value is refused as its
+    # rows mark it, `[not settable: capture]`, not as "`tariff` is const"; the message
+    # says that the lambda's own copy (GCC's `price.__tariff`) is settable in the function
+    # that holds it. `describe` lists the captures, and says that GCC makes the lambda on
+    # its `};` line.
     compiler, root = cpp
     source = root / "priced.cpp"
     source.write_text(PRICED)
@@ -2166,8 +2162,8 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_describe_says_how_a_lambda_captures_this_and_each_name(cpp, capsys):
-    # Review of #393: `[this]` (and an implicit `this`) looked like an ordinary local;
-    # `[*this]`'s `this` showed the variable's `const Acc *const`, and twice.
+    # `[this]` (and an implicit `this`) is no ordinary local; `[*this]`'s `this` is not
+    # the variable's `const Acc *const`, nor listed twice.
     compiler, root = cpp
     source = root / "held.cpp"
     source.write_text(HELD_CAPTURES)
@@ -2235,9 +2231,8 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_a_change_to_a_binding_by_reference_says_where_its_value_is(cpp, capsys):
-    # Eval 13 prep, finding 5: `--set v=5` on a range `for`'s binding by reference was
-    # refused as "`v` is a reference", with the hint to change it "before the call", where
-    # no call passed it: what it binds holds the value.
+    # `--set v=5` on a range `for`'s binding by reference is refused with no hint to change
+    # it "before the call", where no call passed it: what it binds holds the value.
     compiler, root = cpp
     source = root / "bound.cpp"
     source.write_text(BOUND_SET)
@@ -2285,7 +2280,7 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_a_lambdas_capture_of_an_unordered_container_reads_or_withholds_truthfully(cpp, capsys):
-    # #360 with #361: a GCC lambda's capture of an unordered container, by reference and
+    # A GCC lambda's capture of an unordered container, by reference and
     # by value, is its own container: read whole, or withheld with its own count (never
     # the shadowed global's 3), and never from nodes Peeky can't show are live.
     compiler, root = cpp
@@ -2335,7 +2330,7 @@ int main(int argc, char **) {
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("optimization", ["O1", "O2"])
 def test_an_optimized_lambdas_captures_are_not_read(cpp, optimization):
-    # #361: optimized, a `mutable` lambda may keep a capture in a register while its
+    # Optimized, a `mutable` lambda may keep a capture in a register while its
     # object holds an older value: no capture is read through `__closure` there.
     from peeky.native import NativeTarget
     from peeky.probe import Probe, run_probe
@@ -2363,7 +2358,7 @@ def test_an_optimized_lambdas_captures_are_not_read(cpp, optimization):
         if row.get("function", "").startswith("operator()"):
             assert row.get("value") is None, row
         if "is a capture of this lambda" in row.get("error", ""):
-            # Why, as the worker says it (review of #361).
+            # Why, as the worker says it.
             said += 1
             assert (
                 "and Peeky can't read it here: Peeky reads no capture in an optimized build, "
@@ -2446,9 +2441,8 @@ def nested_rows(source, marker, names, capsys):
 
 @pytest.mark.timeout(240)
 def test_a_lambda_nested_five_deep_in_a_running_initializer_is_withheld(cpp, capsys):
-    # Review of #361: only 4 functions around a lambda were read, then it counted as
-    # finished: the fifth `[&]` inside `T t{1, …}` read `t.b` before `t` was built (GCC's
-    # capture, and clang's `this` too).
+    # More than 4 functions around a lambda are read: the fifth `[&]` inside `T t{1, …}`
+    # doesn't read `t.b` before `t` is built (GCC's capture, and clang's `this` too).
     compiler, root = cpp
     source = root / "nest.cpp"
     source.write_text(NESTED)
@@ -2463,9 +2457,9 @@ def test_a_lambda_nested_five_deep_in_a_running_initializer_is_withheld(cpp, cap
 
 @pytest.mark.timeout(300)
 def test_a_capture_and_a_local_of_its_name_are_told_apart_by_scope(cpp, capsys):
-    # Review of #361: the capture was dropped wherever the lambda also declared its name
-    # with another type, and hidden wherever lldb-dap listed a local of its name, as in
-    # the local's block above its declaration, where the code names the capture.
+    # The capture is kept where the lambda also declares its name with another type, and
+    # where lldb-dap lists a local of its name, as in the local's block above its
+    # declaration, where the code names the capture.
     compiler, root = cpp
     source = root / "nest.cpp"
     source.write_text(NESTED)
@@ -2499,8 +2493,8 @@ def test_a_capture_and_a_local_of_its_name_are_told_apart_by_scope(cpp, capsys):
 
 @pytest.mark.timeout(240)
 def test_this_of_a_lambda_that_copies_the_object_is_its_copy(cpp, capsys):
-    # Review of #361: GCC gives `[*this]`'s `this` no location, so it had no value; the
-    # copy is the lambda's member `__this`. `[this]` and `[self = *this]` read as before.
+    # GCC gives `[*this]`'s `this` no location; the copy is the lambda's member `__this`.
+    # `[this]` and `[self = *this]` read too.
     compiler, root = cpp
     source = root / "nest.cpp"
     source.write_text(NESTED)
@@ -2542,8 +2536,8 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_a_local_hides_a_capture_only_where_its_block_runs(cpp, capsys):
-    # Review round 2 of #361: a macro's `if (int x = 9) use(x)` read, by its text, as in
-    # scope to the lambda's end, though its block had ended: the capture was said hidden.
+    # A macro's `if (int x = 9) use(x)` is in scope only to its block's end, not, by its
+    # text, to the lambda's end: the capture is not hidden after it.
     # A line holding code before a block and the block itself stops in each.
     compiler, root = cpp
     source = root / "scoped.cpp"

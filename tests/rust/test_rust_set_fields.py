@@ -1,4 +1,4 @@
-"""#105: `--set` on scalar fields and elements of Rust locals the build keeps in memory
+"""`--set` on scalar fields and elements of Rust locals the build keeps in memory
 and proves initialized, read back and seen by the program; everything else refused."""
 
 import json
@@ -131,13 +131,13 @@ def test_rust_fields_elements_and_tuple_fields_change_and_the_program_sees_them(
         assert code == 0, (assignment, result)
         assert (result["before"], result["after"]) == (before, after), (assignment, result)
     refused(capsys, "pk.b=3", "`pk` is a packed struct (Packed)")
-    # A Box is a pointer to the heap: what it points at may be moved or freed (#101).
+    # A Box is a pointer to the heap: what it points at may be moved or freed.
     refused(capsys, "kept.end=3", "`kept` is a pointer")
     refused(capsys, "bx.end=3", "has no fields or elements")  # moved: no longer read
     refused(capsys, "r.end=3", "`r` is a pointer")  # a reference: LLDB's pointer
     # Moved into drop(), or not yet assigned: the MIR does not prove it initialized.
     refused(capsys, "gone.n=3", "does not prove `gone` initialized")
-    # #132 withholds a local not yet assigned, so nothing in it is offered for a change.
+    # A local not yet assigned is withheld, so nothing in it is offered for a change.
     refused(capsys, "later.end=3", "'later' has no value here (not assigned on every path")
     refused(capsys, "o.flag=0", "is a boolean (bool)")
     refused(capsys, "o.ch=3", "is a character (char)")
@@ -277,7 +277,7 @@ def finish(capsys):
 
 @pytest.mark.timeout(400)
 def test_rust_a_change_part_way_through_a_statement_is_refused(crate, capsys):
-    # Review of #105: back from `f` (`step --out`), `t = x + s.a + f()` already held
+    # Back from `f` (`step --out`), `t = x + s.a + f()` already held
     # `s.a` in a temporary, and a change reported `1 -> 50` while the program printed
     # `1001`; so did a breakpoint on `+ f();` under `let t = s.a`.
     start_mid(crate, capsys, "// TEMP_OUT")
@@ -308,22 +308,21 @@ def test_rust_a_change_part_way_through_a_statement_is_refused(crate, capsys):
 
 @pytest.mark.timeout(400)
 def test_rust_a_shadowed_root_is_selected_by_where_it_is_declared(crate, capsys):
-    # Review of #105: lldb-dap names `s @ main.rs:N` for each of the two `s` (as in
+    # lldb-dap names `s @ main.rs:N` for each of the two `s` (as in
     # `let mut w = w;`), which no selector could name, and plain `s` is not listed.
     start_mid(crate, capsys, "// SHADOW")
     inner, outer = mid_line("// INNER"), mid_line("// OUTER")
     code, result = change(capsys, f"s @ main.rs:{inner}.b=50")
     assert code == 0 and result["after"] == "50", result
     # The outer `s` is named too: the program never reads it again, so it is refused for
-    # that (#330), where the inner one is read.
+    # that, where the inner one is read.
     refused(capsys, f"s@main.rs:{outer}.b=40", "the program does not read it after this stop")
     assert "shadow Tri { a: 11, b: 50, c: 30 }" in finish(capsys)
 
 
 @pytest.mark.timeout(400)
 def test_rust_an_element_of_a_large_array_local_is_changed(crate, capsys):
-    # Review of #105: `a[257]` of a 1,000-element local exhausted the expansion
-    # budget (arrays inside structs worked); the element is now fetched alone.
+    # `a[257]` of a 1,000-element local is fetched alone, within the expansion budget.
     start_mid(crate, capsys, "// BIG")
     code, result = change(capsys, "a[257]=9")
     assert code == 0 and result["after"] == "9", result
@@ -401,7 +400,7 @@ def stopped_line(capsys):
 
 @pytest.mark.timeout(400)
 def test_rust_a_step_back_onto_a_statements_first_line_is_refused(crate, capsys):
-    # Review of #105 (round 2): `let arr = [s.a,` / `k,` / `s.b];` from a breakpoint on
+    # `let arr = [s.a,` / `k,` / `s.b];` from a breakpoint on
     # its first line, `step` twice comes back to that line at the array's
     # construction, after `s.a` was read: `set s.a=50` reported `1 -> 50` and the
     # program printed `arr [1, 7, 2] 50`. So did call arguments over several lines.
@@ -433,7 +432,7 @@ def test_rust_a_step_back_onto_a_statements_first_line_is_refused(crate, capsys)
 
 @pytest.mark.timeout(400)
 def test_rust_a_shadowed_root_integer_is_changed(crate, capsys):
-    # Review of #105 (round 2): `x @ main.rs:N=500` was refused with "only writable
+    # `x @ main.rs:N=500` was refused with "only writable
     # integer locals ... has debugger type 'int'".
     (crate / "src/main.rs").write_text(STEPS)
     at = f"src/main.rs:{steps_line('// X_STOP')}"
@@ -441,7 +440,7 @@ def test_rust_a_shadowed_root_integer_is_changed(crate, capsys):
     capsys.readouterr()
     code, result = change(capsys, f"x @ main.rs:{steps_line('// X_INNER')}=500")
     assert code == 0 and result["after"] == "500", result
-    # The outer `x`, which the program never reads again, is refused for that (#330).
+    # The outer `x`, which the program never reads again, is refused for that.
     outer = f"x@main.rs:{steps_line('// X_OUTER')}=20"
     refused(capsys, outer, "the program does not read it after this stop")
     assert main(["session", "continue", "--to-exit"]) == 0
@@ -454,7 +453,7 @@ def test_rust_a_shadowed_root_integer_is_changed(crate, capsys):
 
 @pytest.mark.timeout(400)
 def test_rust_a_formatting_line_gives_pointers_and_allows_a_change(crate, capsys):
-    # Review of #105 (round 2): `println!("{} {}", s.a, f())` was refused, though
+    # `println!("{} {}", s.a, f())` was refused, though
     # `format_args!` only takes a pointer to `s.a` (it reads the field when printing).
     (crate / "src/main.rs").write_text(STEPS)
     assert (
@@ -507,7 +506,7 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_rust_a_crates_own_core_fmt_is_no_format_args(crate, capsys):
-    # Review of #105 (round 3): the crate's `mod core { pub mod fmt { ... } }` reads in
+    # The crate's `mod core { pub mod fmt { ... } }` reads in
     # the MIR as the standard library's `format_args!`, so its `Arguments::new(&s.a)`
     # (which copies `s.a`) counted as keeping a pointer: at a breakpoint on `+ f();`,
     # `set s.a=50` was allowed and the program printed `1001`.
@@ -515,7 +514,7 @@ def test_rust_a_crates_own_core_fmt_is_no_format_args(crate, capsys):
     line = next(i for i, text in enumerate(USER_CORE.splitlines(), 1) if "// SECOND" in text)
     assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line}"]) == 0
     capsys.readouterr()
-    # #300: the call may read through the pointer it is given, or not.
+    # The call may read through the pointer it is given, or not.
     refused(capsys, "s.a=50", "cannot be changed here", "uses a pointer that may point into it")
     assert main(["session", "continue", "--to-exit"]) == 0
     capsys.readouterr()
@@ -554,9 +553,9 @@ def rows(capsys):
 
 @pytest.mark.timeout(400)
 def test_rust_a_field_of_a_struct_or_tuple_preview_changes_and_reads_back(crate, capsys):
-    # #106 previews a struct or tuple local of scalars from memory (`Span { start: 1,
-    # end: 2 } [memory]`), and its fields are the preview's: `set s.end=20` was refused
-    # as "inside a value Peeky decodes itself". The preview is the local's own storage;
+    # A struct or tuple local of scalars is previewed from memory (`Span { start: 1, end:
+    # 2 } [memory]`), and its fields are the preview's: `set s.end=20` is not refused as
+    # "inside a value Peeky decodes itself". The preview is the local's own storage;
     # a Vec's elements stay refused.
     (crate / "src/main.rs").write_text(PREVIEWS)
     line = next(i for i, text in enumerate(PREVIEWS.splitlines(), 1) if "// STOP" in text)
@@ -597,12 +596,12 @@ def test_rust_a_field_of_a_struct_or_tuple_preview_changes_and_reads_back(crate,
 
 @pytest.mark.timeout(400)
 def test_rust_fields_and_elements_are_marked_where_set_changes_them(crate, capsys):
-    # Sixth evaluation, finding 7: a probe could not tell whether `w.start` could be
-    # changed, and a field read through `&mut` looked like one the frame holds.
+    # A probe says whether `w.start` can be changed, and a field read through `&mut` is
+    # marked apart from one the frame holds.
     at = f"src/main.rs:{line_of('// STOP')}"
     marked = {
         **dict.fromkeys(("s.end", "o.span.start", "o.marks[1]"), True),
-        # #192 review 2: `o` copied `s`, and only `width(&s)` reads `s.start` after the
+        # `o` copied `s`, and only `width(&s)` reads `s.start` after the
         # stop; a reference lent to a call is no read Peeky can prove, so `set` refuses it.
         "s.start": False,
         **dict.fromkeys(("o.pair.__0", "o.pair.__1", "t.__0", "t.__1", "arr[2]"), True),
@@ -640,7 +639,7 @@ def test_rust_fields_and_elements_are_marked_where_set_changes_them(crate, capsy
 
 @pytest.mark.timeout(400)
 def test_rust_inspect_says_why_nothing_is_settable_part_way_through_a_statement(crate, capsys):
-    # Sixth evaluation, finding 8: nothing was marked [settable] there, with no reason.
+    # Nothing is marked [settable] there, and the inspection says why.
     start_mid(crate, capsys, "// TEMP_OUT")
     try:
         assert main(["session", "inspect", "--json"]) == 0
@@ -651,7 +650,7 @@ def test_rust_inspect_says_why_nothing_is_settable_part_way_through_a_statement(
         assert main(["session", "inspect"]) == 0
         text = capsys.readouterr().out
         line = mid_line("// TEMP_OUT")
-        # Each reason names the locals it holds for (review 1).
+        # Each reason names the locals it holds for.
         assert (
             f"note: nothing here is [settable]: `x`, `s`: the stop is part-way through line {line}"
             in text
@@ -679,7 +678,7 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys):
-    # Review of the sixth evaluation's PR: a Vec or String held in a struct or tuple is
+    # A Vec or String held in a struct or tuple is
     # never decoded, so its internals (`h.v.len`, a String's `vec.len`) are raw fields on
     # every debugger, as a whole Vec's are on lldb-dap 18. They say `settable: false`,
     # and `set` refuses them (a standard-library type on the path); so does a Box's.
@@ -698,7 +697,7 @@ def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys)
         row.get("view") == "memory" for row in json.loads(capsys.readouterr().out)["rows"]
     )
     if decoded:
-        # Read from memory (#156): their internals are not listed; the view's own
+        # Read from memory: their internals are not listed; the view's own
         # `len` is not settable either.
         marked = {"h.n": True, "t.__0": True, "h.v.len": False, "t.__1.len": False}
     code = main(["probe", str(crate), "--at", at, "--capture", ",".join(marked), "--json"])
@@ -741,7 +740,7 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_rust_inspect_says_nothing_is_settable_only_when_no_field_is(crate, capsys):
-    # Review 1 of the sixth evaluation's PR: stepped onto `+ w.start;`, `n` is already
+    # Stepped onto `+ w.start;`, `n` is already
     # in a temporary but `w`'s fields are not, and `set w.start=1` works; inspect said
     # "nothing here is [settable]", taking `n`'s reason for the whole stop.
     (crate / "src/main.rs").write_text(SPLIT)
@@ -805,11 +804,10 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_rust_a_refused_change_through_a_reference_advises_what_works(crate, capsys):
-    # Review 1 of the sixth evaluation's PR: the advice was `session step --out`, which
-    # returns part-way through the caller's line, where the change is refused again
-    # (the limiter: refused at line 10, then "part-way through line 30"). Review 2: the
-    # next advice, `session continue --to` the call's line, stopped before the NEXT call
-    # (`now=11`); the advice now stops before this same call.
+    # Not `session step --out`, which returns part-way through the caller's line, where the
+    # change is refused again (the limiter: refused at line 10, then "part-way through line
+    # 30"), nor `session continue --to` the call's line, which stops before the NEXT call
+    # (`now=11`): the advice stops before this same call.
     (crate / "src/main.rs").write_text(LIMITER)
     allow, call = (
         next(i for i, line in enumerate(LIMITER.splitlines(), 1) if marker in line)
@@ -875,11 +873,11 @@ fn main() {
 def test_rust_the_advice_reaches_the_examined_call_of_a_function_called_from_two_lines(
     crate, capsys
 ):
-    # Review 3 of the sixth evaluation's PR: `--set-hit N` counts the call line's own
+    # `--set-hit N` counts the call line's own
     # stops, not the called function's. Stopped in `allow` at its hit 4 (the call on
     # `w`, `now=1`), `--set-hit 4` at the call line changed the call where `now=11`.
     # `seen` holds what `allow(&mut w, …)` returned, which may be computed from `w.count`
-    # (#320): the program reads `w.count` at the end, so a change at the call line is seen.
+    #: the program reads `w.count` at the end, so a change at the call line is seen.
     (crate / "src/main.rs").write_text(TWO_CALLS)
     allow, call = (
         next(i for i, line in enumerate(TWO_CALLS.splitlines(), 1) if marker in line)
@@ -939,7 +937,7 @@ fn main() {
 
 @pytest.mark.timeout(400)
 def test_rust_a_field_changed_at_one_line_is_restored_at_another_in_one_probe(crate, capsys):
-    # #137: `w.start` moved for one check (line CHECK, 3rd pass) and put back before the
+    # `w.start` moved for one check (line CHECK, 3rd pass) and put back before the
     # next pass (line PUSH, 3rd stop), in one probe; captured at line BUMP.
     (crate / "src/main.rs").write_text(WINDOW)
 

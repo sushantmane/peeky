@@ -1,4 +1,4 @@
-"""Java scopes for describe, from class files javac really writes (#91)."""
+"""Java scopes for describe, from class files javac really writes."""
 
 import shutil
 import subprocess
@@ -60,7 +60,7 @@ def compiled(tmp_path):
 def test_scopes_list_selectable_names_and_constructor_spans(compiled):
     found = scopes(compiled("-g"))
     # A constructor spans its own lines, not the field initializers (above or below
-    # it) javac copies into it (review of #96).
+    # it) javac copies into it.
     assert found["X.<init>()V"] == ([10, 10], ["this"])
     assert found["X.<init>(I)V"] == ([11, 13], ["this", "start"])
     # `this$0` is no selector; the inner class's own names are.
@@ -104,7 +104,7 @@ public class H {
 
 
 def test_an_implicit_constructor_never_spans_the_methods_between_fields(tmp_path):
-    # Review of #96: a class with no declared constructor ended on its last field.
+    # A class with no declared constructor ended on its last field.
     javac = shutil.which("javac")
     if not javac:
         pytest.skip("javac is not installed")
@@ -115,7 +115,7 @@ def test_an_implicit_constructor_never_spans_the_methods_between_fields(tmp_path
     )
     found = scopes(tmp_path / "out")
     assert found["H.<init>()V"][0] == [2, 3]
-    # A static initializer too, between its static fields (review of #96).
+    # A static initializer too, between its static fields.
     assert found["H.<clinit>()V"][0] == [4, 4]
     assert found["H$1.<init>(Ldemo/H;)V"][0] == [14, 15]
     assert found["H.m()I"][0] == [7, 7]
@@ -175,8 +175,8 @@ def details(classes, method):
 
 
 def test_a_local_declared_only_in_blocks_lists_their_lines(tmp_path):
-    # #264 (tenth evaluation, runoff): `b`, `ranking` and `c` are each declared in two
-    # loops, but `describe` listed each once, with no lines, as if the method's own.
+    # `b`, `ranking` and `c` are each declared in two loops: `describe` lists their lines,
+    # not each once, with no lines, as if the method's own.
     javac = shutil.which("javac")
     if not javac:
         pytest.skip("javac is not installed")
@@ -187,8 +187,8 @@ def test_a_local_declared_only_in_blocks_lists_their_lines(tmp_path):
     )
     names, found = details(tmp_path / "out", "count")
     assert names == ["this", "ballots", "choice", "n", "round", "counted", "b", "c", "ranking"]
-    # The lines whose breakpoint sees each declaration (#264 review: a line's first
-    # instruction in its scope): not the declaring line of `ranking` (9, 22), nor a `for`
+    # The lines whose breakpoint sees each declaration (a line's first instruction in its
+    # scope): not the declaring line of `ranking` (9, 22), nor a `for`
     # header (8, 12, 17, 21), whose first instruction initializes the loop's variable.
     # The two `c` loops are adjacent but two blocks; `b`'s are split by the code between.
     assert found["spans"] == {

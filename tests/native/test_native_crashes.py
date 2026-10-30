@@ -1,10 +1,10 @@
-"""A C or C++ program that crashes during a probe or a session (#342): a fault in libc
+"""A C or C++ program that crashes during a probe or a session: a fault in libc
 (`strlen(NULL)`), a failed `assert`, an uncaught C++ exception and `std::terminate` stop
 in libc, the C++ runtime or `abort`, outside the program's sources. Each is the program's
 crash (`PROGRAM_CRASHED`), with its output so far and the nearest frame of its own code,
 not a debugger failure that drops the output; a fault in the program's own code is too.
 A signal the program handles, and a C++ throw or catch filter's stop, are no crash: the
-probe lets the program go on (review of #342). The crash's frame is checked against the
+probe lets the program go on. The crash's frame is checked against the
 build's module, as `inspect` checks one."""
 
 import json
@@ -224,7 +224,6 @@ def test_a_fault_in_libc_an_assert_and_a_fault_in_the_program_are_its_crashes(cc
 def test_a_signal_the_program_handles_is_no_crash_and_the_probe_goes_on(cc, capsys):
     Path("handled.c").write_text(HANDLED)
     start = line_of(HANDLED, "START")
-    # On the previous head: PROGRAM_CRASHED for SIGABRT; on main, DEBUGGER_ERROR.
     for argument, name in (("i", "SIGINT"), ("p", "SIGPIPE"), ("a", "SIGABRT")):
         code, result = probe(capsys, "handled.c", start, argument)
         assert code == 0 and result["status"] == "completed", (name, result)
@@ -243,7 +242,6 @@ def test_a_loop_of_handled_signals_is_bounded_with_an_honest_message(cc, capsys)
     Path("handled.c").write_text(HANDLED)
     done, loop = line_of(HANDLED, "DONE"), line_of(HANDLED, "LOOP")
     # 25 raises from one line: the program makes progress; the probe goes on to its line.
-    # On the reviewed head: DEBUGGER_ERROR, "the debugger doesn't let it past", at 20.
     code, result = probe(capsys, "handled.c", done, "l", "25")
     assert code == 0 and result["status"] == "completed", result
     assert [row["value"] for row in result["rows"]] == ["3"], result["rows"]
@@ -259,8 +257,7 @@ def test_a_loop_of_handled_signals_is_bounded_with_an_honest_message(cc, capsys)
     assert code == 1 and result["status"] == "failed" and result["hits"] == 0, result
     error = result["error"]
     assert error["code"] == "BUDGET_EXHAUSTED", error
-    # On the reviewed head: "letting it go on each time", and a warning of 100 times, though
-    # the 100th stop was not let go on.
+    # The 100th stop is not let go on, so nothing says "letting it go on each time".
     assert error["message"] == (
         "The probe ended at the program's 100th stop in a row on signal SIGINT, outside the "
         f"program's sources, in a call from main at handled.c:{loop}. It let the program go "
@@ -274,8 +271,7 @@ def test_a_loop_of_handled_signals_is_bounded_with_an_honest_message(cc, capsys)
         for w in result["warnings"]
     ), result["warnings"]
     # Raises alternating between two lines reach one place in libc, but are not the same
-    # stop: none comes 100 times in a row, and the probe goes on to its line (on the
-    # reviewed head: BUDGET_EXHAUSTED, naming only the last line).
+    # stop: none comes 100 times in a row, and the probe goes on to its line.
     code, result = probe(capsys, "handled.c", done, "m", "150")
     assert code == 0 and result["status"] == "completed", result
     assert "error" not in result and "done 3\n" in result["output"], result
@@ -416,7 +412,6 @@ def test_cpp_a_throw_or_catch_filters_stop_is_no_crash(served):
     client.call("continue", **session, stop_id=state["stop_id"])
     state = wait_stop(client, session)
     assert state["state"] == "stopped" and state["reason"] == "exception", state
-    # On the previous head: `crash`, and "the program crashed"; on main, DEBUGGER_ERROR.
     assert "crash" not in state, state
     with pytest.raises(PeekyError) as refused:
         client.call("inspect", **session, stop_id=state["stop_id"])
@@ -444,7 +439,7 @@ def test_cpp_a_crash_frame_whose_module_is_not_the_builds_fails_closed(served):
     client.call("continue", **session, stop_id=state["stop_id"])
     with pytest.raises(PeekyError) as failed:
         wait_stop(client, session)
-    # On the previous head: a `crash` naming main at abort.cpp, from `validate_stop` alone.
+    # Not a `crash` naming main at abort.cpp: the crash's frame is checked against the build.
     error = failed.value.payload
     assert error["code"] == "DEBUGGER_ERROR" and error["session_closed"], error
     assert "module" in error["message"], error

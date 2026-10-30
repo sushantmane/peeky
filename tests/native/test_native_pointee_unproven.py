@@ -1,10 +1,10 @@
 """What is read through a C or C++ pointer is marked `[unproven]` where Peeky can't show the
-pointer points at a live object (#339).
+pointer points at a live object.
 
-Peeky read any non-NULL pointee and showed it as a plain value: through a pointer into a call
-that had returned, into a freed heap block, or two past an array's end, leftover bytes read
-as the object. It still reads them, but marks them with why. A pointer into a local or an
-array a listed frame holds, or into the program's static storage, reads as before.
+Through a pointer into a call that has returned, into a freed heap block, or two past an
+array's end, leftover bytes would read as the object. Peeky reads them, but marks them with
+why. A pointer into a local or an array a listed frame holds, or into the program's static
+storage, reads plain.
 """
 
 import json
@@ -182,7 +182,7 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
         assert "view" not in rows["lit"], rows
     else:
         # The linkers merge an ELF's literals into `.rodata`, among other constants: no
-        # proof there, nor past the literal (review of PR #341).
+        # proof there, nor past the literal.
         unproven(rows["lit"], "lit", IMAGE, text=True)
         unproven(rows["after"], "after", IMAGE, text=True)
     # Two past `cells`' end: the bytes there are read, marked.
@@ -205,10 +205,10 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
     unproven(rows["old"], "old", BELOW, text=True)
     # A union's other member, which a declaration doesn't prove holds a value.
     unproven(rows["pd[0]"], "pd", "read `un` by name, and the member the program last stored")
-    # An element of an array of unions, likewise (review of PR #341: the stack note).
+    # An element of an array of unions, likewise.
     assert "it points into the union `ua[0]`" in rows["pua[0]"]["note"], rows
-    # A global's element; past its end; into the program's code (review of PR #341: any
-    # address in a load segment counted).
+    # A global's element; past its end; into the program's code (not any address in a
+    # load segment counts).
     assert rows["tp[0]"]["value"] == "2" and "view" not in rows["tp[0]"], rows
     past = "it holds the address of `table[5]`, past the end of `table`, which has 3 elements"
     unproven(rows["tpast[0]"], "tpast", f"{past}; read `table` by name")
@@ -229,7 +229,7 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
 def test_more_arguments_than_peeky_reads_say_so(program, capsys):
     # 64 arguments (the most a probe passes), so 65 strings with the program's name: Peeky
     # reads 64 of them, so a heap `char *` may be one it didn't; its note says so, and
-    # never that a local was left unplaced (review of PR #341).
+    # never that a local was left unplaced.
     words = [f"w{i}" for i in range(64)]
     at = f"pointees.c:{line_of('MAIN')}"
     (row,) = probed(capsys, program, at, "dup", "--", *words)["rows"]

@@ -1,4 +1,4 @@
-"""#195: C and C++ locals and fields with non-ASCII names, captured, read and set
+"""C and C++ locals and fields with non-ASCII names, captured, read and set
 through real LLDB by the names clang keeps as written: an NFC and an NFD spelling of
 `größe` are two variables, and each selector reads only its own."""
 
@@ -92,9 +92,9 @@ def test_a_session_marks_reads_and_sets_native_names_in_unicode(directory, capsy
         main(["session", "close"])
 
 
-# Review of #199, round 2: LLDB names a shadowed local with its file (`t @ my file.c:5`),
-# which no selector can write when the file's name holds a space; `t` reads and sets the
-# one the code names, as #158 made it, and the row says so.
+# LLDB names a shadowed local with its file (`t @ my file.c:5`), which no selector can
+# write when the file's name holds a space; `t` reads and sets the one the code names, and
+# the row says so.
 SHADOWED = """#include <stdio.h>
 
 int main(void) {
@@ -145,9 +145,9 @@ def test_a_shadowed_local_in_a_file_named_with_a_space_is_read_and_set(directory
     assert "INNER 30" in result["output"] and "OUTER 1" in result["output"], result["output"]
 
 
-# Review of #199, round 4: the judgments read every spelling LLDB gives. A shadowing
+# The judgments read every spelling LLDB gives. A shadowing
 # local declared under a `#line` past a selector's bounds (a ten-digit line, a file name
-# of 300 characters) is withheld, as on main, never shown with its leftovers; one whose
+# of 300 characters) is withheld, never shown with its leftovers; one whose
 # file's name holds a colon, which no parse reads, is withheld too.
 VIRTUAL = """#include <stdio.h>
 int main(void) {{
@@ -205,7 +205,7 @@ def test_a_shadowed_local_in_a_file_named_with_a_colon_is_withheld(directory, ca
     capsys.readouterr()
     try:
         rows = _rows(capsys)
-        # `t @ a:b.c:6` was shown on a930b21, holding what its storage held.
+        # Neither is shown holding what its storage held.
         for name in ("t @ a:b.c:4", "t @ a:b.c:6"):
             assert rows[name].get("unavailable") is True, rows
             assert "in a form Peeky cannot read" in rows[name]["reason"], rows[name]

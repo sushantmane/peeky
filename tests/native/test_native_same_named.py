@@ -1,4 +1,4 @@
-"""#158: a function declaring one name twice with different types (in sibling blocks,
+"""A function declaring one name twice with different types (in sibling blocks,
 or an inner block shadowing an outer one) is changed through the declaration the
 debugger shows at the stop, the one whose block holds it, as reads judge it; refused
 only where that cannot be singled out."""
@@ -10,7 +10,7 @@ import pytest
 
 from peeky.cli import main
 
-# The seventh evaluation's `sched` (C++): the loop's `Task t`, and a later block's
+# A C++ `sched`: the loop's `Task t`, and a later block's
 # `const Task &t` (a range-`for`).
 SCHED = """#include <algorithm>
 #include <cstdio>
@@ -132,7 +132,7 @@ def run(capsys, *argv):
 
 @pytest.mark.timeout(300)
 def test_cpp_the_loops_task_is_changed_and_the_program_sees_it(directory, capsys):
-    # Refused before the run with "several locals named `t` of different types": at
+    # Not refused before the run with "several locals named `t` of different types": at
     # line 32 only the loop's `Task t` is in scope.
     path = directory / "sched.cpp"
     path.write_text(SCHED)
@@ -214,13 +214,13 @@ def test_locals_of_one_name_the_debug_information_cannot_tell_apart_are_refused(
     line = line_of(source, "// SAME")
     code, result = probed(capsys, path, line, "s.x=40", "s")
     error = result["error"]
-    # Refused before the program runs: exit 2, as any refusal (#165, finding 14).
+    # Refused before the program runs: exit 2, as any refusal.
     assert code == 2 and error["code"] == "MUTATION_REJECTED", result
     assert result.get("refused_before_launch") is True, result
     assert f"several locals named `s` of different types on line {line}" in error["message"]
 
 
-# Review of PR #159: a plain name chose by the debugger's blocks alone.
+# A plain name is not chosen by the debugger's blocks alone.
 CONDITIONS = {
     # clang gives a `while`'s condition variable no block of its own: its block's code
     # runs on after the loop, where the code names the outer `t`.
@@ -390,8 +390,8 @@ int main(int argc, char **argv) {
     ],
 )
 def test_c_a_name_is_the_one_declared_above_the_stop(directory, capsys, marker, value):
-    # Before an inner declaration `t` was mapped to it, and withheld as declared below
-    # (the program reads the outer one); a shadowed parameter left `t` unmatched.
+    # Before an inner declaration `t` is the outer one, which the program reads, not the
+    # inner one, withheld as declared below; a shadowed parameter still matches `t`.
     path = directory / "before.c"
     path.write_text(BEFORE)
     code, result = captured(capsys, path, line_of(BEFORE, marker), "t", "--set", "t=77")
@@ -426,13 +426,13 @@ def test_cpp_a_line_only_an_exception_runs_singles_out_nothing(directory, cxx, c
     path.write_text(CLOSING)
     code, result = probed(capsys, path, line_of(CLOSING, "// CLOSING"), "t.deadline=5", "t")
     assert code == 2 and result.get("refused_before_launch") is True, result
-    # GCC's code for the line lies outside the block (#167): there `t` is the `int`.
+    # GCC's code for the line lies outside the block: there `t` is the `int`.
     said = "`t` has no fields" if cxx == "gcc" else "several locals named `t` of different types"
     assert said in result["error"]["message"], result["error"]
 
 
-# Review of PR #159 (round 2): a header a macro writes was read as a plain statement,
-# its condition variable scoped to the block's end.
+# A header a macro writes is no plain statement: its condition variable is not scoped to
+# the block's end.
 MACRO_HEADERS = {
     "while.cpp": """#include <cstdio>
 #define P(tag, v) std::printf("%s=%ld\\n", tag, (long)(v))
@@ -468,8 +468,8 @@ int main(int argc, char **argv) { return (int)run(argc + 4) - 5; }
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("name", sorted(MACRO_HEADERS))
 def test_cpp_a_macros_header_scopes_its_variable_to_its_statement(directory, capsys, name):
-    # `t` read the dead `long t` (`0`) and `--set t=500` changed it, while the program
-    # printed `B=1`: the scope is read from the preprocessed source now.
+    # The scope is read from the preprocessed source: otherwise `t` reads the dead `long t`
+    # (`0`) and `--set t=500` changes it, while the program prints `B=1`.
     source = MACRO_HEADERS[name]
     path = directory / name
     path.write_text(source)
@@ -515,8 +515,8 @@ int main(void) {
 @pytest.mark.timeout(300)
 def test_c_a_frame_a_signal_interrupted_is_judged_where_it_stopped(directory, capsys):
     # Above the signal trampoline, a frame's address is the instruction it was
-    # interrupted at, not a return address: less one, it fell in the block before the
-    # loop, and `t` was judged as that block's `int t[3]`.
+    # interrupted at, not a return address: less one, it falls in the block before the
+    # loop, where `t` is that block's `int t[3]`.
     path = directory / "signaled.c"
     path.write_text(SIGNALED)
     assert main(["session", "start", str(path), "--at", str(line_of(SIGNALED, "// HANDLER"))]) == 0
@@ -529,9 +529,9 @@ def test_c_a_frame_a_signal_interrupted_is_judged_where_it_stopped(directory, ca
         capsys.readouterr()
 
 
-# Review of PR #159 (round 3): a statement on the declaration's line after it that only
-# names the local (a header's `while (t > 20)`, a block's `{ t += 0; }`) was read as its
-# declaration, scoping it to that line: the outer `t` was chosen, and changed.
+# A statement on the declaration's line after it that only names the local (a header's
+# `while (t > 20)`, a block's `{ t += 0; }`) is not its declaration: read as one, it scopes
+# the local to that line, and the outer `t` is chosen, and changed.
 SAME_LINE = """#include <stdio.h>
 int main(void) {
     int t = 1;
@@ -598,7 +598,7 @@ def test_cpp_a_macros_declaration_and_header_never_choose_the_outer_local(direct
     assert observed["type"] == "long", observed
 
 
-# Review of PR #159 (round 3): a function of the program named like a signal trampoline
+# A function of the program named like a signal trampoline
 # (`sigtramp`, `__restore`) is no trampoline: its caller is judged as any caller.
 USER_TRAMPOLINES = """#include <stdio.h>
 __attribute__((noinline)) void sigtramp(long v) {
@@ -639,9 +639,9 @@ def test_c_a_programs_function_named_like_a_trampoline_is_a_call(directory, caps
         capsys.readouterr()
 
 
-# Review of PR #159 (round 4): a declaration that is a control statement's whole body,
-# without braces, is in scope to its `;`; clang gives a `while`'s, a `do`'s or a
-# `switch`'s no block, so the block around it ran on, and its dead `t` was chosen.
+# A declaration that is a control statement's whole body, without braces, is in scope to
+# its `;`; clang gives a `while`'s, a `do`'s or a `switch`'s no block, so the block around
+# it runs on, where its dead `t` must not be chosen.
 BODIES = """#include <cstdio>
 struct P { long x; long y; };
 int main(int argc, char **argv) {
@@ -700,7 +700,7 @@ int main(int argc, char **argv) {
 
 @pytest.mark.timeout(300)
 def test_cpp_a_field_of_the_outer_struct_after_a_bodys_declaration_is_set(directory, capsys):
-    # Refused before the run: "`t` has no fields" (the `while`'s `long t` was chosen).
+    # Not refused before the run with "`t` has no fields" (the `while`'s `long t`).
     path = directory / "struct_body.cpp"
     path.write_text(STRUCT_BODY)
     code, result = probed(capsys, path, line_of(STRUCT_BODY, "// DA"), "t.x=50", "t.x")
@@ -708,9 +708,9 @@ def test_cpp_a_field_of_the_outer_struct_after_a_bodys_declaration_is_set(direct
     assert "DA=50" in result["output"], result["output"]
 
 
-# Review of PR #159 (round 4): a structured binding hides an outer local of its name;
-# clang 18 on Linux describes none in a range-`for` over pairs, so LLDB listed only the
-# outer `t`, which read 1 (and changed) where the code reads the binding.
+# A structured binding hides an outer local of its name; clang 18 on Linux describes none
+# in a range-`for` over pairs, so LLDB lists only the outer `t`, which reads 1 where the
+# code reads the binding.
 BINDINGS = """#include <cstdio>
 #include <utility>
 int main() {
@@ -749,8 +749,8 @@ def test_cpp_a_structured_binding_is_never_read_as_the_outer_local(
     assert result["rows"][0]["value"] == "1", result["rows"]
 
 
-# Review of PR #159 (round 4): in a caller frame every declaration of the name was
-# judged, so another block's `long t;` with no code of its own withheld the outer `t`.
+# In a caller frame, another block's `long t;` with no code of its own does not withhold
+# the outer `t`.
 CALLER_NAMESAKE = """#include <stdio.h>
 __attribute__((noinline)) long probe_me(int tag, long x) {
     return x + 0 * tag;  // PROBE
@@ -786,8 +786,8 @@ def test_c_a_caller_frame_judges_only_the_declaration_its_name_means(directory, 
         capsys.readouterr()
 
 
-# Review of PR #159 (round 5): a lambda's structured binding, or one in any braces
-# inside a statement, named nothing in the enclosing block, and hid its `t` after it.
+# A lambda's structured binding, or one in any braces inside a statement, names nothing
+# in the enclosing block, and doesn't hide its `t` after it.
 LAMBDAS = """#include <cstdio>
 #include <utility>
 int main(int argc, char **argv) {
@@ -820,8 +820,8 @@ def test_cpp_what_a_lambda_declares_never_hides_the_functions_local(directory, c
     assert f"{tag}=77" in result["output"], result["output"]
 
 
-# Review of PR #159 (round 5): a structured binding shadowing a parameter, with a use
-# on its line, was not read as a declaration, so `t` was not found.
+# A structured binding shadowing a parameter, with a use on its line, is a declaration
+# too, so `t` is found.
 PARAMETER_BINDING = """#include <cstdio>
 #include <utility>
 struct S2 { long a, b; };
@@ -850,7 +850,7 @@ def test_cpp_a_binding_shadowing_a_parameter_is_the_name(directory, capsys, mark
     assert f"declared on line {line}" in error or "structured binding `t`" in error, error
 
 
-# #169: a range-`for` header's structured binding names nothing in a lambda in its
+# A range-`for` header's structured binding names nothing in a lambda in its
 # range, nor in the range's expression, which runs before the binding is declared.
 RANGE_LAMBDA = """#include <cstdio>
 #include <utility>
@@ -906,7 +906,7 @@ def test_cpp_a_range_for_header_reads_the_outer_local_before_its_range_runs(dire
     line = line_of(RANGE_LAMBDA, "// HEADER")
     code, result = captured(capsys, path, line, "t", "--set", "t=7", "--hits", "1")
     if cxx == "gcc":
-        # LLDB lists GCC's binding `t` at the header's first instruction (#167), so `t`
+        # LLDB lists GCC's binding `t` at the header's first instruction, so `t`
         # names it: withheld as not declared yet, and the change refused, naming the
         # outer local's own row.
         outer = f"settable here: t @ range_header.cpp:{line - 1}"
@@ -920,7 +920,7 @@ def test_cpp_a_range_for_header_reads_the_outer_local_before_its_range_runs(dire
     assert "FB=7" in result["output"], result["output"]
 
 
-# #169: a multi-stop line (#157) is judged before the run at its first stop, the only
+# A multi-stop line is judged before the run at its first stop, the only
 # one where a change is made; the refusal says so where a later stop names another `t`.
 MULTI_STOP = """#include <stdio.h>
 struct Q { long x; long z; };

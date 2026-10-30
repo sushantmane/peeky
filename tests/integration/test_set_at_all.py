@@ -1,4 +1,4 @@
-"""`--set-at LINE@all` against real debugpy (#265): a change at every stop of the line
+"""`--set-at LINE@all` against real debugpy: a change at every stop of the line
 reached only in the case to test, each read back; the cap; a field refused before the
 run."""
 
@@ -98,7 +98,7 @@ def test_an_all_resets_a_python_count_wherever_the_input_agrees(state, capsys):
     assert any(change["before"] != "0" for change in changes), changes
     text = _table(result)
     # A Python int written alike may be another object: the same text, not proven
-    # unchanged, counted apart from the changes (review of PR #314).
+    # unchanged, counted apart from the changes.
     assert (
         f"set count: 0 -> 0, same text, not proven unchanged  (--set-at line {agrees}@all, stop "
         f"1 of line {agrees}, in debounce)"
@@ -148,7 +148,7 @@ def test_an_all_stops_at_the_cap_and_the_probe_exits_with_4(state, capsys):
 
 @pytest.mark.timeout(240)
 def test_diff_tells_an_all_cut_short_by_until_hits_from_one_made_to_the_end(state, capsys):
-    # Review of PR #278: both runs complete, with the same values at their one hit; only
+    # Both runs complete, with the same values at their one hit; only
     # how far the @all got tells them apart.
     (state / "debounce.py").write_text(DEBOUNCE)
     agrees = line_of(DEBOUNCE, "AGREES")

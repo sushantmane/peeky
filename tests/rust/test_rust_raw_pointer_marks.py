@@ -1,8 +1,8 @@
-"""#300 (eleventh evaluation, `rota`): at `if ptr::eq(e, l) {`, a line breakpoint stops
-inside the inlined `ptr::eq`, past `&raw const *e`. Every local was withheld from a change
-as if the call had read it into a temporary. The standard library's `ptr::eq` reads only
-the two addresses. Any other call given a pointer Peeky does not follow may read through
-it: the refusal says so, naming it, and rows say why too."""
+"""At `if ptr::eq(e, l) {`, a line breakpoint stops inside the inlined `ptr::eq`, past `&raw
+const *e`. The locals are not withheld from a change as if the call had read them into a
+temporary: the standard library's `ptr::eq` reads only the two addresses. Any other call given a
+pointer Peeky does not follow may read through it: the refusal says so, naming it, and rows say
+why too."""
 
 import json
 import os

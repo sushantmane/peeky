@@ -1,9 +1,7 @@
-"""A C line that stops several times per pass (#157), on real builds: LLDB places a line
+"""A C line that stops several times per pass says so, on real builds: LLDB places a line
 breakpoint at the first code of each block on the line, so a macro's own block (`do {
-int t_ = ...; } while (0)`) or a one-line loop's body is a location of its own.
-
-Found by the seventh agent evaluation (Rust `movavg`): `--hits all` gave 12 hits for 4
-values, with no word that the line stops 3 times per pass.
+int t_ = ...; } while (0)`) or a one-line loop's body is a location of its own, and
+`--hits`, `--set-hit` and `--set-at`'s @HIT count stops, not passes.
 """
 
 import json

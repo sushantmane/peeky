@@ -1,4 +1,4 @@
-"""#249: a header that differs on the worker host is refused before the build, by name."""
+"""A header that differs on the worker host is refused before the build, by name."""
 
 import json
 import os
@@ -81,8 +81,8 @@ def test_a_header_that_differs_on_the_worker_host_is_refused_by_name(remote, cap
 
 @pytest.mark.timeout(120)
 def test_a_header_changed_between_the_check_and_the_build_is_refused(remote, monkeypatch):
-    # #254 review, blocking 3: the worker hashed the live sources, then built later. The
-    # hook changes the header right after the check, before the build.
+    # The worker must build what it checked, not the live sources: the hook changes the
+    # header right after the check, before the build.
     from peeky import sources
     from peeky.client import Client
     from peeky.errors import PeekyError
@@ -117,8 +117,8 @@ def test_a_header_changed_between_the_check_and_the_build_is_refused(remote, mon
 def test_a_remote_probe_runs_with_the_workers_tools_whatever_the_clients_are(
     remote, capsys, monkeypatch
 ):
-    # Review of the PATH lookup: the client looked for its own compiler, adapter and
-    # dwarfdump, and failed (or said `using …`) for tools the worker never runs.
+    # The client looks for no compiler, adapter or dwarfdump of its own: it would fail (or
+    # say `using …`) for tools the worker never runs.
     host, local, url = remote
     for name in ("CC", "DAP", "DWARFDUMP"):
         monkeypatch.setenv(f"PEEKY_NATIVE_{name}", f"no-such-{name.lower()}-on-this-host")

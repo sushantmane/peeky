@@ -207,7 +207,7 @@ def test_background_verify_preserves_exit_codes(target, capsys):
     job = out.out.split()[1]
     code, out = run(capsys, "job", "wait", job, "--timeout", "60")
     assert code == 1 and "passed: False" in out.out
-    # Eval 4: `job wait --json` printed the text a job submitted without --json recorded.
+    # `job wait --json` printed the text a job submitted without --json recorded.
     code, out = run(capsys, "job", "wait", job, "--json")
     assert code == 1 and json.loads(out.out)["passed"] is False
     code, out = run(capsys, *args, "--old", "no such text", "--new", "x", "--background")
@@ -313,7 +313,7 @@ time.sleep(float(sys.argv[1]))
 
 @pytest.mark.parametrize("sleep", ["30", "0"])
 def test_until_hits_says_the_output_can_follow_the_last_hit(target, sleep):
-    # #203: resumed after its last hit, the program runs on until the probe ends it; its
+    # Resumed after its last hit, the program runs on until the probe ends it; its
     # output read meanwhile was "so far (the program was still running)", with
     # output_complete false, even when the program had exited.
     from peeky.probe import _table
@@ -388,7 +388,7 @@ def test_background_verify_fixes_edit_files_at_submission(target, capsys):
 
 
 def test_verify_takes_a_timeout_and_reports_its_duration(target, capsys):
-    # Eval 4 (all three agents): verify had no --timeout or --quiet, and no duration.
+    # Verify had no --timeout or --quiet, and no duration.
     root = Path(__file__).resolve().parents[2] / "examples"
     for name in ("pagination_bug.py", "verify_pagination.py"):
         shutil.copyfile(root / name, target / name)
@@ -406,7 +406,7 @@ def test_verify_takes_a_timeout_and_reports_its_duration(target, capsys):
 
 
 def test_a_background_verify_with_its_target_after_a_double_dash(target, capsys):
-    # Review of #94: the job's added --json landed after `--`, a second target.
+    # The job's added --json landed after `--`, a second target.
     root = Path(__file__).resolve().parents[2] / "examples"
     for name in ("pagination_bug.py", "verify_pagination.py"):
         shutil.copyfile(root / name, target / name)
@@ -419,7 +419,7 @@ def test_a_background_verify_with_its_target_after_a_double_dash(target, capsys)
 
 
 def test_a_timeout_during_the_checker_is_timeout_not_a_failed_fix(target, capsys):
-    # Review of #94: a correct fix whose checker the deadline cut short read as failed.
+    # A correct fix whose checker the deadline cut short read as failed.
     root = Path(__file__).resolve().parents[2] / "examples"
     shutil.copyfile(root / "pagination_bug.py", target / "pagination_bug.py")
     checker = (root / "verify_pagination.py").read_text()

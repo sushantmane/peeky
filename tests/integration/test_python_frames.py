@@ -1,4 +1,4 @@
-"""#104 against real debugpy: caller frames, module globals and object identity."""
+"""Against real debugpy: caller frames, module globals and object identity."""
 
 import json
 import os
@@ -98,7 +98,7 @@ def test_frame_option_reads_a_callers_locals_and_refuses_past_the_stack(program,
 
 def test_python_inspect_lists_module_globals_on_request_and_once(program, capsys):
     assert run(capsys, "session", "start", program, "--at", RETURN_KEY)[0] == 0
-    # Review of #104: listing globals runs their reprs, and a client that predates them
+    # Listing globals runs their reprs, and a client that predates them
     # resolves names across every scope it gets: they come only on request.
     snapshot = json.loads(run(capsys, "session", "inspect", "--json")[1].out)
     assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals"]
@@ -157,7 +157,7 @@ def test_globals_are_read_when_proven_and_never_for_an_unassigned_local(program,
 
 
 def test_a_source_replaced_by_an_older_file_proves_nothing(program, capsys, tmp_path):
-    # Review of #104: `cp -p` gives the replacement its old mtime, so the running `f`
+    # `cp -p` gives the replacement its old mtime, so the running `f`
     # (which binds X) was judged from a file in which it did not.
     running = "X = 'global'\n\n\ndef f():\n    print(1)\n    X = 2\n    return X\n\n\nf()\n"
     alternative = running.replace("    X = 2\n    return X\n", "    return 2\n")
@@ -179,7 +179,7 @@ def test_a_source_replaced_by_an_older_file_proves_nothing(program, capsys, tmp_
 
 
 def test_reading_a_local_runs_no_globals_repr_and_parses_no_source(tmp_path, monkeypatch):
-    # Review of #104: every inspection listed the globals (running each one's __repr__
+    # Every inspection listed the globals (running each one's __repr__
     # in the program) and parsed the module to prove names nobody asked for.
     import symtable
 
@@ -226,7 +226,7 @@ print("repr calls:", Loud.calls)
 
 
 def test_a_local_debugpy_groups_with_functions_is_set_as_a_local(tmp_path, monkeypatch, capsys):
-    # Review of #104: `set callback=None` said "'callback' is a module global".
+    # `set callback=None` said "'callback' is a module global".
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     path = tmp_path / "s1.py"
     path.write_text(
@@ -243,7 +243,7 @@ def test_a_local_debugpy_groups_with_functions_is_set_as_a_local(tmp_path, monke
 
 
 def test_names_past_the_listing_bound_are_read_by_name(tmp_path, monkeypatch, capsys):
-    # Review of #104: `get zz_last` said "not found" for a global past the 50-entry cut.
+    # `get zz_last` said "not found" for a global past the 50-entry cut.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     path = tmp_path / "many.py"
     globals_ = "".join(f"g{i:02} = 'global-{i}'\n" for i in range(60))
@@ -270,7 +270,7 @@ CALLER = "def callee():\n    return 0\n\n\ndef caller():\n    n = 2\n    r = n +
 
 
 def test_a_callers_locals_are_read_only_and_globals_come_only_on_request(tmp_path):
-    # Review of #104: set_variable on `inspect {"frame": 1}` changed the caller's `n`;
+    # set_variable on `inspect {"frame": 1}` changed the caller's `n`;
     # and a client that predates globals resolved names across every scope it got.
     from peeky.worker import DebugWorker
 
@@ -391,7 +391,7 @@ print(f([1, 2]))
 
 
 def test_a_global_read_beside_a_generator_of_that_name_is_read(tmp_path):
-    # Review of #104 (round 2): `sum(Y for Y in ...)` runs in its own frame, and f reads
+    # `sum(Y for Y in ...)` runs in its own frame, and f reads
     # the global Y (the program prints it), but the probe refused it as a comprehension's.
     from peeky.probe import Probe, run_probe
 
@@ -405,7 +405,7 @@ def test_a_global_read_beside_a_generator_of_that_name_is_read(tmp_path):
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="comprehensions run in their own frame")
 def test_a_global_read_from_inside_an_inlined_comprehension(tmp_path):
-    # Review of #104 (round 2): inside `[X * 2 for X in data]` (inlined from 3.12), X is
+    # Inside `[X * 2 for X in data]` (inlined from 3.12), X is
     # listed though f reads the global X, and `G` was refused as "the file may have
     # changed since it was loaded".
     from peeky.probe import Probe, run_probe
