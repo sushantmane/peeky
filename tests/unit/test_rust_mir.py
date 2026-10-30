@@ -3116,7 +3116,7 @@ def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monk
         "lines 12 and 32), which it uses after the stop, so a change there would not reach it"
     )
     failures = [("f", (kind, text))]
-    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    refusal = judge.session._never_message("week", "week", "src/main.rs", 39, failures)
     assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
 
 
@@ -3163,7 +3163,7 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
         "not one)"
     )
     failures = [("f", (kind, text))]
-    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    refusal = judge.session._never_message("week", "week", "src/main.rs", 39, failures)
     assert ". Change it before the program copies it (`--set-at` an earlier line), or " in (refusal)
     assert _mutation_hint(refusal).startswith("Change it before the program copies it")
 
@@ -3189,7 +3189,7 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
         "change there may not reach it"
     )
     failures = [("f", (kind, text))]
-    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    refusal = judge.session._never_message("week", "week", "src/main.rs", 39, failures)
     assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
     assert not _mutation_hint(refusal).startswith("Change it before the program copies it")
 
