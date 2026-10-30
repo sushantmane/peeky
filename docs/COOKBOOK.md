@@ -7,10 +7,10 @@ This cookbook is for details, which they cite by section number.
 Recipes for debugging running programs from your terminal. Agents use the same commands: see
 [AGENT_GUIDE.md](AGENT_GUIDE.md).
 
-- **Real output:** the output shown is real, recorded on macOS with Python 3.13, from 2026-10-16
-  on.
+- **Real output:** the output shown is real, recorded on macOS with Python 3.13 and Apple's clang
+  and lldb-dap. Timings, addresses, process ids and run numbers differ from run to run.
 - **Copy and paste:** run the commands from the repository root. A recipe that uses a small program
-  of its own shows that program.
+  of its own shows that program, or the lines of it that matter.
 - **Languages:** this book covers what every language shares. Each language has a one-page summary
   of its rules, and a cookbook for what is particular to it. A language cookbook's sections have
   the numbers of the sections here that they add to.
@@ -29,7 +29,7 @@ peeky describe <target>                        # what can I ask? lines, names, r
 peeky probe <target> --at <file>:<line> --capture a,b.c [--set x=0]   # one question, one run
 peeky queries diff        |  peeky sql "SELECT ..."                    # follow-ups on saved runs
 peeky session start <target> --at <file>:<line>                        # several looks at one stop
-peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # proof, on a fresh build
+peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # your checker, on a fresh build
 ```
 
 **Words used here:**
@@ -49,7 +49,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
 > the next line.
 
 > **Tip:** an intervention is an experiment on one run. It tells you whether a hypothesis explains
-> the output. Only `peeky verify` says that a source fix works.
+> the output. Only `peeky verify` checks a source fix: it runs your checker on a fresh build.
 
 ---
 
@@ -96,7 +96,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [5.3 Several Sessions at Once](#53-several-sessions-at-once): `--name`
    - [5.4 Programs with Timeouts](#54-programs-with-timeouts): `--max-pause` for programs with clocks
    - [5.5 Cleaning Up](#55-cleaning-up): when a session's worker ends
-6. [Verifying a Fix](#6-verifying-a-fix): the only proof: the checker on a fresh build
+6. [Verifying a Fix](#6-verifying-a-fix): your checker on a fresh build
    - [6.1 Check One Edit on a Fresh Build](#61-check-one-edit-on-a-fresh-build): `verify`, `--baseline` and `reason`
    - [6.2 An Overfit Fix Is Rejected](#62-an-overfit-fix-is-rejected): a special-case fix fails the checker
    - [6.3 Multi-Line Edits](#63-multi-line-edits): `--old-file`/`--new-file`
@@ -187,6 +187,7 @@ peeky describe examples/pagination_bug.py
 
 ```
 language: python
+root: …/examples
 breakpoint lines in pagination_bug.py: 1, 4-9, 12-13
 names in <module>: get_page
 names in get_page (lines 4-9): end, items, page, page_size, start
@@ -291,18 +292,10 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
   above the loop, reads `i (lines 66, 70-71)`: the macro's line, then the body's. The loop header's
   line between them runs outside the block.
 - Past eight blocks, one span covers them all.
-- In Java, the lines come from the class file's LocalVariableTable. A line is listed where its
-  breakpoint sees the local: its first instruction, where java-debug stops, is in the local's
-  scope.
-- So neither the line that declares a Java local nor a `for` header that starts its loop is
-  listed. `ranking (int[], lines 51-53, 78-79)` is declared on lines 50 and 77
-  ([Java 1.1](lang/java-cookbook.md#see-where-a-local-is-visible)).
-- A Java block on one line gives no line: `x (int, no breakpoint line)`, and `[]` in `spans`.
-- A Java name declared once, for the rest of the method, gets no lines. One declared more than
-  once gets every declaration's lines.
-- Where Java declares one name with different types, it lists it once per type, each with its own
-  lines: `value (int, line 31), value (String, line 34)`. With `--json`, a scope's `typed_spans`
-  maps such a name to `[{"type": …, "spans": […]}, …]`, where `spans` may be empty.
+- In Java, the lines come from the class file's LocalVariableTable, and follow Java's own rules
+  ([Java 1.1](lang/java-cookbook.md#see-where-a-local-is-visible)). A block on one line gives
+  `[]` in `spans`. With `--json`, a scope's `typed_spans` maps a name declared with different
+  types to `[{"type": …, "spans": […]}, …]`, where `spans` may be empty.
 
 #### Fields and elements `set` may change (C, C++, Rust)
 
@@ -393,8 +386,11 @@ peeky probe examples/pagination_bug.py --at 8 --capture 'items[0],items[-1],item
 hit  phase     line  function  selector   type  value
 1    observed  8     get_page  items[0]   int   10
 1    observed  8     get_page  items[-1]  int   60
-1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]
+1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]  [id 6]
 ```
+
+`[id 6]` names which Python object the list is
+([Python 4.6](lang/python-cookbook.md#46-same-object-or-a-copy-java-python)).
 
 #### Write a selector
 
@@ -502,6 +498,7 @@ best      3    6     0      NULL   NULL    0
 value     1    6     -3     NULL   NULL    NULL
 value     2    6     -1     NULL   NULL    1
 value     3    6     -2     NULL   NULL    1
+(6 rows)
 ```
 
 `best` starts at 0 and never drops to a negative value. So the running maximum of all-negative
@@ -926,6 +923,7 @@ hit  phase      line  function     selector  type  value
 2    observed   6     running_max  best      int   -1
 3    observed   6     running_max  best      int   -1
 set best: 0 -> -3
+status: completed  hits: 3  seconds: 1.158  max pause: 16.8 ms
 warning: Interventions are applied once, at hit 1; other hits observe without re-applying.
 output:
   MAX: [-3, -1, -1]
@@ -955,8 +953,9 @@ peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classi
 
 ```
 hit  phase     line  function    selector  type         value
-1    observed  2008  is_private  self      IPv6Address  IPv6Address('::ffff:808:808')
+1    observed  2008  is_private  self      IPv6Address  IPv6Address('::ffff:808:808')  [id 7]
 1    observed  2008  is_private  self._ip  int          281470816487432
+status: completed  hits: 1  seconds: 1.193  max pause: 43.6 ms
 output:
   ::ffff:8.8.8.8: private
 ```
@@ -1003,7 +1002,8 @@ output so far (the program ran on after the last hit, so this can include text w
   PAGE: [40, 50, 60]
 ```
 
-That took about 0.3 s. Waiting for the program to exit took 1.0 s.
+In the recorded run, that took 0.35 s. The same probe took about 1.0 s when it waited for the
+program to exit.
 
 #### What happens after the last hit
 
@@ -1111,25 +1111,19 @@ line just like one would be too``. `--json` always has it whole.
   the warning whole again.
 - A result with no `build_id`, such as one from an older worker, gives it whole every time.
 
-Branch on the exit status:
+Branch on the exit status. [ERRORS.md](ERRORS.md#exit-status) says what each one covers:
 
-| Status | Meaning |
-| --- | --- |
-| 0 | Success. |
-| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
-| 2 | An error, or a refusal. See below. |
-| 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
-| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. So does a `@before` restore that made no restore for some writes it owed, because its hits never came (`unrestored_all`). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
-
-- Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
-  whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
-  the worker root, a build that failed, or a debugger that didn't start.
-- In that case Peeky didn't start the program, though a build, or a Python candidate's
-  interpreter, may have run. So the text has no table, only the error and its hint, and no run is
-  saved.
-- Fewer hits than `--hits` asked for is not a failure on its own: the status is 0, with a warning.
-
-[ERRORS.md](ERRORS.md) lists every exit status and error code.
+- **0:** success. Fewer hits than `--hits` asked for is not a failure on its own: the status is 0,
+  with a warning.
+- **1:** a completed command with a negative result, such as a probe that never stopped, or a
+  verify that didn't pass.
+- **2:** an error, or a refusal. A probe that ended before the debugger's launch or attach request
+  was sent exits 2, and JSON says `refused_before_launch`. Its text has only the error and its
+  hint, and no run is saved.
+- **3:** not there yet, such as a background job still running.
+- **4:** a probe completed, but a change it was asked to make never happened
+  ([2.8](#28-change-a-value-then-restore-it)). The values are evidence, but the experiment didn't
+  happen.
 
 ### 2.8 Change a Value, Then Restore It
 
@@ -1201,8 +1195,11 @@ peeky probe stock --at stock.cpp:24 --capture name --hits all \
 ```
 
 ```
+...
 set name: "apple " -> "apple"  (--set-at line 23@3, in main)
 set name: "pear " -> "pear"  (--set-at line 23@4, in main)
+status: completed  hits: 4 (all)  seconds: 3.085  max pause: 342.4 ms
+warning: Changed `name`: a std::string_view, c_str() or data() pointer or iterator the program took from the string before the change still has its old size, and reads a mix of old and new text (Peeky cannot see those)
 output:
   STOCK:apple=7,pear=3
 ```
@@ -1347,7 +1344,7 @@ set trend: 1 -> 0  (--set-at line 15@all, stop 2 of line 15, in find_turns)
 set trend: 0 -> 1  (restored, --set-at line 18@all, stop 2 of line 18, in find_turns)
 set trend: -1 -> 0  (--set-at line 15@all, stop 3 of line 15, in find_turns)
 set trend: 0 -> -1  (restored, --set-at line 18@all, stop 3 of line 18, in find_turns)
-status: completed  hits: 3 (all)  seconds: 0.981  max pause: 63.6 ms
+status: completed  hits: 3 (all)  seconds: 1.66  max pause: 61.2 ms  watching for new calls: 1 stops, max 119.4 ms
 output:
   TRAIL:T@200 455,B@700 400;FLAT=3
 ```
@@ -1382,11 +1379,10 @@ refusal ends the probe, as any `--set-at` refusal does:
 - **A value whose text is all of it.** Peeky writes back the text it read just before its change,
   so only where that text is the whole value:
   - **C, C++ and Rust:** a built-in integer, by the type the debug information gives.
-  - **Java:** an integer, a `boolean` or a `char` (written back as its code point). Never a `float`
-    or `double`, which java-debug may show rounded, or a String or other object.
-  - **Python:** an `int`, a `float`, `True`, `False` or `None`, whose text reads back as the same
-    value. An int past 256 or a float written back is an equal new object, which `is` tells
-    apart.
+  - **Java:** an integer, a `boolean` or a `char`
+    ([Java 7.3](lang/java-cookbook.md#change-a-field-or-an-array-element)).
+  - **Python:** an `int`, a `float`, `True`, `False` or `None`
+    ([Python 2.8](lang/python-cookbook.md#restore-a-value-with-before)).
 
 Some restores are refused before the program runs, with exit 2:
 
@@ -1451,11 +1447,7 @@ keeps a restore as any change, with more:
 - `["trend", "@before", "18@all"]` in `runs.sets`, and its outcome in `runs.set_outcomes`. An
   outcome with writes it never restored has `unrestored`, `unrestored_all` and `complete: false`.
   It doesn't keep their kinds, so the `(sets)` text calls them writes: `3 writes had no matching
-  restore (line 15, hits 1 to 3)`. A run saved before Peeky named them all has `unrestored` alone.
-  A Peeky that predates `unrestored_all` can't check an outcome with it, or with `unrestored` on
-  a restore at one hit. It then reads none of that run's outcomes. Each request's text is then only
-  what it reads from the warnings: `not made` where the line never stopped, the cap's count, or
-  nothing else. It says nothing of the writes a restore made no restore for;
+  restore (line 15, hits 1 to 3)`. A run saved before Peeky named them all has `unrestored` alone;
 - `set_effect` shows it as `trend: 0 -> 1 (restored from before 15@2)`;
 - the `(sets)` rows of `diff` and `compare` name each restore, even where `…` stands for it:
   `2 requests: trend=0 (…), …; restore: trend=@before (18@all, …)`.
@@ -1641,10 +1633,11 @@ in JSON. That is where its call was stopped, not the line it returned to.
 
 #### What it costs
 
-Each hit costs a step out to its return, through every call it makes. Through a deep or wide
-recursion, `--capture return` costs about 7.5 ms per nested call on macOS. In such a recursion,
-`f` calls `c` calls `f`, and each call makes several more. A tree of depth 13 took 62.6 s, against
-1.8 s without `return`. There, limit `--hits`, or probe a line that only one call reaches.
+Each hit costs a step out to its return, through every call it makes. In a deep or wide
+recursion, `f` calls `c` calls `f`, and each call makes several more. Measured on macOS in
+October 2026, `--capture return` cost about 7.5 ms per nested call there. A tree of depth 13 took
+62.6 s, against 1.8 s without `return`. There, limit `--hits`, or probe a line that only one call
+reaches.
 
 #### A call that never returns
 
@@ -1725,7 +1718,7 @@ Otherwise, LLDB would step out past libc++'s hidden frames and code without debu
 and then list another value as that function's. So Peeky keeps each step out to one frame, and
 checks that it stopped where the call returns.
 
-lldb-dap before LLVM 21 lists no `(Return Value)`; the Linux lanes use 18 and 20. Peeky then reads
+lldb-dap before LLVM 21, such as Ubuntu 24.04's lldb-dap 18, lists no `(Return Value)`. Peeky then reads
 what LLDB itself recorded for that step out (`thread info`), under the same checks.
 
 In C and C++, a `void` function returns no value: its debug information gives it no return type.
@@ -1824,6 +1817,10 @@ Every rule of a caller's frame applies, as in a session:
 
 Peeky saves each probe's run with a run id, unless it refused the probe before launch or you passed
 `--no-save`. `--label` tags a run, so you can find it later.
+
+The examples from 3.1 to 4.4 ran in this order, in a fresh state directory
+([0](#keep-a-tasks-runs-apart)). So their run ids follow on from 1. The examples on pairing hits,
+in 3.1, used a state directory of their own.
 
 These words come up often here:
 
@@ -2077,7 +2074,7 @@ show every later hit as a difference. Two notes say so:
   that first difference, even at an earlier hit. With no real difference at a hit, there is no
   second note.
 
-These runs were recorded in a fresh state directory ([0](#0-setup)), so they are runs 1 to 6:
+These runs were recorded in a state directory of their own, so they are runs 1 to 6:
 
 ```sh
 b() { peeky probe bins --at bins.c:9 --hits all "$@"; }
@@ -2249,10 +2246,10 @@ peeky queries diff --param a=3 --param b=5
 ```
 
 ```
-run_a  run_b  hit   phase     selector  value_a       value_b       differs  note
+run_a  run_b  hit   phase     selector  value_a  value_b    differs  note
 3      5      NULL  NULL      (output)  total: 36\n  total: 21\n  1        output differs at line 1, column 8
-3      5      NULL  NULL      (edit)    none          candidate     1        the runs built different edits (runs.edit has each diff)
-3      5      4     observed  total     28            21            1        NULL
+3      5      NULL  NULL      (edit)    none     candidate  1        the runs built different edits (runs.edit has each diff)
+3      5      4     observed  total     28       21         1        NULL
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=5 --param key=i` would, but that does not prove the hits are the same moments
   - `total` differs after the edit and may follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)
@@ -2267,10 +2264,10 @@ peeky queries diff --param a=3 --param b=6
 ```
 
 ```
-run_a  run_b  hit   phase      selector  value_a      value_b                  differs  note
-3      6      NULL  NULL       (output)  total: 36\n  total: 13\n              1        output differs at line 1, column 8
-3      6      NULL  NULL       (sets)    none         1 change: total=5 (9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
-3      6      4     after-set  total     NULL         5                        1        intervention only in run b
+run_a  run_b  hit   phase      selector  value_a  value_b                  differs  note
+3      6      NULL  NULL       (output)  total: 36\n  total: 13\n             1        output differs at line 1, column 8
+3      6      NULL  NULL       (sets)    none     1 change: total=5 (9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
+3      6      4     after-set  total     NULL     5                        1        intervention only in run b
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=6 --param key=i` would, but that does not prove the hits are the same moments
   - no single selector's values line up better at other hits
@@ -2429,10 +2426,8 @@ whole up to 300 characters each. Past that, both show from where they first diff
 
 - A `--set` is at its `--at` line's `--set-hit`: `["gap", "20", "requested at 34@4"]`.
 - A `--set-at` is at its own `LINE@HIT`, or `LINE@all`.
-- A change whose hit never came ends with `, not made: that hit never came`. The probe warned about
-  it too. One refused there ends with `, refused at that hit`.
-- An `@all` says how far it got: `, made at 6 stops; refused at hit 7`, or `, made at 1 stop before
-  --until hits ended the probe` ([2.8](#how-the-evidence-records-changes)).
+- Each adds how it went where it wasn't simply made, such as `, not made: that hit never came`
+  ([2.8](#how-the-evidence-records-changes) lists them).
 
 ### 3.3 What My Intervention Changed
 
@@ -2552,7 +2547,7 @@ v  hit_a  hit_b  a:total  b:total  no_value_a  no_value_b  caveats_a  caveats_b 
 2  2      1      28       0        NULL        NULL        NULL       NULL       both
 5  3      NULL   34       NULL     NULL        NULL        NULL       NULL       only in run a
 8  NULL   4      NULL     62       NULL        NULL        NULL       NULL       only in run b
-note: the key repeats: add a selector that names the call to the key (key=v,<selector>). Run 9's hits 2 and 3 both have `v` 7, and such a value pairs every hit that has it in one run with every one in the other (2 rows, from 1 value)
+note: the key repeats: add a selector that names the call to the key (key=v,<selector>). Run 6's hits 2 and 3 both have `v` 7, and such a value pairs every hit that has it in one run with every one in the other (2 rows, from 1 value)
 note: left out 1 selector that agrees between the runs at every paired hit: `bins[3].hi` (with its values at unpaired hits); --param unchanged=1 or --json shows it
 (5 rows)
 ```
@@ -2625,7 +2620,7 @@ store: /home/me/.peeky/evidence/evidence.db (SQLite 3.50.4)
 
 tables:
   runs           One row per probe run (31 columns)
-  captures       One row per captured selector, per hit and phase (17 columns)
+  captures       One row per captured selector, per hit and phase (25 columns)
   ...
 views:
   evidence       captures with some of their run's columns (label, program, status, args, ...; not output)
@@ -2639,12 +2634,12 @@ other parts:
 `peeky sql --schema NAME [NAME ...]` shows those in full (e.g. --schema captures functions); --schema all shows everything.
 ```
 
-- `--schema` alone prints this index, under 2 KB. The whole schema is about 20 KB.
+- `--schema` alone prints this index, under 2 KB. The whole schema is many times longer.
 - `--schema NAME` prints each table, view or other part it names in full: its columns, the joins,
   the canned queries, the functions, the examples or the rules. `--schema all` prints everything.
 - A column only some languages fill names them: `element_size [C, C++ only]`, `identity [Python
   only]`, `instance [Rust only]`. Other languages' runs leave it NULL.
-- `--schema --json` gives the whole schema, as before. With names, it gives only those, in the
+- `--schema --json` gives the whole schema. With names, it gives only those, in the
   same shape.
 - An unknown name is `INVALID_QUERY`. The message lists the names there are.
 
@@ -2805,11 +2800,9 @@ captured. For a new question about the program, run a new probe.
 
 **What it answers:** Which arguments did `trim_left` change?
 
-A `const std::string &`, or a pointer, is saved as the debugger shows it, with its address first:
-`0x000000016d78b298 "apple"`. It never equals a plain string's `"apple"`. So take the text after the
-address before you compare.
-
-The recipe is in [C and C++ 4.7](lang/c-cpp-cookbook.md#47-c-references-and-pointers-in-sql).
+A reference or a pointer is saved with its address first, so it never equals a plain string. The
+recipe that compares their text is in
+[C and C++ 4.7](lang/c-cpp-cookbook.md#47-c-references-and-pointers-in-sql).
 
 ### 4.8 Compare Addresses Across Runs
 
@@ -2840,7 +2833,7 @@ in a value, of 1 to 16 hex digits, as an integer:
 own selector, such as `h.p`, not on a struct's preview. A Python identity (`[id 6]` in tables)
 isn't an address. It is in the `identity` column, not in the value.
 
-`no_addresses` masks less: only hex of 9 to 16 significant digits, which is surely an address. So it
+`no_addresses` masks less: only hex of 9 to 16 significant digits, which is most likely an address. So it
 leaves `0x4052a0` and `0xdeadbeef` as they are, and `address` reads both.
 
 This SQL gives each address of selector `p` in run 7, and of `q` in run 8, as an offset from its
@@ -2914,6 +2907,9 @@ Peeky stores each value as its language prints it. A Java array keeps its type a
 `int[4]@61 [3, 0, 7, 2]`. A C++ string reference keeps its address: `0x… "Évora"`. So `value` is
 no JSON, and `value = 'Évora'` matches nothing. Two functions read such values back, by the run's
 language and the row's type. The `evidence` view has both. Neither reads a Python value.
+
+In these examples, from another store, run 4 captured a Java `int[]` as `counts`, and run 5 a C++
+`const std::string &` as `city`.
 
 ```sh
 peeky sql "SELECT v.hit, e.key AS i, e.value FROM evidence v, json_each(elements(v.value, v.language)) e WHERE v.run_id = 4 AND v.selector = 'counts' AND v.hit = 1"
@@ -3259,7 +3255,7 @@ $ peeky session get best
 best: BalanceBug$Worker = BalanceBug$Worker@56 {load=5, name="a"}
 ...
 $ peeky session step
-state: stopped at demo/BalanceBug.java:20 in BalanceBug.assign(List,int[]) (paused 0.0 s)
+state: stopped at examples/java/demo/BalanceBug.java:20 in BalanceBug.assign(List,int[]) (paused 0.0 s)
 $ peeky session get best.load
 best.load: <not found: 'best' was visible at line 30, earlier in this same call, but the block declaring it has ended (read it at a line inside that block); visible: order, tasks, workers>
 ```
@@ -3303,14 +3299,17 @@ $ echo $?
 - A program that exits first gives exit status 3 too, with this note:
   `the program exited without reaching line 17`.
 - `continue --to` refuses a line the debugger would move, because it has no code. The session keeps
-  its stop, so you can choose another line:
+  its stop, so you can choose another line. Here the session stopped at hit 3, the loop's last
+  pass:
 
   ```
+  $ peeky session start examples/corpus/running_max/program.py --at 5 --hit 3
+  session default (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 3 (paused 0.0 s)
   $ peeky session continue --to 8
   peeky: [INVALID_BREAKPOINT] Line 8 has no code to stop at (the debugger would use line 7); choose a line from `peeky describe`
     hint: Choose a line from `peeky describe` breakpoint_lines.
   $ peeky session continue --to 7
-  state: stopped at examples/corpus/running_max/program.py:7 in running_max (paused 0.0 s)
+  state: stopped at examples/corpus/running_max/program.py:7 in running_max (paused 0.01 s)
   ```
 
 - `session start` at such a line starts all the same, at the line the debugger chose. Then it
@@ -3790,10 +3789,10 @@ candidate: The edit keeps the line numbers: the candidate's lines are the origin
      printf("PAGE:[");
 evidence: saved as run 2; query it with `peeky queries run --param run=2` or `peeky sql` (see `peeky sql --schema`)
 compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)
-run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
+run_a  run_b  hit   phase     selector  value_a  value_b    differs  note
 1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at line 1, column 7
-1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
-1      2      1     observed  start     6                 3                     1        NULL
+1      2      NULL  NULL      (edit)    none     candidate  1        the runs built different edits (runs.edit has each diff)
+1      2      1     observed  start     6        3          1        NULL
 (3 rows)
 ```
 
@@ -3991,8 +3990,8 @@ To debug the optimized program, set its level in a `--config`:
 | Rust | `opt_level` | `"1"` or `"2"`; `"0"` by default |
 
 A C or C++ config may also name explicit tool paths
-([C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config)). For example, this
-`examples/c/optimized.json` names them:
+([C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config)). For example, save this
+config, which names macOS's tools, as `examples/c/optimized.json`:
 
 ```json
 {"sources": ["pagination_bug.c"], "headers": ["pagination.h"], "optimization": "O2", "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang", "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap", "dwarfdump": "/usr/bin/dwarfdump", "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil", "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}
@@ -4038,7 +4037,7 @@ peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:
 ```
 
 ```
-error [MUTATION_REJECTED]: `start` cannot be changed: changing values is refused in an optimized build (-O2), where the program may keep using other copies of a value; here the debug information gives `start` no stack slot (a register or a location list), so a change could not reach every copy. Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build
+error [MUTATION_REJECTED]: `start` cannot be changed: use an unoptimized build. Changing values is refused in an optimized build (-O2), because the program may keep using other copies of a value. Here the debug information gives `start` no stack slot (a register or a location list), so a change could not reach every copy. Refused before the program runs: the debugger's launch/attach request was not sent
 hint: Use an unoptimized build to change values.
 ```
 
@@ -4134,6 +4133,7 @@ peeky probe ./app/job.py --at 8 --capture start --worker http://127.0.0.1:8765
 hit  phase     line  function  selector  type  value
 1    observed  8     get_page  start     int   3
 status: completed  hits: 1  seconds: 1.058  max pause: 6.3 ms
+warning: Only the .py files under the target's directory are compared with yours. Not compared: installed packages, any directory holding a pyvenv.cfg, the standard library, and compiled modules (.so, .pyc).
 output:
   PAGE: [40, 50, 60]
 ...
@@ -4146,9 +4146,10 @@ error [PROVENANCE_CHANGED]: Worker source provenance differs for the program job
 hint: Sources, build outputs or tools changed; start a new session on a fresh build.
 ```
 
-- Every source is compared: for Python, every `.py` file under the directory, except in virtual
+- Sources are compared: for Python, every `.py` file under the directory, except in virtual
   environments. A file on one side only is refused too, by name
-  ([REMOTE.md](REMOTE.md#source-identity)).
+  ([REMOTE.md](REMOTE.md#source-identity)). Installed packages, the standard library and compiled
+  modules are not compared, and the warning above says so.
 - For Java, start the worker with `--java-config`, or `--java-attach-config` for a waiting JVM.
   Pass your own `--config` too ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
 - For C and C++, start the worker with `--native-config`; for Rust, with `--rust-config`. You need
