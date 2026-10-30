@@ -4580,16 +4580,20 @@ def _all_elsewhere(message, points):
     )
 
 
-def _set_outcomes(probe, points, changes, status, finished, attempt, unreported):
+def _set_outcomes(
+    probe, points, changes, status, finished, attempt, unreported, lost=(), line=None
+):
     """Each requested change's outcome, in runs.sets' order (each --set, then each
     --set-at): `made`, the stops it was made at; `ended`, why no more were: "made" (one
     at a hit, made), "exit" (the program ended), "until_hits" (the probe ended after its
     last hit), "cap" (an @all's 100 stops), "refused" or "failed" at `hit` (its own change
     there), "timeout" or "failed" (the probe's, first), or "lost_stop" (an @all whose run
-    the debugger lost a stop of, which may have gone unchanged); `complete`, whether it
-    was carried out in full: one at a hit made, or an @all made at every stop of its line
-    until the program ended. Comparisons say it, so that a run ended by --until hits, or
-    by a refusal at hit 7, doesn't read like one that changed every stop."""
+    the debugger lost a stop of, which may have gone unchanged, or a change at one hit never
+    made, whose line it lost a stop of: ``lost``, the build's lines, ``line`` the probe's);
+    `complete`, whether it was carried out in full: one at a hit made, or an @all made at
+    every stop of its line until the program ended. Comparisons say it, so that a run ended
+    by --until hits, or by a refusal at hit 7, doesn't read like one that changed every
+    stop."""
     over = {"exit": "exit", "hits": "until_hits"}.get(finished) or (
         "timeout" if status == "timeout" else "failed"
     )
@@ -4602,6 +4606,8 @@ def _set_outcomes(probe, points, changes, status, finished, attempt, unreported)
         elif attempt is not None and attempt["point"] is None and index == made_set:
             ended = "refused" if attempt.get("refused") else "failed"
             outcome.update(made=0, ended=ended, hit=attempt["hit"])
+        elif line in lost and over == "exit":
+            outcome.update(made=0, ended="lost_stop")
         else:
             outcome.update(made=0, ended=over)
         outcomes.append({**outcome, "name": name, "value": value})
@@ -4617,6 +4623,9 @@ def _set_outcomes(probe, points, changes, status, finished, attempt, unreported)
             outcome["ended"] = "cap"
         elif point["hit"] == ALL and unreported and over == "exit":
             outcome["ended"] = "lost_stop"
+        elif point["build_line"] in lost and over == "exit":
+            # Its hit may have been the stop the debugger never reported.
+            outcome["ended"] = "lost_stop"
         else:
             outcome["ended"] = over
         outcomes.append({**outcome, "name": point["name"], "value": point["value"]})
@@ -4625,6 +4634,30 @@ def _set_outcomes(probe, points, changes, status, finished, attempt, unreported)
             outcome["ended"] == "exit" and outcome["at"].endswith(f"@{ALL}") and outcome["made"] > 0
         )
     return outcomes
+
+
+def _lost_lines(unreported, placed, program):
+    """The probe's lines (the build's numbering) whose breakpoint a stop the debugger never
+    reported was seen at (`unreported_stop`): each such line stopped at least once more
+    than the debugger reported."""
+    if not isinstance(unreported, dict):
+        return frozenset()
+    path, _, line = str(unreported.get("breakpoint") or "").rpartition(":")
+    path = path.replace("\\", "/")
+    if not line.isdigit() or not (path == program or path.endswith("/" + program)):
+        return frozenset()
+    return frozenset(
+        number for number, point in placed.items() if point.get("line", number) == int(line)
+    )
+
+
+def _unreported_count(line, stops):
+    """A line's stops where the debugger also stopped there without reporting it: the
+    reported ones, and why their count is no more than a floor."""
+    return (
+        f"the debugger reported {stops} stop{'' if stops == 1 else 's'} of line {line}, and "
+        "also stopped there without reporting it. So the line's full count of stops is unknown"
+    )
 
 
 def _set_at_moved(points, placed, program):
@@ -4710,6 +4743,8 @@ def run_probe(
     # Pauses at stops only at a function's first line, watched for new calls.
     watch_pauses = []
     unreported = None
+    # The lines (the build's numbering) whose breakpoint that stop was seen at.
+    lost = frozenset()
     # How the probe's watch ended: "exit" (the program ended), "hits" (--until hits), else
     # None (a failure or the timeout); and the change being made when one failed: for
     # each request's outcome (`_set_outcomes`).
@@ -4936,6 +4971,7 @@ def run_probe(
                 # A thread was seen paused at the breakpoint, but the debugger never
                 # reported that stop: the line did run.
                 unreported = state.get("unreported_stop")
+                lost = _lost_lines(unreported, placed, probe.program)
                 status = "completed" if hits else "failed" if unreported else "no-stop"
                 finished = "exit"
                 say(f"program finished after {hits} hit(s)")
@@ -5749,8 +5785,14 @@ def run_probe(
         # Only the --set: a --set-at may have been applied.
         named = ", ".join(f"--set {name}={value}" for name, value in probe.set)
         warnings.append(
-            f"{named} {'was' if len(probe.set) == 1 else 'were'} not applied: the program "
-            f"stopped {hits} time(s) at line {line}, before hit {probe.set_hit}."
+            f"{named} {'was' if len(probe.set) == 1 else 'were'} not applied: "
+            + (
+                f"{_unreported_count(line, hits)}, and its hit {probe.set_hit} may have run "
+                "without the change. Run the probe again."
+                if line in lost
+                else f"the program stopped {hits} time(s) at line {line}, before hit "
+                f"{probe.set_hit}."
+            )
         )
     for number, named in set_functions.items():
         if len(named) > 1 or set(alike.get(number, ())) & set(named):
@@ -5788,6 +5830,8 @@ def run_probe(
                 "name": name,
                 "value": value,
                 "stops": hits,
+                # `stops` counts only the stops the debugger reported.
+                **({"unreported_stop": True} if line in lost else {}),
             }
             for name, value in probe.set
         ]
@@ -5802,6 +5846,7 @@ def run_probe(
                 "stops": seen.get(point["build_line"], 0),
                 # An @all cut short at its cap: the stops it was made at.
                 **({"made": len(point["changes"])} if point["capped"] is not None else {}),
+                **({"unreported_stop": True} if point["build_line"] in lost else {}),
             }
             for point in unapplied
         )
@@ -5825,17 +5870,32 @@ def run_probe(
                         "or a line that runs less often."
                     )
                     continue
+                if point["hit"] == ALL and point["build_line"] in lost:
+                    # Not "never stopped": the debugger stopped there, and never said so.
+                    warnings.append(
+                        f"{asked} was not applied: the debugger stopped at line "
+                        f"{point['build_line']} without reporting it, and reported no stop "
+                        "there. That stop ran without the change, and the line's full count "
+                        "of stops is unknown. Run the probe again."
+                    )
+                    continue
                 if point["hit"] == ALL:
                     warnings.append(
                         f"{asked} was not applied: line {point['build_line']} never stopped "
                         f"{ended}."
                     )
                     continue
+                said = f"--set-at {probe.program}:{point['line']}@{point['hit']} "
+                said += f"{point['name']}={point['value']} was not applied: "
+                if point["build_line"] in lost:
+                    warnings.append(
+                        said + f"{_unreported_count(point['build_line'], stops)}, and its hit "
+                        f"{point['hit']} may have run without the change. Run the probe again."
+                    )
+                    continue
                 warnings.append(
-                    f"--set-at {probe.program}:{point['line']}@{point['hit']} "
-                    f"{point['name']}={point['value']} was not applied: line "
-                    f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
-                    f"{point['hit']} never came."
+                    said + f"line {point['build_line']} stopped {stops} time(s) {ended}, so "
+                    f"its hit {point['hit']} never came."
                 )
     # The writes a restore owed and never made: the run ended before the restore line's
     # hits that pair with them. Each is named, with its kind, not only the latest. That
@@ -5854,6 +5914,7 @@ def run_probe(
                 "name": point["name"],
                 "value": point["value"],
                 "stops": stops,
+                **({"unreported_stop": True} if point["build_line"] in lost else {}),
             }
             # One entry per request: one whose line never stopped is listed already.
             listed = next((e for e in result.get("unapplied") or () if e == entry), None)
@@ -5867,12 +5928,18 @@ def run_probe(
                 else f"{len(ats)} {noun} ({changes_named(ats)}){detail}"
             )
             attached = (result.get("target_identity") or {}).get("mode") == "attach"
+            owed = hits_named(record["hit"] for record in owes)
             warnings.append(
                 f"--set-at {probe.program}:{point['line']}@{point['hit']} {point['name']}="
-                f"{BEFORE} made no restore for {writes}. Line {point['build_line']} stopped "
-                f"{stops} time(s) before the probe "
-                + ("timed out" if result.get("status") == "timeout" else "ended")
-                + f", so its {hits_named(record['hit'] for record in owes)} never came."
+                f"{BEFORE} made no restore for {writes}. "
+                + (
+                    f"Before the probe ended, {_unreported_count(point['build_line'], stops)}, "
+                    f"and its {owed} may have run without the restore."
+                    if point["build_line"] in lost
+                    else f"Line {point['build_line']} stopped {stops} time(s) before the probe "
+                    + ("timed out" if result.get("status") == "timeout" else "ended")
+                    + f", so its {owed} never came."
+                )
                 + (
                     " The attached program goes on running without "
                     + ("that restore." if len(ats) == 1 else "those restores.")
@@ -5883,7 +5950,7 @@ def run_probe(
             )
     if not result.get("refused_before_launch") and (
         outcomes := _set_outcomes(
-            probe, points, changes, result.get("status"), finished, attempt, unreported
+            probe, points, changes, result.get("status"), finished, attempt, unreported, lost, line
         )
     ):
         for point, outcome in zip(points, outcomes[len(probe.set) :]):

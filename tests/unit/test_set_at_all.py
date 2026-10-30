@@ -562,6 +562,14 @@ def test_each_outcome_reads_as_how_far_the_change_got():
     assert said(made=3, ended="lost_stop") == (
         ", made at 3 stops; the debugger lost a stop, which may have run without it"
     )
+    # The stop the debugger lost may have been its line's: it said "its line never stopped",
+    # and a change at one hit whose line it lost a stop of was not read.
+    assert said(made=0, ended="lost_stop") == (
+        ", not made: no stop of its line was reported, and the debugger lost a stop"
+    )
+    assert said(made=0, ended="lost_stop", at="9@4") == (
+        ", not made: the debugger lost a stop of its line, which may have been that hit"
+    )
     # A --set: at its probe line's set_hit (1 where runs.set_hit is NULL).
     assert said(
         ["x", "2"], made=0, ended="refused", hit=1, at="8@1", option="--set", value="2"
@@ -620,6 +628,9 @@ def test_an_outcome_of_another_type_or_hit_is_not_read():
         assert evidence._checked_outcome(json.dumps(wrong), fixed, 8, None) is None
         failed = outcome(made=0, ended="failed", hit=hit, at="9@4")
         assert evidence._checked_outcome(json.dumps(failed), fixed, 8, None) is None
+    # A change at one hit, made, did not end at a lost stop.
+    made = outcome(made=1, ended="lost_stop", at="9@4")
+    assert evidence._checked_outcome(json.dumps(made), fixed, 8, None) is None
     # A --set at the probe's line, at its --set-hit (default 1).
     plain = '["x", "5"]'
     at_two = outcome(made=0, ended="refused", hit=2, at="8@2", option="--set")

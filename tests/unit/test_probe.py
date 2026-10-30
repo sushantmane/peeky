@@ -1,3 +1,4 @@
+import json
 import re
 
 import pytest
@@ -1839,35 +1840,121 @@ def test_a_handled_signals_stop_leaves_each_lines_stop_count_as_it_was(monkeypat
     assert any("stopped on signal SIGINT" in w for w in result["warnings"]), result["warnings"]
 
 
-def test_a_lost_stop_with_a_set_at_never_made_is_reported_not_an_internal_error(monkeypatch):
-    # A stop the debugger never reported (java-debug) with a --set-at whose stop never
-    # came failed with an internal error ('str' object has no attribute 'get').
+def test_a_handled_signals_stop_leaves_an_all_changes_stops_numbered_in_order(monkeypatch):
+    # The changes of `9@all` were numbered 9@1, 9@1, 9@2: each signal's stop started the
+    # line's count again.
+    import peeky.probe as probe_module
+    from peeky.probe import ALL
+
+    worker = Signalled([8, 9, "signal", 9, "signal", 9])
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),)))
+    assert result["status"] == "completed", result
+    assert worker.changed_at == [(9, 1), (9, 2), (9, 3)], result
+    assert [change["at"] for change in result["interventions"]] == ["9@1", "9@2", "9@3"]
+    [made] = result["set_outcomes"]
+    assert (made["at"], made["made"], made["ended"]) == ("9@all", 3, "exit"), made
+
+
+class Lost(Lines):
+    """Lines' stops, then the program's end after a stop the debugger never reported,
+    seen at main.py:`at`."""
+
+    def __init__(self, order, at):
+        super().__init__()
+        self.order, self.at = list(order), at
+
+    def dispatch(self, operation, args):
+        if operation == "wait" and not self.order:
+            return {
+                "state": "terminated",
+                "unreported_stop": {
+                    "thread_name": "main",
+                    "breakpoint": f"main.py:{self.at}",
+                    "function": "main",
+                    "location": f"main.py:{self.at}",
+                },
+            }
+        return super().dispatch(operation, args)
+
+
+def lost_probe(monkeypatch, order, at, request):
     import peeky.probe as probe_module
 
-    class Lost(Lines):
-        def dispatch(self, operation, args):
-            if operation == "wait" and not self.order:
-                return {
-                    "state": "terminated",
-                    "unreported_stop": {
-                        "thread_name": "main",
-                        "breakpoint": "main.py:9",
-                        "function": "main",
-                        "location": "main.py:9",
-                    },
-                }
-            return super().dispatch(operation, args)
-
-    worker = Lost(stops=1)
-    worker.order = [8]
-    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
-    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"),)))
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: Lost(order, at))
+    result = probe_module.run_probe("/w", request)
     assert result["status"] == "completed" and result["hits"] == 1, result
+    assert any(f"was seen paused at main.py:{at}" in w for w in result["warnings"]), result
+    return result
+
+
+def test_a_set_at_whose_line_the_debugger_lost_a_stop_of_never_says_its_hit_never_came(
+    monkeypatch,
+):
+    # A stop the debugger never reported failed the probe with an internal error ('str'
+    # object has no attribute 'get'). Seen at the --set-at's own line, it said "the thread
+    # was seen paused at main.py:9" and "line 9 stopped 0 time(s) ... so its hit 1 never
+    # came".
+    from peeky.evidence import _set_outcome
+
+    request = Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"),))
+    result = lost_probe(monkeypatch, [8], 9, request)
     assert result["unapplied"] == [
-        {"option": "--set-at", "at": "9@1", "name": "x", "value": "5", "stops": 0}
+        {
+            "option": "--set-at",
+            "at": "9@1",
+            "name": "x",
+            "value": "5",
+            "stops": 0,
+            "unreported_stop": True,
+        }
     ]
-    assert any("was seen paused at main.py:9" in w for w in result["warnings"]), result
+    [said] = [w for w in result["warnings"] if "9@1 x=5 was not applied" in w]
+    assert "0 time(s)" not in said and "never came" not in said, said
+    assert said == (
+        "--set-at main.py:9@1 x=5 was not applied: the debugger reported 0 stops of line 9, "
+        "and also stopped there without reporting it. So the line's full count of stops is "
+        "unknown, and its hit 1 may have run without the change. Run the probe again."
+    )
+    [outcome] = result["set_outcomes"]
+    assert (outcome["made"], outcome["ended"], outcome["complete"]) == (0, "lost_stop", False)
+    # As the store says it: not "that hit never came".
+    assert _set_outcome(json.dumps(outcome), '["x", "5", "9@1"]', 8, None) == (
+        ", not made: the debugger lost a stop of its line, which may have been that hit"
+    )
+    # Seen at another line: line 9's count is the debugger's, and its hit never came.
+    result = lost_probe(monkeypatch, [8], 8, request)
+    assert result["unapplied"][0]["stops"] == 0 and "unreported_stop" not in result["unapplied"][0]
     assert any("9@1 x=5 was not applied: line 9 stopped 0 time(s)" in w for w in result["warnings"])
+    assert result["set_outcomes"][0]["ended"] == "exit"
+
+
+def test_an_all_or_a_set_whose_line_the_debugger_lost_a_stop_of_says_so(monkeypatch):
+    from peeky.probe import ALL
+
+    request = Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),))
+    result = lost_probe(monkeypatch, [8], 9, request)
+    assert result["unapplied"][0]["unreported_stop"] is True, result["unapplied"]
+    [said] = [w for w in result["warnings"] if "9@all x=5 was not applied" in w]
+    assert "never stopped" not in said, said
+    assert said.endswith(
+        "was not applied: the debugger stopped at line 9 without reporting it, and reported no "
+        "stop there. That stop ran without the change, and the line's full count of stops is "
+        "unknown. Run the probe again."
+    ), said
+    assert result["set_outcomes"][0]["ended"] == "lost_stop"
+    # A --set at the probe's own line, whose set hit may have been the stop it lost.
+    result = lost_probe(
+        monkeypatch, [8], 8, Probe("main.py", 8, ("x",), (("x", "2"),), hits=2, set_hit=2)
+    )
+    [entry] = result["unapplied"]
+    assert (entry["option"], entry["stops"], entry["unreported_stop"]) == ("--set", 1, True)
+    assert (
+        "--set x=2 was not applied: the debugger reported 1 stop of line 8, and also stopped "
+        "there without reporting it. So the line's full count of stops is unknown, and its hit "
+        "2 may have run without the change. Run the probe again." in result["warnings"]
+    ), result["warnings"]
+    assert result["set_outcomes"][0]["ended"] == "lost_stop"
 
 
 def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monkeypatch):
