@@ -115,6 +115,28 @@ def withheld(row, *phrases):
     return "value" not in row and all(phrase in row.get("error", "") for phrase in phrases)
 
 
+def unsure(row, at, end):
+    """Whether ``row`` is withheld at the first line of a declaration over lines ``at`` to
+    ``end``, after code of its later lines: Peeky can't tell what has run there, and never
+    says the local is not initialized."""
+    error = row.get("error", "")
+    return (
+        withheld(row, f"declared on line {at}, and this stop's instruction lies just after")
+        and f"(lines {at}-{end}), so Peeky can't tell whether it is fully initialized" in error
+        and "still running" not in error
+        and "not fully initialized" not in error
+    )
+
+
+def running(row, at, end):
+    """Whether ``row`` is withheld as its declaration's (lines ``at`` to ``end``) where the
+    stop shows it is still running: on a later line of it, or on its first line after code
+    of a later one, where Peeky can't tell (``unsure``)."""
+    if row.get("line") == at:
+        return unsure(row, at, end)
+    return withheld(row, f"(lines {at}-{end}) is still running")
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("suffix", ["c", "cpp"])
 def test_an_aggregate_is_withheld_while_its_initializer_runs_in_the_stopped_frame(
@@ -142,9 +164,10 @@ def test_an_aggregate_is_withheld_while_its_initializer_runs_in_the_stopped_fram
     rows = shown_at(capsys, path, line_of(source, "// t.p.y"), "t", "ps[1].x")
     assert withheld(rows["t"], f"(lines {t}-{t_end}) is still running")
     assert rows["ps[1].x"]["value"] == "10"
-    # A step from the first member's line onto the next one.
+    # A step from the first member's line onto the next one; GCC's C stores it on `o`'s
+    # line, after that member's call.
     rows = shown_at(capsys, path, line_of(source, "// o.in.x"), "o", steps=1)
-    assert withheld(rows["o"], f"(lines {o}-{o_end}) is still running")
+    assert running(rows["o"], o, o_end), rows
     # Once its declaration has run, and a loop counter in its body, read as ever.
     rows = shown_at(capsys, path, line_of(source, "// loop body"), "t.p.y", "i", "head", hit=2)
     assert [rows[name]["value"] for name in ("t.p.y", "i", "head")] == ["16", "1", "5"]
@@ -166,7 +189,14 @@ __attribute__((noinline)) static long run(long seed) {
             .y = head * 3,
         },
     };
-    printf("%ld %ld\\n", o.in.x, o.in.y);
+    long w =  // w
+        twice(head) +
+        twice(head + 1);
+    long arr[2] = {  // arr
+        twice(head + 4),
+        twice(head + 5),
+    };
+    printf("%ld %ld %ld %ld\\n", o.in.x, o.in.y, w, arr[1]);
     return o.in.x;
 }
 
@@ -179,17 +209,149 @@ int main(void) {
 
 
 @pytest.mark.timeout(300)
-def test_a_declarations_first_line_run_after_its_members_lines_is_withheld(directory, capsys):
-    # GCC runs `.x = head + 1` before the stores on `struct outer o = {`, whose first
-    # instruction the stop is at: `o` was shown as a value, its leftovers, with no note.
-    # clang puts no code on that line, so the stop is on the members' line.
+@pytest.mark.parametrize("local, end", [("o", 5), ("w", 2), ("arr", 3)])
+def test_a_declarations_first_line_run_after_its_later_lines_is_withheld(
+    directory, capsys, local, end
+):
+    # The compiler runs the later lines' code (`.x = head + 1`, the calls) before the
+    # stores on the declaration's first line, whose first instruction the stop is at: the
+    # local's leftovers were shown as a value, with no note (`w = 0`, `arr = [281474976709560,
+    # 0]`). clang puts no code on `o`'s first line, so the stop is on its members' line.
     path = directory / "nested.c"
     path.write_text(NESTED)
-    at = line_of(NESTED, "// o")
-    rows = shown_at(capsys, path, at, "o", "o.in.x", "head")
-    assert withheld(rows["o"], f"(lines {at}-{at + 5}) is still running"), rows
-    assert withheld(rows["o.in.x"], "'o' has no value here"), rows
+    at = line_of(NESTED, f"// {local}")
+    rows = shown_at(capsys, path, at, local, "head")
+    assert running(rows[local], at, at + end), rows
+    if local != "o" or cc_is_gcc():
+        assert rows[local]["line"] == at, rows
     assert rows["head"]["value"] == "5"
+
+
+# A C++ aggregate whose elements are built on their own lines: clang runs code of its first
+# line between them, and after them destroys the temporaries, with `d` whole.
+TEMPORARIES = """#include <cstdio>
+
+__attribute__((noinline)) void sink(long v) { std::printf("~%ld\\n", v); }
+struct Temp {
+    long v;
+    ~Temp() { sink(v); }
+};
+struct Widget {
+    long a;
+    __attribute__((noinline)) explicit Widget(long x) : a(x) {}
+};
+struct Pair { Widget p, q; };
+
+__attribute__((noinline)) long run(long seed) {
+    Pair d = {  // FIRST
+        Widget(Temp{seed}.v),
+        Widget(Temp{seed + 1}.v),
+    };
+    return d.p.a + d.q.a;
+}
+
+int main() {
+    std::printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+@pytest.mark.cpp
+@pytest.mark.timeout(300)
+def test_a_cpp_initializers_temporaries_cleanup_is_never_said_unbuilt(directory, cxx, capsys):
+    # Review of the rule for a declaration's first line: where its code runs after a later
+    # line's, the order of the code doesn't say what has run. Once both elements are built,
+    # the temporaries die: on the first line (clang), or on the elements' lines (GCC), with
+    # `d` whole. Withheld at every step through it, never said to be not initialized.
+    path = directory / "temps.cpp"
+    path.write_text(TEMPORARIES)
+    first = line_of(TEMPORARIES, "// FIRST")
+    assert main(["session", "start", str(path), "--at", str(first)]) == 0
+    capsys.readouterr()
+    lines = []
+    try:
+        for _ in range(8):
+            main(["session", "get", "d", "--json"])
+            [row] = json.loads(capsys.readouterr().out)
+            if not first <= row["line"] <= first + 3:
+                break
+            lines.append(row["line"])
+            assert "value" not in row and "it is not fully initialized" not in row["error"], row
+            if row["line"] == first:
+                # Before the second element (its first instruction), then past both.
+                assert unsure(row, first, first + 3) or (
+                    "this stop is part-way through that line" in row["error"]
+                    and "may not be initialized yet" in row["error"]
+                ), row
+            else:
+                assert "it may not be fully initialized yet" in row["error"], row
+            assert main(["session", "step"]) == 0
+            capsys.readouterr()
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    # clang stops on the first line twice; GCC last on the first temporary's line.
+    assert lines.count(first) == 2 if cxx == "clang" else lines[-1] == first + 1, lines
+
+
+OPTIMIZED = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+__attribute__((noinline)) static long use(const void *p) { return *(const long *)p; }
+
+__attribute__((noinline)) static long run(long seed) {
+    long head = twice(seed);
+    struct pair p = {  // p
+        twice(head),
+        twice(head + 2) };
+    struct pair q = { twice(head),  // q
+        twice(head + 3) };
+    long arr[2] = {  // arr
+        twice(head + 4),
+        twice(head + 5),
+    };
+    return use(&p) + use(&q) + use(arr);
+}
+
+int main(void) {
+    printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_optimized_declarations_first_line_is_never_said_unbuilt(directory):
+    # -O1 moves code: clang runs these declarations' later lines first, and the rows say
+    # nothing of what has run by the first line's. `p` was shown as `pair @ 0x…`, with no
+    # note. Withheld where the rule applies, never with a claim that the local is not
+    # initialized; GCC's -O1 puts the first line's code first.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    adapter = NativeTarget(
+        sources=("opt.c",),
+        language="c",
+        compiler=os.environ.get("PEEKY_NATIVE_CC", "clang"),
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization="O1",
+    )
+    (directory / "opt.c").write_text(OPTIMIZED)
+    for local, end in (("p", 2), ("q", 1), ("arr", 3)):
+        at = line_of(OPTIMIZED, f"// {local}")
+        result = run_probe(directory, Probe("opt.c", at, (local,)), adapter=adapter)
+        assert result["status"] == "completed", result.get("error")
+        [row] = result["rows"]
+        assert "still running" not in row.get("error", ""), row
+        assert "not fully initialized" not in row.get("error", ""), row
+        if not cc_is_gcc():
+            assert row["line"] == at and unsure(row, at, at + end), row
 
 
 BUILDING = (

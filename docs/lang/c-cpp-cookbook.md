@@ -1549,8 +1549,11 @@ until its `;` has run.
 - Peeky finds the end in the source, read as for caller frames ([5.1](#51-stop-look-change-finish)).
 - Where it can't find the end, the local is withheld.
 - A declaration below the stop whose own line has no code is placed by its elements' lines.
-- GCC runs the elements' lines first, then stores them on the declaration's first line. A stop on
-  that line, after their code, says the same.
+- The compiler may run the later lines' code first, then store on the declaration's first line,
+  as GCC does for `struct outer o = {`. A stop on that first line, just after such code, is
+  withheld too. Peeky can't tell which code has run there, so the row says so.
+- In C++, a temporary's cleanup can run on the declaration's lines once the object is whole. So
+  the row says the local `may not be fully initialized yet`.
 
 A variable that a `for`, `if`, `while`, `switch` or `catch` header declares is different. It has
 run with its part of the header, so the body reads it.
