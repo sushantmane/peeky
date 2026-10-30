@@ -562,3 +562,27 @@ def test_only_an_end_between_frames_is_the_streams_end():
         with pytest.raises(EOFError) as raised:
             read_message(io.BytesIO(cut))
         assert not isinstance(raised.value, StreamEnd)
+
+
+def test_an_announcing_thread_is_listed_only_once_started(monkeypatch):
+    # close(), on another thread, joins every listed one: an unstarted one can't be joined.
+    import types
+
+    from peeky import dap as dap_module
+
+    dap = DAP.__new__(DAP)
+    dap.announcing = []
+    dap.announce_lock = threading.Lock()
+    listed_at_start = []
+
+    class Recording:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            listed_at_start.append(self in dap.announcing)
+
+    monkeypatch.setattr(dap_module, "threading", types.SimpleNamespace(Thread=Recording))
+    dap._announce(12345)
+    assert listed_at_start == [False]
+    assert len(dap.announcing) == 1
