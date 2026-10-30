@@ -664,7 +664,7 @@ def main():
 
         # The one its own worker chooses too: the root's virtual environment, or Peeky's.
         try:
-            python = find(source_root).path
+            python = find(source_root).executable
         except ValueError as exc:
             parser.error(str(exc))
     destination = Path(args.output).resolve()

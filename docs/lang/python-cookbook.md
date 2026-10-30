@@ -57,6 +57,9 @@ installed as a tool, with pipx or uv, can't import those itself. Peeky takes the
   `peeky probe . --at src/app.py:12`. Or pass `--python .venv/bin/python`.
 - The output names a `.venv` above the root that it didn't use. Where that is Peeky's own, as
   when Peeky runs from a checkout's `.venv`, the output says Peeky's own is that environment.
+- A shim, such as pyenv's `python`, picks its Python from the directory it runs in. Peeky asks it
+  in the root, where debugpy starts the program. debugpy then runs the file it picked, which the
+  output names: `python: ~/.pyenv/shims/python (runs …/3.12.4/bin/python3.12), …`.
 
 The output says which interpreter ran the program:
 
@@ -68,7 +71,8 @@ With `--json`, a probe, `session start`, `describe` and `verify` give `python`:
 
 | Key | Holds |
 | --- | --- |
-| `interpreter` | The path that runs. A virtual environment's `python` is a link, which isn't followed |
+| `interpreter` | The path chosen. A virtual environment's `python` is a link, which isn't followed |
+| `executable` | The file it said it runs, where that differs, as a pyenv shim's pick does. debugpy runs that file |
 | `version` | Its version, such as `3.12.4` |
 | `optimize` | The program's optimization level, 0 to 2, from `PYTHONOPTIMIZE`. The text shows `-O` or `-OO` |
 | `chosen` | `--python`, `.venv`, `venv`, `VIRTUAL_ENV` or `peeky` |
@@ -106,13 +110,17 @@ program's interpreter makes these readings, at the program's level. Peeky asks t
 it as the program runs, with the program's environment: `PYTHONOPTIMIZE=1` leaves out each
 `assert`. Every reading compiles at that level, whatever Peeky's own is.
 
-Where the interpreter reports Peeky's own compiler, Peeky reads in its own process. Otherwise a
-helper process of that interpreter reads them, with Peeky's code by its path. No reading made by
-one Python version is applied to another.
+Peeky reads in its own process only where the interpreter is Peeky's own file, and reports
+Peeky's compiler and optimization level. Otherwise a helper process of that interpreter reads them,
+with Peeky's code by its path. A reading that depends on the environment, what an import finds,
+is always the helper's. No reading made by one Python version is applied to another.
 
-Peeky asks the interpreter once per launch, and notes the file its path leads to. Each reading
-checks that file again. A `.venv` made again at the same path is asked again at the next launch.
-The launch's readings and their helper end with it.
+Peeky asks the interpreter once per launch, as the program runs: in the root, with the program's
+environment. Its answer is a record of its own, after a newline and with a nonce of the call's.
+So a `.pth` file's output, or an exit handler's, can't be taken for it. The helper's answers are
+framed the same way. Peeky notes the file it runs, and each reading checks that file again. A
+`.venv` made again at the same path is asked again at the next launch. The launch's readings and
+their helper end with it.
 
 If the interpreter can't read, Peeky claims nothing. A module global is withheld, with why. A
 loop's local gets no note. Where a line's lambdas can't be read, a warning says their stops may be

@@ -54,17 +54,22 @@ def make_venv(where, base=None):
     return where / "bin" / "python"
 
 
+def site_packages(python):
+    return Path(
+        subprocess.run(
+            [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.strip()
+    )
+
+
 def install_greet(python, lib):
     """`greet` importable by ``python`` only: a `.pth` file in its site-packages naming
     ``lib``, outside any project root."""
-    purelib = subprocess.run(
-        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    ).stdout.strip()
-    (Path(purelib) / "greet.pth").write_text(f"{lib}\n")
+    (site_packages(python) / "greet.pth").write_text(f"{lib}\n")
 
 
 @pytest.fixture
@@ -362,3 +367,63 @@ def test_an_interpreter_too_old_for_peeky_is_refused_before_anything_runs(
     assert result["error"]["code"] == "UNSUPPORTED"
     assert f"{old} (--python) is CPython {said.stdout.split()[0]}." in result["error"]["message"]
     assert not (tmp_path / "RAN").exists()
+
+
+def test_a_shim_runs_the_python_it_picks_where_debugpy_starts_the_program(
+    tmp_path, capsys, monkeypatch
+):
+    # A pyenv-like shim picks its Python from the directory it runs in. Peeky asked it
+    # in its own directory, and debugpy then ran it in the root: another Python ran the
+    # program than the one Peeky read its code with.
+    other = _other_python()
+    if other is None:
+        pytest.skip("no CPython 3.11 or later of another version than Peeky's")
+    base, version = other
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    shim = tmp_path / "shims" / "python"
+    shim.parent.mkdir()
+    shim.write_text(
+        f'#!/bin/sh\nif grep -qs other .python-version; then exec "{base}" "$@"; fi\n'
+        f'exec "{sys.executable}" "$@"\n'
+    )
+    shim.chmod(0o755)
+    root, elsewhere = tmp_path / "proj", tmp_path / "elsewhere"
+    root.mkdir()
+    elsewhere.mkdir()
+    (root / "rows.py").write_text(ROWS)
+    (root / ".python-version").write_text("other\n")
+    monkeypatch.chdir(elsewhere)
+    argv = ["probe", root / "rows.py", "--at", "4", "--capture", "best", "--hits", "all"]
+    code, out = run(capsys, *argv, "--python", shim, "--no-save", "--json")
+    result = json.loads(out.out)
+    held = [row for row in result["rows"] if row["function"] == "pick" and "value" in row]
+    assert code == 0 and held, result
+    assert [bool(row.get("note")) for row in held] == [version < (3, 12)] * len(held), held
+    assert result["python"]["version"].startswith(f"{version[0]}.{version[1]}.")
+    # debugpy runs the file the shim picked, not the shim.
+    assert os.path.samefile(result["python"]["executable"], base), result["python"]
+
+
+NOISY = (
+    "import sys, atexit; sys.stdout.write('pth says hi'); "
+    "atexit.register(sys.stdout.write, 'bye from atexit')\n"
+)
+
+
+def test_an_environment_that_prints_at_startup_and_exit_is_read(project, capsys, monkeypatch):
+    # A `.pth` file's output with no newline, and an exit handler's: Peeky took the last
+    # line its interpreter printed for its answer.
+    root, python = project
+    (site_packages(python) / "noise.pth").write_text(NOISY)
+    (root / "opt.py").write_text(OPTIMIZED)
+    # Read by a helper too: the program's level is not Peeky's.
+    monkeypatch.setenv("PYTHONOPTIMIZE", "1")
+    code, out = run(capsys, "describe", root / "opt.py", "--json")
+    manifest = json.loads(out.out)
+    assert code == 0 and manifest["breakpoint_lines"] == {"opt.py": [1, 4, 7]}, manifest
+    argv = ["probe", root / "app.py", "--at", "6", "--capture", "word", "--no-save", "--json"]
+    code, out = run(capsys, *argv)
+    result = json.loads(out.out)
+    assert code == 0 and result["rows"][0]["value"] == "'hello ada'", result
+    assert "pth says hi" in result["output"]

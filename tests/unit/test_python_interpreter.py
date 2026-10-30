@@ -35,8 +35,12 @@ SRC = Path(__file__).resolve().parents[2] / "src"
 
 def fake_python(path, version="3.12.4", implementation="cpython", optimize=0, **said):
     """An interpreter that answers Peeky's question about itself as CPython ``version``
-    would (``said["compiler"]``: what it reports as its compiler), or with ``said["text"]``
-    and ``said["status"]``; it runs nothing else."""
+    would, in a record with the call's nonce (``said["compiler"]``: what it reports as
+    its compiler; ``said["executable"]``: the file it says it runs, else itself;
+    ``said["before"]``/``["after"]``: what it prints around the record, as a `.pth` file
+    and an exit handler may), or with ``said["text"]`` and ``said["status"]``; it runs
+    nothing else. Asked with no nonce (a Peeky before records), it prints the list alone,
+    on its last line."""
     major, minor = (int(part) for part in version.split(".")[:2])
     compiler = said.get("compiler") or [
         implementation,
@@ -45,11 +49,20 @@ def fake_python(path, version="3.12.4", implementation="cpython", optimize=0, **
         f"cpython-{major}{minor}",
         "00000d0a",
     ]
-    text = said.get("text") or repr(
-        [implementation, version, [major, minor], compiler[1], *compiler[2:], optimize]
-    )
+    listed = [implementation, version, [major, minor], compiler[1], *compiler[2:], optimize]
+    executable = said.get("executable") or str(path)
+    if "text" in said:
+        body = f"cat <<'EOF'\n{said['text']}\nEOF\n"
+    else:
+        body = (
+            f'if [ -z "$3" ]; then printf %s "{said.get("before", "")}"; '
+            f'echo "{listed!r}"; printf %s "{said.get("after", "")}"; exit 0; fi\n'
+            f'printf %s "{said.get("before", "")}"\n'
+            f'printf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{[*listed, executable]!r}"\n'
+            f'printf %s "{said.get("after", "")}"\n'
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"#!/bin/sh\ncat <<'EOF'\n{text}\nEOF\nexit {said.get('status', 0)}\n")
+    path.write_text(f"#!/bin/sh\n{body}exit {said.get('status', 0)}\n")
     path.chmod(0o755)
     return path
 
@@ -192,24 +205,155 @@ def test_an_interpreter_that_cannot_say_its_version_is_refused(tmp_path):
 
 
 def test_an_interpreter_is_asked_as_the_program_runs_without_the_token(tmp_path, monkeypatch):
-    seen = tmp_path / "seen"
+    seen, root = tmp_path / "seen", tmp_path / "root"
+    root.mkdir()
     python = tmp_path / "python"
-    said = repr(["cpython", "3.12.1", [3, 12], "3.12.1 (x)", "", "cpython-312", "ab", 1])
-    python.write_text(f'#!/bin/sh\necho "$@" > {seen}.args\nenv > {seen}\necho "{said}"\n')
+    said = repr(
+        ["cpython", "3.12.1", [3, 12], "3.12.1 (x)", "", "cpython-312", "ab", 1, str(python)]
+    )
+    python.write_text(
+        f'#!/bin/sh\necho "$@" > {seen}.args\npwd > {seen}.cwd\nenv > {seen}\n'
+        f'printf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{said}"\n'
+    )
     python.chmod(0o755)
     monkeypatch.setenv("DEBUG_TOKEN", "worker-side-token-1234567890-0123456789abcdef")
     monkeypatch.setenv("PEEKY_WORKER_TOKEN", "client-side-token-1234567890-0123456789abcdef")
     monkeypatch.setenv("PYTHONOPTIMIZE", "1")
-    assert identify(str(python), "--python").optimize == 1
+    assert identify(str(python), "--python", cwd=root).optimize == 1
     text = seen.read_text()
     assert "DEBUG_TOKEN" not in text and "PEEKY_WORKER_TOKEN" not in text and "PATH=" in text
     # Not isolated: the program is not, and PYTHONOPTIMIZE reaches it.
     assert "PYTHONOPTIMIZE=1" in text and "PYTHONDONTWRITEBYTECODE=1" in text
     assert not Path(f"{seen}.args").read_text().startswith("-I")
+    # Where debugpy starts the program: the root.
+    assert Path(f"{seen}.cwd").read_text().strip() == os.path.realpath(root)
+
+
+SHIM = """#!/bin/sh
+# Picks its Python from the directory it runs in, as a pyenv shim does.
+if grep -qs old .python-version; then V=3.9.6; M=9; else V=3.12.4; M=12; fi
+said="['cpython', '$V', [3, $M], '$V (x)', '', 'cpython-3$M', '00', 0"
+if [ -z "$3" ]; then echo "$said]"; exit 0; fi
+printf '\\n<PEEKY-IDENTITY %s> %s\\n' "$3" "$said, '$0']"
+"""
+
+
+def test_an_interpreter_is_asked_where_debugpy_starts_the_program(tmp_path, monkeypatch):
+    # debugpy starts the program in the root: a shim there may be another Python than in
+    # its own directory, or Peeky's.
+    shim = tmp_path / "shims" / "python"
+    shim.parent.mkdir()
+    shim.write_text(SHIM)
+    shim.chmod(0o755)
+    root, elsewhere = tmp_path / "proj", tmp_path / "elsewhere"
+    root.mkdir()
+    elsewhere.mkdir()
+    (root / ".python-version").write_text("old\n")
+    monkeypatch.chdir(elsewhere)
+    with pytest.raises(ValueError, match=r"\(--python\) is CPython 3\.9\.6"):
+        find(root, str(shim))
+    (root / ".python-version").unlink()
+    assert find(root, str(shim)).version == "3.12.4"
+
+
+def test_the_program_runs_on_the_file_the_interpreter_reports(tmp_path, no_active):
+    # A shim (pyenv's, `--python python`) execs the Python it picks: debugpy runs that
+    # file, so no later pick can differ from the one Peeky read with.
+    shim = tmp_path / "python"
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    shim.chmod(0o755)
+    found = find(tmp_path, str(shim))
+    assert found.path == str(shim) and os.path.samefile(found.executable, sys.executable)
+    identity = found.identity()
+    assert identity["interpreter"] == str(shim)
+    assert identity["executable"] == found.executable
+    adapter = PythonAdapter.on(found)
+    assert adapter.interpreter == found.executable
+    ran = adapter.launch_args(tmp_path / "a.py", tmp_path).get("python", [sys.executable])
+    assert ran == [found.executable] and ran != [str(shim)]
+    shown = python_interpreter.text(identity)
+    assert shown.startswith(f"{shim} (runs {found.executable}), Python "), shown
+
+
+def test_reported_metadata_alone_does_not_make_readings_local(tmp_path, no_active):
+    # Another build can report this one's version, build and magic number: only the very
+    # file Peeky runs is read in its process.
+    path = tmp_path / "rows.py"
+    path.write_text(SOURCE)
+    python = fake_python(
+        tmp_path / "python",
+        own_compiler_version(),
+        optimize=sys.flags.optimize,
+        compiler=own_compiler(),
+    )
+    found = identify(str(python), "--python")
+    assert list(found.compiler) == own_compiler() and found.same is False
+    readings = Readings(str(python), found)
+    try:
+        with pytest.raises(Unavailable, match="it ended"):
+            readings("lines", str(path))
+    finally:
+        readings.close()
+
+
+def test_a_reading_of_the_environment_is_always_the_helpers(tmp_path, no_active):
+    # What an import finds depends on the environment (a venv's site-packages, its
+    # .pth files), not only the file: Peeky's process is never asked, even sharing it.
+    path = tmp_path / "rows.py"
+    path.write_text(SOURCE)
+    readings = Readings(sys.executable)
+    try:
+        assert readings("lines", str(path)) and readings.process is None
+        assert readings("self_contained", "import math\nprint(math.pi)\n") is True
+        assert readings.process is not None
+    finally:
+        readings.close()
+
+
+def test_identify_reads_only_its_own_record(tmp_path):
+    # A `.pth` file's output with no newline, and an exit handler's after the record.
+    python = fake_python(tmp_path / "python", before="pth says hi", after="bye from atexit")
+    assert identify(str(python), "--python").version == "3.12.4"
+    noisy = fake_python(tmp_path / "other", text="<PEEKY-IDENTITY 0> ['cpython']")
+    with pytest.raises(ValueError, match="could not ask the Python interpreter"):
+        identify(str(noisy), "--python")
+
+
+def test_identify_keeps_a_bounded_output(tmp_path):
+    python = tmp_path / "python"
+    python.write_text("#!/bin/sh\nhead -c 3000000 /dev/zero | tr '\\0' x\n")
+    python.chmod(0o755)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="printed over 1024 KiB"):
+        identify(str(python), "--python")
+    assert time.monotonic() - started < 10
+
+
+def test_a_helpers_replies_are_read_only_from_its_records(tmp_path, no_active):
+    python = tmp_path / "python"
+    compiler = ["cpython", "3.12.4 (x)", "", "cpython-312", "00"]
+    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python)])
+    hello = json.dumps({"id": 0, "compiler": compiler})
+    answer = json.dumps({"id": 1, "result": [1, 2, 3]})
+    python.write_text(
+        '#!/bin/sh\ncase "$1" in\n'
+        f'-c) printf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{said}";;\n'
+        f"*) printf 'pth noise'; printf '\\n<PEEKY-READING %s> %s\\n' \"$6\" '{hello}'; "
+        f"read request; printf 'noise {answer}'; "
+        f"printf '\\n<PEEKY-READING %s> %s\\n' \"$6\" '{answer}'; printf 'bye';;\nesac\n"
+    )
+    python.chmod(0o755)
+    readings = Readings(str(python), identify(str(python), "--python"))
+    try:
+        assert readings("lines", "x.py") == [1, 2, 3]
+    finally:
+        readings.close()
 
 
 def test_the_adapter_runs_debugpy_on_peeky_and_the_program_on_its_interpreter(tmp_path):
-    found = Interpreter("/p/.venv/bin/python", ".venv", "3.12.4", 2)
+    found = Interpreter(
+        "/p/.venv/bin/python", ".venv", "3.12.4", 2, executable="/p/.venv/bin/python"
+    )
     adapter = PythonAdapter.on(found)
     # Peeky's own debugpy runs the program on it: the project needs no debugpy.
     assert adapter.command == (sys.executable, "-m", "debugpy.adapter")
@@ -331,20 +475,28 @@ def test_peekys_own_optimization_is_not_the_programs(tmp_path, no_active):
     assert manifest["python"]["optimize"] == 0
 
 
+def real_venv(directory):
+    """A virtual environment of this Python, as `python -m venv` makes one: its
+    `pyvenv.cfg` and a link to the interpreter."""
+    base = os.path.realpath(sys.executable)
+    (directory / "bin").mkdir(parents=True)
+    (directory / "pyvenv.cfg").write_text(f"home = {os.path.dirname(base)}\n")
+    (directory / "bin" / "python").symlink_to(base)
+    return directory / "bin" / "python"
+
+
 def test_a_launch_reads_with_the_interpreter_it_identified(tmp_path, no_active):
     # A .venv made again at the same path with another Python: the earlier launch's
     # verdict (this Python compiles alike) is not the new one's, and the earlier
     # launch reads nothing with the new file.
     path = tmp_path / "rows.py"
     path.write_text(SOURCE)
-    own = own_compiler()
-    environment(tmp_path, ".venv", version=own_compiler_version(), compiler=own)
+    venv = real_venv(tmp_path / ".venv")
     first = PythonAdapter.on(find(tmp_path))
     try:
+        assert first.readings.given.same, first.readings.given
         assert first.readings("lines", str(path)) == Readings(sys.executable)("lines", str(path))
-        venv = tmp_path / ".venv" / "bin" / "python"
         venv.unlink()
-        time.sleep(0.01)
         fake_python(venv, "3.12.4")
         second = PythonAdapter.on(find(tmp_path))
         assert second.target_identity["version"] == "3.12.4"
@@ -392,10 +544,12 @@ def test_a_helper_is_bounded_by_the_readings_deadline(tmp_path, no_active):
     # is never sent.
     python = tmp_path / "python"
     compiler = ["cpython", "3.12.4 (x)", "", "cpython-312", "00"]
-    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0])
+    said = repr(["cpython", "3.12.4", [3, 12], *compiler[1:], 0, str(python)])
     hello = json.dumps({"id": 0, "compiler": compiler})
     python.write_text(
-        f'#!/bin/sh\ncase "$1" in -c) echo "{said}";; *) echo \'{hello}\'; exec sleep 30;; esac\n'
+        '#!/bin/sh\ncase "$1" in\n'
+        f'-c) printf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{said}";;\n'
+        f"*) printf '\\n<PEEKY-READING %s> %s\\n' \"$6\" '{hello}'; exec sleep 30;;\nesac\n"
     )
     python.chmod(0o755)
     readings = Readings(str(python), identify(str(python), "--python"))

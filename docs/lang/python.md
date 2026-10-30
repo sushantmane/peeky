@@ -26,6 +26,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 - Only the root is looked in. A `.venv` above it is named in the output, not used. Give the project
   as the target, or pass `--python`
   ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- A shim, such as pyenv's, is asked in the root, and the Python it picks there runs the program
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
 - The output says which one ran: `python: …` in text, `python` in `--json`
   ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
 - It must be CPython 3.11 or later, and needs no debugpy. Peeky reads the program's code with it,

@@ -1238,11 +1238,12 @@ class PythonAdapter:
     @classmethod
     def on(cls, interpreter):
         """The adapter running a program on ``interpreter`` (a python_interpreter.Interpreter
-        identified for this launch), whose readings are made as it was identified."""
+        identified for this launch): on the file it reported running, which a shim can't
+        change afterwards, with readings made as it was identified."""
         from peeky.python_interpreter import Readings
 
-        made = cls(interpreter.path, interpreter.identity())
-        object.__setattr__(made, "_readings", Readings(interpreter.path, interpreter))
+        made = cls(interpreter.executable, interpreter.identity())
+        object.__setattr__(made, "_readings", Readings(interpreter.executable, interpreter))
         return made
 
     @property

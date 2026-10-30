@@ -18,16 +18,23 @@ code on a line that the debugger names alike. What the compiler makes of a sourc
 between Python versions, builds and optimization levels, so each is read by the
 program's interpreter, at the level the program runs at: its `sys.flags.optimize` asked
 with the program's own environment (`PYTHONOPTIMIZE`), and passed to every compile. In
-this process where the interpreter reports this one's compiler (implementation, exact
-version and build, ABI flags, cache tag, magic number); else in a helper process of it,
-which imports this Peeky by absolute path (`-I`) and reports its compiler first. No
-reading made on one version is applied to another.
+this process only where the interpreter's own file is this one's (`os.path.samefile`),
+and it reports this compiler (implementation, exact version and build, ABI flags, cache
+tag, magic number) and optimization level; else in a helper process of it, which imports
+this Peeky by absolute path (`-I`) and reports its compiler first. A reading that depends
+on the environment (what a module import finds) is always the helper's. No reading made
+on one version is applied to another.
 
-An interpreter is identified once per launch: what it reports, and where its path leads
-(the file, its inode, size and mtime). Each reading checks the file again, and a reading
-that can't be made is not remembered: the next one asks again. A launch's readings, and
-their helper, are its adapter's, closed with the launch. The interpreter must be CPython
-3.11 or later, as Peeky is; another one is refused before anything runs.
+An interpreter is identified once per launch, run as the program will be: in the
+directory debugpy starts it in (the root: a pyenv shim picks its Python from there), with
+the program's environment. It reports the file it runs (`sys.executable`), which debugpy
+then runs, and which the helper runs: a shim can't choose another Python later. That
+file's place, inode, size and mtime are checked at each reading. What it prints is
+read only from a record of its own, after a newline and with a nonce of the call's, so
+a `.pth` file's or an exit handler's output can't be taken for it. A reading that can't
+be made is not remembered: the next one asks again. A launch's readings, and their
+helper, are its adapter's, closed with the launch. The interpreter must be CPython 3.11
+or later, as Peeky is; another one is refused before anything runs.
 """
 
 import ast
@@ -35,8 +42,10 @@ import atexit
 import importlib.util
 import json
 import os
+import secrets
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -69,20 +78,40 @@ READ_S = 30
 # A request carries a source's text at most (python_scopes reads at most 1 MB of one).
 MAX_REQUEST = 4 * 1024 * 1024
 MAX_REPLY = 16 * 1024 * 1024
+# What identify keeps of what the interpreter prints, its record and anything else.
+MAX_IDENTIFY_OUTPUT = 1024 * 1024
 # What the interpreter says of itself, run as the program is (no -I, the program's
-# environment) but importing nothing: any Python can run it, so a refusal names it.
+# environment) but importing nothing: any Python can run it, so a refusal names it. Its
+# record follows a newline and names the call's nonce (argv[1]): a `.pth` file's output
+# without a newline, or an exit handler's after it, is not part of it.
 _IDENTIFY = (
     "import sys\n"
     "i = getattr(sys, 'implementation', None)\n"
     "m = getattr(sys.modules.get('_frozen_importlib_external'), 'MAGIC_NUMBER', None)\n"
-    "print(repr([getattr(i, 'name', 'cpython'), sys.version.split()[0], "
-    "list(sys.version_info[:2]), sys.version, getattr(sys, 'abiflags', ''), "
-    "getattr(i, 'cache_tag', None), m.hex() if m else '', sys.flags.optimize]))\n"
+    "sys.stdout.write('\\n<PEEKY-IDENTITY %s> %r\\n' % (sys.argv[1], ["
+    "getattr(i, 'name', 'cpython'), sys.version.split()[0], list(sys.version_info[:2]), "
+    "sys.version, getattr(sys, 'abiflags', ''), getattr(i, 'cache_tag', None), "
+    "m.hex() if m else '', sys.flags.optimize, sys.executable]))\n"
+    "sys.stdout.flush()\n"
 )
 _SERVE = (
     "import sys; sys.path.insert(0, sys.argv.pop(1)); "
     "from peeky.python_interpreter import serve; sys.exit(serve())"
 )
+# Readings that depend on the environment (what a module import finds): never made in
+# this process, whose environment is Peeky's, even where its interpreter is the program's.
+ENVIRONMENTAL = frozenset({"self_contained"})
+
+
+def record(marker, nonce, text):
+    """The text of the record ``marker`` with ``nonce`` that ``text`` holds (after a
+    newline, up to the next), or None."""
+    start = f"\n<{marker} {nonce}> "
+    at = text.find(start)
+    if at < 0:
+        return None
+    end = text.find("\n", at + len(start))
+    return None if end < 0 else text[at + len(start) : end]
 
 
 def own_compiler():
@@ -106,11 +135,13 @@ def fingerprint(path):
 
 @dataclass(frozen=True)
 class Interpreter:
-    """``path``: what runs (absolute, its links not followed: a virtual environment's
-    `python` is a link to the one it was made from); ``chosen``: a key of CHOSEN;
-    ``version``: `3.12.4`; ``optimize``: the program's `sys.flags.optimize`;
-    ``compiler``: what it reported (own_compiler); ``fingerprint``: its file when it was
-    asked; ``unused``: a virtual environment above the root, which is never used, named
+    """``path``: what was chosen (absolute, its links not followed: a virtual
+    environment's `python` is a link to the one it was made from); ``chosen``: a key of
+    CHOSEN; ``version``: `3.12.4`; ``optimize``: the program's `sys.flags.optimize`;
+    ``compiler``: what it reported (own_compiler); ``executable``: the file it reported
+    running (`sys.executable`), which runs the program and the helper; ``fingerprint``:
+    that file when it was asked; ``cwd``: where it was asked, the directory debugpy starts
+    it in; ``unused``: a virtual environment above the root, which is never used, named
     where Peeky's own runs the program; ``environment``: Peeky's own virtual environment,
     where that is the one above the root."""
 
@@ -119,21 +150,30 @@ class Interpreter:
     version: str
     optimize: int = 0
     compiler: tuple = ()
+    executable: str = ""
     fingerprint: tuple = ()
+    cwd: str | None = None
     unused: str | None = None
     environment: str | None = None
 
     @property
     def same(self):
-        """Whether it compiles as this interpreter does (at an optimization level given
-        to each compile)."""
-        return list(self.compiler) == own_compiler()
+        """Whether readings may be made in this process: its file is this interpreter's,
+        and it reports this compiler and optimization level (each compile is given the
+        program's level anyway)."""
+        try:
+            shared = os.path.samefile(self.executable, sys.executable)
+        except (OSError, ValueError):
+            return False
+        return (
+            shared and list(self.compiler) == own_compiler() and self.optimize == sys.flags.optimize
+        )
 
     def current(self):
-        """Whether its path still leads to the file it was asked as."""
+        """Whether its file is still the one it was asked as."""
         try:
-            return fingerprint(self.path) == list(self.fingerprint)
-        except OSError:
+            return fingerprint(self.executable) == list(self.fingerprint)
+        except (OSError, ValueError):
             return False
 
     def identity(self):
@@ -145,7 +185,9 @@ class Interpreter:
             "optimize": self.optimize,
             "chosen": self.chosen,
         }
-        if (resolved := os.path.realpath(self.path)) != self.path:
+        if self.executable and self.executable != self.path:
+            found["executable"] = self.executable
+        if (resolved := os.path.realpath(self.executable or self.path)) != self.path:
             found["resolved"] = resolved
         if self.unused:
             found["unused"] = self.unused
@@ -168,7 +210,8 @@ def text(identity):
         )
     level = identity.get("optimize")
     flags = f" -{'O' * level}" if type(level) is int and 0 < level <= 2 else ""
-    return f"{identity['interpreter']}, Python {identity.get('version')}{flags} ({how})"
+    runs = f" (runs {identity['executable']})" if identity.get("executable") else ""
+    return f"{identity['interpreter']}{runs}, Python {identity.get('version')}{flags} ({how})"
 
 
 def _environment_python(directory):
@@ -236,12 +279,68 @@ def program_environment():
     return {**without_credentials(os.environ), **PROGRAM_ENV}
 
 
-def identify(path, chosen, unused=None, environment=None):
-    """The Interpreter at ``path``: asked, as the program will be run (with its
-    environment, which has no credentials), for its implementation, version, compiler
-    and optimization level. ValueError where it cannot be asked, changes while asked,
-    or is not CPython 3.11 or later."""
+def _bounded_run(command, cwd, env, timeout, limit):
+    """(exit status, stdout, stderr) of ``command``, each stream at most ``limit``
+    bytes: one that prints more, or runs past ``timeout`` seconds, is ended with its
+    process group, and OSError raised."""
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    streams = {process.stdout: bytearray(), process.stderr: bytearray()}
+    deadline, problem = time.monotonic() + timeout, None
+    try:
+        while streams and problem is None:
+            left = deadline - time.monotonic()
+            open_streams = [stream for stream in streams if not stream.closed]
+            if not open_streams:
+                break
+            if left <= 0:
+                problem = f"it ran past {timeout} s"
+                break
+            ready, _, _ = select.select(open_streams, [], [], left)
+            for stream in ready:
+                chunk = os.read(stream.fileno(), 65536)
+                if not chunk:
+                    stream.close()
+                    continue
+                streams[stream] += chunk
+                if len(streams[stream]) > limit:
+                    problem = f"it printed over {limit >> 10} KiB"
+        if problem is None:
+            try:
+                status = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                problem = f"it ran past {timeout} s"
+    finally:
+        if problem is not None or process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            process.wait()
+        for stream in streams:
+            if not stream.closed:
+                stream.close()
+    if problem is not None:
+        raise OSError(problem)
+    out, err = streams.values()
+    return status, bytes(out), bytes(err)
+
+
+def identify(path, chosen, unused=None, environment=None, cwd=None):
+    """The Interpreter at ``path``: asked, as the program will be run (in ``cwd``, the
+    directory debugpy starts it in, with its environment, which has no credentials), for
+    its implementation, version, compiler, optimization level and the file it runs.
+    ValueError where it cannot be asked, changes while asked, or is not CPython 3.11 or
+    later."""
     shown = f"{path} ({CHOSEN.get(chosen, chosen)})"
+    cwd = os.path.abspath(cwd or os.getcwd())
 
     def unrunnable(why):
         return ValueError(
@@ -249,39 +348,51 @@ def identify(path, chosen, unused=None, environment=None):
             "program's interpreter with --python, or --python peeky for Peeky's own"
         )
 
+    nonce = secrets.token_hex(8)
     try:
         before = fingerprint(path)
-        ran = subprocess.run(
-            [path, "-c", _IDENTIFY],
-            capture_output=True,
-            text=True,
-            timeout=IDENTIFY_S,
-            check=False,
-            stdin=subprocess.DEVNULL,
-            cwd=os.path.dirname(os.path.realpath(path)),
-            env=program_environment(),
+        status, out, err = _bounded_run(
+            [path, "-c", _IDENTIFY, nonce],
+            cwd,
+            program_environment(),
+            IDENTIFY_S,
+            MAX_IDENTIFY_OUTPUT,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise unrunnable(exc) from None
+    text = out.decode(errors="replace")
     try:
-        said = ast.literal_eval(split_lines(ran.stdout.strip())[-1]) if ran.returncode == 0 else 0
-        implementation, version, (major, minor), build, flags, tag, magic, level = said
+        said = record("PEEKY-IDENTITY", nonce, text) if status == 0 else None
+        said = ast.literal_eval(said)
+        implementation, version, (major, minor), build, flags, tag, magic, level, executable = said
+        if not isinstance(executable, str) or not os.path.isabs(executable):
+            raise ValueError("no executable")
         found = Interpreter(
             path,
             chosen,
             str(version),
             int(level),
             (str(implementation), str(build), str(flags), tag, str(magic)),
-            tuple(before),
+            executable,
+            tuple(fingerprint(executable)),
+            cwd,
             unused,
             environment,
         )
         release = (int(major), int(minor))
-    except (ValueError, TypeError, IndexError, SyntaxError, MemoryError, RecursionError):
-        said = split_lines((ran.stderr or ran.stdout or "").strip())
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        IndexError,
+        SyntaxError,
+        MemoryError,
+        RecursionError,
+    ):
+        lines = split_lines((err.decode(errors="replace") or text).strip())
         raise ValueError(
             f"Peeky could not ask the Python interpreter {shown} its version"
-            + (f" ({said[-1][:200]})" if said else f" (exit status {ran.returncode})")
+            + (f" ({lines[-1][:200]})" if lines else f" (exit status {status})")
             + ". Pass the program's interpreter with --python, or --python peeky for "
             "Peeky's own"
         ) from None
@@ -294,15 +405,19 @@ def identify(path, chosen, unused=None, environment=None):
             f"compile. Pass --python with CPython {MINIMUM[0]}.{MINIMUM[1]} or later, or "
             f"--python peeky for Peeky's own (Python {own_version()})"
         )
-    if not found.current():
+    try:
+        changed = fingerprint(path) != before
+    except OSError:
+        changed = True
+    if changed or not found.current():
         raise unrunnable("it changed while Peeky asked it its version; start again")
     return found
 
 
 def find(root, option=None, environ=None):
     """The Interpreter that runs a program under ``root`` (``choose``, then
-    ``identify``)."""
-    return identify(*choose(root, option, environ))
+    ``identify`` in ``root``, where debugpy starts the program)."""
+    return identify(*choose(root, option, environ), cwd=root)
 
 
 def absolute_option(option):
@@ -382,14 +497,21 @@ class Unavailable(Exception):
 
 def serve():
     """The helper: first its compiler, `{"id": 0, "compiler"}`; then one reply per
-    request, each a JSON line: `{"id", "reading", "optimize", "args"}` on stdin;
-    `{"id", "result"}`, `{"id", "error"}` (the reading's own refusal, a ValueError) or
-    `{"id", "failed"}` on stdout. Ends at the end of its input."""
-    replies = sys.stdout
-    # Whatever a reading or the environment's startup prints is not a reply.
+    request, `{"id", "reading", "optimize", "args"}` a JSON line on stdin; `{"id",
+    "result"}`, `{"id", "error"}` (the reading's own refusal, a ValueError) or `{"id",
+    "failed"}` on stdout. Each reply is a record after a newline, `<PEEKY-READING
+    nonce> JSON`, with the nonce it was started with (argv[1]): what else reaches stdout
+    (a `.pth` file's output at startup, an exit handler's) is not a reply. Ends at the
+    end of its input."""
+    replies, nonce = sys.stdout, sys.argv[1]
+    # Whatever a reading prints is not a reply.
     sys.stdout = sys.stderr
-    replies.write(json.dumps({"id": 0, "compiler": own_compiler()}) + "\n")
-    replies.flush()
+
+    def reply(value):
+        replies.write(f"\n<PEEKY-READING {nonce}> {json.dumps(value)}\n")
+        replies.flush()
+
+    reply({"id": 0, "compiler": own_compiler()})
     for line in sys.stdin:
         try:
             request = json.loads(line)
@@ -398,13 +520,11 @@ def serve():
         except (ValueError, TypeError, KeyError):
             continue
         try:
-            reply = {"id": number, "result": reading(optimize, *request["args"])}
+            reply({"id": number, "result": reading(optimize, *request["args"])})
         except ValueError as exc:
-            reply = {"id": number, "error": str(exc)}
+            reply({"id": number, "error": str(exc)})
         except Exception as exc:
-            reply = {"id": number, "failed": f"{type(exc).__name__}: {exc}"[:500]}
-        replies.write(json.dumps(reply) + "\n")
-        replies.flush()
+            reply({"id": number, "failed": f"{type(exc).__name__}: {exc}"[:500]})
     return 0
 
 
@@ -413,8 +533,8 @@ _OPEN = weakref.WeakSet()
 
 class Readings:
     """One launch's readings of a program's code by its ``interpreter`` (identified for
-    the launch; else asked at the first reading, and again after ``close``), one at a
-    time; its helper, if any, ends at ``close``."""
+    the launch; else ``path`` asked at the first reading, and again after ``close``),
+    one at a time; its helper, if any, ends at ``close``."""
 
     def __init__(self, path, interpreter=None):
         self.path = path
@@ -422,6 +542,7 @@ class Readings:
         self.found = None
         self.lock = threading.Lock()
         self.process = None
+        self.nonce = None
         self.buffer = b""
         self.asked = 0
         _OPEN.add(self)
@@ -440,8 +561,10 @@ class Readings:
                     raise Unavailable(str(exc)) from None
             if not interpreter.current():
                 self._stop()
-                raise Unavailable(f"{self.path} is not the interpreter Peeky asked at launch")
-            if interpreter.same:
+                raise Unavailable(
+                    f"{interpreter.executable} is not the interpreter Peeky asked at launch"
+                )
+            if interpreter.same and reading not in ENVIRONMENTAL:
                 return json.loads(json.dumps(_READINGS[reading](interpreter.optimize, *args)))
             try:
                 return self._ask(interpreter, reading, list(args), deadline)
@@ -452,13 +575,16 @@ class Readings:
     def _start(self, interpreter, deadline):
         import peeky
 
+        self.nonce = secrets.token_hex(8)
         try:
+            # The file the program runs, where it runs: a shim can't pick another.
             self.process = subprocess.Popen(
-                [self.path, "-I", "-B", "-c", _SERVE]
-                + [str(Path(peeky.__file__).resolve().parents[1])],
+                [interpreter.executable, "-I", "-B", "-c", _SERVE]
+                + [str(Path(peeky.__file__).resolve().parents[1]), self.nonce],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                cwd=interpreter.cwd,
                 env=without_credentials(os.environ),
             )
         except OSError as exc:
@@ -467,8 +593,8 @@ class Readings:
         said = self._reply(0, deadline)
         if said != list(interpreter.compiler):
             raise Unavailable(
-                f"{self.path} is not the interpreter Peeky asked at launch (its helper "
-                f"reports {str(said)[:200]})"
+                f"{interpreter.executable} is not the interpreter Peeky asked at launch (its "
+                f"helper reports {str(said)[:200]})"
             )
 
     def _ask(self, interpreter, reading, args, deadline):
@@ -500,26 +626,33 @@ class Readings:
                 raise Unavailable("it ended") from None
 
     def _reply(self, number, deadline):
-        """The value of reply ``number`` (0: the helper's compiler)."""
+        """The value of reply ``number`` (0: the helper's compiler), read from its
+        records only (``serve``)."""
+        start = f"\n<PEEKY-READING {self.nonce}> ".encode()
         while True:
-            line, newline, rest = self.buffer.partition(b"\n")
-            if newline:
-                self.buffer = rest
-                try:
-                    reply = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(reply, dict) or reply.get("id") != number:
-                    continue
-                if number == 0:
-                    return reply.get("compiler")
-                if "result" in reply:
-                    return reply["result"]
-                if "error" in reply:
-                    raise ValueError(str(reply["error"]))
-                raise Unavailable(str(reply.get("failed"))[:300])
-            if len(self.buffer) > MAX_REPLY:
-                raise Unavailable("its reply was too long")
+            at = self.buffer.find(start)
+            if at >= 0:
+                end = self.buffer.find(b"\n", at + len(start))
+                if end >= 0:
+                    text, self.buffer = self.buffer[at + len(start) : end], self.buffer[end:]
+                    try:
+                        reply = json.loads(text)
+                    except ValueError:
+                        continue
+                    if not isinstance(reply, dict) or reply.get("id") != number:
+                        continue
+                    if number == 0:
+                        return reply.get("compiler")
+                    if "result" in reply:
+                        return reply["result"]
+                    if "error" in reply:
+                        raise ValueError(str(reply["error"]))
+                    raise Unavailable(str(reply.get("failed"))[:300])
+                if len(self.buffer) - at > MAX_REPLY:
+                    raise Unavailable("its reply was too long")
+            else:
+                # Not a record: kept only where a record's start may begin.
+                self.buffer = self.buffer[-len(start) :]
             left = deadline - time.monotonic()
             if left <= 0:
                 raise Unavailable("it did not answer in time")

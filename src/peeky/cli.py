@@ -698,7 +698,7 @@ def describe(args):
         # As the program's interpreter compiles it: lines and scopes differ by version and
         # optimization level.
         interpreter = find(root, args.python)
-        read = Readings(interpreter.path, interpreter)
+        read = Readings(interpreter.executable, interpreter)
         try:
             manifest["breakpoint_lines"] = {program: read("lines", str(root / program))}
             manifest["scopes"] = read("scopes", str(root / program))
@@ -3554,7 +3554,7 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
         candidate.write_text(text if args.old is None else text.replace(args.old, args.new, 1))
         candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
         result = {
-            **run_checker(check, candidate, root, deadline=deadline, python=interpreter.path),
+            **run_checker(check, candidate, root, deadline=deadline, python=interpreter.executable),
             "candidate": str(candidate),
         }
         result["candidate_sha256"] = candidate_sha256

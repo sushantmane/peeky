@@ -483,28 +483,33 @@ def test_ordinary_uses_of_those_names_leave_a_module_judged(tmp_path):
 
 def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, cases):
     # A 3.11 worker read a 3.12 program's inlined comprehension (its
-    # `LOAD_FAST_AND_CLEAR x`) as code that never reads `x`. Only an interpreter that
-    # reports this one's compiler is read here; another is read by a helper of its own,
-    # which these scripts can't run, so they get no note.
+    # `LOAD_FAST_AND_CLEAR x`) as code that never reads `x`. Only this very file, reporting
+    # this one's compiler, is read here; another is read by a helper of its own, which
+    # these scripts can't run, so they get no note.
     from peeky.adapters import PythonAdapter
     from peeky.python_interpreter import identify, own_compiler
 
-    def interpreter(name, compiler):
+    def interpreter(name, compiler, executable=None):
         script = tmp_path / name
         version = sys.version.split()[0]
-        said = repr([compiler[0], version, list(sys.version_info[:2]), *compiler[1:], 0])
-        script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{said}\nEOF\n")
+        listed = [compiler[0], version, list(sys.version_info[:2]), *compiler[1:], 0]
+        said = repr([*listed, executable or str(script)])
+        script.write_text(f'#!/bin/sh\nprintf \'\\n<PEEKY-IDENTITY %s> %s\\n\' "$3" "{said}"\n')
         script.chmod(0o755)
         return str(script)
 
     own = own_compiler()
-    same = interpreter("same", own)
-    other = interpreter("other", [*own[:4], "00000d0a"])
+    # Says it runs this very file: read here.
+    same = interpreter("same", own, sys.executable)
+    # Another file reporting this compiler: another build may say the same.
+    alike = interpreter("alike", own)
+    other = interpreter("other", [*own[:4], "00000d0a"], sys.executable)
     # One magic number spans patch versions and builds; the exact version and
     # build must match too.
-    build = interpreter("build", [own[0], own[1] + "+", *own[2:]])
+    build = interpreter("build", [own[0], own[1] + "+", *own[2:]], sys.executable)
     assert identify(sys.executable, "peeky").same is True
     assert identify(same, "--python").same is True
+    assert identify(alike, "--python").same is False
     assert identify(other, "--python").same is False
     assert identify(build, "--python").same is False
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "key = slug(title)" in text)
@@ -513,6 +518,7 @@ def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, case
     assert PythonAdapter().not_yet_declared(variable, frame) is not None
     assert PythonAdapter(interpreter=same).not_yet_declared(variable, frame) is not None
     assert PythonAdapter(interpreter=other).not_yet_declared(variable, frame) is None
+    assert PythonAdapter(interpreter=alike).not_yet_declared(variable, frame) is None
     with pytest.raises(ValueError, match="cannot be changed at this stop"):
         PythonAdapter().validate_mutation_target(variable, frame)
     PythonAdapter(interpreter=other).validate_mutation_target(variable, frame)
