@@ -28,18 +28,18 @@ class ResponseTimeout(TimeoutError):
 # Ending a launched debuggee at close: SIGTERM, then SIGKILL after this many seconds.
 TERMINATE_GRACE = 1.0
 # Once the debugger has reported the program's end, close() ends the adapter's input and
-# waits at most this long for the adapter to end its output stream (#203): only that end
+# waits at most this long for the adapter to end its output stream: only that end
 # proves no more of the program's output can come. A wait that runs out says so.
 DRAIN_TIMEOUT = 2.0
 # How long close() waits for the stderr of an adapter it reaped to end, when its exit
-# may be the one Peeky provokes: what it printed then is read whole (#213).
+# may be the one Peeky provokes: what it printed then is read whole.
 STDERR_SETTLE = 1.0
 # How soon after the adapter answered `disconnect` Peeky ending its input still counts
-# as "just answered", for the one exit Peeky is known to provoke (#213).
+# as "just answered", for the one exit Peeky is known to provoke.
 JUST_ANSWERED = 0.25
 # At most this much of what the adapter sent from Peeky's disconnect on is kept.
 AFTER_DISCONNECT_CHARS = 4096
-# How often the session's processes are listed (#143), and at most how often a stop or
+# How often the session's processes are listed, and at most how often a stop or
 # an announcement lists them again.
 FAMILY_INTERVAL = 1.0
 FAMILY_MIN_GAP = 0.25
@@ -62,7 +62,7 @@ _JDK_FRAMES = ("at java.", "at jdk.", "at sun.", "at com.sun.")
 
 
 class StreamEnd(EOFError):
-    """The adapter ended its output stream between frames: a clean end (#203)."""
+    """The adapter ended its output stream between frames: a clean end."""
 
 
 def read_message(stream):
@@ -110,10 +110,10 @@ class DAP:
         means the adapter can no longer work (e.g. a dead event thread), and fails the
         transport with that message (``{excerpt}``: the line and its stack frames).
         ``provoked_exit``: (status, signature) of the exit this adapter is known to make
-        when Peeky ends its input as it answers `disconnect` (debugpy: 1, #213), and the
+        when Peeky ends its input as it answers `disconnect` (debugpy: 1), and the
         lines its stderr then shows: close() does not take that exit for a crash.
         ``diagnostics``: a regex for the debugger's own lines that this adapter sends as
-        `stderr` output (#167: LLDB 18's errors about GCC's debug information). In the
+        `stderr` output (LLDB 18's errors about GCC's debug information). In the
         launch Peeky makes, lldb-dap runs the program on a terminal, which carries both its
         streams as `stdout`; that is no DAP rule, and lldb-dap sends a program's stderr as
         `stderr` where it is no terminal. A `stderr` event whose every line the pattern
@@ -139,7 +139,7 @@ class DAP:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=processes.without_credentials(os.environ if env is None else env),
-            start_new_session=os.name == "posix",
+            start_new_session=True,
         )
         os.set_blocking(self.process.stdin.fileno(), False)
         self.condition = threading.Condition()
@@ -147,7 +147,7 @@ class DAP:
         self.abandoned = set()
         self.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
         self.ignored_events = {}
-        # The threads a `thread` event said started since launch (#181 review): two
+        # The threads a `thread` event said started since launch: two
         # mean the program has run more than one thread.
         self.started_threads = set()
         # Bounded message summaries (no arguments or values) for diagnosing lost events.
@@ -161,9 +161,9 @@ class DAP:
         self.process_pid = None
         # Every process the session started, listed while their ancestry still shows
         # it, and the debuggees the adapter announced (`process`, `processid`): close()
-        # ends them even once their parents are gone, never a reused pid (#143).
+        # ends them even once their parents are gone, never a reused pid.
         # The adapter leads a session of its own (start_new_session): what is still in
-        # it was started from it, even once its parents are gone (#168).
+        # it was started from it, even once its parents are gone.
         self.family = processes.Family(
             self.process.pid,
             session=self.process.pid
@@ -177,7 +177,7 @@ class DAP:
         )
         self.announcing = []
         self.family_wake = threading.Event()
-        # What close() did about the processes the session started (#143).
+        # What close() did about the processes the session started.
         self.cleanup = None
         # Set only when a write failed; a read-side failure still allows `disconnect`.
         self.write_error = None
@@ -191,7 +191,7 @@ class DAP:
         self.output_count = 0
         # Set when the adapter ended its output stream (EOF): nothing more can come.
         self.stream_ended = threading.Event()
-        # What close() left (#203): whether the debugger had reported the program's end
+        # What close() left: whether the debugger had reported the program's end
         # before Peeky disconnected (`ended`); the output before Peeky's disconnect was
         # sent, and whether the adapter then ended its stream with nothing more
         # (`drained`); what it sent from the disconnect on, while answering it included
@@ -316,7 +316,7 @@ class DAP:
                         # LLDB says `continued` after each of its own stops it resumes from
                         # (a step out's breakpoint hit by a deeper call, a condition that
                         # held false): one entry stands for a run of them, from the first
-                        # one's cursor, so a deep step out never evicts the stops (#162).
+                        # one's cursor, so a deep step out never evicts the stops.
                         body["since"] = last.get("since", last["cursor"])
                         body["repeated"] = last.get("repeated", 1) + 1
                         self.events[-1] = body
@@ -324,7 +324,7 @@ class DAP:
                         self.events.append(body)
                 else:
                     if body["event"] == "processid":
-                        # java-debug announces the launched JVM's pid (liveness, #27).
+                        # java-debug announces the launched JVM's pid (liveness).
                         pid = (body.get("body") or {}).get("processId")
                         if type(pid) is int and pid > 1:
                             self.debuggee_pid = pid
@@ -545,7 +545,7 @@ class DAP:
                 self.condition.wait(remaining)
             return not self.abandoned and not self.error
 
-    # Called with every stackTrace answer before it is used (#249: a remote Python
+    # Called with every stackTrace answer before it is used (a remote Python
     # session's frames must come from the sources it compared).
     frames_check = None
 
@@ -632,7 +632,7 @@ class DAP:
         thread.start()
 
     def _adapter_state(self, table=None):
-        """The adapter's state, asked without reaping it (#170): "running", "exited" (a
+        """The adapter's state, asked without reaping it: "running", "exited" (a
         zombie Peeky has not reaped yet), "reaped" or "unknown". Unreaped, a dead adapter
         stays a zombie, which keeps its pid, and so its process group's and its
         session's ids, from naming anyone else's: the session rule and the group kill
@@ -735,7 +735,7 @@ class DAP:
 
     def _kill_group(self, sig=signal.SIGKILL):
         """Signal the adapter's own process group (macOS: EPERM once only zombies). Only
-        while its id is still the adapter's group's (#170): the adapter is unreaped, or a
+        while its id is still the adapter's group's: the adapter is unreaped, or a
         process Peeky recorded is still in that group. Returns whether it was signalled."""
         if self._adapter_state() in ("reaped", "unknown"):
             table = processes.table()
@@ -829,7 +829,7 @@ class DAP:
         """Disconnect and reap the adapter, and return what cleanup did (``cleanup``).
 
         A launched debuggee ends with the session, wherever its process group: the
-        adapter is asked first (`disconnect`), then Peeky ends what is left (#143). An
+        adapter is asked first (`disconnect`), then Peeky ends what is left. An
         attached program is detached, never killed: Peeky did not start it.
         """
         with self.close_lock:
@@ -847,7 +847,7 @@ class DAP:
                 except Exception:
                     owned = None
             # The program's end as the debugger reported it, never one inferred, and the
-            # output so far, read together before the disconnect is sent (#203). The
+            # output so far, read together before the disconnect is sent. The
             # output is whole only once the adapter has ended its stream on its own with
             # nothing more: what it sends from the disconnect on, while handling it (its
             # reply) or shutting down (lldb-dap 18's crash on Linux), cannot be told from
@@ -880,7 +880,8 @@ class DAP:
                     self.cleanup = f"cleanup failed ({type(exc).__name__}: {exc})"[:300]
             else:
                 self.cleanup = "detached; the attached program keeps running"
-            # Always reap the owned group, including children surviving adapter exit.
+            # End the adapter's own group in every case, children that outlived it
+            # included, while its id is still the adapter's group's (_kill_group).
             self._kill_group()
             # Reaped only now, after everything that names its pid, group or session.
             self.process.wait(timeout=3)
@@ -934,8 +935,8 @@ class DAP:
         for it to end its output stream. Returns (whether the stream ended with no output
         after ``mark``, taken before the disconnect was sent; whether the adapter had
         exited on its own before its input was ended). Called before anything is killed,
-        so the end is the adapter's own (#203); output after ``mark`` already settles it,
-        so it is not waited for. Its status is read without reaping it (#170)."""
+        so the end is the adapter's own; output after ``mark`` already settles it,
+        so it is not waited for. Its status is read without reaping it."""
         own_exit, input_ended = self._adapter_state() in ("exited", "reaped"), None
         if self.write_lock.acquire(timeout=1):
             try:
@@ -957,7 +958,7 @@ class DAP:
 
     def _provoked_when(self, status, own_exit, asked, answered, input_ended):
         """Whether the adapter's non-zero exit came as the one Peeky is known to provoke
-        (#213) does: debugpy's adapter (``provoked_exit``), exactly that status, still
+        does: debugpy's adapter (``provoked_exit``), exactly that status, still
         running when Peeky ended its input, and that while its `disconnect` was
         unanswered, or at most JUST_ANSWERED after its answer. Its disconnect handler then
         fails writing to the channel the end of its input closed. Not enough alone: a
