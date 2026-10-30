@@ -11,7 +11,7 @@ import pytest
 from peeky import sources
 from peeky.cli import main
 from peeky.client import Client
-from peeky.errors import PROTOCOL_VERSION, PeekyError
+from peeky.errors import ERROR_CODES, PROTOCOL_VERSION, PeekyError
 from peeky.worker import DebugWorker, make_server
 
 TOKEN = "remote-sources-token-1234567890-0123456789abcdef"
@@ -289,6 +289,14 @@ def test_the_version_says_which_sources_a_client_hashes(served, tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_the_version_lists_every_code_a_worker_returns(served):
+    # A worker's `launch` fails with BUILD_FAILED, and its `probe` result's error can be
+    # NO_STOP or PROGRAM_CRASHED: the list left all three out.
+    codes = served.call("version")["error_codes"]
+    assert {"BUILD_FAILED", "NO_STOP", "PROGRAM_CRASHED"} <= set(codes)
+    assert codes == sorted(ERROR_CODES)
 
 
 @pytest.mark.parametrize("operation", ["launch", "probe"])

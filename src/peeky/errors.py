@@ -370,6 +370,17 @@ def _build_failure(exc):
 
 _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 
+# Every code Peeky sends: those of the rules, a build's failure, a probe result's no-stop or
+# crash, the worker's token check, and the fallback for an unexpected exception. The worker's
+# `version` lists them; test_errors checks that each code the sources send is here.
+ERROR_CODES = frozenset(code for _, code, _, _ in _RULES) | {
+    "BUILD_FAILED",
+    "NO_STOP",
+    "PROGRAM_CRASHED",
+    "UNAUTHORIZED",
+    "INTERNAL_ERROR",
+}
+
 
 # The one action each MUTATION_REJECTED rule leaves: the
 # message names the rule, so the hint need not repeat every rule. First match wins.

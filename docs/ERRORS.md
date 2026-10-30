@@ -497,8 +497,9 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 
 ## Protocol version
 
-`POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 11`, and so does every request a client sends.
+`POST /version` returns the protocol version, the supported operations and the error codes: every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 11`, and so does every
+request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
