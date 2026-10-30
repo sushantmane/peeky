@@ -10,7 +10,6 @@ import pytest
 
 from peeky.cli import main
 
-# The evaluation's case, as the agent had it.
 STOCK = """#include <cstdio>
 #include <map>
 #include <string>
@@ -96,19 +95,19 @@ def session(source, line, capsys, *extra):
 
 @pytest.mark.timeout(120)
 def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
-    # Eval 6, finding 16: the function column read `trim_left(std::__1::basic_string<char,
-    # std::__1::char_traits<char>, std::__1::allocator<char>> const&)`, so the table was
-    # about 200 columns wide. JSON and the evidence store keep the whole name. GCC gives
-    # a static function no linkage name, so LLDB names it from its declaration, from the
-    # global scope: `::trim_left`, `::twice(int)` (#167), which tables show as clang's
-    # (twelfth evaluation's preparation). The hints name what is stored.
+    # The function column shows `trim_left`, not `trim_left(std::__1::basic_string<char,
+    # std::__1::char_traits<char>, std::__1::allocator<char>> const&)`, which makes the
+    # table about 200 columns wide. JSON and the evidence store keep the whole name. GCC
+    # gives a static function no linkage name, so LLDB names it from its declaration, from
+    # the global scope: `::trim_left`, `::twice(int)`, which tables show as clang's. The
+    # hints name what is stored.
     source = cpp("stock.cpp", STOCK)
     assert main(["probe", str(source), "--at", "9", *ARGS, "--capture", "i", "--hits", "2"]) == 0
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
     assert max(len(line) for line in text.splitlines() if line.startswith(("hit", "1 "))) < 80
-    # Review of the eval-6 fixes: SQL compares the stored name, which `WHERE function =
-    # 'trim_left'` does not match; the probe's table says how to match it.
+    # SQL compares the stored name, which `WHERE function = 'trim_left'` does not match;
+    # the probe's table says how to match it.
     assert "note: function shows short frame names" in text, text
     assert "short_function(function) = 'trim_left'" in text, text
     assert main(["sql", "SELECT count(*) AS n FROM last_run WHERE function = 'trim_left'"]) == 0
@@ -122,7 +121,7 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
-    # Once per run: the probe said it (twelfth evaluation, laps 6; review of PR #350).
+    # Once per run: the probe said it.
     assert "note: function shows short frame names" not in text, text
     query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'trim_left'"
     assert main(["sql", query, "--json"]) == 0
@@ -134,9 +133,9 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     by_text = "twice(const std::string &)" if cxx == "gcc" else "twice(std::string const&)"
     assert "twice(int)" in text and by_text in text, text
     assert "basic_string" not in text, text
-    # A probe's table says the note once per state directory (seventh evaluation,
-    # finding 8); a query's table says it of a run that has not had it (twelfth
-    # evaluation, laps 6). Its example is what short_function gives: both overloads' rows.
+    # A probe's table says the note once per state directory; a query's table says it of a
+    # run that has not had it. Its example is what short_function gives: both overloads'
+    # rows.
     assert "note: function shows short frame names" not in text, text
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out

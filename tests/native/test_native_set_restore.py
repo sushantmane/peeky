@@ -1,7 +1,7 @@
-"""`--set-at LINE@HIT name=@before` on real C and C++ builds (#305): the guard flip that skips
-a statement, in two `--set-at`s. Eleventh evaluation, tides: testing "don't move `turn` while
-the tide stands" (pointers can't be set) took six `--set-at`s, flipping `trend` to 0 before
-the inner `if` and restoring it after, with the restored values (1, 1, -1) copied by hand."""
+"""`--set-at LINE@HIT name=@before` on real C and C++ builds: the guard flip that skips a
+statement, in two `--set-at`s. Testing "don't move `turn` while the tide stands" (pointers
+can't be set) means flipping `trend` to 0 before the inner `if` and restoring it after; with
+`@before` the restored values (1, 1, -1) are not copied by hand."""
 
 import json
 import os
@@ -195,9 +195,9 @@ def test_the_guard_flip_skips_the_move_with_two_set_ats(native, capsys, name):
 
 @pytest.mark.timeout(300)
 def test_a_restore_line_that_never_runs_names_each_write_it_never_restored(native, capsys):
-    # Twelfth evaluation (in Python): the guard was flipped at each hit and restored at the
-    # line it guards, which then never ran. The run named only the latest change. Hit 2's
-    # wrote the 0 already there, which the worker proves changed nothing.
+    # The guard is flipped at each hit and restored at the line it guards, which then
+    # never runs: the run names each change, not only the latest. Hit 2's writes the 0
+    # already there, which the worker proves changed nothing.
     path = write(native, "trail.c", TRAIL)
     guard, move = line_of(TRAIL, "/* GUARD */"), line_of(TRAIL, "/* MOVE */")
     code, result = probe(
@@ -253,8 +253,8 @@ def test_a_restore_in_another_call_or_frame_is_refused(native, capsys):
 
 @pytest.mark.timeout(300)
 def test_a_restore_is_made_only_to_the_declaration_its_change_wrote(native, capsys):
-    # Review of PR #322: a restore wrote whatever its name named at its stop, such as a
-    # shadowing `x`, or another block's `y`.
+    # A restore never writes whatever its name names at its stop, such as a shadowing `x`,
+    # or another block's `y`.
     path = write(native, "shadow.c", SHADOW)
     outer, inner = line_of(SHADOW, "/* OUTER */"), line_of(SHADOW, "/* INNER */")
     first, second = line_of(SHADOW, "/* FIRST_Y */"), line_of(SHADOW, "/* SECOND_Y */")

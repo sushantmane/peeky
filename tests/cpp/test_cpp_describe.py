@@ -1,5 +1,5 @@
-"""The eighth agent evaluation's C++ `describe` findings, on real builds: types named as
-code writes them (L12), and no compiler-generated locals (L13)."""
+"""C++ `describe` on real builds: types named as code writes them, no compiler-generated
+locals, and a block's locals not listed on lines outside the block."""
 
 import json
 import os
@@ -25,8 +25,8 @@ int main() {
 def test_describe_names_cpp_types_as_code_does_without_compiler_locals(
     tmp_path, capsys, monkeypatch
 ):
-    # L12: describe showed `std::__1::vector<std::__1::basic_string<char, ...>>`, while
-    # probe tables show `std::vector<std::string>`. L13: it listed the range `for`'s
+    # `std::vector<std::string>`, as probe tables show it, not
+    # `std::__1::vector<std::__1::basic_string<char, ...>>`; and not the range `for`'s
     # `__range1`, `__begin1` and `__end1`, which no code names.
     if not os.environ.get("PEEKY_NATIVE_DAP"):
         pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
@@ -43,7 +43,6 @@ def test_describe_names_cpp_types_as_code_does_without_compiler_locals(
     assert main_scope["types"]["part"] in ("const std::string &", "const string &"), main_scope
 
 
-# The evaluation's case, as the agent had it.
 STOCK = """#include <cstdio>
 #include <map>
 #include <string>
@@ -97,11 +96,10 @@ def cpp(tmp_path, monkeypatch):
 
 @pytest.mark.timeout(120)
 def test_a_blocks_locals_are_not_listed_on_lines_outside_it(cpp, capsys):
-    # Eval 6, finding 17: `describe` gave `name (lines 22-35)` for the `if` block's local
-    # and `colon (lines 17-35)` for the `while` body's: C++ puts a block's cleanup code
-    # (run when an exception leaves it) on the function's closing line, and the span ran
-    # from the block to there. The lines between, where code outside the block runs,
-    # are not the block's; its own lines, and that closing line, still are.
+    # Not `name (lines 22-35)` for the `if` block's local and `colon (lines 17-35)` for the
+    # `while` body's: C++ puts a block's cleanup code (run when an exception leaves it) on
+    # the function's closing line, beyond the block. The lines between, where code outside
+    # the block runs, are not the block's; its own lines, and that closing line, still are.
     source = cpp("stock.cpp", STOCK)
     assert main(["describe", str(source), "--json"]) == 0
     scopes = json.loads(capsys.readouterr().out)["scopes"]

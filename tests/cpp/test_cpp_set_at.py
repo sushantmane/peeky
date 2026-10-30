@@ -8,7 +8,6 @@ import pytest
 
 from peeky.cli import main
 
-# The evaluation's case, as the agent had it.
 STOCK = """#include <cstdio>
 #include <map>
 #include <string>
@@ -66,9 +65,9 @@ def line_of(text, marker):
 
 @pytest.mark.timeout(240)
 def test_a_value_shortened_at_one_line_is_restored_at_the_next_in_one_probe(cpp, capsys):
-    # #137 (sixth evaluation, `stock`): the agent shortened `colon` at line 22 for the
-    # names with a trailing space and restored it at line 23, so `std::stol` still read
-    # the quantity: 14 session calls, as one `--set colon=` crashed at line 23.
+    # `colon` shortened at line 22 for the names with a trailing space and restored at
+    # line 23, so `std::stol` still reads the quantity: one probe, where one `--set colon=`
+    # crashes at line 23.
     source = cpp("stock.cpp", STOCK)
     name = line_of(STOCK, "std::string name = trim_left")
     qty = line_of(STOCK, "long qty = ")
@@ -101,8 +100,8 @@ int main() {
 
 @pytest.mark.timeout(240)
 def test_a_set_at_line_that_stops_in_a_lambda_says_whose_variable_changed(cpp, cxx, capsys):
-    # #151 review: line BOTH stops in `main` and in the lambda it declares, and @HIT counts
-    # both, so `6@2` changed the lambda's `v`; nothing said so.
+    # Line BOTH stops in `main` and in the lambda it declares, and @HIT counts both, so
+    # `6@2` changes the lambda's `v`, and says so.
     source = cpp("lam.cpp", LAMBDA)
     both, end = line_of(LAMBDA, "BOTH"), line_of(LAMBDA, "END")
     argv = ["probe", str(source), "--at", str(end), "--capture", "total"]
@@ -111,8 +110,8 @@ def test_a_set_at_line_that_stops_in_a_lambda_says_whose_variable_changed(cpp, c
     text = shown.out
     if cxx == "gcc":
         # GCC marks no prologue end, so the lambda's one-line body stops at its first
-        # instruction, before its prologue stores `v` (#279): the change is refused, and
-        # says why. GCC names the lambda plain `operator()` (#167).
+        # instruction, before its prologue stores `v`: the change is refused, and says why.
+        # GCC names the lambda plain `operator()`.
         warned = f"warning: --set-at line {both} stopped in 2 functions: main (stop 1); "
         assert code == 1 and warned + "operator() (stop 2)." in text, text
         assert "MUTATION_REJECTED" in text and "(in operator())" in text, text

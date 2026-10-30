@@ -318,7 +318,7 @@ def test_native_adapter_death_reaps_stopped_target(native_worker):
     with pytest.raises(HTTPError) as caught:
         client.call("inspect", **context)
     # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends both,
-    # as it listed them (#143). Linux's lldb-server ends its tracee itself.
+    # as it listed them. Linux's lldb-server ends its tracee itself.
     cleanup = json.load(caught.value)["error"]["cleanup"]
     assert "; the debugger was gone: a process the program started in the last " in cleanup
     assert str(pid) in cleanup or cleanup.startswith("nothing Peeky could identify was still")
@@ -358,7 +358,7 @@ def test_a_launch_whose_debugger_hangs_ends_the_running_program(
             while not dap.process_pid and time.monotonic() < deadline:
                 time.sleep(0.05)
             time.sleep(0.3)
-            # The program now blocks before its breakpoint, and lldb-dap stops
+            # The program then blocks before its breakpoint, and lldb-dap stops
             # answering: the launch's next request times out.
             os.kill(dap.process.pid, signal.SIGSTOP)
             hung.append(dap.process_pid)
@@ -579,9 +579,9 @@ def outside_build(tmp_path, native_config, headers, included):
 
 
 def test_headers_outside_are_hashed_by_their_real_names(tmp_path, native_config):
-    # #177: a U+2028 in a name is no line break: main dropped the rest of the rule (the
-    # header after it went unhashed) and hashed a decoy named for the part before it.
-    # `$` (written `$$`) and spaces (`\ `) it read right.
+    # A U+2028 in a name is no line break: read as one, the rest of the rule (the header
+    # after it) would go unhashed, and a decoy named for the part before it be hashed.
+    # Also `$` (written `$$`) and spaces (`\ `).
     headers = {
         "c$$d.h": "#define LIMIT 3\n",
         "c$d.h": "#define DECOY 1\n",
@@ -604,8 +604,8 @@ def test_headers_outside_are_hashed_by_their_real_names(tmp_path, native_config)
 
 
 def test_a_header_clang_names_with_a_slash_for_its_backslash_is_refused(tmp_path, native_config):
-    # #177: clang prints a name's backslash as `/`: `bs\x.h` reads as `bs/x.h`, which
-    # main hashed (a decoy) in its place. GCC keeps the backslash, which is refused too.
+    # Clang prints a name's backslash as `/`: `bs\x.h` reads as `bs/x.h`, a decoy that
+    # would be hashed in its place. GCC keeps the backslash, which is refused too.
     headers = {"bs\\x.h": "#define LIMIT 3\n", "bs/x.h": "#define DECOY 1\n"}
     with pytest.raises(ValueError, match="unambiguously") as caught:
         outside_build(tmp_path, native_config, headers, ["bs\\x.h"])
@@ -614,9 +614,9 @@ def test_a_header_clang_names_with_a_slash_for_its_backslash_is_refused(tmp_path
 
 @pytest.mark.parametrize("real", ["\\x.h", "\\\\/x.h"])
 def test_a_header_clang_prints_with_an_empty_step_is_refused(tmp_path, native_config, real):
-    # #178 review: clang prints `/out/\x.h` (and `/out/\\/x.h`) with `//` for the
-    # backslashes, which a path shortens to `/out/x.h`, a decoy: its hash was recorded,
-    # and a change to the header the compiler read went unnoticed.
+    # Clang prints `/out/\x.h` (and `/out/\\/x.h`) with `//` for the backslashes, which a
+    # path shortens to `/out/x.h`, a decoy: recording its hash would leave a change to the
+    # header the compiler read unnoticed.
     headers = {real: "#define LIMIT 1\n", "x.h": "#define LIMIT 2\n"}
     with pytest.raises(ValueError, match="unambiguously"):
         outside_build(tmp_path, native_config, headers, [real])
@@ -624,9 +624,9 @@ def test_a_header_clang_prints_with_an_empty_step_is_refused(tmp_path, native_co
 
 @pytest.mark.parametrize("name", ["main\u2028x.c", "größe.c"])
 def test_a_source_named_with_any_character_is_debugged(tmp_path, native_config, name):
-    # #179: dwarfdump and clang print a non-ASCII name in octal (`main\342\200\250x.c`), and
-    # dwarfdump `DW_AT_decl_file` as it is; Peeky split their output at the U+2028 and
-    # read the octal as JSON, so the program could not be debugged.
+    # dwarfdump and clang print a non-ASCII name in octal (`main\342\200\250x.c`), and
+    # dwarfdump `DW_AT_decl_file` as it is: their output is not split at the U+2028, and
+    # the octal is not read as JSON.
     from peeky.native import NativeTarget
     from peeky.probe import Probe, run_probe
 
@@ -672,7 +672,7 @@ def test_describe_lists_each_functions_span_and_locals(tmp_path, native_config, 
         manifest = json.loads(capsys.readouterr().out)
         scope = next(s for s in manifest["scopes"] if s["scope"] == function)
         assert scope["source"] == program and local in scope["names"]
-        # #93 (eval 4, C): each local's type, as the debug information names it.
+        # Each local's type, as the debug information names it.
         if program.endswith(".c"):
             assert scope["types"]["start"] == "int"
         first, last = scope["lines"]
@@ -714,7 +714,7 @@ def test_native_sessions_step_and_report_leaving_the_program(
         # macOS: the step went on into dyld, past main's return.
         assert "outside the program's sources" in shown.err
     else:
-        # Linux: one frame up, in libc: only what main returned is read there (#155).
+        # Linux: one frame up, in libc: only what main returned is read there.
         snapshot = json.loads(shown.out)
         assert snapshot["scopes"] == [] and snapshot["returned"]["function"] == "main"
         # A plain step left main: LLDB records a return only for a step out.
@@ -875,7 +875,7 @@ def test_a_step_interrupted_by_another_threads_hit_can_still_step(
 
 @pytest.mark.cpp
 def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_config, capsys):
-    # Review of #97: dwarfdump names unnamed types by their tag (`structure `).
+    # dwarfdump names unnamed types by their tag (`structure `).
     from peeky.cli import main
 
     (tmp_path / "anon.c").write_text(
@@ -922,7 +922,7 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         "    return 0;\n"
         "}\n"
     )
-    # C names a struct or enum no typedef names by its tag (seventh evaluation, 17).
+    # C names a struct or enum no typedef names by its tag.
     named = {
         "plain": "int",
         "named": "struct structure",
@@ -965,9 +965,8 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
 def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
     tmp_path, native_config, capsys
 ):
-    # #107: `describe` listed a `for` loop's `i` among the function's names, though it
-    # is not visible after the loop. A local declared only in nested blocks now carries
-    # the lines of those blocks.
+    # A `for` loop's `i` is not visible after the loop: a local declared only in nested
+    # blocks carries the lines of those blocks.
     from peeky.cli import main
 
     (tmp_path / "blocks.c").write_text(BLOCKS)
@@ -982,7 +981,7 @@ def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
     assert main(["describe", str(tmp_path / "blocks.c")]) == 0
     text = capsys.readouterr().out
     assert "i (int, lines 4-" in text and "count (int)," in text
-    # Review of #107: a block that runs an `#include`d file's code gives no span (its
+    # A block that runs an `#include`d file's code gives no span (its
     # names are visible on that file's lines too); an always-inline function's blocks
     # are read from its inlined copies.
     (tmp_path / "step.h").write_text("extra += k;\n")
@@ -996,8 +995,8 @@ def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
 def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
     tmp_path, native_config, capsys
 ):
-    # Review 3 of #107: GCC -O2 put a row for the loop's line 5 at the address of the
-    # later block's line 15, so `tail` took the loop's lines too.
+    # GCC -O2 puts a row for the loop's line 5 at the address of the later block's line
+    # 15, which must not give `tail` the loop's lines too.
     gcc = shutil.which("gcc")
     version = subprocess.run([gcc, "--version"], capture_output=True, text=True) if gcc else None
     if version is None or "Free Software Foundation" not in version.stdout:
@@ -1027,7 +1026,7 @@ def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
 
     spans = described("o2.c", OPTIMIZED_BLOCKS, "O2")["accumulate"]
     assert all(first >= 14 for first, _ in spans.get("tail", [])), spans
-    # Review 4: a statement row a later row at its address replaces (an inlined
+    # A statement row a later row at its address replaces (an inlined
     # `printf`'s) runs no code either; an inlined call's line is its block's (LLDB stops
     # there, at the callee's entry, in this frame).
     words = line_of(RICH, "int words = count_words(buf);")
@@ -1036,7 +1035,7 @@ def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
     neg = line_of(RICH, "return clamp(neg, -50, 0);")
     spans = described("rich.c", RICH, "Og")["classify"]
     assert any(first <= neg <= last for first, last in spans["neg"]), spans
-    # Review 5: of the rows at one address, only the last runs, whatever its neighbours;
+    # Of the rows at one address, only the last runs, whatever its neighbours;
     # one of its own line stays.
     doubled = line_of(RICH, "int doubled = v * 2;")
     spans = described("rich.c", RICH, "O1")["classify"]
@@ -1265,13 +1264,13 @@ int main(void) {
 
 
 def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys):
-    # Eval 5 dry run: `values[0]` on `const int *values` said only "children: *values".
+    # `values[0]` on `const int *values` reads the pointee, not only "children: *values".
     from peeky.cli import main
 
     (tmp_path / "avg.c").write_text(AVG)
     probe = ["probe", str(tmp_path / "avg.c"), "--at", "7", "--json", "--no-save", "--quiet"]
     capture = "values[0],values[1],count[0],n.count[0],n.count[1],pp[0][0],pp[0][1]"
-    # Review of #100: qualified and typedef'd pointers (`int *const`, `__restrict`).
+    # Qualified and typedef'd pointers (`int *const`, `__restrict`).
     capture += ",cp[0],rp[0],tp[0],rp[1]"
     assert main([*probe, "--capture", capture]) == 0
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
@@ -1279,7 +1278,7 @@ def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys
     assert values["values[0]"] == "-3" and values["count[0]"] == "100"
     assert values["n.count[0]"] == values["pp[0][0]"] == values["rp[0]"] == "1"
     assert values["cp[0]"] == values["tp[0]"] == "100"
-    # Review of #100: the hint names the whole path, never another variable's.
+    # The hint names the whole path, never another variable's.
     paths = (("values[1]", "values"), ("n.count[1]", "n.count"), ("pp[0][1]", "pp[0]"))
     for name, path in (*paths, ("rp[1]", "rp")):
         assert f"; {path} is a pointer, which carries no length: {path}[0]" in rows[name]["error"]
@@ -1296,9 +1295,9 @@ def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys
 
 @pytest.mark.cpp
 def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_config, capsys):
-    # #102: the debugger lists a pointer's pointee elements as its own children, so
-    # `parr[1]` read `(*parr)[1]`, where C means the next row. Now p[0] is the pointee and
-    # p[1] is refused with the selector that reads the element.
+    # The debugger lists a pointer's pointee elements as its own children, so `parr[1]`
+    # would read `(*parr)[1]`, where C means the next row: p[0] is the pointee and p[1]
+    # is refused with the selector that reads the element.
     from peeky.cli import main
 
     for name, text, line, capture in (
@@ -1328,15 +1327,15 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert "read parr[0][-1]" in rows["parr[-1]"]["error"]
             assert "index the array where it is declared" in rows["pp[1]"]["error"]
         elif name == "rows.cpp":
-            # What it points at shows its elements (#181).
+            # What it points at shows its elements.
             assert rows["vp[0]"]["value"] == "size=3 [7, 8, 9]", rows["vp[0]"]
             assert rows["vp[0][1]"]["value"] == "8"
             assert "read vp[0][1] for its element" in rows["vp[1]"]["error"]
         elif name == "names.cpp":
-            # Review 4: a member typedef's last name (`Table::Rows`, `Graph::vector`)
-            # resolved `lib::Rows` (lldb-dap leaves out the inline namespace) and plain
-            # `std::vector<int>`.
-            # Round 5: `lib::v1::Rows` is known by the name lldb-dap shows, `lib::Rows`.
+            # A member typedef's last name (`Table::Rows`, `Graph::vector`) resolves
+            # neither `lib::Rows` (lldb-dap leaves out the inline namespace) nor plain
+            # `std::vector<int>`. `lib::v1::Rows` is known by the name lldb-dap shows,
+            # `lib::Rows`.
             assert "not read" in rows["r[1]"]["error"], rows
             assert rows["r[0][1]"].get("value") in (None, "2"), rows["r[0][1]"]
             assert rows["rf[0]"].get("value") in (None, "7"), rows["rf[0]"]
@@ -1346,24 +1345,24 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert rows["g.v[0][1]"]["value"] == "2"
             assert "read g.v[0][1]" in rows["g.v[1]"]["error"]
         elif name == "anon.cpp":
-            # Review 6: an unnamed struct a typedef names shows by that name (`Anon::P`),
-            # so its member typedef took another `Anon::P`'s kind, or none.
-            # Review 7: one named twice (`} Anon, Other;`) shows by the first name.
+            # An unnamed struct a typedef names shows by that name (`Anon::P`), so its
+            # member typedef must not take another `Anon::P`'s kind. One named twice
+            # (`} Anon, Other;`) shows by the first name.
             for base in ("a.p", "b.p"):
                 assert "not read" in rows[f"{base}[1]"]["error"], rows
                 assert rows[f"{base}[0][1]"].get("value") in (None, "2"), rows
             assert rows["pr[0]"].get("value") in (None, "7"), rows
             assert rows["pr[1]"].get("value") in (None, "8"), rows
         elif name in ("inline.cpp", "local.cpp"):
-            # Review 5: lldb-dap leaves out inline namespaces and a local class's
-            # function (`Ref`, `Node::Link`), so another entity shown alike (a function's
-            # own `Ref`, the file's `Node`) gave its kind to these.
+            # lldb-dap leaves out inline namespaces and a local class's function (`Ref`,
+            # `Node::Link`), so another entity shown alike (a function's own `Ref`, the
+            # file's `Node`) must not give its kind to these.
             expected = {"rf[0]": "7", "rf[1]": "8", "r[0][1]": "2", "l[0]": "7", "l[1]": "8"}
             expected["g.l[0][1]"] = "2"
             for selector, row in rows.items():
                 assert row.get("value") in (None, expected.get(selector)), row
         else:
-            # Review of #117: a typedef'd pointer shows by the typedef's name alone, as a
+            # A typedef'd pointer shows by the typedef's name alone, as a
             # typedef'd reference does; the build's debug information tells them apart.
             assert rows["rp[0][1]"]["value"] == "2" and "read rp[0][1]" in rows["rp[1]"]["error"]
             assert rows["rr[1]"]["value"] == "2" and rows["vr[1]"]["value"] == "8"
@@ -1374,14 +1373,14 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert rows["ep[0]"]["value"] == "size=0 []"
             assert "np is NULL" in rows["np[0]"]["error"]
             assert "cannot read what garbage points at" in rows["garbage[0]"]["error"]
-            # Review 2: the typedef behind lldb-dap's `const RowPtr` resolves; a template's
+            # The typedef behind lldb-dap's `const RowPtr` resolves; a template's
             # member typedef does not, and is refused rather than indexed either way; a
             # scalar pointer still reads; a pointer declared below the stop is not read.
             assert rows["crp[0][1]"]["value"] == "2"
             assert "not read" in rows["tp[1]"]["error"]
             assert rows["dp[0]"]["value"] == "7"
             assert "has no value here" in rows["later[0]"]["error"]
-            # Review 3: a `*` inside template arguments is not the type's own; a class's
+            # A `*` inside template arguments is not the type's own; a class's
             # member typedef resolves by its last name where all agree (or is refused);
             # an unnamed namespace's typedef by its plain name.
             assert "not read" in rows["pc[1]"]["error"]
@@ -1471,9 +1470,9 @@ def _maps_session(tmp_path, capsys, monkeypatch, marker="// OBSERVE", program=No
 def test_a_cpp_maps_index_is_the_value_for_that_key(
     tmp_path, native_config, cxx, capsys, monkeypatch
 ):
-    # #119: LLDB lists a map's entries as [0], [1], ... in iteration order, so `m[1]` read
-    # the second entry ({2, 20}; `m[1].second` was 20) where C++'s m[1] is 10. Now [K] is
-    # the value for key K, and [#N] is the Nth entry.
+    # LLDB lists a map's entries as [0], [1], ... in iteration order, so `m[1]` would
+    # read the second entry ({2, 20}) where C++'s m[1] is 10: [K] is the value for key K,
+    # and [#N] is the Nth entry.
     with _maps_session(tmp_path, capsys, monkeypatch) as get:
         rows = get(
             *("m[1]", "m[2]", "m[5]", "m[3]", "m[#1].first", "m[#1].second", "m[1].second"),
@@ -1487,7 +1486,7 @@ def test_a_cpp_maps_index_is_the_value_for_that_key(
         assert "m has no key 3 (keys: 1, 2, 5)" in errors["m[3]"]
         assert values["m[#1].first"] == "2" and values["m[#1].second"] == "20"
         assert "m[1] is the value for that key, as in C++" in errors["m[1].second"]
-        # GCC's, which LLDB counts as empty, is read from its own nodes (#360).
+        # GCC's, which LLDB counts as empty, is read from its own nodes.
         assert values["um[1]"] == "10" and values["um[5]"] == "50"
         assert "um has no key 7" in errors["um[7]"]
         assert values['sm["a"]'] == "1" and values["sm['b']"] == "2"
@@ -1515,8 +1514,8 @@ def test_a_cpp_maps_index_is_the_value_for_that_key(
 
 
 def test_a_cpp_set_or_multimap_index_is_refused(tmp_path, native_config, cxx, capsys, monkeypatch):
-    # #119: `s[1]` read a set's second element and `mm[1]` a multimap's second entry,
-    # where C++ has no [] for either. Now they are refused with the [#N] that reads one.
+    # C++ has no [] for a set or a multimap: `s[1]` and `mm[1]` are refused with the [#N]
+    # that reads one, never read by position.
     with _maps_session(tmp_path, capsys, monkeypatch) as get:
         rows = get("s[1]", "s[#1]", "mm[1]", "mm[#1].second", "ms[0]", "ms[#2]", "us[0]")
         rows.update(get("us[#0]", "is[1]", "is[#0]"))
@@ -1537,7 +1536,7 @@ def test_a_cpp_set_or_multimap_index_is_refused(tmp_path, native_config, cxx, ca
 def test_a_cpp_map_or_set_listing_never_labels_an_entry_by_position(
     tmp_path, native_config, cxx, capsys, monkeypatch
 ):
-    # #119: `session get m` listed m[0], m[1], m[2], each read by position.
+    # `session get m` lists entries by key, not as m[0], m[1], m[2] read by position.
     with _maps_session(tmp_path, capsys, monkeypatch) as get:
         listed = get("m", "um", "s", "mm", "sm", "dm", "im", "is")
         selectors = {
@@ -1577,7 +1576,7 @@ def test_a_cpp_map_or_set_listing_never_labels_an_entry_by_position(
 
 
 def test_cpp_sequences_index_as_before(tmp_path, native_config, capsys, monkeypatch):
-    # #119 changed maps and sets only: vectors, deques and arrays index by position.
+    # Vectors, deques and arrays index by position, unlike maps and sets.
     with _maps_session(tmp_path, capsys, monkeypatch) as get:
         rows = get("v[1]", "d[1]", "v[-1]", "v", "a")
         assert rows["v[1]"]["value"] == rows["d[1]"]["value"] == "8"
@@ -1662,9 +1661,9 @@ int main() {
 def test_a_string_key_matches_only_a_string_of_its_length(
     tmp_path, native_config, capsys, monkeypatch
 ):
-    # Review of #119 (PR #127): libstdc++'s std::string summary stops at the first NUL,
-    # so on Linux `sso["a"]` read the entry whose key is "a\0b" (3), where C++ has no key
-    # "a". A key now matches only a string of its own length: libstdc++'s
+    # libstdc++'s std::string summary stops at the first NUL, so on Linux `sso["a"]` would
+    # read the entry whose key is "a\0b" (3), where C++ has no key "a". A key matches
+    # only a string of its own length: libstdc++'s
     # `_M_string_length`, or libc++'s summary, which shows every byte (a NUL as \0).
     with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
         rows = get(
@@ -1680,7 +1679,7 @@ def test_a_string_key_matches_only_a_string_of_its_length(
         assert labels == ['both["a"]', "both[#1]"], labels
         # A key at the depth limit: libc++'s summary is whole, and the worker checks a
         # libstdc++ one against its length, read through the debugger's own reference
-        # (#128), or reads its bytes.
+        # or reads its bytes.
         assert rows['cfg.opts["k"]']["value"] == "1"
         labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
         assert labels == ['cfg.opts["k"]', "cfg.opts[#1]"], labels
@@ -1690,15 +1689,15 @@ def test_a_string_key_matches_only_a_string_of_its_length(
 def test_a_custom_comparison_never_says_a_key_is_missing(
     tmp_path, native_config, cxx, capsys, monkeypatch
 ):
-    # Review of #119 (PR #127): with `ByAbs`, C++'s am[1] reads key -1's -10, but `am[1]`
-    # said "not found ... would insert it". Absence is now claimed only under std::less,
+    # With `ByAbs`, C++'s am[1] reads key -1's -10, so "not found ... would insert it"
+    # would be wrong. Absence is claimed only under std::less,
     # std::greater, or std::hash with std::equal_to; an exact key still reads.
     with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
         rows = get(
             *("am[1]", "am[-1]", "mod[3]", "mod[13]", "bigabs[-3]", "bigabs[3]", "plain[4]"),
             *('ci["alpha"]', 'ci["Alpha"]', 'hci["ALPHA"]', 'hci["Alpha"]', "am"),
         )
-        # GCC's unordered map, which LLDB counts as empty, is read from its nodes (#360).
+        # GCC's unordered map, which LLDB counts as empty, is read from its nodes.
         for selector in ("am[1]", "mod[3]", "bigabs[3]", 'ci["alpha"]', 'hci["ALPHA"]'):
             error = rows[selector].get("error", "")
             assert "would insert" not in error and "no key equals" in error, (selector, error)
@@ -1722,9 +1721,9 @@ def test_a_custom_comparison_never_says_a_key_is_missing(
 def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
     tmp_path, native_config, capsys, monkeypatch
 ):
-    # Review of #119 (PR #127): `Holder<std::string>::S hs2` (a std::set<int>) read
-    # `hs2[1]` as its second element, and `std::map<int, std::set<int>>::mapped_type mt`
-    # read `mt[1]` (20): a class's member typedef lost the class it names.
+    # A class's member typedef keeps the class it names: `Holder<std::string>::S hs2` (a
+    # std::set<int>) has no `hs2[1]`, nor `std::map<int, std::set<int>>::mapped_type mt`
+    # an `mt[1]`.
     with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
         rows = get("hs2[1]", "hs2[#1]", "hm2[4]", "mt[1]", "mt[#1]", "hs2", "mt", "hi.m[3]")
         assert "is a C++ set" in rows["hs2[1]"]["error"], rows["hs2[1]"]
@@ -1742,9 +1741,8 @@ def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
 def test_a_key_no_selector_can_write_is_listed_by_position(
     tmp_path, native_config, capsys, monkeypatch
 ):
-    # Review of #119 (PR #127): `session get ids` listed `ids[1234567]`, which the
-    # selector grammar (six digits) cannot read back; `const char *` keys were named
-    # `char *const`.
+    # `session get ids` lists no `ids[1234567]`, which the selector grammar (six digits)
+    # cannot read back; `const char *` keys are not named `char *const`.
     with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
         rows = get("ids", 'cpm["al"]')
         shown = {c["selector"]: c["value"] for c in rows["ids"]["children"]}
@@ -1917,7 +1915,7 @@ int main(void) {
 
 
 # The program starts a child in its process group and one in a session of its own, then
-# loops at the breakpoint (PR #147 review, `c2/hang.c`).
+# loops at the breakpoint.
 FAMILY = """#define _DEFAULT_SOURCE
 #include <stdio.h>
 #include <unistd.h>
@@ -1959,7 +1957,7 @@ def test_what_a_program_started_is_ended_when_its_debugger_dies(native_worker, t
         while not set(children) <= set(worker.dap.family.kin):
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        # `kill -9`, unreaped as a crash leaves it: Peeky reaps it at close (PR #170).
+        # `kill -9`, unreaped as a crash leaves it: Peeky reaps it at close.
         os.kill(worker.dap.process.pid, signal.SIGKILL)
         while worker.dap._adapter_running():
             assert time.monotonic() < deadline + 5

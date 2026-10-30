@@ -2,7 +2,7 @@
   "issue": "classify.py labels ::ffff:8.8.8.8 as private. An IPv4-mapped IPv6 address must classify like its IPv4 address (8.8.8.8 is public). Fixed upstream for CVE-2024-4032.",
   "program": "ipaddress39.py",
   "driver": "classify.py",
-  "observe_line": 2008,
+  "observe_line": 2018,
   "capture": ["self"],
   "fix": {
     "old": "        return any(self in net for net in self._constants._private_networks)\n\n    @property\n    def is_global(self):\n        \"\"\"Test if this address is allocated for public networks.\n\n        Returns:\n            A boolean, true if the address is not reserved per\n            iana-ipv6-special-registry.\n\n        \"\"\"\n        return not self.is_private",

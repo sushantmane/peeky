@@ -1,7 +1,9 @@
-"""C++ session states where an exception ends a call (tenth agent evaluation, and the
-review of #274). The stacks never prove a return: a step out that an exception cut short
-says only which function it left, and a step the session's breakpoint stopped first, in
-a later call of the same function from the same place, says nothing of calls or scopes."""
+"""C++ session states on real builds. Where an exception ends a call, the stacks never prove
+a return: a step out that an exception cut short says only which function it left, and a
+step the session's breakpoint stopped first, in a later call of the same function from the
+same place, says nothing of calls or scopes. `session get` names the stop a selector did not
+resolve at, `continue --to` says when the session's breakpoint came first, a `void`
+function's step out returns no value, and a step onto the breakpoint's line is not a hit."""
 
 import json
 import os
@@ -63,15 +65,15 @@ def state_of(capsys, *argv):
 
 @pytest.mark.timeout(180)
 def test_a_step_out_an_exception_cut_short_never_says_returned(program, cxx, capsys):
-    # Review of #274: `step --out` of `g(0)`, which throws, stopped in `f(1)`'s call of
-    # `g` from the same place (the return watch), and the state said "returned from".
+    # `step --out` of `g(0)`, which throws, stops in `f(1)`'s call of `g` from the same
+    # place (the return watch), and the state doesn't say "returned from".
     assert main(["session", "start", str(program), "--at", str(line_of("THROW"))]) == 0
     capsys.readouterr()
     try:
         assert main(["session", "step", "--out"]) == 0
         out = capsys.readouterr().out
         lines = out.splitlines()
-        # GCC's names for static functions, from their declarations (#167), read as
+        # GCC's names for static functions, from their declarations, read as
         # clang's (`f(int)`, not `::f(int)`).
         assert lines[0].startswith("state: stopped at ") and " in f(int) " in lines[0], out
         assert lines[1] == "note: left `g(int)`; now in `f(int)`", out
@@ -106,7 +108,6 @@ def test_a_step_an_exception_ended_says_nothing_of_calls_or_scopes(program, caps
         main(["session", "close"])
 
 
-# The evaluation's case, as the agent had it.
 SCHED = """#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -169,8 +170,8 @@ def run(capsys, *argv):
 
 @pytest.mark.timeout(180)
 def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, cxx, capsys):
-    # Finding 15: `session get a.name` at the wrong stop printed `<cannot expand 'a'
-    # (leaf; value 4)>` without naming the stop's function (`main`).
+    # `session get a.name` at the wrong stop names the stop's function (`main`), not only
+    # `<cannot expand 'a' (leaf; value 4)>`.
     code, out = run(capsys, "session", "start", sched, "--at", "30", *ARGS)
     assert code == 0 and "hit 1" in out, out
     try:
@@ -184,11 +185,11 @@ def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, cxx, capsys):
         code, out = run(capsys, "session", "get", "pos")
         assert code == 0 and "note:" not in out, out
         for _ in range(4):
-            # Hits 2 to 4 of line 30 first (finding 5), then the comparator.
+            # Hits 2 to 4 of line 30 first, then the comparator.
             code, out = run(capsys, "session", "continue", "--to", "17")
         code, out = run(capsys, "session", "get", "a.name", "b.nope")
         assert code == 1 and "cannot expand 'a'" not in out, out
-        # GCC's name for a static function, from its declaration (#167), shown without
+        # GCC's name for a static function, from its declaration, shown without
         # the global scope's `::`.
         before = (
             "before(const Task &, const Task &)"
@@ -202,8 +203,8 @@ def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, cxx, capsys):
 
 @pytest.mark.timeout(180)
 def test_continue_to_says_when_the_sessions_breakpoint_came_first(sched, capsys):
-    # Finding 5: `session continue --to 17` stopped first at the session's own
-    # breakpoint (line 30, hit 2), with no note that line 17 was not reached.
+    # `session continue --to 17` stops first at the session's own breakpoint (line 30,
+    # hit 2), and notes that line 17 was not reached.
     code, out = run(capsys, "session", "start", sched, "--at", "30", *ARGS)
     assert code == 0 and "hit 1" in out, out
     try:
@@ -222,7 +223,7 @@ def test_continue_to_says_when_the_sessions_breakpoint_came_first(sched, capsys)
             code, out = run(capsys, "session", "continue", "--to", "17")
         # Past the parsing loop, line 17 comes first: no note. Nor one on the comparator
         # being a call std::sort made: a continue's stop is never compared with the stop
-        # it left, whose stack can look like another activation's (review of #274).
+        # it left, whose stack can look like another activation's.
         assert code == 0 and "sched.cpp:17" in out and "note:" not in out, out
         # No call reaches line 18 on this input (no two tasks tie on both keys).
         code, out = run(capsys, "session", "continue", "--to", "18", "--json")

@@ -1,7 +1,5 @@
-"""The thirteenth agent evaluation's Lows in a C++ build (#385): a map ordered by a lambda
-shows the compiler's name for it, not the typedef LLDB names it by; its preview says how
-to read the entries it leaves out; and lldb-dap 18's notes on a GCC build are whole once
-per build, then short."""
+"""lldb-dap 18's notes on a GCC C++ build are whole once per build, then short; a build id
+names the sources and the compiler that make a build."""
 
 import json
 import os
@@ -73,7 +71,7 @@ def test_lldb_dap_18s_notes_are_whole_once_per_build(program, capsys):
         assert "the debugger again sent more text as Peeky closed the session" in again, again
     shown = json.loads(probe(capsys, "name", "--json"))
     assert any("_M_local_buf" in warning for warning in shown["warnings"]), shown["warnings"]
-    # Review of PR #389: a candidate, and the same target with its source changed, are
+    # A candidate, and the same target with its source changed, are
     # other builds, whose first probe says it whole again.
     out = probe(capsys, "name", *EDIT)
     assert "_M_local_buf" in out and SHORT not in out, out

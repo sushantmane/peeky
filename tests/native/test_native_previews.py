@@ -1,7 +1,5 @@
-"""C struct, union and array previews (#136), on real builds.
-
-Found by the sixth agent evaluation's `histo` case: `bins  bin[4] @ 0x16bb9f278`, so the
-agent listed eight selectors by hand to read the bins' bounds.
+"""C struct, union and array previews, on real builds: `bins` shows its elements' fields,
+where `bins  bin[4] @ 0x16bb9f278` would need eight selectors to read the bins' bounds.
 """
 
 import contextlib
@@ -14,7 +12,6 @@ import pytest
 
 from peeky.cli import main
 
-# The evaluation's case, as the agent had it.
 HISTO = """#include <stdio.h>
 #include <stdlib.h>
 
@@ -149,7 +146,7 @@ def session(source, line, capsys, *extra):
 
 @pytest.mark.timeout(120)
 def test_the_histogram_bins_read_in_one_capture(c_program, capsys):
-    # #136: `bins  bin[4]  bin[4] @ 0x16bb9f278` and `bins[3]  bin  bin @ 0x…`.
+    # Not `bins  bin[4]  bin[4] @ 0x16bb9f278` and `bins[3]  bin  bin @ 0x…`.
     source = c_program("histo.c", HISTO)
     args = ["--arg", "0", "--arg", "7", "--arg", "7"]
     capture = "bins,bins[3],bins[3].hi"
@@ -157,7 +154,7 @@ def test_the_histogram_bins_read_in_one_capture(c_program, capsys):
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     assert rows["bins"]["value"] == BINS, rows["bins"]
     assert rows["bins[3]"]["value"] == "{lo = 6, hi = 7, count = 0}", rows["bins[3]"]
-    # A field stays selectable, and settable, as before (#105, #141).
+    # A field stays selectable, and settable.
     assert rows["bins[3].hi"]["value"] == "7" and rows["bins[3].hi"]["settable"] is True
     # The evidence store keeps the preview as the value.
     assert main(["sql", "SELECT value FROM last_run WHERE selector = 'bins'", "--json"]) == 0
@@ -258,9 +255,9 @@ def configured(tmp_path, name, compiler, optimization="O0"):
 @pytest.mark.parametrize("compiler", ["clang", "gcc"])
 @pytest.mark.parametrize("optimization", ["O1", "O2"])
 def test_an_optimized_build_previews_nothing(c_program, tmp_path, capsys, compiler, optimization):
-    # Review of #136: at -O1 and -O2 a struct with an address previewed values the
-    # optimizer had not stored yet (GCC: `t = {x = 64, y = 0, z = 0}` where the program
-    # printed {5, 6, 7}). As for Rust, an optimized build shows the debugger's `T @ 0x…`.
+    # At -O1 and -O2 a struct with an address may hold values the optimizer has not stored
+    # yet (GCC: `t = {x = 64, y = 0, z = 0}` where the program prints {5, 6, 7}). As for
+    # Rust, an optimized build shows the debugger's `T @ 0x…`.
     built = os.environ.get("PEEKY_NATIVE_CC", "clang") if compiler == "clang" else _gcc()
     if built is None:
         pytest.skip("needs GCC")
@@ -315,13 +312,13 @@ int main(int argc, char **argv) {
 def test_what_the_debug_information_cannot_vouch_for_is_not_previewed(
     c_program, tmp_path, capsys, compiler
 ):
-    # Review of #136, with clang and GCC: a variable-length array previewed another's
-    # length (clang: `a = [10, 11, 12, 0, -1882931200, 1]`) or a wrong one (GCC: `b` as
-    # `int[5]`, holding 6); `npp[0]` on a pointer to a pointer previewed the struct where
-    # the pointer belongs; `op[0]` on a pointer to an incomplete type showed `{}`; a
-    # char-typed bitfield read as an unsigned character (`sc = '\\x05'` for -3); a wide
-    # character array ended at its first NUL (`L"a"`); an unnamed bitfield LLDB adds
-    # showed as `0`; a typedef'd array as `{[0] = 1, …}`.
+    # With clang and GCC, previews that trust the debugger go wrong: a variable-length
+    # array previewed another's length (clang: `a = [10, 11, 12, 0, -1882931200, 1]`) or
+    # a wrong one (GCC: `b` as `int[5]`, holding 6); `npp[0]` on a pointer to a pointer
+    # previewed the struct where the pointer belongs; `op[0]` on a pointer to an
+    # incomplete type showed `{}`; a char-typed bitfield read as an unsigned character
+    # (`sc = '\\x05'` for -3); a wide character array ended at its first NUL (`L"a"`); an
+    # unnamed bitfield LLDB adds showed as `0`; a typedef'd array as `{[0] = 1, …}`.
     built = os.environ.get("PEEKY_NATIVE_CC", "clang") if compiler == "clang" else _gcc()
     if built is None:
         pytest.skip("needs GCC")
@@ -396,11 +393,11 @@ int main(void) {
 
 @pytest.mark.timeout(120)
 def test_what_is_read_through_a_noted_local_carries_its_note(c_program, capsys):
-    # Review 2 of #136: a local Peeky shows but cannot vouch for (declared below a stop
-    # after `setjmp`, a `do` body's first line) carried its note, but its preview's
-    # fields and its children did not: `late.lo` read `{x = 1073741824, y = 0}`, plain.
-    # #148's notes (read through the local) cover previews too, and the evidence keeps
-    # them with the preview's text.
+    # A local Peeky shows but cannot vouch for (declared below a stop after `setjmp`, a
+    # `do` body's first line) carries its note, and so do its preview's fields and its
+    # children: plain, `late.lo` would read `{x = 1073741824, y = 0}`. The notes (read
+    # through the local) cover previews too, and the evidence keeps them with the
+    # preview's text.
     source = c_program("noted.c", NOTED)
     for marker, root, fields in (
         ("// STOP", "late", ("late.lo", "late.lo.x", "late.tag")),

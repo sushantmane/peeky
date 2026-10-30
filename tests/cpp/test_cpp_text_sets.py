@@ -1,8 +1,8 @@
-"""Setting a C++ `std::string` to a text (#137 part 2), on real builds: libc++ (macOS)
+"""Setting a C++ `std::string` to a text, on real builds: libc++ (macOS)
 and libstdc++ (Linux). The text, its NUL and the new size go in the string's own buffer
 or its heap buffer, within its current capacity: never reallocating, never past it.
 
-Built by clang and by g++ (#167). LLDB 18 and 20 read GCC's string buffer (`char[16]`)
+Built by clang and by g++. LLDB 18 and 20 read GCC's string buffer (`char[16]`)
 as `char[0]`, so a text in it cannot be set character by character: lldb-dap 20, which
 reads memory but has no writeMemory request, writes it with LLDB's `memory write`."""
 
@@ -16,7 +16,7 @@ from peeky.cli import main
 
 
 def _refused_code(result):
-    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    # A probe refused before it ran exits 2; a refusal at a stop, 1.
     return 2 if result.get("refused_before_launch") else 1
 
 
@@ -74,8 +74,7 @@ def refusal(code, result, *texts):
 
 @pytest.mark.timeout(300)
 def test_a_std_string_takes_a_text_within_its_capacity(texts, cxx, capsys):
-    # #137 part 2: `--set shortv="pear"` was refused ("Native mutations require bounded
-    # decimal integer literals").
+    # `--set shortv="pear"` changes the string's text.
     reads, writes = debugger(capsys, texts)
     code, result = probe(capsys, texts, "--set", 'shortv="pear"')
     if not reads:
@@ -142,8 +141,8 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(texts, cxx, capsys):
-    # #164 review: `const std::string cs` was changed and marked [settable] (undefined
-    # behavior); a string_view taken before a change keeps the old size, unseen.
+    # `const std::string cs` is never changed or marked [settable] (that would be
+    # undefined behavior); a string_view taken before a change keeps the old size, unseen.
     source = texts.parent / "views.cpp"
     source.write_text(VIEWS)
     look = next(i for i, text in enumerate(VIEWS.splitlines(), 1) if "// LOOK" in text)
@@ -188,7 +187,7 @@ def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(tex
     assert "std::string_view" in note and "old size" in note, note
     assert f"Changed `s`: {note}" in result["warnings"], result["warnings"]
     # libc++ keeps the allocation's size in `__cap_`: capacity() 47 for reserve(40),
-    # all of it usable (one byte short before #164's review).
+    # all of it usable.
     assert "CAP:47" in result["output"], result["output"]
     code = main([*at, "--set", f's="{"c" * 47}"', "--json", "--quiet"])
     result = json.loads(capsys.readouterr().out)
@@ -198,7 +197,6 @@ def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(tex
     assert code == 1 and "with room for 47 bytes" in result["error"]["message"], result
 
 
-# The evaluation's case, as the agent had it.
 STOCK = """#include <cstdio>
 #include <map>
 #include <string>
@@ -256,9 +254,8 @@ def line_of(text, marker):
 
 @pytest.mark.timeout(240)
 def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, cxx, capsys):
-    # #137 part 2 (sixth evaluation, `stock`): the names with a trailing space were the
-    # bug; setting `name` to the trimmed text, which a string's change now does, shows
-    # that trimming them is the fix, without changing the parser's offsets.
+    # The names with a trailing space are the bug; setting `name` to the trimmed text
+    # shows that trimming them is the fix, without changing the parser's offsets.
     source = cpp("stock.cpp", STOCK)
     qty = line_of(STOCK, "long qty = ")
     add = line_of(STOCK, "stock[name] += qty")

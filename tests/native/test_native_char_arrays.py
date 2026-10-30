@@ -1,7 +1,7 @@
-"""A C character array shows its text up to its first NUL, and a note of what follows it
-(thirteenth evaluation): `char name[32]` holding a name, its NUL and leftovers showed
-`"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`, so the leftovers read as part of the text,
-a byte had two spellings, and SQL's `text()` gave NULL."""
+"""A C character array shows its text up to its first NUL, and a note of what follows it.
+Shown whole, `char name[32]` holding a name, its NUL and leftovers reads
+`"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`: the leftovers look like part of the text,
+a byte has two spellings, and SQL's `text()` gives NULL."""
 
 import json
 import os
@@ -127,11 +127,11 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_bytes_past_an_unreadable_page_are_never_called_nuls(arrays, capsys):
-    # Review of #390: LLDB's summary formats what part of its read succeeded, so
-    # `r.label`, whose last 10 bytes are on a page past a mapped file's end, read
-    # `"abcdef"` as if NULs followed: `"abcdef" (then 10 NUL bytes)`. Peeky reads the
-    # bytes after a summary again only where the array is reached through nothing in
-    # doubt (round 2): `r` isn't proven to point at a live object, so they are not read.
+    # LLDB's summary formats what part of its read succeeded, so `r.label`, whose last
+    # 10 bytes are on a page past a mapped file's end, reads `"abcdef"` as if NULs
+    # followed: `"abcdef" (then 10 NUL bytes)`. Peeky reads the bytes after a summary again
+    # only where the array is reached through nothing in doubt: `r` isn't proven to point
+    # at a live object, so they are not read.
     # (A page that is only `PROT_NONE`, or unmapped, won't do: Linux's ptrace reads the
     # one, and LLDB may map the other for itself.)
     path = arrays.with_name("edge.c")
@@ -177,10 +177,10 @@ int main(void) {
 
 @pytest.mark.timeout(120)
 def test_a_long_char_array_shows_where_its_text_ends(arrays, capsys):
-    # wrap 7: `out->text` (a `char[8192]`) showed `"    The quick brown fox"...`, whose
-    # `...` suggests a cut where the text ended at its NUL (LLDB adds it to any array
-    # past its 1024-byte summary limit), and `<children: Variable collection exceeds
-    # bounded expansion limit>`.
+    # LLDB shows `out.text` (a `char[8192]`) as `"    The quick brown fox"...`, whose `...`
+    # suggests a cut where the text ends at its NUL (LLDB adds it to any array past its
+    # 1024-byte summary limit), with `<children: Variable collection exceeds bounded
+    # expansion limit>`.
     path = arrays.with_name("texts.c")
     path.write_text(TEXTS)
     line = next(i for i, text in enumerate(TEXTS.splitlines(), 1) if "/* SHOW */" in text)

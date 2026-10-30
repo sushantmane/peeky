@@ -1,4 +1,4 @@
-"""C++ struct, class and array previews (#136), on real builds: bases, a vtable,
+"""C++ struct, class and array previews, on real builds: bases, a vtable,
 anonymous members, unions, references and standard-library members."""
 
 import contextlib
@@ -118,11 +118,11 @@ def test_classes_previews_follow_lldb_and_never_guess(cpp, capsys):
         assert rows["rp"]["value"].endswith(" {x = 1, y = 2}"), rows["rp"]
         assert rows["rp"]["value"].startswith("0x") and rows["pp"]["value"].startswith("0x")
         assert " {" not in rows["pp"]["value"], rows["pp"]
-        # A vector or map shows its first elements (#181), typed by its template's
-        # arguments in the debug information; a string its checked text (#128).
+        # A vector or map shows its first elements, typed by its template's arguments in
+        # the debug information; a string its checked text.
         assert rows["vp"]["value"] == "size=2 [{x = 1, y = 2}, {x = 3, y = 4}]", rows["vp"]
         assert rows["mp"]["value"] == "size=1 {1: {x = 5, y = 6}}", rows["mp"]
-        # A value inside one is typed by them too (review of #136 found none was).
+        # A value inside one is typed by them too.
         assert rows["mp[1]"]["value"] == "{x = 5, y = 6}", rows["mp[1]"]
         mixed = rows["mixed"]["value"]
         tail = ", v = size=2 [1, 2], ratio = 0.5, ok = true, c = 'z'}"
@@ -131,7 +131,7 @@ def test_classes_previews_follow_lldb_and_never_guess(cpp, capsys):
             assert mixed.startswith('{s = "hi"'), mixed
         # Declared below the stop: no value, so no preview.
         assert rows["later"].get("unavailable") and "value" not in rows["later"]
-        # Fields stay selectable and marked as before (#141).
+        # Fields stay selectable and marked.
         fields = {c["selector"]: c for c in rows["pts[1]"]["children"]}
         assert fields["pts[1].x"]["value"] == "2" and fields["pts[1].x"].get("settable") is True
     with session(cpp, line_of(SHAPES, "// IN_AREA"), capsys) as get:
@@ -163,7 +163,7 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_an_optimized_cpp_build_previews_nothing(cpp, tmp_path, capsys):
-    # Review of #136: an optimized build's structs may hold values the optimizer has
+    # An optimized build's structs may hold values the optimizer has
     # not stored yet; as for Rust, they keep the debugger's `T @ 0x…`.
     (tmp_path / "opt.cpp").write_text(OPTIMIZED)
     config = tmp_path / "native.json"
@@ -214,10 +214,10 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_types_the_debug_information_gives_never_the_names(cpp, tmp_path, capsys):
-    # Review of #136: `Hold<int[1]> hs[5]` previewed one element (the count was the type
-    # name's first `[1]`), `Hold<char[2]> hc[3]` two; a typedef'd array read
-    # `{[0] = 1, …}`; a char-typed bitfield `'\\x05'`; a wide or UTF-16/32 array ended at
-    # its first NUL (`L"a"`); an unnamed bitfield LLDB adds showed as `0`.
+    # Types read from their names go wrong: `Hold<int[1]> hs[5]` previewed one element (the
+    # count was the type name's first `[1]`), `Hold<char[2]> hc[3]` two; a typedef'd array
+    # read `{[0] = 1, …}`; a char-typed bitfield `'\\x05'`; a wide or UTF-16/32 array ended
+    # at its first NUL (`L"a"`); an unnamed bitfield LLDB adds showed as `0`.
     (tmp_path / "templates.cpp").write_text(TEMPLATES)
     line = line_of(TEMPLATES, "// HERE")
     selectors = "hs,hc,fx,grid,rows,bits,bits.sc,w,u,U"
@@ -239,7 +239,7 @@ def test_types_the_debug_information_gives_never_the_names(cpp, tmp_path, capsys
     rows = {row["selector"]: row["value"] for row in result["rows"]}
     tags = ", ".join(f"{{v = […], tag = {i}}}" for i in range(5))
     assert rows["hs"] == f"[{tags}]", rows["hs"]
-    # A char array shows its text up to its NUL, and what follows it (thirteenth evaluation).
+    # A char array shows its text up to its NUL, and what follows it.
     held = ", ".join(f'{{v = "{c}" (then 1 NUL byte), tag = {i}}}' for i, c in enumerate("abc", 1))
     assert rows["hc"] == f"[{held}]", rows
     assert rows["fx"] == "[{data = […]}, {data = […]}]", rows["fx"]
@@ -272,10 +272,10 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_fields_lldb_reads_wrongly_or_cannot_tell_apart_have_no_value(cpp, tmp_path, capsys):
-    # Review 2 of #136: a wide character bitfield (`char16_t w : 9` holding u'a') read
-    # `u'̍'` (U+030D): LLDB reads its bits elsewhere, so it has no value, in the preview
-    # and its own row. `struct B2 : A2 { int A2; }` previewed `{A2 = A2 @ 0x…, A2 = 60}`:
-    # a base and a member of one name cannot be told apart, so no preview.
+    # LLDB reads a wide character bitfield (`char16_t w : 9` holding u'a') as `u'̍'`
+    # (U+030D), its bits from elsewhere, so it has no value, in the preview and its own
+    # row. `struct B2 : A2 { int A2; }` gets no preview, not `{A2 = A2 @ 0x…, A2 = 60}`: a
+    # base and a member of one name cannot be told apart.
     (tmp_path / "bits.cpp").write_text(BITS)
     line = line_of(BITS, "// HERE")
     capture = "e,e.w,e.wc,e.u,e.i8,b2,ok"

@@ -1,4 +1,4 @@
-"""#138: C and C++ probes refuse a `--set` no stop of the build can apply before the
+"""C and C++ probes refuse a `--set` no stop of the build can apply before the
 program runs: every change in an optimized build, a field through a pointer at -O0. A
 -O0 parameter (spilled to the frame) is still changed."""
 
@@ -95,9 +95,8 @@ def test_sets_no_stop_allows_are_refused_before_the_run(tmp_path, language):
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_an_index_is_judged_as_the_stop_reads_it(tmp_path, language):
-    # Review of #138: `sp[-1].end` and `sp[01].end` change `sp[1].end` at the stop (the
-    # walk counts `-1` from the array's end and reads `01` as 1), but were refused before
-    # the run ("`sp` is an array: select an element as `sp[0]`").
+    # `sp[-1].end` and `sp[01].end` change `sp[1].end` at the stop (the walk counts `-1`
+    # from the array's end and reads `01` as 1), so they are not refused before the run.
     name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
     (tmp_path / name).write_text(SOURCE)
     debug, at = target(language, "O0"), line_of("ARR")
@@ -134,9 +133,8 @@ int main(void) {
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_final_index_is_set_as_it_is_read_and_marked(tmp_path, language):
-    # Review of #138: `arr[03]`, `sh[-1]`, `np.arr[-1]`, `gr.g[1][-4]` read and were
-    # marked [settable], then `set` refused them ("a negative index can be changed only
-    # in a Java array", "'[03]' is not a field or element the debugger lists there").
+    # `arr[03]`, `sh[-1]`, `np.arr[-1]`, `gr.g[1][-4]` read, are marked [settable], and
+    # `set` changes them as it reads them.
     name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
     (tmp_path / name).write_text(INDEXES)
     at = next(i for i, text in enumerate(INDEXES.splitlines(), 1) if "IDX" in text)
@@ -154,7 +152,7 @@ def test_a_final_index_is_set_as_it_is_read_and_marked(tmp_path, language):
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_previews_fields_are_marked_as_set_treats_them(tmp_path, language):
-    # #138 with #146: a struct's preview keeps its fields' marks, as `set` judges them:
+    # A struct's preview keeps its fields' marks, as `set` judges them:
     # the frame's own struct's field is [settable] and changed; one reached through a
     # pointer is not, and is refused before the run.
     name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
@@ -191,8 +189,8 @@ int main(int argc, char **argv) {
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_root_of_no_writable_integer_type_is_refused_before_the_run(tmp_path, language):
-    # Twelfth evaluation's preparation: `--set-at LINE@2 tracks=2` of a `const long` ran to
-    # its stop, then was refused there, though the debug information gives its type.
+    # `--set-at LINE@2 tracks=2` of a `const long` is refused before the run: the debug
+    # information gives its type, so it need not run to its stop to learn that.
     name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
     (tmp_path / name).write_text(CONSTS)
     at = next(i for i, text in enumerate(CONSTS.splitlines(), 1) if "LOOP" in text)
@@ -224,10 +222,10 @@ int main(void) {
 
 @pytest.mark.timeout(240)
 def test_a_bit_precise_integer_is_judged_by_its_name_not_its_width(tmp_path):
-    # Review of PR #335: `_BitInt(32)` is a 4-byte DW_ATE_signed. lldb-dap on macOS shows it
-    # as `_BitInt(32)`, which the stop refuses by name, so a probe ran to its stop to learn
-    # that; LLDB 18 and 20 show it as `int`, and changed it. Neither the debug information's
-    # name nor the stop's list admits it: refused before the run, and never marked.
+    # `_BitInt(32)` is a 4-byte DW_ATE_signed. lldb-dap on macOS shows it as `_BitInt(32)`,
+    # which the stop refuses by name, so a probe would run to its stop to learn that; LLDB
+    # 18 and 20 show it as `int`, and would change it. Neither the debug information's name
+    # nor the stop's list admits it: refused before the run, and never marked.
     debug = target("c", "O0")
     if "gcc" in os.path.basename(debug.compiler):
         pytest.skip("GCC 13 has no `_BitInt`; the clang lanes build this case")

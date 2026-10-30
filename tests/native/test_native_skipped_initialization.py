@@ -1,5 +1,7 @@
-"""The ninth agent evaluation's C findings (wrap), on real builds: a caller frame's loop
-counter, a withheld local's reason, and `session get`'s exit status."""
+"""Locals whose initialization may have been skipped, on real C and C++ builds: a loop
+counter read from a caller frame or mid-line, a local a macro's block lies between, and a C++
+`for` header's later declarator are withheld, and say why. `session get`'s exit status names
+the selector that had no value."""
 
 import json
 import os
@@ -45,11 +47,9 @@ def line_of(marker):
 
 @pytest.mark.timeout(120)
 def test_a_callers_loop_counter_says_where_to_read_it_and_a_missing_name_is_named(program, capsys):
-    # wrap 4: `session get --frame 1 i` in `wrap`, a caller inside its `for` loop, said
-    # `no value yet: declared on line 35, whose code this caller frame has not
-    # finished`. It stays withheld (review of PR #214: a call a macro hides in the
-    # initializer, or a `goto` into the body, leaves leftovers there), and says why and
-    # where the counter can be read.
+    # `session get --frame 1 i` in a caller inside its `for` loop is withheld (a call a
+    # macro hides in the initializer, or a `goto` into the body, leaves leftovers there),
+    # and says why and where the counter can be read.
     assert main(["session", "start", str(program), "--at", str(line_of("TWICE"))]) == 0
     capsys.readouterr()
     try:
@@ -64,7 +64,7 @@ def test_a_callers_loop_counter_says_where_to_read_it_and_a_missing_name_is_name
             "frame. It is declared in this caller frame's `for` header, on line 11, and Peeky "
             "cannot prove the loop has run its initialization: its storage may hold leftovers"
         ), rows["i"]
-        # wrap 6: exit 1 said nothing of which selector had no value.
+        # Exit 1 says which selector had no value.
         assert main(["session", "get", "--frame", "1", "total", "nosuch"]) == 1
         captured = capsys.readouterr()
         assert "total: int = 2" in captured.out
@@ -85,9 +85,9 @@ def test_a_callers_loop_counter_says_where_to_read_it_and_a_missing_name_is_name
 
 @pytest.mark.timeout(120)
 def test_a_withheld_locals_reason_names_no_jump_the_code_may_not_have(program, capsys):
-    # wrap 5: a withheld `len` blamed "a jump (a `switch` or a `goto`)" in a function
-    # with neither. Here macros open and close a block between the declaration and the
-    # stop, which Peeky cannot read through.
+    # A withheld `len` blames no jump (a `switch` or a `goto`) in a function with neither.
+    # Here macros open and close a block between the declaration and the stop, which Peeky
+    # cannot read through.
     code = main(
         ["probe", str(program), "--at", str(line_of("PRINT")), "--capture", "len", "--json"]
         + ["--no-save", "--quiet"]
@@ -132,9 +132,9 @@ int main(int argc, char **argv) {
 
 @pytest.mark.timeout(180)
 def test_a_loop_counter_whose_initialization_may_not_have_run_is_withheld(program, capsys):
-    # Review of PR #214: a call a macro hides in the initializer (`int i = INIT`), and a
-    # `goto` into the body past `int j = 0`, each left leftovers where the header's
-    # text alone had been taken to prove the counter set.
+    # A call a macro hides in the initializer (`int i = INIT`), and a `goto` into the body
+    # past `int j = 0`, each leave leftovers, though the header's text alone reads as
+    # setting the counter.
     path = program.parent / "skips.c"
     path.write_text(SKIPS)
     lines = {
@@ -201,9 +201,9 @@ int main(int argc, char **argv) {
 def test_a_one_line_loops_variable_its_header_may_not_have_set_is_withheld_mid_line(
     program, capsys, sink, line, name
 ):
-    # Review round 2 of PR #214: back from a call in a one-line loop's body (`step
-    # --out`), a header's variable read as live mid-line though the header sets nothing
-    # (`int i;`), or a `goto` into the body skipped `int k = 0`: both leftovers.
+    # Back from a call in a one-line loop's body (`step --out`), mid-line, a header's
+    # variable holds leftovers where the header sets nothing (`int i;`), or where a `goto`
+    # into the body skipped `int k = 0`.
     path = program.parent / "midline.c"
     path.write_text(MIDLINE)
     lines = {
@@ -247,9 +247,8 @@ int main(void) {
 
 @pytest.mark.timeout(120)
 def test_an_asm_goto_may_skip_a_one_line_loops_initialization(program, capsys):
-    # Review round 3 of PR #214: a GNU `asm goto` names its labels as operands, so no
-    # `goto inside` was seen and `k` read as live mid-line. This one never jumps, but
-    # the source cannot show that: `k` is withheld.
+    # A GNU `asm goto` names its labels as operands, with no `goto inside` in the source.
+    # This one never jumps, but the source cannot show that: `k` is withheld mid-line.
     path = program.parent / "asmgoto.c"
     path.write_text(ASMGOTO)
     lines = {
@@ -291,9 +290,9 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_cpp_declarator_after_one_that_constructs_is_withheld_mid_line(program, capsys):
-    # Review round 3 of PR #214: `X j = 0` runs `X::X(int)` before `*i = nullptr` is
-    # set, so back from it (`step --out`) `i` is not set yet: in C++ only a header's
-    # first declarator counts as set by no call.
+    # `X j = 0` runs `X::X(int)` before `*i = nullptr` is set, so back from it (`step
+    # --out`) `i` is not set yet: in C++ only a header's first declarator counts as set by
+    # no call.
     path = program.parent / "declarators.cpp"
     path.write_text(DECLARATORS)
     lines = {

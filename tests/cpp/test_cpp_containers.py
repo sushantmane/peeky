@@ -1,4 +1,4 @@
-"""Standard containers previewed by their elements (#181), on real builds: libc++ on
+"""Standard containers previewed by their elements, on real builds: libc++ on
 macOS, libstdc++ on Linux. Each element is shown as the class template's argument in the
 build's debug information says, read from the debugger's children (its formatter reads
 `size()` of them from the container's own storage)."""
@@ -106,7 +106,7 @@ def whole():
 
 
 def texts_match(shown, expected):
-    """A preview with strings: as expected, or, where strings are not read whole (#128),
+    """A preview with strings: as expected, or, where strings are not read whole,
     with `<no value>` in place of any of them."""
     if shown == expected or whole():
         return shown == expected
@@ -135,8 +135,8 @@ def session(source, line, capsys):
 
 @pytest.mark.timeout(120)
 def test_probe_rows_show_a_containers_first_elements(cpp, capsys):
-    # #181: `have` (`std::vector<std::string>`) showed only `size=3`; its `have[2] = ""`
-    # was the bug's evidence. A struct holding a vector showed `{v = size=2, n = 3}`.
+    # `have` (`std::vector<std::string>`) shows its elements, not only `size=3`, and a
+    # struct holding a vector its vector's, not `{v = size=2, n = 3}`.
     source = cpp / "shapes.cpp"
     source.write_text(SHAPES)
     selectors = [*EXPECTED, *TEXTS, "um", "mm"]
@@ -146,8 +146,8 @@ def test_probe_rows_show_a_containers_first_elements(cpp, capsys):
     result = json.loads(capsys.readouterr().out)
     rows = {row["selector"]: row.get("value") for row in result["rows"]}
     assert "moved=0 " in result["output"], result["output"]
-    # GCC's unordered containers, which LLDB counts as empty (#167), are read from their
-    # own nodes (#360), their strings too.
+    # GCC's unordered containers, which LLDB counts as empty, are read from their own
+    # nodes, their strings too.
     for selector, value in EXPECTED.items():
         assert rows[selector] == value, (selector, rows[selector])
     for selector, value in TEXTS.items():
@@ -157,7 +157,7 @@ def test_probe_rows_show_a_containers_first_elements(cpp, capsys):
         texts_match(rows["um"], f"size=2 {{{a}, {b}}}")
         for a, b in (('1: "one"', '2: "two"'), ('2: "two"', '1: "one"'))
     ), rows["um"]
-    # A multimap's keys repeat: its summary alone (#119 reads it by position).
+    # A multimap's keys repeat: its summary alone (a selector reads it by position).
     assert rows["mm"] == "size=2", rows["mm"]
 
 
@@ -175,7 +175,7 @@ def test_session_rows_references_pointers_and_listings(cpp, capsys):
         assert rows["ptr[0]"]["value"] == "size=3 [1, 2, 3]", rows["ptr[0]"]
     with session(source, line_of(SHAPES, "// HERE"), capsys) as get:
         rows = get("m", "named")
-        # A map's entries keep #119's key selectors, now with their values' previews.
+        # A map's entries keep their key selectors, with their values' previews.
         listed = {c["selector"]: c["value"] for c in rows["m"]["children"]}
         assert listed == {"m[1]": "10", "m[2]": "20", "m[5]": "50"}, listed
         listed = {c["selector"]: c["value"] for c in rows["named"]["children"]}
@@ -216,7 +216,7 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_a_container_a_library_call_is_changing_keeps_its_summary(cpp, capsys):
-    # #181: during `o.items.clear()`, the second element's destructor runs while the
+    # During `o.items.clear()`, the second element's destructor runs while the
     # vector still counts the first, already destroyed (its string's memory freed): the
     # debugger lists it, but no preview shows it. Below calls of the program's own, the
     # same vector reads.
@@ -239,7 +239,7 @@ def test_a_container_a_library_call_is_changing_keeps_its_summary(cpp, capsys):
         rows = get("o.items", frame=caller)
         shown = rows["o.items"]
         assert shown["value"] == "size=2", shown
-        # Nor its elements, one of which is destroyed: they are withheld (#187).
+        # Nor its elements, one of which is destroyed: they are withheld.
         for child in shown["children"]:
             assert child.get("unavailable") and not child.get("value"), child
         # Reached through a pointer from the destructor's own frame: the same.
@@ -268,7 +268,7 @@ def test_a_container_not_yet_constructed_or_in_an_optimized_build_is_not_preview
     source.write_text(GUARDS)
     probe = ["probe", str(source), "--capture", "got", "--hits", "3", "--json"]
     # Before its declaration has run, a later pass's storage holds the last pass's
-    # vector, destroyed (#121, #140): withheld, never previewed.
+    # vector, destroyed: withheld, never previewed.
     for marker in ("// TOP", "// DECL"):
         assert main([*probe, "--at", str(line_of(GUARDS, marker))]) == 0
         for row in json.loads(capsys.readouterr().out)["rows"]:
@@ -276,7 +276,7 @@ def test_a_container_not_yet_constructed_or_in_an_optimized_build_is_not_preview
     assert main([*probe, "--at", str(line_of(GUARDS, "// USE"))]) == 0
     values = [row["value"] for row in json.loads(capsys.readouterr().out)["rows"]]
     assert values == ["size=2 [0, 0]", "size=3 [1, 1, 1]", "size=4 [2, 2, 2, 2]"], values
-    # An optimized build: the debugger's summary alone, as for a struct (#136).
+    # An optimized build: the debugger's summary alone, as for a struct.
     config = cpp / "native.json"
     config.write_text(
         json.dumps(
@@ -318,7 +318,7 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_program_running_several_threads_shows_container_summaries(cpp, capsys):
-    # #181: a stop pauses every thread wherever it is; another one may be inside a
+    # A stop pauses every thread wherever it is; another one may be inside a
     # `push_back` on a container this frame holds or shares (`shared`, which the worker
     # thread changes through its capture).
     source = cpp / "threads.cpp"
@@ -359,9 +359,9 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_structured_binding_of_a_reference_is_read_as_one(cpp, capsys):
-    # Review of #181: clang types `items` of `auto &[items, dropped] = *owner` as the
-    # vector itself, at a location read through a pointer (`DW_OP_deref`). Taken for
-    # the frame's own vector, it previewed `size=2 [{value = 1, …}, {value = -99, …}]`
+    # Clang types `items` of `auto &[items, dropped] = *owner` as the vector itself, at a
+    # location read through a pointer (`DW_OP_deref`). Taken for the frame's own vector,
+    # it would preview `size=2 [{value = 1, …}, {value = -99, …}]`
     # at the second destructor `clear()` runs, the first element destroyed already.
     source = cpp / "binding.cpp"
     source.write_text(BINDING)
@@ -400,10 +400,10 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_container_whose_element_the_program_destroys_in_place_keeps_its_summary(cpp, capsys):
-    # Review of #181: `slot->~E(); ::new (slot) E(3);` in `main`, stopped in `E::~E()`:
-    # `main`'s `v` previewed `size=2 [{x = -7}, {x = 2}]`, an element whose lifetime
-    # had ended, with no library frame between. A constructor, destructor or assignment
-    # operator below the container's frame now withholds its elements.
+    # `slot->~E(); ::new (slot) E(3);` in `main`, stopped in `E::~E()`: `main`'s `v` holds
+    # `size=2 [{x = -7}, {x = 2}]`, an element whose lifetime has ended, with no library
+    # frame between. A constructor, destructor or assignment operator below the
+    # container's frame withholds its elements.
     source = cpp / "manual.cpp"
     source.write_text(MANUAL)
     with session(source, line_of(MANUAL, "// IN_E_DTOR"), capsys) as get:
@@ -452,10 +452,10 @@ int main() {
 
 @pytest.mark.timeout(120)
 def test_a_container_another_thread_is_relocating_keeps_its_summary(cpp, capsys):
-    # Review of #181: the worker thread is inside `emplace_back`, which has moved the
-    # element out (`x = -1` left behind) and is destroying it, when `main` stops: two
-    # threads, so `shared` shows its summary. Review of #187: and its element no value
-    # at all, nor what it holds (`shared[0].x` read the moved-from `-1`).
+    # The worker thread is inside `emplace_back`, which has moved the element out (`x = -1`
+    # left behind) and is destroying it, when `main` stops: two threads, so `shared` shows
+    # its summary, and its element no value at all, nor what it holds (`shared[0].x` would
+    # read the moved-from `-1`).
     source = cpp / "relocating.cpp"
     source.write_text(RELOCATING)
     line = line_of(RELOCATING, "// HERE")
@@ -506,10 +506,10 @@ CHANGING = "standard-library call"
 
 @pytest.mark.timeout(180)
 def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(cpp, capsys):
-    # #187: while `o.items.clear()` runs the second element's destructor, the vector
-    # still counts the first, destroyed: `o.items[1].name` in `main`'s frame read its
-    # freed string (`"\\U00000003\\0\\0…"`), with no note, and so did `items[1].name`
-    # through the reference parameter of a call the destructor makes.
+    # While `o.items.clear()` runs the second element's destructor, the vector still counts
+    # the first, destroyed: `o.items[1].name` in `main`'s frame would read its freed string
+    # (`"\\U00000003\\0\\0…"`), and so would `items[1].name` through the reference
+    # parameter of a call the destructor makes.
     source = cpp / "clearing.cpp"
     source.write_text(CLEARING)
     line = line_of(CLEARING, "// IN_NOTE")
@@ -537,7 +537,7 @@ def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(c
         rows = get(
             "o.items", "o.items[1].name", "o.items[0]", "o.tags[1]", "o.dropped", frame=caller
         )
-        # The container keeps its summary (#181); its elements, what they hold and any
+        # The container keeps its summary; its elements, what they hold and any
         # container of the frame are withheld with the reason.
         assert rows["o.items"]["value"] == "size=2", rows["o.items"]
         for child in rows["o.items"]["children"]:
@@ -558,8 +558,8 @@ def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(c
 def test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld(
     cpp, capsys
 ):
-    # #187 with #186's review: stopped in `E::~E()`, which `main`'s `slot->~E()` runs,
-    # `v[0].x` read the ended element (`-7`); no library frame is on the stack.
+    # Stopped in `E::~E()`, which `main`'s `slot->~E()` runs, `v[0].x` would read the
+    # ended element (`-7`); no library frame is on the stack.
     source = cpp / "manual.cpp"
     source.write_text(MANUAL)
     with session(source, line_of(MANUAL, "// IN_E_DTOR"), capsys) as get:

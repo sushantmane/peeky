@@ -134,8 +134,8 @@ int main() {
 @pytest.mark.timeout(120)
 def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys):
     # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a
-    # visible local here, yet the code means the static, not this->calls. #364: the static
-    # is read.
+    # visible local here, yet the code means the static, not this->calls. The static is
+    # read.
     (ring / "ring.cpp").write_text(STATIC)
     code = main(
         [
@@ -242,7 +242,7 @@ def test_writes_that_cannot_reach_the_program_are_never_reported_as_done(ring, c
             error = capsys.readouterr().err
             said = ["refused", "did not"]
             if cxx_is_gcc():
-                # GCC gives it no location (#167): neither read nor changed, and said so.
+                # GCC gives it no location: neither read nor changed, and said so.
                 said.append("neither read nor change it")
             assert "MUTATION_REJECTED" in error and any(text in error for text in said), error
         # The session is still usable, and a stored local takes a canonical literal.
@@ -276,9 +276,9 @@ int main() {
 
 @pytest.mark.timeout(180)
 def test_a_write_is_proven_a_no_op_by_its_debug_type_never_its_name(ring, cxx, capsys, monkeypatch):
-    # Review round 2 of PR #314: `typedef float int64_t;` (as in test_cpp_cli.py) read as
-    # an integer by its name, so `lossy: 1 -> 1` was marked as no change. The type the
-    # debug information gives, through typedefs, decides: a float's text proves nothing.
+    # `typedef float int64_t;` (as in BITS) reads as an integer by its name, but
+    # `lossy: 1 -> 1` is no proven no-op: the type the debug information gives, through
+    # typedefs, decides, and a float's text proves nothing.
     (ring / "td.cpp").write_text(TYPEDEF)
     monkeypatch.chdir(ring)
     stop = next(i for i, text in enumerate(TYPEDEF.splitlines(), 1) if "/* STOP */" in text)

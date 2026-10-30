@@ -1,5 +1,5 @@
 """C and C++ values the stopped frame reads while they are being built or after a jump
-past their initialization (#121): withheld, never shown as values."""
+past their initialization: withheld, never shown as values."""
 
 import json
 import os
@@ -100,8 +100,8 @@ def shown_at(capsys, path, line, *selectors, hit=1, steps=0, frame=0, out=False)
 
 
 def never_stops_at(capsys, path, line):
-    """GCC runs a default member initializer's code on the line that builds the object
-    (#167): `describe` leaves the member's line out, and `--at` it never stops."""
+    """GCC runs a default member initializer's code on the line that builds the object:
+    `describe` leaves the member's line out, and `--at` it never stops."""
     assert main(["describe", str(path), "--json"]) == 0
     lines = json.loads(capsys.readouterr().out)["breakpoint_lines"]
     assert line not in lines[path.name], lines
@@ -120,8 +120,8 @@ def withheld(row, *phrases):
 def test_an_aggregate_is_withheld_while_its_initializer_runs_in_the_stopped_frame(
     directory, capsys, suffix
 ):
-    # #121: clang puts no code on the declaration line of a nested struct, an array of
-    # structs or a 2-D array (or only part of it), so a stop inside the initializer read
+    # Clang puts no code on the declaration line of a nested struct, an array of structs
+    # or a 2-D array (or only part of it), so a stop inside the initializer would read
     # leftovers (`o.in.y = 20905`, `ps[1].x = -1530060163171811189`).
     source = AGGREGATES if suffix == "c" else AGGREGATES_CPP
     path = directory / f"aggregates.{suffix}"
@@ -197,8 +197,8 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_this_is_withheld_while_its_object_is_being_built(directory, cxx, capsys):
-    # #121: the stopped `Widget::Widget` showed `this.a = 20908` and `this.b = 20909`, and
-    # a lambda called inside `t`'s initializer showed `this.t.p` (its capture) unset.
+    # The stopped `Widget::Widget` would show `this.a = 20908` and `this.b = 20909`, and a
+    # lambda called inside `t`'s initializer would show `this.t.p` (its capture) unset.
     path = directory / "building.cpp"
     path.write_text(BUILDING)
     rows = shown_at(capsys, path, line_of(BUILDING, "// constructor body"), "this", "a", "x")
@@ -212,7 +212,7 @@ def test_this_is_withheld_while_its_object_is_being_built(directory, cxx, capsys
     assert rows["this"]["frame"] == 1 and withheld(rows["this"], "is building")
     rows = shown_at(capsys, path, line_of(BUILDING, "// lambda in t's"), "this", "this.t", "t")
     if cxx == "gcc":
-        # GCC passes a lambda its captures through `__closure` (#361): no `this`, and the
+        # GCC passes a lambda its captures through `__closure`: no `this`, and the
         # capture `t` is withheld as clang's `this` is.
         assert rows["this"]["error"] == "not found; visible: got, t", rows
         assert withheld(rows["t"], "this lambda is defined in the declaration of `t`")
@@ -226,7 +226,6 @@ def test_this_is_withheld_while_its_object_is_being_built(directory, cxx, capsys
         capsys, path, line_of(BUILDING, "// lambda called later"), "this.t.p.y", "t.p.y"
     )
     if cxx == "gcc":
-        # Before #361: `not found; visible: (none)`.
         assert rows["this.t.p.y"]["error"] == "not found; visible: t, w", rows
         assert rows["t.p.y"]["value"] == "8", rows
     else:
@@ -284,8 +283,8 @@ JUMPS_CPP = (
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("suffix", ["c", "cpp"])
 def test_a_local_a_jump_can_skip_is_withheld_past_the_label(directory, capsys, suffix):
-    # #121: `case 1` skips `struct pair p = { 7, 8 };`, and `p` was listed with the
-    # stack's contents; a `goto` from above a declaration skips it too.
+    # `case 1` skips `struct pair p = { 7, 8 };`, so `p` holds the stack's contents; a
+    # `goto` from above a declaration skips it too.
     source = JUMPS if suffix == "c" else JUMPS_CPP
     path = directory / f"jumps.{suffix}"
     path.write_text(source)
@@ -300,8 +299,6 @@ def test_a_local_a_jump_can_skip_is_withheld_past_the_label(directory, capsys, s
     rows = shown_at(capsys, path, line_of(source, "// after again"), "after", "before")
     assert [rows["after"]["value"], rows["before"]["value"]] == ["3", "2"]
 
-
-# Review of #126 (round 1).
 
 STEP_OUT = (
     """#include <stdio.h>
@@ -328,8 +325,8 @@ int main(void) {
 
 @pytest.mark.timeout(300)
 def test_a_local_declared_on_the_line_a_call_returns_to_is_withheld(directory, capsys):
-    # Review of #126: back from `twice` (`step --out`), `p` showed leftovers and `r`
-    # showed `20911 [settable]`, part-way through their own lines.
+    # Back from `twice` (`step --out`), part-way through their own lines, `p` holds
+    # leftovers and `r` `20911`.
     path = directory / "stepout.c"
     path.write_text(STEP_OUT)
     twice = line_of(STEP_OUT, "return w;")
@@ -372,8 +369,8 @@ CASES = "    case 1:\n        out = twice(p.x);\n        out += p.y;  // read\n 
 
 @pytest.mark.timeout(300)
 def test_a_local_read_in_an_included_case_is_withheld(directory, capsys):
-    # Review of #126: `case 1:` in `cases.h` skips `p`'s initializer in `sw.c`, and
-    # `get p` there showed the stack's contents.
+    # `case 1:` in `cases.h` skips `p`'s initializer in `sw.c`, so there `p` holds the
+    # stack's contents.
     (directory / "cases.h").write_text(CASES)
     path = directory / "sw.c"
     path.write_text(SWITCH_INCLUDED)
@@ -421,8 +418,8 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_an_object_a_default_member_initializer_builds_is_withheld(directory, cxx, capsys):
-    # Review of #126: breaking on `Cfg`'s member line stops in `run()`, which showed
-    # `cfg.b = 20907`; so did `run()` as frame 1 of `twice`.
+    # Breaking on `Cfg`'s member line stops in `run()`, where `cfg.b` holds `20907`; so
+    # does `run()` as frame 1 of `twice`.
     path = directory / "members.cpp"
     path.write_text(MEMBERS)
     member = line_of(MEMBERS, "// member b")
@@ -474,7 +471,7 @@ int main(void) {
 
 @pytest.mark.timeout(300)
 def test_a_backward_goto_into_a_block_from_after_it_withholds_its_local(directory, capsys):
-    # Review of #126: `goto again` re-enters the block from after it, so `p` is
+    # `goto again` re-enters the block from after it, so `p` is
     # indeterminate on the second and third passes (C11 6.2.4).
     path = directory / "back.c"
     path.write_text(BACK_INTO)
@@ -486,8 +483,8 @@ def test_a_backward_goto_into_a_block_from_after_it_withholds_its_local(director
 
 
 ORDINARY = {
-    # Review of #126: one `"huh??!"` withheld every local above the stop (C reads the
-    # trigraph as `|`; C++17 has none).
+    # One `"huh??!"` withholds no local above the stop (C reads the trigraph as `|`;
+    # C++17 has none).
     "tri.c": (
         """#include <stdio.h>
 static long run(int n) {
@@ -517,8 +514,8 @@ int main() { return (int)(run(3) & 1); }
 """,
         ("total", "i", "n"),
     ),
-    # Review of #126: a statement expression's `;` kept `m` withheld for the rest of
-    # the function.
+    # A statement expression's `;` doesn't keep `m` withheld for the rest of the
+    # function.
     "stmtexpr.c": (
         """#include <stdio.h>
 #define max(a, b) ({ __typeof__(a) _a = (a); __typeof__(b) _b = (b); _a > _b ? _a : _b; })
@@ -589,13 +586,13 @@ int main() {
 def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(
     directory, cxx, capsys
 ):
-    # Review of #126: through `std::function`, `run` (where `cb` is defined) is more than
-    # ten frames below the lambda, so its `this` was withheld; up to 64 are read now.
+    # Through `std::function`, `run` (where `cb` is defined) is more than ten frames below
+    # the lambda; up to 64 are read, so its `this` is judged.
     path = directory / "deep.cpp"
     path.write_text(DEEP)
     line = line_of(DEEP, "// in the lambda")
     if cxx == "gcc":
-        # GCC passes the lambda its captures through `__closure` (#361): its capture
+        # GCC passes the lambda its captures through `__closure`: its capture
         # `total` is judged as clang's `this` is.
         for hit in (1, 2):
             rows = shown_at(capsys, path, line, "total", hit=hit)
@@ -611,8 +608,6 @@ def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(
     rows = shown_at(capsys, path, line, "this", hit=3)
     assert withheld(rows["this"], "Peeky cannot list every frame below this one")
 
-
-# Review of #126 (round 2).
 
 HEADER_CALLS_C = (
     """#include <stdio.h>
@@ -670,9 +665,8 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(400)
 def test_a_header_variable_whose_initializer_calls_is_withheld_after_the_call(directory, capsys):
-    # Review of #126 (round 2): back from the call in a header's own initializer
-    # (`step --out`), `i`, `r` and `k` were leftovers and `[settable]`; a `while`'s `v`
-    # was garbage, then the last pass's value.
+    # Back from the call in a header's own initializer (`step --out`), `i`, `r` and `k`
+    # hold leftovers; a `while`'s `v` garbage, then the last pass's value.
     path = directory / "headers.c"
     path.write_text(HEADER_CALLS_C)
     twice = line_of(HEADER_CALLS_C, "return w;")
@@ -722,8 +716,8 @@ int main(void) {
 
 @pytest.mark.timeout(300)
 def test_a_local_an_include_below_the_stop_declares_is_withheld(directory, capsys):
-    # Review of #126 (round 2): `decls.h` declares `later`, included below line 16, and
-    # `--at 16` showed its leftovers.
+    # `decls.h` declares `later`, included below line 16, so at line 16 it holds
+    # leftovers.
     (directory / "decls.h").write_text("    struct pair later = { twice(5), twice(6) };\n")
     path = directory / "rev.c"
     path.write_text(DECLARED_BY_INCLUDE)
@@ -770,16 +764,15 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_header_class_initializer_reads_from_the_line_that_runs_it(directory, cxx, capsys):
-    # Review of #126 (round 2): stopped in `cfg.hpp`'s member initializer inside `run()`,
-    # `after = 20911 [settable]` and a garbage `where` were shown; the stop now reads
-    # as `main.cpp:16`, the line whose code runs it.
+    # Stopped in `cfg.hpp`'s member initializer inside `run()`, `after` holds `20911` and
+    # `where` garbage; the stop reads as `main.cpp:16`, the line whose code runs it.
     (directory / "cfg.hpp").write_text(HEADER_CFG)
     path = directory / "main.cpp"
     path.write_text(HEADER_CFG_MAIN)
     built = line_of(HEADER_CFG_MAIN, "// cfg")
     rows = shown_at(capsys, path, built, "after", "where", "before", "cfg", steps=1)
     if cxx == "gcc":
-        # GCC runs the initializers on `cfg`'s own line (#167): the step ends on the next.
+        # GCC runs the initializers on `cfg`'s own line: the step ends on the next.
         assert rows["before"]["line"] == built + 1 and rows["before"]["value"] == "4", rows
         assert withheld(rows["after"], "which has not run yet")
         assert withheld(rows["where"], "below this stop")
@@ -824,15 +817,13 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_goto_in_another_function_of_a_namespace_reaches_no_label_here(directory, capsys):
-    # Review of #126 (round 2): `app::f`'s `goto out;` counted for `app::g`'s own `out:`
-    # (the namespace's braces bounded the search), withholding `doubled` and `tripled`.
+    # `app::f`'s `goto out;` doesn't count for `app::g`'s own `out:`, though the
+    # namespace's braces hold both, so `doubled` and `tripled` are read.
     path = directory / "ns.cpp"
     path.write_text(NAMESPACED)
     rows = shown_at(capsys, path, line_of(NAMESPACED, "// sum"), "doubled", "tripled")
     assert [rows["doubled"]["value"], rows["tripled"]["value"]] == ["8", "12"]
 
-
-# Review of #126 (round 3).
 
 LOCAL_CLASS = """#include <cstdio>
 
@@ -876,14 +867,14 @@ int main() {
 def test_a_caller_frame_on_a_member_initializer_above_its_function_reads_from_its_line(
     directory, cxx, capsys
 ):
-    # Review of #126 (round 3): `run()` as frame 1 on `Cfg::b`'s line showed `x = 20908`
-    # and a garbage `px`: the remapping to the line running it was the stopped frame's.
+    # `run()` as frame 1 on `Cfg::b`'s line is remapped to the line running it, its own,
+    # not the stopped frame's: there `x` holds `20908` and `px` garbage.
     path = directory / "localcls.cpp"
     path.write_text(LOCAL_CLASS)
     rows = shown_at(
         capsys, path, line_of(LOCAL_CLASS, "return w;"), "x", "px", "cfg", "before", hit=4, frame=1
     )
-    # GCC runs the initializers on the line that builds `cfg` (#167).
+    # GCC runs the initializers on the line that builds `cfg`.
     marker = "Cfg cfg{};" if cxx == "gcc" else "// Cfg::b"
     assert rows["x"]["line"] == line_of(LOCAL_CLASS, marker), rows["x"]
     assert withheld(rows["x"]) and withheld(rows["px"]) and withheld(rows["cfg"])
@@ -895,14 +886,14 @@ def test_a_caller_frame_on_a_member_initializer_above_its_function_reads_from_it
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_local_classes_member_initializer_is_not_its_functions_own_line(directory, cxx, capsys):
-    # Review of #126 (round 3): on the initializer of `Local`, defined inside `run()`
-    # (within its own lines), `loc.b = 4366860288` was shown, stopped and as frame 1.
+    # On the initializer of `Local`, defined inside `run()` (within its own lines),
+    # `loc.b` holds `4366860288`, stopped and as frame 1.
     path = directory / "localcls.cpp"
     path.write_text(LOCAL_CLASS)
     built = line_of(LOCAL_CLASS, "// loc")
     rows = shown_at(capsys, path, built, "loc", "after", "before", steps=1)
     if cxx == "gcc":
-        # GCC runs the initializers on `loc`'s own line (#167): the step ends on the next.
+        # GCC runs the initializers on `loc`'s own line: the step ends on the next.
         assert rows["loc"]["line"] == built + 1 and rows["loc"]["value"] == "{a = 6, b = 8}"
         assert withheld(rows["after"], "which has not run yet")
     else:
@@ -915,8 +906,6 @@ def test_a_local_classes_member_initializer_is_not_its_functions_own_line(direct
     )
     assert withheld(rows["loc"]) and withheld(rows["after"]) and rows["before"]["value"] == "1"
 
-
-# Review of #126 (round 4).
 
 UNNAMED = """#include <cstdio>
 
@@ -964,8 +953,8 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_member_initializer_lambda_capturing_this_withholds_it(directory, capsys):
-    # Review of #126 (round 4): `Agg` has no constructor, so its initializers run in
-    # `run()`, and its lambda's `this.this.b` showed leftovers, stopped and as frame 1.
+    # `Agg` has no constructor, so its initializers run in `run()`, and its lambda's
+    # `this.this.b` holds leftovers, stopped and as frame 1.
     path = directory / "unnamed.cpp"
     path.write_text(UNNAMED)
     rows = shown_at(capsys, path, line_of(UNNAMED, "// lambda"), "this", "this.this.b")
@@ -980,13 +969,13 @@ def test_a_member_initializer_lambda_capturing_this_withholds_it(directory, caps
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
-    # Review of #126 (round 4): frame 1 `nested(long)::$_0::$_0()` showed `this.t = 2`
-    # (a leftover), and frame 2, the other constructor, showed `this` too.
+    # Frame 1 `nested(long)::$_0::$_0()` holds `this.t = 2` (a leftover), and frame 2,
+    # the other constructor, its `this` too.
     path = directory / "unnamed.cpp"
     path.write_text(UNNAMED)
     twice = line_of(UNNAMED, "return w;")
     rows = shown_at(capsys, path, twice, "this", hit=4, frame=1)
-    # GCC names it `<constructor>` (#167; its C++ builds run only with the test-only hatch).
+    # GCC names it `<constructor>`.
     constructor = ("::$_0::$_0()", "<constructor>")
     assert rows["this"]["function"].endswith(constructor), rows["this"]
     assert withheld(rows["this"], "the object this constructor"), rows["this"]
@@ -1000,10 +989,10 @@ def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
         assert "value" not in rows["this"], rows["this"]
 
 
-# Sixth agent evaluation: clang attributes the exception handler destroying line 22's
-# `std::string` temporaries to line 22, after line 23's code, and that disabled the
-# declared-below rule: `qty` showed leftovers (`6712214884 [settable]`, then the last
-# pass's `3`), and `--set qty=99` reported a change line 23 then overwrote.
+# Clang attributes the exception handler destroying line 22's `std::string` temporaries
+# to line 22, after line 23's code, which must not disable the declared-below rule: `qty`
+# holds leftovers (`6712214884`, then the last pass's `3`), and `--set qty=99` would be a
+# change line 23 then overwrites.
 STOCK = """#include <cstdio>
 #include <map>
 #include <stdexcept>
@@ -1111,7 +1100,7 @@ def test_a_local_below_the_stop_in_a_function_with_a_label_is_withheld(directory
         assert "value" in rows["total"], rows
 
 
-# Shapes like the evaluation's: a declaration below a line with temporaries, in a `try`
+# Shapes like `STOCK`'s: a declaration below a line with temporaries, in a `try`
 # block, a range-`for`, an `if`/`while` condition, after a label, a `cleanup` variable
 # and a compound literal. Below the stop: withheld; above it: read.
 SHAPES = {
@@ -1244,7 +1233,7 @@ def test_locals_below_the_stop_are_withheld_whatever_the_line_runs_after(
     rows = shown_at(capsys, path, line_of(source, f"// {marker}"), *below, *above, hit=hit)
     if marker == "TEMPS" and cxx_is_gcc():
         # GCC tests a `for` loop at its bottom, which branches back to the body's first
-        # instruction (#167): there `head` holds the last pass's string, or leftovers on
+        # instruction: there `head` holds the last pass's string, or leftovers on
         # the first pass, and says so.
         note = "may be the last pass's value, or leftovers on the first pass: this line is "
         assert rows["head"]["note"].startswith(note + "reached again by the loop"), rows
@@ -1348,10 +1337,10 @@ def test_a_local_declared_on_a_line_a_loop_returns_to_carries_a_note(directory, 
 def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
     # Below a setjmp call, a `longjmp` can bring control back past a declaration with
     # the local live, or this is the first pass: the local is shown with a note, and a
-    # change is refused (its declaration may run after it). Review of PR #140: only in
-    # the function that calls setjmp, below the call, and only for what is declared at
-    # or below the stop; elsewhere the usual rules judge it (they withheld nothing in
-    # a program using setjmp, and noted every local, `before` and `tries` included).
+    # change is refused (its declaration may run after it). Only in the function that
+    # calls setjmp, below the call, and only for what is declared at or below the stop;
+    # elsewhere the usual rules judge it: `before` and `tries` get no note, and what the
+    # rules withhold stays withheld.
     path = directory / "jump.c"
     path.write_text(JUMPED)
     capture = "later,total,before,tries,n"
@@ -1367,7 +1356,7 @@ def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
     result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,before", 1)
     assert withheld(rows[1, "total"], "declared on line") and "note" not in rows[1, "before"]
     assert withheld(rows[1, "later"], "below this stop"), rows
-    # On the call's own line too (review of PR #144, round 2): a `longjmp` returns past
+    # On the call's own line too: a `longjmp` returns past
     # the call, never to the line's first instruction, where this stop is.
     result, rows = probed(capsys, path, line_of(JUMPED, "// CALL"), "later,total", 1)
     assert withheld(rows[1, "later"], "below this stop") and "note" not in rows[1, "later"], rows
@@ -1389,8 +1378,8 @@ def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
         capsys.readouterr()
 
 
-# #148: a local shown with a note (#140) passed it to nothing read through it: its
-# fields and elements read as plain values. A `do` body's first line, and below a
+# A local shown with a note passes it to what is read through it, so its fields and
+# elements don't read as plain values. A `do` body's first line, and below a
 # setjmp call; in C and C++.
 NOTED_DO = """#include <stdio.h>
 
@@ -1524,8 +1513,8 @@ int main() {
 @pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_noted_maps_entries_carry_its_note_beside_how_to_read_them(directory, capsys):
-    # #148: `session get m` replaced the map's own note (#140) with how to read its
-    # entries, and its entries carried none.
+    # `session get m` keeps the map's own note beside how to read its entries, and its
+    # entries carry it.
     path = directory / "map.cpp"
     path.write_text(NOTED_MAP)
     line = line_of(NOTED_MAP, "// STOP")
@@ -1543,9 +1532,9 @@ def test_a_noted_maps_entries_carry_its_note_beside_how_to_read_them(directory, 
         capsys.readouterr()
 
 
-# Review of PR #140: another declaration of the name (an earlier loop's, a static, a
-# lambda's parameter) kept the local declared below the stop shown with leftovers, and
-# settable: only the declaration the debugger shows is judged.
+# Another declaration of the name (an earlier loop's, a static, a lambda's parameter)
+# doesn't keep the local declared below the stop shown with leftovers, and settable: only
+# the declaration the debugger shows is judged.
 NAMESAKES = {
     "f1.c": """#include <stdio.h>
 
@@ -1652,10 +1641,10 @@ def test_a_local_below_the_stop_is_judged_by_the_declaration_shown(
         capsys.readouterr()
 
 
-# Review of PR #140: in a block declaring a `static` or `extern` (or C++ `using`) of an
-# outer local's name, the code reads that one, which lldb-dap does not list (clang
-# declares a block's static in the function's scope, a block's extern not at all): the
-# outer local was shown, and read and changed, under its name.
+# In a block declaring a `static` or `extern` (or C++ `using`) of an outer local's name,
+# the code reads that one, which lldb-dap does not list (clang declares a block's static
+# in the function's scope, a block's extern not at all): the outer local, which lldb-dap
+# lists under that name, is withheld.
 SHADOWS = {
     "shadow.c": """#include <stdio.h>
 
@@ -1715,7 +1704,7 @@ int main() {
     [
         ("shadow.c", "EXTERN", "gcount", "names the block's `extern` `gcount`"),
         ("shadow.c", "STATIC", "q", "names the block's `static` `q`"),
-        # A macro's static: read as the compiler preprocessed the source (PR #144, round 2).
+        # A macro's static: read as the compiler preprocessed the source.
         ("shadow.c", "MACRO", "r", "names the block's `static` `r`"),
         ("shadow.cpp", "USING", "level", "the block's `using` declaration (line"),
     ],
@@ -1753,9 +1742,8 @@ int main(void) {
 
 @pytest.mark.timeout(300)
 def test_a_static_local_is_read_though_the_debugger_does_not_list_it(directory, capsys):
-    # #167 (B4): lldb-dap lists no frame's static storage, so a function's `static` read
-    # "not found; visible: a", as if main had no `q`. #364: it is read where the code
-    # names it, and never changed.
+    # lldb-dap lists no frame's static storage, as if main had no `q`: a function's
+    # `static` is read where the code names it, and never changed.
     path = directory / "statics.c"
     path.write_text(STATICS)
     rows = shown_at(capsys, path, line_of(STATICS, "// HERE"), "q", "a")
@@ -1776,7 +1764,7 @@ def test_outer_locals_are_read_outside_the_blocks_that_hide_them(directory, caps
     assert rows["level"]["value"] == "1" and rows["kept"]["value"] == "0", rows
 
 
-# Review of PR #144: more shapes that hide an outer local's name, and some that do not.
+# More shapes that hide an outer local's name, and some that do not.
 HIDING = {
     "hide.c": """#include <stdio.h>
 
@@ -1894,7 +1882,7 @@ int main() {
     return 0;
 }
 """,
-    # Review of PR #144 (round 2): what a macro or a conditional makes of a block, and an
+    # What a macro or a conditional makes of a block, and an
     # enum nested in a struct's body (C gives its enumerators the block's scope).
     "made.c": """#include <stdio.h>
 
@@ -2082,7 +2070,7 @@ int main(void) {
 
 @pytest.mark.timeout(300)
 def test_a_header_functions_block_is_read_from_the_unit_including_it(directory, capsys):
-    # Review of PR #144 (round 2): a function in a header is read in the translation
+    # A function in a header is read in the translation
     # unit that includes it, as the compiler preprocessed it there.
     (directory / "hiding.h").write_text(HEADER_HIDING)
     path = directory / "main.c"

@@ -8,7 +8,6 @@ import pytest
 
 from peeky.cli import main
 
-# The evaluation's case, as the agent had it.
 RING = """#include <stdio.h>
 #include <stdlib.h>
 
@@ -109,7 +108,7 @@ def run(capsys, *argv):
 
 @pytest.mark.timeout(240)
 def test_describe_names_c_structs_unions_and_enums_as_c_does(c_program, capsys):
-    # Finding 17: `describe` printed `r (ring)` for a C `struct ring` with no typedef.
+    # A C `struct ring` with no typedef is named `struct ring`, not `ring`.
     source = c_program("ring.c", RING)
     code, out = run(capsys, "describe", source)
     assert code == 0, out
@@ -127,11 +126,11 @@ def test_describe_names_c_structs_unions_and_enums_as_c_does(c_program, capsys):
 
 @pytest.mark.timeout(240)
 def test_describe_says_which_locals_have_settable_fields(c_program, capsys):
-    # Finding 16: the `mutable:` line did not say that `r`'s fields are settable.
+    # The `mutable:` line says that `r`'s fields are settable.
     source = c_program("ring.c", RING)
     code, out = run(capsys, "describe", source)
     (mutable,) = [line for line in out.splitlines() if line.startswith("mutable:")]
-    # #183: the paths themselves, `[*]` for any element.
+    # The paths themselves, `[*]` for any element.
     assert mutable.endswith(
         ". Such fields and elements (`[*]`: any element): main: r.buf[*], r.head, r.tail, r.count"
     ), mutable

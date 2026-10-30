@@ -1,6 +1,6 @@
-"""The seventh agent evaluation's C findings, on real builds: a refusal through a pointer
-parameter names the one call that passed it (13), and `describe` names C's struct,
-union and enum types as C does (17) and says which locals have settable fields (16)."""
+"""A refused change to a field through a C pointer parameter names the one call that passed
+the pointer, on real builds, and calls the field settable there only where a change at that
+call's line reaches the callee."""
 
 import json
 import os
@@ -9,7 +9,6 @@ import pytest
 
 from peeky.cli import main
 
-# The evaluation's case, as the agent had it.
 RING = """#include <stdio.h>
 #include <stdlib.h>
 
@@ -59,8 +58,8 @@ int main(int argc, char **argv) {
 }
 """
 OPS = ["--", "+1", "+2", "+3", "-", "-", "+4", "+5", "+6", "-", "-", "-", "-"]
-# The same ring, its line 36 reading the digit without a call (round 3 of PR #165: a
-# call in the arguments, `atoi`'s too, gets no settable claim).
+# The same ring, its line 36 reading the digit without a call (a call in
+# the arguments, `atoi`'s too, gets no settable claim).
 READING_RING = RING.replace("push(&r, atoi(argv[i] + 1));", "push(&r, argv[i][1] - '0');")
 
 # Callers Peeky cannot single out: twice, through a macro used twice, through a function
@@ -117,8 +116,8 @@ def run(capsys, *argv):
 
 @pytest.mark.timeout(240)
 def test_a_pointer_parameters_one_caller_is_named(c_program, capsys):
-    # Finding 13: `MUTATION_REJECTED` said to change the value "before the call that
-    # passed it", but did not name `ring.c:36`, push's one caller.
+    # `MUTATION_REJECTED` names `ring.c:36`, push's one caller, as the call that passed the
+    # pointer.
     source = c_program("ring.c", RING)
     code, out = run(
         capsys, "probe", source, "--at", "15", "--capture", "r.tail", "--set", "r.tail=0", *OPS
@@ -168,8 +167,8 @@ def test_callers_peeky_cannot_single_out_keep_the_general_advice(c_program, caps
         )  # fmt: skip
         assert code == 2 and "before the call that passed it" in out, (marker, out)
         assert "one caller" not in out, (marker, out)
-    # One call, but of a pointer the caller does not own: no frame named for the change
-    # (#202), only where to find the one that owns it.
+    # One call, but of a pointer the caller does not own: no frame named for the change,
+    # only where to find the one that owns it.
     code, out = run(
         capsys, "probe", source, "--at", line_of(CALLERS, "PASSED"), "--capture", "b.n",
         "--set", "b.n=7",
@@ -187,8 +186,8 @@ def test_callers_peeky_cannot_single_out_keep_the_general_advice(c_program, caps
 
 @pytest.mark.timeout(240)
 def test_a_set_at_refused_before_the_run_names_the_caller_and_shows_no_table(c_program, capsys):
-    # Findings 13 and 14 with #151's `--set-at`: judged at its own line before the run,
-    # the refusal names push's one caller, prints no table and exits 2.
+    # A `--set-at` judged at its own line before the run: the refusal names push's one
+    # caller, prints no table and exits 2.
     source = c_program("ring.c", READING_RING)
     code, out = run(
         capsys, "probe", source, "--at", "36", "--capture", "r.tail",
@@ -214,7 +213,7 @@ def test_a_set_at_refused_before_the_run_names_the_caller_and_shows_no_table(c_p
     assert [row["value"] for row in result["rows"]] == ["0", "3"], result["rows"]
 
 
-# Review of PR #165: calls a stop at their line cannot change the value before.
+# Calls a stop at their line cannot change the value before.
 CALL_SITES = {
     # The line overwrites the field before the call.
     "overwrite": "    r.tail = 1; total += push(&r, 1);  /* CALL */",
@@ -245,10 +244,9 @@ CALL
 @pytest.mark.timeout(240)
 @pytest.mark.parametrize("site", list(CALL_SITES))
 def test_settable_is_claimed_only_where_the_call_sees_the_change(c_program, capsys, site):
-    # Low 1: `r.tail = 1; total += push(&r, 1);` was called settable at line 11, but the
-    # line overwrites the field before the call; so does `push(&r, r.tail = 3)`. Low 3:
-    # a call on its statement's second line was named by that line, where no stop is at
-    # the statement's start.
+    # `r.tail = 1; total += push(&r, 1);` overwrites the field before the call, so it is
+    # not settable at line 11; nor with `push(&r, r.tail = 3)`. A call on its statement's
+    # second line is not named by that line, where no stop is at the statement's start.
     text = SITE.replace("CALL\n", CALL_SITES[site] + "\n")
     source = c_program("m.c", text)
     at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
@@ -327,7 +325,7 @@ VIA_H = "static inline int via(void) { struct ring q = { 0, 0, { 0 } }; return p
 
 @pytest.mark.timeout(240)
 def test_a_caller_in_another_file_is_changed_by_a_probe_there(c_program, capsys):
-    # Low 2: push's one call is at other.c:6, but `--set-at 6@N` names main.c's line 6,
+    # push's one call is at other.c:6, but `--set-at 6@N` names main.c's line 6,
     # the probe's own file. A probe `--at other.c:6` with `--set` is what works.
     root = c_program("main.c", OTHER_MAIN).parent
     c_program("other.c", OTHER)
@@ -354,8 +352,8 @@ def test_a_caller_in_another_file_is_changed_by_a_probe_there(c_program, capsys)
 
 @pytest.mark.timeout(240)
 def test_a_caller_in_a_header_gets_no_advice_a_probe_cannot_follow(c_program, capsys):
-    # Low 2: push's call is in ring.h's `via`, where no probe stops. Main.c and other.c
-    # each compile their own via (review of PR #211): two calls, so the general advice.
+    # push's call is in ring.h's `via`, where no probe stops. Main.c and other.c each
+    # compile their own via: two calls, so the general advice.
     root = c_program("main.c", HEADER_MAIN).parent
     c_program("other.c", HEADER_OTHER)
     c_program("ring.h", HEADER_H)
@@ -384,7 +382,7 @@ def test_a_caller_in_a_header_gets_no_advice_a_probe_cannot_follow(c_program, ca
     assert "--set-at" not in out.split("has one caller")[1].splitlines()[0], out
 
 
-# Round 2 of PR #165: what a stop on the call's line cannot see changes the value first.
+# What a stop on the call's line cannot see changes the value first.
 WRITERS = """#include <stdio.h>
 #include <string.h>
 struct ring { int head; int tail; int buf[4]; };
@@ -474,7 +472,7 @@ def test_the_claim_kept_where_nothing_can_reach_the_value(
     assert (claim in message) == claimed, out
 
 
-# Round 3 of PR #165: `buf` is the first field, so `(struct ring *)b` is `r`, and zap,
+# `buf` is the first field, so `(struct ring *)b` is `r`, and zap,
 # reached through a table, a pointer or a member, changes `r.tail` before push reads it.
 FIRST_FIELD = """#include <stdio.h>
 #include <string.h>

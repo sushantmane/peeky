@@ -1,7 +1,7 @@
-"""C++ loop headers (#161), on a real build: a counted `for` stops only before its loop
-and says so; a range `for` binds its element at each pass (a location in the body's
-block, #157), so it stops at every pass and gets no such note. GCC gives a range `for`
-header one location, before its loop (#167): it stops once, and says so."""
+"""C++ loop headers, on a real build: a counted `for` stops only before its loop and says
+so; a range `for` binds its element at each pass (a location in the body's block), so it
+stops at every pass and gets no such note. GCC gives a range `for` header one location,
+before its loop: it stops once, and says so."""
 
 import json
 import os
