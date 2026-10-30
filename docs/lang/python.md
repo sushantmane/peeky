@@ -18,6 +18,19 @@ Peeky debugs Python with debugpy, Python's debugger.
 - Pass program arguments after `--`, or with repeated `--arg`. Write `--arg=-v` for a value that
   starts with a dash ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 
+## Choose the interpreter
+
+- A program runs on its project's interpreter: `--python PATH`, else the root's `.venv` or `venv`,
+  else the active virtual environment, else Peeky's own. `--python peeky` keeps Peeky's own
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- Only the root is looked in. A `.venv` above it is named in the output, not used. Give the project
+  as the target, or pass `--python`
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- The output says which one ran: `python: …` in text, `python` in `--json`
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- It must be CPython 3.11 or later, and needs no debugpy. Peeky reads the program's code with it
+  ([Python 0](python-cookbook.md#how-peeky-reads-the-code)).
+
 ## Read values
 
 - Select a dict entry by its key: `order['id']`. If you write `order.id`, the row names

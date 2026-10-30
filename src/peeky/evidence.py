@@ -79,7 +79,9 @@ TABLES = {
             "artifact_manifest_id": "Identity of the build the values came from",
             "source_sha256": "SHA-256 of the breakpoint's source file as it ran: for a candidate "
             "run, the edited text",
-            "target_identity": "JSON target identity (toolchain, flags), with inputs_sha256: "
+            "target_identity": "JSON target identity (toolchain, flags; Python: the "
+            "interpreter that ran the program, its version and how it was chosen), with "
+            "inputs_sha256: "
             "a digest of every source and header the run read (C/C++: the build's sources "
             "and headers; Rust: the crate's sources, Cargo.toml and Cargo.lock; Java: its "
             "sources; Python: the root's .py files), as they were on disk, a candidate's "

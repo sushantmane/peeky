@@ -1032,17 +1032,17 @@ def test_python_watches_the_first_statement_of_the_function_or_module(tmp_path):
         "                for y in (1,)]  # 18\n"
         "print(find([1]))\n"  # 19
     )
-    assert PythonAdapter.entry_lines(path, [8, 9, 19]) == {8: [6], 9: [6], 19: [1]}
+    assert PythonAdapter().entry_lines(path, [8, 9, 19]) == {8: [6], 9: [6], 19: [1]}
     for line, said in (
         (13, "line 13 is in `gen`, a generator or coroutine"),
         (15, "line 15 is in the body of class `C`"),
         (18, "line 18 is in a listcomp"),
     ):
         with pytest.raises(ValueError, match=said):
-            PythonAdapter.entry_lines(path, [line])
+            PythonAdapter().entry_lines(path, [line])
     path.write_text("async def a():\n    await b()\n")
     with pytest.raises(ValueError, match="a generator or coroutine"):
-        PythonAdapter.entry_lines(path, [2])
+        PythonAdapter().entry_lines(path, [2])
 
 
 def test_native_watches_the_row_each_body_s_prologue_ends_at():

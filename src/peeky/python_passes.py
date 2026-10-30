@@ -20,9 +20,9 @@ bytecode, compiled from its source, and notes a local only where all of these ho
   `with` whose `__exit__` returns true, an `except` that falls through, an `async for`'s
   end) lets the pass go on without one. An exception's path can only take a note away.
 
-It is compiled by this interpreter, so only where the program runs under one that
-compiles alike (the same implementation, exact version and build, and bytecode magic
-number), both as `python`
+It is compiled by the program's interpreter (python_interpreter): in Peeky's process where
+that one compiles alike (``same_compiler``: the same implementation, exact version and
+build, and bytecode magic number), else in a helper process of it; both as `python`
 and as `python -O` compile it (an `assert` is left out under -O), which must agree. Not
 judged: a module (the whole file) that may run code other than its source says (`exec`,
 `eval`, `compile`, `types.FunctionType`, `__code__`, the `builtins` module) or may read
@@ -470,7 +470,7 @@ def _identity():
     ]
 
 
-def same_compiler(interpreter):
+def same_compiler(interpreter, timeout=15):
     """Whether ``interpreter`` (the program's) compiles a source as this one does: the
     same file, or the same implementation, exact version and build, ABI flags, cache tag
     and bytecode magic number, asked once; False where it cannot be asked. A 3.11 worker
@@ -486,7 +486,7 @@ def same_compiler(interpreter):
                     [interpreter, "-I", "-c", _IDENTITY],
                     capture_output=True,
                     text=True,
-                    timeout=15,
+                    timeout=timeout,
                     check=False,
                     env=without_credentials(os.environ),
                 )

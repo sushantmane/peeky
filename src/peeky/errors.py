@@ -38,10 +38,30 @@ from peeky.textlines import split_lines
 # `hello` with a proof that it holds the token (client.hello_proof). A protocol 10 worker
 # has no `hello`: it asks for the token, so a client never learnt whether another process
 # had taken the worker's port, and sent the token there.
-PROTOCOL_VERSION = 11
+# 12: a worker runs a Python program on its project's interpreter (the root's virtual
+# environment, or the worker's `--python`), and names it in the launch's
+# `target_identity`; a protocol 11 worker runs it on its own interpreter, and a protocol
+# 11 client would not say which one ran it.
+PROTOCOL_VERSION = 12
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
+    (
+        # python_interpreter: refused before anything runs.
+        r"^Peeky runs Python programs on CPython ",
+        "UNSUPPORTED",
+        "Pass --python with CPython 3.11 or later (the project's own), or --python peeky for "
+        "Peeky's own.",
+        False,
+    ),
+    (
+        r"^(--python .*: no executable file there|Peeky could not (run|ask) the Python "
+        r"interpreter )",
+        "INVALID_REQUEST",
+        "Pass the program's interpreter with --python (such as .venv/bin/python), or "
+        "--python peeky for Peeky's own.",
+        False,
+    ),
     (
         # A stop's read that timed out: before the rule that takes any "breakpoint".
         r"^A stop is never shown without (its line and function|the breakpoint it is at):",

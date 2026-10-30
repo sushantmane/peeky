@@ -325,10 +325,14 @@ class _NodePaths:
 
 
 class DebugWorker:
-    def __init__(self, root, adapter=None):
+    def __init__(self, root, adapter=None, python=None):
         self.root = Path(root).resolve()
         # Adapter configuration is trusted startup input, never HTTP request data.
         self.adapter = adapter if adapter is not None else PythonAdapter()
+        # Without one, a Python worker: each launch runs the program on the interpreter
+        # chosen then (python_interpreter), its `--python` (``python``) or the root's.
+        self.python = python
+        self.choose_python = adapter is None
         self.runtime = None
         # A remote Python session's sources as accepted at launch: rechecked around
         # every later operation, since the program may import any of them at any time.
@@ -2308,6 +2312,11 @@ class DebugWorker:
             if self.dap:
                 raise ValueError("Close the current session before launching another")
             program = self.path(args["program"])
+            if self.choose_python:
+                from peeky.python_interpreter import find
+
+                # Before anything runs: an interpreter Peeky cannot read with is refused.
+                self.adapter = PythonAdapter.on(find(self.root, self.python))
             self.program = program
             entry = None
             if args.get("args"):
@@ -7090,10 +7099,12 @@ def _inside_program(runtime, frame, *roots):
     return False
 
 
-def make_server(root, token, port=8765, *, adapter=None):
+def make_server(root, token, port=8765, *, adapter=None, python=None):
+    """``python``: a Python worker's `--python` (python_interpreter), for its sessions
+    and its probes."""
     if not isinstance(token, str) or not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
         raise ValueError(f"Token must contain {MIN_TOKEN_CHARS} to {MAX_TOKEN_CHARS} characters")
-    worker = DebugWorker(root, adapter=adapter)
+    worker = DebugWorker(root, adapter=adapter, python=python)
     probes = threading.Semaphore(1)
 
     def probe(args):
@@ -7181,7 +7192,12 @@ def make_server(root, token, port=8765, *, adapter=None):
             raise ValueError("Another probe is running; retry later")
         try:
             return _run_probe_process(
-                Path(root).resolve(), request, adapter, HTTP_PROBE_SECONDS, secret=token
+                Path(root).resolve(),
+                request,
+                adapter,
+                HTTP_PROBE_SECONDS,
+                secret=token,
+                **({"python": python} if python is not None else {}),
             )
         finally:
             probes.release()
@@ -7476,10 +7492,11 @@ class _Server(ThreadingHTTPServer):
 PROBE_LAUNCH_MARGIN_S = 10
 
 
-def _run_probe_process(root, request, adapter, cap, *, secret=None):
+def _run_probe_process(root, request, adapter, cap, *, secret=None, python=None):
     """A probe in a child process; its result, or its failure. ``secret``: the worker's
     token, which the child never gets: removed from the child's error and stderr before
-    they are cut."""
+    they are cut. ``python``: the worker's `--python`, else the child chooses as a
+    session's launch does."""
     import dataclasses
     import subprocess
 
@@ -7502,6 +7519,8 @@ def _run_probe_process(root, request, adapter, cap, *, secret=None):
     command += ["--set-hit", str(request.set_hit)]
     if request.entry:
         command += ["--run", request.entry]
+    if python is not None and adapter is None:
+        command += ["--python", python]
     for argument in request.args:
         command += [f"--arg={argument}"]
     for role, digest in request.expect_sha256:
@@ -7747,6 +7766,12 @@ def main():
     targets.add_argument(
         "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
     )
+    targets.add_argument(
+        "--python",
+        metavar="PATH",
+        help="Python programs' interpreter (default: the root's .venv or venv, else "
+        "$VIRTUAL_ENV, else this one); `peeky`: this one",
+    )
     args = parser.parse_args()
     if not token or not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
         parser.error(
@@ -7766,7 +7791,17 @@ def main():
                 adapter = load_rust_target(args.rust_config)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
-    server = make_server(args.root, token, args.port, adapter=adapter)
+    python = None
+    if args.python is not None:
+        from peeky.python_interpreter import absolute_option, find
+
+        try:
+            python = absolute_option(args.python)
+            # Refused now if Peeky cannot read with it, not at the first launch.
+            find(args.root, python)
+        except ValueError as exc:
+            parser.error(str(exc))
+    server = make_server(args.root, token, args.port, adapter=adapter, python=python)
 
     if not 1 <= args.idle_timeout <= 86400:
         parser.error("--idle-timeout must be within [1, 86400] seconds")

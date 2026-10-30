@@ -1109,12 +1109,12 @@ def test_a_worker_of_another_protocol_is_never_sent_anything_but_a_hello(tmp_pat
     try:
         client = Client(f"http://127.0.0.1:{server.server_port}", "t" * 32)
         for operation in ("continue", "expand", "fail", "version"):
-            with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 11"):
+            with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 12"):
                 client.call(operation, handle=1, key="5")
         assert asked == ["/hello"], asked
         # An answer whose header names another protocol, from a worker whose hello said
         # this one's, is refused too.
-        client.protocol = 11
+        client.protocol = 12
         with pytest.raises(ValueError, match="its answer to 'continue' .* is not read"):
             client.call("continue")
     finally:
@@ -1235,7 +1235,7 @@ def test_a_local_session_never_sends_a_worker_of_another_protocol_anything_it_ru
             os.chmod(path, 0o600)
             assert main(["session", *command, "--name", "old", "--json"]) == 2, command
             message = json.loads(capsys.readouterr().out)["error"]["message"]
-            assert message.startswith("Worker speaks protocol 9, this session 11: another "), (
+            assert message.startswith("Worker speaks protocol 9, this session 12: another "), (
                 message
             )
             assert "peeky session close --forget --name old" in message, message

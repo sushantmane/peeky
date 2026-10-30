@@ -296,14 +296,15 @@ for the note on a value read through one. Protocol 8 reads a GCC lambda's captur
 it doesn't read one. Protocol 9 reads a caller frame's values in a probe (`1:i`). Protocol 10
 reads a key of a GCC build's unordered container past its first 256 entries. Protocol 11 adds
 `hello`: a client sends nothing else, and not the token, before the worker proves it holds the
-token. Both hosts need the same protocol. A client and a worker of different protocols refuse
+token. Protocol 12 runs a Python program on the worker root's virtual environment, or the
+worker's `--python`, and names it. Both hosts need the same protocol. A client and a worker of different protocols refuse
 each other:
 
 - A client refuses a worker of another protocol before sending anything but a `hello`, which
-  carries no token: `Worker speaks protocol 10, this client 11: install the same Peeky version on
+  carries no token: `Worker speaks protocol 11, this client 12: install the same Peeky version on
   both hosts`. That holds for a probe and a `session start`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 11: `Client
-  speaks protocol 10, this worker 11: install the same Peeky version on both hosts`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 12: `Client
+  speaks protocol 11, this worker 12: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
   the worker's protocol again. A session started with another protocol is refused: start it again.

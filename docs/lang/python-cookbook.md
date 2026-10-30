@@ -11,6 +11,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 
 ## Contents
 
+- [Setup](#0-setup)
+  - [Which interpreter runs the program](#which-interpreter-runs-the-program)
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See which module globals a function reads](#see-which-module-globals-a-function-reads)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
@@ -30,6 +32,82 @@ Peeky debugs Python with debugpy, Python's debugger.
   - [What happens to repositories](#what-happens-to-repositories)
   - [What else is copied, linked or left out](#what-else-is-copied-linked-or-left-out)
   - [When the result warns that nothing above the root was copied](#when-the-result-warns-that-nothing-above-the-root-was-copied)
+
+## 0. Setup
+
+Read [COOKBOOK 0](../COOKBOOK.md#0-setup) first.
+
+### Which interpreter runs the program
+
+A Python program runs on its project's interpreter, so it imports what the project installs. Peeky
+installed as a tool, with pipx or uv, can't import those itself. Peeky takes the first of these:
+
+| Interpreter | When |
+| --- | --- |
+| `--python PATH` | Given. A name on `PATH` works too: `--python python3.12` |
+| The root's `.venv/bin/python`, then `venv/bin/python` | The directory holds `pyvenv.cfg`, as a virtual environment does |
+| `$VIRTUAL_ENV/bin/python` | A virtual environment is active, and it isn't Peeky's own |
+| The interpreter running `peeky` | Otherwise, or with `--python peeky` |
+
+- `probe`, `session start`, `verify` and `describe` take `--python`. A worker takes it as
+  `peeky-worker --python`, and a client's `--python` is refused with `--worker`
+  ([WORKER.md](../WORKER.md#start-a-python-worker)).
+- Peeky looks in the root only, never above it. For `peeky probe src/app.py`, the root is `src`,
+  so a `.venv` beside `src` isn't used. Give the project as the target instead:
+  `peeky probe . --at src/app.py:12`. Or pass `--python .venv/bin/python`.
+- The output names a `.venv` above the root that it didn't use.
+
+The output says which interpreter ran the program:
+
+```
+python: /home/me/shop/.venv/bin/python, Python 3.12.4 (the root's .venv)
+```
+
+With `--json`, a probe, `session start`, `describe` and `verify` give `python`:
+
+| Key | Holds |
+| --- | --- |
+| `interpreter` | The path that runs. A virtual environment's `python` is a link, which isn't followed |
+| `version` | Its version, such as `3.12.4` |
+| `chosen` | `--python`, `.venv`, `venv`, `VIRTUAL_ENV` or `peeky` |
+| `resolved` | Where the path's links lead, when they lead elsewhere. It is only reported |
+| `unused` | A virtual environment above the root, named but not used |
+
+A probe's `target_identity` holds the same. So a run on another interpreter is never compared as
+the same program.
+
+The interpreter must be CPython 3.11 or later. Peeky reads the program's code with it, and it reads
+only what 3.11 and later compile. Another one is refused before anything runs, with
+`UNSUPPORTED`:
+
+```
+[UNSUPPORTED] Peeky runs Python programs on CPython 3.11 or later, and /usr/bin/python3 (--python) is CPython 3.9.6: …
+```
+
+The project needs no debugpy. Peeky's own debugpy starts the program on the interpreter. debugpy's
+compiled speedups are built for Peeky's Python version only. On another version, debugpy uses its
+pure-Python tracer instead, which is slower.
+
+#### How Peeky reads the code
+
+Peeky reads some of a program's code without running it:
+
+- which scope a name missing from the locals is read from;
+- a loop's locals that this pass hasn't assigned yet;
+- the lines and scopes that `describe` lists;
+- a function's first line, which a `@before` restore watches.
+
+Bytecode and line tables differ between Python versions. So the program's interpreter makes these
+readings. Where it compiles as Peeky's own does, Peeky reads in its own process. Otherwise a helper
+process of that interpreter reads them, with Peeky's code by its path. No reading made by one
+Python version is applied to another.
+
+If the helper can't read, Peeky claims nothing. A module global is withheld, with why. A loop's
+local gets no note.
+
+The interpreter and its environment are your project's code, as the program is. They get the same
+environment as the program, without the worker's token. An environment's `.pth` files run in the
+helper too.
 
 ## 1.1 What Can I Ask?
 
@@ -318,10 +396,9 @@ read or change this pass's value, stop after the line that assigns it.
 
 #### How Peeky decides
 
-Peeky reads the function's bytecode. It compiles the source as the program's interpreter does,
-both plain and with `-O`, and the two must agree. It does this only when Peeky itself runs on an
-interpreter that compiles alike. That means the same implementation, exact version and build, and
-bytecode magic number.
+Peeky reads the function's bytecode. The program's interpreter compiles the source, both plain and
+with `-O`, and the two must agree
+([How Peeky reads the code](#how-peeky-reads-the-code)).
 
 The debugger reports a line, not an instruction. So the stop may be at any instruction of the line.
 A breakpoint stops only where the line begins. All of the line's instructions must be in the same

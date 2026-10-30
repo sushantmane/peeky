@@ -9,12 +9,17 @@ globals. Nothing is evaluated in the program.
 Each source is parsed once into a compact index (every function's line span and how
 it binds each name); the syntax tree and symbol table are dropped, and the index cache
 is bounded by size. Nothing is parsed until a name is missing from a frame's locals.
+
+Also the lines and scopes `describe` lists (``breakable_lines``, ``function_scopes``).
+Each of these is read by the program's own interpreter (python_interpreter).
 """
 
 import ast
+import dis
 import importlib.util
 import os
 import symtable
+import warnings
 from collections import OrderedDict
 
 # The syntax tree and symbol table of a source take a few hundred times its size while
@@ -289,3 +294,143 @@ def classify(path, function, line, names, listed=(), loaded_by=None):
             f"({', '.join(unknown[:5])}): the file may have changed since it was loaded"
         )
     return {name: entry["bindings"].get(name) for name in names}, None
+
+
+def _parse_error(path, exc):
+    return ValueError(f"{path} does not parse as Python: {exc.msg} (line {exc.lineno})")
+
+
+def breakable_lines(path):
+    """The lines of a source the compiler gives code: where a breakpoint can stop."""
+    try:
+        code = compile(path.read_text(), str(path), "exec")
+    except SyntaxError as exc:
+        raise _parse_error(path, exc) from exc
+    lines, stack = set(), [code]
+    while stack:
+        item = stack.pop()
+        lines.update(line for _, _, line in item.co_lines() if line)
+        stack.extend(c for c in item.co_consts if hasattr(c, "co_lines"))
+    return sorted(lines)
+
+
+MAX_SCOPES = 300
+
+
+def function_scopes(path):
+    """Names each Python function (and the module) can see, for choosing selectors.
+
+    Static: lists parameters and assigned locals, not values or attributes, and the
+    module globals a function reads that the module assigns (`globals`: a probe reads them,
+    `[module global]`): names the module binds (`MAX_GAP = 30`, not
+    `globals()["x"] = 1`) that the function's compiled code loads as globals (its generator
+    expressions' and comprehensions' too), so not in code the compiler drops (`if False:`);
+    nothing runs. Methods are qualified by class
+    (`IPv6Address.is_private`); listed in source order, first MAX_SCOPES only.
+    """
+    text = path.read_text()
+    try:
+        tree = ast.parse(text, str(path))
+        table = symtable.symtable(text, str(path), "exec")
+    except SyntaxError as exc:
+        raise _parse_error(path, exc) from exc
+    # Names the module itself binds (`MAX_GAP = 30`), not its functions, classes or
+    # imports, nor a name a target only reads (`globals()["x"] = 1`, `counts[0] = 1`):
+    # what a function may read as a module global.
+    assigned = set()
+    for node in tree.body:
+        targets = (
+            node.targets
+            if isinstance(node, ast.Assign)
+            else [node.target]
+            if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            else []
+        )
+        for target in targets:
+            for name in ast.walk(target):
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
+                    assigned.add(name.id)
+    # The globals each function's compiled code loads, by (name, first line) as the
+    # compiler numbers it: a decorated function's code starts at its first decorator.
+    try:
+        with warnings.catch_warnings():
+            # A program's own syntax warnings (`"\d"`) are not describe's to print.
+            warnings.simplefilter("ignore")
+            compiled = compile(text, str(path), "exec", dont_inherit=True)
+    except (SyntaxError, ValueError):
+        compiled = None
+    # A generator expression's code is its own (a comprehension's too, before 3.12), but
+    # it is the enclosing function's: its loads count there.
+    loads, codes = {}, [(compiled, None)] if compiled is not None else []
+    while codes:
+        code, into = codes.pop()
+        if into is None or code.co_name not in (
+            "<genexpr>",
+            "<listcomp>",
+            "<setcomp>",
+            "<dictcomp>",
+        ):
+            into = set()
+            loads.setdefault((code.co_name, code.co_firstlineno), []).append(into)
+        into.update(
+            instruction.argval
+            for instruction in dis.get_instructions(code)
+            if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS")
+        )
+        codes.extend((each, into) for each in code.co_consts if hasattr(each, "co_code"))
+    spans, starts = {}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            name = getattr(node, "name", "lambda")
+            spans.setdefault((node.lineno, name), node.end_lineno)
+            first = min([d.lineno for d in getattr(node, "decorator_list", ())] + [node.lineno])
+            starts.setdefault(
+                (node.lineno, name), ("<lambda>" if name == "lambda" else name, first)
+            )
+    found, stack = [], [(table, "")]
+    while stack and len(found) < 20000:
+        item, prefix = stack.pop()
+        kind = item.get_type()
+        name = item.get_name()
+        qualified = f"{prefix}{name}"
+        # Only functions and classes name a level; PEP 695 type-parameter scopes and the
+        # module pass their prefix through unchanged.
+        child_prefix = f"{qualified}." if kind in ("function", "class") else prefix
+        stack.extend((child, child_prefix) for child in item.get_children())
+        end = spans.get((item.get_lineno(), name))
+        if kind == "module":
+            found.append((0, "<module>", None, item))
+        elif kind == "function" and end is not None:
+            # Generator expressions and annotation scopes have no source span: skipped.
+            found.append((item.get_lineno(), qualified, [item.get_lineno(), end], item))
+    found.sort(key=lambda entry: entry[0])
+    scopes = []
+    for _, qualified, lines, item in found[:MAX_SCOPES]:
+        names = sorted(
+            s.get_name()
+            for s in item.get_symbols()
+            if s.is_parameter()
+            or s.is_assigned()
+            or (item.get_type() == "module" and s.is_imported())
+        )
+        # One code object of that name and first line, else none listed: two lambdas on
+        # a line cannot be told apart.
+        matched = loads.get(starts.get((item.get_lineno(), item.get_name())), [])
+        read = (
+            sorted(matched[0] & assigned)
+            if item.get_type() != "module" and len(matched) == 1
+            else []
+        )
+        scope = {
+            "scope": qualified,
+            "lines": lines,
+            "names": (names + [name for name in read if name not in names])[:100],
+        }
+        if read:
+            scope["globals"] = read
+        scopes.append(scope)
+    if len(found) > MAX_SCOPES:
+        scopes.append(
+            {"scope": "...", "lines": None, "names": [], "omitted": len(found) - MAX_SCOPES}
+        )
+    return scopes

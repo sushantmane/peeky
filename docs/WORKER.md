@@ -26,6 +26,11 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD" --port 8765
 - Only the worker reads `DEBUG_TOKEN`. Every client reads `PEEKY_WORKER_TOKEN`, and refuses
   `DEBUG_TOKEN` given alone.
 - A session left idle for `--idle-timeout` seconds (default 300) is closed, and its program ended.
+- A program runs on its project's interpreter: `--python PATH`, else the root's `.venv` or `venv`,
+  else `$VIRTUAL_ENV`, else the worker's own. `--python peeky` keeps the worker's own. Each launch
+  and probe chooses again, and names it in `target_identity`
+  ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
+- A request can't choose the interpreter: a client's `--python` is refused with `--worker`.
 
 In a second terminal, run this with the Python Peeky is installed in. Set `PEEKY_WORKER_TOKEN` to
 the token for that command alone:
@@ -141,8 +146,8 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD/examples/c" \
   and the debugger operations Peeky supports.
 - A request can't supply a compiler command, an LLDB initialization command, or a launch
   configuration of its own.
-- `--java-config`, `--java-attach-config`, `--native-config` and `--rust-config` are mutually
-  exclusive: a worker serves one target. Without any of them, it serves Python.
+- `--java-config`, `--java-attach-config`, `--native-config`, `--rust-config` and `--python` are
+  mutually exclusive: a worker serves one target. Without a config, it serves Python.
 - A config field that Peeky doesn't know is refused, and `sources` is required.
 
 ## Inspect and change a C value

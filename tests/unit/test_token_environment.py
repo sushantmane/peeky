@@ -39,7 +39,7 @@ def sdk(monkeypatch):
 
 
 def calls(tmp_path, monkeypatch):
-    from peeky import adapters, build, cli, native, processes, python_passes
+    from peeky import adapters, build, cli, native, processes, python_interpreter, python_passes
 
     (tmp_path / "cc").write_text("")
     (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
@@ -59,11 +59,17 @@ def calls(tmp_path, monkeypatch):
         "native sdk": lambda: cli.native_tools("c"),
         "git": lambda: adapters._git("git", tmp_path, "status"),
         "interpreter": lambda: python_passes.same_compiler(str(tmp_path / "python3")),
+        "program's interpreter": lambda: python_interpreter.identify(
+            str(tmp_path / "python3"), "--python"
+        ),
+        "readings helper": lambda: python_interpreter.Readings(str(tmp_path / "python3"))(
+            "lines", str(tmp_path / "main.py")
+        ),
     }
 
 
 def test_no_tool_peeky_asks_gets_the_token(tmp_path, monkeypatch, credentials):
-    from peeky import build, processes
+    from peeky import build, processes, python_interpreter
 
     seen = []
 
@@ -79,7 +85,7 @@ def test_no_tool_peeky_asks_gets_the_token(tmp_path, monkeypatch, credentials):
             seen.clear()
             try:
                 call()
-            except (OSError, ValueError):
+            except (OSError, ValueError, python_interpreter.Unavailable):
                 pass
             assert seen, f"{name} started nothing"
             # None inherits this process's environment, and both names with it.
@@ -97,7 +103,7 @@ def test_the_worker_takes_its_token_out_of_its_environment(monkeypatch, credenti
 
     seen = {}
 
-    def make_server(root, token, port, adapter=None):
+    def make_server(root, token, port, adapter=None, python=None):
         seen.update(token=token, names=set(CREDENTIALS) & set(os.environ))
         raise Started
 
@@ -208,7 +214,7 @@ def test_the_agents_own_worker_gets_a_fresh_token(tmp_path, monkeypatch, credent
 
     seen = {}
 
-    def make_server(root, token, port, adapter=None):
+    def make_server(root, token, port, adapter=None, python=None):
         seen.update(token=token)
         raise Started
 

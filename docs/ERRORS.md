@@ -1,4 +1,4 @@
-# Error codes (protocol 11)
+# Error codes (protocol 12)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -150,6 +150,7 @@ The last column is the `retryable` field.
 | `peeky setup-java` that failed: `Java adapter setup failed, and nothing was installed: …`, such as a download that failed | Fix what the message names, such as network access to GitHub and Maven Central, and run it again. Report a checksum mismatch |
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
+| A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -176,6 +177,10 @@ file lists what it reads.
   16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
   directory, or start the worker with another `--root`.
 - A remote session started by an older Peeky, without source provenance. Start it again.
+- A `--python` that names no executable file, or an interpreter that can't say its version:
+  `--python …: no executable file there`, or `Peeky could not run the Python interpreter …`. Pass
+  the program's interpreter, or `--python peeky` for Peeky's own. A `--python` with `--worker`, or
+  for another language, is refused too: a worker chooses its own.
 - A Java target without an adapter bundle: `No Java adapter bundle at …`. Run the
   `peeky setup-java` command that the message gives.
 - `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
@@ -503,7 +508,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 11`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 12`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
@@ -538,6 +543,10 @@ request a client sends.
 - **Protocol 11** adds `hello`. A client sends a worker nothing, and not the token, before the
   worker proves it holds the token ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundaries)). A
   protocol 10 worker has no `hello`: it asks for the token, and is refused as another protocol.
+- **Protocol 12** runs a Python program on its project's interpreter: the worker root's `.venv` or
+  `venv`, or the worker's `--python`. The launch's `target_identity` names it, and a probe's
+  `python`. A protocol 11 worker runs it on its own interpreter, and names none
+  ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.
