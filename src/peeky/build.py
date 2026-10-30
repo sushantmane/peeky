@@ -362,8 +362,7 @@ def _executable(command, workspace, env):
 def _run(command, workspace, env, timeout=None, *, stop=None, gate=None, store=None):
     """``stop`` and ``gate``: see agent.execute. ``store``: where the executable's digest
     is kept for later processes (digest.sha256_file)."""
-    # Temporary dependency reuse. Move execute to a shared process module when
-    # the build boundary is integrated; never import agent at module scope.
+    # agent is the CLI's module (it loads the worker): never imported at module scope.
     from peeky.agent import BUILD_RETAINED, execute
 
     cwd, executable = _executable(command, workspace, env)
@@ -726,7 +725,7 @@ def assert_current(prepared):
 
 
 class UnreadDependencies(ValueError):
-    """A compiler's dependency file that Peeky cannot read unambiguously (#177): its
+    """A compiler's dependency file that Peeky cannot read unambiguously: its
     provenance check fails rather than skip or misread an entry."""
 
     def __init__(self, why):
@@ -737,7 +736,7 @@ def dependency_paths(text, base, producer):
     """Every file a compile read, from its dependency file: ``producer`` "rustc" (rustc's
     `--emit=dep-info`) or "make" (`clang -MD`, `gcc -MD`), each read by its own escaping.
     Lines end at `\n` alone (a U+2028 is part of a name). Anything that could be read two
-    ways raises UnreadDependencies (#177)."""
+    ways raises UnreadDependencies."""
     names = _rustc_dependencies(text) if producer == "rustc" else _make_dependencies(text, base)
     return [path if (path := Path(name)).is_absolute() else Path(base) / path for name in names]
 
@@ -869,7 +868,7 @@ def _make_dependencies(text, base):
             )
         if "//" in name or name.endswith("/"):
             # clang prints a name's backslash as `/`: `/w/\\x.h` reads `/w//x.h`, which a
-            # path would shorten to another file (`/w/x.h`; #178 review).
+            # path would shorten to another file (`/w/x.h`).
             raise UnreadDependencies(
                 f"an empty step in {name!r}, where clang may have printed a backslash"
             )

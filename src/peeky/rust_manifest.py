@@ -1,4 +1,4 @@
-"""Strict input contract for the first dependency-free Cargo qualification.
+"""Strict input contract for a dependency-free Cargo crate.
 
 This is preflight validation, not a Rust runtime adapter or a hostile-code sandbox.
 Build preparation must still copy/hash these inputs and isolate Cargo's environment.
@@ -47,7 +47,8 @@ _METADATA = frozenset(
     }
 )
 _SWITCHES = ("build", "autobins", "autotests", "autoexamples", "autobenches", "autolib")
-# Tables `cargo new` writes; Peeky builds offline, so they must stay empty.
+# Dependency tables (`cargo new` writes an empty [dependencies]); Peeky builds offline, so
+# they must stay empty.
 _EMPTY_TABLES = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
 _SHAPE = (
     "Peeky builds one dependency-free binary crate, with at most one integration test "
@@ -173,7 +174,7 @@ def cargo_layout(root):
 def validate_cargo_inputs(root, *, sources, tests):
     """Accept one binary, at most one integration test and a dependency-free lockfile.
 
-    Explicit targets with discovery switched off are accepted as before; so is a plain
+    Explicit targets with discovery switched off are accepted; so is a plain
     `cargo new` crate, when nothing Cargo would discover besides those targets exists.
     """
     root = Path(root).resolve(strict=True)

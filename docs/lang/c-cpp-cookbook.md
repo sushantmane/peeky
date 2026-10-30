@@ -792,7 +792,7 @@ hit  phase      line  function  selector  type  value
 1    after-set  25    main      start     int   0  [settable]
 after-set: 2 number, flag, null or text rows equal to the observed value left out; `--json` has all
 set start: 3 -> 0
-status: completed  hits: 1  seconds: 0.745
+status: completed  hits: 1  seconds: 1.474  max pause: 172.9 ms
 output:
   PAGE:[10, 20, 30]
 ```
@@ -854,7 +854,7 @@ hit  phase     line  function  selector  type    value
 `bins[3]: bin = {lo = 6, hi = 7, count = 0} (children: peeky session get 'bins[3]')`. The preview
 replaces the value in probe rows, `inspect`, `session get` (the root and every child it lists) and
 the evidence store. The handle stays, so you still read and set fields by name: `bins[3].hi`,
-`--set 'bins[3].hi=8'`. They are marked `[settable]` as before.
+`--set 'bins[3].hi=8'`. The preview doesn't change which ones are marked `[settable]`.
 
 #### What a preview shows
 
@@ -959,7 +959,8 @@ That is the case for:
   - the debug information gives the nodes' type, and where each node holds its entry;
   - the entries hold numbers, `bool`s, characters, enums, pointers and `std::string`s, in pairs
     and structs. A `long double` doesn't count: the debug information doesn't say which of its
-    formats its bytes hold. Nor does a struct with a base class or a bitfield;
+    formats its bytes hold. Nor does a union, or a struct with a base class, a bitfield or an
+    anonymous member;
   - its chain of nodes ends after exactly `_M_element_count` of them. Peeky walks at most 16,384
     nodes with a debugger that reads memory, as lldb-dap 20 does, and 512 with lldb-dap 18
     (see below);
@@ -1008,8 +1009,8 @@ That is the case for:
 
   A container of more than 256 entries is read too. Peeky walks its whole chain to check its
   count. The row reads its first 256 entries, and a later one when a position or key asks for it:
-  `big[#350]`, `big[399]`. `big[K]` compares every key. A listing says how many entries it
-  doesn't show: `... 336 more (400 entries in all)`.
+  `big[#350]`, `big[399]`. `big[K]` compares every key. A listing's last line says how many
+  entries it doesn't show: `then 336 more (400 entries in all)`.
 
   How long a chain Peeky walks depends on the debugger:
 
@@ -1718,7 +1719,7 @@ hit  phase     line  function  selector  type        value
   why: ``tick declares 'count' in static storage (…), at line 18, in a block this stop is outside
   of, so the code here doesn't name it; read it in that block, below line 18``.
 - Where Peeky can't tell which declaration the code names, the note says why, and it isn't read.
-- Where the frame has a local of that name, the name selects the local, as before
+- Where the frame has a local of that name, the name selects the local
   ([A name a block declares again](#a-name-a-block-declares-again)).
 - Where lldb-dap lists several of one name, the row is `calls @ tick.c:13`. One a C++ symbol
   names may read `Acc::run()::calls`. Select either as `calls`.
@@ -1781,7 +1782,7 @@ member of `this`:
 - A capture is withheld where clang's `this` would be, such as in a lambda that a running
   declaration defines ([`this` in C++](#this-in-c)).
 - In `[*this]`, `this` is the lambda's copy of the object: `this  Acc  {total = 5}`, and
-  `this.total` reads the copy's member. `[this]` shows the pointer, as before.
+  `this.total` reads the copy's member. `[this]` shows the pointer.
 - The lambda's own local of a capture's name hides the capture from its declaration to the end of
   its block, as C++ reads it. Above it in the block, and after the block, the name reads the
   capture. So does a stop whose code isn't the block's, as after a macro's `if (int x = 9) …`.
@@ -2048,7 +2049,7 @@ peeky session close --name maps
 
 ```
 ages["al"]: int = 42
-ages: std::map<std::string, int> = size=2
+ages: std::map<std::string, int> = size=2 {"al": 42, "bo": 31}
   ages["al"]: int = 42
   ages["bo"]: int = 31
   note: ages is a C++ map: ages[K] is the value for key K, as in C++ (integer and std::string keys), and ages[#N] its Nth entry in iteration order, a pair with .first and .second

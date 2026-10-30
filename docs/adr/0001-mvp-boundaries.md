@@ -1,6 +1,6 @@
 # ADR 0001: Python + DAP + a single worker for the MVP
 
-Status: accepted for the Python bootstrap; language scope amended by docs/LANGUAGES.md. Python is the first alpha, and Java/C/C++/Rust are now committed minimum product scope.
+Status: accepted for the Python bootstrap; language scope amended: Python was the first alpha, and Java, C, C++ and Rust joined the minimum product scope. All five are delivered, as experimental ([ROADMAP.md](../ROADMAP.md)).
 
 ## Original bootstrap decision
 

@@ -1,4 +1,4 @@
-"""Changing a string's text in place (#137 part 2): `--set 'name="apple"'`.
+"""Changing a string's text in place: `--set 'name="apple"'`.
 
 A `--set` value in double quotes is text, written as JSON writes a string (`"apple"`,
 `"a \\"b\\""`, `"caf\\u00e9"`). Python's debugger evaluates it as Python does, and
@@ -121,7 +121,7 @@ def text_kind(variable, language):
 
 
 def qualifier_reason(qualifier):
-    """Why a const or volatile string is never changed (#164)."""
+    """Why a const or volatile string is never changed."""
     if qualifier == "const":
         return (
             "a const object, which the program may never change (the compiler may keep "
@@ -349,7 +349,7 @@ def _libstdcxx(variable, data, writer, relist, layout=None):
     union of its own 16-byte buffer and the heap buffer's capacity, in that order. The
     text is in the string's own buffer exactly when the pointer points there. ``layout``:
     {"local_buf": its buffer's length} from the build's debug information, which LLDB
-    can misread (GCC's as `char[0]`, #167)."""
+    can misread (GCC's as `char[0]`)."""
     name = writer.name
     if not writer.can_read:
         writer.failed(
