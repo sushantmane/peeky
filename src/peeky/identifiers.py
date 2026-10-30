@@ -1,4 +1,4 @@
-"""The names a selector can write (#195): a Unicode identifier, matched exactly as the
+"""The names a selector can write: a Unicode identifier, matched exactly as the
 debugger lists it.
 
 A name is Python's identifier (`str.isidentifier()`: XID_Start or `_`, then
@@ -85,7 +85,7 @@ def selectable(name):
 
 def split_located(name):
     """``(base, file, line)`` of a name LLDB gives with where it is declared, as LLDB
-    writes it (`t @ my file.c:3`), else None: the one parser of such names. The base is
+    writes it (`t @ my file.c:3`), else None. The base is
     all before the first ` @ ` and holds no space, as no name does, so `t @ one @ two.c:5`
     is `t` in `one @ two.c` everywhere; never a greedy prefix. Any file name with no colon
     and any line parse (`#line 1000000000`, a long `#line` file name), and so does a base
@@ -118,7 +118,7 @@ def _bounded(name):
 
 def reachable(row):
     """Whether a selector reads the root row ``row`` whole: by its own name
-    (``selectable``), or by the plain name the worker gives it (``selected_as``, #158)
+    (``selectable``), or by the plain name the worker gives it (``selected_as``)
     where the row is that name with where LLDB says it is declared (`t` for
     `t @ my file.c:3`). What `inspect` offers, and what alone may be marked [settable]."""
     name, alias = row.get("name"), row.get("selected_as")
