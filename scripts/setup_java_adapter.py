@@ -25,11 +25,11 @@ CREDENTIAL_ENV = frozenset({"DEBUG_TOKEN", "PEEKY_WORKER_TOKEN"})
 # Source patches to the pinned java-debug, applied before compiling and recorded in
 # adapter.json (`patches`); peeky.java refuses a bundle without them.
 #
-# eventhub-log-guard (#27): the "Event Hub" thread, which turns every JDI event into
-# DAP stops, steps, thread and exit events, built a FINE log line for each event even
+# eventhub-log-guard: the "Event Hub" thread, which turns every JDI event into DAP
+# stops, steps, thread and exit events, builds a FINE log line for each event even
 # with FINE off. The line names the event's thread; for a short-lived thread already
-# collected that throws ObjectCollectedException, which nothing caught, so the thread
-# died and no JVM event was ever processed again (lost stops and exits).
+# collected that throws ObjectCollectedException, which nothing catches, so the thread
+# dies and no JVM event is processed again (lost stops and exits).
 EVENT_HUB = (
     "com.microsoft.java.debug.core/src/main/java/com/microsoft/java/debug/core/EventHub.java"
 )

@@ -324,20 +324,20 @@ _DDL = (
 # 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
 # stop); version 11 adds interventions.function, version 12 interventions.instance, and
 # version 13 captures.instance (a closure's or generic instance's label, NULL before);
-# version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
-# locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop
-# (#174), from that hit's other rows where they agree (NULL where they give none, as with
+# version 14 adds captures.stop and interventions.stop, which of a line's breakpoint
+# locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop,
+# from that hit's other rows where they agree (NULL where they give none, as with
 # `--capture return` alone, or disagree); version 16 adds runs.set_outcomes, how each
 # requested change went (NULL for earlier runs); version 17 adds captures.element_size,
-# at_element_of and element_index (#302), at which element's address of a captured array
+# at_element_of and element_index, at which element's address of a captured array
 # a C or C++ pointer is, and offset_from and element_offset, how far it is from another
 # pointer by address alone (NULL for earlier runs); version 18 adds captures.debugger_type,
 # the debugger's own name for the type (NULL for earlier runs, whose type spelled a Rust
-# reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315);
-# version 19 adds interventions.restores_at (#305), the change a restore undid (NULL
+# reference or raw pointer as the debugger does);
+# version 19 adds interventions.restores_at, the change a restore undid (NULL
 # for earlier runs, which made none); version 20 adds interventions.unchanged, 1 for a
 # write the worker proved changed nothing (NULL for earlier runs); version 21 adds
-# captures.frame, the stack frame a selector read (#382: `1:i`, a caller's), and
+# captures.frame, the stack frame a selector read (`1:i`, a caller's), and
 # stop_line, where the program stopped, for a caller frame's row (NULL for earlier runs,
 # which read only the frame the program stopped in).
 # Views name columns of the newest tables, so earlier steps only drop them and the
@@ -392,7 +392,7 @@ def _integer_identity(connection):
 def _one_stop(column="stop"):
     """SQL aggregate: the one stop of a group of rows, only where each has one and all
     agree, else NULL (none labelled, or contradictory evidence): a stop is never picked
-    from several (#174)."""
+    from several."""
     return (
         f"CASE WHEN COUNT(DISTINCT {column}) = 1 AND COUNT({column}) = COUNT(*) THEN "
         f"MIN({column}) END"
@@ -481,7 +481,7 @@ _B = f"COALESCE(:b, {_LATEST})"
 _A = f"COALESCE(:a, (SELECT MAX(run_id) FROM runs WHERE run_id < {_B}))"
 
 
-# What set_effect adds to a restore's change (#305): the change it undid.
+# What set_effect adds to a restore's change: the change it undid.
 _RESTORED = "COALESCE(' (restored from before ' || restores_at || ')', '')"
 # And to a write the worker proved changed nothing, as the probe's text says it.
 _NO_CHANGE = "CASE WHEN unchanged THEN ', no change' ELSE '' END"
@@ -502,8 +502,7 @@ def _caveat(alias=""):
     budget-exhausted or one added later; else `note` where the row has a note (a C/C++
     local a loop returns to, a Rust summary). NULL for a plain value, or none; and for a
     Rust raw pointer's address alone (`*const T`, `[unproven]`), whose view and note are
-    about what it points at: the address is the pointer's own value (COOKBOOK 4.8,
-    eleventh evaluation, prep 16)."""
+    about what it points at: the address is the pointer's own value (COOKBOOK 4.8)."""
     prefix = f"{alias}." if alias else ""
     return (
         f"CASE WHEN {prefix}value IS NULL THEN NULL WHEN {prefix}view = 'unproven' AND "
@@ -523,28 +522,28 @@ def _shown(alias=""):
 _ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
 _LANGUAGE = "(SELECT language FROM runs WHERE run_id = {})"
 # An after-set value equal to the same run's observed value at that hit (the
-# intervention did not touch it): `same` is 1 (seventh evaluation, finding 10).
+# intervention did not touch it): `same` is 1.
 _SAME = (
     "s.phase = 'after-set' AND {shown} IS (SELECT {observed} FROM captures o WHERE "
     "o.run_id = s.run_id AND o.hit = s.hit AND o.stop IS s.stop AND o.selector = "
     "s.selector AND o.phase = 'observed' ORDER BY o.rowid LIMIT 1)"
 ).format(shown=_shown("s"), observed=_shown("o"))
-# Where both runs label their stops (#157: a line with several breakpoint locations in a
+# Where both runs label their stops (a line with several breakpoint locations in a
 # function), a hit is also its stop: the same hit at another stop is another row.
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 
 
 def _requested(alias, outcomes=True):
     """SQL: a run's requested interventions (runs.sets), each as [name, value, "requested
-    at LINE@HIT"], a --set at its probe line's set_hit too (ninth evaluation: `diff`'s
-    `(sets)` row and `outputs` did not say which hit a --set was for). With ``outcomes``,
+    at LINE@HIT"], a --set at its probe line's set_hit too (so `diff`'s
+    `(sets)` row and `outputs` say which hit a --set was for). With ``outcomes``,
     each says how it went, from runs.set_outcomes where the run recorded it (`_RECORDED`;
-    `_set_outcome`: review of PR #278, a `LINE@all` made at some stops only read like one
+    `_set_outcome`: else a `LINE@all` made at some stops only would read like one
     made at all). A run that did not (saved before schema 16, or with an outcome that does
     not match its request) says what the probe's own warning did: ", not made: that hit
     never came" (", not made: its line never stopped" for a `LINE@all`), or ", made only
     at the first N stops: the cap" (the warning for a run's --sets names them all, as they
-    share their hit; a --set-at's names its LINE@HIT, name and value; review of PR #214);
+    share their hit; a --set-at's names its LINE@HIT, name and value);
     else nothing, which claims nothing of how it was applied. Without ``outcomes``: the
     requests alone, which say whether two runs asked for the same changes."""
     at = (
@@ -596,7 +595,7 @@ def _requested(alias, outcomes=True):
 # Whether a run recorded how each of its requested changes was applied: a runs.set_outcomes
 # array with, for each entry of runs.sets in its order, an outcome `_set_outcome` accepts
 # for that request (schema 16 on). Its outcomes are read only then; two runs whose requests
-# are the same were made alike only where both recorded it (reviews 2 and 3 of PR #278).
+# are the same were made alike only where both recorded it.
 _RECORDED = (
     "(CASE WHEN {r}.set_outcomes IS NULL OR NOT json_valid({r}.set_outcomes) THEN 0 WHEN "
     "json_type({r}.set_outcomes) IS NOT 'array' THEN 0 ELSE json_array_length("
@@ -613,9 +612,9 @@ def _checked_outcome(text, entry, line, set_hit):
     """The outcome in ``text`` (a runs.set_outcomes entry) where it is one for the request
     ``entry`` (its runs.sets entry: [name, value] for a --set at ``line``@``set_hit``,
     [name, value, "LINE@HIT"] for a --set-at): every key, of its type, with the request's
-    option, location, name and value, and what such a request can end with (review 3 of
-    PR #278: an outcome without `at`, another request's, or entries swapped read as
-    recorded). Else None."""
+    option, location, name and value, and what such a request can end with (else an outcome
+    without `at`, another request's, or entries swapped would read as recorded). Else
+    None."""
     try:
         outcome, request = json.loads(text), json.loads(entry)
     except (TypeError, ValueError):
@@ -651,7 +650,7 @@ def _checked_outcome(text, entry, line, set_hit):
     ]:
         return None
     every = option == "--set-at" and at.endswith("@all")
-    # A change at one hit is refused or fails only at that hit (review 4 of PR #278).
+    # A change at one hit is refused or fails only at that hit.
     if not every and "hit" in outcome and str(hit) != at.rpartition("@")[2]:
         return None
     if every:
@@ -660,8 +659,8 @@ def _checked_outcome(text, entry, line, set_hit):
             return None
     elif ended in ("cap", "lost_stop") or made not in (0, 1) or (made == 1) != (ended == "made"):
         return None
-    # A restore (#305) that never made some of the restores it owed: the latest such
-    # write's LINE@HIT, and each one's in the order made (#331), at most one per hit, of
+    # A restore that never made some of the restores it owed: the latest such
+    # write's LINE@HIT, and each one's in the order made, at most one per hit, of
     # its own hit for a restore at one hit, which was never made; it was not carried out
     # in full. A run saved before has `unrestored` alone.
     unrestored = outcome.get("unrestored")
@@ -703,7 +702,7 @@ def _set_outcome(text, entry, line, set_hit):
 
         left = outcome.get("unrestored_all") or [outcome["unrestored"]]
         # A write with no matching restore, which may have changed nothing; the program
-        # may have written the value since (#331).
+        # may have written the value since.
         text += (
             f"; the write at {left[0]} had no matching restore"
             if len(left) == 1
@@ -750,7 +749,7 @@ _OUTCOME = (
 _OUTCOMES = (_OUTCOME.format(r="ra"), _OUTCOME.format(r="rb"))
 # Run-level rows `diff` and `compare` share, each (hit, phase, selector, value_a, value_b,
 # differs, note, pos): `(status)` where the runs' outcomes differ or either did not
-# complete, with its error (review of PR #278: two runs refused at different hits read
+# complete, with its error (else two runs refused at different hits would read
 # alike), and `(sets)`.
 _STATUS_ROW = f"""SELECT NULL, NULL, '(status)', {_OUTCOMES[0]}, {_OUTCOMES[1]},
     {_OUTCOMES[0]} IS NOT {_OUTCOMES[1]}, CASE WHEN {_OUTCOMES[0]} IS NOT {_OUTCOMES[1]}
@@ -759,8 +758,8 @@ _STATUS_ROW = f"""SELECT NULL, NULL, '(status)', {_OUTCOMES[0]}, {_OUTCOMES[1]},
     AND ({_OUTCOMES[0]} IS NOT {_OUTCOMES[1]} OR ra.status IS NOT 'completed'
     OR rb.status IS NOT 'completed')"""
 # `(sets)`: each run's requests with how they went (`va`, `vb`), told apart by the requests
-# alone (`qa`, `qb`) first (review 3 of PR #278: a schema-15 run against a schema-16 one
-# with the same request read as different requests), then by how they went, only where
+# alone (`qa`, `qb`) first (else a schema-15 run against a schema-16 one
+# with the same request would read as different requests), then by how they went, only where
 # both runs recorded it (`kept`). Callers add to its WHERE: `asked`, how many changes run
 # a requested; `unknown`, whether the requests are the same but not both recorded.
 _SETS_ROW = f"""SELECT NULL, NULL, '(sets)', va, vb, va IS NOT vb, CASE
@@ -784,20 +783,19 @@ _SETS_UNKNOWN = "(qa IS qb AND asked_a > 0 AND NOT kept)"
 
 
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
-# A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15 (#174);
-# one saved without it (#155) takes it from the other rows of its hit where they agree,
+# A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15;
+# one saved without it takes it from the other rows of its hit where they agree,
 # as a store's upgrade to 15 does, else has none.
 _HIT_STOP = f"COALESCE(s.stop, {_hits_stop('s')})"
 
 # A value that differs only in addresses, where an address is a pointer's or a value's
-# place, which can be another element's in the other run (#292: a pointer into an array
-# held element 6's address in one run and element 4's in the other, and `diff` called it
-# `addresses only`). That is a pointer or a reference row: its type ends in `*`, `&` or
-# `&&`, after any `const`, `volatile` or `restrict` (rtrim drops their letters), or starts
-# with Rust's `&` or `*` (`&[T]`, `*const T`). Or any value of a C, C++ or Rust run: a
-# preview shows the pointers in it as addresses only, and LLDB's `T @ 0x...` is where the
-# value is. Elsewhere, a Python repr's address or a Java object number, the masking
-# stands: `addresses only`.
+# place, which can be another element's in the other run (a pointer into an array
+# may hold element 6's address in one run and element 4's in the other). That is a pointer
+# or a reference row: its type ends in `*`, `&` or `&&`, after any `const`, `volatile` or
+# `restrict` (rtrim drops their letters), or starts with Rust's `&` or `*` (`&[T]`,
+# `*const T`). Or any value of a C, C++ or Rust run: a preview shows the pointers in it as
+# addresses only, and LLDB's `T @ 0x...` is where the value is. Elsewhere, a Python repr's
+# address or a Java object number, the masking stands: `addresses only`.
 _POINTER_TYPE = "(rtrim({t}, ' _aceilnorstv') GLOB '*[*&]' OR {t} GLOB '[*&]*')"
 _NATIVE_LANGUAGES = "('c', 'cpp', 'rust')"
 # Each says what to do; `diff` puts `at N hits (...)` after `addresses differ`.
@@ -812,8 +810,7 @@ _HOLDS_ELSEWHERE = (
 # A C or C++ pointer or reference that shows what it points at after its address, with
 # no other address in it (a string's text, a struct's plain members: `0x… "Maya"`), and
 # reads the same in both runs: it may still be another element that reads the same, but
-# no offset is needed to tell that much (eleventh evaluation: a `const std::string &` was
-# sent to address()). It ranks with the address-only values.
+# no offset is needed to tell that much. It ranks with the address-only values.
 _READS_ALIKE = (
     "addresses only: what it points at reads the same in both runs, though it may be "
     "another element that reads the same"
@@ -837,9 +834,9 @@ _ADDRESS_KIND = f"""CASE
 
 
 # A C or C++ pointer at an element's address of the same captured array in both runs
-# (captures.at_element_of, #302), each element's by its index. Another element's address is
-# an address fact, ranked first among the addresses that differ, never a real difference
-# (review 2 of PR #312): the pointer may not have changed while the array moved (a stale
+# (captures.at_element_of), each element's by its index. Another element's address is
+# an address fact, ranked first among the addresses that differ, never a real difference:
+# the pointer may not have changed while the array moved (a stale
 # pointer, storage reused, the allocator's layout), so the index can change by layout
 # alone. The same element's address, with addresses that differ, is no more than that.
 _ELSEWHERE = "a.pi IS NOT NULL AND a.pi IS b.pi AND a.ei IS NOT b.ei"
@@ -856,8 +853,8 @@ def _from(run):
 
 
 # A C or C++ pointer counted from the same captured pointer in both runs by address alone
-# (captures.offset_from): its offsets are shown, but rank with the addresses that differ
-# (review of PR #312). Two pointers of one type may point into separate blocks within the
+# (captures.offset_from): its offsets are shown, but rank with the addresses that differ.
+# Two pointers of one type may point into separate blocks within the
 # cap (`src`, `dst`), whose distance is the allocator's layout, not the program's, so
 # another offset need not be another element; and the base itself may point elsewhere.
 _OFFSETS = f"""'addresses differ: by address, ' || CASE WHEN a.eo IS b.eo
@@ -868,7 +865,7 @@ _OFFSETS = f"""'addresses differ: by address, ' || CASE WHEN a.eo IS b.eo
 
 # Whether the two runs' types differ (a.t, b.t).
 _RETYPED = "(a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t)"
-# Where Peeky can't tell whether a type changed (reviews of PR #315): a Rust run saved
+# Where Peeky can't tell whether a type changed: a Rust run saved
 # before schema 18 (its rows have no debugger type, dt) spelled a reference and a raw
 # pointer alike, as LLDB does (`rota::Engineer *`), where a newer Rust run respells that
 # debugger type (`&rota::Engineer`, `*const rota::Engineer`). Only there: any other type
@@ -894,16 +891,15 @@ _MOVED_TOO = (
 
 # A row with no value to compare (`u`, `unavailable`): Peeky withheld it (`not shown`, `no
 # value yet`), or the debugger had none (optimized out). Against another run's value it is
-# no value difference (thirteenth evaluation: 18 of a candidate's 25 `diff` rows were
-# `differs 1` only because its structured bindings were `not shown`). The value's own text
+# no value difference. The value's own text
 # says why (`<not shown: …>`). One plain column, so `kind` stays well within SQLite's
 # aggregate terms; `differs` is NULL for such a row only where the rows are shown.
 _NOT_COMPARED = ", so not a value difference"
 # What pairing proves apart from the values, which a run with no value to compare leaves
-# standing (review of PR #389): a type that changed. Its row stays a difference, in tier 3,
+# standing: a type that changed. Its row stays a difference, in tier 3,
 # and its note says the values were not compared (`_UNREAD`). A type Peeky can't tell
 # changed (`_UNTOLD`) proves nothing: with `nv`, its row is one of the values a run has
-# none of, differs NULL, its note kept after (`_UNSURE`; review 2 of PR #389). No other
+# none of, differs NULL, its note kept after (`_UNSURE`). No other
 # kind comes with `nv`: those need a hit one run lacks, or both values read.
 _TYPED = "COALESCE(kind LIKE 'type %', 0)"
 _UNREAD = "COALESCE('; no value in ' || nv || ', so the values were not compared', '')"
@@ -975,7 +971,7 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       AND a.st IS k.st
     LEFT JOIN b ON b.hit = k.hit AND b.phase = k.phase AND b.selector = k.selector
       AND b.st IS k.st),
-  -- Whatever else a row says, a qualified value says so too (review 3 of #139).
+  -- Whatever else a row says, a qualified value says so too.
   pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
     ELSE kind || '; ' || qualified END AS note FROM kinds)"""
 _PAIR_COLUMNS = (
@@ -986,31 +982,28 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # The runs' outcomes and outputs first, when they differ, each output shown from just
 # before the first character that differs (an intervention's effect shows there), and
 # what else told the runs apart: their edits, source, stop lines, arguments and
-# interventions (sixth evaluation, finding 9: the decisive (output) row came after rows
-# for selectors only one run captured). Then values changed by an intervention only one
-# run made, before what may follow from them (tenth evaluation: they came after 70 rows
-# of its effects); then real divergences, in hit and capture order (a hit only one run
+# interventions. Then values changed by an intervention only one run made, before what
+# may follow from them; then real divergences, in hit and capture order (a hit only one run
 # reached is one); then pointers whose addresses differ: first a C or C++ pointer at
-# another element's address of an array both runs captured, in hit order (`_AT_ELEMENTS`,
-# #302), then those that may point at another element (`_ADDRESS_KIND`, and `_OFFSETS`,
+# another element's address of an array both runs captured, in hit order (`_AT_ELEMENTS`),
+# then those that may point at another element (`_ADDRESS_KIND`, and `_OFFSETS`,
 # by address from another pointer): not with the real divergences, since the stack and
 # heap move
 # between runs, so most pointers differ whether or not they point at another element,
 # and the first real difference stays the first divergence; then values a view or a note
 # qualifies in either run (a C local's leftovers
-# on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
+# on a `do` body's first line, a moved Rust local's bytes), whatever else
 # their note says (`missing in run b; qualified (run a: note)`); then other values
 # that differ only in memory addresses (a C or C++ pointer at the same element's address,
 # or one whose text after its address reads the same: `_READS_ALIKE`); last, one row per
 # selector only one run asked
 # for. Nothing is dropped: an address-only or qualified difference may still be real;
 # but an after-set value equal to its run's observed value at that hit, in each run
-# with one, is no difference of its own (the observed row has any: seventh evaluation,
-# finding 10), and one selector's address-only rows are one row, its first hit's, that
-# says how many hits there were (finding 9), one for each stop where both runs label
-# them; so are its rows whose addresses differ.
+# with one, is no difference of its own (the observed row has any), and one selector's
+# address-only rows are one row, its first hit's, that says how many hits there were, one
+# for each stop where both runs label them; so are its rows whose addresses differ.
 # The tiers' ranks that code reads too: the real divergences (`_after_first` finds the
-# first among them, never an address or a qualified value: review of PR #294), and the
+# first among them, never an address or a qualified value), and the
 # selectors only one run captured, which are at no hit of their own. Right after the
 # real divergences, a pointer whose type Peeky can't compare across store generations
 # (`_UNTOLD`), whose values differ only in addresses: maybe a change, never the first.
@@ -1034,7 +1027,7 @@ _RANKED = f"""(
     AND (kind IS NULL OR kind LIKE 'missing%'
       OR ((kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%') AND NOT moved))
   -- A pointer whose type changed, but whose values differ only in addresses (a reference
-  -- an edit made a raw pointer: eleventh evaluation, prep 16), is a real difference too,
+  -- an edit made a raw pointer), is a real difference too,
   -- but one row per selector (and stop), its first hit's, as for its addresses below.
   UNION ALL SELECT {_REAL_RANK}, hit, phase, selector, value_a, value_b, differs,
     {_TYPE_FOLDED}, MIN(pos)
@@ -1045,7 +1038,7 @@ _RANKED = f"""(
     {_TYPE_FOLDED}, MIN(pos)
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
     AND kind LIKE '{_UNTOLD_SAYS}%' AND moved AND nv IS NULL GROUP BY selector, phase, st, kind
-  -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
+  -- More than 3 alike (a --set-at LINE@all's) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN alike > 3 THEN note || ', at ' || alike || ' hits (one row per selector and '
@@ -1054,7 +1047,7 @@ _RANKED = f"""(
       FROM pair WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged)
     GROUP BY selector, note, value_a, value_b, CASE WHEN alike > 3 THEN NULL ELSE pos END
   -- First among the addresses that differ, each at its own hit: another element's address
-  -- of the same captured array, which an address alone may explain (#302). With no
+  -- of the same captured array, which an address alone may explain. With no
   -- qualified value, note is kind.
   UNION ALL SELECT {_ELEMENT_RANK}, hit, phase, selector, value_a, value_b, differs, kind, pos
     FROM pair
@@ -1062,7 +1055,7 @@ _RANKED = f"""(
     AND nv IS NULL
   -- As rank 14 below, but the count goes after `addresses differ`, before what to do. With
   -- no qualified value, note is kind: named once, the GROUP BY's terms stay well within
-  -- SQLite's limit, the column limit Peeky sets (#302).
+  -- SQLite's limit, the column limit Peeky sets.
   UNION ALL SELECT {_ADDRESS_RANK}, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses differ at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
@@ -1230,7 +1223,7 @@ def _object_ref(value):
 
 # A hex token address() reads: 0x and hex digits, a whole word. Unlike _ADDRESS (which
 # masks only what is surely an address), any length counts, for the caller asked for an
-# address: a non-PIE Linux program's brk heap is at 0x4052a0 (review of PR #277).
+# address: a non-PIE Linux program's brk heap is at 0x4052a0.
 _HEX_TOKEN = re.compile(r"\b0x([0-9a-fA-F]+)\b")
 
 
@@ -1238,14 +1231,14 @@ def _address(value):
     """The first `0x` token outside quoted text, as an INTEGER, else NULL.
 
     Registered as the SQL function address(text), to compare addresses across runs by
-    their offset from a base each run has (eval 10: kitty's agent joined runs on
-    `substr(value, -3)`). It is lexical, not typed: in a struct's preview it reads the
-    first hex field, whatever it is, so it is for a pointer's own selector. NULL where
-    that first token is zero (a null pointer) or longer than 16 hex digits, and for a
-    string's text (a value that starts with a quote; a Java String is java-debug's
-    unescaped text) and a Java object (object_ref). SQLite's integers are signed 64-bit,
-    so from 2**63 on it is the two's complement, a negative number: two such addresses
-    still subtract and order correctly, and printf('0x%x', ...) gives the hex back.
+    their offset from a base each run has. It is lexical, not typed: in a struct's
+    preview it reads the first hex field, whatever it is, so it is for a pointer's own
+    selector. NULL where that first token is zero (a null pointer) or longer than 16 hex
+    digits, and for a string's text (a value that starts with a quote; a Java String is
+    java-debug's unescaped text) and a Java object (object_ref). SQLite's integers are
+    signed 64-bit, so from 2**63 on it is the two's complement, a negative number: two
+    such addresses still subtract and order correctly, and printf('0x%x', ...) gives the
+    hex back.
     """
     if not isinstance(value, str) or value[:1] in ('"', "'") or _OBJECT_REF.match(value):
         return None
@@ -1257,8 +1250,7 @@ def _address(value):
     return None
 
 
-# A run's output without its final line ends (`queries runs`' output_end; eleventh
-# evaluation: output_start cut `…;FREE=39` and `…;FREE=32` alike, at `…;FREE`).
+# A run's output without its final line ends (`queries runs`' output_end).
 _OUTPUT_BODY = "rtrim(output, char(13, 10))"
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -1503,8 +1495,7 @@ EXAMPLES = (
     "peeky queries wide --param run=3",
     "peeky queries join --param a=3 --param b=4 --param key=v",
 )
-# Each canned query in a few words, for `peeky queries --help` (eleventh evaluation: an
-# agent passed set_effect a and b, since only the 20 KB schema said which takes which).
+# Each canned query in a few words, for `peeky queries --help`.
 QUERY_SUMMARIES = {
     "runs": "the latest runs (20 unless count), newest first",
     "run": "every captured value of one run, in capture order",
@@ -1567,7 +1558,8 @@ def _text(value):
 
 
 def _set_line(result, hit):
-    """Where a --set from a worker before #137 was applied: its hit's after-set rows'."""
+    """Where a --set from a worker that gives no line was applied: its hit's after-set
+    rows'."""
     return next(
         (
             row["line"]
@@ -1717,7 +1709,7 @@ def _ensure(path):
 
 
 def _points_into(row, key="at_element_of", number="index"):
-    """(at_element_of, element_index) of a probe row's `at_element_of` (#302), or with
+    """(at_element_of, element_index) of a probe row's `at_element_of`, or with
     ``key`` "offset_from" and ``number`` "offset", (offset_from, element_offset); else
     NULLs."""
     into = row.get(key)
@@ -1749,7 +1741,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "program": probe.get("program"),
         "line": probe.get("line"),
         "capture": json.dumps(list(probe.get("capture") or [])),
-        # --set as [name, value]; --set-at as [name, value, "LINE@HIT"] (#137).
+        # --set as [name, value]; --set-at as [name, value, "LINE@HIT"].
         "sets": json.dumps(
             [list(change) for change in probe.get("set") or []]
             + [
@@ -1757,7 +1749,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                 for line, hit, name, value in probe.get("set_at") or []
             ]
         ),
-        # Eval 5: a run without --set has no intervention hit (the probe's default is 1).
+        # A run without --set has no intervention hit (the probe's default is 1).
         "set_hit": probe.get("set_hit") if probe.get("set") else None,
         "hits_requested": probe.get("hits"),
         "args": _program_args(result, probe, language),
@@ -1832,7 +1824,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     *_points_into(row, "offset_from", "offset"),
                     # Every row of a run from schema 18 has one where it has a type.
                     row.get("debugger_type") or row.get("type"),
-                    # Which frame the selector read (#382): 0, where the program stopped,
+                    # Which frame the selector read: 0, where the program stopped,
                     # unless the row names a caller's.
                     row["frame"] if type(row.get("frame")) is int else 0,
                     row["stop_line"]
@@ -1849,7 +1841,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             [
                 (
                     run_id,
-                    # A worker before #137 says neither: its --set was at set_hit.
+                    # An older worker says neither: its --set was at set_hit.
                     change.get("hit", probe.get("set_hit")),
                     change.get("name"),
                     _text(change.get("before")),
@@ -1890,7 +1882,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
 
 def baseline(path, run_id, source_sha256):
     """The newest run before ``run_id`` that is the same probe without its edit, to
-    compare a candidate run with (seventh evaluation, finding 12): the same target,
+    compare a candidate run with: the same target,
     file, line, captures, program arguments and Python entry; the same build and the
     same sources (its target identity: compiler options, optimization, and the digest of
     every source and header it read, the candidate's before its edit); the `--at`
@@ -1914,11 +1906,10 @@ def baseline(path, run_id, source_sha256):
 def near_baseline(path, run_id, source_sha256):
     """Where ``baseline`` finds none: (run, its captures, the candidate's) for the newest
     run that is the same probe without its edit but for its --capture list, and shares at
-    least one selector with it, else None (thirteenth evaluation: one selector more said
-    only that no saved run matched). `diff` compares the selectors both captured, and
+    least one selector with it, else None. `diff` compares the selectors both captured, and
     lists the others as `only in run a` or `b`. The shared selector is found in SQL, over
-    every retained run (at most MAX_RUNS), before the newest is taken (review of PR #389:
-    newer runs of other selectors hid it)."""
+    every retained run (at most MAX_RUNS), before the newest is taken (so newer runs of
+    other selectors do not hide it)."""
     found = query(
         path,
         "SELECT b.run_id, b.capture AS theirs, c.capture AS ours FROM runs c JOIN runs b ON "
@@ -2189,9 +2180,8 @@ def _reader(path, *, snapshot=False):
 
 
 # The connection a canned query reads through (path, connection, clock): one read
-# transaction for its rows, its notes and its text table (review 3 of PR #269: a probe
-# that saved run 501 evicted run 1 between `diff`'s rows and its notes, and the
-# alignment note vanished).
+# transaction for its rows, its notes and its text table (else a probe that saves run
+# 501 could evict run 1 between `diff`'s rows and its notes).
 _SNAPSHOT = contextvars.ContextVar("peeky_evidence_snapshot", default=None)
 
 
@@ -2359,7 +2349,7 @@ def _cells(where):
     ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
     other than how it was read, else `note` where the row has a note); ``stop``, where
     its rows agree on one (`_one_stop`); ``line``, where the program stopped (a caller
-    frame's row's `stop_line`, #382). A selector captured twice at a hit read the same
+    frame's row's `stop_line`). A selector captured twice at a hit read the same
     both times (``_captured`` checks): one cell."""
     return (
         f"SELECT hit, phase, selector, MIN(COALESCE(stop_line, line)) AS line, "
@@ -2465,8 +2455,8 @@ def _wide(path, params):
     column per selector in capture order. Generated per run: SQL cannot pivot alone."""
     run, phase = _run_id(path, params.get("run")), _phase(params)
     selectors = _captured(path, run, phase)
-    # Which of the line's breakpoint locations each hit was at (#157), for a run whose
-    # line has several in one function: NULL where its cells do not agree on one (#174).
+    # Which of the line's breakpoint locations each hit was at, for a run whose line
+    # has several in one function: NULL where its cells do not agree on one.
     stops = query(
         path,
         "SELECT 1 AS n FROM captures WHERE run_id = :run AND stop IS NOT NULL LIMIT 1",
@@ -2476,7 +2466,7 @@ def _wide(path, params):
     names = _columns(selectors, set(fixed), fixed=fixed)
     _too_wide(len(names) + len(fixed), run, "wide")
     where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
-    # The interventions made since the previous row's values were read (#137): at this
+    # The interventions made since the previous row's values were read: at this
     # captured stop for its after-set row; else, at other stops after the previous hit
     # and before this one, for its observed row.
     sets = (
@@ -2504,7 +2494,7 @@ MAX_KEYS = 8
 
 
 def _keys(text):
-    """The selectors ``key`` names: one, or several separated by commas (#201), split
+    """The selectors ``key`` names: one, or several separated by commas, split
     only outside brackets, parentheses and quotes (`m["a,b"]` is one)."""
     keys, depth, quote, start = [], 0, None, 0
     for i, char in enumerate(text):
@@ -2571,7 +2561,7 @@ def _join(path, params):
     """(SQL, params, notes) of `queries join`: two runs' hits paired where ``key`` has
     the same value (stored text; with ``masked``, addresses masked), every pair where it
     repeats; then each run's unpaired hits. ``key`` may name several selectors (`a,b`):
-    hits pair where each has the same value (#201)."""
+    hits pair where each has the same value."""
     a, b, keys, phase, masked, fixed, key_names, sides, same = _join_layout(path, params)
     notes = []
     _too_wide(
@@ -2642,8 +2632,8 @@ def _join(path, params):
 
 def _key_cells(keys, matched):
     """A join side's key columns, k0, k1, ...: each key's value (``matched``: as stored,
-    or masked). A key value a view or a note qualifies matches nothing (review of PR
-    #209): the hit is unmatched, and caveats names why."""
+    or masked). A key value a view or a note qualifies matches nothing: the hit is
+    unmatched, and caveats names why."""
     return [
         f"MAX(CASE WHEN selector = {_literal(key)} AND caveat IS NULL THEN {matched} END) AS k{i}"
         for i, key in enumerate(keys)
@@ -2653,8 +2643,8 @@ def _key_cells(keys, matched):
 def _unchanged(path, keys, phase, sides, same):
     """(selectors, unpaired) for `join`: the selectors both runs show, keys aside, whose
     cell (its value, why it has none, and its caveat) is the same in run a's and run b's
-    hit of every pair the key makes, which `join`'s table leaves out (tenth evaluation:
-    runoff's join was 400 columns wide, each unchanged selector twice); none where no
+    hit of every pair the key makes, which `join`'s table leaves out (else a join
+    can be hundreds of columns wide, each unchanged selector twice); none where no
     hits pair. ``unpaired`` counts the hits that pair with none, whose values of them go
     too."""
     shared = [s for s in sides["a"][1] if s in sides["b"][1] and s not in keys]
@@ -2688,8 +2678,8 @@ def _unchanged(path, keys, phase, sides, same):
 
 def _repeated(path, sides, keys, a, b):
     """A note where the key's values repeat in a run and the other run has them too, so
-    that each such hit pairs with every hit of the other run that has them (#201:
-    rechnung's `neu.bezeichnung`, 16 rows): naming the first, and how many rows they
+    that each such hit pairs with every hit of the other run that has them:
+    naming the first, and how many rows they
     make, so that a selector can be added to the key."""
     columns = ", ".join(f"k{i}" for i in range(len(keys)))
     present = " AND ".join(f"k{i} IS NOT NULL" for i in range(len(keys)))
@@ -2758,8 +2748,8 @@ def prepare(path, name, params=None):
     """``params`` checked for canned query ``name``, with the runs it reads named: `run`
     (default: the newest), or `a` and `b` (default: the run before b, and the newest).
     Each is resolved once, so that the query, its notes and its text table read the same
-    runs, though a probe may save a newer one meanwhile (review 2 of PR #269: `join`'s
-    table compared runs 2 and 3 for a result of runs 1 and 2). A run that does not
+    runs, though a probe may save a newer one meanwhile (else `join`'s table could compare
+    runs 2 and 3 for a result of runs 1 and 2). A run that does not
     resolve stays unnamed, so the query says why."""
     params = _checked(name, params)
     accepted = QUERIES[name][2]
@@ -2829,7 +2819,7 @@ def _run(path, name, params, limit):
     """(result, params): a canned query's rows and notes, and the params naming its
     runs. Run inside ``_snapshot``, which keeps every run it reads; should a run it
     named go before its notes are read all the same, a note says what they could not
-    check, never nothing (review 3 of PR #269)."""
+    check, never nothing."""
     params = prepare(path, name, params)
     _, sql, accepted, _ = QUERIES[name]
     bound = {**dict.fromkeys(accepted), **params}
@@ -2863,7 +2853,7 @@ def _run(path, name, params, limit):
         )
     if "stop" in result["columns"] and all(row.get("stop") is None for row in result["rows"]):
         # No row was at one of several breakpoint locations of its line (Python and Java
-        # never are): the column would be empty (eighth evaluation, L7).
+        # never are): the column would be empty.
         result = {
             **result,
             "columns": [column for column in result["columns"] if column != "stop"],
@@ -2873,7 +2863,7 @@ def _run(path, name, params, limit):
 
 
 def _labels(path, params):
-    """The two runs' labels, where either has one (eighth evaluation, L17): a pair's rows
+    """The two runs' labels, where either has one: a pair's rows
     name runs by number only."""
     rows = query(
         path,
@@ -2893,8 +2883,7 @@ def _labels(path, params):
 
 def _not_compared(path, params):
     """For `diff`: a note counting the values one run has none of (withheld or unavailable),
-    apart from the differences (thirteenth evaluation: 18 of a candidate's 25 rows read as
-    differences only because its structured bindings were `not shown`), with the selectors
+    apart from the differences, with the selectors
     and the run."""
     rows = query(
         path,
@@ -2927,17 +2916,17 @@ def _not_compared(path, params):
     ]
 
 
-# How `join` is named where hits may not pair: one selector, or several together (#201).
+# How `join` is named where hits may not pair: one selector, or several together.
 _JOIN_KEY = "--param key=<selector>[,<selector>…]"
 
 
 def _unaligned(path, params):
     """For `diff`, which pairs hits by number: (notes, counted). A note where the two
     runs stopped at their line a different number of times (``counted``), so that their
-    hits need not line up (a sort's comparator called on other pairs: seventh
-    evaluation, finding 20), naming `join`, which pairs them by a value instead; or where
+    hits need not line up (a sort's comparator called on other pairs),
+    naming `join`, which pairs them by a value instead; or where
     they stopped as often but something says a hit may not be the same moment in both,
-    or how they pair (#201)."""
+    or how they pair."""
     found = query(
         path,
         f"SELECT ra.run_id AS a, rb.run_id AS b, ra.hits AS ha, rb.hits AS hb FROM runs ra, "
@@ -2974,11 +2963,10 @@ def _unaligned(path, params):
 def _after_first(rows):
     """Where the runs stopped a different number of times (``_unaligned``): how many of
     `diff`'s rows at a hit come after the first hit with a real difference, where pairing
-    by number may compare different calls (#201: 20 of rechnung's 22 rows were). Every
+    by number may compare different calls. Every
     row is kept. The first is among the real divergences only, by their tier
     (``_REAL_RANK``): a pointer whose address differs, an address-only value and a
-    qualified one rank after them, and may be no difference (review of PR #294: a
-    pointer's row at hit 1 made the note say hit 1, though the rows led with hit 2), so
+    qualified one rank after them, and may be no difference, so
     the note says "real" (`_element_first` names an earlier element's address that
     differs). Where no hit has a real difference, there is no note. ``rows`` are
     `_DIFF_RANKS`'s."""
@@ -2999,15 +2987,12 @@ def _after_first(rows):
 
 def _element_first(rows):
     """A note where a C or C++ pointer holds a different element's address of a captured
-    array in each run (``_ELEMENT_RANK``, #312) at an earlier hit than the first real
-    difference (twelfth evaluation: playlist's `now` held `queue[3]`'s address in one run
-    and `queue[2]`'s in the other at hit 4, but its row came after the real differences
-    at hits 5 and 6, though AGENT_GUIDE said `diff` puts the first divergence first). The
-    rows keep their tiers, since layout alone can change an address (review 2 of PR
-    #312), so the note names that hit and its selectors, and never calls them the first
-    difference: a pointer that only `addresses differ` names may differ earlier (most do,
-    as the stack moves between runs, so they are not named). ``rows`` are
-    `_DIFF_RANKS`'s."""
+    array in each run (``_ELEMENT_RANK``) at an earlier hit than the first real
+    difference, whose row comes after the real differences. The rows keep their tiers,
+    since layout alone can change an address, so the note names that hit and its
+    selectors, and never calls them the first difference: a pointer that only
+    `addresses differ` names may differ earlier (most do, as the stack moves between
+    runs, so they are not named). ``rows`` are `_DIFF_RANKS`'s."""
     elements = [row for row in rows if row["rank"] == _ELEMENT_RANK]
     real = [row["hit"] for row in rows if row["rank"] == _REAL_RANK]
     if not elements or not real:
@@ -3033,7 +3018,7 @@ def _element_first(rows):
 
 def _changes(path, a, b):
     """{run: [(name, after, where)]}: what each run's interventions (--set, --set-at)
-    changed, after how many hits of its line had been captured (#201), and in which
+    changed, after how many hits of its line had been captured, and in which
     function (its instance where it has one). A value read at a later hit may follow
     from the change, whatever its name; one read at that hit or before cannot (a stop's
     observed rows come before its own changes)."""
@@ -3075,7 +3060,7 @@ def _edited(path, a, b):
 
 
 def _structure_apart(path, run):
-    """(notes, suspect) where two runs stopped as often (eighth evaluation, M6; #201).
+    """(notes, suspect) where two runs stopped as often.
 
     Notes where their hits may not be the same moments, so that pairing by hit number
     may compare different calls (``suspect``), the first found of:
@@ -3088,26 +3073,24 @@ def _structure_apart(path, run):
       hit, the note says both, and that the values do not settle it;
     - the hits' values differ at most of them, so they cannot show that the hits pair.
 
-    Only plain values tell (#201): a value a view or a note qualifies is no evidence
+    Only plain values tell: a value a view or a note qualifies is no evidence
     either way. A value that differs between the runs after a change, an edit (in either
     run: from the first hit) or an intervention (after the hits captured before the
-    first), may follow from it (tenth evaluation: debounce's reset count moved
-    `db.stable`'s values, which then lined up better at other hits). Such a selector is
+    first), may follow from it. Such a selector is
     left out from then on of what agrees and of the hits that differ, and the note names
     it; its values before still tell. Where its values line up better at other hits,
     the note says so, and that the change may account for it: that still vetoes saying
-    the hits line up (review of PR #269), unless values that agree pair every hit as a
+    the hits line up, unless values that agree pair every hit as a
     `join` key (``_after_change``).
 
     Where nothing above is found and some values agree between the runs at every hit,
     the note says what agrees, and what pairing by number amounts to: where they are
     unique across the hits, what `join` by them gives. Never that the hits line up
-    (review of PR #308: `i` 1 to 4 in both runs, the first two moments swapped): Peeky
+    (`i` 1 to 4 in both runs may have the first two moments swapped): Peeky
     cannot tell whether a value names the call. `join` is named only where some captured
     selectors together tell each run's hits apart, so that it could pair them.
 
-    Each note leads with its verdict on a line of its own (``_note``; eleventh
-    evaluation: three agents could not find it in one long sentence): `hits pair by`,
+    Each note leads with its verdict on a line of its own (``_note``): `hits pair by`,
     `hits pair as far as`, or `hits may not line up:`. Each detail follows on its own
     line."""
     rows = query(
@@ -3134,7 +3117,7 @@ def _structure_apart(path, run):
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue
-        # Where the program stopped: a caller frame's row (#382) gives its own place only
+        # Where the program stopped: a caller frame's row gives its own place only
         # to a hit with no other.
         place = (row["frame"] or 0, row["function"], row["instance"], row["line"])
         known = places[here].get(row["hit"])
@@ -3143,7 +3126,7 @@ def _structure_apart(path, run):
         if row["selector"] not in captured[here]:
             captured[here].append(row["selector"])
         if row["withheld"]:
-            # No value to compare (thirteenth evaluation): it tells nothing either way.
+            # No value to compare: it tells nothing either way.
             untold[here].add((row["selector"], row["hit"]))
             continue
         if masked is None:
@@ -3173,10 +3156,9 @@ def _structure_apart(path, run):
         )
 
     # Whether `join` could pair the hits: the plain values of the selectors both runs
-    # read at every hit tell each run's hits apart, taken together (tenth evaluation:
-    # debounce's `settle` has no value that names its call, so `join` cannot help).
-    # Where only values that carry addresses do, `join` matches them only with
-    # `--param masked=1` (review 2 of PR #308: each run's addresses differ).
+    # read at every hit tell each run's hits apart, taken together. Where only values
+    # that carry addresses do, `join` matches them only with `--param masked=1` (each
+    # run's addresses differ).
     plain = [
         s
         for s in selectors
@@ -3236,8 +3218,8 @@ def _structure_apart(path, run):
         one, other = seen(a, selector, hit), seen(b, selector, hit)
         return skipped not in (one, other) and one != other
 
-    # Every selector's plain values as read, before any is left out (review of PR #269:
-    # a value a change may have moved still vetoes saying the hits line up).
+    # Every selector's plain values as read, before any is left out: a value a change
+    # may have moved still vetoes saying the hits line up.
     whole = {r: {selector: dict(seen) for selector, seen in values[r].items()} for r in (a, b)}
     # A selector that differs after a change may differ because of it: from then on
     # its values tell nothing of how the hits pair.
@@ -3262,8 +3244,8 @@ def _structure_apart(path, run):
         )
     ]
     shown = [s for s in agreeing if len({seen(a, s, hit) for hit in common}) > 1]
-    # Alike only once addresses are masked (review 2 of PR #308: a C++ string reference's
-    # address, then its text): the note says so, and names `join --param masked=1`.
+    # Alike only once addresses are masked (a C++ string reference's address, then its
+    # text): the note says so, and names `join --param masked=1`.
     masked_only = {
         s for s in agreeing if any(stored(a, s, hit) != stored(b, s, hit) for hit in common)
     }
@@ -3296,7 +3278,7 @@ def _structure_apart(path, run):
             )
         return None
 
-    # Every selector on its own, whatever others say (review of PR #209: a value alike
+    # Every selector on its own, whatever others say: a value alike
     # at every hit by chance must not hide another pairing that a differing selector
     # suggests). First on the values no change can have moved.
     moved = moved_in(values, selectors)
@@ -3312,8 +3294,8 @@ def _structure_apart(path, run):
     if moved:
         return [_note(f"hits may not line up: {_REORDER}", moved[1], join)], True
     # Then on those left out: the change may account for it, but it still vetoes saying
-    # the hits line up (review of PR #269: `call` A, B, C against B, A, C after an edit,
-    # beside `key` 1, 2, 3 in both, gave "the hits line up by `key`").
+    # the hits line up (`call` A, B, C against B, A, C after an edit, beside `key` 1, 2,
+    # 3 in both, does not show that the hits line up by `key`).
     hedged = moved_in(whole, left_out) if left_out else None
     both = {key[2] for key in cells[a]} & {key[2] for key in cells[b]}
     differs = any(
@@ -3322,10 +3304,10 @@ def _structure_apart(path, run):
         if key[2] in both
     )
     # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
-    # differs (review 2 of PR #189). Only selectors both runs captured (`diff` lists the
+    # differs. Only selectors both runs captured (`diff` lists the
     # others once), plain and not left out; one with no such value at a hit is
-    # `missing`, which no text equals. Checked before anything agreeing is said (review 2
-    # of PR #209: `key` 1, 2 in both runs said nothing about `call` A, B against C, D).
+    # `missing`, which no text equals. Checked before anything agreeing is said
+    # (`key` 1, 2 in both runs says nothing about `call` A, B against C, D).
     differ = [hit for hit in common if any(unlike(selector, hit) for selector in selectors)]
     if len(differ) >= 2 and 2 * len(differ) > len(common):
         calls = f"if the edit changed which calls reach the line, {pair_by}" if keyable else join
@@ -3357,7 +3339,7 @@ def _structure_apart(path, run):
     keys = _join_key(shown, rows)
     paired = keys and _paired(keys, len(common), (a, b), bool(set(keys) & masked_only))
     # Without a key: the values read alike at some hits, or only more of them together
-    # than `join` takes are unique (review 3 of PR #308).
+    # than `join` takes are unique.
     loose = agreed = None
     if shown and not keys:
         wide = len({tuple(row) for row in rows}) == len(rows)
@@ -3412,23 +3394,21 @@ def _cause(changes, edited, detail=True):
 
 
 def _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedged, join):
-    """The note where a change left selectors out (tenth evaluation): what agrees, never
-    that the hits line up (review of PR #269); what was left out, and why; and a sign
+    """The note where a change left selectors out: what agrees, never
+    that the hits line up; what was left out, and why; and a sign
     that the hits may not line up among those left out (``hedged``: the selector and
     what it saw), which the change may account for. Where some values that agree are
     unique across the hits, the verdict is that the hits pair by them, and such a sign is
-    left out, its selector named with the others left out (twelfth evaluation: after
-    `hits pair by p.name`, three agents read "saw the same values of `desk` in another
-    order … does not settle whether the calls were reordered" as a reorder; the key
-    already pairs the hits, and the verdict's caveat that this does not prove the hits
-    are the same moments stays). Else the
+    left out, its selector named with the others left out (the key already pairs the
+    hits, and the verdict's caveat that this does not prove the hits are the same
+    moments stays). Else the
     sign is the verdict. ``paired`` is `_paired`'s lines where some values that agree are
     unique across the hits, as a `join` key; else ``loose`` is the verdict that they pair
     as far as ``shown`` show, and ``agreed`` says what agrees and why it is no key."""
     it = "them" if any(changes.values()) else "it"
     if paired:
         # The key pairs every hit: a left-out value's alternate alignment adds nothing but
-        # doubt it cannot settle (twelfth evaluation: three agents read it as a reorder).
+        # doubt it cannot settle, which readers take for a reorder.
         hedged = None
     others = [selector for selector in left_out if not hedged or selector != hedged[0]]
 
@@ -3473,8 +3453,8 @@ _REORDER = "the calls may have come in another order or number"
 
 def _note(verdict, *details):
     """An alignment note: its verdict, then each detail (none where None) on a line of its
-    own after `- ` (eleventh evaluation: three agents could not find the verdict in one
-    long sentence). The text table indents the details under `note:`."""
+    own after `- `, so the verdict is not lost in one long sentence. The text table
+    indents the details under `note:`."""
     return "\n".join([verdict, *(f"- {detail}" for detail in details if detail)])
 
 
@@ -3493,7 +3473,7 @@ def _interventions(changes, reached):
 
 def _agrees(selectors, count, *, pronoun=False, apart=False, masked=False):
     """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), with
-    ``masked`` ` with addresses masked` (alike only so: review 2 of PR #308), and with
+    ``masked`` ` with addresses masked` (alike only so), and with
     ``apart`` ` and is unique across these hits` (`and together are unique …`)."""
     one = len(selectors) == 1
     subject = ("it" if one else "they") if pronoun else _quoted(selectors)
@@ -3508,10 +3488,10 @@ def _agrees(selectors, count, *, pronoun=False, apart=False, masked=False):
 def _paired(keys, count, runs, masked):
     """The verdict where ``keys`` agree between the runs at every hit and are unique across
     them, and what it amounts to: hit-number pairing is what `join` by them gives, which
-    does not prove the hits are the same moments (review of PR #308: Peeky cannot tell
+    does not prove the hits are the same moments (Peeky cannot tell
     whether a value names the call, so it never says the hits line up). The `join` is
     given whole, with `--param masked=1` where a key agrees only with addresses masked:
-    plain `join` compares the stored text (review 2 of PR #308)."""
+    plain `join` compares the stored text."""
     a, b = runs
     command = (
         f"peeky queries join --param a={a} --param b={b} --param "
@@ -3526,17 +3506,17 @@ def _paired(keys, count, runs, masked):
 
 
 def _agreement(verdict, changes, differing, runs):
-    """What agrees where nothing suggests another pairing and nothing was left out
-    (#201), as `_structure_apart` says it: its ``verdict`` lines, that the hits pair by
-    what agrees (a `join` key) or as far as it shows, never that they line up (review of
-    PR #308); then, with no intervention in either run, that no single selector suggests
+    """What agrees where nothing suggests another pairing and nothing was left out,
+    as `_structure_apart` says it: its ``verdict`` lines, that the hits pair by
+    what agrees (a `join` key) or as far as it shows, never that they line up;
+    then, with no intervention in either run, that no single selector suggests
     another pairing; else what differs (``differing``, as read) and which interventions
     there were."""
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
     if not reached:
         # Selectors are checked one at a time: two that differ could line up better
-        # together (review 3 of PR #209), which is not checked.
+        # together, which is not checked.
         return _note(
             *verdict,
             single,
@@ -3544,7 +3524,7 @@ def _agreement(verdict, changes, differing, runs):
             if len(differing) > 1
             else None,
         )
-    # After an intervention, what follows from it is unknown (review of PR #209): what
+    # After an intervention, what follows from it is unknown: what
     # agrees, what does not, and no more.
     return _note(
         *verdict,
@@ -3561,9 +3541,8 @@ def _agreement(verdict, changes, differing, runs):
 def _join_key(selectors, rows):
     """The fewest of ``selectors`` (in their order) whose values, ``rows`` (one list per
     hit, in ``selectors`` order), together are unique across the hits, as a `queries
-    join` key: at most ``MAX_KEYS`` of them, as `join` takes no more (review 3 of PR
-    #308: nine named together made the command fail). None where all of them together
-    are not unique, or where no such key is found.
+    join` key: at most ``MAX_KEYS`` of them, as `join` takes no more. None where all of
+    them together are not unique, or where no such key is found.
 
     One that is unique alone is the first such. Else each is chosen in turn to tell the
     most hits apart, the first of equals; then smaller sets are tried, in order, while
@@ -3600,7 +3579,7 @@ _KEY_SEARCH = 2_000_000
 
 def _place(place):
     """Where a stop was, for a note: `in f at line 24`, an instance by its label; where
-    only a caller frame was read (#382), `below main at line 30 (frame 1)`."""
+    only a caller frame was read, `below main at line 30 (frame 1)`."""
     frame, function, instance, line = place
     if frame:
         return f"below {instance or function} at line {line} (frame {frame})"
@@ -3630,10 +3609,10 @@ def _aligned(a, b):
 
 
 def _unplaced_returns(path, run):
-    """A note where a run's line stops several times per pass (#157's warning) and a
-    `(return)` row (#155) has no stop, and its hit's other rows give none, or disagree
-    (`--capture return` alone, before schema 15 gave a `(return)` row its hit's stop,
-    #174; no stop recorded; contradictory evidence): pairing them by hit number cannot
+    """A note where a run's line stops several times per pass (the probe's warning) and a
+    `(return)` row has no stop, and its hit's other rows give none, or disagree
+    (`--capture return` alone, before schema 15 gave a `(return)` row its hit's stop;
+    no stop recorded; contradictory evidence): pairing them by hit number cannot
     be checked."""
     found = query(
         path,
@@ -3656,7 +3635,7 @@ def _unplaced_returns(path, run):
 
 def stops_apart(path, a, b):
     """{hit, stop_a, stop_b} for the first hit both runs ``a`` and ``b`` captured whose
-    stop labels (#157: which of the line's breakpoint locations it was at) differ, a
+    stop labels (which of the line's breakpoint locations it was at) differ, a
     label missing in one included (a run saved before Peeky labelled stops), else None."""
     found = query(
         path,
@@ -3797,8 +3776,7 @@ def schema(path):
 
 
 # The columns a canned query compares, each of a pair shown in text from just before
-# where it first differs from the other (tenth evaluation: `diff` cut `…{'text':
-# 'Café', ...` against `…'lev...`, before the difference). `--json` keeps them whole.
+# where it first differs from the other. `--json` keeps them whole.
 _PAIRED = {
     "compare": {"value_a": "value_b", "value_b": "value_a"},
     "diff": {"value_a": "value_b", "value_b": "value_a"},
@@ -3835,12 +3813,10 @@ def _window(value, other, width, lead=_LEAD):
 
 def _sets_text(value, other=None):
     """A `diff` or `compare` `(sets)` cell in text: how many changes, then each as
-    `name=value (LINE@HIT)`, its outcome after, as many as fit in ``_SETS_WIDTH`` (tenth
-    evaluation: six `--set-at`s made every line of the table 230 columns wide; twelfth:
-    `2 changes: desk=0 (requested at 58@4), …` hid the second). Where they don't all fit,
-    they start at the first that differs from the ``other`` run's, so that a difference in
-    a later change's outcome shows (review of PR #278), and `…` marks each cut, with how
-    many it hides. Where one is a `LINE@all` (#265), made at every stop of its line, they
+    `name=value (LINE@HIT)`, its outcome after, as many as fit in ``_SETS_WIDTH``. Where
+    they don't all fit, they start at the first that differs from the ``other`` run's,
+    so that a difference in a later change's outcome shows, and `…` marks each cut, with
+    how many it hides. Where one is a `LINE@all`, made at every stop of its line, they
     are counted as requests. None where the cell is not such a list."""
 
     def parsed(text):
@@ -3871,7 +3847,7 @@ def _sets_text(value, other=None):
     index = next((i for i, item in enumerate(sets) if i >= len(others) or others[i] != item), 0)
 
     def shown(start, end):
-        """The cell with ``pieces[start:end]``, and how many it hides, but restores (#305),
+        """The cell with ``pieces[start:end]``, and how many it hides, but restores,
         named even where `…` stands for them: a run with one and a run without it differ in
         what they asked."""
         hidden = [i for i in range(len(sets)) if not start <= i < end]
@@ -3913,7 +3889,7 @@ def _no_change(change):
 
 
 def _restored(change):
-    """` (restored from before 15@2)` for a restore (#305), as set_effect's SQL says it."""
+    """` (restored from before 15@2)` for a restore, as set_effect's SQL says it."""
     at = change.get("restores_at")
     return f" (restored from before {at})" if isinstance(at, str) else ""
 
@@ -3966,7 +3942,7 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
     short name (see ``names.function_labels``), with a note: the result keeps it whole.
     ``short_note``, where given, is asked whether to add that note when one applies,
     given the runs the table shows (``runs``, else its rows' run_id values, else None):
-    the CLI's says yes once per saved run (twelfth evaluation, laps 6; review of PR #350).
+    the CLI's says yes once per saved run.
     For a canned query (``result["query"]``) that compares values, a long value shows
     from just before where it first differs from its pair (`_PAIRED`); `diff`'s
     `(sets)` row shows how many changes and the first; set_effect's `interventions`
@@ -3993,8 +3969,8 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
         if column == "function":
             return text(shortened.get(value, value))
         if query_name == "outputs" and column == "args" and value is not None:
-            # Both runs' arguments whole where they are short enough (twelfth evaluation,
-            # laps 4: 12 reads were cut at 120 characters), else from where they differ.
+            # Both runs' arguments whole where they are short enough, else from where they
+            # differ.
             others = [shown(other["args"]) for other in result["rows"] if other is not row]
             if all(len(item) <= _ARGS_WHOLE for item in [shown(value), *others]):
                 return shown(value)
@@ -4004,13 +3980,13 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
                 return text(summary)
         if query_name == "diff" and row.get("selector") == "(output)" and column in paired:
             # Already `output_window`'s 200 characters from before where the outputs first
-            # differ, at one offset in both runs: whole, as COOKBOOK 3.1 says (twelfth
-            # evaluation: a second cut at ``width`` hid the tail of both).
+            # differ, at one offset in both runs: whole, as COOKBOOK 3.1 says: a second
+            # cut at ``width`` would hide the tail of both.
             return shown(value)
         if query_name in ("diff", "compare") and column in paired and _unvalued(row, column):
             # A value a run has none of says only its label here (`<not shown: …>`); the
-            # row's note says so, and `queries run` gives why (thirteenth evaluation: a
-            # 300-character reason padded the column on every row).
+            # row's note says so, and `queries run` gives why (a long reason would pad
+            # the column on every row).
             return _label_only(shown(value))
         if column in paired and value is not None and row.get(paired[column]) is not None:
             return _window(shown(value), shown(row[paired[column]]), width)
@@ -4025,8 +4001,7 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
 
     cells = [[cell(row, column) for column in columns] for row in result["rows"]]
     # `diff`'s (output) row shows up to 200 characters of each output whole: it runs past
-    # its columns rather than widen them on every other row (thirteenth evaluation: every
-    # row was padded to 118 characters).
+    # its columns rather than widen them on every other row.
     sized = [
         item
         for item, row in zip(cells, result["rows"])
@@ -4062,10 +4037,10 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
 
 def _compact_join(path, result, params):
     """`join`'s ``result`` without the columns of selectors that agree between the runs
-    at every paired hit, and a note naming them: for its text table, which showed each
-    twice (tenth evaluation: runoff's, 430 columns). `--json` keeps every column (review
-    of PR #269). ``params`` name the result's runs (``prepare``); where they no longer
-    give its layout (a run deleted since), the table shows every column."""
+    at every paired hit, and a note naming them: for its text table, which would show each
+    twice. `--json` keeps every column. ``params`` name the result's runs (``prepare``);
+    where they no longer give its layout (a run deleted since), the table shows every
+    column."""
     try:
         _, _, keys, phase, _, _, _, sides, same = _join_layout(path, params)
         dropped, unpaired = _unchanged(path, keys, phase, sides, same)
@@ -4126,8 +4101,7 @@ _VIEW_SUMMARIES = {
 
 
 # The languages whose runs fill a column; any other's are NULL there. `peeky sql --schema`
-# says so beside its name (twelfth evaluation, desks 8: a Java store listed the C and C++
-# columns with the rest).
+# says so beside its name.
 _COLUMN_LANGUAGES = {
     ("captures", "identity"): "Python",
     ("captures", "scope"): "Python",
@@ -4200,8 +4174,7 @@ def schema_text(manifest):
 
 def schema_index(manifest):
     """`peeky sql --schema`'s short form: a line for each table, view and other part, and
-    how to see them in full (eleventh evaluation: the whole is 20 KB, and two agents'
-    tools cut it off)."""
+    how to see them in full (the whole runs to tens of KB, more than some tools show)."""
     tables, views = manifest["tables"], manifest["views"]
     width = max(map(len, [*tables, *views, *SCHEMA_PARTS])) + 2
     functions = ", ".join(name.split("(")[0] for name in manifest["functions"])
