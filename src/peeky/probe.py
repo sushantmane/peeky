@@ -47,7 +47,7 @@ MAX_SETS = 8
 MAX_HITS = 100
 # The highest hit a --set-at may name: its line's stops are counted, not captured.
 MAX_SET_AT_HIT = 1000
-# `--set-at LINE@all` (#265): the change at every stop of LINE, up to MAX_HITS of them.
+# `--set-at LINE@all`: the change at every stop of LINE, up to MAX_HITS of them.
 ALL = "all"
 # A --set-at's value that writes back what the variable held just before this probe's
 # latest change to it, made at the same hit of its own line, in the same call.
@@ -75,7 +75,7 @@ _STEP = re.compile(
 _SHADOWED_PLACE = re.compile(r" ?@ ?([^\s:@\[\]'\"]{1,255}):([0-9]{1,9})")
 
 
-# The selector for what a function returned (#155): `--capture return` (or `(return)`).
+# The selector for what a function returned: `--capture return` (or `(return)`).
 RETURN = "(return)"
 
 
@@ -84,7 +84,7 @@ def returns(selector):
     return RETURN if selector.strip() in ("return", RETURN) else selector
 
 
-# A probe's selector of a caller frame's value (#382): `1:i` reads `i` in frame 1, the
+# A probe's selector of a caller frame's value: `1:i` reads `i` in frame 1, the
 # caller, as `session get --frame 1 i` does. No name starts with a digit, so the prefix
 # begins no selector; `@` already says where a local is declared (`s @ main.rs:81`) and
 # at which hit a change is made (`--set-at 9@2`).
@@ -129,14 +129,14 @@ def parse_selector(text):
     Negative indexes (`items[-1]`) count from the end of a sequence whose elements
     all fit in the bounded inspection window. A quoted key reads one entry of a
     mapping; it is kept in its canonical Python form, `[` + repr(key) + `]`. `[#N]` is
-    the Nth entry of a C++ map or set in iteration order, where `[N]` is key N (#119).
+    the Nth entry of a C++ map or set in iteration order, where `[N]` is key N.
     A name is a Unicode identifier (`größe`), matched exactly as the debugger lists it
-    (identifiers.py, #195).
+    (identifiers.py).
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
     if framed := _FRAME_PREFIX.match(text):
-        # A caller frame's selector (#382), which only a probe's --capture takes.
+        # A caller frame's selector, which only a probe's --capture takes.
         raise ValueError(
             f"Invalid selector: {text}. Only a probe's --capture reads a caller's frame "
             f"({text}): a change is made only where the program stopped. A session reads "
@@ -167,7 +167,7 @@ def parse_selector(text):
                     "; a tuple's fields are .__0, .__1 in Rust (as LLDB names them) and "
                     "[0] in Python: " + re.sub(r"[.]([0-9]+)", r".__\1", text)
                 )
-            # An index named by a variable (outline 4, tenth evaluation): never evaluated.
+            # An index named by a variable: never evaluated.
             named = re.match(r"\[\s*([^\]'\"#]*?)\s*\]", text[position:])
             if named and named[1] and not re.fullmatch(r"-?[0-9]+", named[1]):
                 arrow += (
@@ -177,7 +177,7 @@ def parse_selector(text):
                     + f" first, then use its value, as {text[:position]}[2]"
                 )
             if at := re.fullmatch(r"@([1-9][0-9]{0,5})", text[position:]):
-                # `name@1` (thirteenth evaluation's guess) for a caller frame's value (#382).
+                # `name@1`, a guess at how to name a caller frame's value.
                 arrow += (
                     f"; a probe reads {text[:position]} in caller frame {at[1]} as "
                     f"{at[1]}:{text[:position]}"
@@ -333,8 +333,8 @@ def _edit_delta(text, start, old, new):
     """The lines one edit at ``start`` adds (or, negative, removes), as lines are counted:
     a last line without a newline is one, and a final newline starts none. Within the
     file, the newlines it adds or removes; at its end, the lines of the file before and
-    after (review of PR #350: removing an unterminated last line, `b` of `a\\nb`, removes
-    a line but no newline)."""
+    after (removing an unterminated last line, `b` of `a\\nb`, removes a line but no
+    newline)."""
     if start + len(old) < len(text):
         return new.count("\n") - old.count("\n")
     return len(split_lines(text[:start] + new)) - len(split_lines(text))
@@ -426,8 +426,8 @@ _SET_AT = re.compile(
 def parse_set_at(where, assignment):
     """`--set-at [<path>:]<line>[@<hit>|@all] <name>=<value>` -> (path or None, line,
     hit, name, value); the hit defaults to 1 and counts that line's own stops, and `all`
-    (ALL) is every stop of the line (#265). A value of `@before` (BEFORE) writes back the
-    value from before an earlier change (#305)."""
+    (ALL) is every stop of the line. A value of `@before` (BEFORE) writes back the
+    value from before an earlier change."""
     found = _SET_AT.fullmatch(where or "")
     if not found:
         raise ValueError(
@@ -470,12 +470,12 @@ class Probe:
     # A candidate fix: (old, new) applied once to `program` in a fresh build; `line` is
     # in the original's numbering. The files on disk are never changed.
     edit: tuple[str, str] | None = None
-    # Interventions at their own stops (#137): (line, hit, selector, value), each applied
+    # Interventions at their own stops: (line, hit, selector, value), each applied
     # once at that hit of that line of `program` (its own stops counted, in the original's
     # numbering), whether or not it is the capture line; `set`/`set_hit` stay as they are.
-    # A hit of ALL applies it at every stop of the line, up to MAX_HITS of them (#265).
+    # A hit of ALL applies it at every stop of the line, up to MAX_HITS of them.
     set_at: tuple[tuple[int, int | str, str, str], ...] = ()
-    # Remote clients (#249): (path, sha256) of every source the target reads; the worker
+    # Remote clients: (path, sha256) of every source the target reads; the worker
     # refuses before launching when its own set differs.
     expect_inputs: tuple[tuple[str, str], ...] | None = None
 
@@ -507,11 +507,11 @@ class Probe:
             raise ValueError(f"At most {MAX_SELECTORS} capture selectors")
         if not all(isinstance(selector, str) for selector in self.capture):
             raise ValueError("Selectors must be nonempty dotted paths")
-        # `return`: what the function holding the line returns, each call (#155).
+        # `return`: what the function holding the line returns, each call.
         object.__setattr__(self, "capture", tuple(returns(s) for s in self.capture))
         for selector in self.capture:
             if selector != RETURN:
-                # `1:i` (#382): a caller frame's value.
+                # `1:i`: a caller frame's value.
                 frame_selector(selector)
         if len(set(self.capture)) != len(self.capture):
             # A repeated selector adds no evidence and would multiply rows in comparisons.
@@ -706,9 +706,8 @@ def _visible(snapshot, module=True):
 def _static_hint(snapshot, name):
     """Why a name the stopped function keeps in static storage is not found (C, C++):
     lldb-dap lists none of them among a frame's locals. A `static` local, or a `const`
-    local GCC places in read-only data (#167). Peeky reads one where the code at the
-    stop names it (#364); the worker's note says why not here (an earlier worker reads
-    none)."""
+    local GCC places in read-only data. Peeky reads one where the code at the stop names
+    it; the worker's note says why not here (an earlier worker reads none)."""
     if name not in (snapshot.get("statics") or ()):
         return ""
     function = display_function(snapshot.get("function")) or "this function"
@@ -726,9 +725,9 @@ def _static_hint(snapshot, name):
 
 
 def _capture_hint(snapshot, name):
-    """Why a GCC lambda's capture is not found (eleventh evaluation, prep 8): GCC passes
-    it through the lambda's `__closure`, which lldb-dap does not list, and the worker
-    reads it there except where ``closure_unread`` says why not (#361)."""
+    """Why a GCC lambda's capture is not found: GCC passes it through the lambda's
+    `__closure`, which lldb-dap does not list, and the worker reads it there except
+    where ``closure_unread`` says why not."""
     if name not in (snapshot.get("closure_captures") or ()):
         return ""
     why = (snapshot.get("closure_unread") or {}).get(name)
@@ -843,10 +842,10 @@ def _scope_lookup(worker, stop, snapshot, scopes, name):
     line alike, `p @ s.c:10`), it is refused: which is which cannot be told. A plain
     name LLDB lists only with where it is declared (`t @ two.c:20`, an inner block's
     shadowing an outer `t @ two.c:18`) is the one the worker says the code at the stop
-    names (``selected_as``, #158). A name with where it is declared (`entry @ main.rs:81`,
+    names (``selected_as``). A name with where it is declared (`entry @ main.rs:81`,
     as `describe` lists a Rust local its function declares more than once) is also the
     one the debugger lists by its plain name there, if the worker says it is declared
-    there (``declared_at``, #206)."""
+    there (``declared_at``)."""
     listed = [(v, scope) for scope in scopes for v in scope["variables"] if v["name"] == name]
     if not listed:
         listed = [
@@ -864,8 +863,8 @@ def _scope_lookup(worker, stop, snapshot, scopes, name):
         )
     shared = [v.get("declared_at_shared") for v, _ in listed if v.get("declared_at") == name]
     if shared and type(shared[0]) is int and shared[0] > 1:
-        # Where it is declared names several bindings (#215 review): `let x = 1; let x =
-        # "a";` on one line, or files of one name in two directories.
+        # Where it is declared names several bindings: `let x = 1; let x = "a";` on one
+        # line, or files of one name in two directories.
         raise Refused(
             "NOT_FOUND",
             f"{name!r} is ambiguous: {shared[0]} bindings on this line: not selectable by "
@@ -953,7 +952,7 @@ def _root(worker, stop, snapshot, name):
             + f"; visible: {_visible(snapshot)}"
         )
     if any(scope.get("truncated") for scope in own) and name not in (snapshot.get("names") or ()):
-        # A worker that predates `names` lists no name past the bound.
+        # Only the names an inspection asks for (`names`) are searched past the bound.
         raise ValueError(
             f"not found among the names listed (visible: {_visible(snapshot)}): {name!r} "
             "may be past them"
@@ -1016,7 +1015,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
 
     for segment in segments[1:]:
         if isinstance(variable.get("past_end"), dict):
-            # Nothing past an array's end is read through a pointer (#336), whatever the
+            # Nothing past an array's end is read through a pointer, whatever the
             # selector reads there (`end[0]`, `pend.x`).
             step = segment if segment.startswith("[") else f".{segment}"
             reason = past_end_text(path, variable["past_end"])
@@ -1038,7 +1037,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             and (pointee := _c_pointee(variable)) is not None
         ):
             # A pointer to a C++ string, shown with its text (`0x… "apple"`): p[0] is
-            # that string, as C++ reads it; the worker lists no members (eval 6).
+            # that string, as C++ reads it; the worker lists no members.
             if _first_index(segment):
                 variable = _dereferenced(variable, pointee, path == segments[0])
                 path += segment
@@ -1048,7 +1047,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             pointee = _c_pointee(variable)
             unresolved = pointee is None and _unresolved_indirection(variable)
             first = first_page(handle) if pointee is not None or unresolved else None
-            # A single `*p` child is a pointer to one scalar (#100), whatever its type's name.
+            # A single `*p` child is a pointer to one scalar, whatever its type's name.
             if first is not None and _pointee(variable, first["variables"]) is None:
                 listed = [child for child in first["variables"] if child["name"] not in _GROUPS]
                 if unresolved:
@@ -1059,7 +1058,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                         "differently; index the array where it is declared, or select "
                         "fields with `.`"
                     )
-                # #102: the debugger lists what a pointer to an array, a container or a
+                # The debugger lists what a pointer to an array, a container or a
                 # struct points at as the pointer's own children. In C, p[0] is that
                 # pointee and p[1] the one after it, which no pointer's length tells.
                 _readable(variable, path, pointee, listed)
@@ -1072,7 +1071,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             from peeky.native import UNLISTED
 
             if variable.get("withheld_as") == UNLISTED:
-                # An unordered container whose count is not proven (#167): no entry of
+                # An unordered container whose count is not proven: no entry of
                 # it is read, by key or by position.
                 raise ValueError(
                     f"{_shown(segment)} not read: {path} is not listed: {variable.get('reason')}"
@@ -1098,7 +1097,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                     f"(4 levels below a local)"
                 )
             value = variable.get("value")
-            # A C or C++ value read through a pointer is still a value (#339).
+            # A C or C++ value read through a pointer is still a value.
             view = None if variable.get("unproven_read") else variable.get("view")
             if view is None and value in ("null", "None"):
                 # Java's null and Python's None have no members.
@@ -1107,7 +1106,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             if view == "unproven":
                 raise ValueError(f"cannot expand {variable['name']!r}: {_unproven_text(variable)}")
             if view == "memory" and segment.startswith("[") and _c_pointee(variable) is not None:
-                # A pointer Peeky read from an unordered container's node (#374).
+                # A pointer Peeky read from an unordered container's node.
                 raise ValueError(
                     f"{_shown(segment)} not read: {path} ({variable.get('type')}) is a pointer "
                     "read from an unordered container's node, shown by its address alone; "
@@ -1124,7 +1123,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 f"cannot expand {variable['name']!r} ({view or 'leaf'}{shown})" + keyed
             )
         if pointers and segment.startswith("["):
-            # #119: LLDB lists a C++ map's or set's entries as [0], [1], ... in iteration
+            # LLDB lists a C++ map's or set's entries as [0], [1], ... in iteration
             # order, where C++'s m[k] is the value for key k.
             kind = _associative(variable)
             if kind is None and (variable.get("aliased_type") == "?" or _unplaced(variable)):
@@ -1143,7 +1142,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         key = _key(segment)
         length = variable.get("indexedVariables")
         if (index := _INDEX.fullmatch(segment)) and type(length) is int and length > 512:
-            # An element past one listing's bound (`es[699].a`): fetched alone (#105).
+            # An element past one listing's bound (`es[699].a`): fetched alone.
             if int(index[1]) >= length:
                 raise ValueError(f"{segment} is out of range: {path} has {length} elements")
             page = worker.dispatch("expand", {**stop, "handle": handle, "index": int(index[1])})
@@ -1218,7 +1217,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
     return {**variable, "scope": "globals"} if module else variable
 
 
-# Rust text, shown whole: an owned `String` too, and an element's `String` field (#260).
+# Rust text, shown whole: an owned `String` too, and an element's `String` field.
 _RUST_TEXT = frozenset(
     {"&str", "&mut str", "&str *", "alloc::string::String *", "alloc::string::String", "String"}
 )
@@ -1301,7 +1300,7 @@ _FIELD_RUST = (
 def _length_step(kind):
     """The child a raw Rust container (as LLDB names its type) keeps its length in:
     `vec.len` (String), `len` (Vec, also through a `&Vec`), `length` (a slice or `&str`,
-    also through a `&&str`); None where LLDB's own children name none Peeky knows (#205)."""
+    also through a `&&str`); None where LLDB's own children name none Peeky knows."""
     base = kind.removesuffix(" *")
     if base.startswith("alloc::string::String"):
         return "vec.len"
@@ -1314,7 +1313,7 @@ def _length_step(kind):
 
 def _length_hint(variable, selector):
     """`Capture names.len for the length. ` for a raw Rust container, naming the child
-    that holds it (#205), or nothing where none is known."""
+    that holds it, or nothing where none is known."""
     step = _length_step(_lldb_type(variable))
     return f"Capture {selector}.{step} for the length. " if step else ""
 
@@ -1349,7 +1348,7 @@ def _raw_rust(variable, selector):
 
 def _changing(variable):
     """Whether the worker left a Rust container raw because a call under way may be
-    changing it (a caller frame's): none of its fields is offered as its length (#260)."""
+    changing it (a caller frame's): none of its fields is offered as its length."""
     from peeky.rust_symbols import CALLER_CHANGING
 
     return CALLER_CHANGING in str(variable.get("raw_reason") or "")
@@ -1362,7 +1361,7 @@ _COMPOSITE_RUST = (
     "initialized at this stop, in the innermost frame, and only their integer, bool, "
     "float, char and String fields."
 )
-# A slice or `&Vec` already: never advised to be read as one (#260).
+# A slice or `&Vec` already: never advised to be read as one.
 _LENT_COMPOSITE_RUST = (
     "This Rust slice or &Vec of tuples or structs shows LLDB's summary: check contents "
     "with `peeky verify`. {length}Peeky reads its elements only for a parameter the build's "
@@ -1390,7 +1389,7 @@ _UNPROVEN_RUST = (
     "crate with no unsafe code. Here what it points at may be moved or dropped, or the "
     "MIR cannot say (rust-cookbook 7.2)"
 )
-# A raw pointer is never followed, wherever it is and however live (#255).
+# A raw pointer is never followed, wherever it is and however live.
 _RAW_RUST = (
     "this Rust raw pointer shows only its address: Peeky never follows a raw pointer, "
     "because nothing proves that what it points at still stands"
@@ -1431,7 +1430,7 @@ _UNREAD_RUST = (
 
 
 def _str_items(variable, selector):
-    """Where a slice's or Vec's `&str` items read (#205), or nothing for another value."""
+    """Where a slice's or Vec's `&str` items read, or nothing for another value."""
     kind = _lldb_type(variable).removesuffix(" *")
     if re.fullmatch(r"&(?:mut )?\[&(?:mut )?str\]|alloc::vec::Vec<&(?:mut )?str, .+>", kind):
         return (
@@ -1442,7 +1441,7 @@ def _str_items(variable, selector):
 
 
 def _unread_note(variable, selector):
-    """_UNREAD_RUST for one value: where its `&str` items read (#205), and its length."""
+    """_UNREAD_RUST for one value: where its `&str` items read, and its length."""
     return _UNREAD_RUST.format(
         items=_str_items(variable, selector), length=_length_hint(variable, selector)
     )
@@ -1450,8 +1449,8 @@ def _unread_note(variable, selector):
 
 def _unproven_text(variable):
     """Why a Rust value shows only its pointer: a raw pointer, or one the build does not
-    tell from one (#255); a reference past #110's proof, where the worker says (#205);
-    else every way that can be."""
+    tell from one; a reference past the worker's liveness proof, where the worker says
+    why; else every way that can be."""
     pointer = variable.get("unproven_pointer")
     if pointer in ("raw", "unknown"):
         return _RAW_RUST if pointer == "raw" else _MAYBE_RAW_RUST
@@ -1469,7 +1468,7 @@ def _unproven_note(variable):
 
 def _held_unproven_note(children):
     """The note of a Rust value that reads, for its children shown only as their pointer:
-    its raw pointers (#255), else every way that can be (#108)."""
+    its raw pointers, else every way that can be."""
     kinds = {child.get("unproven_pointer") for child in children}
     if kinds == {"raw"}:
         return _RAW_HELD_RUST + "."
@@ -1608,7 +1607,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + (f". Capture {shown_path}.{length} for the length" if length else "")
             )
         elif isinstance(variable.get("raw_reason"), str):
-            # Why the worker left it raw (#156); never a length that may be mid-change.
+            # Why the worker left it raw; never a length that may be mid-change.
             message += (
                 f"; Peeky shows LLDB's summary of it, not its contents: {variable['raw_reason']}"
                 + (
@@ -1619,7 +1618,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + ", and check contents with `peeky verify`"
             )
         elif _rust_composite(_lldb_type(variable)):
-            # Never advice to read a slice or `&Vec` as one: it is one already (#260).
+            # Never advice to read a slice or `&Vec` as one: it is one already.
             message += (
                 "; check contents with `peeky verify`"
                 + (f", and capture {shown_path}.{length} for the length" if length else "")
@@ -1652,7 +1651,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
     step = _length_step(_lldb_type(variable))
     if not twin and segment in ("len", "length") and step and step != segment:
         # A Rust slice's or `&str`'s length is `length`, a Vec's `len`, a String's
-        # `vec.len` (#205).
+        # `vec.len`.
         twin = f"; its length is {shown_path}.{step}"
     return f"{_shown(segment)} not found in {label}; children: {shown or 'none'}{twin}"
 
@@ -1797,13 +1796,13 @@ _BUDGET = re.compile(
 
 
 def _previewed(worker, stop, variable):
-    """A field's or element's value with its preview (#136): a selector walks to it
+    """A field's or element's value with its preview: a selector walks to it
     without previewing the listings on its way. A worker that cannot preview (one that
     predates it), or a value it has none for, keeps the debugger's text."""
     handle = variable.get("variablesReference")
     if variable.get("unavailable") or type(handle) is not int or handle <= 0:
         return variable
-    # What a pointer points at (`p[0]`, #102), which lldb-dap lists as the pointer's
+    # What a pointer points at (`p[0]`), which lldb-dap lists as the pointer's
     # children: the selector asked for it, so it is read as the pointer's target. Only
     # a value `_dereferenced` made: lldb-dap's own `*pp` child is a value of its own (a
     # pointer, where `pp` is a pointer to one), and never a pointee's preview.
@@ -1822,7 +1821,7 @@ def _previewed(worker, stop, variable):
 
 def _named(selectors):
     """What an inspection for ``selectors`` asks: their roots read by name, even past the
-    listing bound, previewed (#136), and with what their addresses can tell (#302)."""
+    listing bound, previewed, and with what their addresses can tell."""
     roots = _roots(selectors)
     return {**({"names": roots} if roots else {}), "previews": roots, "extents": roots}
 
@@ -1831,14 +1830,7 @@ def _inspection(worker, stop, named, frame=0):
     """An inspection of stack frame ``frame`` (0, the innermost, by default)."""
     if not frame:
         return worker.dispatch("inspect", {**stop, **named})
-    shown = worker.dispatch("inspect", {**stop, "frame": frame, **named})
-    if shown.get("frame") != frame:
-        # A worker that predates `frame` ignores it and reads the innermost frame.
-        raise ValueError(
-            "This worker cannot read a caller's frame (it predates --frame); update "
-            "Peeky on the worker host"
-        )
-    return shown
+    return worker.dispatch("inspect", {**stop, "frame": frame, **named})
 
 
 def _capture(
@@ -1864,7 +1856,7 @@ def _capture(
     """
 
     # Asked for by name, a local or global past the listing bound is read too; only
-    # those roots are previewed (#136), and say what their addresses can tell (#302).
+    # those roots are previewed, and say what their addresses can tell.
     named = _named(selectors)
 
     def inspect():
@@ -1926,12 +1918,12 @@ def _capture(
                 row.update(value=variable["value"], type=variable.get("type"))
                 if isinstance(variable.get("buffer"), str):
                     # A narrow character array's every byte, which its value shows only up
-                    # to its first NUL (thirteenth evaluation).
+                    # to its first NUL.
                     row["buffer"] = variable["buffer"]
-                # What its address can tell (C, C++: #302), for `_pointed` below.
+                # What its address can tell (C, C++), for `_pointed` below.
                 extent = variable.get("extent")
                 if isinstance(variable.get("past_end"), dict):
-                    # One past an array's end (#336): nothing it points at is read.
+                    # One past an array's end: nothing it points at is read.
                     row["past_end"] = variable["past_end"]
                 if preview:
                     # Only this value's own expansions, never its siblings', so the same
@@ -1956,15 +1948,15 @@ def _capture(
                 elif variable.get("view") == "opaque" and isinstance(
                     reason := variable.get("opaque_reason"), str
                 ):
-                    # Why a Rust enum is not decoded, and what to read instead (#303).
+                    # Why a Rust enum is not decoded, and what to read instead.
                     row["note"] = reason[:1].upper() + reason[1:] + "."
                 elif isinstance(variable.get("raw_reason"), str):
-                    # Why a Rust Vec or String stays raw here (#156).
+                    # Why a Rust Vec or String stays raw here.
                     row["note"] = _raw_rust(variable, selector)
                 elif owned_type and len(parse_selector(selector)) == 1:
                     row["note"] = _rust_note(_OWNED_RUST, variable, selector)
                 elif variable.get("stale") and not _THROUGH.match(str(variable.get("note"))):
-                    # A note carried from what holds it says why first (#260: a call may be
+                    # A note carried from what holds it says why first (a call may be
                     # changing it), else every way a value can be stale.
                     row["note"] = (
                         _STALE_PLAIN_RUST if variable.get("pointer_free") else _STALE_RUST
@@ -1977,13 +1969,13 @@ def _capture(
                     row["note"] = _composite_note(variable, selector)
                 elif isinstance(variable.get("note"), str):
                     # A value the runtime shows but cannot vouch for (C, C++: a line a loop
-                    # returns to; initialization not judged), or one read through it (#148),
-                    # or through a pointer Peeky can't show points at a live object (#339).
+                    # returns to; initialization not judged), or one read through it, or
+                    # through a pointer Peeky can't show points at a live object.
                     row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
             if variable.get("unproven_pointer") in ("raw", "unknown"):
-                # A raw pointer, or one the build does not tell from one (#255).
+                # A raw pointer, or one the build does not tell from one.
                 row["unproven_pointer"] = variable["unproven_pointer"]
             if variable.get("stale"):
                 row["stale"] = True
@@ -1997,16 +1989,16 @@ def _capture(
                 # or a Java field or array element.
                 row["settable"] = variable["settable"]
             if isinstance(variable.get("not_settable"), str):
-                # Why it can't be changed: at no stop of this build (#138: `register`), or
-                # here (Java, #261).
+                # Why it can't be changed: at no stop of this build (`register`), or here
+                # (Java).
                 row["not_settable"] = variable["not_settable"]
             if isinstance(variable.get("maybe_settable"), str):
-                # Why neither mark can be promised (Java, #261).
+                # Why neither mark can be promised (Java).
                 row["maybe_settable"] = variable["maybe_settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
             if children and variable.get("variablesReference") and not variable.get("whole"):
-                # A Java String or boxed number is a value (#204): its class's own fields
+                # A Java String or boxed number is a value: its class's own fields
                 # are read only when selected by name (`n.value`).
                 try:
                     try:
@@ -2026,7 +2018,7 @@ def _capture(
                         )
                     if row.get("note") and listing.get("note"):
                         # How to read a map's entries never replaces why the value
-                        # itself may not be current (#148).
+                        # itself may not be current.
                         listing["note"] = f"{row['note']}; {listing['note']}"
                     row.update(listing)
                 except ValueError as exc:
@@ -2037,25 +2029,23 @@ def _capture(
                     ):
                         row["children_error"] = str(exc)
                     # Else a long `char[N]` shown as its text: its characters are the
-                    # text, each still selectable (`text[5]`), so no listing is no loss
-                    # (ninth evaluation: `<children: … exceeds bounded expansion limit>`).
+                    # text, each still selectable (`text[5]`), so no listing is no loss.
                 listed = row.get("children", ())
                 unproven = [c for c in listed if c.get("view") == "unproven"]
                 read = [c["note"] for c in unproven if _UNPROVEN_C.match(str(c.get("note")))]
                 if "note" not in row and read:
                     # Read through a C or C++ pointer Peeky can't show points at a live
-                    # object, or a `char *` member's text (#339): each why, once, for the
+                    # object, or a `char *` member's text: each why, once, for the
                     # children marked.
                     row["note"] = "; ".join(dict.fromkeys(read[:3]))
                 elif "note" not in row and unproven:
-                    # A caller's struct reads, but not what its pointers reach (#108); a
-                    # live one, but not what its raw pointers do (#255).
+                    # A caller's struct reads, but not what its pointers reach; a live
+                    # one, but not what its raw pointers do.
                     row["note"] = _held_unproven_note(unproven)
                 elif "note" not in row and any(c.get("stale") for c in listed):
                     row["note"] = _STALE_RUST + "."
             elif children and variable.get("depth_limited"):
-                # Its fields exist, but are not read here (outline 5, tenth evaluation:
-                # `self.history[-1][2]` listed none, beside `self.items[2]`, the same dict).
+                # Its fields exist, but are not read here.
                 row["children_error"] = DEPTH_LIMITED_CHILDREN
             elif children and isinstance(row.get("past_end"), dict):
                 row["children_error"] = "none read: " + past_end_text(selector, row["past_end"])
@@ -2071,9 +2061,9 @@ def _capture_frames(
 ):
     """Rows for a probe's ``selectors`` at one stop, in their order: those of the frame
     the program stopped in (``stopped``, as an inspection lists it), from ``snapshot``
-    where given, then each caller frame's (`1:i`, #382), read as `session get --frame N`
-    reads it (``_caller_rows``). ``unplaced``: why the stopped frame is not read (#326),
-    so none of its selectors is."""
+    where given, then each caller frame's (`1:i`), read as `session get --frame N`
+    reads it (``_caller_rows``). ``unplaced``: why the stopped frame is not read, so
+    none of its selectors is."""
     frames = {}
     for selector in selectors:
         frame, path = frame_selector(selector)
@@ -2140,7 +2130,7 @@ _HELD = re.compile(r"0x([0-9a-fA-F]{1,16})(?![0-9a-zA-Z_])")
 
 def pointed_element(value, pointer, base):
     """Which element of ``base``'s address the pointer whose row's value is ``value``
-    holds (#302): its index from 0, or the base's length where it is the address one past
+    holds: its index from 0, or the base's length where it is the address one past
     its end (an object, with no length, is one element). An address alone: another
     object can share it (a union's other member, the array after this one, storage
     reused), so it never says which object the pointer designates. ``pointer`` and ``base`` are what
@@ -2169,7 +2159,7 @@ def pointed_element(value, pointer, base):
 
 def past_end(value, pointer, bases):
     """Where the C or C++ pointer whose row's value is ``value`` holds the address one
-    past the end of an array the stop shows (#336), which C lets a pointer hold but never
+    past the end of an array the stop shows, which C lets a pointer hold but never
     read: what it points at is then not read, as nothing there belongs to the array.
     ``pointer`` is what its address can tell (``NativeSession.value_extent``); ``bases``
     are the arrays and objects the stop's frames hold, [(selector, extent, place)]
@@ -2205,7 +2195,7 @@ def past_end(value, pointer, bases):
 
 def past_end_text(pointer, past):
     """Why nothing a C or C++ pointer named ``pointer`` points at is read, from its
-    ``past_end`` (#336), whose `frame` is there only where another frame than the
+    ``past_end``, whose `frame` is there only where another frame than the
     pointer's holds the array: why, then what to read instead."""
     base = past.get("selector")
     where, how = _held_where(past)
@@ -2224,7 +2214,7 @@ def past_end_text(pointer, past):
     )
 
 
-# How many elements apart two pointers may be for their offset to be said (#302): past
+# How many elements apart two pointers may be for their offset to be said: past
 # that, they are unrelated (the stack against the heap), and the row says nothing.
 OFFSET_CAP = 1 << 20
 
@@ -2244,10 +2234,10 @@ def _held_where(place):
     )
 
 
-# How many elements before or past an array a pointer's note names it by (#339).
+# How many elements before or past an array a pointer's note names it by.
 PAST_CAP = 64
 # How far below the stack pointer a pointer is said to point where a call that has
-# returned kept its locals (#339); further down is other memory (the heap, on Linux).
+# returned kept its locals; further down is other memory (the heap, on Linux).
 BELOW_STACK = 1 << 16
 # How many bytes below the stack pointer a function that calls nothing may keep its own
 # locals (the x86-64 and Apple arm64 red zone).
@@ -2264,7 +2254,7 @@ def _base_bounds(base):
 
 def pointee_proven(address, pointer, bases, strings=()):
     """Whether what a C or C++ pointer holding ``address`` points at is proven to be a
-    live object (#339). ``pointer``: what it points at (``NativeSession.pointee_of``:
+    live object. ``pointer``: what it points at (``NativeSession.pointee_of``:
     "pointee", "element_size", "count", and "character" for a byte-sized character
     type, which C lets read any object's bytes); ``bases``: the arrays and objects the
     stop's frames and the program's static storage hold, [(selector, extent, place)]
@@ -2273,7 +2263,7 @@ def pointee_proven(address, pointer, bases, strings=()):
     type: any byte of it); never through a union's member, as no declaration says which
     one holds a value (the union itself proves it). For a character pointer, also inside
     one of ``strings``: C strings, [(start, end)] from the first byte to the NUL (a
-    string literal, `main`'s arguments). One past an array's end is no element (#336)."""
+    string literal, `main`'s arguments). One past an array's end is no element."""
     size, count = pointer.get("element_size"), pointer.get("count", 1)
     if type(address) is not int or type(size) is not int or type(count) is not int:
         return False
@@ -2300,12 +2290,12 @@ def pointee_proven(address, pointer, bases, strings=()):
 
 def pointee_past(address, pointer, bases):
     """Where a C or C++ pointer holding ``address`` is outside an array the stop's
-    frames hold (#339), by a whole number of its elements: two or more past its end
+    frames hold, by a whole number of its elements: two or more past its end
     ({"kind": "past", "selector", "index", "length"}), or before its start ({"kind":
     "before", "selector", "elements"}), with the array's place (``past_end``'s). The
     array nearest by elements, the pointer's own frame's first; within ``PAST_CAP``
     elements (further off, where it is says more); never a 2-D one, whose element no single index names. One past the end is
-    ``past_end``'s (#336). None otherwise."""
+    ``past_end``'s. None otherwise."""
     size, found = pointer.get("element_size"), None
     for selector, base, place in bases:
         bounds = _base_bounds(base)
@@ -2336,7 +2326,7 @@ def pointee_past(address, pointer, bases):
 
 def pointee_place(address, sp, bases, settled=True):
     """Where a C or C++ pointer Peeky can't prove points at a live object points, for
-    its note (#339): "below" the stack pointer ``sp`` (by at most ``BELOW_STACK``),
+    its note: "below" the stack pointer ``sp`` (by at most ``BELOW_STACK``),
     where no live call keeps its locals; "stack", from the stack pointer (or the first
     local Peeky placed) to the end of the last local it placed in the frames it lists;
     else "unplaced". Within ``RED_ZONE`` below the stack pointer, the innermost call may
@@ -2356,13 +2346,13 @@ def pointee_place(address, sp, bases, settled=True):
 
 def unproven_text(pointer, why, text=False, reference=False):
     """The note on what is read through the C or C++ pointer named ``pointer``, which
-    Peeky can't show points at a live object (#339): the rule, why, then what to do.
+    Peeky can't show points at a live object: the rule, why, then what to do.
     ``why``: ``pointee_past``'s, {"kind": "union", "selector", place}, or {"kind":
     ``pointee_place``'s, "image" or "limit" (with `limits`: "locals", "arguments"),
     "statics": whether Peeky knew where the program's image is}. ``text``: the note of the
     pointer's own row, whose text LLDB read through it (a `char *`'s); with ``pointer``
     None, of the one a function returned. ``reference``: ``pointer`` is a reference (a GCC
-    lambda's capture by reference, #361), which refers to what it reads."""
+    lambda's capture by reference), which refers to what it reads."""
     kind = why.get("kind")
     if kind in ("past", "before"):
         base = why.get("selector")
@@ -2441,7 +2431,7 @@ def unproven_text(pointer, why, text=False, reference=False):
 def pointer_offset(value, pointer, base_value, base):
     """How many elements past the pointer ``base`` (its row's value ``base_value``) the
     pointer whose row's value is ``value`` holds the address of, by address arithmetic
-    alone (#302): negative where it is before. Unlike ``pointed_element``, nothing proves
+    alone: negative where it is before. Unlike ``pointed_element``, nothing proves
     that both point into one array, so it never names an element. ``pointer`` and ``base``
     are what their addresses can tell (``NativeSession.value_extent``), read at one stop of
     one frame. None unless both point at the same type of the same size, neither is null,
@@ -2473,8 +2463,8 @@ def _pointed(rows, extents):
     """Gives each pointer and array row of one stop and frame the size of its element
     (`element_size`), and says on each pointer row which element's address of another
     captured array or object it holds, where ``pointed_element`` proves it and exactly one
-    captured base matches (`at_element_of`: {selector, index, and the array's length};
-    #302). Where several match (a union's two arrays, one array's end and the next one's
+    captured base matches (`at_element_of`: {selector, index, and the array's length}).
+    Where several match (a union's two arrays, one array's end and the next one's
     start), it says none: the address alone cannot tell them apart.
 
     A pointer with none says how far it is from another captured pointer of its type, by
@@ -2538,9 +2528,9 @@ _SAME_ADDRESS_CAP = 3
 def _read_through(rows, pointers):
     """Says on a value read straight through a captured C or C++ pointer (`now.title`,
     `now[0]`) which other captured pointers of its type hold the same address
-    (`read_through`: {selector, same_address_as}; twelfth evaluation, playlist 3: `now`
-    equal to `end`, the program's one past its last track, read `"Coda"`, an element the
-    program no longer counts, with nothing to say so). Peeky can't know the program's
+    (`read_through`: {selector, same_address_as}): `now.title`, where `now` equals
+    `end`, one past the program's last track, reads an element the program no longer
+    counts. Peeky can't know the program's
     count, so it never says the value is left over; only where it was read. Of the rows,
     and of the children `session get` lists under them, against the rows' pointers only."""
     held, paths = {}, {}
@@ -2608,7 +2598,7 @@ def pointed_text(row):
     address`, `at x's address`, or `at the address one past level's end`, which is never
     read. Or its `offset_from`, which names no element: `level + 6 by address; same array
     not proven` (`level - 2` before it), or `same address as `now``, which is no claim on
-    any array. Then its `past_end`, where that says more (#336): `at the address one past
+    any array. Then its `past_end`, where that says more: `at the address one past
     queue's end`, `in frame 1` where another frame holds the array, and what else starts
     there (`, also b[0]'s`) where nothing above says. Then its `read_through`: `read
     through `now`, which holds the same address as `end``."""
@@ -2650,9 +2640,7 @@ def _pointer_text(row):
 
 def _element_text(row):
     """``pointed_text`` of a row's `at_element_of` or `offset_from` alone. An offset of 0
-    is only an equal address, so it says no more (twelfth evaluation, playlist 2: `now +
-    0 by address; same array not proven` beside `at the address one past queue's end`,
-    which `now` holds too)."""
+    is only an equal address, so it says no more."""
     into = row.get("at_element_of")
     apart = row.get("offset_from")
     if not isinstance(into, dict) and isinstance(apart, dict):
@@ -2679,10 +2667,10 @@ DEPTH_LIMITED_CHILDREN = (
 )
 
 
-# How the worker prefixes the note of what is read through a local shown with one (#148).
+# How the worker prefixes the note of what is read through a local shown with one.
 _THROUGH = re.compile(r"^read through `[^`\n]+`: ")
 # The note of a C or C++ value read through a pointer Peeky can't show points at a live
-# object, or of a pointer's own text read so (#339: ``unproven_text``).
+# object, or of a pointer's own text read so (``unproven_text``).
 _UNPROVEN_C = re.compile(r"^(?:read through `[^`\n]+`: )?Peeky can't show that ")
 
 
@@ -2705,7 +2693,7 @@ def _resume(worker, stop, returning, rows):
 
 def debugger_diagnostics(result, *sources):
     """The warning for the `stderr` lines a session left out of the program's output as
-    LLDB's (#167: LLDB 18's errors about the build's debug information), from the first
+    LLDB's (LLDB 18's errors about the build's debug information), from the first
     of ``sources`` (the session's end, or its last report) that has any; it also sets
     ``debugger_diagnostics`` in ``result`` (the first 20 lines). None where none."""
     for source in sources:
@@ -2730,7 +2718,7 @@ _DIAGNOSED = re.compile(r"(?:A `stderr` line|([0-9]+) `stderr` lines) with the s
 
 def diagnostics_again(warning):
     """debugger_diagnostics's ``warning`` in short, for a probe of a build whose earlier
-    probe gave it whole (thirteenth evaluation: lldb-dap 18 gave it on every GCC probe);
+    probe gave it whole (lldb-dap 18 gives it on every GCC probe);
     None for any other warning. It still says that a program line just like one would be
     moved too."""
     found = _DIAGNOSED.match(warning)
@@ -2745,10 +2733,10 @@ def diagnostics_again(warning):
 
 
 def _settle_output(result, final, known_end):
-    """The output as the session's end left it (#203): what the debugger sent up to
+    """The output as the session's end left it: what the debugger sent up to
     Peeky's disconnect. Whole (`output_complete`) only when the debugger reported the
     program's end before that disconnect, and the adapter then ended its stream with
-    nothing more: none could follow. An end Peeky only inferred (java-debug #27), a
+    nothing more: none could follow. An end Peeky only inferred (java-debug may not report it), a
     stream the adapter kept open, text it sent from the disconnect on (its own, or the
     program's: `output_after_disconnect`), or an adapter that exited with a status other
     than 0 (`adapter_exit`, and the warning returned; save the one exit Peeky is known to
@@ -2806,7 +2794,7 @@ _OPTIMIZED_RETURN = (
 def _again(call, frame, snapshot, place):
     """Why a pending call's hits get no return when the capture line stopped again at
     its depth, on its thread, before it returned, in a stop not proven to be in the same
-    call (#174). Only what the stop shows is said: a call of another function where the
+    call. Only what the stop shows is said: a call of another function where the
     stopped function is not the call's, another call where the frames under it are not,
     else that Peeky could not tell."""
     below = [_frame_id(caller) for caller in (snapshot.get("frames") or [])[1:]]
@@ -2835,14 +2823,14 @@ def _again(call, frame, snapshot, place):
 
 def _each_hit(call, row):
     """``row`` as the `(return)` row of each hit of ``call``, in hit order: a call
-    followed across stops of the line (#174) has several. Each has its hit's stop."""
+    followed across stops of the line has several. Each has its hit's stop."""
     shared = {key: value for key, value in row.items() if key != "hit"}
     return [{"hit": hit["hit"], **shared, **hit} for hit in call["hits"]]
 
 
 def _unplaced_rows(selectors, hit, frame, why):
-    """A stop's rows where its frame is not read (#326: the debugger shows it inside a
-    macro's definition): each selector withheld, saying why."""
+    """A stop's rows where its frame is not read (the debugger shows it inside a macro's
+    definition): each selector withheld, saying why."""
     return [
         {
             "hit": hit,
@@ -2872,7 +2860,7 @@ def _never_returned(call, why):
 
 
 def _returned_by(worker, stop, call):
-    """The `(return)` row of a pending call whose step out just ended (#155), with the
+    """The `(return)` row of a pending call whose step out just ended, with the
     stack depth it ended at (the caller's: one frame fewer, else withheld)."""
     row = {"hit": call["hits"][-1]["hit"], "phase": "returned", "selector": RETURN}
     try:
@@ -2908,7 +2896,7 @@ def _frame_id(frame):
 
 def _same_callers(frames, below):
     """Whether a step out ended in the frame a call returns to: the caller, back where
-    it made the call, and the frames under it as they were at the call's hit (#155). The
+    it made the call, and the frames under it as they were at the call's hit. The
     line is not compared in the caller: LLDB names a caller's line from its call, a
     stopped frame's from where it stopped."""
     if below is None:
@@ -2923,7 +2911,7 @@ def _same_callers(frames, below):
 
 def _returned_row(row, snapshot):
     """The `(return)` row: what the function a step left returned, read in the frame it
-    returned to (#155); its function and the line it returned to, or why there is none."""
+    returned to; its function and the line it returned to, or why there is none."""
     returned = snapshot.get("returned")
     frame = snapshot["frames"][0] if snapshot.get("frames") else {}
     # The line it returned to (none in a frame without source, a Java lambda's).
@@ -2949,10 +2937,10 @@ def _returned_row(row, snapshot):
             }
         return {**row, "unavailable": True, "error": f"withheld: {returned.get('reason')}"}
     if isinstance(returned.get("past_end"), dict):
-        # One past a character array's end (#336): its address alone.
+        # One past a character array's end: its address alone.
         row["past_end"] = returned["past_end"]
     elif returned.get("view") == "unproven" and isinstance(returned.get("note"), str):
-        # Text read through a pointer Peeky can't show points at a live object (#339).
+        # Text read through a pointer Peeky can't show points at a live object.
         row.update(view="unproven", note=returned["note"])
     return {**row, "value": returned.get("value"), "type": returned.get("type")}
 
@@ -3046,10 +3034,10 @@ def _element(worker, stop, snapshot, segments, target, negative):
 
 
 def _launch_set(line, name, value):
-    """A change as the check before the run judges it (#138): its line and name, whether
-    its value is a text (#137: a string's, not an integer's), and the value itself, which
-    a Java local's declared type judges (#183). A restore's value (`@before`, #305) is
-    known only at its stop: its name alone is judged."""
+    """A change as the check before the run judges it: its line and name, whether its
+    value is a text (a string's, not an integer's), and the value itself, which a Java
+    local's declared type judges. A restore's value (`@before`) is known only at its
+    stop: its name alone is judged."""
     if value == BEFORE:
         return {"line": line, "name": name}
     return {
@@ -3064,9 +3052,9 @@ def apply_set(worker, stop, name, value, restorable=False, target=None):
     """Apply one `--set name=value` at this stop: a root local, or a field or array
     element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
     C++ and Rust: `s.end`, `s.in.lo`, `xs[2]`, `t.__0`, which the worker proves the
-    frame holds itself, #105). ``restorable``: the result's `restore` says how a later
-    `@before` may write back the value read before this write, and to which storage
-    (#305); ``target``: that storage, which a restore writes only where it names it."""
+    frame holds itself). ``restorable``: the result's `restore` says how a later
+    `@before` may write back the value read before this write, and to which storage;
+    ``target``: that storage, which a restore writes only where it names it."""
     asked = {"restorable": True} if restorable else {}
     if target is not None:
         asked["target"] = target
@@ -3094,7 +3082,7 @@ def apply_set(worker, stop, name, value, restorable=False, target=None):
                 + twin_hint(name, [v["name"] for scope in own for v in scope["variables"]])
                 + "; only the stopped function's own locals can be changed",
             )
-        # The debugger's own name for it (`t @ two.c:20` for `t`, #158).
+        # The debugger's own name for it (`t @ two.c:20` for `t`).
         listed_as = found["name"] if found is not None else name
         try:
             return worker.dispatch(
@@ -3149,9 +3137,9 @@ def apply_set(worker, stop, name, value, restorable=False, target=None):
                 f"{target}: a negative index can be changed only in a Java array",
             )
         if not java and (index < 0 or last != f"[{index}]"):
-            # The element a read of the selector shows, and marks [settable] (review of
-            # #138): `[03]` is `[3]`, and `[-1]` counts from the end of a sequence whose
-            # length the debugger states; the debugger names it `[N]`.
+            # The element a read of the selector shows, and marks [settable]: `[03]` is
+            # `[3]`, and `[-1]` counts from the end of a sequence whose length the
+            # debugger states; the debugger names it `[N]`.
             member = _element(worker, stop, snapshot, segments, target, negative=index < 0)
         if array and not -int(array[1]) <= index < int(array[1]):
             raise Refused(
@@ -3278,16 +3266,16 @@ def _pointee_type(variable, pointee):
 
 def _first_index(segment):
     """Whether an index ``segment`` is element 0 (`[0]`, `[00]`; never `[-0]`): what a
-    pointer points at (#102, #117)."""
+    pointer points at."""
     return segment[1] != "-" and int(segment[1:-1]) == 0
 
 
 def _dereferenced(variable, pointee, root=False, page=None):
     """`*p` for a C/C++ pointer whose children the debugger lists from its pointee; it
-    carries the pointer's note (#148), said as read through it where the pointer is a
-    ``root`` local. Read through a pointer Peeky can't show points at a live object
-    (#339: the pointer's own text was, or ``page``, its children's listing, says), it is
-    marked so, with why."""
+    carries the pointer's note, said as read through it where the pointer is a ``root``
+    local. Read through a pointer Peeky can't show points at a live object (the
+    pointer's own text was, or ``page``, its children's listing, says), it is marked so,
+    with why."""
     value = str(variable.get("value") or "")
     address = re.match(r"0x[0-9a-fA-F]+", value)
     # The debugger's summary of the pointee follows the address (`0x… size=3`).
@@ -3297,16 +3285,16 @@ def _dereferenced(variable, pointee, root=False, page=None):
         "value": summary or f"{pointee or '*' + variable['name']} @ {address[0]}",
         "type": pointee or None,
         "variablesReference": variable["variablesReference"],
-        # Its handle is the pointer's: a preview reads what that points at (#136).
+        # Its handle is the pointer's: a preview reads what that points at.
         "dereferenced": True,
     }
     if variable.get("pointee_aliased_type"):
         shown["aliased_type"] = variable["pointee_aliased_type"]
     if summary and variable.get("view") == "memory":
-        # A libstdc++ string's text, which the worker read from memory (#128).
+        # A libstdc++ string's text, which the worker read from memory.
         shown["view"] = "memory"
     if variable.get("text"):
-        # A C++ string's: its text, with no members to list (eval 6).
+        # A C++ string's: its text, with no members to list.
         shown.update(text=True, variablesReference=0)
     for key in ("indexedVariables", "namedVariables", "string_length"):
         if type(variable.get(key)) is int:
@@ -3374,7 +3362,7 @@ _STD_STRING = re.compile(r"(?:::)?std::(?:__\w+::)*(?:string|basic_string<\s*cha
 # Keys compared as text: what LLDB shows of such a std::string is `"` + the key + `"`.
 _PLAIN_KEY = re.compile(r"[ !#-\[\]-~]{0,256}")
 _STRING_SUMMARY = re.compile(r'"(?:[^"\\]|\\.)*"(?:\.\.\.)?', re.S)
-# A libstdc++ string the worker could not read whole (#128): the debugger's text, then a
+# A libstdc++ string the worker could not read whole: the debugger's text, then a
 # note (`"a" (shown up to a NUL at byte 1 of 3)`). It equals no key a selector writes.
 _NOTED_STRING = re.compile(r'"(?:[^"\\]|\\.)*"(?:\.\.\.)? \(.+\)', re.S)
 # GCC's spellings of the integer types (`long unsigned int`) as LLDB's.
@@ -3509,7 +3497,7 @@ def _entry_part(worker, stop, child, part, path):
     """`first` or `second` of one entry LLDB lists for a map (`first` alone is fetched
     first: one node, not two)."""
     if child.get("unavailable") and child.get("withheld"):
-        # Withheld by Peeky, with why (a library call may be changing the map, #187).
+        # Withheld by Peeky, with why (a library call may be changing the map).
         label = child.get("withheld_as") or "no value yet"
         raise ValueError(f"cannot read the keys of {path}'s entries: {label}: {child['reason']}")
     if not child.get("variablesReference"):
@@ -3547,7 +3535,7 @@ def _key_kind(first):
 
 
 def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False):
-    """What `segment` names in a C++ map or set (#119). LLDB lists the entries as
+    """What `segment` names in a C++ map or set. LLDB lists the entries as
     [0], [1], ... in iteration order, where C++'s `m[k]` is the value for key k: so
     `[#N]` is the Nth entry, `[k]` the value for key k (a map with unique keys that
     Peeky compares exactly), and anything else is refused, never read by position.
@@ -3588,7 +3576,7 @@ def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False)
 
 def _summary_size(variable):
     """The entry count LLDB's summary of a container states (`size=3`), also before the
-    preview of its entries (`size=3 {1: 10, …}`, #181), or None."""
+    preview of its entries (`size=3 {1: 10, …}`), or None."""
     value = str(variable.get("value") or "")
     found = re.search(r"(?:^|\s)size=([0-9]{1,9})$", value) or re.match(
         r"size=([0-9]{1,9}) [\[{]", value
@@ -3599,7 +3587,7 @@ def _summary_size(variable):
 def _entry_at(worker, stop, variable, position):
     """Entry ``position`` of a C++ map as LLDB lists it (one node), with whether more
     follow it; (None, False) past the last. Of entries Peeky read from an unordered
-    container's nodes, any position, past the inspection window's 512 too (#374)."""
+    container's nodes, any position, past the inspection window's 512 too."""
     where = (
         {"index": position}
         if variable.get("view") == "memory" and position > 511
@@ -3656,7 +3644,7 @@ def _comparison(variable):
     std::less or std::greater, or a std::unordered_map using std::hash and std::equal_to
     (the defaults LLDB leaves out of a type's name). Else why not (`comparator (ByAbs) is
     not ...`): the map's own comparison may treat another key as equal to K, which `m[K]`
-    then reads (review of #119)."""
+    then reads."""
     if _order(variable) is not None:
         return None
     for kind in (variable.get("type"), variable.get("aliased_type")):
@@ -3686,10 +3674,10 @@ def _string_bytes(worker, stop, first, whole):
     bytes from libstdc++'s `_M_string_length` (that summary is a C string, which ends at
     the first NUL), or None where neither can be read."""
     if whole or first.get("view") == "memory":
-        # A libstdc++ string the worker read from memory is shown whole too (#128).
+        # A libstdc++ string the worker read from memory is shown whole too.
         return True
     if type(first.get("string_length")) is int:
-        # One whose summary the worker checked against its `_M_string_length` (#128).
+        # One whose summary the worker checked against its `_M_string_length`.
         return first["string_length"]
     if not first.get("variablesReference"):
         return None
@@ -3786,7 +3774,7 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
 
     target = wanted if compared == "integer" else f'"{wanted}"'
     if variable.get("view") == "memory":
-        # Entries Peeky read from an unordered container's own nodes (#374): the worker
+        # Entries Peeky read from an unordered container's own nodes: the worker
         # compares every key, however many, each as `key_of` does.
         try:
             page = worker.dispatch(
@@ -3798,7 +3786,7 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
             raise ValueError(f"{written} not read: {exc}; {how}") from None
         if page.get("key") != str(target) or type(page.get("compared")) is not int:
             # Not an answer to this key (a worker that ignores `key` gives the first
-            # entries): none of it is taken for the key's entry (#374 review).
+            # entries): none of it is taken for the key's entry.
             raise ValueError(
                 f"{written} not read: the worker's answer doesn't say it compared every key "
                 f"with {shown}; {how}"
@@ -3862,7 +3850,7 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
         number, value, part = key_of(child, first if checked == 0 else None)
         checked += 1
         if number == target and compared == "string":
-            # libstdc++'s summary ends at a NUL: "a\0b" shows as "a" (review of #119).
+            # libstdc++'s summary ends at a NUL: "a\0b" shows as "a".
             length = _string_bytes(worker, stop, part, whole)
             if length is None:
                 raise ValueError(
@@ -3943,7 +3931,7 @@ def _keyed_child(worker, stop, base, child, whole):
     ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
     if not child.get("variablesReference"):
         return None
-    # The value with its preview (#181), as other listings show theirs.
+    # The value with its preview, as other listings show theirs.
     request = {**stop, "handle": child["variablesReference"], "start": 0, "previews": True}
     shown = worker.dispatch("expand", request)["variables"]
     first = next((field for field in shown if field["name"] == "first"), None)
@@ -3988,7 +3976,7 @@ def _positional_child(base, child):
 
 
 def _entry_children(worker, stop, selector, variable, page, whole=False):
-    """A C++ map's or set's first page of entries (#119), each with the selector that
+    """A C++ map's or set's first page of entries, each with the selector that
     reads it: `m[K]` (the value for key K) for a map whose keys Peeky compares, else
     `m[#N]` (the Nth entry in iteration order), never `m[N]`, which is key N in C++.
     None for any other value. ``whole``: LLDB's summary of a std::string shows all of
@@ -3996,7 +3984,7 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
     base, container, kind = selector, variable, _associative(variable)
     pointee = _c_pointee(variable)
     if kind is None and pointee is not None and _pointee(variable, page["variables"]) is None:
-        # A pointer lists what it points at (#102): its entries are p[0][...].
+        # A pointer lists what it points at: its entries are p[0][...].
         base, container = f"{selector}[0]", _pointee_type(variable, pointee)
         kind = _associative(container)
     if kind is None:
@@ -4018,7 +4006,7 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
             listed[at] = _positional_child(base, child)
     for entry, child in zip(listed, entries):
         if isinstance(child.get("note"), str) and not entry.get("unavailable"):
-            # Read through a local shown with a note (#148).
+            # Read through a local shown with a note.
             entry["note"] = child["note"]
     for entry in listed:
         try:
@@ -4088,7 +4076,7 @@ def _list_children(worker, stop, selector, backing, size):
 
 
 def _whole(worker, stop, child):
-    """A listed child's value: a Java boxed number shown whole (#204) with its value, as
+    """A listed child's value: a Java boxed number shown whole with its value, as
     its own row shows it (`Integer@57 {value=1001}`); else as the worker gives it."""
     if not child.get("whole"):
         return child.get("value")
@@ -4136,12 +4124,12 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
         if child.get("view"):
             entry["view"] = child["view"]
         if child.get("unproven_pointer") in ("raw", "unknown"):
-            # A raw pointer, or one the build does not tell from one (#255).
+            # A raw pointer, or one the build does not tell from one.
             entry["unproven_pointer"] = child["unproven_pointer"]
         if child.get("stale"):
             entry["stale"] = True
         if isinstance(child.get("note"), str) and not child.get("unavailable"):
-            # Read through a local shown with a note (#148).
+            # Read through a local shown with a note.
             entry["note"] = child["note"]
         if type(child.get("settable")) is bool:
             entry["settable"] = child["settable"]
@@ -4150,10 +4138,10 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
         if isinstance(child.get("maybe_settable"), str):
             entry["maybe_settable"] = child["maybe_settable"]
         if isinstance(child.get("raw_reason"), str):
-            # Why a Rust Vec or String field stays raw (#156).
+            # Why a Rust Vec or String field stays raw.
             entry["raw_reason"] = child["raw_reason"]
         if isinstance(child.get("past_end"), dict):
-            # One past an array's end (#336): nothing it points at is read.
+            # One past an array's end: nothing it points at is read.
             entry["past_end"] = child["past_end"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
@@ -4166,7 +4154,7 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             and _unresolved_indirection(variable)
             and _pointee(variable, page["variables"]) is None
         ):
-            # Neither p[N] (a pointer's) nor r[N] (a reference's) can be told (#102).
+            # Neither p[N] (a pointer's) nor r[N] (a reference's) can be told.
             path = None
         elif (
             pointers
@@ -4176,7 +4164,7 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             and _pointee(variable, page["variables"]) is None
         ):
             # A pointer to an array or container lists its pointee's elements: in C,
-            # element N is p[0][N] (#102).
+            # element N is p[0][N].
             path = _child_selector(f"{selector}[0]", child["name"])
         if path and (
             not path.endswith("]") or _genuine(child, page["variables"], path[-2] in "'\"")
@@ -4194,14 +4182,14 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
 
 
 # A probe that completed, but whose requested change (--set, --set-at) never came: its
-# values are evidence, but the experiment asked for did not happen (#137).
+# values are evidence, but the experiment asked for did not happen.
 UNAPPLIED_EXIT = 4
 
 
 def probe_exit_code(result):
     """`peeky probe`'s and `peeky-probe`'s exit code: 0; 2 for a probe refused before
     launch (the debugger's launch or attach request was not sent: a refusal, as for any
-    request Peeky turns down; seventh evaluation, finding 14; #190); 1 for any other probe
+    request Peeky turns down); 1 for any other probe
     that did not complete; or UNAPPLIED_EXIT."""
     if result.get("refused_before_launch"):
         return 2
@@ -4298,12 +4286,12 @@ def _moved(placed, state):
 
 def _waiting(point):
     """Whether a --set-at still needs its line's stops: one at a hit until it is made, an
-    @all until the first stop past its cap (#265)."""
+    @all until the first stop past its cap."""
     return point["capped"] is None if point["hit"] == ALL else point["change"] is None
 
 
 class _Restores:
-    """A probe's `@before` restores (#305). Each writes back the value its variable held
+    """A probe's `@before` restores. Each writes back the value its variable held
     just before the probe's latest change to it, and only where that is exactly what the
     variable held in the same call: the change was made at the same hit of its own line,
     on the same thread, in the same function at the same stack depth under the same
@@ -4370,7 +4358,7 @@ class _Restores:
         restore at one hit only the one at its hit. A restore line that reached a hit
         paired its own change there. The same for what an `--until hits` probe waits for
         (``owed``) and what is left in place at its end: every change owed, not only the
-        latest (#331: an @all restore whose line never ran was said to leave 1 of 6)."""
+        latest."""
         found = []
         for point in self.points:
             if not _waiting(point):
@@ -4451,7 +4439,7 @@ class _Restores:
             "restore": restore if isinstance(restore, dict) else {},
             "wrote": change.get("after"),
             "undoes": change.get("restores"),
-            # A change, a write proven to change nothing, or one of the same text (#331).
+            # A change, a write proven to change nothing, or one of the same text.
             "kind": _write_kind(change),
         }
         made = self.by_hit.setdefault(key, {})
@@ -4465,7 +4453,7 @@ class _Restores:
         not."""
         record = self.ledger.get(restore_key(name))
         if record is None:
-            # The lines whose change this stop came before (twelfth evaluation, prep 9).
+            # The lines whose change this stop came before.
             later = sorted(
                 {
                     point["line"]
@@ -4566,14 +4554,14 @@ class _Restores:
         return record["restore"]["value"], record
 
 
-# A refusal's advice to change the value in the frame that owns it (#202).
+# A refusal's advice to change the value in the frame that owns it.
 _OWNER_LINE = re.compile(r"`--set-at ([0-9]+)@N ")
 
 
 def _all_elsewhere(message, points):
     """A refusal before the run of a `--set-at LINE@all` whose advice names another line's
     `--set-at M@N`, in the frame that owns the value: with what `@all` there would do
-    instead, every stop of M (#265). Else the message as it is."""
+    instead, every stop of M. Else the message as it is."""
     named = _OWNER_LINE.search(message)
     refused = re.match(r"`([^`]+)` cannot be changed at [^,]*:([0-9]+), ", message)
     if not named or not refused:
@@ -4600,8 +4588,8 @@ def _set_outcomes(probe, points, changes, status, finished, attempt, unreported)
     there), "timeout" or "failed" (the probe's, first), or "lost_stop" (an @all whose run
     the debugger lost a stop of, which may have gone unchanged); `complete`, whether it
     was carried out in full: one at a hit made, or an @all made at every stop of its line
-    until the program ended. Comparisons say it (review of #278: a run ended by --until
-    hits, or a refusal at hit 7, read like one that changed every stop)."""
+    until the program ended. Comparisons say it, so that a run ended by --until hits, or
+    by a refusal at hit 7, doesn't read like one that changed every stop."""
     over = {"exit": "exit", "hits": "until_hits"}.get(finished) or (
         "timeout" if status == "timeout" else "failed"
     )
@@ -4666,7 +4654,7 @@ def _expected_line(breakpoint, state, requested):
 
 def moved_breakpoint(requested, placed, candidate=False):
     """The warning for a breakpoint the debugger placed on another line: a probe's, and a
-    session's start (#262)."""
+    session's start."""
     return (
         f"The debugger moved the breakpoint from line {requested} to line {placed} (line "
         f"{requested} has no code of its own); values are from line {placed}"
@@ -4690,9 +4678,9 @@ def run_probe(
     ``progress(message)`` receives human-readable milestones (never parsed). A worker's
     probe child passes ``launch_budget`` (seconds, at most the worker's own) so its
     launch ends before the worker's watchdog, ``launch_marker``, a file written just
-    before the debugger is asked to start the program (#190 review), and
-    ``pycache_base``, in its parent's scratch, for a remote Python run's bytecode cache
-    (#249: the parent removes it, even after killing the child).
+    before the debugger is asked to start the program, and ``pycache_base``, in its
+    parent's scratch, for a remote Python run's bytecode cache (the parent removes it,
+    even after killing the child).
     """
     say = progress or (lambda message: None)
     if launch_budget is not None and not launch_budget > 0:
@@ -4719,22 +4707,22 @@ def run_probe(
     discard = False
     # Pauses at stops that only apply a --set-at (no capture there).
     set_pauses = []
-    # Pauses at stops only at a function's first line, watched for new calls (#305).
+    # Pauses at stops only at a function's first line, watched for new calls.
     watch_pauses = []
     unreported = None
     # How the probe's watch ended: "exit" (the program ended), "hits" (--until hits), else
     # None (a failure or the timeout); and the change being made when one failed: for
     # each request's outcome (`_set_outcomes`).
     finished, attempt = None, None
-    # What the debugger said of the program's crash, where it crashed (#342); and the
+    # What the debugger said of the program's crash, where it crashed; and the
     # other `exception` or `signal` stops the probe let the program go on from, by what
     # the debugger said, with how many came in a row at one place.
     crash, passed, again, repeated = None, {}, (None, 0), None
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
-    # Each --set-at, with its line in the build that runs (#137).
-    # `change`: a hit's once made; `changes`: each made (an @all's, #265, one per stop, up
-    # to MAX_HITS); `capped`: the @all's first stop past that cap, made without it.
+    # Each --set-at, with its line in the build that runs.
+    # `change`: a hit's once made; `changes`: each made (an @all's, one per stop, up to
+    # MAX_HITS); `capped`: the @all's first stop past that cap, made without it.
     points = [
         {
             "line": at,
@@ -4748,7 +4736,7 @@ def run_probe(
         }
         for at, hit, name, value in probe.set_at
     ]
-    # `@before` restores (#305), and the changes and calls they are judged by.
+    # `@before` restores, and the changes and calls they are judged by.
     restores = _Restores(points)
     # Stops seen per breakpoint line (the build's numbering): a --set-at's hit counts its
     # own line's stops, in any function.
@@ -4765,9 +4753,9 @@ def run_probe(
     session = None
     # Whether the worker's session said the program ended (a wait read it, or inferred it).
     known_end = False
-    # The session's last report: the debugger's own lines left out of the output (#167).
+    # The session's last report: the debugger's own lines left out of the output.
     reported = None
-    # `(return)` (#155): after each call's hit, step out of it and read what it returned.
+    # `(return)`: after each call's hit, step out of it and read what it returned.
     # `returning` holds the calls still to return, innermost last: {hit, depth, thread}.
     wants_return, returning = RETURN in probe.capture, []
     selectors = tuple(selector for selector in probe.capture if selector != RETURN)
@@ -4809,8 +4797,8 @@ def run_probe(
                     if probe.expect_inputs is not None
                     else {}
                 ),
-                # What no stop of the build can change is refused before it runs (#138).
-                # Each with the line whose stops make it: a --set-at's own (#137).
+                # What no stop of the build can change is refused before it runs.
+                # Each with the line whose stops make it: a --set-at's own.
                 **(
                     {
                         "sets": [_launch_set(line, name, value) for name, value in probe.set]
@@ -4842,8 +4830,8 @@ def run_probe(
             source_sha256=launch["source_sha256"],
         )
         if isinstance(launch.get("build_id"), str):
-            # The build by its sources and tools, not its artifacts (thirteenth evaluation):
-            # what `peeky probe`'s text says LLDB's notes once per.
+            # The build by its sources and tools, not its artifacts: what `peeky probe`'s
+            # text says LLDB's notes once per.
             result["build_id"] = launch["build_id"]
         if launch.get("inputs_checked"):
             result["inputs_checked"] = launch["inputs_checked"]
@@ -4853,8 +4841,7 @@ def run_probe(
             result["inputs_sha256"] = launch["inputs_sha256"]
         if isinstance(manifest := launch.get("source_manifest"), dict) and manifest:
             # Every source and header the build read, as they were on disk (a candidate's
-            # before its edit): which runs read the same program (seventh evaluation,
-            # review of finding 12).
+            # before its edit): which runs read the same program.
             result["inputs_sha256"] = hashlib.sha256(
                 json.dumps(sorted(manifest.items())).encode()
             ).hexdigest()
@@ -4888,8 +4875,7 @@ def run_probe(
         verified = point.get("verified") is True
         say(
             "started; "
-            # Which line of the candidate `--at` names, before the breakpoint's line in it
-            # (eleventh evaluation: `breakpoint tides.c:37 in the candidate` for `--at 40`).
+            # Which line of the candidate `--at` names, before the breakpoint's line in it.
             + (
                 f"line {probe.line} is line {line} of the candidate; "
                 if probe.edit and line != probe.line
@@ -4947,7 +4933,7 @@ def run_probe(
                         "The captured hits stand: nothing to do."
                     )
                 # A thread was seen paused at the breakpoint, but the debugger never
-                # reported that stop (#27): the line did run.
+                # reported that stop: the line did run.
                 unreported = state.get("unreported_stop")
                 status = "completed" if hits else "failed" if unreported else "no-stop"
                 finished = "exit"
@@ -4958,7 +4944,7 @@ def run_probe(
             stop = {**session, "stop_id": state["stop_id"]}
             body = state.get("event", {}).get("body", {})
             # The worker's reason: a step out that ended where its caller went on without
-            # the call's return is a step's end, though a breakpoint stopped it (#155).
+            # the call's return is a step's end, though a breakpoint stopped it.
             reason = state.get("reason") or body.get("reason")
             if (
                 wants_return
@@ -4981,9 +4967,9 @@ def run_probe(
                 worker.dispatch("continue", stop)
                 continue
             if returning and reason == "step":
-                # The innermost pending call's step out ended: what it returned (#155).
-                # No later stop is proven in a pending call from here (#174): the step
-                # out that follows may leave another frame.
+                # The innermost pending call's step out ended: what it returned.
+                # No later stop is proven in a pending call from here: the step out that
+                # follows may leave another frame.
                 for call in returning:
                     call["live"] = None
                 row = _returned_by(worker, stop, returning[-1])
@@ -5010,7 +4996,7 @@ def run_probe(
                     break
                 continue
             if reason in CRASH_STOPS and not isinstance(state.get("crash"), dict):
-                # Not a proven crash (review of #342): a signal the program may handle
+                # Not a proven crash: a signal the program may handle
                 # (SIGINT, SIGPIPE), a C++ throw or catch filter's stop, or a fatal one
                 # whose handlers can't be read. Nothing is read; the program goes on.
                 seen = state.get("signal_stop")
@@ -5047,7 +5033,7 @@ def run_probe(
                 continue
             again = (None, 0)
             if reason in CRASH_STOPS:
-                # The program crashed (#342): a fatal signal it neither handles nor
+                # The program crashed: a fatal signal it neither handles nor
                 # ignores, from a fault or `abort` (after an uncaught C++ exception).
                 # Nothing more is read or changed: the worker's summary says where, and
                 # the probe ends with the program stopped there.
@@ -5068,7 +5054,7 @@ def run_probe(
             # was just removed may still be served (LLDB stops all threads together).
             expected = {number: _expected_line(placed[number], state, number) for number in lines}
             roots = _roots([*selectors, *(p["name"] for p in points if _waiting(p))])
-            # Previews (#136) of the captured roots only: each costs debugger requests. A
+            # Previews of the captured roots only: each costs debugger requests. A
             # stop the wait places at another line (a --set-at's) reads none.
             where = str(state.get("location") or "").rpartition(":")[2]
             capturing = hits < probe.limit and (not where.isdigit() or int(where) == expected[line])
@@ -5085,7 +5071,7 @@ def run_probe(
                     },
                 )
             except UnplacedStop as exc:
-                # The debugger shows the stop inside a macro's definition (#326): its frame
+                # The debugger shows the stop inside a macro's definition: its frame
                 # is validated, but nothing in it is read. Its place alone tells whether it
                 # is a stop of the probe's breakpoint.
                 unplaced, snapshot = str(exc), {"frames": [exc.frame] if exc.frame else []}
@@ -5109,7 +5095,7 @@ def run_probe(
                 if any(p["build_line"] == number for p in points):
                     named = set_functions.setdefault(number, {})
                     named.setdefault(frame.get("name"), []).append(seen[number])
-            # Where this stop is, which a `@before` restore is judged by (#305).
+            # Where this stop is, which a `@before` restore is judged by.
             here = {
                 "thread": body.get("threadId"),
                 "function": frame.get("name"),
@@ -5139,7 +5125,7 @@ def run_probe(
                     )
                     say(f"hit {hits}{of} at {probe.program}:{expected[line]}; capturing")
                 # Which of the line's breakpoint locations in this function the stop is at,
-                # where it has several (#157): each pass stops at each.
+                # where it has several: each pass stops at each.
                 place = (
                     {"stop": state["place"], "stops": state["places"]}
                     if type(state.get("place")) is int and type(state.get("places")) is int
@@ -5166,7 +5152,7 @@ def run_probe(
             due = []
             if captured and hits == probe.set_hit and probe.set:
                 due += [(name, value, hits, None) for name, value in probe.set]
-            # An @all, at each stop of its line up to the cap (#265).
+            # An @all, at each stop of its line up to the cap.
             for point in points:
                 number = point["build_line"]
                 if number not in matched or not _waiting(point):
@@ -5249,7 +5235,7 @@ def run_probe(
                     # Which function's variable: the line's stops may be in several.
                     "function": frame.get("name"),
                     **({"instance": snapshot["instance"]} if snapshot.get("instance") else {}),
-                    # Which of the line's breakpoint locations there (#157): @HIT and
+                    # Which of the line's breakpoint locations there: @HIT and
                     # --set-hit count each.
                     **(
                         {"stop": state["place"], "stops": state["places"]}
@@ -5258,7 +5244,7 @@ def run_probe(
                     ),
                 }
                 if undone is not None:
-                    # Which change's value from before it was written back (#305), and
+                    # Which change's value from before it was written back, and
                     # the value it wrote over, where that is not the one the change
                     # wrote (the program, or another of the probe's changes through
                     # another name, wrote it since).
@@ -5301,7 +5287,7 @@ def run_probe(
             if captured and snapshot.get("instance"):
                 # The function as the build names it (`tf<rc::A>`, `main::{closure#1}`),
                 # for the table: the frame's own name keeps the symbol hash. A caller
-                # frame's rows (#382) have their own frame's.
+                # frame's rows have their own frame's.
                 for row in rows:
                     if (
                         row["hit"] == hits
@@ -5314,10 +5300,10 @@ def run_probe(
             # Keep only the breakpoints a later stop still needs.
             needed = [line] if hits < probe.limit else []
             # What the probe still owes: an @all keeps its line's breakpoint, but never
-            # keeps an --until hits probe running (#265), unless it is a restore that the
+            # keeps an --until hits probe running, unless it is a restore that the
             # latest change to its name awaits.
             owed = [*needed, *(p["build_line"] for p in points if p["hit"] != ALL and _waiting(p))]
-            # A restore awaited by the latest change to its name is owed too (#305).
+            # A restore awaited by the latest change to its name is owed too.
             owed += restores.owed(seen)
             needed += [p["build_line"] for p in points if _waiting(p)]
             needed += restores.needed()
@@ -5339,7 +5325,7 @@ def run_probe(
             thread = body.get("threadId")
             # This stop is in the innermost pending call where the step out of it that
             # began at its last stop was interrupted here, in its own frame, with the
-            # step's watch on its caller kept whole (#174): no other call could have
+            # step's watch on its caller kept whole: no other call could have
             # returned to that caller frame unseen. Nothing else is taken for it.
             top = returning[-1] if returning else None
             same = (
@@ -5381,7 +5367,7 @@ def run_probe(
                 top["live"] = stop["stop_id"]
             if wants_return and captured:
                 call = {
-                    # Its earlier hits in the same call first (#174), each with its stop.
+                    # Its earlier hits in the same call first, each with its stop.
                     "hits": [*(followed["hits"] if followed else ()), {"hit": hits, **place}],
                     "depth": depth,
                     "thread": thread,
@@ -5426,7 +5412,7 @@ def run_probe(
             elif captured and hits >= probe.limit:
                 say("all requested hits captured; waiting for the --set-at stops")
         if status == "timeout":
-            # Still being stepped out of when time ran out: no return came (#162).
+            # Still being stepped out of when time ran out: no return came.
             for call in reversed(returning):
                 rows.extend(_never_returned(call, "the probe timed out before it returned"))
             returning.clear()
@@ -5456,7 +5442,7 @@ def run_probe(
         if at_hits:
             # Resumed after its last hit, the program ran on (until Peeky ends it, or for
             # good once detached) while its output was collected: it can include text
-            # written after that hit (#203).
+            # written after that hit.
             result["output_after_last_hit"] = True
         if type(report.get("exit_code")) is int:
             result["exit_code"] = report["exit_code"]
@@ -5517,15 +5503,14 @@ def run_probe(
                 TimeoutError(f"Probe exceeded its {probe.timeout} s timeout"), session_closed=True
             )
             if events := report.get("debugger_events"):
-                # What the debugger last said: a stop it never reported shows here (#27).
+                # What the debugger last said: a stop it never reported shows here.
                 result["debugger_events"] = events
         if status == "no-stop":
             code = result.get("exit_code")
             where = f"{probe.program}:{line}" + (
                 f" of the candidate (line {probe.line} before the edit)" if probe.edit else ""
             )
-            # The run's writes (eleventh evaluation: six --set-at changes kept line 33
-            # from running, and NO_STOP said to pick a line the program executes): each a
+            # The run's writes, which may have kept the line from running: each a
             # change its text shows, one proven to change nothing (``unchanged``), or one
             # whose text stayed but which may still be a change (a new String, a Python
             # `1000`). Nothing proves that one came before the line's chance to run: the
@@ -5635,8 +5620,8 @@ def run_probe(
         # Values and output from sources that changed during the run are not evidence.
         discard = result["error"].get("code") == "PROVENANCE_CHANGED"
         if getattr(exc, "before_launch", False) or not launching:
-            # The debugger's launch or attach request was not sent (#138, #190): no
-            # run to keep as evidence, and no table.
+            # The debugger's launch or attach request was not sent: no run to keep as
+            # evidence, and no table.
             result["refused_before_launch"] = True
         if session is not None:
             # What the program printed before the failure says how far it got.
@@ -5653,7 +5638,7 @@ def run_probe(
             known_end = report.get("state") == "terminated"
             failed_for_good = report.get("lost_stop") or report.get("adapter_failure")
             if failed_for_good and (events := report.get("debugger_events")):
-                # The evidence for #27: the last DAP messages, the polls, the adapter's log.
+                # The evidence for it: the last DAP messages, the polls, the adapter's log.
                 result["debugger_events"] = events
     finally:
         cleanup = worker.close()
@@ -5662,7 +5647,7 @@ def run_probe(
     if diagnosed := debugger_diagnostics(result, getattr(worker, "last_final", None), reported):
         warnings.append(diagnosed)
     if cleanup and isinstance(result.get("error"), dict) and "cleanup" not in result["error"]:
-        # What became of the program once the probe failed or timed out (#143).
+        # What became of the program once the probe failed or timed out.
         result["error"] = {**result["error"], "cleanup": cleanup}
     if level := optimization_level(result.get("target_identity")):
         result["optimized"] = level
@@ -5721,7 +5706,7 @@ def run_probe(
             + ". --hits, --set-hit and --set-at's @HIT count every stop; the function column "
             "says which is which."
         )
-    # A change's own caveat (a std::string's text, #164), once for the names it covers.
+    # A change's own caveat (a std::string's text), once for the names it covers.
     caveats = {}
     for change in changes:
         if change.get("note"):
@@ -5729,9 +5714,9 @@ def run_probe(
     for note, names in caveats.items():
         named = ", ".join(f"`{name}`" for name in dict.fromkeys(names))
         warnings.append(f"Changed {named}: {note}")
-    # Each row's note, once, with the selectors it is about (#205): rows marked `[note]`
-    # in the table, unless it is one of Peeky's Rust limits. What is read through a
-    # local shares that local's (#148).
+    # Each row's note, once, with the selectors it is about: rows marked `[note]` in
+    # the table, unless it is one of Peeky's Rust limits. What is read through a local
+    # shares that local's.
     noted = {}
     for row in rows:
         if row.get("note"):
@@ -5752,7 +5737,7 @@ def run_probe(
         and hits < probe.set_hit
         and result.get("status") != "failed"
     ):
-        # Only the --set: a --set-at may have been applied (#151 review).
+        # Only the --set: a --set-at may have been applied.
         named = ", ".join(f"--set {name}={value}" for name, value in probe.set)
         warnings.append(
             f"{named} {'was' if len(probe.set) == 1 else 'were'} not applied: the program "
@@ -5774,7 +5759,7 @@ def run_probe(
                     "change says which function's variable it changed."
                 )
             )
-    # An @all (#265) is not made where its line never stopped, and is cut short where the
+    # An @all is not made where its line never stopped, and is cut short where the
     # line stopped past its cap: either way, the run is not the experiment asked for.
     unapplied = [
         point
@@ -5798,7 +5783,7 @@ def run_probe(
             for name, value in probe.set
         ]
     if unapplied:
-        # Never silently: a --set-at whose stop never came (#137).
+        # Never silently: a --set-at whose stop never came.
         result.setdefault("unapplied", []).extend(
             {
                 "option": "--set-at",
@@ -5843,9 +5828,9 @@ def run_probe(
                     f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
                     f"{point['hit']} never came."
                 )
-    # The writes a restore owed and never made (#305): the run ended before the restore
-    # line's hits that pair with them. Each is named, with its kind, not only the latest
-    # (#331). That says no restore was made, not that the value stayed: the program may
+    # The writes a restore owed and never made: the run ended before the restore line's
+    # hits that pair with them. Each is named, with its kind, not only the latest. That
+    # says no restore was made, not that the value stayed: the program may
     # have written it since.
     unrestored = {}
     if result.get("status") != "failed":
@@ -5901,7 +5886,7 @@ def run_probe(
     if result.get("ended") == "hits":
         for point in points:
             if point["hit"] == ALL and point["changes"] and point["capped"] is None:
-                # It applies while the probe runs; the program may run on after (#203).
+                # It applies while the probe runs; the program may run on after.
                 warnings.append(
                     f"--set-at {probe.program}:{point['line']}@{ALL} {point['name']}="
                     f"{point['value']} was made at each of the {len(point['changes'])} stops "
@@ -5929,9 +5914,9 @@ def run_probe(
 def _by_hit(rows, functions=None):
     """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...},
     returned: {"(return)": ...}}; line and function are the stop's, not where the call
-    returned to (a `(return)` row's own line), nor a caller frame's (#382: its row's
+    returned to (a `(return)` row's own line), nor a caller frame's (its row's
     `stop_line` is the stop's, and ``functions``, {function: [hits]}, the stop's
-    function). A `(return)` row has its hit's stop too (#174); the hit's stop is given
+    function). A `(return)` row has its hit's stop too; the hit's stop is given
     only where every row of it has one and all agree."""
     grouped, places = {}, {}
     stopped_in = {hit: name for name, hits in (functions or {}).items() for hit in hits}
@@ -5949,7 +5934,7 @@ def _by_hit(rows, functions=None):
         elif entry["function"] is None:
             entry["function"] = row.get("function")
         if "stops" in row and "stops" not in entry:
-            # Which of the line's stops per pass (#157).
+            # Which of the line's stops per pass.
             entry.update(stop=row["stop"], stops=row["stops"])
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
@@ -6065,8 +6050,7 @@ def repeated_visible(rows, where):
     """{index: error} for the rows of ``rows`` whose error ends with a `visible:` list
     (and what follows it) that an earlier row's ended with already: that part is
     `visible: as listed <where(earlier row)>`. Text only; JSON and the store keep every
-    error whole (tenth evaluation: a probe's stops in `settle` restated its ten names
-    twice per hit)."""
+    error whole."""
     seen, shortened = {}, {}
     for index, row in enumerate(rows):
         error = row.get("error")
@@ -6089,8 +6073,8 @@ _REPEAT_SHOWN = 60
 def repeated_errors(rows, shortened=()):
     """{index: error} for the rows of ``rows`` whose whole error an earlier row of the same
     selector gave already (none in ``shortened``): its label, then `same as at hit N`
-    (`not shown: same as at hit 1`). Text only; JSON and the store keep every error whole
-    (thirteenth evaluation: a probe's table repeated a 300-character reason on 18 rows)."""
+    (`not shown: same as at hit 1`). Text only; JSON and the store keep every error
+    whole."""
     seen, repeated = {}, {}
     for index, row in enumerate(rows):
         error = row.get("error")
@@ -6109,7 +6093,7 @@ def repeated_errors(rows, shortened=()):
 
 
 def _restored(change):
-    """How a probe's text marks a restore (#305): `restored, `, or `restored over the
+    """How a probe's text marks a restore: `restored, `, or `restored over the
     current 2, ` where the value it wrote over was not the one the change undone wrote:
     the program, or another change of the probe's through another name for it, wrote it
     since. Peeky does not tell which."""
@@ -6125,11 +6109,10 @@ _CRATE_REFERENCE = re.compile(r"&(?:mut )?(?!(?:std|core|alloc)::)[A-Za-z_]\w*(?
 
 
 def _address_only_note(result):
-    """Why a Rust row of a reference to a crate's type shows only its address, or None
-    (twelfth evaluation, laps 2: `read &laps::Read 0x…` beside a `read.car` that read). A
-    reference parameter's struct of plain scalar fields is the only one previewed through a
-    reference (`rust_symbols.struct_view`); a field to read instead is named only where
-    the probe read one (review of PR #350: `&app::State` may be an enum, with no field)."""
+    """Why a Rust row of a reference to a crate's type shows only its address, or None.
+    A reference parameter's struct of plain scalar fields is the only one previewed
+    through a reference (`rust_symbols.struct_view`); a field to read instead is named
+    only where the probe read one (`&app::State` may be an enum, with no field)."""
     if (result.get("target_identity") or {}).get("language") != "rust":
         return None
     rows = result.get("rows", ())
@@ -6173,9 +6156,8 @@ _CUT_PREVIEW = re.compile(r"size=([0-9]+) (?:\{.*…\}|\[.*…\])", re.S)
 
 
 def _more_entries(result):
-    """A line for each C or C++ container whose preview shows fewer entries than it holds
-    (thirteenth evaluation: `by_hour`'s preview stopped at 8 of 9, and nothing said how to
-    read the rest), once per selector: how to read one, and how to list them."""
+    """A line for each C or C++ container whose preview shows fewer entries than it
+    holds, once per selector: how to read one, and how to list them."""
     if (result.get("target_identity") or {}).get("language") not in ("c", "cpp"):
         return []
     lines, said = [], set()
@@ -6210,11 +6192,10 @@ def _table(result, short_names=True, sent_before=False):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory; ``sent_before``:
     the line on text the debugger sent once Peeky began closing the session in short, as
-    `peeky probe` gives it after its first time for a build (thirteenth evaluation)."""
+    `peeky probe` gives it after its first time for a build."""
     lines = []
     if result.get("refused_before_launch"):
-        # Refused before launch (#138): no rows, hits or timing to show, only why (seventh
-        # evaluation, finding 14).
+        # Refused before launch: no rows, hits or timing to show, only why.
         lines.extend(f"warning: {warning}" for warning in result.get("warnings", ()))
         error = result.get("error") or {}
         lines.append(f"error [{error.get('code')}]: {error.get('message')}")
@@ -6222,7 +6203,7 @@ def _table(result, short_names=True, sent_before=False):
         if error.get("cleanup"):
             lines.append(f"cleanup: {error['cleanup']}")
         return "\n".join(lines)
-    # Which of a line's breakpoint locations each stop is at, where it has several (#157).
+    # Which of a line's breakpoint locations each stop is at, where it has several.
     stops = any("stops" in row for row in result["rows"])
     header = ("hit", *(("stop",) if stops else ()), "phase", "line", "function", "selector")
     header += ("type", "value")
@@ -6232,7 +6213,7 @@ def _table(result, short_names=True, sent_before=False):
     short_instance = _short_instance
     # An after-set value equal to its hit's observed one, shown whole, of a selector that
     # neither a change named nor holds what one changed: the intervention left it as it
-    # was (eighth evaluation, L16). JSON keeps every row.
+    # was. JSON keeps every row.
     # A Java value other than a primitive is an object: a String set through an alias
     # (`b = a`, then `a[0]="x"`) is a new object with the same text, so its text alone
     # never shows it unchanged. A Python value's identity must match too.
@@ -6261,8 +6242,7 @@ def _table(result, short_names=True, sent_before=False):
     errors = repeated_visible(kept, lambda row: f"at hit {row['hit']}")
     errors.update(repeated_errors(kept, errors))
     # A Java field's `final` or `static`, true of every row of its selector, shows on its
-    # first row only (twelfth evaluation, desks 5: on every row, after-set too). JSON keeps
-    # it on each.
+    # first row only. JSON keeps it on each.
     declared, said = set(_MEMBER_REASONS), set()
 
     def unsettable(row):
@@ -6280,8 +6260,7 @@ def _table(result, short_names=True, sent_before=False):
             str(row["hit"]),
             *((f"{row['stop']}/{row['stops']}" if "stops" in row else "",) if stops else ()),
             row["phase"],
-            # A return's line is where it returned to, in the caller, not in its function
-            # (eleventh evaluation: `returned 49 Seats.block(...)`, line 49 in `book`).
+            # A return's line is where it returned to, in the caller, not in its function.
             f"to {row['line']}"
             if row["phase"] == "returned" and row.get("line") is not None
             else str(row.get("line", "")),
@@ -6298,7 +6277,7 @@ def _table(result, short_names=True, sent_before=False):
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
             # A value read through a pointer Peeky can't show points at a live object
-            # says why among the notes below its `[unproven]` (#339).
+            # says why among the notes below its `[unproven]`.
             + (
                 "  [note]"
                 if row.get("note")
@@ -6315,12 +6294,10 @@ def _table(result, short_names=True, sent_before=False):
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
     if left_out:
-        # Only whole scalars are left out (eleventh evaluation: an aggregate's equal row
-        # stayed under a line that said every equal row was left out). A Java String is an
-        # object, whose equal row stays too (twelfth evaluation's preparation). Short: it
-        # came under every probe with a change (twelfth evaluation, laps 6).
-        # A Java row left out is a primitive's, never null (review of PR #350: `None`,
-        # `null` and `nullptr` rows are left out too).
+        # Only whole scalars are left out, so the line names their kinds. A Java String is
+        # an object, whose equal row stays too. Short: it comes under every probe with a
+        # change. A Java row left out is a primitive's, never null; in other languages
+        # `None`, `null` and `nullptr` rows are left out too.
         kinds = "number, flag or char" if java else "number, flag, null or text"
         lines.append(
             f"after-set: {left_out} {kinds} row{'s' if left_out > 1 else ''} equal to the "
@@ -6338,7 +6315,7 @@ def _table(result, short_names=True, sent_before=False):
     def key_of(change):
         return (f"{str(change.get('at')).partition('@')[0]}@{ALL}", change.get("name"))
 
-    # An @all's changes (#265): the first few, then how many more at which hits. One more
+    # An @all's changes: the first few, then how many more at which hits. One more
     # than the few is shown too: a line counting one change says no less.
     totals = Counter(key_of(change) for change in result["interventions"] if change.get("all"))
     every, more = {}, {}
@@ -6358,7 +6335,7 @@ def _table(result, short_names=True, sent_before=False):
         stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
         hit = ""
         if change.get("all"):
-            # Its own line's count, not the probe's hits (twelfth evaluation, rainfall 3).
+            # Its own line's count, not the probe's hits.
             hit = f", stop {change.get('hit')} of line {at.partition('@')[0]}"
             stop = f" at location {change['stop']} of {change['stops']}" if stop else ""
         lines.append(
@@ -6378,7 +6355,7 @@ def _table(result, short_names=True, sent_before=False):
     for (at, name), changes in more.items():
         numbers = [change.get("hit") for change in changes]
         known = [number for number in numbers if type(number) is int]
-        # Its own line's stops, as each change's line says (twelfth evaluation, rainfall 3).
+        # Its own line's stops, as each change's line says.
         own = at.partition("@")[0]
         span = (
             ""
@@ -6388,11 +6365,10 @@ def _table(result, short_names=True, sent_before=False):
             else f", at stops {min(known)} to {max(known)} of line {own}"
         )
         # Changes, writes proven to change nothing, and writes of the same text not proven
-        # unchanged, counted apart, as NO_STOP counts them (eleventh evaluation: 35 of 42
-        # `set free: 0 -> 0` writes were counted as changes).
+        # unchanged, counted apart, as NO_STOP counts them.
         kinds = [_write_kind(change) for change in changes]
         parts = [(kinds.count(kind), word) for kind, word in _KIND_WORDS if kind in kinds]
-        # A `@before` request's writes are restores (#305).
+        # A `@before` request's writes are restores.
         writes = "restore" if all(change.get("restores") for change in changes) else "write"
         if parts == [(len(changes), "change")]:
             noun = "restore" if writes == "restore" else "change"
@@ -6416,7 +6392,7 @@ def _table(result, short_names=True, sent_before=False):
             )
         lines.append(f"set {name}: {counted} (`--json` lists each)")
     entries = result.get("unapplied") or ()
-    # Not made at all; an `@all` restore (#305) that left changes in place is one where
+    # Not made at all; an `@all` restore that left changes in place is one where
     # its line never stopped.
     unmade = [
         entry
@@ -6429,8 +6405,8 @@ def _table(result, short_names=True, sent_before=False):
         )
     ]
     capped = len([entry for entry in entries if "made" in entry])
-    # The writes `@before` restores owed and never made (#305), every one, not only the
-    # latest (#331); each once, by its selector and LINE@HIT, with its kind.
+    # The writes `@before` restores owed and never made, every one, not only the latest;
+    # each once, by its selector and LINE@HIT, with its kind.
     left = {}
     for entry in entries:
         if "unrestored" not in entry:
@@ -6519,7 +6495,7 @@ def _table(result, short_names=True, sent_before=False):
 
 
 def crash_text(crash, crashed=True):
-    """A crash's summary (#342), as the worker gave it: "signal SIGABRT, outside the
+    """A crash's summary, as the worker gave it: "signal SIGABRT, outside the
     program's sources, in a call from main at abort.cpp:12, after a C++ exception that
     nothing caught"."""
     text = str(crash.get("description") or "the debugger did not say what")
@@ -6542,7 +6518,7 @@ def crash_text(crash, crashed=True):
 
 
 def crash_message(crash, hits, where):
-    """A probe's error for a crash (#342): when it came, what it was, and that the program
+    """A probe's error for a crash: when it came, what it was, and that the program
     was ended there, so it has no exit status."""
     when = f"after hit {hits}" if hits else f"before it stopped at {where}"
     return (
@@ -6552,7 +6528,7 @@ def crash_message(crash, hits, where):
 
 
 def _output_label(result):
-    """What the output shown is (#203): whole, cut, or read before its end was proven."""
+    """What the output shown is: whole, cut, or read before its end was proven."""
     complete = result.get("output_complete", True)
     cut = result.get("output_truncated") is True
     if result.get("output_after_last_hit"):
@@ -6593,7 +6569,7 @@ def _own_set_at(program, where, assignment):
 def main(argv=None):
     from peeky.processes import keep_children_waitable
 
-    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
+    keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(
         prog="peeky-probe",
         description="One-shot stateless probe: stop at a line, capture values, optionally "
