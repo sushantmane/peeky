@@ -44,7 +44,14 @@ from peeky.build import (
     private_base,
     real_tool,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
+from peeky.c_source import (
+    RETURNS_TWICE_NAMES,
+    Preprocessed,
+    Statements,
+    macro_hazards,
+    optimizes,
+    returning_twice,
+)
 from peeky.char_arrays import array_size, proven_rest
 from peeky.char_arrays import shown as char_array
 from peeky.cxx_strings import (
@@ -3320,7 +3327,7 @@ def _class_role(dies, chain):
 # Non-local jumps: after one returns, code above a declaration can run again with the
 # local live (C11 7.13.2.1). Searched in the executable (imports, wherever the call is
 # hidden) and in the sources (`__builtin_setjmp` leaves no symbol).
-_NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
+_NONLOCAL_JUMPS = tuple(name.encode() for name in RETURNS_TWICE_NAMES)
 
 
 def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
@@ -3347,8 +3354,9 @@ def has_tail_calls(info):
 
 
 def has_nonlocal_jumps(binary):
-    """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
-    (its imports), wherever the call is hidden (a TRY macro in a library header)."""
+    """Whether the executable names a function that may return twice
+    (RETURNS_TWICE_NAMES) anywhere (its imports), wherever the call is hidden (a TRY
+    macro in a library header)."""
     tail = b""
     with Path(binary).open("rb") as stream:
         while chunk := stream.read(1 << 20):
@@ -11006,11 +11014,13 @@ class NativeSession:
         where = f"line {jump}" if jump else "a line Peeky cannot tell"
         reason = declared.format(at)
         return ValueNote(
-            f"{reason}, and this function calls setjmp ({where}) above the stop, so a "
-            "`longjmp` can bring control here past its declaration",
+            f"{reason}, and this function calls setjmp, or another function that returns "
+            f"twice ({where}), above the stop, so a `longjmp` can bring control here past "
+            "its declaration",
             f"may be leftovers, or its value from before a `longjmp`: {reason}, and this "
-            f"function calls setjmp ({where}) above the stop, so Peeky cannot tell whether "
-            "its declaration has run on this pass; read it after its declaration",
+            "function calls setjmp, or another function that returns twice "
+            f"({where}), above the stop, so Peeky cannot tell whether its declaration has "
+            "run on this pass; read it after its declaration",
             refuses=True,
         )
 

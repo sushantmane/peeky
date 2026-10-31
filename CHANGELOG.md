@@ -56,7 +56,14 @@
   --at src/execute.c:120` and `describe` read a binary clang built at `-O0` with `-g -gdwarf-5
   -grecord-command-line`. Each unit is judged from its own debug information. A file changed
   since the build refuses the binary by name, and frames in units Peeky doesn't judge show
-  nothing, with why. A unit's text isn't read yet, so the rules that need it withhold.
+  nothing, with why. A unit's text is its preprocessing, replayed with its recorded `-I`, `-D`
+  and the like, where every header it reads has an MD5 in its line table (`-fdebug-macro` on
+  Linux). Where a unit isn't read, holds `asm`, or the binary has code no unit covers (assembly
+  built without `-g`), any call may return twice; a config's `returns_twice` names those that do.
+  A unit's text is withheld where a `__has_include` finds no file (the build may have), for
+  `-march=native`, for a `-D` that names a probe or may paste one, and where one file is built
+  twice with different commands. `vfork` returns twice, as setjmp does. Startup code whose name
+  a program may use counts as the program's unless its bytes are the toolchain's.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and

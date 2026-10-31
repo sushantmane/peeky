@@ -2489,3 +2489,17 @@ def test_blanking_is_unchanged_by_its_faster_regexes():
         text = "".join(pick.choice(pieces) for _ in range(pick.randint(0, 24)))
         for raw_strings in (True, False):
             assert blank(text, raw_strings) == reference_blank(text, raw_strings), repr(text)
+
+
+def test_one_family_of_names_returns_twice_everywhere():
+    # vfork was in neither set and savectx only in the source's: a program calling only
+    # those had no note.
+    from peeky.c_source import _RETURNS_TWICE
+    from peeky.native import _NONLOCAL_JUMPS
+
+    for name in ("setjmp", "_setjmp", "sigsetjmp", "__sigsetjmp", "__builtin_setjmp", "savectx"):
+        assert _RETURNS_TWICE.fullmatch(name), name
+    for name in ("vfork", "__vfork", "getcontext", "__getcontext", "swapcontext"):
+        assert _RETURNS_TWICE.fullmatch(name), name
+    assert not _RETURNS_TWICE.fullmatch("fork") and not _RETURNS_TWICE.fullmatch("longjmp")
+    assert {b"setjmp", b"savectx", b"vfork", b"getcontext", b"swapcontext"} <= set(_NONLOCAL_JUMPS)

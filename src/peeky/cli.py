@@ -376,7 +376,17 @@ def _stored_name(root, program):
 
 # The keys a binary target's config may hold (native_binary.BinaryTarget).
 _BINARY_KEYS = frozenset(
-    {"binary", "language", "compiler", "adapter", "dwarfdump", "dsymutil", "arguments", "optimized"}
+    {
+        "binary",
+        "language",
+        "compiler",
+        "adapter",
+        "dwarfdump",
+        "dsymutil",
+        "arguments",
+        "optimized",
+        "returns_twice",
+    }
 )
 _CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx")
 
@@ -886,6 +896,7 @@ def describe(args):
             if (units := getattr(runtime, "described_units", None)) is not None:
                 language = manifest["language"] = runtime.target.language
                 manifest["units"] = units
+                manifest["returns_twice"] = runtime.returning_twice
             manifest["breakpoint_lines"] = runtime.lines
             manifest["artifact_manifest_id"] = runtime.manifest_id
             if scopes := getattr(runtime, "function_scopes", None):
@@ -965,6 +976,15 @@ def _describe_text(manifest):
             if not unit["judged"]:
                 read = " (read as an optimized build)" if unit.get("read") else ""
                 lines.append(f"not judged{read}: {unit['unit']}: {unit['why']}")
+            if unit.get("text"):
+                lines.append(f"text not read: {unit['text']}")
+        if (twice := manifest.get("returns_twice")) and twice.get("any"):
+            lines.append(f"calls that may return twice: any ({twice['why']})")
+        elif twice:
+            from peeky.c_source import RETURNS_TWICE_FAMILY
+
+            named = f"; and {', '.join(twice['named'])}" if twice["named"] else ""
+            lines.append(f"calls that may return twice: {RETURNS_TWICE_FAMILY}{named}")
     for source, numbers in manifest["breakpoint_lines"].items():
         lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):

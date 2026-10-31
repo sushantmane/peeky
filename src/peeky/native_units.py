@@ -44,6 +44,8 @@ class Unit:
     stmt_list: int | None
     dwo_name: str | None
     ranges: tuple = ()
+    # `DW_AT_LLVM_sysroot`: the SDK Apple's clang compiled against, where it says.
+    sysroot: str | None = None
 
 
 def _string(raw):
@@ -93,6 +95,7 @@ def read_units(text):
                 stmt_list=None if stmt_list is None else _hex(stmt_list),
                 dwo_name=string("DW_AT_dwo_name") or string("DW_AT_GNU_dwo_name"),
                 ranges=code_ranges(attributes, die.continued),
+                sysroot=string("DW_AT_LLVM_sysroot"),
             )
         )
     return found
@@ -319,6 +322,139 @@ def optimization(words):
         ):
             unknown = unknown or word
     return level, lto
+
+
+# What Peeky's compiler is given of a unit's recorded words when it replays the unit's
+# preprocessing (`-E`, with its dependencies), never the words as they are: the options
+# that choose what the preprocessor reads or defines, each safe to pass (``_REPLAY_*``);
+# never one that loads code, or reads a file but a header. Options that change no
+# predefined macro are left out (``_INERT_*``): each is checked against clang's own
+# `-dM -E` (tests/native/test_native_units.py). Any other option leaves the unit's text
+# unread, naming it.
+_REPLAY_SEPARATE = frozenset(
+    """-I -D -U -include -imacros -isystem -iquote -idirafter -iprefix -iwithprefix
+    -iwithprefixbefore -isystem-after -cxx-isystem -isysroot --sysroot -F -iframework
+    -iframeworkwithsysroot -resource-dir -x -target -arch""".split()
+)
+_REPLAY_WORDS = frozenset(
+    """-ansi -pthread -nostdinc -nostdinc++ -nostdlibinc -nobuiltininc -undef -trigraphs
+    -fPIC -fpic -fPIE -fpie -fno-PIC -fno-pic -fno-PIE -fno-pie -fexceptions
+    -fno-exceptions -fcxx-exceptions -fno-cxx-exceptions -frtti -fno-rtti -fsigned-char
+    -funsigned-char -fno-signed-char -fno-unsigned-char -fshort-wchar -fno-short-wchar
+    -fshort-enums -fno-short-enums -fstack-protector -fstack-protector-strong
+    -fstack-protector-all -fno-stack-protector -ffreestanding -fhosted -fbuiltin
+    -fno-builtin -fms-extensions -fno-ms-extensions -fms-compatibility
+    -fno-ms-compatibility -fgnu-keywords -fno-gnu-keywords -fgnu89-inline
+    -fno-gnu89-inline -fblocks -fno-blocks -fchar8_t -fno-char8_t
+    -fdollars-in-identifiers -fno-dollars-in-identifiers -ftrigraphs -fno-trigraphs
+    -fdeclspec -fno-declspec -fcoroutines -fno-coroutines -fsized-deallocation
+    -fno-sized-deallocation -faligned-allocation -fno-aligned-allocation -fmath-errno
+    -fno-math-errno -fno-fast-math -fhonor-nans -fhonor-infinities -fcf-protection
+    -fopenmp -fno-openmp -fno-inline -finline-functions -fno-inline-functions
+    -finline-hint-functions -fno-operator-names -fdelayed-template-parsing
+    -fno-delayed-template-parsing -fthreadsafe-statics -fno-threadsafe-statics
+    -fno-elide-constructors -fsigned-wchar -fno-signed-wchar -fasynchronous-unwind-tables
+    -fno-asynchronous-unwind-tables -funwind-tables -fno-unwind-tables -fgnu-inline-asm
+    -fno-gnu-inline-asm -fasm-blocks -fno-asm-blocks -fasm -fno-asm -fpascal-strings
+    -fno-access-control""".split()
+)
+_REPLAY_FORMS = re.compile(
+    r"-[DUI].+|-std=\S+|-O\w*|--target=\S+|--sysroot=\S+|-resource-dir=\S+|-stdlib=\S+"
+    r"|-F.+|-m(?!llvm)[A-Za-z0-9][\w.=,+-]*|-fno-builtin-\w+"
+    r"|-f(?:gnuc-version|macro-prefix-map|file-prefix-map|ms-compatibility-version"
+    r"|cf-protection|openmp|wchar-type|constexpr-steps|constexpr-depth|template-depth"
+    r"|bracket-depth)=\S+"
+)
+# A CPU the compiler detects on the host it runs on: the replay's host may differ.
+_HOST_CPU = re.compile(r"-m(?:arch|cpu|tune)=native(?:\W.*)?")
+_INERT_SEPARATE = frozenset(
+    """-o -MF -MT -MQ -MJ -Xlinker -Xassembler -L -l -u -z -T -filelist -install_name
+    -framework -weak_framework -serialize-diagnostics -dependency-file -dependency-dot
+    -index-store-path""".split()
+)
+_INERT_WORDS = frozenset(
+    """-c -S -w -v -pipe -pedantic -pedantic-errors -Qunused-arguments -MD -MMD -MP -MG
+    -g -g0 -g1 -g2 -g3 -ggdb -ggdb0 -ggdb1 -ggdb2 -ggdb3 -gdwarf -gdwarf-4 -gdwarf-5
+    -grecord-command-line -gno-record-gcc-switches -grecord-gcc-switches
+    -gline-tables-only -gline-directives-only -gcolumn-info -gno-column-info -gsplit-dwarf
+    -gembed-source -gstrict-dwarf -gfull -gno-inline-line-tables -fdebug-macro
+    -fno-debug-macro -fstandalone-debug -fno-standalone-debug -fno-limit-debug-info
+    -flimit-debug-info -fno-omit-frame-pointer -fomit-frame-pointer -ffunction-sections
+    -fno-function-sections -fdata-sections -fno-data-sections -fno-common -fcommon
+    -fno-strict-aliasing -fstrict-aliasing -fno-plt -fplt
+    -fno-semantic-interposition -fsemantic-interposition -fno-delete-null-pointer-checks
+    -fvisibility-inlines-hidden -fcolor-diagnostics -fno-color-diagnostics
+    -fdiagnostics-color -fno-diagnostics-color -fansi-escape-codes -fno-caret-diagnostics
+    -fno-diagnostics-fixit-info -fno-spell-checking -fno-elide-type -flto -fno-lto -fwrapv
+    -fno-wrapv -fno-strict-overflow -fstack-clash-protection -fno-stack-clash-protection
+    -fzero-initialized-in-bss -fno-zero-initialized-in-bss -fno-jump-tables -fjump-tables
+    -fno-ident -fident -fno-unique-section-names -funique-section-names -fno-addrsig
+    -faddrsig""".split()
+)
+_INERT_FORMS = re.compile(
+    r"-W(?!p,)[\w,=+.:/-]*|-L.+|-l.+|-f(?:visibility|diagnostics-color|diagnostics-format"
+    r"|message-length|error-limit|template-backtrace-limit|macro-backtrace-limit|lto"
+    r"|lto-jobs|trivial-auto-var-init|debug-prefix-map|debug-compilation-dir|fp-contract)"
+    r"=\S+"
+)
+
+
+def replay_arguments(words, comp_dir, main):
+    """The arguments Peeky's compiler replays the preprocessing of a unit with, of the
+    words ``recorded_command`` read (its driver first): the options ``_REPLAY_*`` allow,
+    in their order, and the unit's own input, the word naming ``main`` (its absolute
+    path) under ``comp_dir``, last. Raises NotRecorded naming what it can't pass: an
+    option it doesn't know, one passed on to another tool (`-Xclang` but Apple's own
+    and warnings, `-Xpreprocessor`, `-Wp,`), no input naming the unit's file, or `-x`
+    after it, which applies to later inputs only."""
+    passed, at, given, ended = [], 1, None, False
+
+    def unread(what):
+        raise NotRecorded(f"its command uses {what}, which Peeky doesn't pass to its compiler")
+
+    def own(word):
+        return posixpath.normpath(posixpath.join(comp_dir, word)) == posixpath.normpath(main)
+
+    while at < len(words):
+        word = words[at]
+        at += 1
+        if not ended and word == "--":
+            ended = True
+            continue
+        if word.startswith("@"):
+            # A response file the recorded words should hold expanded.
+            unread(word)
+        if ended or not word.startswith("-") or word == "-":
+            if word == "-":
+                unread("its standard input as a file")
+            if given is None and own(word):
+                given = word
+            continue
+        if word in _REPLAY_SEPARATE or word in _INERT_SEPARATE or word == "-Xclang":
+            if at >= len(words):
+                unread(f"{word} without its value")
+            value = words[at]
+            at += 1
+            if word == "-Xclang":
+                if not (_INERT.fullmatch(value) or value in _APPLE):
+                    unread(f"-Xclang {value}")
+            elif word in _REPLAY_SEPARATE:
+                if word == "-x" and given is not None:
+                    unread(f"-x {value} after its input, for later inputs only")
+                passed += [word, value]
+            continue
+        if _HOST_CPU.fullmatch(word):
+            raise NotRecorded(
+                f"its command uses {word}, whose macros are those of the CPU that built it, "
+                "which Peeky can't tell"
+            )
+        if word in _REPLAY_WORDS or word in _MODES or _REPLAY_FORMS.fullmatch(word):
+            passed.append(word)
+        elif not (word in _INERT_WORDS or _INERT_FORMS.fullmatch(word)):
+            unread(word)
+    if given is None:
+        raise NotRecorded("its command names no input that is its own file")
+    return [*passed, given]
 
 
 @dataclass(frozen=True)

@@ -1241,6 +1241,19 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
 - **Optimized units:** to read units built at another level, put `"optimized": true` in a
   config naming the binary. Their rows then carry the optimized warning, and nothing changes.
 
+- **What Peeky reads of each unit's text:** it replays the unit's preprocessing, with the
+  recorded `-I`, `-D` and the like, where every header read has an MD5 in the unit's line table.
+  `describe` lists each unit whose text it can't read, and why: `text not read: Peeky can't read
+  src/util.c as compiled: …`. The rules that need the text withhold there, saying so. So they do
+  where its preprocessing asks for a file it doesn't find (`__has_include`): the build may have
+  found one. Or where its command has `-march=native`, which names the build host's CPU.
+- **Calls that return twice:** setjmp's family, `vfork`, `getcontext`, `swapcontext` and
+  `savectx`, by name. Where a unit isn't read, or holds `asm` (its headers too), any call may. So may any
+  where the binary holds code no unit covers, such as assembly built without `-g`: the note names
+  its symbol. Locals at or below a stop then carry the setjmp note. If you know which functions do, name them, as
+  MicroPython's `nlr_push`: `"returns_twice": ["nlr_push"]`. Peeky trusts that claim: a function
+  left out of it can show a local's old value as its own.
+
 Rebuild after every edit. A source changed since the build refuses the binary, naming the file.
 
 ### Which C++ builds Peeky supports

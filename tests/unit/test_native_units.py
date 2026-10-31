@@ -453,3 +453,87 @@ def test_md5_of(tmp_path):
     assert md5_of(source) == hashlib.md5(source.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="over 1000 bytes"):
         md5_of(source, limit=1000)
+
+
+LINUX_WORDS = (
+    "/usr/lib/llvm-18/bin/clang -O0 -g -gdwarf-5 -grecord-command-line -fdebug-macro -I inc "
+    "-I inc\\ sp -isystem sys -include pre.h -D SP=a\\ b -U ZZ -std=gnu11 -Wall -MD -MF m.d "
+    "-c main.c -o m.o"
+)
+APPLE_WORDS = (
+    "/Library/Developer/CommandLineTools/usr/bin/clang --driver-mode=g++ -g -gdwarf-5 "
+    "-grecord-command-line -O0 -isysroot /SDK -c a.cpp -Wno-elaborated-enum-base -Xclang "
+    "-clang-vendor-feature=+thisNoNullAttr -Xclang -fno-odr-hash-protocols -Xclang "
+    "-Wno-error=allocator-wrappers -mlinker-version=1166.2 -mmacos-version-min=27.0"
+)
+
+
+def _replayed(words, main="/w/main.c"):
+    from peeky.native_units import _words, replay_arguments
+
+    return replay_arguments(_words(words), "/w", main)
+
+
+def test_a_unit_s_preprocessing_is_replayed_with_the_options_that_choose_what_it_reads():
+    assert _replayed(LINUX_WORDS) == [
+        "-O0",
+        "-I",
+        "inc",
+        "-I",
+        "inc sp",
+        "-isystem",
+        "sys",
+        "-include",
+        "pre.h",
+        "-D",
+        "SP=a b",
+        "-U",
+        "ZZ",
+        "-std=gnu11",
+        "main.c",
+    ]
+    # Apple's own options pass on, but those it gives its compiler, which define nothing.
+    assert _replayed(APPLE_WORDS, "/w/a.cpp") == [
+        "--driver-mode=g++",
+        "-O0",
+        "-isysroot",
+        "/SDK",
+        "-mlinker-version=1166.2",
+        "-mmacos-version-min=27.0",
+        "a.cpp",
+    ]
+    # The unit's own input, by its path, whatever others the command names.
+    words = "/usr/bin/clang -x c -c ./src/../src/b.c ./src/a.c -fPIC -o x"
+    assert _replayed(words, "/w/src/a.c") == ["-x", "c", "-fPIC", "./src/a.c"]
+    assert _replayed("/usr/bin/clang -O0 -c -- -odd.c", "/w/-odd.c") == ["-O0", "-odd.c"]
+
+
+@pytest.mark.parametrize(
+    "words, why",
+    [
+        ("-fplugin=x.so -c main.c", "-fplugin=x.so"),
+        ("-Xclang -load -Xclang x.so -c main.c", "-Xclang -load"),
+        ("-Wp,-DX=1 -c main.c", "-Wp,-DX=1"),
+        ("-Xpreprocessor -DX -c main.c", "-Xpreprocessor"),
+        ("-ivfsoverlay o.yaml -c main.c", "-ivfsoverlay"),
+        ("-B /tools -c main.c", "-B"),
+        ("-working-directory /x -c main.c", "-working-directory"),
+        ("-fmodules -c main.c", "-fmodules"),
+        ("-A system(linux) -c main.c", "-A"),
+        ("@args.rsp -c main.c", "@args.rsp"),
+        ("-c main.c -- @args.rsp", "@args.rsp"),
+        ("-c -", "its standard input as a file"),
+        ("-c main.c -x c++ other.c", "-x c++ after its input"),
+        ("-c other.c", "names no input that is its own file"),
+        ("-c main.c -include", "-include without its value"),
+        ("-mllvm -x -c main.c", "-mllvm"),
+        ("--driver-mode=cl -c main.c", "--driver-mode=cl"),
+        # The build's host CPU, which the replay's host may not share.
+        ("-march=native -c main.c", "-march=native, whose macros are those of the CPU"),
+        ("-mcpu=native+crc -c main.c", "-mcpu=native+crc"),
+        ("-mtune=native -c main.c", "-mtune=native"),
+    ],
+)
+def test_what_can_t_be_passed_leaves_the_unit_s_text_unread(words, why):
+    with pytest.raises(NotRecorded, match=re.escape(why)):
+        _replayed(f"/usr/bin/clang {words}")
