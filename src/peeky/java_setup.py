@@ -67,7 +67,7 @@ JAVAC_FLAGS = ("--release", "17")
 # The recipe's part the JDK gives: setup rebuilds when it differs. The worker never runs the
 # JDK to ask it, but checks that the bundle's `java` is still the file it recorded: its real
 # path (links followed) and its bytes (peeky.java._verify_bundle).
-JDK_KEYS = ("javac_version", "java_path", "java_sha256")
+JDK_KEYS = ("javac_version", "java_path", "java_sha256", "java_jdk")
 UNUSABLE = "Peeky's own Java adapter can't be used: "
 
 # Source patches to the pinned java-debug, applied before compiling and recorded in
@@ -208,17 +208,34 @@ def run(command: list[str], env: dict | None = None) -> str:
 
 
 def java_identity(java: str) -> dict:
-    """The file ``java`` names: its real path, links followed, and its SHA-256."""
+    """The file ``java`` names: its real path, links followed, and its SHA-256. Where it is
+    a JDK's own bin/java (peeky.java.jdk_of), also that JDK's release file and JVM library,
+    each by path and SHA-256 (`java_jdk`; else None): the worker checks them all before
+    it runs the bundle (peeky.java._same_java)."""
+    from peeky.java import jdk_of
+
     real = os.path.realpath(java)
-    return {"java_path": real, "java_sha256": digest(Path(real))}
+    jdk, _ = jdk_of(real)
+    return {
+        "java_path": real,
+        "java_sha256": digest(Path(real)),
+        "java_jdk": None
+        if jdk is None
+        else {
+            "release": jdk.release,
+            "release_sha256": digest(Path(jdk.release)),
+            "libjvm": jdk.libjvm,
+            "libjvm_sha256": digest(Path(jdk.libjvm)),
+        },
+    }
 
 
 def toolchain(java: str, javac: str) -> dict:
     """The JDK setup builds with: java's and javac's paths and the version texts they print
     now (asked afresh each time), and the file java is (java_identity). Where that file is
-    not a JDK's own bin/java (peeky.java.jdk_release), such as macOS's /usr/bin/java, also
+    not a JDK's own bin/java (peeky.java.jdk_of), such as macOS's /usr/bin/java, also
     the JDK home it says it runs, which only refusals name."""
-    from peeky.java import jdk_release, reported_home
+    from peeky.java import reported_home
 
     tools = {
         "java": java,
@@ -227,7 +244,7 @@ def toolchain(java: str, javac: str) -> dict:
         "javac_version": run([javac, "-version"]),
         **java_identity(java),
     }
-    if jdk_release(tools["java_path"]) is None:
+    if tools["java_jdk"] is None:
         tools["java_home"] = reported_home(java)
     return tools
 

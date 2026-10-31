@@ -118,10 +118,7 @@ def refused_as_a_launcher(result, named):
     error = result["error"]
     assert error["code"] == "UNSUPPORTED", error
     assert error["message"].startswith(f"{RULE}{named}")
-    assert (
-        "It is not one (a launcher, a wrapper or a shim, whose JDK can change)"
-        in (error["message"])
-    )
+    assert "whose files setup pinned. It is not one: " in error["message"]
 
 
 @pytest.mark.timeout(120)
@@ -140,8 +137,8 @@ def test_a_wrapper_on_path_is_refused_naming_the_jdk_it_runs(
     error = result["error"]
     assert error["code"] == "UNSUPPORTED", error
     home = java_home(java)
-    assert f"The java on PATH, {script}, is not one (a wrapper or a shim?)" in error["message"]
-    assert f"says it runs {home}. Put {home}/bin first on PATH" in error["message"]
+    assert f"The java on PATH, {script}, is not one: " in error["message"]
+    assert f"; it says it runs {home}. Put {home}/bin first on PATH" in error["message"]
 
 
 @pytest.mark.timeout(120)
@@ -203,14 +200,29 @@ def _other_jdks(java):
         yield real
 
 
+def native(path):
+    from peeky.java import NATIVE_MAGIC
+
+    return path.is_file() and path.read_bytes()[:4] in NATIVE_MAGIC
+
+
 def jdk_release(java):
-    """(home, JAVA_VERSION) where ``java`` is a JDK's own bin/java beside its release file."""
+    """(home, JAVA_VERSION) where ``java`` is a JDK 9 or later's own bin/java."""
     path = Path(java)
-    release = path.parent.parent / "release"
-    if path.name != "java" or path.parent.name != "bin" or not release.is_file():
+    home = path.parent.parent
+    release = home / "release"
+    libjvm = [home / "lib" / "server" / name for name in ("libjvm.so", "libjvm.dylib")]
+    if (
+        path.name != "java"
+        or path.parent.name != "bin"
+        or not native(path)
+        or not release.is_file()
+        or not (home / "lib" / "modules").is_file()
+        or not any(native(lib) for lib in libjvm)
+    ):
         return None
     found = re.search(r'^JAVA_VERSION="([0-9][^"]*)"', release.read_text(), re.MULTILINE)
-    return (str(path.parent.parent), found[1]) if found else None
+    return (str(home), found[1]) if found and not found[1].startswith("1.") else None
 
 
 def _feature(version):

@@ -168,15 +168,21 @@ A process running as the same user, or as root, isn't covered.
   runs it. The classes are compiled with `--release 17`, and a JVM that can't run them refuses
   them.
 - The adapter runs only on the `java` its bundle was built with. The recipe records that file:
-  its real path, with links followed, and its SHA-256. Before every operation, Peeky checks that
-  the bundle's `java` still leads to that path and has those bytes. Then it runs it.
+  its real path, with links followed, and its SHA-256. Where it is a JDK's own, the recipe also
+  records its JDK's `release` file and `lib/server/libjvm`, by path and SHA-256. Before every
+  operation, Peeky checks that the bundle's `java` still leads to that path and that all three
+  have those bytes. Then it runs it.
 - A config's `java` must be that one. Without one, the program runs on the `java` on `PATH`,
   and the adapter on the bundle's. Where `PATH` names the bundle's `java`, nothing more is
   checked, as for every tool on `PATH`.
 - Where `PATH`'s `java` is another, Peeky picks the bundle's itself. So it also requires the
-  bundle's `java` to be a JDK's own `bin/java`, beside a `release` file. Neither it nor a
+  bundle's `java` to be a JDK's own `bin/java`, whose JDK files setup recorded. Neither it nor a
   directory above it may be writable by a user other than you or root. A JDK under
   `/usr/lib/jvm`, owned by root and writable by no one else, passes.
+- A JDK's own `bin/java` is a native executable, ELF or Mach-O, not a script. It is in a JDK 9
+  or later: beside a `release` file naming `JAVA_VERSION`, `lib/modules` and a native
+  `lib/server/libjvm`. Someone who can write such files can make a fake JDK. That is the
+  trusted-code bar, as for every tool Peeky runs.
 - Peeky never decides which JDK a `java` is by running it. A wrapper or a launcher, such as
   macOS's `/usr/bin/java`, can print one JDK and run another, by `JAVA_HOME`. Where the two
   `java`s differ, both must be a JDK's own `bin/java`, and their `release` files give their

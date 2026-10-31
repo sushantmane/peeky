@@ -36,8 +36,9 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   say which ran what.
 - Peeky checks that the bundle's `java` is still the file setup recorded, by real path and bytes.
   After a JDK update, run `peeky setup-java` again.
-- Where the two differ, each must be a JDK's own `bin/java`, beside its `release` file. A wrapper,
-  a shim or macOS's `/usr/bin/java` is refused. The message names the JDK to put on `PATH`.
+- Where the two differ, each must be a JDK's own `bin/java`: a native executable in a JDK 9 or
+  later, beside its `release` file. A script, a shim or macOS's `/usr/bin/java` is refused. The
+  message says why, and names the JDK to put on `PATH`.
 - An adapter on JDK 19 or later launches programs only on JDK 19 or later. For a project on an
   older JDK, build the bundle with JDK 17.
 - A config's `java` runs both, so it must be the bundle's own. Another is refused before anything

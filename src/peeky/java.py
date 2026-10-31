@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import struct
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -505,11 +506,16 @@ def bundle_directory(bundle):
 # bundle records its `java` (`command`'s first word), and the file that is (its real path and
 # SHA-256, in the recipe). The JDK a launched program runs on is another matter: the config's
 # `java`, else the one on PATH. Where the two differ, each must be a JDK's own bin/java, whose
-# release file says which JDK it is (jdk_release); what a JVM prints is never trusted for it.
+# release file says which JDK it is (jdk_of); what a JVM prints is never trusted for it.
 ADAPTER_JAVA = "The Java adapter runs only on the java that its bundle was built with: "
+# What jdk_of takes for a JDK's own bin/java.
+OWN_JAVA = (
+    "a native executable in a JDK 9 or later, beside its release file, lib/modules and "
+    "lib/server/libjvm"
+)
 PROGRAM_JAVA = (
     "Peeky runs a Java program on another JDK than the adapter's only from that JDK's own "
-    "bin/java, whose release file says which JDK it is. "
+    f"bin/java: {OWN_JAVA}. "
 )
 _PICKED_UP = re.compile(r"(?:NOTE: )?Picked up [A-Z_]+:")
 # JDK 19's debugger (JDI) starts a JVM with includevirtualthreads, which a JVM before 19 refuses.
@@ -522,25 +528,75 @@ LAUNCHES_ONLY = (
     "java to {runner} to run the program on JDK {adapter}"
 )
 MAX_RELEASE_BYTES = 64 * 1024
+# How a native executable or library starts: ELF, and Mach-O (32 and 64 bit, either byte
+# order, and universal). A script starts `#!`.
+NATIVE_MAGIC = frozenset(
+    (
+        b"\x7fELF",
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe",
+        b"\xca\xfe\xba\xbf",
+        b"\xbe\xba\xfe\xca",
+    )
+)
 
 
-def jdk_release(java):
-    """(the JDK's home, its JAVA_VERSION) where ``java``, a real path, is a JDK's own
-    launcher: <home>/bin/java, beside a <home>/release file that names JAVA_VERSION. None
-    for anything else: a wrapper, a shim, or a launcher such as macOS's /usr/bin/java,
-    which picks a JDK by JAVA_HOME. Which JDK it is comes from that file, never from what
-    the JVM prints."""
+def _native(path):
+    """Whether ``path`` is a regular file that starts as a native executable or library."""
+    try:
+        with open(path, "rb") as opened:
+            if not stat.S_ISREG(os.fstat(opened.fileno()).st_mode):
+                return False
+            return opened.read(4) in NATIVE_MAGIC
+    except OSError:
+        return False
+
+
+@dataclass(frozen=True)
+class JDK:
+    """A JDK, as jdk_of finds it: its home, its release file's JAVA_VERSION, and the files
+    that say which JDK it is (the release file, and the JVM's library)."""
+
+    home: str
+    version: str
+    release: str
+    libjvm: str
+
+
+def jdk_of(java):
+    """``(JDK, None)`` where ``java``, a real path, is a JDK's own launcher: a native
+    executable at <home>/bin/java, in a JDK 9 or later (a <home>/release file naming
+    JAVA_VERSION, <home>/lib/modules and a native <home>/lib/server/libjvm). Otherwise
+    ``(None, why)``: a script, a shim, a launcher such as macOS's /usr/bin/java (which
+    picks a JDK by JAVA_HOME), JDK 8, or another layout. Which JDK it is comes from those
+    files, never from what the JVM prints."""
     path = Path(java)
     if path.name != "java" or path.parent.name != "bin":
-        return None
+        return None, "it is not in a JDK's bin directory"
+    if not _native(path):
+        return None, "it is not a native executable (a script?)"
     home = path.parent.parent
     try:
         with open(home / "release", "rb") as release:
             text = release.read(MAX_RELEASE_BYTES).decode("utf-8", errors="replace")
     except OSError:
-        return None
+        return None, f"{home} has no release file"
     found = re.search(r'^JAVA_VERSION="([0-9][^"\n]*)"', text, re.MULTILINE)
-    return (str(home), found[1]) if found else None
+    if found is None:
+        return None, f"{home}/release names no JAVA_VERSION"
+    if _feature(found[1]) < 9:
+        return None, f"it is JDK {_feature(found[1])} ({found[1]}), and Peeky takes JDK 9 or later"
+    server = home / "lib" / "server"
+    libjvm = next(
+        (server / name for name in ("libjvm.so", "libjvm.dylib") if _native(server / name)),
+        None,
+    )
+    if libjvm is None or not (home / "lib" / "modules").is_file():
+        return None, f"{home} has no lib/modules or lib/server/libjvm, as a JDK 9 or later has"
+    return JDK(str(home), found[1], str(home / "release"), str(libjvm)), None
 
 
 def _feature(version):
@@ -589,8 +645,8 @@ def _rebuild(bundle):
 
 def _recorded_java(bundle):
     """(the absolute `java` path, its `-version` text or None, the JDK home setup saw it run
-    or None) that a bundle's adapter.json records; None where it records no such path
-    (_bundle then refuses it, saying why)."""
+    or None, the JDK files its recipe pins or None) that a bundle's adapter.json records;
+    None where it records no such path (_bundle then refuses it, saying why)."""
     from peeky.java_setup import read_manifest
 
     try:
@@ -603,10 +659,12 @@ def _recorded_java(bundle):
     if not os.path.isabs(command[0]) or "\x00" in command[0]:
         return None
     home = manifest.get("java_home")
+    recipe = manifest.get("recipe") if isinstance(manifest.get("recipe"), dict) else {}
     return (
         command[0],
         version if isinstance(version, str) else None,
         home if isinstance(home, str) else None,
+        recipe.get("java_jdk") if isinstance(recipe.get("java_jdk"), dict) else None,
     )
 
 
@@ -634,7 +692,7 @@ def adapter_java(bundle, named=None, program=None, *, launched=True):
     must be that one, as it always had to be. Without one, it runs the adapter whatever PATH
     holds. Where the program's `java` is it, nothing more is asked, as before: PATH names
     it. Otherwise Peeky picks it, not the config or PATH, so it must also be a JDK's own
-    bin/java (jdk_release), and neither it nor a directory above it may be writable by
+    bin/java (jdk_of), and neither it nor a directory above it may be writable by
     another user (peeky.build.writable_by_others). It is never run to ask. A refusal
     (ValueError) says what to do instead."""
     found = _recorded_java(bundle)
@@ -643,7 +701,7 @@ def adapter_java(bundle, named=None, program=None, *, launched=True):
         if named is not None:
             return _tool(named)
         return program or shutil.which("java") or "java"
-    recorded, version, home = found
+    recorded, version, home, pinned = found
     try:
         runner = _tool(recorded)
     except ValueError:
@@ -687,15 +745,16 @@ def adapter_java(bundle, named=None, program=None, *, launched=True):
             f"Set the config's java to {recorded} to run the program on it too, if you trust "
             f"it. Or, if {shared} is yours, run `chmod go-w {shared}`. ",
         )
-    if jdk_release(runner) is None:
-        runs = f": setup saw it run {home}" if home else ""
+    jdk, why = jdk_of(runner)
+    if jdk is None or pinned is None:
+        runs = f"; setup saw it run {home}" if home else ""
         raise adapter_java_refusal(
             bundle,
             recorded,
             version,
-            "Peeky runs it in place of the java on PATH only where it is a JDK's own bin/java, "
-            "whose release file says which JDK it is. It is not one (a launcher, a wrapper or a "
-            f"shim, whose JDK can change){runs}",
+            "Peeky runs it in place of the java on PATH only where it is a JDK's own bin/java "
+            f"({OWN_JAVA}), whose files setup pinned. It is not one: "
+            f"{why or 'setup pinned no JDK files for it'}{runs}",
             f"Set the config's java to {recorded} to run the program on it too. ",
             home,
         )
@@ -743,29 +802,41 @@ class _Verified:
     named: str
     version: str | None
     java_sha256: str
+    # Where the `java` was a JDK's own (jdk_of) when setup ran: its release file's and its
+    # JVM library's paths and SHA-256s ({"release": .., "release_sha256": .., "libjvm": ..,
+    # "libjvm_sha256": ..}); None for another `java`, such as macOS's /usr/bin/java.
+    java_jdk: dict | None = None
 
 
 def _java_sha256(path):
+    # Kept by stat (peeky.digest), so the JVM's library is hashed once while unchanged.
     return sha256_file(path)
 
 
 def _same_java(bundle, verified):
-    """The bundle's `java` is still the bytes setup recorded: an update, a replaced file or
-    a link turned to another file under the same real path is refused before it runs."""
-    java = verified.command[0]
-    try:
-        same = _java_sha256(java) == verified.java_sha256
-    except (OSError, ValueError):
-        same = None
-    if not same:
-        raise adapter_java_refusal(
-            bundle,
-            verified.named,
-            verified.version,
-            f"That java, {java}, is gone"
-            if same is None
-            else f"That java, {java}, has changed since the bundle was built (a JDK update?)",
-        )
+    """The bundle's `java`, and where it was a JDK's own its release file and JVM library,
+    are still the bytes setup recorded: an update, a replaced file or a link turned to
+    another file under the same real path is refused before it runs."""
+    java, jdk = verified.command[0], verified.java_jdk
+    files = [(java, verified.java_sha256)]
+    if isinstance(jdk, dict):
+        files += [(jdk.get("release"), jdk.get("release_sha256"))]
+        files += [(jdk.get("libjvm"), jdk.get("libjvm_sha256"))]
+    for path, expected in files:
+        try:
+            same = isinstance(path, str) and _java_sha256(path) == expected
+        except (OSError, ValueError):
+            same = None
+        if not same:
+            what = f"That java, {java}," if path == java else f"Its JDK's {path}"
+            raise adapter_java_refusal(
+                bundle,
+                verified.named,
+                verified.version,
+                f"{what} is gone"
+                if same is None
+                else f"{what} has changed since the bundle was built (a JDK update?)",
+            )
 
 
 def _verified(bundle, java):
@@ -850,6 +921,7 @@ def _verified(bundle, java):
         command[0],
         version,
         manifest["recipe"]["java_sha256"],
+        manifest["recipe"]["java_jdk"],
     )
 
 
@@ -878,9 +950,9 @@ def java_text(runtimes):
 
 
 def _shown_java(path):
-    """A `java` as a run shows it: its path, and its JAVA_VERSION where a release file says."""
-    found = jdk_release(path)
-    return {"path": path, "version": found[1] if found else None, "version_from": "release"}
+    """A `java` as a run shows it: its path, and its JAVA_VERSION where it is a JDK's own."""
+    jdk, _ = jdk_of(path)
+    return {"path": path, "version": jdk and jdk.version, "version_from": "release"}
 
 
 def _runtimes(java, runner, bundle):
@@ -889,30 +961,30 @@ def _runtimes(java, runner, bundle):
     a JDK's own bin/java (it may run another JDK than it says, and java-debug runs a `java`
     outside a bin directory on the adapter's JDK instead), and a program on a JDK before 19
     from an adapter on 19 or later (LAUNCHES_ONLY). Both JDKs' versions come from their
-    release files (jdk_release), never from what a JVM prints."""
+    release files (jdk_of), never from what a JVM prints."""
     runtimes = {"program": _shown_java(java), "adapter": _shown_java(runner)}
     if runner == java:
         return runtimes
-    adapter, program = jdk_release(runner), jdk_release(java)
+    (adapter, _), (program, why) = jdk_of(runner), jdk_of(java)
     if program is None:
         environment = without_credentials(
             {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
         )
         home = reported_home(java, environment)
-        says = f", and says it runs {home}" if home else ""
-        use = f"{home}/bin" if home else "a JDK's own bin directory"
+        says = f"; it says it runs {home}" if home and home != str(Path(java).parent.parent) else ""
+        use = f"{home}/bin" if says else "a JDK 9 or later's own bin directory"
         raise ValueError(
-            f"{PROGRAM_JAVA}The java on PATH, {java}, is not one (a wrapper or a shim?){says}. "
-            f"Put {use} first on PATH, or set the config's java to {runner} to run the "
-            "program on the adapter's JDK too"
+            f"{PROGRAM_JAVA}The java on PATH, {java}, is not one: {why}{says}. Put {use} first "
+            f"on PATH, or set the config's java to {runner} to run the program on the "
+            "adapter's JDK too"
         )
-    if adapter is not None and _feature(adapter[1]) >= 19 > _feature(program[1]):
+    if adapter is not None and _feature(adapter.version) >= 19 > _feature(program.version):
         raise ValueError(
             LAUNCHES_ONLY.format(
-                adapter=_feature(adapter[1]),
+                adapter=_feature(adapter.version),
                 runner=runner,
                 java=java,
-                program=_feature(program[1]),
+                program=_feature(program.version),
                 rebuild=_rebuild(bundle),
             )
         )

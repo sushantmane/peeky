@@ -298,14 +298,6 @@ _RULES = (
         False,
     ),
     (
-        # A backstop for what JDK checks miss: java-debug's own launch failure.
-        r"VM initialization failed for: .*includevirtualthreads=",
-        "UNSUPPORTED",
-        "The adapter's JDK, 19 or later, can't start a JVM before 19. Rebuild the bundle with "
-        "JDK 17 first on PATH, or run the program on the adapter's JDK.",
-        False,
-    ),
-    (
         r"^No Java adapter bundle at ",
         "INVALID_REQUEST",
         "Build it with the `peeky setup-java` command the message gives; it needs JDK 17 or "

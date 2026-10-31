@@ -166,7 +166,11 @@ def offline(monkeypatch):
         builds=0,
         fail=False,
         commands=[],
-        sha={JAVA: "1" * 64},
+        sha={
+            JAVA: "1" * 64,
+            "/opt/jdk/release": "2" * 64,
+            "/opt/jdk/lib/server/libjvm.so": "3" * 64,
+        },
         releases={JAVA: ("/opt/jdk", "17.0.1")},
         shared={},
     )
@@ -201,11 +205,26 @@ def offline(monkeypatch):
             raise FileNotFoundError(path)
         return jdk.sha[path]
 
-    identity = lambda java: {"java_path": java, "java_sha256": sha(java)}  # noqa: E731
+    def jdk_of(java):
+        if java not in jdk.releases:
+            return None, "it is not a native executable (a script?)"
+        home, version = jdk.releases[java]
+        files = {"release": f"{home}/release", "libjvm": f"{home}/lib/server/libjvm.so"}
+        return SimpleNamespace(home=home, version=version, **files), None
+
+    def identity(java):
+        # As java_setup.java_identity, on the fake files.
+        found, _ = jdk_of(java)
+        pinned = None
+        if found is not None:
+            pinned = {"release": found.release, "release_sha256": sha(found.release)}
+            pinned.update(libjvm=found.libjvm, libjvm_sha256=sha(found.libjvm))
+        return {"java_path": java, "java_sha256": sha(java), "java_jdk": pinned}
+
     for module, name, fake in (
         (java_setup, "java_identity", identity),
         (peeky.java, "_java_sha256", sha),
-        (peeky.java, "jdk_release", lambda java: jdk.releases.get(java)),
+        (peeky.java, "jdk_of", jdk_of),
         (peeky.java, "writable_by_others", lambda path: jdk.shared.get(path)),
     ):
         monkeypatch.setattr(module, name, fake, raising=False)
@@ -225,12 +244,25 @@ def test_setup_builds_a_bundle_with_its_provenance_recipe_and_notices(tmp_path, 
     assert json.loads((output / "adapter.json").read_text()) == manifest
     recipe = manifest["recipe"]
     assert manifest["fingerprint"] == java_setup.fingerprint(recipe)
+    pinned = {
+        "release": "/opt/jdk/release",
+        "release_sha256": "2" * 64,
+        "libjvm": "/opt/jdk/lib/server/libjvm.so",
+        "libjvm_sha256": "3" * 64,
+    }
     assert recipe == java_setup.recipe(
-        {"javac_version": offline.versions[JAVAC], "java_path": JAVA, "java_sha256": "1" * 64}
+        {
+            "javac_version": offline.versions[JAVAC],
+            "java_path": JAVA,
+            "java_sha256": "1" * 64,
+            "java_jdk": pinned,
+        }
     )
     assert "java" not in recipe and recipe["javac_version"] == offline.versions[JAVAC]
-    # The file java is: its real path and bytes, which the worker checks before it runs it.
+    # The file java is: its real path and bytes, which the worker checks before it runs it,
+    # and its JDK's release file and JVM library.
     assert (recipe["java_path"], recipe["java_sha256"]) == (JAVA, offline.sha[JAVA])
+    assert recipe["java_jdk"] == pinned
     assert manifest["java_version"] == offline.versions[JAVA]
     assert (
         recipe["launcher_sha256"]
@@ -622,7 +654,9 @@ def test_the_fingerprint_changes_with_every_input(tmp_path, offline, monkeypatch
     base = java_setup.fingerprint(java_setup.recipe(tools))
     changed = []
     for key in java_setup.JDK_KEYS:
-        changed.append(java_setup.fingerprint(java_setup.recipe({**tools, key: tools[key] + "x"})))
+        value = tools[key]
+        value = {**value, "libjvm_sha256": "x"} if isinstance(value, dict) else value + "x"
+        changed.append(java_setup.fingerprint(java_setup.recipe({**tools, key: value})))
     # java's name on PATH, its version text and javac's path are not part of it: the file
     # java is (its real path and bytes) is.
     other = {**tools, "java": "/elsewhere/java", "java_version": "x", "javac": "/elsewhere/javac"}
@@ -646,7 +680,7 @@ def test_the_fingerprint_changes_with_every_input(tmp_path, offline, monkeypatch
         with monkeypatch.context() as patched:
             patched.setattr(java_setup, name, value)
             changed.append(java_setup.fingerprint(java_setup.recipe(tools)))
-    assert base not in changed and len(set(changed)) == len(changed) == 10
+    assert base not in changed and len(set(changed)) == len(changed) == 11
 
 
 def program(root):
@@ -917,17 +951,29 @@ def test_the_jdk_decision_reads_release_files_not_what_a_jvm_prints(
         target.prepare(source, tmp_path / "app")
 
 
-def test_a_launch_that_older_jvms_refuse_is_unsupported_not_a_debugger_error():
-    # A backstop for what the release files miss: java-debug's own launch failure.
-    failed = RuntimeError(
+@pytest.mark.parametrize(
+    "message",
+    [
+        # What java-debug says when JDK 11 refuses the option (Docker, JDK 21's JDI): the
+        # command only. The JVM's own `ERROR: JDWP option syntax error: …` never reaches it.
         "Failed to launch debuggee VM. Reason: com.sun.jdi.connect.VMStartException: VM "
         "initialization failed for: /usr/lib/jvm/java-11-openjdk-arm64/bin/java -cp /w/classes "
         "-Xrunjdwp:transport=dt_socket,address=localhost:39825,suspend=y,"
-        "includevirtualthreads=n shop.Main"
-    )
-    error = classify(failed)
-    assert error["code"] == "UNSUPPORTED" and len(error["hint"]) <= 150
-    assert "can't start a JVM before 19" in error["hint"]
+        "includevirtualthreads=n shop.Main",
+        "ERROR: JDWP option syntax error: -agentlib:jdwp=transport=dt_socket,address=localhost:9,"
+        "suspend=y,includevirtualthreads=n",
+        # A JDK 21 that can't start for its own reason: the option is in its command too.
+        "Failed to launch debuggee VM. Reason: com.sun.jdi.connect.VMStartException: VM "
+        "initialization failed for: /usr/lib/jvm/java-21-openjdk-arm64/bin/java -Xmx64g -cp /w "
+        "-Xrunjdwp:transport=dt_socket,address=localhost:1,suspend=y,includevirtualthreads=n "
+        "shop.Main: Error occurred during initialization of VM. Could not reserve enough space "
+        "for object heap",
+    ],
+)
+def test_a_launch_that_fails_is_a_debugger_error_whatever_its_command_holds(message):
+    # The release files decide the JDK 19 rule before the launch; a launch failure is never
+    # taken for it, since the text java-debug gives doesn't say why the JVM failed.
+    assert classify(RuntimeError(message))["code"] == "DEBUGGER_ERROR"
 
 
 def test_an_attached_jvm_without_java_uses_the_bundles_java_too(state, jdk11_on_path):
@@ -1011,6 +1057,25 @@ def test_a_bundles_java_whose_bytes_changed_is_refused_before_it_runs(
     assert "(it was built with another java)" in messages[0]
 
 
+@pytest.mark.parametrize("path", ["/opt/jdk/release", "/opt/jdk/lib/server/libjvm.so"])
+def test_a_bundles_jdk_whose_release_or_jvm_changed_is_refused(state, jdk11_on_path, path):
+    # The launcher's bytes alone don't say which JDK runs: its release file and JVM library
+    # are pinned too.
+    bundle = bundle_directory(state / "java-adapter")
+    jdk11_on_path.sha[path] = "4" * 64
+    for named, program in ((None, OLD_JAVA), (None, JAVA)):
+        with pytest.raises(ValueError) as changed:
+            peeky.java.adapter_java(bundle, named, program)
+        assert str(changed.value) == (
+            f"{RULE}, for the bundle at {bundle}. Its JDK's {path} has changed since the bundle "
+            f"was built (a JDK update?). Rebuild the bundle with the JDK 17 or later you want: "
+            f"{REBUILD}"
+        )
+    del jdk11_on_path.sha[path]
+    with pytest.raises(ValueError, match=f"Its JDK's {path} is gone"):
+        peeky.java.adapter_java(bundle, None, OLD_JAVA)
+
+
 def test_a_bundles_java_that_is_gone_or_leads_elsewhere_is_refused(state, jdk11_on_path):
     bundle = bundle_directory(state / "java-adapter")
     # A link turned to another file: the real path the recipe records differs.
@@ -1064,13 +1129,18 @@ def test_peeky_picks_only_a_jdks_own_java(state, offline, monkeypatch):
     assert str(launcher.value) == (
         "The Java adapter runs only on the java that its bundle was built with: "
         f'{JAVA} (openjdk version "17.0.1"), for the bundle at {bundle}. Peeky runs it in place '
-        "of the java on PATH only where it is a JDK's own bin/java, whose release file says "
-        "which JDK it is. It is not one (a launcher, a wrapper or a shim, whose JDK can change): "
-        f"setup saw it run /opt/jdk17. Set the config's java to {JAVA} to run the program on it "
-        "too. Or rebuild the bundle with the JDK 17 or later you want: put its bin directory "
+        "of the java on PATH only where it is a JDK's own bin/java (a native executable in a "
+        "JDK 9 or later, beside its release file, lib/modules and lib/server/libjvm), whose files "
+        "setup pinned. It is not one: it is not a native executable (a script?); setup saw it "
+        f"run /opt/jdk17. Set the config's java to {JAVA} to run the program on it too. Or "
+        "rebuild the bundle with the JDK 17 or later you want: put its bin directory "
         "(/opt/jdk17/bin, say) first on PATH, then run `peeky setup-java`"
     )
     assert peeky.java.adapter_java(bundle, None, JAVA) == JAVA
+    # One that is a JDK's own now, but whose JDK files setup didn't pin, is refused too.
+    offline.releases[JAVA] = ("/opt/jdk", "17.0.1")
+    with pytest.raises(ValueError, match="It is not one: setup pinned no JDK files for it"):
+        peeky.java.adapter_java(bundle, None, OLD_JAVA)
 
 
 @pytest.mark.parametrize("shim", ["/home/me/.jenv/shims/java", "/opt/wrap/bin/java"])
@@ -1086,9 +1156,10 @@ def test_a_java_on_path_that_is_not_a_jdks_own_is_refused(
         launched_target(state).prepare(source, tmp_path / "app")
     assert str(refused.value) == (
         "Peeky runs a Java program on another JDK than the adapter's only from that JDK's own "
-        f"bin/java, whose release file says which JDK it is. The java on PATH, {shim}, is not "
-        "one (a wrapper or a shim?), and says it runs /opt/jdk11. Put /opt/jdk11/bin first on "
-        f"PATH, or set the config's java to {JAVA} to run the program on the adapter's JDK too"
+        "bin/java: a native executable in a JDK 9 or later, beside its release file, lib/modules "
+        f"and lib/server/libjvm. The java on PATH, {shim}, is not one: it is not a native "
+        "executable (a script?); it says it runs /opt/jdk11. Put /opt/jdk11/bin first on PATH, "
+        f"or set the config's java to {JAVA} to run the program on the adapter's JDK too"
     )
     error = classify(refused.value)
     assert error["code"] == "UNSUPPORTED" and len(error["hint"]) <= 150
@@ -1105,17 +1176,44 @@ def test_a_java_on_path_that_is_not_a_jdks_own_is_refused(
         launched_target(state, java=JAVA).prepare(source, tmp_path / "app")
 
 
-def test_a_jdks_own_java_is_known_by_its_release_file(tmp_path):
-    from peeky.java import _feature, jdk_release
+def test_a_jdks_own_java_is_a_native_executable_in_a_jdk_layout(tmp_path):
+    # A script beside a synthetic release file is not a JDK: it may run any JDK, or none.
+    from peeky.java import _feature, jdk_of
 
     home = tmp_path / "jdk-11"
-    (home / "bin").mkdir(parents=True)
-    (home / "bin" / "java").write_text("#!/bin/sh\n")
-    assert jdk_release(str(home / "bin" / "java")) is None
+    java = home / "bin" / "java"
+    java.parent.mkdir(parents=True)
+    java.write_text('#!/bin/sh\nexec /opt/jdk21/bin/java "$@"\n')
     (home / "release").write_text('IMPLEMENTOR="x"\nJAVA_VERSION="11.0.2"\nOS_ARCH="aarch64"\n')
-    assert jdk_release(str(home / "bin" / "java")) == (str(home), "11.0.2")
-    assert jdk_release(str(home / "bin" / "javaw")) is None
-    assert jdk_release(str(home / "java")) is None
+    assert jdk_of(str(java)) == (None, "it is not a native executable (a script?)")
+    java.write_bytes(b"\x7fELF\x02\x01\x01" + bytes(64))
+    assert jdk_of(str(java)) == (
+        None,
+        f"{home} has no lib/modules or lib/server/libjvm, as a JDK 9 or later has",
+    )
+    (home / "lib" / "server").mkdir(parents=True)
+    (home / "lib" / "modules").write_bytes(b"jimage")
+    (home / "lib" / "server" / "libjvm.so").write_text("not a library")
+    assert jdk_of(str(java))[0] is None
+    for magic, name in ((b"\x7fELF", "libjvm.so"), (b"\xcf\xfa\xed\xfe", "libjvm.dylib")):
+        for old in (home / "lib" / "server").iterdir():
+            old.unlink()
+        (home / "lib" / "server" / name).write_bytes(magic + bytes(64))
+        found, why = jdk_of(str(java))
+        assert why is None and found == peeky.java.JDK(
+            str(home), "11.0.2", str(home / "release"), str(home / "lib" / "server" / name)
+        )
+    # Mach-O, universal too, is native.
+    java.write_bytes(b"\xca\xfe\xba\xbe" + bytes(64))
+    assert jdk_of(str(java))[0] is not None
+    (home / "release").write_text('JAVA_VERSION="1.8.0_402"\n')
+    assert jdk_of(str(java)) == (None, "it is JDK 8 (1.8.0_402), and Peeky takes JDK 9 or later")
+    (home / "release").write_text('IMPLEMENTOR="x"\n')
+    assert jdk_of(str(java)) == (None, f"{home}/release names no JAVA_VERSION")
+    (home / "release").unlink()
+    assert jdk_of(str(java)) == (None, f"{home} has no release file")
+    assert jdk_of(str(home / "bin" / "javaw"))[1] == "it is not in a JDK's bin directory"
+    assert jdk_of(str(home / "java"))[1] == "it is not in a JDK's bin directory"
     assert [_feature(v) for v in ("1.8.0_402", "11.0.2", "17", "22-ea", "x")] == [
         8,
         11,
@@ -1123,6 +1221,28 @@ def test_a_jdks_own_java_is_known_by_its_release_file(tmp_path):
         22,
         None,
     ]
+
+
+def test_this_hosts_jdks_are_their_own(tmp_path):
+    from peeky.java import jdk_of
+
+    homes = [
+        Path(p) for p in ("/usr/lib/jvm", "/Library/Java/JavaVirtualMachines") if Path(p).is_dir()
+    ]
+    javas = sorted(
+        {
+            os.path.realpath(java)
+            for base in homes
+            for java in [*base.glob("*/bin/java"), *base.glob("*/Contents/Home/bin/java")]
+        }
+    )
+    if not javas:
+        pytest.skip("no JDK in /usr/lib/jvm or /Library/Java/JavaVirtualMachines")
+    for java in javas:
+        found, why = jdk_of(java)
+        if why and "JDK 8" in why:
+            continue
+        assert found is not None and found.home == str(Path(java).parent.parent), (java, why)
 
 
 def test_a_bundle_a_config_names_is_rebuilt_with_output(tmp_path, jdk11_on_path):

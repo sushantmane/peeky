@@ -297,6 +297,8 @@ The adapter and the program may run on different JDKs.
 - The adapter runs on the `java` that `peeky setup-java` built its bundle with. The bundle's
   `adapter.json` records it, as `command`'s first word. Its recipe records the file that `java`
   is: its real path, with links followed, and its SHA-256.
+- Where that `java` is a JDK's own (below), the recipe also records two files of its JDK. They are
+  the `release` file and the JVM's library, `lib/server/libjvm`, each by path and SHA-256.
 - The program builds with `javac` and runs on `java`. Without them in the config, both come from
   `PATH`: the project's JDK.
 - So with JDK 11 first on `PATH`, the program builds and runs on JDK 11. The adapter runs on the
@@ -314,17 +316,24 @@ Before every operation, Peeky checks the bundle's `java`, whichever `java` runs 
 
 - It must still lead to the real path the recipe records. A link turned to another JDK, by
   `update-alternatives` for example, is refused.
-- Its bytes must still be the ones the recipe records. A JDK update, or a replaced file, is
-  refused before it runs. Run `peeky setup-java` again then: setup builds anew for another `java`.
+- Its bytes, and those of the JDK files the recipe records, must still be the ones recorded. A JDK
+  update, or a replaced file, is refused before it runs. Run `peeky setup-java` again then: setup
+  builds anew for another `java`.
 - Where `PATH` names the bundle's `java`, nothing more is checked, as before.
 
 Where `java` on `PATH` is another one, Peeky picks the bundle's `java` itself. Then both `java`s
-must be a JDK's own `bin/java`, beside a `release` file that names `JAVA_VERSION`. Peeky reads
-each JDK's version from that file, and never from what a JVM prints.
+must be a JDK's own `bin/java`:
+
+- a native executable (ELF or Mach-O), not a script;
+- in a JDK 9 or later, with its `release` file naming `JAVA_VERSION`, `lib/modules` and
+  `lib/server/libjvm`. JDK 8 is refused there.
+
+Peeky reads each JDK's version from its `release` file, and never from what a JVM prints.
 
 - A wrapper, a shim or macOS's `/usr/bin/java` can print one JDK and run another, by
-  `JAVA_HOME`. Such a `java` is refused, with `UNSUPPORTED`. The message names the JDK it says it
-  runs: put that JDK's `bin` directory first on `PATH` instead.
+  `JAVA_HOME`. Such a `java` is refused, with `UNSUPPORTED`, and the message says why. It names
+  the JDK a wrapper says it runs: put that JDK's `bin` directory first on `PATH` instead.
+- The bundle's `java` must also be one whose JDK files setup recorded.
 - The bundle's `java`, and each directory above it, must not be writable by a user other than
   you or root. A JDK under `/usr/lib/jvm`, owned by root, passes.
 - The `version` shown comes from the `release` file. Where there is none, it is what the build's
@@ -332,7 +341,7 @@ each JDK's version from that file, and never from what a JVM prints.
 
 An adapter on JDK 19 or later launches programs only on JDK 19 or later. Its debugger starts the
 JVM with an option, `includevirtualthreads`, that older JVMs refuse. Peeky refuses such a launch
-before it starts, with `UNSUPPORTED`. A launch that fails on that option is `UNSUPPORTED` too.
+before it starts, with `UNSUPPORTED`, by the JDKs' `release` files.
 
 - So build the bundle with JDK 17 if a project needs an older JDK. A bundle built with JDK 17
   launches programs on JDK 11, 17 and 21.
