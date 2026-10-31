@@ -1042,8 +1042,9 @@ class BinarySession(NativeSession):
                     self.naming.setdefault(shown, []).append(each.name)
 
     @property
-    def units(self):
-        """Each unit as `describe` lists it: judged, or not and why."""
+    def described_units(self):
+        """Each unit as `describe` lists it: judged, or not and why. (Not `units`: a
+        RustSession's are its application units.)"""
         return [each.describe() for each in self.judged]
 
     def _holding(self, address):

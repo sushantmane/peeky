@@ -883,7 +883,7 @@ def describe(args):
             manifest["target_identity"] = getattr(
                 runtime, "target_identity", manifest["target_identity"]
             )
-            if (units := getattr(runtime, "units", None)) is not None:
+            if (units := getattr(runtime, "described_units", None)) is not None:
                 language = manifest["language"] = runtime.target.language
                 manifest["units"] = units
             manifest["breakpoint_lines"] = runtime.lines
