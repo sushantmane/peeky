@@ -529,10 +529,18 @@ def read_lock(path, seen=None):
     data = _read_toml(path, MAX_LOCK_BYTES, seen=seen)
     version = data.get("version")
     if type(version) is not int or version not in (3, 4):
+        if version in (None, 2) and not data.get("metadata"):
+            # Version 2 has no `version` line (version 1 keeps its checksums in
+            # `[metadata]`). Version 3 differs from it only in how it writes git sources.
+            raise ValueError(
+                f"Peeky reads only Cargo.lock versions 3 and 4, and {path} is version 2. "
+                "`cargo update` keeps a lockfile's version. Without git sources, version 2 is "
+                "version 3 but for its first line: add `version = 3` there"
+            )
         raise ValueError(
-            f"Peeky reads only Cargo.lock versions 3 and 4, and {path} is "
-            f"{'version ' + str(version) if version is not None else 'an older one'}. Run "
-            "`cargo update --workspace` with this Cargo to rewrite it"
+            f"Peeky reads only Cargo.lock versions 3 and 4, and {path} is version "
+            f"{version if version is not None else 1}. Delete it and run `cargo "
+            "generate-lockfile` with this Cargo, which resolves the versions again"
         )
     if set(data) - {"version", "package", "patch", "metadata"} or data.get("metadata"):
         raise ValueError(f"{path} has tables Peeky doesn't read")
