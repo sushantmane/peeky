@@ -1100,6 +1100,9 @@ class WorkspaceShape:
     host: str = ""
     cfgs: tuple[str, ...] = ()
     watch: dict | None = None
+    # ((package ID, OPT_LEVEL, DEBUG), ...): what Cargo gives each package's build script
+    # run of its profile, from the unit graph's `run-custom-build` units.
+    build_profiles: tuple[tuple[str, str, str], ...] = ()
 
     def cargo_arguments(self):
         """Cargo's subcommand and target selection for this run (after `cargo`)."""
@@ -1442,6 +1445,17 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
         preflight.host,
         preflight.cfgs,
         preflight.watch,
+        tuple(
+            sorted(
+                (
+                    unit["pkg_id"],
+                    unit["profile"]["opt_level"],
+                    "false" if unit["profile"]["debuginfo"] in (0, "0", "none") else "true",
+                )
+                for unit in units
+                if unit["mode"] == "run-custom-build"
+            )
+        ),
     )
 
 

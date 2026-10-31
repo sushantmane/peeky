@@ -164,6 +164,8 @@ def test_peeky_build_builds_the_analysed_packages_and_records_them(workspace, ca
     }
     files = directory / unit["unit"]
     assert (files / "expanded.rs").read_text().startswith("#![feature(prelude_import)]")
+    # The expansion had Cargo's jobserver, as the compile did: rustc warned of none.
+    assert "jobserver" not in (files / "expand.log").read_text()
     assert list((files / "mir").glob("util.*.PreCodegen.after.mir"))
     assert not list((files / "mir").glob("*.before.mir"))
     assert (files / "ir.ll").stat().st_size > 0
@@ -228,6 +230,12 @@ def test_a_change_since_the_build_is_refused_and_build_makes_it_current(
     code, result = probe(capsys, workspace, config)
     assert result["error"]["code"] == "PROVENANCE_CHANGED"
     assert f"Cargo's configuration {above} appeared since" in result["error"]["message"]
+    # A manifest above the workspace, which must be absent, is one too.
+    above.unlink()
+    (tmp_path / "Cargo.toml").write_text("[workspace]\n")
+    code, result = probe(capsys, workspace, config)
+    assert result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert f"{tmp_path / 'Cargo.toml'} appeared since" in result["error"]["message"]
 
 
 @pytest.mark.timeout(300)
@@ -507,7 +515,7 @@ def test_rustc_bootstrap_is_the_analysed_compiles_alone(workspace, capsys):
     assert code == 0, summary
     shown = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
     assert shown.stdout == "2 []\n"
-    # The analysed crate's own compile has it; a read of it there is refused.
+    # The analysed crate's own compile has it: a mention of it there is refused.
     (workspace / "util/src/lib.rs").write_text(
         UTIL + '\npub fn seen() -> Option<&\'static str> {\n    option_env!("RUSTC_BOOTSTRAP")\n}\n'
     )
@@ -515,6 +523,70 @@ def test_rustc_bootstrap_is_the_analysed_compiles_alone(workspace, capsys):
     code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
     assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
     assert result["error"]["message"].startswith(
-        "Peeky analyses only code built as stable Rust builds it: `util`'s util reads "
-        "RUSTC_BOOTSTRAP"
+        "Peeky analyses only code built as stable Rust builds it: `util`'s util/src/lib.rs "
+        "mentions RUSTC_BOOTSTRAP"
     )
+
+
+@pytest.mark.timeout(300)
+def test_a_procedural_macro_that_mentions_rustc_bootstrap_is_refused(workspace, capsys):
+    # It runs inside the analysed crate's compile, which has RUSTC_BOOTSTRAP.
+    (workspace / "derive/src").mkdir(parents=True)
+    (workspace / "derive/Cargo.toml").write_text(
+        '[package]\nname = "derive"\nversion = "0.1.0"\nedition = "2021"\n\n'
+        "[lib]\nproc-macro = true\n"
+    )
+    (workspace / "derive/src/lib.rs").write_text(
+        "use proc_macro::TokenStream;\n\n#[proc_macro]\npub fn seen(_: TokenStream) -> "
+        'TokenStream {\n    let seen = std::env::var("RUSTC_BOOTSTRAP").unwrap_or_default();\n'
+        '    format!("{seen:?}").parse().unwrap()\n}\n'
+    )
+    manifest = workspace / "Cargo.toml"
+    manifest.write_text(manifest.read_text().replace('"util"]', '"util", "derive"]'))
+    util = workspace / "util/Cargo.toml"
+    util.write_text(util.read_text() + '\n[dependencies]\nderive = { path = "../derive" }\n')
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + "\npub fn seen() -> &'static str {\n    derive::seen!()\n}\n"
+    )
+    subprocess.run(
+        [os.environ["PEEKY_RUST_CARGO"], "generate-lockfile", "--offline"]
+        + list(rw.vendor_arguments(workspace, "vendor")),
+        cwd=workspace,
+        env=rw.cargo_environment(os.environ["PEEKY_RUST_RUSTC"], workspace.parent / "cargo-home"),
+        check=True,
+        capture_output=True,
+    )
+    config = configure(workspace)
+    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    assert result["error"]["message"].startswith(
+        "Peeky analyses only code built as stable Rust builds it: the procedural macro "
+        "`derive`'s derive/src/lib.rs mentions RUSTC_BOOTSTRAP"
+    )
+
+
+@pytest.mark.timeout(300)
+def test_a_build_scripts_jobs_are_the_builds_own(workspace, capsys):
+    from peeky import rust_build as rb
+
+    (workspace / "util/build.rs").write_text(
+        "fn main() {\n"
+        '    println!("cargo::rerun-if-env-changed=NUM_JOBS");\n'
+        '    println!("cargo::rustc-env=JOBS={}", std::env::var("NUM_JOBS").unwrap());\n'
+        "}\n"
+    )
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\npub fn jobs() -> &\'static str {\n    env!("JOBS")\n}\n'
+    )
+    main = workspace / "app/src/main.rs"
+    main.write_text(
+        main.read_text().replace('println!("{x}");', 'println!("{x} {}", util::jobs());')
+    )
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    shown = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
+    # What the build script was given, and what Peeky recorded, are the build's -j.
+    assert shown.stdout == f"2 {rb.jobs()}\n"
+    _, manifest = manifest_of(summary)
+    assert manifest["build_inputs"]["env"] == {"NUM_JOBS": str(rb.jobs())}

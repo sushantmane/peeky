@@ -105,13 +105,13 @@ if source is not None:
             skip = True
         elif not arg.startswith(("--emit=", "--out-dir=")):
             expand.append(arg)
-    # Without Cargo's jobserver, whose descriptors these processes don't inherit.
-    cargo_env = {k: v for k, v in os.environ.items()
-                 if k not in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS")}
+    # Each process has Cargo's environment, its jobserver's descriptors passed on
+    # (close_fds=False); the expansion and the compile, RUSTC_BOOTSTRAP too.
+    nightly = {**os.environ, "RUSTC_BOOTSTRAP": crate}
     stable = os.path.join(unit, "stable")
     gate = subprocess.run(
         [*expand, "--emit=metadata", "--out-dir", stable],
-        env=cargo_env, stdin=subprocess.DEVNULL, capture_output=True,
+        env=dict(os.environ), stdin=subprocess.DEVNULL, capture_output=True, close_fds=False,
     )
     if gate.returncode != 0:
         sys.stdout.buffer.write(gate.stdout)
@@ -126,8 +126,7 @@ if source is not None:
     with open(os.path.join(unit, "expand.log"), "wb") as log:
         done = subprocess.run(
             [*expand, "-Zunpretty=expanded", "-o", os.path.join(unit, "expanded.rs")],
-            env={**cargo_env, "RUSTC_BOOTSTRAP": crate},
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            env=nightly, stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=False,
         )
     with open(os.path.join(unit, "expand.json"), "w") as out:
         json.dump({"exit_code": done.returncode}, out)
@@ -142,7 +141,7 @@ if source is not None:
         "-Zunstable-options",
         "-Csymbol-mangling-version=legacy",
     ]
-    os.execve(args[0], args, {**os.environ, "RUSTC_BOOTSTRAP": crate})
+    os.execve(args[0], args, nightly)
 os.execv(args[0], args)
 """
 WRAPPER_SHA256 = hashlib.sha256(WRAPPER.encode()).hexdigest()
@@ -611,10 +610,14 @@ def build(target, root, *, deadline=None, progress=None):
                 deadline,
                 "`cargo clean`",
             )
+            # A fixed number of jobs: a build script's NUM_JOBS (_script_value).
+            jobs_ = jobs()
             result = _run(
                 [
                     target.cargo,
                     *shape.cargo_arguments(),
+                    "-j",
+                    str(jobs_),
                     "--offline",
                     "--locked",
                     "--message-format=json-diagnostic-short",
@@ -633,7 +636,7 @@ def build(target, root, *, deadline=None, progress=None):
                 target, root, shape, directory, run, messages, before, started_ns, store
             )
             manifest["build_inputs"] = _build_inputs(
-                shape, root, messages, env, before, started_ns, vendor
+                shape, root, messages, env, before, started_ns, vendor, jobs_
             )
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
@@ -726,7 +729,19 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         if message.get("reason") != "compiler-artifact":
             continue
         package = by_manifest.get(str(Path(str(message.get("manifest_path"))).resolve()))
+        macro = "proc-macro" in ((message.get("target") or {}).get("kind") or ())
         if package is None:
+            if macro:
+                # A vendored procedural macro runs in an analysed crate's compile too.
+                name = str((message.get("target") or {}).get("name"))
+                filenames = [str(each) for each in message.get("filenames") or ()]
+                depfile, producer = _dependency_file(filenames)
+                if depfile is None:
+                    raise ValueError(f"Cargo wrote no dependency file for the macro `{name}`")
+                read = _read_dependencies(
+                    depfile, shape.workspace, root, target_dir, name, producer
+                )
+                _check_bootstrap_mentions(read["sources"], root, f"the procedural macro `{name}`")
             continue
         artifact = message.get("target") or {}
         profile = message.get("profile") or {}
@@ -748,6 +763,10 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             depfile, shape.workspace, root, target_dir, package.name, producer
         )
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
+        if macro:
+            _check_bootstrap_mentions(
+                read["sources"], root, f"the procedural macro `{artifact.get('name')}`"
+            )
         if package.name not in analysed_names or {"custom-build", "proc-macro"} & set(kinds):
             continue
         crate = str(artifact.get("name", "")).replace("-", "_")
@@ -766,8 +785,9 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         seen_units.add(unit.name)
         entry = _unit(package, artifact, unit, run)
         depfile = Path(entry.pop("dependency_file"))
-        _check_bootstrap_read(package.name, crate, depfile)
         read = _read_dependencies(depfile, shape.workspace, root, target_dir, package.name)
+        _check_bootstrap_mentions(read["sources"], root, f"`{package.name}`")
+        _check_bootstrap_read(package.name, crate, depfile)
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         entry["sources"] = sorted(read["sources"])
         units.append(entry)
@@ -819,6 +839,36 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
 _RERUN = re.compile(r"cargo::?(rerun-if-changed|rerun-if-env-changed)=(.*)")
 # The wrapper's own variables, which name one build's files: no build script's input.
 _PER_BUILD = ("PEEKY_UNITS", "PEEKY_ANALYSED")
+# The most of a build script's output Peeky reads.
+MAX_BUILD_OUTPUT = 16 * 1024 * 1024
+# What Cargo gives every build script in Peeky's build, whatever the package: its host
+# is the target, its profile a dev or test one (`debug`).
+_FIXED_FOR_SCRIPTS = ("TARGET", "HOST", "PROFILE")
+# Variables Cargo sets or changes for a build script whose value Peeky doesn't compute
+# (`OUT_DIR`, `CARGO_PKG_NAME`, `DEP_Z_INCLUDE`, the dynamic library path).
+_CARGO_SETS = re.compile(
+    r"(?:CARGO|CARGO_.*|DEP_.*|OUT_DIR|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|"
+    r"RUSTC_LINKER|LD_LIBRARY_PATH|DYLD_LIBRARY_PATH|DYLD_FALLBACK_LIBRARY_PATH)"
+)
+
+
+def jobs():
+    """The jobs Peeky's build runs (`cargo build -j`): Cargo's `NUM_JOBS` for a build
+    script."""
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def _spend(budget, where):
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise ValueError(
+            f"Peeky records at most {MAX_RECORDED} files a build script or procedural "
+            f"macro may read, and {where} holds more. Build fewer packages' files, or "
+            "give the build script `cargo::rerun-if-changed` lines"
+        )
 
 
 def _tree(top, skip=(), *, budget):
@@ -828,8 +878,6 @@ def _tree(top, skip=(), *, budget):
     files left to record, spent here."""
     top = Path(top)
     found = {}
-    if top.is_file():
-        return {".": _hash(top)}
     for base, folders, files in os.walk(top):
         folders[:] = sorted(
             name
@@ -843,41 +891,102 @@ def _tree(top, skip=(), *, budget):
             path = Path(base, name)
             if path.is_symlink() or not path.is_file():
                 continue
-            budget[0] -= 1
-            if budget[0] < 0:
-                raise ValueError(
-                    f"Peeky records at most {MAX_RECORDED} files a build script or procedural "
-                    f"macro may read, and {top} holds more. Build fewer packages' files, or "
-                    "give the build script `cargo::rerun-if-changed` lines"
-                )
+            _spend(budget, top)
             found[path.relative_to(top).as_posix()] = _hash(path)
     return found
 
 
-def _build_inputs(shape, root, messages, env, before, started_ns, vendor):
+def _exact_tree(top, root, *, budget):
+    """{path relative to ``top``: what is there} of everything under the directory
+    ``top``, as Cargo scans a `rerun-if-changed` directory: hidden, `target` and other
+    packages' directories too. A file's SHA-256; "dir" for a directory; for a link,
+    ["link", what it names, its file's SHA-256, "dir" or None], a directory it names
+    walked too. A link that leaves ``root`` is refused."""
+    root, found, seen = Path(root).resolve(), {}, set()
+    pending = [(Path(top), "")]
+    while pending:
+        directory, prefix = pending.pop()
+        real = directory.resolve()
+        if real in seen:
+            continue
+        seen.add(real)
+        for entry in sorted(os.scandir(directory), key=lambda each: each.name):
+            relative, path = prefix + entry.name, Path(entry.path)
+            _spend(budget, top)
+            if entry.is_symlink():
+                target = path.resolve()
+                if not target.is_relative_to(root):
+                    raise ValueError(
+                        f"Peeky builds only files inside {root}: {path}, which a build script "
+                        f"says it reads, is a link to {target}. Make it a file, or move what "
+                        "it names into the workspace"
+                    )
+                what = "dir" if target.is_dir() else _hash(target) if target.is_file() else None
+                found[relative] = ["link", os.readlink(path), what]
+                if what == "dir":
+                    pending.append((path, relative + "/"))
+            elif entry.is_dir(follow_symlinks=False):
+                found[relative] = "dir"
+                pending.append((path, relative + "/"))
+            elif entry.is_file(follow_symlinks=False):
+                found[relative] = _hash(path)
+            else:
+                found[relative] = "other"
+    return found
+
+
+def _script_value(name, package_id, shape, env, jobs_):
+    """The value Cargo gives a build script of ``package_id`` for the variable ``name``
+    in Peeky's build (``env``: what Peeky runs Cargo with; ``jobs_``: its `-j`): Cargo's
+    own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, from the
+    unit graph; else what Peeky gives Cargo, which Cargo passes on. Refused for a variable
+    Cargo sets otherwise, whose value Peeky doesn't compute."""
+    if name in ("TARGET", "HOST"):
+        return shape.host
+    if name == "PROFILE":
+        return "debug"
+    if name == "NUM_JOBS":
+        return str(jobs_)
+    if name in ("OPT_LEVEL", "DEBUG"):
+        found = [each for each in shape.build_profiles if each[0] == package_id]
+        if len(found) == 1:
+            return found[0][1] if name == "OPT_LEVEL" else found[0][2]
+    elif name == "RUSTC" or not _CARGO_SETS.fullmatch(name):
+        return env.get(name)
+    _, _, package, _ = rust_workspace.package_id(package_id)
+    raise ValueError(
+        f"Peeky can't tell the value Cargo gives `{package}`'s build script of {name}, which "
+        "it says it reads (`rerun-if-env-changed`), so not whether a later build would differ"
+    )
+
+
+def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1):
     """What build scripts and procedural macros may read, beyond what rustc's dependency
-    files list, as the manifest keeps it ({"files": {path: SHA-256 or None where
-    missing}, "trees": {directory: _tree}, "env": {variable: value or None}}): each local
-    build script's `rerun-if-changed` paths (a directory, every file under it), or with
-    none, Cargo's default, every file of its package; every build script's
-    `rerun-if-env-changed` variables (dependencies' too); and with a local procedural
-    macro, every file of its package and of each analysed one (a macro reading files
-    elsewhere isn't followed). Refused where one changed while Cargo ran."""
+    files list, as the manifest keeps it: {"files": {path: identity}, "dirs": {directory:
+    _exact_tree}, "trees": {directory: _tree}, "env": {variable: value or None}}. That
+    is each local build script's `rerun-if-changed` paths (a directory, everything under
+    it), or with none, Cargo's default, every file of its package; every build
+    script's `rerun-if-env-changed` variables (dependencies' too), as Cargo gives them
+    (_script_value); and with a local procedural macro, every file of its package and of
+    each analysed one (a macro reading files elsewhere isn't followed). Refused where one
+    changed while Cargo ran, or where Peeky can't record it."""
     skip = {shape.watch["vendor_directory"]} if vendor else set()
-    files, trees, variables, budget = {}, {}, {}, [MAX_RECORDED]
+    files, dirs, trees, variables, budget = {}, {}, {}, {}, [MAX_RECORDED]
     by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
+
+    def unchanged(path):
+        if Path(path).is_file() and _changed_during(path, before, started_ns):
+            raise RuntimeError(
+                f"Provenance: {_shown(path, root)} changed while Peeky built the "
+                "workspace, so the build may not be of it. Build again"
+            )
 
     def watch_tree(directory):
         key = str(directory)
         if key not in trees:
             trees[key] = _tree(directory, skip, budget=budget)
             for name in trees[key]:
-                path = directory if name == "." else directory / name
-                if _changed_during(path, before, started_ns):
-                    raise RuntimeError(
-                        f"Provenance: {_shown(path, root)} changed while Peeky built the "
-                        "workspace, so the build may not be of it. Build again"
-                    )
+                unchanged(directory / name)
 
     for message in messages:
         if message.get("reason") != "build-script-executed":
@@ -889,7 +998,13 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor):
         source, directory, name, _ = found
         output = Path(out_dir).parent / "output"
         try:
-            text = output.read_bytes()[: 16 * 1024 * 1024].decode("utf-8", "replace")
+            if output.stat().st_size > MAX_BUILD_OUTPUT:
+                raise ValueError(
+                    f"Peeky reads at most {MAX_BUILD_OUTPUT // 1024 // 1024} MiB of a build "
+                    f"script's output, and `{name}`'s is more: Peeky can't tell all it says "
+                    "it reads. Make it print less"
+                )
+            text = output.read_bytes().decode("utf-8", "replace")
         except OSError:
             raise ValueError(f"Cargo kept no output of `{name}`'s build script") from None
         changed = []
@@ -897,7 +1012,9 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor):
             if (rerun := _RERUN.fullmatch(line.strip())) is None:
                 continue
             if rerun[1] == "rerun-if-env-changed":
-                variables[rerun[2]] = env.get(rerun[2])
+                variables[rerun[2]] = _script_value(
+                    rerun[2], message["package_id"], shape, env, jobs_
+                )
             elif source is None:
                 changed.append(rerun[2])
         if source is not None:
@@ -908,18 +1025,20 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor):
         for each in changed:
             path = package_directory / each
             if path.is_dir():
-                watch_tree(path.resolve())
-            elif str(path) not in files:
-                if path.is_file():
-                    if _changed_during(path, before, started_ns):
-                        raise RuntimeError(
-                            f"Provenance: {_shown(path, root)} changed while Peeky built the "
-                            "workspace, so the build may not be of it. Build again"
+                if str(path) not in dirs:
+                    if path.is_symlink() and not path.resolve().is_relative_to(root):
+                        raise ValueError(
+                            f"Peeky builds only files inside {root}: {path}, which a build "
+                            f"script says it reads, is a link to {path.resolve()}. Make it a "
+                            "directory, or move what it names into the workspace"
                         )
-                    files[str(path)] = _hash(path)
-                else:
-                    files[str(path)] = None
-                budget[0] -= 1
+                    dirs[str(path)] = _exact_tree(path, root, budget=budget)
+                    for name, what in dirs[str(path)].items():
+                        unchanged(path / name)
+            elif str(path) not in files:
+                _spend(budget, path)
+                unchanged(path)
+                files[str(path)] = rust_workspace.identity(path)
     macros = {
         str(Path(str(message.get("manifest_path"))).resolve().parent)
         for message in messages
@@ -933,6 +1052,7 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor):
             watch_tree((root / package.directory).resolve())
     return {
         "files": dict(sorted(files.items())),
+        "dirs": dict(sorted(dirs.items())),
         "trees": dict(sorted(trees.items())),
         "env": dict(sorted(variables.items())),
     }
@@ -1003,6 +1123,22 @@ def _unit(package, artifact, unit, run):
         "expanded": expanded,
         "dependency_file": str(Path(out_dir) / f"{unit.name}.d"),
     }
+
+
+def _check_bootstrap_mentions(sources, root, whose):
+    """Refuse where a Rust source of ``sources`` (relative to ``root``) mentions
+    RUSTC_BOOTSTRAP: Peeky sets it for an analysed crate's own compile, which the crate's
+    code and the procedural macros running there (``whose``) could then tell from a
+    stable one. Otherwise they are taken not to change on it, as dependencies are taken
+    as sound."""
+    for path in sources:
+        if path.endswith(".rs") and b"RUSTC_BOOTSTRAP" in (Path(root) / path).read_bytes():
+            raise ValueError(
+                f"Peeky analyses only code built as stable Rust builds it: {whose}'s {path} "
+                "mentions RUSTC_BOOTSTRAP, which Peeky's build sets for an analysed crate's "
+                "own compile, where procedural macros run too. Take the mention out, or "
+                "analyse another package"
+            )
 
 
 def _check_bootstrap_read(package, crate, depfile):
@@ -1235,8 +1371,10 @@ def _current(target, root, *, hold):
                 raise _edited(target, f"{name} changed")
         state = manifest["watch"]
         for path, recorded in state["files"].items():
-            if Path(path).name == "Cargo.toml" and (
-                rust_workspace.identity(path, digest) != recorded
+            if (
+                Path(path).name == "Cargo.toml"
+                and path not in state.get("absent", ())
+                and rust_workspace.identity(path, digest) != recorded
             ):
                 raise _edited(target, f"{_shown(path, root)} changed")
         members = rust_workspace.members_now(state)
@@ -1268,15 +1406,22 @@ def _current(target, root, *, hold):
 
 def _check_build_inputs(target, root, directory, manifest):
     """BuildRequired where what a build script or procedural macro may read changed since
-    the build (_build_inputs): a file, a directory's files, a variable."""
+    the build (_build_inputs): a file, a directory's contents, a variable as Cargo
+    would give it now."""
     inputs = manifest["build_inputs"]
     for path, recorded in inputs["files"].items():
-        try:
-            now = sha256_file(path) if Path(path).is_file() else None
-        except OSError:
-            now = "unreadable"
-        if now != recorded:
+        if rust_workspace.identity(path) != recorded:
             raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
+    for top, recorded in inputs["dirs"].items():
+        try:
+            now = _exact_tree(Path(top), root, budget=[MAX_RECORDED])
+        except (OSError, ValueError):
+            now = {}
+        if now != recorded:
+            name = sorted(set(now) ^ set(recorded) or {k for k in now if now[k] != recorded[k]})[0]
+            raise _edited(
+                target, f"{_shown(Path(top) / name, root)}, which a build script reads, changed"
+            )
     vendor = manifest["watch"].get("vendor_directory")
     for top, recorded in inputs["trees"].items():
         try:
@@ -1285,8 +1430,7 @@ def _check_build_inputs(target, root, directory, manifest):
             now = {}
         if now != recorded:
             name = sorted(set(now.items()) ^ set(recorded.items()))[0][0]
-            path = Path(top) if name == "." else Path(top) / name
-            raise _edited(target, f"{_shown(path, root)} changed")
+            raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
     fresh = _environment(
         target,
         directory / "cargo-home",
@@ -1297,7 +1441,14 @@ def _check_build_inputs(target, root, directory, manifest):
         manifest["rustflags"],
     )
     for name, value in inputs["env"].items():
-        if name not in _PER_BUILD and fresh.get(name) != value:
+        if name == "NUM_JOBS":
+            now = str(jobs())
+        elif name in _FIXED_FOR_SCRIPTS or name in ("OPT_LEVEL", "DEBUG") or name in _PER_BUILD:
+            # From the tools and the profiles, which the build's other records hold.
+            continue
+        else:
+            now = fresh.get(name)
+        if now != value:
             raise _edited(
                 target, f"the build environment's {name}, which a build script reads, changed"
             )

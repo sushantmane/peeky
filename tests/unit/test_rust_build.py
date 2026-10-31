@@ -15,9 +15,16 @@ from peeky.errors import ERROR_CODES, classify
 
 FAKE_RUSTC = """import json, os, sys
 args = sys.argv[1:]
+jobserver = int(os.environ.get("FAKE_JOBSERVER_FD", "-1"))
+try:
+    os.fstat(jobserver)
+    open_ = True
+except OSError:
+    open_ = False
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps({"args": args, "bootstrap": os.environ.get("RUSTC_BOOTSTRAP"),
-                          "makeflags": os.environ.get("CARGO_MAKEFLAGS")}) + "\\n")
+                          "makeflags": os.environ.get("CARGO_MAKEFLAGS"),
+                          "jobserver": open_, "env": dict(os.environ)}) + "\\n")
 if "-o" in args:
     with open(args[args.index("-o") + 1], "w") as out:
         out.write("#![feature(prelude_import)]\\npub fn expanded() {}\\n")
@@ -44,17 +51,31 @@ def wrapped(tmp_path):
     log = tmp_path / "log"
 
     def run(*args, crate="util", cwd=tmp_path / "ws", refuse=False, failed=False):
+        # Cargo's jobserver: a pipe whose descriptors every rustc it runs inherits.
+        read_end, write_end = os.pipe()
         env = {
             "PATH": os.environ["PATH"],
             "FAKE_LOG": str(log),
+            "FAKE_JOBSERVER_FD": str(read_end),
             "PEEKY_ANALYSED": json.dumps({"util": [str(source.resolve())]}),
             "PEEKY_UNITS": str(units),
-            "CARGO_MAKEFLAGS": "-j --jobserver-fds=6,7",
+            "CARGO_MAKEFLAGS": f"-j --jobserver-fds={read_end},{write_end}",
             "CARGO_PKG_NAME": "util",
             **({"FAKE_STABLE_REFUSES": "1"} if refuse else {}),
         }
         argv = [str(wrapper), str(rustc), "--crate-name", crate, *args]
-        done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+        try:
+            done = subprocess.run(
+                argv,
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                pass_fds=(read_end, write_end),
+            )
+        finally:
+            os.close(read_end)
+            os.close(write_end)
         assert (done.returncode != 0) is failed, done.stderr
         runs = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         log.unlink(missing_ok=True)
@@ -96,10 +117,14 @@ def test_the_wrapper_records_expands_and_dumps_an_analysed_compile(wrapped):
         str(unit / "stable"),
     ]
     assert gate["bootstrap"] is None and not (unit / "stable").exists()
-    # Expansion: a second rustc that writes only the expanded text, without Cargo's jobserver.
+    # Expansion: a second rustc that writes only the expanded text.
     assert expand["args"][-3:] == ["-Zunpretty=expanded", "-o", str(unit / "expanded.rs")]
     assert not any(arg.startswith("--emit") or arg == "--out-dir" for arg in expand["args"])
-    assert expand["bootstrap"] == "util" and expand["makeflags"] is None
+    # Each in Cargo's environment, with its jobserver; the expansion and the compile in the
+    # same one, RUSTC_BOOTSTRAP too.
+    assert all(each["jobserver"] and each["makeflags"] for each in runs)
+    assert expand["env"] == compile_["env"] and expand["bootstrap"] == "util"
+    assert {**gate["env"], "RUSTC_BOOTSTRAP": "util"} == compile_["env"]
     # The compile: MIR dumped, LLVM IR emitted. The program is built from the MIR the
     # proofs read, so its compile has those nightly flags, allowed in its own environment
     # for this crate alone.
@@ -144,12 +169,8 @@ def test_the_wrapper_passes_any_other_compile_through_unchanged(wrapped, crate, 
     run, units = wrapped
     args = ("--edition=2021", source, "--emit=link", "--crate-type", "lib")
     runs = run(*args, crate=crate)
-    assert runs == [
-        {
-            "args": ["--crate-name", crate, *args],
-            "bootstrap": None,
-            "makeflags": runs[0]["makeflags"],
-        }
+    assert [(each["args"], each["bootstrap"]) for each in runs] == [
+        (["--crate-name", crate, *args], None)
     ]
     assert list(units.iterdir()) == []
 
@@ -336,6 +357,8 @@ def fake_shape(tmp_path, local=("util", "app"), analysed=("util",)):
         local=tuple(packages.values()),
         analysed=tuple(packages[name] for name in analysed),
         watch={"vendor_directory": None},
+        host="aarch64-unknown-linux-gnu",
+        build_profiles=((f"path+file://{tmp_path / 'ws' / 'util'}#0.1.0", "0", "true"),),
     )
 
 
@@ -375,10 +398,17 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
     env = {"PATH": "/usr/bin:/bin", "PEEKY_UNITS": "/x"}
     found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None)
     assert found["files"] == {
-        str(root / "util/gone.txt"): None,
-        str(root / "util/schema.txt"): hashlib.sha256(b"one\n").hexdigest(),
+        str(root / "util/gone.txt"): ["missing"],
+        str(root / "util/schema.txt"): [
+            "file",
+            str((root / "util/schema.txt").resolve()),
+            hashlib.sha256(b"one\n").hexdigest(),
+        ],
     }
-    assert set(found["trees"]) == {str(root / "util/proto"), str(root / "app")}
+    assert found["dirs"] == {
+        str(root / "util/proto"): {"a.proto": hashlib.sha256(b"a\n").hexdigest()}
+    }
+    assert set(found["trees"]) == {str(root / "app")}
     assert sorted(found["trees"][str(root / "app")]) == [
         "assets/logo.txt",
         "build.rs",
@@ -479,5 +509,131 @@ def test_an_analysed_compile_that_reads_rustc_bootstrap_is_refused(tmp_path):
     assert str(caught.value).startswith(
         "Peeky analyses only code built as stable Rust builds it: `util`'s util reads "
         "RUSTC_BOOTSTRAP"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_oversized_build_script_output_is_refused_not_cut(tmp_path):
+    # Past 16 MiB, a `rerun-if-changed` line would not be read.
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/schema.txt": "one\n"})
+    output = "x" * (rb.MAX_BUILD_OUTPUT + 1) + "\ncargo::rerun-if-changed=schema.txt\n"
+    messages = [build_script_run(tmp_path, "util", output)]
+    with pytest.raises(ValueError) as caught:
+        rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
+    assert str(caught.value).startswith(
+        "Peeky reads at most 16 MiB of a build script's output, and `util`'s is more"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_a_watched_directory_is_recorded_entry_by_entry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root = tmp_path / "ws"
+    write(
+        root,
+        {
+            "util/build.rs": "",
+            "util/data/.schema": "one\n",
+            "util/data/target/x.txt": "x\n",
+            "util/data/nested/Cargo.toml": "[package]\n",
+        },
+    )
+    (root / "util/data/link").symlink_to("nested/Cargo.toml")
+    messages = [build_script_run(tmp_path, "util", "cargo::rerun-if-changed=data\n")]
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
+    assert found["dirs"][str(root / "util/data")] == {
+        ".schema": hashlib.sha256(b"one\n").hexdigest(),
+        "link": ["link", "nested/Cargo.toml", hashlib.sha256(b"[package]\n").hexdigest()],
+        "nested": "dir",
+        "nested/Cargo.toml": hashlib.sha256(b"[package]\n").hexdigest(),
+        "target": "dir",
+        "target/x.txt": hashlib.sha256(b"x\n").hexdigest(),
+    }
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    for change in (
+        lambda: (root / "util/data/.schema").write_text("two\n"),
+        lambda: (root / "util/data/target/new").mkdir(),
+    ):
+        change()
+        with pytest.raises(rb.BuildRequired, match=r"util/data/.*, which a build script reads"):
+            rb._check_build_inputs(target, root, tmp_path, manifest)
+    # A link out of the root is refused.
+    (root / "util/data/out").symlink_to(tmp_path)
+    with pytest.raises(ValueError, match="Peeky builds only files inside") as caught:
+        rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_explicit_files_count_against_the_limit(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    monkeypatch.setattr(rb, "MAX_RECORDED", 3)
+    lines = "".join(f"cargo::rerun-if-changed=f{n}\n" for n in range(5))
+    messages = [build_script_run(tmp_path, "util", lines)]
+    with pytest.raises(ValueError, match="Peeky records at most 3 files"):
+        rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
+
+
+def test_a_build_scripts_variables_are_recorded_as_cargo_gives_them(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    names = "NUM_JOBS TARGET HOST PROFILE OPT_LEVEL DEBUG RUSTC PATH CC"
+    output = "".join(f"cargo::rerun-if-env-changed={name}\n" for name in names.split())
+    output += "cargo::rerun-if-changed=build.rs\n"
+    messages = [build_script_run(tmp_path, "util", output)]
+    env = {"PATH": "/usr/bin:/bin", "RUSTC": "/toolchain/bin/rustc"}
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
+    assert found["env"] == {
+        "CC": None,
+        "DEBUG": "true",
+        "HOST": "aarch64-unknown-linux-gnu",
+        "NUM_JOBS": "6",
+        "OPT_LEVEL": "0",
+        "PATH": "/usr/bin:/bin",
+        "PROFILE": "debug",
+        "RUSTC": "/toolchain/bin/rustc",
+        "TARGET": "aarch64-unknown-linux-gnu",
+    }
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: env)
+    monkeypatch.setattr(rb, "jobs", lambda: 6)
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    # Another machine's jobs: a later build's NUM_JOBS differs.
+    monkeypatch.setattr(rb, "jobs", lambda: 8)
+    with pytest.raises(rb.BuildRequired, match="the build environment's NUM_JOBS"):
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    # One Cargo sets that Peeky can't compute is refused, naming it.
+    for name in ("OUT_DIR", "CARGO_PKG_NAME", "DEP_Z_INCLUDE"):
+        messages = [
+            build_script_run(tmp_path / name, "util", f"cargo::rerun-if-env-changed={name}\n")
+        ]
+        with pytest.raises(ValueError) as caught:
+            rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
+        assert str(caught.value).startswith(
+            f"Peeky can't tell the value Cargo gives `util`'s build script of {name}"
+        )
+        assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_a_mention_of_rustc_bootstrap_is_refused_naming_the_crate_and_file(tmp_path):
+    write(
+        tmp_path, {"util/src/lib.rs": "pub fn f() {}\n", "util/src/env.rs": "// RUSTC_BOOTSTRAP\n"}
+    )
+    rb._check_bootstrap_mentions(["util/src/lib.rs"], tmp_path, "`util`")
+    with pytest.raises(ValueError) as caught:
+        rb._check_bootstrap_mentions(
+            ["util/src/lib.rs", "util/src/env.rs"], tmp_path, "the procedural macro `derive`"
+        )
+    assert str(caught.value).startswith(
+        "Peeky analyses only code built as stable Rust builds it: the procedural macro "
+        "`derive`'s util/src/env.rs mentions RUSTC_BOOTSTRAP"
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"

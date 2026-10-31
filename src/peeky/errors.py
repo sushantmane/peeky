@@ -465,10 +465,12 @@ _RULES = (
         False,
     ),
     (
-        r"^Peeky records at most [0-9]+ files a build script or procedural macro may read",
+        r"^Peeky (?:records at most [0-9]+ files a build script or procedural macro may read|"
+        r"reads at most [0-9]+ MiB of a build script's output|can't tell the value Cargo gives "
+        r"`)",
         "UNSUPPORTED",
-        "Give the build script `cargo::rerun-if-changed` lines naming what it reads, or move "
-        "large data out of the package, then build again.",
+        "Nothing was recorded. Change the build script as the message says, or move large data "
+        "out of the package, then build again.",
         False,
     ),
     (
