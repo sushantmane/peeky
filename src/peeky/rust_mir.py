@@ -1231,6 +1231,12 @@ class _Forwarding(NamedTuple):
     trusted: frozenset
     layouts: object
     known: frozenset
+    # The crate's `impl` blocks, as ``_local_impls`` reads their headers: (the type's last
+    # segment or None, ``_impl_trait``'s (trait, derived) or None, the methods it
+    # defines); the traits the crate defines; its `use` trees (``_use_trees``).
+    blocks: tuple = ()
+    traits: frozenset = frozenset()
+    uses: tuple = ()
 
     def first(self):
         """The witness of any code of the crate's that may, or None where none may."""
@@ -1239,11 +1245,17 @@ class _Forwarding(NamedTuple):
                 return each
         return _UNREAD_CODE if self.unknown else None
 
-    def call(self, name, kinds, path=""):
+    def call(self, name, kinds, path="", crate=False):
         """The witness where a call of ``name`` by ``path``, given values of the MIR
-        types ``kinds``, may run such code; else None."""
+        types ``kinds``, may run such code; else None. ``crate``: the call runs a function
+        of the crate's, read (``Body._crate_function``), whose body says what it runs (a
+        namesake's counts too), not the types it is given."""
         if self.first() is None:
             return None
+        if crate:
+            if name in self.names:
+                return self.names[name]
+            return self.first() if name in self.unknown or not name else None
         if not _std_callee(path, self.trusted, self.layouts):
             if name in self.names:
                 return self.names[name]
@@ -1514,6 +1526,86 @@ def _strip_arguments(text):
         elif not depth:
             out.append(char)
     return "".join(out).replace("::::", "::").rstrip(":").strip()
+
+
+# A call through a local: a function pointer (`move _6` of `_5 = move _6(move _7)`).
+_POINTER_CALLEE = re.compile(r"(?:(?:move|copy) )?\(?\*?_[0-9]+\)?")
+
+
+def _qualified_call(path):
+    """(self type, trait or "", what follows) of a qualified call path: (`smallnum::Holder`,
+    `std::clone::Clone`, `clone`) of `<smallnum::Holder as std::clone::Clone>::clone`;
+    None for a plain one."""
+    text = path.strip()
+    if not text.startswith("<"):
+        return None
+    depth = 0
+    for at, char in enumerate(text):
+        depth += char == "<"
+        depth -= char == ">" and text[at - 1 : at] != "-"
+        if depth == 0:
+            inner, rest = text[1:at], text[at + 1 :].removeprefix("::")
+            break
+    else:
+        return None
+    level, split = 0, None
+    for at, char in enumerate(inner):
+        level += char in "<([{"
+        level -= char in ">)]}" and inner[at - 1 : at] != "-"
+        if level == 0 and inner.startswith(" as ", at):
+            split = at
+    if split is None:
+        return inner.strip(), "", rest
+    return inner[:split].strip(), inner[split + 4 :].strip(), rest
+
+
+def _crate_function(path, foreign):
+    """Whether the call ``path`` surely runs a function of the crate's, which Peeky reads:
+    a plain path the crate's (`forward`, `Wrap::new`), or a method of a trait the crate
+    defines, or of a dependency's trait (``Body._foreign_call`` found no dependency's code
+    for it: the crate's own `impl` defines it). Not a standard trait's method, which may
+    be a blanket `impl`'s (`ToString` runs the crate's `Display`)."""
+    qualified = _qualified_call(path)
+    if qualified is None:
+        first = _strip_arguments(path).removeprefix("::").split("::")[0]
+        return bool(first) and first not in _STD_CRATES and first not in _PRIMITIVE_WORDS
+    trait = _strip_arguments(qualified[1]).removeprefix("::") if qualified[1] else ""
+    return bool(trait) and trait.split("::")[0] not in _STD_CRATES
+
+
+def _last_segment(text):
+    """The last path segment of a type or trait, without arguments, references or `dyn`:
+    `Wrap` of `&mut m::Wrap<u32>`."""
+    plain = _strip_arguments(text or "")
+    plain = re.sub(r"^(?:&(?:'\w+ )?(?:mut )?|dyn |\*(?:const|mut) )+", "", plain).strip()
+    return plain.rsplit("::", 1)[-1]
+
+
+def _use_trees(texts):
+    """Each `use` tree of the crate's sources ``texts``, its whitespace collapsed."""
+    found = []
+    for text in texts.values():
+        for tree in re.findall(r"\buse\s+([^;]+);", text or ""):
+            found.append(" ".join(tree.split()))
+    return tuple(found)
+
+
+def _bound_names(trees, path):
+    """(the names the crate's `use` trees bind to the trait ``path`` (`smallnum::Trait`):
+    `Trait`, an alias; whether a glob `use` of a module of its crate may bind its name)."""
+    segments = _strip_arguments(path).removeprefix("::").split("::")
+    root, name = segments[0], segments[-1]
+    names, glob = set(), False
+    for tree in trees:
+        tree = tree.removeprefix("::")
+        if not re.match(rf"{re.escape(root)}\s*::", tree):
+            continue
+        for alias in re.findall(rf"\b{re.escape(name)}\s+as\s+(\w+)", tree):
+            names.add(alias)
+        if re.search(rf"\b{re.escape(name)}\b(?!\s+as\b)", tree):
+            names.add(name)
+        glob = glob or tree.endswith("*")
+    return frozenset(names), glob
 
 
 def _foreign_rows(body, found):
@@ -3383,17 +3475,14 @@ class Body:
         for code of the crate's Peeky can't read. Else None."""
         kind, name, kinds, path = edge
         if kind == "call":
-            root = _foreign_root(path, foreign, generics) or next(
-                (found for found in (_foreign_root(k, foreign, generics) for k in kinds) if found),
-                None,
-            )
-            what = f"`{_shown_call(path)}`" if path else "a call through a function pointer"
-            if root:
-                # "~": a function of another crate's (the standard library's) given or named
-                # for a type of the dependency's, whose code it may run.
-                own = _foreign_root(_call_head(path), foreign, generics)
-                return (what, root if own else f"~{root}", None)
-            via = state.call(name, kinds, path) if state is not None else None
+            if not path or _POINTER_CALLEE.fullmatch(path):
+                # A function pointer's target (`move _6(…)`), which Peeky doesn't follow.
+                return ("a call through a function pointer", "?fn", None)
+            what = f"`{_shown_call(path)}`"
+            if root := self._foreign_call(path, kinds, state, foreign, generics):
+                return (what, root, None)
+            crate = _crate_function(path, foreign)
+            via = state.call(name, kinds, path, crate) if state is not None else None
             return (what, via[1], via) if via else None
         what = f"the drop of a `{kinds[0]}`" if kinds[0] else "a drop"
         if root := self._foreign_held(kinds[0], foreign, generics, layouts):
@@ -3401,6 +3490,97 @@ class Body:
             return (what, root if own or root == "?" else f"~{root}", None)
         via = state.drop(kinds[0]) if state is not None else None
         return (what, via[1], via) if via else None
+
+    def _foreign_call(self, path, kinds, state, foreign, generics):
+        """The crate whose code the call ``path``, given values of the MIR types ``kinds``,
+        runs that Peeky reads none of, or None for the crate's own or the standard
+        library's alone (``_foreign_edge``):
+
+        - a dependency's function or inherent method (`smallnum::keep`);
+        - a method of a dependency's trait (``_dependency_method``), unless the crate's own
+          `impl` defines it; "?impl" where Peeky can't tell that `impl` apart;
+        - a standard trait's or inherent method of a dependency's type (`<smallnum::Holder
+          as std::clone::Clone>::clone`), "?" for a trait object's or type parameter's;
+        - "~" and the crate where the standard library's function is named for, or given,
+          a dependency's type, whose code it may run (`std::mem::drop::<smallnum::Holder>`);
+        - "?closure" where it names or is given a closure, an async block or the like whose
+          body Peeky read none of (``_Forwarding.known``): one a dependency made.
+
+        A trait the crate defines is implemented only by the crate (a dependency can't name
+        it), and a function of the crate's is read: what either does with what it is given
+        is the crate's code's (``_Forwarding``)."""
+        known = state.known if state is not None else frozenset()
+        spans = [each for text in (path, *kinds) for each in _SPANNED.findall(text or "")]
+        stranger = any(each.startswith("{") and each not in known for each in spans)
+        qualified = _qualified_call(path)
+        if qualified is not None:
+            subject, trait, rest = qualified
+            trait_root = _foreign_root(_strip_arguments(trait), foreign, ()) if trait else None
+            if trait_root:
+                return self._dependency_method(
+                    subject, trait, rest, trait_root, state, foreign, generics
+                )
+            first = _strip_arguments(trait).removeprefix("::").split("::")[0] if trait else ""
+            if trait and first not in _STD_CRATES:
+                # The crate's own trait: only its `impl`s, which it reads.
+                return None
+            if root := _foreign_root(_strip_arguments(subject), foreign, generics):
+                return root
+            head_std = True
+        else:
+            head = _strip_arguments(path)
+            if root := _foreign_root(head, foreign, generics):
+                return root
+            head_std = head.removeprefix("::").split("::")[0] in _STD_CRATES
+        if not head_std:
+            # A function of the crate's, read: what it runs is its body's.
+            return None
+        if stranger:
+            return "?closure"
+        for text in (path, *kinds):
+            if root := _foreign_root(text, foreign, generics):
+                return root if root == "?" else f"~{root}"
+        return None
+
+    def _dependency_method(self, subject, trait, rest, root, state, foreign, generics):
+        """The crate whose code `<subject as trait>::method` runs, the trait a dependency's
+        (``root``): None where the crate's own `impl` of it for ``subject`` defines the
+        method (its body is read); the trait's crate where the method is its default, or
+        no `impl` of the crate's applies (a dependency's own, or its blanket one); "?" for a
+        trait object or a type parameter; "?impl" where Peeky can't tell whether one of the
+        crate's `impl`s is this one (a bare trait name the `use` lines don't bind to it, a
+        derive's, a header it can't read)."""
+        if _foreign_root(_strip_arguments(subject), foreign, generics) == "?":
+            return "?"
+        method = re.split(r"::|<", rest or "", maxsplit=1)[0]
+        blocks = state.blocks if state is not None else ()
+        traits = state.traits if state is not None else frozenset()
+        bound, glob = _bound_names(state.uses if state is not None else (), trait)
+        wanted, last = _strip_arguments(trait).removeprefix("::"), _last_segment(trait)
+        own, doubt = [], False
+        for kind, found, methods in blocks:
+            if found is None or (found[1] and _last_segment(found[0]) == last):
+                # A header Peeky can't read, or a derive's (whose type it doesn't tell).
+                doubt = doubt or found is None or kind is None
+                if kind is None or found is None:
+                    continue
+            if kind != _last_segment(subject):
+                continue
+            named = _strip_arguments(found[0]).removeprefix("::")
+            if "::" in named:
+                if named == wanted:
+                    own.append(methods)
+                continue
+            if named in bound or (named == last and glob and named not in traits):
+                own.append(methods)
+            elif named == last:
+                doubt = True
+        if any(method in methods for methods in own):
+            return None
+        if own:
+            # The trait's default method: the dependency's code.
+            return root
+        return "?impl" if doubt else root
 
     def _foreign_held(self, kind, foreign=None, generics=None, layouts=None):
         """The crate (as ``_foreign_root`` names it) whose `Drop` a drop of a value of the
@@ -3535,15 +3715,16 @@ class Body:
                     found.add(word)
         return tuple(sorted(found))
 
-    def foreign_given(self, local, positions):
+    def foreign_given(self, local, positions, free_types=frozenset()):
         """[((block, index), what it runs, the crate, how, via)] of each call or drop of
         ``foreign_calls`` that may have run before the stop at one of ``positions``
         ((block, index): before that statement; a path from the call's return reaches one,
         ``local`` not restarted on the way) and was given ``local``'s value then:
-        ``local`` itself ("value"), a pointer that may point into it ("pointer": `&x`,
-        what is made of one, what a call given one returns), or what may hold a copy of it
-        or of what is computed from it ("copy": `y` of `let y = x;`, a closure capturing
-        it, `&y`), as the copy flow traces them (``_copy_state``'s direct copies and
+        ``local`` itself ("value"), a borrow of it ("pointer": `&x`, ``_borrows_of``), what
+        may hold a pointer into it ("holder": what is made of one, what a call given one
+        returns or may store it in; ``free_types`` hold none), or what may hold a copy
+        of it or of what is computed from it ("copy": `y` of `let y = x;`, a closure
+        capturing it, `&y`), as the copy flow traces them (``_copy_state``'s direct copies and
         pointers, ``lent_from``). The dependency may keep a copy, which a change of
         ``local`` would not reach. "unknown" for each such call given anything, where the
         copy flow is past its budget."""
@@ -3551,7 +3732,7 @@ class Body:
         calls = self.foreign_calls()
         if not calls:
             return found
-        lent = self.lent_from(local, self.generics, frozenset())
+        lent = self.lent_from(local, self.generics, free_types)
         for place, (what, root, via) in sorted(calls.items()):
             if not self._reaches_before_restart(place, local, positions):
                 continue
@@ -3571,11 +3752,36 @@ class Body:
             _, _, direct, own, kept, aims = state
             if local in operands:
                 found.append((place, what, root, "value", via))
-            elif operands & (lent | aims | own):
+            elif operands & own & self._borrows_of(local):
                 found.append((place, what, root, "pointer", via))
+            elif operands & (lent | aims | own):
+                found.append((place, what, root, "holder", via))
             elif operands & (direct | kept):
                 found.append((place, what, root, "copy", via))
         return found
+
+    def _borrows_of(self, local):
+        """The locals that are only ever a borrow of ``local`` or of a place in it (`&_1`,
+        `&mut (_1.0: u32)`, `&raw const _1`), or a reborrow, copy or move of one: each a
+        pointer into it, which a note may call so."""
+        assigned, found, grown = self._assignments(), set(), True
+        borrow = re.compile(rf"&(?:mut |raw (?:const|mut) )?\(*_{local}\b")
+        while grown:
+            grown = False
+            for target, values in assigned.items():
+                if target in found or not values:
+                    continue
+                if all(
+                    borrow.match(value)
+                    or any(
+                        re.fullmatch(rf"&(?:mut )?\(\*_{n}\)|(?:copy|move) _{n}", value)
+                        for n in found
+                    )
+                    for value in values
+                ):
+                    found.add(target)
+                    grown = True
+        return frozenset(found)
 
     def _reaches_before_restart(self, place, local, positions):
         """Whether some path from the return of the call or drop at ``place`` (the end of
@@ -9196,7 +9402,15 @@ class OwnedLocals:
         return coded or found
 
     def foreign_given(
-        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        free_types=frozenset(),
     ):
         """For the frame's local ``variable_name``: [(file, line, what it runs, the crate,
         how)] of each call or drop into code Peeky reads none of (a dependency's) that may
@@ -9208,9 +9422,9 @@ class OwnedLocals:
         if placed is None:
             return None
         body, local, positions = placed
-        return _foreign_rows(body, body.foreign_given(local, positions))
+        return _foreign_rows(body, body.foreign_given(local, positions, free_types))
 
-    def foreign_everywhere(self, hashed, variable_name, line, path):
+    def foreign_everywhere(self, hashed, variable_name, line, path, free_types=frozenset()):
         """``foreign_given``'s calls where every place of ``line`` a stop can be at (before
         a statement that emits code, as ``coded_hazards``) has one: no stop there can
         change the local so that the dependency's copy sees it (refused before the program
@@ -9224,7 +9438,7 @@ class OwnedLocals:
             for position in positions
             if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
         ] or positions
-        each = [body.foreign_given(local, [position]) for position in coded]
+        each = [body.foreign_given(local, [position], free_types) for position in coded]
         if not each or not all(each):
             return None
         rows = {}
@@ -10149,6 +10363,25 @@ class OwnedLocals:
             self._keepers_known = frozenset(found)
         return self._keepers_known
 
+    def _local_impls(self):
+        """The crate's `impl` blocks its dump has functions of: (the type's last segment
+        (``_impl_self``), the trait (``_impl_trait``), the names of the functions it
+        defines), each block once."""
+        blocks = {}
+        for body in self.bodies:
+            segments = _segments(body.path)
+            if len(segments) < 2 or not segments[-2].startswith("<impl at "):
+                continue
+            block = segments[-2]
+            if block not in blocks:
+                blocks[block] = (
+                    _impl_self(block, self.texts),
+                    _impl_trait(block, self.texts),
+                    set(),
+                )
+            blocks[block][2].add(segments[-1])
+        return tuple((kind, trait, frozenset(names)) for kind, trait, names in blocks.values())
+
     def _forwarding(self):
         """``_Forwarding`` of the crate: which of its functions, closures and `impl`s may
         hand what they are given to a dependency's code (``Body.forwards``), found again
@@ -10168,9 +10401,25 @@ class OwnedLocals:
                 def closures_of(body):
                     return _CLOSURE_TYPE.findall(body.types.get(1, "") if body.arguments else "")
 
-                known = frozenset(each for body in self.bodies for each in closures_of(body))
+                # Each closure, async block or the like whose body the dump holds, by its type.
+                known = frozenset(
+                    each
+                    for body in self.bodies
+                    for each in _SPANNED.findall(body.types.get(1, "") if body.arguments else "")
+                )
                 generics = [body.guessed_generics(layouts) for body in self.bodies]
-                state = _Forwarding({}, {}, None, unknown, trusted, layouts, known)
+                state = _Forwarding(
+                    {},
+                    {},
+                    None,
+                    unknown,
+                    trusted,
+                    layouts,
+                    known,
+                    self._local_impls(),
+                    _crate_traits(self.texts)[0],
+                    _use_trees(self.texts),
+                )
                 for _ in range(_GLOBAL_ROUNDS):
                     names, closures, impls, memo = {}, {}, None, {}
                     for body, guessed in zip(self.bodies, generics):

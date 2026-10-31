@@ -376,6 +376,9 @@ it as one more source (`EXPANDED`).
 - A dependency's macros write the dependency's own code, taken as sound, as std's `thread_local!`
   is. A local procedural macro writes the project's. So where the build has one (the manifest's
   `macros`), the unsafe scan reads the expansion too, and its note names the macros.
+- What the build generated and an analysed crate read (a build script's `OUT_DIR` file it
+  `include!`s) is the project's code too. Each analysed unit records those files (`generated`),
+  and the unsafe scan reads each, naming it.
 - A frame outside the analysed compile's files, a dependency's or another member's, is read as a
   library's (`owns_source`), though its file is under the workspace.
 
@@ -908,6 +911,16 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   a dependency's type counts too (`std::mem::drop::<smallnum::Holder>`), as one that may run that
   type's code ("~"). A drop counts by what its type holds by value (`_foreign_held`): a crate
   type's field (`layouts`), a closure's capture, a standard container's element.
+- Whose code a call runs is read from its head (`Body._foreign_call`). A plain path's first
+  segment. For `<S as T>::m`, the trait: the crate's own trait has only the crate's `impl`s. A
+  dependency's trait's method is the crate's code where the crate's own `impl` of it for `S`
+  defines `m` (`_dependency_method`): the `impl`'s header (`_local_impls`) names the trait in
+  full, or by a name a `use` line binds to it (`_bound_names`). Without that, it is the
+  dependency's (its default method, its blanket `impl`). Where Peeky can't tell, the note says
+  so ("?impl"). A standard trait's method is judged by `S`.
+- A call through a function pointer (`move _6(…)`) may run a dependency's code ("?fn"). So may
+  a closure or async block whose body the dump doesn't hold ("?closure"); a dependency's own is
+  named by its path (`{closure@smallnum::keeper::{closure#0}}`).
 - Such code may write through, keep or hand on anything it is given. It may touch any global
   state, run any code of the crate's ever handed to a dependency, and never return. So
   `_escapes` counts such a call as keeping a pointer (`thread::spawn` alone did). `_keepers`

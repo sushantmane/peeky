@@ -119,6 +119,72 @@ pub fn later(arg: u32) -> u32 {
     smallnum::keep(&x);
     k + x + smallnum::kept()
 }
+
+pub fn pointed(arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    let f: fn(&u32) = smallnum::maker();
+    f(&x); // CALLED
+    let k = std::hint::black_box(1); // POINTED
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
+pub fn closed(arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    let f = smallnum::keeper();
+    f(&x); // CLOSURE
+    let k = std::hint::black_box(1); // CLOSED
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
+struct Mine<'a>(&'a u32);
+
+impl smallnum::Keep for Mine<'_> {
+    fn keep_it(&self) {
+        std::hint::black_box(*self.0);
+    }
+
+    fn value(&self) -> u32 {
+        *self.0
+    }
+}
+
+trait Show {
+    fn show(&self, v: &u32);
+}
+
+impl Show for smallnum::Holder {
+    fn show(&self, v: &u32) {
+        std::hint::black_box(v);
+    }
+}
+
+pub fn own_impl(arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    smallnum::Keep::keep_it(&Mine(&x));
+    smallnum::Holder::new(1).show(&x);
+    let k = std::hint::black_box(1); // OWN_IMPL
+    std::hint::black_box(&x);
+    k + x
+}
+
+pub fn defaulted(arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    smallnum::Keep::noted(&Mine(&x)); // NOTED
+    let k = std::hint::black_box(1); // DEFAULTED
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
+pub fn blanket(arg: u32) -> u32 {
+    use smallnum::Stash;
+    let x = std::hint::black_box(arg);
+    x.stash(); // STASH
+    let k = std::hint::black_box(1); // BLANKET
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
 """
 MAIN = """fn main() {
     println!("DOUBLE {}", util::double(smallnum::one()));
@@ -131,6 +197,11 @@ MAIN = """fn main() {
     println!("WRAPPED {}", util::wrapped(11));
     println!("UNRELATED {}", util::unrelated(15));
     println!("LATER {}", util::later(5));
+    println!("POINTED {}", util::pointed(17));
+    println!("CLOSED {}", util::closed(19));
+    println!("OWN_IMPL {}", util::own_impl(21));
+    println!("DEFAULTED {}", util::defaulted(23));
+    println!("BLANKET {}", util::blanket(25));
 }
 """
 SMALLNUM = """use std::sync::atomic::{AtomicU32, Ordering};
@@ -179,6 +250,35 @@ pub fn spawn<F: FnOnce() -> u32 + Send + 'static>(f: F) -> Handle {
 
 pub fn apply(f: &mut dyn FnMut(u32)) {
     f(3);
+}
+
+pub fn maker() -> fn(&u32) {
+    keep
+}
+
+pub fn keeper() -> impl Fn(&u32) {
+    |v| keep(v)
+}
+
+pub trait Keep {
+    fn keep_it(&self);
+
+    fn value(&self) -> u32;
+
+    fn noted(&self) -> u32 {
+        keep(&self.value());
+        0
+    }
+}
+
+pub trait Stash {
+    fn stash(&self);
+}
+
+impl<T: Copy + Into<u32>> Stash for T {
+    fn stash(&self) {
+        keep(&(*self).into());
+    }
 }
 
 #[macro_export]
@@ -312,6 +412,20 @@ def test_a_change_a_dependency_may_keep_a_copy_of_is_refused_naming_the_call(bui
         "WRAPPED": f"the drop of a `Wrap` on line {line_of('DROPPED')} drops what may hold a "
         "copy of `x`, or a value computed from it, and its `Drop` may hand it on to "
         "`smallnum::keep` (dependency `smallnum`)",
+        # A function pointer and a closure the dependency returned.
+        "POINTED": "a call through a function pointer (whose target Peeky can't identify, so "
+        f"it may run a dependency's code) on line {line_of('CALLED')} is given a pointer into "
+        "`x`",
+        # A closure of the dependency's is named by its path.
+        "CLOSED": "a call to `<{closure@smallnum::keeper::{closure#0}} as "
+        "std::ops::Fn<(&u32,)>>::call` (dependency `smallnum`) on line "
+        f"{line_of('CLOSURE')} is given",
+        # The dependency's trait's default method, which the crate's `impl` leaves as it is.
+        "DEFAULTED": "a call to `<Mine as smallnum::Keep>::noted` (dependency `smallnum`) on "
+        f"line {line_of('NOTED')} is given what may hold a pointer into `x`",
+        # The dependency's blanket `impl`.
+        "BLANKET": "a call to `<u32 as smallnum::Stash>::stash` (dependency `smallnum`) on line "
+        f"{line_of('STASH')} is given a pointer into `x`",
     }
     for marker, reason in cases.items():
         code, result = probe(capsys, built, marker, "--set", "x=100")
@@ -332,10 +446,18 @@ def test_a_change_no_dependency_was_given_is_made_and_the_program_prints_it(buil
     # Only the standard library's code was given `x` before the stop (`smallnum::one()` is
     # given nothing, `forward(&y)` another local), or a dependency is given it after the stop:
     # each sees the change.
-    for marker, shown in (("STD", "101"), ("UNRELATED", "101"), ("LATER", "201")):
+    # The crate's own `impl` of the dependency's trait, and its own trait's `impl` for the
+    # dependency's type: both its code, read.
+    observed = {"STD": "5", "UNRELATED": "15", "LATER": "5", "OWN_IMPL": "21"}
+    for marker, shown in (
+        ("STD", "101"),
+        ("UNRELATED", "101"),
+        ("LATER", "201"),
+        ("OWN_IMPL", "101"),
+    ):
         code, result = probe(capsys, built, marker, "--capture", "x", "--set", "x=100")
         assert code == 0, (marker, result.get("error"))
-        assert rows(result)["x"]["value"] == ("15" if marker == "UNRELATED" else "5")
+        assert rows(result)["x"]["value"] == observed[marker]
         assert rows(result, "after-set")["x"]["value"] == "100"
         assert printed(result, marker) == [shown], (marker, result["output"])
 
@@ -417,3 +539,37 @@ def test_unsafe_code_a_local_procedural_macro_writes_withholds_memory_reads(
         "not its contents: the crate has unsafe code (in `util` as rustc expands it, with the "
         "local procedural macros `pm`), which can free a buffer without Peeky seeing it"
     ) in row["note"], row
+
+
+# A build script's code: `util` includes what it generates, with unsafe code in it.
+GENERATING = """fn main() {
+    let out = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(
+        format!("{out}/generated.rs"),
+        "pub fn first(v: &[u32]) -> u32 { unsafe { *v.as_ptr() } }\\n",
+    )
+    .unwrap();
+    println!("cargo::rerun-if-changed=build.rs");
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_unsafe_code_a_build_script_generates_withholds_memory_reads(tmp_path, monkeypatch, capsys):
+    text = (
+        UTIL.replace(
+            "drop(held); // TOTAL",
+            "drop(held);\n    let f = first(&v); // TOTAL",
+        )
+        + '\ninclude!(concat!(env!("OUT_DIR"), "/generated.rs"));\n'
+    )
+    files = {**FILES, "util/src/lib.rs": text, "util/build.rs": GENERATING}
+    root, config = make(tmp_path, monkeypatch, files)
+    code, summary = run(capsys, "build", str(root), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    code, result = probe(capsys, (root, config), "TOTAL", "--capture", "v", text=text)
+    assert code == 0, result
+    row = rows(result)["v"]
+    assert row["value"].startswith("alloc::vec::Vec<unsigned int, alloc::alloc::Global> @ 0x")
+    assert "not its contents: the crate has unsafe code (in " in row["note"], row
+    assert "/out/generated.rs, which the build generated)" in row["note"], row

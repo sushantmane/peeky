@@ -324,8 +324,20 @@ def prepare_session(target, program, root, *, deadline=None):
         session.code_blocks = blocks
         session.declarations_ir = declarations
         # A dependency's macros write its own code, taken as sound as std's are; a local
-        # procedural macro writes the project's, which only the expansion shows.
+        # procedural macro writes the project's, which only the expansion shows. What the
+        # build generated and the crate read (a build script's `OUT_DIR` file it
+        # `include!`s) is the project's code too.
         session.unsafe_code = unsafe_source(texts, rust)
+        if session.unsafe_code is None and unit["generated"]:
+            made = {
+                f"{name}, which the build generated": (directory / "target" / name)
+                .read_bytes()
+                .decode("utf-8", errors="replace")
+                for name in unit["generated"]
+            }
+            session.unsafe_code = unsafe_source(
+                made, [label for label in made if label.split(",", 1)[0].endswith(".rs")]
+            )
         if session.unsafe_code is None and manifest["macros"]:
             macros = ", ".join(f"`{name}`" for name in manifest["macros"])
             label = f"`{crate}` as rustc expands it, with the local procedural macros {macros}"

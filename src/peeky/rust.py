@@ -1177,6 +1177,7 @@ _PLACE_KEYS = ("hashed", "variable_name", "line", "path", "breakpoint", "column"
 _FOREIGN_GIVEN = {
     "value": "{target}",
     "pointer": "a pointer into {target}",
+    "holder": "what may hold a pointer into {target}",
     "copy": "what may hold a copy of {target}, or a value computed from it",
     "unknown": "what may be {target}, a copy of it or a pointer into it (Peeky's flow of "
     "its copies is past its budget there)",
@@ -1187,6 +1188,15 @@ def _foreign_crate(root, analysed):
     """How a note names the crate ``root`` of ``rust_mir._foreign_root``."""
     if root == "?":
         return "code a dependency's type may supply: a trait object or a type parameter"
+    if root == "?fn":
+        return "whose target Peeky can't identify, so it may run a dependency's code"
+    if root == "?closure":
+        return "a closure or async block whose code Peeky read none of: a dependency's may be"
+    if root == "?impl":
+        return (
+            "a dependency's trait, where Peeky can't tell the crate's own `impl` of it from a "
+            "dependency's"
+        )
     if root == "!":
         return "code of the crate's Peeky can't read"
     if root.startswith("~"):
@@ -1232,19 +1242,20 @@ def _foreign_note(rows, target, home, analysed=frozenset()):
         where = "" if line is None else f" on {_line_list({(file, line)}, home)}"
         given = _FOREIGN_GIVEN[how].format(target=target)
         drop = what.startswith(("the drop of ", "a drop"))
+        call = what if what.startswith("a call ") else f"a call to {what}"
         if via is None:
             crate = f" ({_foreign_crate(root, analysed)})"
             parts.append(
                 f"{what}{crate}{where} drops {given}"
                 if drop
-                else f"a call to {what}{crate}{where} is given {given}"
+                else f"{call}{crate}{where} is given {given}"
             )
         else:
             onward = f"may hand it on to {via[0]} ({_foreign_crate(via[1], analysed)})"
             parts.append(
                 f"{what}{where} drops {given}, and its `Drop` {onward}"
                 if drop
-                else f"a call to {what}{where} is given {given}, and {onward}"
+                else f"{call}{where} is given {given}, and {onward}"
             )
     if len(rows) > 3:
         parts.append(f"{len(rows) - 3} more such call{'s' if len(rows) > 4 else ''}")
@@ -3149,10 +3160,11 @@ class RustSession(NativeSession):
         change; else None."""
         proofs = getattr(self, "owned", None)
         check = getattr(proofs, "foreign_everywhere", None)
-        if check is None or self._optimized():
+        if check is None or not getattr(proofs, "foreign", None) or self._optimized():
+            # A crate built alone calls no other crate's code.
             return None
         path = str(Path(self.prepared.source_root) / source)
-        rows = check(hashed, plain, line, path)
+        rows = check(hashed, plain, line, path, free_types=self._free_types())
         if not rows:
             return None
         return ("foreign", _foreign_note(rows, f"`{plain}`", path, self._analysed_crates()))
@@ -3551,9 +3563,15 @@ class RustSession(NativeSession):
                 ),
                 "named": not members,
             }
-            given = getattr(proofs, "foreign_given", None)
+            # A crate built alone calls no other crate's code.
+            given = (
+                getattr(proofs, "foreign_given", None) if getattr(proofs, "foreign", None) else None
+            )
             rows = (
-                given(**{key: value for key, value in asked.items() if key in _PLACE_KEYS})
+                given(
+                    **{key: value for key, value in asked.items() if key in _PLACE_KEYS},
+                    free_types=self._free_types(),
+                )
                 if given is not None
                 else None
             )

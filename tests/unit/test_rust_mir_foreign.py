@@ -8,7 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 from peeky.rust import _foreign_note, _foreign_row
-from peeky.rust_mir import OwnedLocals, _call_head, _foreign_root, parse_body
+from peeky.rust_mir import (
+    OwnedLocals,
+    _bound_names,
+    _call_head,
+    _crate_function,
+    _foreign_root,
+    _Forwarding,
+    _qualified_call,
+    parse_body,
+)
 from peeky.rust_workspace import _crate_names
 from peeky.rust_workspace_session import expanded_code
 from peeky.worker import _inside_program
@@ -89,8 +98,10 @@ def run(call="forward"):
         ("std::vec::Vec::<u32>::push", None),
         ("<dyn std::any::Any as std::any::Any>::type_id", "?"),
         ("<T as std::fmt::Display>::fmt", "?"),
-        # A span names no crate, though its file's path has words.
+        # A span's file names no crate by its root (``_foreign_call`` judges a closure the
+        # crate read no body of); a dependency's closure is named by its path.
         ("<{closure@smallnum/src/lib.rs:3:5: 3:9} as std::ops::FnOnce<()>>::call_once", None),
+        ("<{closure@smallnum::keeper::{closure#0}} as std::ops::Fn<(&u32,)>>::call", "smallnum"),
         ("<impl at smallnum/src/lib.rs:5:1: 5:17>::new", None),
         ('core::panicking::panic("smallnum")', None),
     ],
@@ -340,3 +351,112 @@ def test_a_rows_mark_names_the_first_call_and_where_it_hands_it_on():
     unread = ("util/src/lib.rs", 3, "`helper`", "!", "value", None)
     assert _foreign_row(unread).startswith("code Peeky can't read may hold a copy")
     assert _foreign_row(direct, {"smallnum"}).startswith("another crate may hold a copy")
+
+
+def state(blocks=(), traits=frozenset(), uses=(), known=frozenset()):
+    """A ``_Forwarding`` with nothing that hands on what it is given, but the crate's
+    `impl` blocks, traits, `use` trees and the closures whose bodies it read."""
+    return _Forwarding(
+        {},
+        {},
+        None,
+        frozenset(),
+        frozenset({"std", "core", "alloc"}),
+        None,
+        known,
+        blocks,
+        traits,
+        uses,
+    )
+
+
+def call(path, kinds=(), forwarding=None):
+    keeps = run("smallnum::keep")
+    matched(keeps)
+    return keeps._foreign_edge(("call", "", kinds, path), forwarding or state(), FOREIGN, ())
+
+
+def test_a_call_through_a_function_pointer_or_a_closure_peeky_read_none_of_may_be_a_dependencys():
+    # `let f: fn(&u32) = smallnum::maker(); f(&x);`: its target isn't followed.
+    assert call("move _6", ("for<'a> fn(&'a u32)",)) == (
+        "a call through a function pointer",
+        "?fn",
+        None,
+    )
+    # A closure of the crate's own the dump holds, given to the standard library's code: no
+    # dependency's code; one whose body Peeky read none of may be a dependency's.
+    span = "{closure@util/src/lib.rs:3:5: 3:9}"
+    path = f"<std::ops::Range<u32> as std::iter::Iterator>::map::<u32, {span}>"
+    assert call(path, forwarding=state(known=frozenset({span}))) is None
+    assert call(path)[1] == "?closure"
+
+
+@pytest.mark.parametrize(
+    ("path", "parts"),
+    [
+        ("<Mine<'_> as smallnum::Keep>::keep_it", ("Mine<'_>", "smallnum::Keep", "keep_it")),
+        (
+            "<std::vec::Vec<u32> as std::clone::Clone>::clone",
+            ("std::vec::Vec<u32>", "std::clone::Clone", "clone"),
+        ),
+        ("<[u32]>::len", ("[u32]", "", "len")),
+        ("smallnum::keep", None),
+    ],
+)
+def test_a_qualified_call_names_its_type_and_trait(path, parts):
+    assert _qualified_call(path) == parts
+
+
+MINE = ("Mine", ("smallnum::Keep", False), frozenset({"keep_it", "value"}))
+
+
+def test_a_dependency_traits_method_the_crates_own_impl_defines_is_the_crates_code():
+    own = state(blocks=(MINE,))
+    assert call("<Mine<'_> as smallnum::Keep>::keep_it", ("&Mine<'_>",), own) is None
+    # Its default method, which that `impl` leaves as it is: the dependency's code.
+    assert call("<Mine<'_> as smallnum::Keep>::noted", ("&Mine<'_>",), own)[1] == "smallnum"
+    # No `impl` of the crate's: a dependency's own, or its blanket one.
+    assert call("<u32 as smallnum::Stash>::stash", ("&u32",), own)[1] == "smallnum"
+    # The crate's trait, for a dependency's type: only the crate implements it.
+    assert call("<smallnum::Holder as Show>::show", ("&smallnum::Holder", "&u32"), own) is None
+    assert _crate_function("<smallnum::Holder as Show>::show", FOREIGN)
+    assert not _crate_function("<Mine as std::string::ToString>::to_string", FOREIGN)
+
+
+def test_an_impl_by_a_bare_trait_name_is_the_dependencys_traits_only_where_a_use_binds_it():
+    bare = ("Mine", ("Keep", False), frozenset({"keep_it"}))
+    path = "<Mine as smallnum::Keep>::keep_it"
+    assert call(path, (), state(blocks=(bare,), uses=("smallnum::Keep",))) is None
+    assert call(path, (), state(blocks=(bare,), uses=("smallnum::{Keep, one}",))) is None
+    aliased = ("Mine", ("Kept", False), frozenset({"keep_it"}))
+    assert call(path, (), state(blocks=(aliased,), uses=("smallnum::Keep as Kept",))) is None
+    assert call(path, (), state(blocks=(bare,), uses=("smallnum::*",))) is None
+    # The crate's own trait of that name, or no `use` that says: Peeky can't tell.
+    assert call(path, (), state(blocks=(bare,), traits=frozenset({"Keep"})))[1] == "?impl"
+    assert call(path, (), state(blocks=(bare,), uses=("other::Keep",)))[1] == "?impl"
+    # A header Peeky can't read.
+    assert call(path, (), state(blocks=((None, None, frozenset({"keep_it"})),)))[1] == "?impl"
+    # A trait object or a type parameter: any type's `impl`.
+    assert call("<dyn smallnum::Keep as smallnum::Keep>::keep_it")[1] == "?"
+
+
+def test_the_names_a_use_binds_to_a_trait():
+    trees = ("smallnum::{Keep, Stash as Stashed}", "other::Keep", "::smallnum::nested::*")
+    assert _bound_names(trees, "smallnum::Keep") == (frozenset({"Keep"}), True)
+    assert _bound_names(trees, "smallnum::Stash") == (frozenset({"Stashed"}), True)
+    assert _bound_names(("tokio::Keep",), "smallnum::Keep") == (frozenset(), False)
+
+
+@pytest.mark.parametrize(
+    ("root", "said"),
+    [
+        ("?fn", "whose target Peeky can't identify, so it may run a dependency's code"),
+        ("?closure", "a closure or async block whose code Peeky read none of"),
+        ("?impl", "where Peeky can't tell the crate's own `impl` of it from a dependency's"),
+    ],
+)
+def test_the_note_says_why_peeky_cant_tell_whose_code_runs(root, said):
+    row = ("util/src/lib.rs", 7, "a call through a function pointer", root, "pointer", None)
+    note = _foreign_note([row], "`x`", "util/src/lib.rs")
+    assert said in note, note
+    assert note.startswith("a call through a function pointer (") if root == "?fn" else True

@@ -52,8 +52,8 @@ _SETTLE_NS = 1_000_000_000
 # The most files Peeky notes the state of before a build, to tell a change during it.
 _MAX_SNAPSHOT = 200_000
 # 2: the build's crates (`crates`), its local procedural macros (`macros`), and analysed
-# MIR with full paths.
-SCHEMA = 2
+# MIR with full paths. 3: each analysed unit's generated files (`generated`).
+SCHEMA = 3
 
 # Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
 # target's own compile, which it knows by crate name and source file (a build script's
@@ -904,6 +904,9 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         _check_bootstrap_read(package.name, crate, depfile)
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         entry["sources"] = sorted(read["sources"])
+        # What it read that the build made (a build script's `OUT_DIR` file it
+        # `include!`s), under the target directory: its code too.
+        entry["generated"] = sorted(read["generated"])
         units.append(entry)
     if len(sources) + len(generated) > MAX_RECORDED:
         raise ValueError(f"The build read more than {MAX_RECORDED} files Peeky would record")
