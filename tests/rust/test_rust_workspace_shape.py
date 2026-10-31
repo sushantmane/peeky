@@ -81,7 +81,10 @@ def test_the_workspace_is_read_as_cargo_reads_it(workspace):
     package, target = shape.run
     assert (package.name, target.name, target.kinds) == ("app", "app", ("bin",))
     assert shape.inputs == ("Cargo.lock", "Cargo.toml", "app/Cargo.toml", "util/Cargo.toml")
-    assert shape.vendored == {("smallnum", "1.0.0"): "vendor/smallnum/.cargo-checksum.json"}
+    assert shape.vendored == {("smallnum", "1.0.0"): "vendor/smallnum"}
+    digests = dict(shape.digests)
+    for name in ("Cargo.lock", "app/Cargo.toml", "vendor/smallnum/src/lib.rs"):
+        assert digests[str(root / name)] == hashlib.sha256((root / name).read_bytes()).hexdigest()
     # Cargo builds it from the vendored copy, offline, with Peeky's source replacement, and
     # checks each file of the copy against its checksums as it compiles it.
     env = rw.cargo_environment(rustc, home)
@@ -144,4 +147,71 @@ def test_cargo_configuration_above_the_workspace_is_read_and_recorded(workspace)
     assert (str(above), hashlib.sha256(above.read_bytes()).hexdigest()) in shape.configs_above
     above.write_text("[target.'cfg(unix)']\nlinker = \"/bin/false\"\n")
     with pytest.raises(ValueError, match=r"`target\.cfg\(unix\)\.linker` in .*config\.toml"):
+        rw.read(root, config(), cargo, rustc, home)
+
+
+def regenerate(root, home, cargo, rustc):
+    subprocess.run(
+        [cargo, "generate-lockfile", "--offline", *rw.vendor_arguments(root, "vendor")],
+        cwd=root,
+        env=rw.cargo_environment(rustc, home),
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_a_feature_gated_path_dependency_outside_the_root_is_refused_when_built(workspace):
+    root, home, cargo, rustc = workspace
+    far = root.parent / "far"
+    (far / "src").mkdir(parents=True)
+    (far / "Cargo.toml").write_text(
+        '[package]\nname = "far"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (far / "src/lib.rs").write_text("pub fn far() {}\n")
+    manifest = root / "app/Cargo.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            'smallnum = "1"\n',
+            'smallnum = "1"\nfar = { path = "../../far", optional = true }\n\n'
+            '[features]\nextra = ["dep:far"]\n',
+        )
+    )
+    regenerate(root, home, cargo, rustc)
+    # Without the feature, the build doesn't compile it: nothing outside the root is read.
+    shape = rw.read(root, config(), cargo, rustc, home)
+    assert [package.name for package in shape.local] == ["app", "util"]
+    with pytest.raises(ValueError) as caught:
+        rw.read(root, config(features=["extra"]), cargo, rustc, home)
+    assert f"`far` is at {far} (the build compiles it)" in str(caught.value)
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_profiles_are_peekys_and_a_per_package_override_of_an_analysed_one_is_refused(workspace):
+    root, home, cargo, rustc = workspace
+    manifest = root / "Cargo.toml"
+    base = manifest.read_text()
+    # A profile's own settings are overridden by Peeky's environment.
+    manifest.write_text(
+        base + '\n[profile.dev]\nopt-level = 3\nlto = true\nstrip = "symbols"\n'
+        "[profile.test]\nopt-level = 3\n"
+    )
+    rw.read(root, config(), cargo, rustc, home)
+    rw.read(root, config(run={"package": "util", "lib": True}), cargo, rustc, home)
+    # One package's setting overrides it, so it is refused for an analysed package only.
+    manifest.write_text(base + "\n[profile.dev.package.util]\nopt-level = 2\n")
+    with pytest.raises(ValueError) as caught:
+        rw.read(root, config(), cargo, rustc, home)
+    assert "`util`'s util has opt-level 2" in str(caught.value)
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    rw.read(root, config(analyse=["app"]), cargo, rustc, home)
+
+
+def test_a_target_table_for_another_host_is_ignored_and_one_for_this_host_refused(workspace):
+    root, home, cargo, rustc = workspace
+    config_file = root / ".cargo/config.toml"
+    config_file.parent.mkdir()
+    config_file.write_text("[target.'cfg(windows)']\nlinker = \"link.exe\"\n")
+    rw.read(root, config(), cargo, rustc, home)
+    config_file.write_text("[target.'cfg(not(windows))']\nlinker = \"cc\"\n")
+    with pytest.raises(ValueError, match=r"`target\.cfg\(not\(windows\)\)\.linker`"):
         rw.read(root, config(), cargo, rustc, home)

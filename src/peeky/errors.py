@@ -346,7 +346,9 @@ _RULES = (
         # A Rust workspace Peeky doesn't build (rust_workspace), refused before Cargo runs.
         r"^Peeky (?:doesn't build (?:git dependencies|a workspace with|a path dependency outside|"
         r"with `)|builds crates\.io dependencies only|analyses only (?:editions|code the program "
-        r"runs)|builds only files inside )",
+        r"runs|code built at|the workspace's members)|builds only files inside |reads only "
+        r"Cargo\.lock versions|builds a Rust workspace only where Cargo reads no manifest|can't "
+        r"tell whether `target)",
         "UNSUPPORTED",
         "Nothing was built. Change what the message names in the workspace or its "
         "configuration, or analyse another package.",

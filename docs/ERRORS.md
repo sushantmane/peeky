@@ -154,6 +154,7 @@ The last column is the `retryable` field.
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
+| A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information | Change what the message names, or analyse another package |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -171,6 +172,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
+- A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
+  `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
 - A client and a remote worker of different protocols: `Worker speaks protocol 12, this client 13`,
   or, from the worker, `Client speaks protocol 12, this worker 13`. Install the same Peeky version
   on both hosts.
@@ -224,6 +227,10 @@ file lists what it reads.
   no values come back: `helper.py changed on the worker host after launch`.
 - A remote Python session with a stack frame whose code names a file under the root that wasn't
   compared is closed the same way: `a stack frame is in hook.py`. A probe is discarded.
+- A Rust workspace's vendored copy that isn't what `cargo vendor` wrote: a file's SHA-256, or
+  the package's checksum, differs. Run the `cargo vendor` command the message gives.
+- A file Cargo reads in a Rust workspace that changed while Peeky read it and Cargo ran: a
+  manifest, the lockfile, Cargo's configuration or a vendored file. Run again.
 - A source in your own checkout that changed after the worker compared it: the probe is
   discarded, or the session closed and its record dropped.
 - A remote result that the client can't confirm is discarded with this code:
