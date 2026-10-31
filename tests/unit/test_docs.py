@@ -24,10 +24,36 @@ def test_the_guide_links_resolve():
         assert f"]({name})" in guide
         assert (DOCS / name).is_file()
     assert "RUST_AGENT.md" not in guide
-    # The first five minutes send each language to its page, which links its cookbook.
-    first = guide.split("## First 5 minutes")[1].split("\n## ")[0]
+    # The first command sends each language to its page, which links its cookbook.
+    first = guide.split("## Your first command")[1].split("\n## ")[0]
     for lang in ("python", "java", "c-cpp", "rust"):
         assert f"](lang/{lang}.md)" in first, lang
+
+
+def test_the_guide_opens_with_when_to_use_peeky_and_the_first_command():
+    # In a study of real bugs, every agent read the guide, and almost none ran Peeky. The
+    # guide opened on an example program, not on when a probe beats a print, or on the
+    # first command for a repository with a test suite.
+    guide = (DOCS / "AGENT_GUIDE.md").read_text()
+    assert re.findall(r"^## (.+)$", guide, flags=re.M)[:3] == [
+        "When Peeky beats a print",
+        "Your first command",
+        "The loop",
+    ]
+    # Both fit the first screenful an agent reads.
+    assert guide.index("## The loop") < 6 * 1024
+    first = " ".join(guide.split("## Your first command")[1].split("\n## ")[0].split())
+    for text in (
+        "--run peeky_pytest.py -- -q tests/test_x.py::test_y",
+        "a file in `site-packages` never stops",
+        "--python python",
+        "-Dmaven.surefire.debug",
+        "--debug-jvm",
+        '"main_class": "pkg.Main"',
+        "A project with its own build (Make, CMake, autotools) isn't supported yet",
+        "A crate with dependencies",
+    ):
+        assert text in first, text
 
 
 def _slugs(headings):

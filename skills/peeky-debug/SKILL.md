@@ -5,7 +5,7 @@ description: Debug a running program with the peeky CLI — stop at a line, read
 
 # Debugging with peeky
 
-Follow docs/AGENT_GUIDE.md in the peeky repository. Short form:
+Follow docs/AGENT_GUIDE.md in the peeky repository. Its first two sections say when a probe beats a print, and the first command for a Python, Java, C, C++ or Rust project. Short form:
 
 1. `peeky describe <target>`: valid breakpoint lines and what can be read or changed.
 2. `peeky probe <target> --at <file>:<line> --capture <a,b.c>`: observe real values.

@@ -3497,6 +3497,9 @@ Crash and exception stops are never auto-resumed. The budget holds while Peeky r
 If the debugger hasn't said where the stop is when the budget runs out, the stop is resumed. The
 note then says the latest stop was at a place not read in time.
 
+`peeky describe` gives the target's timing in its `timing:` line: whether a session's stops wait
+for you, and when to use `--max-pause` or `--background`.
+
 ### 5.5 Cleaning Up
 
 A session's worker ends:
