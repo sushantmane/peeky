@@ -1,6 +1,7 @@
 """Peeky's build of a Rust workspace (rust_build): its rustc wrapper, the checks of rustc's
 recorded commands, and its refusals' codes."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -20,6 +21,10 @@ with open(os.environ["FAKE_LOG"], "a") as log:
 if "-o" in args:
     with open(args[args.index("-o") + 1], "w") as out:
         out.write("#![feature(prelude_import)]\\npub fn expanded() {}\\n")
+if "--emit=metadata" in args and os.environ.get("FAKE_STABLE_REFUSES"):
+    sys.stderr.write('{"artifact":"/x/libutil.rmeta","emit":"metadata"}\\n')
+    sys.stderr.write("error[E0554]: `#![feature]` may not be used on the stable release channel\\n")
+    sys.exit(1)
 """
 
 
@@ -38,7 +43,7 @@ def wrapped(tmp_path):
     units.mkdir()
     log = tmp_path / "log"
 
-    def run(*args, crate="util", cwd=tmp_path / "ws"):
+    def run(*args, crate="util", cwd=tmp_path / "ws", refuse=False, failed=False):
         env = {
             "PATH": os.environ["PATH"],
             "FAKE_LOG": str(log),
@@ -46,12 +51,14 @@ def wrapped(tmp_path):
             "PEEKY_UNITS": str(units),
             "CARGO_MAKEFLAGS": "-j --jobserver-fds=6,7",
             "CARGO_PKG_NAME": "util",
+            **({"FAKE_STABLE_REFUSES": "1"} if refuse else {}),
         }
         argv = [str(wrapper), str(rustc), "--crate-name", crate, *args]
-        subprocess.run(argv, cwd=cwd, env=env, check=True)
+        done = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+        assert (done.returncode != 0) is failed, done.stderr
         runs = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         log.unlink(missing_ok=True)
-        return runs
+        return (runs, done) if failed else runs
 
     return run, units
 
@@ -74,16 +81,53 @@ def test_the_wrapper_records_expands_and_dumps_an_analysed_compile(wrapped):
     )
     assert json.loads((unit / "expand.json").read_text()) == {"exit_code": 0}
     assert (unit / "expanded.rs").read_text().startswith("#![feature(prelude_import)]")
-    expand, compile_ = runs
+    gate, expand, compile_ = runs
+    # First, Cargo's own command in Cargo's environment (no RUSTC_BOOTSTRAP), writing only
+    # metadata, and that into the unit's directory.
+    assert gate["args"] == [
+        "--crate-name",
+        "util",
+        "--edition=2021",
+        "util/src/lib.rs",
+        "-C",
+        "extra-filename=-0123456789abcdef",
+        "--emit=metadata",
+        "--out-dir",
+        str(unit / "stable"),
+    ]
+    assert gate["bootstrap"] is None and not (unit / "stable").exists()
     # Expansion: a second rustc that writes only the expanded text, without Cargo's jobserver.
     assert expand["args"][-3:] == ["-Zunpretty=expanded", "-o", str(unit / "expanded.rs")]
     assert not any(arg.startswith("--emit") or arg == "--out-dir" for arg in expand["args"])
     assert expand["bootstrap"] == "util" and expand["makeflags"] is None
-    # The compile: MIR dumped, LLVM IR emitted, nightly flags for this crate alone.
+    # The compile: MIR dumped, LLVM IR emitted. The program is built from the MIR the
+    # proofs read, so its compile has those nightly flags, allowed in its own environment
+    # for this crate alone.
     assert "--emit=dep-info,metadata,link,llvm-ir" in compile_["args"]
     assert "-Zmir-opt-level=0" in compile_["args"]
     assert f"-Zdump-mir-dir={unit / 'mir'}" in compile_["args"]
     assert compile_["bootstrap"] == "util"
+
+
+def test_what_stable_rustc_refuses_fails_the_compile_in_rustcs_words(wrapped):
+    run, units = wrapped
+    (runs, done) = run(
+        "--edition=2021",
+        "util/src/lib.rs",
+        "--emit=dep-info,metadata,link",
+        "--out-dir",
+        "/target/debug/deps",
+        refuse=True,
+        failed=True,
+    )
+    # Only Cargo's own command ran, without RUSTC_BOOTSTRAP; its error is Cargo's to show,
+    # and its notice of the metadata it would have written isn't.
+    assert [each["bootstrap"] for each in runs] == [None]
+    assert done.returncode == 1
+    assert "error[E0554]: `#![feature]` may not be used on the stable release channel" in (
+        done.stderr
+    )
+    assert '"artifact"' not in done.stderr
 
 
 @pytest.mark.parametrize(
@@ -146,6 +190,15 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
         "make",
     )
     assert rb._dependency_file([str(tmp_path / "debug/none")]) == (None, None)
+    # A build script: Cargo names its copy, beside rustc's output and dependency file.
+    script = tmp_path / "debug/build/util-89ab"
+    script.mkdir(parents=True)
+    for name in ("build-script-build", "build_script_build-89ab", "build_script_build-89ab.d"):
+        (script / name).write_text("")
+    assert rb._dependency_file([str(script / "build-script-build")]) == (
+        script / "build_script_build-89ab.d",
+        "rustc",
+    )
     assert rb._stem("libutil-0123.rlib") == "util-0123"
     assert rb._stem("app-4567.dSYM") == "app-4567"
 
@@ -220,3 +273,197 @@ def test_the_build_directory_is_private_and_one_per_root_and_configuration(tmp_p
         first.parent == tmp_path / "state/rust-builds" and oct(first.stat().st_mode)[-3:] == "700"
     )
     assert Path(first).parent.stat().st_mode & 0o077 == 0
+
+
+# What build scripts and procedural macros may read.
+
+
+def write(root, files):
+    for name, text in files.items():
+        path = Path(root) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def test_a_packages_files_are_listed_as_cargo_lists_them(tmp_path):
+    write(
+        tmp_path,
+        {
+            "build.rs": "fn main() {}\n",
+            "src/lib.rs": "",
+            "data/schema.txt": "a\n",
+            ".git/HEAD": "x",
+            "target/debug/out": "x",
+            "nested/Cargo.toml": "[package]\n",
+            "nested/src/lib.rs": "",
+            "vendor/smallnum/src/lib.rs": "",
+        },
+    )
+    found = rb._tree(tmp_path, {str(tmp_path / "vendor")}, budget=[100])
+    assert sorted(found) == ["build.rs", "data/schema.txt", "src/lib.rs"]
+    with pytest.raises(ValueError) as caught:
+        rb._tree(tmp_path, budget=[2])
+    assert str(caught.value).startswith(
+        f"Peeky records at most {rb.MAX_RECORDED} files a build script or procedural macro may "
+        f"read, and {tmp_path} holds more"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+# A build that started after the test wrote its files: none changed while Cargo ran.
+LATER = 2**62
+
+
+def build_script_run(tmp_path, package, output, *, registry=False):
+    """Cargo's message for a build script's run, and the output it kept."""
+    out_dir = tmp_path / "target/debug/build" / f"{package}-0123" / "out"
+    out_dir.mkdir(parents=True)
+    (out_dir.parent / "output").write_text(output)
+    package_id = (
+        f"registry+https://github.com/rust-lang/crates.io-index#{package}@1.0.0"
+        if registry
+        else f"path+file://{tmp_path / 'ws' / package}#0.1.0"
+    )
+    return {"reason": "build-script-executed", "package_id": package_id, "out_dir": str(out_dir)}
+
+
+def fake_shape(tmp_path, local=("util", "app"), analysed=("util",)):
+    from types import SimpleNamespace
+
+    packages = {name: SimpleNamespace(name=name, directory=name) for name in local}
+    return SimpleNamespace(
+        workspace=tmp_path / "ws",
+        local=tuple(packages.values()),
+        analysed=tuple(packages[name] for name in analysed),
+        watch={"vendor_directory": None},
+    )
+
+
+def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
+    root = tmp_path / "ws"
+    write(
+        root,
+        {
+            "util/build.rs": "",
+            "util/src/lib.rs": "",
+            "util/schema.txt": "one\n",
+            "util/proto/a.proto": "a\n",
+            "app/build.rs": "",
+            "app/src/main.rs": "",
+            "app/assets/logo.txt": "logo\n",
+            "derive/src/lib.rs": "",
+        },
+    )
+    messages = [
+        build_script_run(
+            tmp_path,
+            "util",
+            "cargo:rerun-if-changed=schema.txt\ncargo::rerun-if-changed=proto\n"
+            "cargo:rerun-if-changed=gone.txt\ncargo:rerun-if-env-changed=PROTOC\n"
+            "cargo:rustc-cfg=x\n",
+        ),
+        # No rerun-if-changed: Cargo's default, every file of the package.
+        build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=PATH\n"),
+        build_script_run(
+            tmp_path,
+            "zstd-sys",
+            "cargo:rerun-if-env-changed=ZSTD_SYS_USE_PKG_CONFIG\n"
+            "cargo:rerun-if-changed=/elsewhere/zstd.h\n",
+            registry=True,
+        ),
+    ]
+    env = {"PATH": "/usr/bin:/bin", "PEEKY_UNITS": "/x"}
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None)
+    assert found["files"] == {
+        str(root / "util/gone.txt"): None,
+        str(root / "util/schema.txt"): hashlib.sha256(b"one\n").hexdigest(),
+    }
+    assert set(found["trees"]) == {str(root / "util/proto"), str(root / "app")}
+    assert sorted(found["trees"][str(root / "app")]) == [
+        "assets/logo.txt",
+        "build.rs",
+        "src/main.rs",
+    ]
+    assert found["env"] == {
+        "PATH": "/usr/bin:/bin",
+        "PROTOC": None,
+        "ZSTD_SYS_USE_PKG_CONFIG": None,
+    }
+    # A local procedural macro: every file of its package and of the analysed ones.
+    macro = {
+        "reason": "compiler-artifact",
+        "manifest_path": str(root / "derive/Cargo.toml"),
+        "target": {"name": "derive", "kind": ["proc-macro"]},
+    }
+    shape = fake_shape(tmp_path, local=("util", "app", "derive"))
+    found = rb._build_inputs(shape, root, [macro], env, {}, LATER, None)
+    assert set(found["trees"]) == {str(root / "derive"), str(root / "util")}
+
+
+def test_a_build_input_changed_while_cargo_ran_is_refused(tmp_path):
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/schema.txt": "one\n"})
+    messages = [build_script_run(tmp_path, "util", "cargo:rerun-if-changed=schema.txt\n")]
+    # Not in the snapshot taken before Cargo ran, and written since it started.
+    with pytest.raises(RuntimeError) as caught:
+        rb._build_inputs(fake_shape(tmp_path, local=("util",)), root, messages, {}, {}, 0, None)
+    assert str(caught.value).startswith("Provenance: util/schema.txt changed while Peeky built")
+    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+
+
+def test_a_changed_build_input_is_build_required_naming_it(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/schema.txt": "one\n", "app/src/main.rs": ""})
+    messages = [
+        build_script_run(tmp_path, "util", "cargo:rerun-if-changed=schema.txt\n"),
+        build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n"),
+    ]
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, {"CC": None}, {}, LATER, None)
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    fresh = {}
+    monkeypatch.setattr(rb, "_environment", lambda *args: fresh)
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+
+    def refused():
+        with pytest.raises(rb.BuildRequired) as caught:
+            rb._check_build_inputs(target, root, tmp_path, manifest)
+        assert classify(caught.value)["code"] == "BUILD_REQUIRED"
+        return str(caught.value)
+
+    (root / "app/assets").mkdir()
+    (root / "app/assets/new.txt").write_text("new\n")
+    assert refused() == (
+        "No current Peeky build of this workspace: app/assets/new.txt changed since `peeky build` "
+        "ran. Run `peeky build . --config rust.json` again, or add --build"
+    )
+    (root / "app/assets/new.txt").unlink()
+    (root / "util/schema.txt").write_text("two\n")
+    assert refused().startswith(
+        "No current Peeky build of this workspace: util/schema.txt, which a build script reads, "
+        "changed since `peeky build` ran."
+    )
+    (root / "util/schema.txt").write_text("one\n")
+    fresh["CC"] = "clang"
+    assert "the build environment's CC, which a build script reads, changed" in refused()
+
+
+# A probe's or session's build stays while it runs.
+
+
+def test_a_leased_build_is_kept_until_its_lease_is_released(tmp_path):
+    runs = tmp_path / "runs"
+    for index, nonce in enumerate(("a", "b", "c", "d")):
+        (runs / nonce).mkdir(parents=True)
+        os.utime(runs / nonce, ns=(index * 10**9, index * 10**9))
+    with rb._locked(tmp_path, exclusive=False):
+        lease = rb.Lease({"nonce": "a"}, rb._lease(tmp_path, "a"))
+    # Builds C and D complete: the two newest are kept, and A, held.
+    rb._prune(tmp_path, "d")
+    assert sorted(path.name for path in runs.iterdir()) == ["a", "c", "d"]
+    lease.close()
+    rb._prune(tmp_path, "d")
+    assert sorted(path.name for path in runs.iterdir()) == ["c", "d"]
+    assert not (tmp_path / "leases/a").exists()

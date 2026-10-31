@@ -167,6 +167,7 @@ The last column is the `retryable` field.
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
 | A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information | Change what the message names, or analyse another package |
 | `verify --check-command` on a target that isn't Python: `--check-command supports Python targets for now …`, refused before building ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)) | Pass `--check` with a checker script ([6.5](COOKBOOK.md#65-writing-a-checker)) |
+| A Rust workspace whose build script or procedural macro may read more files than Peeky records: `Peeky records at most … files a build script or procedural macro may read, …` | Give the build script `cargo::rerun-if-changed` lines naming what it reads, or move large data out of the package |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -245,6 +246,9 @@ file lists what it reads.
   workspace's config names `analyse` and `run`. The request is refused before anything runs where
   there is no build for this configuration and these tools. It is refused too where a source or
   a manifest changed since the build, or a new member appeared: the normal edit cycle.
+- So is a change to what a build script or procedural macro may read. That is each
+  `rerun-if-changed` path of a local build script, or, with none, every file of its package. A
+  local procedural macro adds every file of its package and of the analysed ones.
 - The message names the file and gives the command: `No current Peeky build of this workspace:
   util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again,
   or add --build`.

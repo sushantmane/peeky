@@ -3454,6 +3454,13 @@ def _start_local(args, root, program, line, language, data, max_pause):
         config = _state_dir() / f"{args.name}.target.json"
         _private_write(config, json.dumps(data, default=list))
         command += [f"--{'native' if language in ('c', 'cpp') else language}-config", str(config)]
+        from peeky.rust_workspace import is_workspace_config
+
+        typed = _build_command(args)
+        if language == "rust" and is_workspace_config(data) and typed is not None:
+            # The worker reads a private copy of the configuration: its refusals name the
+            # command as the user would type it.
+            command += ["--rust-build-command", typed]
     log_path = _state_dir() / f"{args.name}.log"
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
     process = subprocess.Popen(

@@ -54,13 +54,21 @@ SCHEMA = 1
 
 # Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
 # target's own compile, which it knows by crate name and source file (a build script's
-# probes of rustc run it too), it records the command, expands the crate in a second
-# rustc process (`-Zunpretty` compiles nothing; its messages go to a file, not to Cargo),
-# then compiles it with MIR dumped and LLVM IR emitted. RUSTC_BOOTSTRAP is set to the
-# crate's name, which allows nightly flags for that crate alone. Every other compile runs
-# unchanged. Python, not a shell: dash drops variables like CARGO_BIN_EXE_<bin-with-dashes>.
+# probes of rustc run it too), it records the command, then:
+# 1. runs Cargo's command as Cargo gave it, in Cargo's environment, writing only metadata
+#    into the unit's directory: what stable rustc refuses (a `#![feature]`), the build
+#    fails on, in rustc's words, as a stable build would;
+# 2. expands the crate in another rustc process (`-Zunpretty` compiles nothing; its
+#    messages go to a file, not to Cargo);
+# 3. compiles it with MIR dumped and LLVM IR emitted. The proofs read that MIR, so the
+#    program must be built from it: no MIR optimizations, legacy mangling. Those flags
+#    are nightly ones, which RUSTC_BOOTSTRAP set to the crate's name allows for that
+#    crate alone, in that process's environment (the wrapper's own is never changed).
+# Every other compile runs unchanged. Python, not a shell: dash drops variables like
+# CARGO_BIN_EXE_<bin-with-dashes>.
 WRAPPER = r"""import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -97,16 +105,32 @@ if source is not None:
             skip = True
         elif not arg.startswith(("--emit=", "--out-dir=")):
             expand.append(arg)
-    env = {k: v for k, v in os.environ.items() if k not in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS")}
-    env["RUSTC_BOOTSTRAP"] = crate
+    # Without Cargo's jobserver, whose descriptors these processes don't inherit.
+    cargo_env = {k: v for k, v in os.environ.items()
+                 if k not in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS")}
+    stable = os.path.join(unit, "stable")
+    gate = subprocess.run(
+        [*expand, "--emit=metadata", "--out-dir", stable],
+        env=cargo_env, stdin=subprocess.DEVNULL, capture_output=True,
+    )
+    if gate.returncode != 0:
+        sys.stdout.buffer.write(gate.stdout)
+        sys.stdout.buffer.flush()
+        # Not its notice of the metadata it wrote: Cargo would take it for its own.
+        lines = gate.stderr.split(b"\n")
+        sys.stderr.buffer.write(b"\n".join(
+            line for line in lines if not line.startswith(b'{"artifact":')))
+        sys.stderr.buffer.flush()
+        sys.exit(gate.returncode)
+    shutil.rmtree(stable, ignore_errors=True)
     with open(os.path.join(unit, "expand.log"), "wb") as log:
         done = subprocess.run(
             [*expand, "-Zunpretty=expanded", "-o", os.path.join(unit, "expanded.rs")],
-            env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            env={**cargo_env, "RUSTC_BOOTSTRAP": crate},
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         )
     with open(os.path.join(unit, "expand.json"), "w") as out:
         json.dump({"exit_code": done.returncode}, out)
-    os.environ["RUSTC_BOOTSTRAP"] = crate
     for index, arg in enumerate(args):
         if arg.startswith("--emit=") and "llvm-ir" not in arg[len("--emit="):].split(","):
             args[index] = arg + ",llvm-ir"
@@ -118,6 +142,7 @@ if source is not None:
         "-Zunstable-options",
         "-Csymbol-mangling-version=legacy",
     ]
+    os.execve(args[0], args, {**os.environ, "RUSTC_BOOTSTRAP": crate})
 os.execv(args[0], args)
 """
 WRAPPER_SHA256 = hashlib.sha256(WRAPPER.encode()).hexdigest()
@@ -250,20 +275,23 @@ class RustWorkspaceTarget:
                 "change the source and run `peeky build` again"
             )
         root = Path(root).resolve(strict=True)
-        manifest = self.current(root)
-        relative = Path(program).resolve().relative_to(root).as_posix()
-        analysed = [unit for unit in manifest["units"] if relative in unit["sources"]]
-        if not analysed:
-            packages = ", ".join(self.config.analyse)
+        # Held while the program runs, so no later build removes its files.
+        with lease_build(self, root) as lease:
+            manifest = lease.manifest
+            relative = Path(program).resolve().relative_to(root).as_posix()
+            analysed = [unit for unit in manifest["units"] if relative in unit["sources"]]
+            if not analysed:
+                packages = ", ".join(self.config.analyse)
+                raise ValueError(
+                    f"Peeky stops only in the analysed packages' files ({packages}), as their "
+                    f"build read them: {relative} is none of those. Probe a line there, or add "
+                    'its package to "analyse" and build again'
+                )
             raise ValueError(
-                f"Peeky stops only in the analysed packages' files ({packages}), as their "
-                f"build read them: {relative} is none of those. Probe a line there, or add its "
-                'package to "analyse" and build again'
+                "Peeky doesn't read values in a Rust workspace's build yet: it will once a "
+                "call into a dependency counts as code it can't read. The build is current; "
+                "nothing ran"
             )
-        raise ValueError(
-            "Peeky doesn't read values in a Rust workspace's build yet: it will once a call "
-            "into a dependency counts as code it can't read. The build is current; nothing ran"
-        )
 
 
 def build_directory(target, root, *, create=True):
@@ -500,6 +528,12 @@ def _dependency_file(filenames):
             candidate.is_file()
         ):
             return candidate, "rustc"
+        if path.parent.parent.name == "build" and path.name == "build-script-build":
+            # A build script, which Cargo names `build-script-build` beside rustc's own
+            # `build_script_build-<hash>` and its dependency file.
+            found = sorted(path.parent.glob("build_script_build-*.d"))
+            if len(found) == 1:
+                return found[0], "rustc"
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
         if candidate.is_file():
@@ -594,16 +628,12 @@ def build(target, root, *, deadline=None, progress=None):
             if wrapper.read_text() != wrapper_text:
                 raise RuntimeError("Provenance: Peeky's rustc wrapper changed during the build")
             _assert_tools(tools)
+            messages = _messages(result["stdout"])
             manifest = _record(
-                target,
-                root,
-                shape,
-                directory,
-                run,
-                _messages(result["stdout"]),
-                before,
-                started_ns,
-                store,
+                target, root, shape, directory, run, messages, before, started_ns, store
+            )
+            manifest["build_inputs"] = _build_inputs(
+                shape, root, messages, env, before, started_ns, vendor
             )
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
@@ -786,6 +816,128 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     }
 
 
+_RERUN = re.compile(r"cargo::?(rerun-if-changed|rerun-if-env-changed)=(.*)")
+# The wrapper's own variables, which name one build's files: no build script's input.
+_PER_BUILD = ("PEEKY_UNITS", "PEEKY_ANALYSED")
+
+
+def _tree(top, skip=(), *, budget):
+    """{path relative to ``top``: SHA-256} of every file under ``top``, as Cargo lists a
+    package's files: no hidden directory, no `target` directory, no other package's
+    directory (one with a Cargo.toml) and none of ``skip``. ``budget``: a list holding the
+    files left to record, spent here."""
+    top = Path(top)
+    found = {}
+    if top.is_file():
+        return {".": _hash(top)}
+    for base, folders, files in os.walk(top):
+        folders[:] = sorted(
+            name
+            for name in folders
+            if not name.startswith(".")
+            and name != "target"
+            and str(Path(base, name)) not in skip
+            and not (Path(base, name) / "Cargo.toml").exists()
+        )
+        for name in sorted(files):
+            path = Path(base, name)
+            if path.is_symlink() or not path.is_file():
+                continue
+            budget[0] -= 1
+            if budget[0] < 0:
+                raise ValueError(
+                    f"Peeky records at most {MAX_RECORDED} files a build script or procedural "
+                    f"macro may read, and {top} holds more. Build fewer packages' files, or "
+                    "give the build script `cargo::rerun-if-changed` lines"
+                )
+            found[path.relative_to(top).as_posix()] = _hash(path)
+    return found
+
+
+def _build_inputs(shape, root, messages, env, before, started_ns, vendor):
+    """What build scripts and procedural macros may read, beyond what rustc's dependency
+    files list, as the manifest keeps it ({"files": {path: SHA-256 or None where
+    missing}, "trees": {directory: _tree}, "env": {variable: value or None}}): each local
+    build script's `rerun-if-changed` paths (a directory, every file under it), or with
+    none, Cargo's default, every file of its package; every build script's
+    `rerun-if-env-changed` variables (dependencies' too); and with a local procedural
+    macro, every file of its package and of each analysed one (a macro reading files
+    elsewhere isn't followed). Refused where one changed while Cargo ran."""
+    skip = {shape.watch["vendor_directory"]} if vendor else set()
+    files, trees, variables, budget = {}, {}, {}, [MAX_RECORDED]
+    by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
+
+    def watch_tree(directory):
+        key = str(directory)
+        if key not in trees:
+            trees[key] = _tree(directory, skip, budget=budget)
+            for name in trees[key]:
+                path = directory if name == "." else directory / name
+                if _changed_during(path, before, started_ns):
+                    raise RuntimeError(
+                        f"Provenance: {_shown(path, root)} changed while Peeky built the "
+                        "workspace, so the build may not be of it. Build again"
+                    )
+
+    for message in messages:
+        if message.get("reason") != "build-script-executed":
+            continue
+        found = rust_workspace.package_id(message.get("package_id"))
+        out_dir = message.get("out_dir")
+        if found is None or not isinstance(out_dir, str):
+            raise ValueError("Cargo named a build script's run in a form Peeky doesn't read")
+        source, directory, name, _ = found
+        output = Path(out_dir).parent / "output"
+        try:
+            text = output.read_bytes()[: 16 * 1024 * 1024].decode("utf-8", "replace")
+        except OSError:
+            raise ValueError(f"Cargo kept no output of `{name}`'s build script") from None
+        changed = []
+        for line in split_lines(text):
+            if (rerun := _RERUN.fullmatch(line.strip())) is None:
+                continue
+            if rerun[1] == "rerun-if-env-changed":
+                variables[rerun[2]] = env.get(rerun[2])
+            elif source is None:
+                changed.append(rerun[2])
+        if source is not None:
+            continue
+        package_directory = Path(directory).resolve()
+        if not changed:
+            watch_tree(package_directory)
+        for each in changed:
+            path = package_directory / each
+            if path.is_dir():
+                watch_tree(path.resolve())
+            elif str(path) not in files:
+                if path.is_file():
+                    if _changed_during(path, before, started_ns):
+                        raise RuntimeError(
+                            f"Provenance: {_shown(path, root)} changed while Peeky built the "
+                            "workspace, so the build may not be of it. Build again"
+                        )
+                    files[str(path)] = _hash(path)
+                else:
+                    files[str(path)] = None
+                budget[0] -= 1
+    macros = {
+        str(Path(str(message.get("manifest_path"))).resolve().parent)
+        for message in messages
+        if message.get("reason") == "compiler-artifact"
+        and "proc-macro" in ((message.get("target") or {}).get("kind") or ())
+    }
+    if macros := sorted(each for each in macros if each in by_directory):
+        for directory in macros:
+            watch_tree(Path(directory))
+        for package in shape.analysed:
+            watch_tree((root / package.directory).resolve())
+    return {
+        "files": dict(sorted(files.items())),
+        "trees": dict(sorted(trees.items())),
+        "env": dict(sorted(variables.items())),
+    }
+
+
 def _record_read(read, root, target_dir, before, started_ns, sources, generated):
     """Hash what a compile read: sources (refused where one changed while Cargo ran) and
     files a build script generated."""
@@ -900,16 +1052,73 @@ def _write_manifest(directory, manifest):
     os.replace(temporary, path)
 
 
+class Lease:
+    """A probe's or session's hold on one build (``manifest``): _prune keeps that build's
+    files while it is held. Release it with close()."""
+
+    def __init__(self, manifest, descriptor):
+        self.manifest = manifest
+        self._descriptor = descriptor
+
+    def close(self):
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _lease(directory, nonce):
+    """A shared lock on ``nonce``'s lease file, taken while the build directory's own lock
+    is held (so no build prunes it meanwhile): its descriptor."""
+    folder = Path(directory) / "leases"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    descriptor = os.open(folder / nonce, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _held(lease):
+    """Whether a probe or session holds ``lease`` (a lease file); one nobody holds goes."""
+    try:
+        descriptor = os.open(lease, os.O_RDWR | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        lease.unlink()
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def _prune(directory, nonce):
-    """Keep the newest KEEP_RUNS builds' files."""
-    runs = Path(directory) / "runs"
+    """Keep the newest KEEP_RUNS builds' files, and any a probe or session holds (Lease).
+    Called with the build directory's lock held alone."""
+    runs, leases = Path(directory) / "runs", Path(directory) / "leases"
     kept = sorted(
         (path for path in runs.iterdir() if path.is_dir()),
         key=lambda path: (path.name == nonce, path.stat().st_mtime_ns),
         reverse=True,
     )
     for path in kept[KEEP_RUNS:]:
-        shutil.rmtree(path, ignore_errors=True)
+        if not _held(leases / path.name):
+            shutil.rmtree(path, ignore_errors=True)
+    if leases.is_dir():
+        for lease in leases.iterdir():
+            if not (runs / lease.name).is_dir():
+                _held(lease)
 
 
 def summary(manifest, directory):
@@ -966,6 +1175,18 @@ def current_build(target, root):
     edit cycle); a provenance error where what identifies it changed (Cargo's
     configuration, the lockfile, a vendored copy, a tool, the build's own output). Each
     names the file."""
+    return _current(target, root, hold=False)[0]
+
+
+def lease_build(target, root):
+    """current_build's, held (Lease) until the probe or session using it ends: no later
+    build removes its files meanwhile."""
+    manifest, descriptor = _current(target, root, hold=True)
+    return Lease(manifest, descriptor)
+
+
+def _current(target, root, *, hold):
+    """(current_build's manifest, with ``hold`` a lease's descriptor, else None)."""
     root = Path(root).resolve(strict=True)
     directory = build_directory(target, root, create=False)
     path = directory / "manifest.json"
@@ -1004,10 +1225,11 @@ def current_build(target, root):
                 rust_workspace.identity(path, digest) != recorded
             ):
                 raise _edited(target, f"{_shown(path, root)} changed")
-        members = rust_workspace.member_candidates(state["workspace"], state["patterns"])
+        members = rust_workspace.members_now(state)
         if members != state["candidates"]:
             added = sorted(set(members) ^ set(state["candidates"]))
             raise _edited(target, f"the workspace's members changed ({_shown(added[0], root)})")
+        _check_build_inputs(target, root, directory, manifest)
         if (what := rust_workspace.recheck(state, digest)) is not None:
             raise _stale(target, _shown(what, root))
         target_dir = directory / "target"
@@ -1025,8 +1247,46 @@ def current_build(target, root):
                 same = False
             if not same:
                 raise _stale(target, f"the build's output {name} changed")
+        descriptor = _lease(directory, manifest["nonce"]) if hold else None
     manifest["directory"] = str(directory)
-    return manifest
+    return manifest, descriptor
+
+
+def _check_build_inputs(target, root, directory, manifest):
+    """BuildRequired where what a build script or procedural macro may read changed since
+    the build (_build_inputs): a file, a directory's files, a variable."""
+    inputs = manifest["build_inputs"]
+    for path, recorded in inputs["files"].items():
+        try:
+            now = sha256_file(path) if Path(path).is_file() else None
+        except OSError:
+            now = "unreadable"
+        if now != recorded:
+            raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
+    vendor = manifest["watch"].get("vendor_directory")
+    for top, recorded in inputs["trees"].items():
+        try:
+            now = _tree(Path(top), {vendor} if vendor else set(), budget=[MAX_RECORDED])
+        except (OSError, ValueError):
+            now = {}
+        if now != recorded:
+            name = sorted(set(now.items()) ^ set(recorded.items()))[0][0]
+            path = Path(top) if name == "." else Path(top) / name
+            raise _edited(target, f"{_shown(path, root)} changed")
+    fresh = _environment(
+        target,
+        directory / "cargo-home",
+        directory,
+        directory / "wrapper" / "rustc-peeky",
+        {},
+        "",
+        manifest["rustflags"],
+    )
+    for name, value in inputs["env"].items():
+        if name not in _PER_BUILD and fresh.get(name) != value:
+            raise _edited(
+                target, f"the build environment's {name}, which a build script reads, changed"
+            )
 
 
 def _shown(text, root):

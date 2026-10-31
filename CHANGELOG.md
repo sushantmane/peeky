@@ -63,7 +63,8 @@
   config names the packages to analyse and what runs (`analyse`, `run`, `features`, `vendor`).
   The build is offline, from the lockfile and `cargo vendor`'s copy, into Peeky's own directory;
   the analysed packages are compiled every time, at opt-level 0, checked from rustc's commands.
-  A probe or session without a current build, or with a source or manifest edited since, is
+  What stable rustc refuses fails the build, as a stable build fails. A probe or session without
+  a current build, or with a source, a manifest or a build script's input edited since, is
   refused with the new `BUILD_REQUIRED`, naming the file and the command, and never builds;
   `--build` builds first. A changed lockfile, configuration or vendored copy is
   `PROVENANCE_CHANGED`. Probing a workspace's values comes next.

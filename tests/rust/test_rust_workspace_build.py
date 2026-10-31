@@ -316,9 +316,12 @@ def test_a_worker_loads_a_workspace_and_refuses_a_remote_clients_probe_of_it(wor
     config = workspace / "worker.json"
     data = {"analyse": ["util"], "run": {"bin": "app"}, "vendor": "vendor", **rust_tools()}
     config.write_text(json.dumps(data))
-    target = load_rust_target(config)
+    target = load_rust_target(config, workspace)
     assert isinstance(target, RustWorkspaceTarget)
-    assert target.build_command == f"peeky build <the worker's root> --config {config.resolve()}"
+    # `peeky build` of the worker's root and its configuration, as a refusal names it.
+    assert target.build_command == f"peeky build {workspace} --config {config.resolve()}"
+    typed = "peeky build . --config rust.json"
+    assert load_rust_target(config, workspace, typed).build_command == typed
     program = hashlib.sha256((workspace / "util/src/lib.rs").read_bytes()).hexdigest()
     worker = DebugWorker(workspace, adapter=target)
     with pytest.raises(ValueError) as caught:
@@ -356,3 +359,127 @@ def test_the_build_keeps_the_projects_cfg_rustflags_and_records_them(workspace, 
     _, manifest = manifest_of(summary)
     assert manifest["rustflags"] == ["--cfg", "special", "--check-cfg", "cfg(special)"]
     assert ".cargo/config.toml" in manifest["inputs"]
+
+
+@pytest.mark.timeout(300)
+def test_what_stable_rust_refuses_fails_peeky_build_as_a_stable_build_fails(workspace, capsys):
+    config = configure(workspace)
+    (workspace / "util/src/lib.rs").write_text("#![feature(never_type)]\n" + UTIL)
+    plain = subprocess.run(
+        [os.environ["PEEKY_RUST_CARGO"], "build", "--offline", "--locked"]
+        + list(rw.vendor_arguments(workspace, "vendor")),
+        cwd=workspace,
+        env={
+            **rw.cargo_environment(os.environ["PEEKY_RUST_RUSTC"], workspace.parent / "cargo-home"),
+            "CARGO_TARGET_DIR": str(workspace.parent / "plain"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert plain.returncode != 0 and "E0554" in plain.stderr, plain.stderr
+    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 2 and result["error"]["code"] == "BUILD_FAILED"
+    assert "E0554" in result["error"]["message"]
+    assert "may not be used on the stable release channel" in result["error"]["message"]
+
+
+BUILD_SCRIPT = """fn main() {
+    println!("cargo::rerun-if-changed=schema.txt");
+    let schema = std::fs::read_to_string("schema.txt").unwrap();
+    println!("cargo::rustc-env=SCHEMA={}", schema.trim());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_what_a_build_script_reads_is_an_input_of_the_build(workspace, capsys):
+    (workspace / "util/build.rs").write_text(BUILD_SCRIPT)
+    (workspace / "util/schema.txt").write_text("one\n")
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\npub fn schema() -> &\'static str {\n    env!("SCHEMA")\n}\n'
+    )
+    config = configure(workspace)
+    command = f"`peeky build {workspace} --config {config}`"
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    _, manifest = manifest_of(summary)
+    assert str(workspace / "util/schema.txt") in manifest["build_inputs"]["files"]
+    assert probe(capsys, workspace, config)[1]["error"]["message"].startswith(NOT_YET)
+    (workspace / "util/schema.txt").write_text("two\n")
+    code, result = probe(capsys, workspace, config)
+    assert result["error"]["code"] == "BUILD_REQUIRED"
+    message = result["error"]["message"]
+    assert message.startswith("No current Peeky build of this workspace: util/schema.txt")
+    assert message.endswith(f"since `peeky build` ran. Run {command} again, or add --build")
+    code, result = probe(capsys, workspace, config, "util/src/lib.rs:3", "--build")
+    assert result["error"]["message"].startswith(NOT_YET), result
+    # With no rerun-if-changed, Cargo reruns a build script for any file of its package: a
+    # new one too.
+    (workspace / "util/build.rs").write_text(
+        BUILD_SCRIPT.replace('println!("cargo::rerun-if-changed=schema.txt");\n    ', "")
+    )
+    assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
+    (workspace / "util/data").mkdir()
+    (workspace / "util/data/new.txt").write_text("new\n")
+    code, result = probe(capsys, workspace, config)
+    assert result["error"]["code"] == "BUILD_REQUIRED"
+    assert result["error"]["message"].startswith(
+        "No current Peeky build of this workspace: util/data/new.txt changed since"
+    )
+
+
+@pytest.mark.timeout(300)
+def test_a_build_a_probe_holds_stays_until_it_is_released(workspace, capsys):
+    from peeky import rust_build as rb
+    from peeky.cli import rust_tools
+
+    config = configure(workspace)
+    target = rb.RustWorkspaceTarget.from_config(
+        {**json.loads(config.read_text()), **rust_tools()}, "peeky build"
+    )
+    code, first = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, first
+    held = Path(first["executable"]).parents[1]
+    lease = rb.lease_build(target, workspace)
+    assert lease.manifest["nonce"] == held.name
+    for _ in range(2):
+        assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
+    assert held.is_dir() and len(list(held.parent.iterdir())) == 3
+    lease.close()
+    assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
+    assert not held.exists() and len(list(held.parent.iterdir())) == 2
+
+
+@pytest.mark.timeout(300)
+def test_a_sessions_worker_names_the_build_command_as_typed(
+    workspace, capsys, tmp_path, monkeypatch
+):
+    import shutil
+
+    from peeky import cli
+
+    spaced = tmp_path / "my ws"
+    shutil.move(workspace, spaced)
+    config = tmp_path / "my config.json"
+    config.write_text(json.dumps({"analyse": ["util"], "run": {"bin": "app"}, "vendor": "vendor"}))
+    assert run(capsys, "build", str(spaced), "--config", str(config), "--quiet")[0] == 0
+    # A source changes after `session start` checked the build, before its worker does.
+    monkeypatch.setattr(cli, "_workspace_ready", lambda *args: None)
+    (spaced / "util/src/lib.rs").write_text(UTIL.replace("x * 2", "x * 3"))
+    code, result = run(
+        capsys,
+        "session",
+        "start",
+        str(spaced),
+        "--config",
+        str(config),
+        "--at",
+        "util/src/lib.rs:3",
+        "--name",
+        "spaced",
+    )
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"] == (
+        "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` "
+        f"ran. Run `peeky build '{spaced}' --config '{config}'` again, or add --build"
+    )

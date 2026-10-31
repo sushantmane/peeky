@@ -465,6 +465,13 @@ _RULES = (
         False,
     ),
     (
+        r"^Peeky records at most [0-9]+ files a build script or procedural macro may read",
+        "UNSUPPORTED",
+        "Give the build script `cargo::rerun-if-changed` lines naming what it reads, or move "
+        "large data out of the package, then build again.",
+        False,
+    ),
+    (
         r"^Provenance: vendored `",
         "PROVENANCE_CHANGED",
         "Run the `cargo vendor` command the message gives, so the vendored copies are the ones "

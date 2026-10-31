@@ -7805,8 +7805,10 @@ def load_native_target(path):
     return NativeTarget(**config)
 
 
-def load_rust_target(path):
-    """Load trusted Rust tools and inputs; HTTP clients cannot choose executables."""
+def load_rust_target(path, root=None, build_command=None):
+    """Load trusted Rust tools and inputs; HTTP clients cannot choose executables. A
+    workspace's refusals name ``build_command`` (`peeky build` as `session start` was
+    given it), else `peeky build` of the worker's ``root`` and this configuration."""
     from peeky.rust import RustTarget
 
     config = json.loads(Path(path).read_text())
@@ -7816,11 +7818,12 @@ def load_rust_target(path):
 
     if is_workspace_config(config):
         from peeky.rust_build import RustWorkspaceTarget
+        from peeky.rust_build import build_command as typed
 
         # A workspace is built on the worker's host by `peeky build`, never by a request.
-        return RustWorkspaceTarget.from_config(
-            config, f"peeky build <the worker's root> --config {Path(path).resolve()}"
-        )
+        if build_command is None:
+            build_command = typed(Path(root or ".").resolve(), Path(path).resolve())
+        return RustWorkspaceTarget.from_config(config, build_command)
     fields = {
         "sources",
         "tests",
@@ -7901,6 +7904,10 @@ def main():
     targets.add_argument(
         "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
     )
+    parser.add_argument(
+        "--rust-build-command",
+        help="The `peeky build` command a Rust workspace's refusals name (from `session start`)",
+    )
     targets.add_argument(
         "--python",
         metavar="PATH",
@@ -7923,7 +7930,7 @@ def main():
             elif args.native_config:
                 adapter = load_native_target(args.native_config)
             else:
-                adapter = load_rust_target(args.rust_config)
+                adapter = load_rust_target(args.rust_config, args.root, args.rust_build_command)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     python = None
