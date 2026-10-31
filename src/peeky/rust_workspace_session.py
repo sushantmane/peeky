@@ -181,6 +181,33 @@ def expanded_code(path):
     return rest[: found.start()] + rest[found.end() :]
 
 
+def _edition(files):
+    """The edition the analysed compile in ``files`` (its unit's directory) was built at,
+    from its recorded rustc command (`--edition=2018`), or None."""
+    try:
+        args = json.loads((Path(files) / "command.json").read_text()).get("args") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    found = [each.split("=", 1)[1] for each in args if str(each).startswith("--edition=")]
+    return found[-1] if found else None
+
+
+def _check_lexed_as_2018(unit, texts):
+    """Refuse an edition 2018 compile whose ``texts`` ({name: text}, the sources and the
+    expansion) hold what Peeky's lexer reads as Rust 2021 does and edition 2018 otherwise: a
+    raw C string (`cr"…"`). The scans of its text could then hide code from Peeky."""
+    from peeky.rust_lexer import raw_c_string
+
+    for name, text in texts.items():
+        if (line := raw_c_string(text)) is not None:
+            raise ValueError(
+                f"Peeky can't read `{unit['package']}`'s text as edition 2018 does: {name} has "
+                f'a raw C string (`cr"…"`) on line {line}. Peeky reads one as Rust 2021 does, '
+                "and edition 2018 reads `cr` and an ordinary string. Analyse another package, "
+                "or write the string otherwise"
+            )
+
+
 def prepare_session(target, program, root, *, deadline=None):
     """The session on ``target``'s current build under ``root`` that stops in ``program``
     (a file of an analysed package): refused where there is none (BuildRequired), or where
@@ -264,6 +291,8 @@ def prepare_session(target, program, root, *, deadline=None):
             raise ValueError(
                 f"Peeky can't read rustc's expansion of `{unit['package']}`'s {crate}: build again"
             )
+        if _edition(files) == "2018":
+            _check_lexed_as_2018(unit, {**texts, f"`{crate}` as rustc expands it": expanded})
         defined = set()
         # The other crates of the build, whose code these proofs read none of: the
         # dependencies, and the other analysed crates, proven apart.

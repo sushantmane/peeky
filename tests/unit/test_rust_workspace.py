@@ -180,9 +180,11 @@ def checked(root, chosen=None):
 
 def shape(root, data=None, units=None, **overrides):
     chosen = config(vendor="vendor", **overrides)
-    return rw.read_workspace(
-        root, chosen, checked(root, chosen), data or metadata(root), units or graph(root)
-    )
+    if units is None:
+        # Cargo builds the run's package with the features the configuration names.
+        units = graph(root)
+        units["units"][0]["features"] = list(overrides.get("features", ()))
+    return rw.read_workspace(root, chosen, checked(root, chosen), data or metadata(root), units)
 
 
 def code(exc):
@@ -957,18 +959,48 @@ def test_tests_run_as_cargo_builds_them(workspace, run, arguments):
     assert found.cargo_arguments() == arguments
 
 
-def test_an_analysed_package_outside_editions_2021_and_2024_is_refused(workspace):
+def test_an_analysed_package_outside_editions_2018_2021_and_2024_is_refused(workspace):
     with pytest.raises(ValueError) as caught:
-        shape(workspace, data=metadata(workspace, {"util": "2018"}))
-    assert str(caught.value).startswith(
-        "Peeky analyses only editions 2021 and 2024: package `util` is edition 2018"
+        shape(workspace, data=metadata(workspace, {"util": "2015"}))
+    assert str(caught.value) == (
+        "Peeky analyses only editions 2018, 2021 and 2024: package `util` is edition 2015. "
+        "Analyse another package, or move this one to edition 2018 (`cargo fix --edition`)"
     )
     assert code(caught) == "UNSUPPORTED"
     # A package not analysed may be of any edition: its code counts as a dependency's.
     shape(workspace, data=metadata(workspace, {"app": "2015"}))
     # A compiled target's own edition counts too.
-    with pytest.raises(ValueError, match="package `util` is edition 2018"):
-        shape(workspace, units=graph(workspace, util={"edition": "2018"}))
+    with pytest.raises(ValueError, match="package `util` is edition 2015"):
+        shape(workspace, units=graph(workspace, util={"edition": "2015"}))
+    # Edition 2018 is analysed (main refused it until 2018 was qualified).
+    found = shape(
+        workspace,
+        data=metadata(workspace, {"util": "2018"}),
+        units=graph(workspace, util={"edition": "2018"}),
+    )
+    assert [(package.name, package.edition) for package in found.analysed] == [("util", "2018")]
+
+
+def test_a_feature_cargo_would_build_without_is_refused(workspace):
+    # Under resolver 1, a workspace whose root is a package gives `--features` to the root's
+    # package: Cargo's unit graph builds the run's without it, saying nothing.
+    units = graph(workspace)
+    with pytest.raises(ValueError) as caught:
+        shape(workspace, units=units, features=["fast"])
+    assert str(caught.value) == (
+        'Peeky builds only with the features "features" names, and Cargo would build `app` '
+        "without `fast`. Under resolver 1, Cargo gives --features to the package in the "
+        "workspace's root directory, not to the one it builds. Name it `app/fast`, or set "
+        'resolver = "2" in the workspace\'s Cargo.toml'
+    )
+    assert code(caught) == "UNSUPPORTED"
+    with pytest.raises(ValueError, match="Cargo would build `smallnum` without `big`"):
+        shape(workspace, units=units, features=["smallnum/big"])
+    # Where the graph builds them, and for a package it doesn't compile (Cargo's to judge).
+    units["units"][0]["features"] = ["fast", "default"]
+    units["units"][2]["features"] = ["big"]
+    found = shape(workspace, units=units, features=["fast", "smallnum/big", "far/x"])
+    assert found.features == ("fast", "smallnum/big", "far/x")
 
 
 def test_only_the_workspaces_own_code_is_analysed(workspace):
@@ -988,6 +1020,7 @@ def test_only_the_workspaces_own_code_is_analysed(workspace):
 def test_an_analysed_package_the_run_doesnt_compile_is_refused(workspace):
     units = graph(workspace)
     del units["units"][1]
+    units["units"][0]["features"] = ["slim"]
     with pytest.raises(ValueError) as caught:
         shape(workspace, units=units, features=["slim"])
     assert str(caught.value).startswith(

@@ -1476,7 +1476,7 @@ def _canonical_type(text):
     return head
 
 
-def _impl_self_place(text, module, types=None):
+def _impl_self_place(text, module, types=None, traits=frozenset()):
     """The type an `impl` header names as ``text`` (``_impl_self_type``), in
     ``_canonical_type``'s form, its crate's paths from the crate's root (`a::Mine`): a bare name
     the block's ``module``'s (its function's path's segments before `<impl at …>`), `crate::`,
@@ -1484,20 +1484,22 @@ def _impl_self_place(text, module, types=None):
     `Pin` kept (`&a::Mine`, `std::boxed::Box<a::Mine>`), a path rooted at the standard
     library's as named. "" where Peeky can't place it: another path (through a `use`, or a
     module's), a bare name ``types`` (the crate's type paths, from the debug information)
-    doesn't have in that module (a `use` may have brought it, or the prelude: `String`), any
-    other type (a tuple, a slice, a trait object, another generic one: `Vec<Mine>`)."""
+    doesn't have in that module (a `use` may have brought it, or the prelude: `String`), a
+    name ``traits`` (those the crate's sources define) has, which edition 2018 reads as a
+    trait object (`impl Keep for Box<Sink>`), any other type (a tuple, a slice, a trait
+    object, another generic one: `Vec<Mine>`)."""
     text = (text or "").strip()
     if not text:
         return ""
     if found := _REFERENCE.match(text):
-        inner = _impl_self_place(text[found.end() :], module, types)
+        inner = _impl_self_place(text[found.end() :], module, types, traits)
         return ("&mut " if found[1] else "&") + inner if inner else ""
     head, arguments = _type_head(text)
     plain = head.removeprefix("::")
     for paths, name in ((_BOX_PATHS, "Box"), (_PIN_PATHS, "Pin")):
         ours = types is not None and any(each.rsplit("::", 1)[-1] == name for each in types)
         if plain in paths or (plain == name and not ours):
-            inner = _impl_self_place(arguments[0], module, types) if arguments else ""
+            inner = _impl_self_place(arguments[0], module, types, traits) if arguments else ""
             wrapper = "std::boxed::Box" if name == "Box" else "std::pin::Pin"
             return f"{wrapper}<{inner}>" if inner else ""
     if not re.fullmatch(r"(?:\w+::)*\w+", plain) or (
@@ -1507,6 +1509,8 @@ def _impl_self_place(text, module, types=None):
     segments, module = plain.split("::"), list(module)
     if segments[0] in _STD_CRATES:
         return plain
+    if segments[-1] in traits:
+        return ""
     if len(segments) == 1:
         placed = "::".join([*module, plain])
         return "" if types is not None and placed not in types else placed
@@ -1841,6 +1845,7 @@ def _local_impls(bodies, texts, types=None):
     (``_impl_trait``), the names of the functions it defines, the type as its header names
     it), each block once. ``types``: the crate's type paths, from the debug information."""
     blocks, receivers = {}, {}
+    traits = _crate_traits(texts)[0]
     for body in bodies:
         segments = _segments(body.path)
         if len(segments) < 2 or not segments[-2].startswith("<impl at "):
@@ -1848,7 +1853,7 @@ def _local_impls(bodies, texts, types=None):
         block = segments[-2]
         if block not in blocks:
             named = _impl_self_type(block, texts)
-            placed = _impl_self_place(named, segments[:-2], types)
+            placed = _impl_self_place(named, segments[:-2], types, traits)
             blocks[block] = (placed, _impl_trait(block, texts), set(), named or "")
         blocks[block][2].add(segments[-1])
         if any(found[0] == 1 for found in body.bindings.get("self", ())):

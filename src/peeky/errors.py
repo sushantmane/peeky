@@ -393,12 +393,20 @@ _RULES = (
         # A Rust workspace Peeky doesn't build (rust_workspace), refused before Cargo runs.
         r"^Peeky (?:doesn't build (?:git dependencies|a workspace with|a path dependency outside|"
         r"with `)|builds crates\.io dependencies only|analyses only (?:editions|code the program "
-        r"runs|code built at|code built as stable|the workspace's members)|builds only files inside |reads only "
+        r"runs|code built at|code built as stable|the workspace's members)|builds only files inside |"
+        r"builds only with the features|reads only "
         r"Cargo\.lock versions|builds a Rust workspace only where Cargo reads no manifest|can't "
         r"tell (?:whether `target|which of Cargo's))",
         "UNSUPPORTED",
         "Nothing was built. Change what the message names in the workspace or its "
         "configuration, or analyse another package.",
+        False,
+    ),
+    (
+        # An edition 2018 crate whose text Peeky's lexer may read otherwise than rustc.
+        r"^Peeky can't read `[^`]+`'s text as edition 2018 does",
+        "UNSUPPORTED",
+        "Nothing ran. Analyse another package, or change what the message names, and build again.",
         False,
     ),
     (

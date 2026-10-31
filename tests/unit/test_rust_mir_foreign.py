@@ -741,3 +741,50 @@ def test_a_dependency_traits_method_on_a_reference_to_a_trait_object_is_an_impls
     assert call(path, ("&&dyn Sink",), state(blocks=blocks))[1].startswith(
         "?impl\x1f`impl smallnum::Keep for &dyn Sink`"
     )
+
+
+def test_a_bare_trait_object_edition_2018_writes_is_never_placed_as_a_type():
+    # Edition 2018 reads `impl smallnum::Keep for Box<Sink>`, `trait Sink` the crate's, as
+    # `Box<dyn Sink>`, which the MIR prints as `std::boxed::Box<dyn Sink>`. Without the debug
+    # information's types, `Sink` was placed as a type of the crate's root: the call then ran
+    # the dependency's default `noted`, a false note. Now Peeky can't tell, and says so.
+    texts = {
+        "src/d.rs": "pub trait Sink {}\nimpl smallnum::Keep for Box<Sink> {\n"
+        "impl smallnum::Keep for &Sink {\n"
+    }
+    for span, kind in (("2:1: 2:34", "std::boxed::Box<dyn Sink>"), ("3:1: 3:30", "&dyn Sink")):
+        method = impl_of([], "src/d.rs", span, receiver=f"&{kind}")
+        for types in (None, TYPES):
+            blocks = _local_impls([method], texts, types)
+            assert blocks[0][0] == "", (span, types)
+            found = call(f"<{kind} as smallnum::Keep>::noted", (), state(blocks=blocks))
+            assert found[1].startswith("?impl\x1f`impl smallnum::Keep for "), (span, types, found)
+    # A type of that name is still placed.
+    mine = impl_of([], "src/d.rs", "2:1: 2:34", receiver="&std::boxed::Box<Sink>")
+    assert _local_impls([mine], {"src/d.rs": texts["src/d.rs"].replace("trait", "struct")})[0][
+        0
+    ] == ("std::boxed::Box<Sink>")
+
+
+def test_an_edition_2018_compiles_text_peeky_lexes_otherwise_is_refused(tmp_path):
+    import json
+
+    from peeky.errors import classify
+    from peeky.rust_workspace_session import _check_lexed_as_2018, _edition
+
+    args = ["--crate-name", "util", "--edition=2018", "util/src/lib.rs"]
+    (tmp_path / "command.json").write_text(json.dumps({"args": args}))
+    assert _edition(tmp_path) == "2018"
+    assert _edition(tmp_path / "missing") is None
+    unit = {"package": "util"}
+    # A C string lexes alike in both editions.
+    _check_lexed_as_2018(unit, {"util/src/lib.rs": 'm!(c"\\"");'})
+    with pytest.raises(ValueError) as caught:
+        _check_lexed_as_2018(unit, {"util/src/lib.rs": 'fn f() {}\nm!(cr"\\"");'})
+    assert str(caught.value) == (
+        "Peeky can't read `util`'s text as edition 2018 does: util/src/lib.rs has a raw C "
+        'string (`cr"…"`) on line 2. Peeky reads one as Rust 2021 does, and edition 2018 '
+        "reads `cr` and an ordinary string. Analyse another package, or write the string "
+        "otherwise"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"

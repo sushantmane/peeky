@@ -6,9 +6,9 @@ Peeky builds such a workspace itself, in a separate step, offline and from its l
 with every registry dependency from `cargo vendor`'s copy. It refuses here, before
 anything runs: a git dependency, a registry other than crates.io, `[patch]` and
 `[replace]`, Cargo configuration it doesn't account for, a vendored copy that isn't what
-`cargo vendor` wrote, and an analysed package outside editions 2021 and 2024, or built
-otherwise than at opt-level 0. What the build compiles comes from Cargo's unit graph of
-the build's own command. What Cargo reads is hashed before it runs and checked again
+`cargo vendor` wrote, and an analysed package outside editions 2018, 2021 and 2024, or
+built otherwise than at opt-level 0. What the build compiles comes from Cargo's unit graph
+of the build's own command. What Cargo reads is hashed before it runs and checked again
 after. Trusted configuration; not a sandbox: Cargo runs the project's build scripts and
 procedural macros, as it runs the program.
 """
@@ -59,7 +59,7 @@ MAX_LOCK_BYTES = 16 * 1024 * 1024
 MAX_CHECKSUMS_BYTES = 16 * 1024 * 1024
 MAX_METADATA_BYTES = 64 * 1024 * 1024
 MAX_VENDORED_FILES = 200_000
-EDITIONS = ("2021", "2024")
+EDITIONS = ("2018", "2021", "2024")
 # crates.io as Cargo.lock names it; the only registry Peeky builds from.
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 VENDORED_SOURCE = "peeky-vendored"
@@ -1300,8 +1300,8 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
     metadata --no-deps --format-version 1`, as parsed JSON: the members) and ``graph``:
     Cargo's unit graph of the exact command the build runs (its packages, features,
     targets and profiles). Every path package that command compiles, and every member,
-    must be inside ``root``. Each analysed package must be a member of edition 2021 or
-    2024, compiled by that command at opt-level 0 (check_profile), and no procedural
+    must be inside ``root``. Each analysed package must be a member of edition 2018, 2021
+    or 2024, compiled by that command at opt-level 0 (check_profile), and no procedural
     macro; the run's target is the command's root. ``cargo_version`` names Cargo where
     its output is not what Peeky reads (check_metadata, check_graph)."""
     root = Path(root).resolve(strict=True)
@@ -1396,6 +1396,7 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
         raise ValueError(f"Peeky can't tell apart two path packages named `{twice[0]}`")
     by_name = {package.name: (package_key, package) for package_key, package in local.items()}
     run = _run_target(config.run, graph, units, local)
+    check_features(config.features, units[graph["roots"][0]], units)
     command = "cargo " + " ".join(_selection(run[0].name, run[1], config.features))
     analysed = []
     for name in config.analyse:
@@ -1433,9 +1434,9 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
         editions = {package.edition, *(unit["target"]["edition"] for unit in own)}
         if outside := sorted(editions - set(EDITIONS)):
             raise ValueError(
-                f"Peeky analyses only editions 2021 and 2024: package `{name}` is edition "
-                f"{outside[0]}. Analyse another package, or move this one to edition 2021 "
-                "(`cargo fix --edition`)"
+                f"Peeky analyses only editions 2018, 2021 and 2024: package `{name}` is "
+                f"edition {outside[0]}. Analyse another package, or move this one to edition "
+                "2018 (`cargo fix --edition`)"
             )
         for unit in own:
             check_profile(name, unit)
@@ -1485,6 +1486,26 @@ def _crate_names(units):
             if isinstance(each.get("extern_crate_name"), str):
                 found.add(each["extern_crate_name"])
     return tuple(sorted(found))
+
+
+def check_features(features, root, units):
+    """Refuse where Cargo's unit graph builds without a feature ``features`` names: a plain
+    one on the run's package (``root``: the graph's root unit), `package/feature` on that
+    package where the graph compiles it. Under resolver 1, a workspace whose root is a
+    package gives `--features` to that package, not to the one `-p` selects, and builds
+    the selected one without them, saying nothing."""
+    run = package_id(root["pkg_id"])[2]
+    for feature in features:
+        package, _, name = feature.rpartition("/")
+        package = package or run
+        compiled = [unit for unit in units if package_id(unit["pkg_id"])[2] == package]
+        if compiled and not any(name in unit["features"] for unit in compiled):
+            raise ValueError(
+                f'Peeky builds only with the features "features" names, and Cargo would build '
+                f"`{package}` without `{name}`. Under resolver 1, Cargo gives --features to the "
+                "package in the workspace's root directory, not to the one it builds. Name it "
+                f'`{package}/{name}`, or set resolver = "2" in the workspace\'s Cargo.toml'
+            )
 
 
 def _run_target(run, graph, units, local):
