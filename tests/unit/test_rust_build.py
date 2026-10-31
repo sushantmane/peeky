@@ -467,3 +467,17 @@ def test_a_leased_build_is_kept_until_its_lease_is_released(tmp_path):
     rb._prune(tmp_path, "d")
     assert sorted(path.name for path in runs.iterdir()) == ["c", "d"]
     assert not (tmp_path / "leases/a").exists()
+
+
+def test_an_analysed_compile_that_reads_rustc_bootstrap_is_refused(tmp_path):
+    depfile = tmp_path / "util-0123.d"
+    depfile.write_text("util-0123.d: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:HOME=/x\n")
+    rb._check_bootstrap_read("util", "util", depfile)
+    depfile.write_text(depfile.read_text() + "# env-dep:RUSTC_BOOTSTRAP=util\n")
+    with pytest.raises(ValueError) as caught:
+        rb._check_bootstrap_read("util", "util", depfile)
+    assert str(caught.value).startswith(
+        "Peeky analyses only code built as stable Rust builds it: `util`'s util reads "
+        "RUSTC_BOOTSTRAP"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"

@@ -765,9 +765,9 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         unit = found[0]
         seen_units.add(unit.name)
         entry = _unit(package, artifact, unit, run)
-        read = _read_dependencies(
-            Path(entry.pop("dependency_file")), shape.workspace, root, target_dir, package.name
-        )
+        depfile = Path(entry.pop("dependency_file"))
+        _check_bootstrap_read(package.name, crate, depfile)
+        read = _read_dependencies(depfile, shape.workspace, root, target_dir, package.name)
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         entry["sources"] = sorted(read["sources"])
         units.append(entry)
@@ -1003,6 +1003,20 @@ def _unit(package, artifact, unit, run):
         "expanded": expanded,
         "dependency_file": str(Path(out_dir) / f"{unit.name}.d"),
     }
+
+
+def _check_bootstrap_read(package, crate, depfile):
+    """Refuse an analysed compile that read RUSTC_BOOTSTRAP, as rustc's dependency file
+    records (`# env-dep:`: `env!`, `option_env!`, a macro's tracked read): Peeky sets it
+    for that compile alone, which would then build otherwise than stable Rust does."""
+    for line in split_lines(depfile.read_text(errors="surrogateescape")):
+        if line == "# env-dep:RUSTC_BOOTSTRAP" or line.startswith("# env-dep:RUSTC_BOOTSTRAP="):
+            raise ValueError(
+                f"Peeky analyses only code built as stable Rust builds it: `{package}`'s "
+                f"{crate} reads RUSTC_BOOTSTRAP (`env!`, `option_env!` or a macro), which "
+                "Peeky's build sets for that crate's compile alone. Read it elsewhere, or "
+                "analyse another package"
+            )
 
 
 def _copy_executable(executable, run):

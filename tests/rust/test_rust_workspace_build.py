@@ -483,3 +483,38 @@ def test_a_sessions_worker_names_the_build_command_as_typed(
         "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` "
         f"ran. Run `peeky build '{spaced}' --config '{config}'` again, or add --build"
     )
+
+
+@pytest.mark.timeout(300)
+def test_rustc_bootstrap_is_the_analysed_compiles_alone(workspace, capsys):
+    # A build script runs in Cargo's environment: it never sees the variable.
+    (workspace / "util/build.rs").write_text(
+        "fn main() {\n"
+        '    println!("cargo::rerun-if-changed=build.rs");\n'
+        '    let seen = std::env::var("RUSTC_BOOTSTRAP").unwrap_or_default();\n'
+        '    println!("cargo::rustc-env=SEEN=[{seen}]");\n'
+        "}\n"
+    )
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\npub fn seen() -> &\'static str {\n    env!("SEEN")\n}\n'
+    )
+    main = workspace / "app/src/main.rs"
+    main.write_text(
+        main.read_text().replace('println!("{x}");', 'println!("{x} {}", util::seen());')
+    )
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    shown = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
+    assert shown.stdout == "2 []\n"
+    # The analysed crate's own compile has it; a read of it there is refused.
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\npub fn seen() -> Option<&\'static str> {\n    option_env!("RUSTC_BOOTSTRAP")\n}\n'
+    )
+    main.write_text(main.read_text().replace("util::seen()", 'util::seen().unwrap_or("")'))
+    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    assert result["error"]["message"].startswith(
+        "Peeky analyses only code built as stable Rust builds it: `util`'s util reads "
+        "RUSTC_BOOTSTRAP"
+    )
