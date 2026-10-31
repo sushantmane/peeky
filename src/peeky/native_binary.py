@@ -1615,8 +1615,10 @@ class BinaryTarget:
         self, root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, hashed=True
     ):
         """The binary's units, each judged, and the files those Peeky reads name, each
-        checked against its MD5 ({absolute path: SHA-256}; None, unread, unless
-        ``hashed``); on macOS, through the dSYM Peeky makes in ``scratch``."""
+        checked against its MD5 ({absolute path: SHA-256}); on macOS, through the dSYM
+        Peeky makes in ``scratch``. Unless ``hashed`` (a listing), no file is hashed: the
+        files are None, and the debug map's objects are checked by their stat identities,
+        and the dSYM's files not at all."""
         version = _version_line(compiler)
         symbols, dsym = binary, ()
         if sys.platform == "darwin":
@@ -1629,7 +1631,7 @@ class BinaryTarget:
                 raise _refused(
                     "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
                 ) from None
-            objects = check_debug_map(entries, root, binary)
+            objects = check_debug_map(entries, root, binary, hashed, deadline)
             said = _run(
                 [tools[-1], str(binary), "-o", str(bundle)],
                 scratch,
@@ -1645,7 +1647,7 @@ class BinaryTarget:
                     f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
                     "again"
                 )
-            if check_debug_map(debug_map(binary), root, binary) != objects:
+            if check_debug_map(debug_map(binary), root, binary, hashed, deadline) != objects:
                 raise BinaryChanged(
                     "Provenance: an object the binary's debug map names changed while "
                     "dsymutil read it"
@@ -1656,10 +1658,15 @@ class BinaryTarget:
                     "UNSUPPORTED",
                     f"{shown} has no debug information (dsymutil found none): rebuild with -g",
                 )
-            dsym = tuple(
-                FileIdentity(item.relative_to(scratch).as_posix(), sha256_file(item), 0)
-                for item in sorted(bundle.rglob("*"))
-                if item.is_file()
+            # A listing keeps no dSYM: nothing of it is hashed.
+            dsym = (
+                tuple(
+                    FileIdentity(item.relative_to(scratch).as_posix(), sha256_file(item), 0)
+                    for item in sorted(bundle.rglob("*"))
+                    if item.is_file()
+                )
+                if hashed
+                else ()
             )
         index = _metadata(
             dwarfdump,
@@ -2104,17 +2111,20 @@ def debug_map(binary):
     return found
 
 
-def _members(archive):
-    """{member name: [its modification times]} of a BSD or System V `ar` archive."""
+def _members(archive, deadline=None):
+    """{member name: [its modification times]} of a BSD or System V `ar` archive; read
+    within ``deadline`` (time.monotonic()), where one is given: TimeoutError past it."""
     found = {}
     with open(archive, "rb") as stream:
         if stream.read(8) != b"!<arch>\n":
             raise ValueError("not an ar archive")
         size = os.fstat(stream.fileno()).st_size
         at = 8
-        for _ in range(MAX_MEMBERS):
+        for count in range(MAX_MEMBERS):
             if at >= size:
                 return found
+            if deadline is not None and count % 4096 == 0 and time.monotonic() > deadline:
+                raise TimeoutError(f"Reading {archive}'s members ran past Peeky's deadline")
             stream.seek(at)
             header = stream.read(60)
             if len(header) != 60 or header[58:60] != b"`\n":
@@ -2129,9 +2139,12 @@ def _members(archive):
     raise ValueError("too many members")
 
 
-def check_debug_map(entries, root, binary):
-    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name, each
-    checked by the linker's timestamps, as LLDB and dsymutil check them: there, with the
+def check_debug_map(entries, root, binary, hashed=True, deadline=None):
+    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name (where not
+    ``hashed``, its size, modification time and inode: nothing is read of it but an
+    archive's member headers), within ``deadline`` (time.monotonic(), where given:
+    TimeoutError past it). Each is checked by the linker's timestamps, as LLDB and
+    dsymutil check them: there, with the
     modification time the linker recorded, in seconds (an archive's member by its
     header's), and the file itself no newer than ``binary``, to the nanosecond: the linker
     wrote the binary after reading it. One rebuilt after the link, gone, or changed makes
@@ -2140,9 +2153,13 @@ def check_debug_map(entries, root, binary):
     refused (UNSUPPORTED). So is a file written in the binary's second where either time
     has no part of a second, as a filesystem keeping whole seconds gives: which came
     first can't be told."""
-    hashes, stale, unordered = {}, [], None
+    hashes, stale, unordered, archives = {}, [], None, {}
     linked = os.stat(binary).st_mtime_ns
     for name, moment in entries:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(
+                "Checking the objects the binary's debug map names ran past Peeky's deadline"
+            )
         member = re.fullmatch(r"(.+)\(([^()]+)\)", name)
         path = member[1] if member else name
         shown = _shown(os.path.realpath(path), Path(root))
@@ -2155,14 +2172,17 @@ def check_debug_map(entries, root, binary):
             )
         try:
             if member:
-                times = _members(path).get(member[2])
+                if path not in archives:
+                    archives[path] = _members(path, deadline)
+                times = archives[path].get(member[2])
                 if not times:
                     stale.append(f"{shown} is gone")
                     continue
                 current = moment if moment in times else times[0]
             else:
                 current = int(os.stat(path).st_mtime)
-            written = os.stat(path).st_mtime_ns
+            info = os.stat(path)
+            written = info.st_mtime_ns
             # In one second, where either time has no part of a second (it may be rounded
             # down), neither order is proven: refused as such, never as newer or older.
             ambiguous = written // 10**9 == linked // 10**9 and (
@@ -2171,7 +2191,9 @@ def check_debug_map(entries, root, binary):
             newer = not ambiguous and written > linked
             if ambiguous:
                 unordered = unordered or _shown(os.path.realpath(path), Path(root))
-            hashes[path] = sha256_file(path)
+            hashes[path] = (
+                sha256_file(path) if hashed else (info.st_size, info.st_mtime_ns, info.st_ino)
+            )
         except (OSError, ValueError):
             stale.append(f"{shown} is gone or unreadable")
             continue

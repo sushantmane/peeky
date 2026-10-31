@@ -5,9 +5,12 @@ shared library is refused naming the library, and the session is kept."""
 
 import hashlib
 import json
+import os
+import shutil
 import struct
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -510,3 +513,66 @@ def test_a_step_into_a_shared_library_names_it(tmp_path):
         "/usr/lib/libfoo.so); `session step --out` returns to your code, or `session continue`"
     )
     assert worker.state == "stopped" and worker.dap is not None
+
+
+def test_a_listing_on_macos_hashes_no_object_and_no_dsym_and_keeps_its_deadline(
+    tmp_path, monkeypatch
+):
+    # On macOS, judging reads the debug map's objects and makes a dSYM: a listing checks the
+    # objects by their stat identities, and hashes nothing, within its deadline.
+    root = (tmp_path / "project").resolve()
+    root.mkdir()
+    objects = [root / "main.o", root / "util.o"]
+    for each in objects:
+        each.write_bytes(b"object")
+        os.utime(each, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    binary = root / "prog"
+    binary.write_bytes(b"binary")
+    os.utime(binary, ns=(1_700_000_100_000_000_000, 1_700_000_100_000_000_000))
+    entries = [(str(each), 1_700_000_000) for each in objects]
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    hashed = []
+
+    class Reached(Exception):
+        pass
+
+    def dsymutil(argv, cwd, env, timeout, what):
+        made = Path(argv[3]) / "Contents/Resources/DWARF" / binary.name
+        made.parent.mkdir(parents=True)
+        made.write_bytes(b"dwarf")
+        return ""
+
+    def hashing(path):
+        hashed.append(str(path))
+        return "0" * 64
+
+    def metadata(*args, **kwargs):
+        raise Reached
+
+    monkeypatch.setattr(native_binary.sys, "platform", "darwin")
+    monkeypatch.setattr(native_binary, "_version_line", lambda compiler: "Apple clang 21")
+    monkeypatch.setattr(native_binary, "debug_map", lambda path: list(entries))
+    monkeypatch.setattr(native_binary, "_run", dsymutil)
+    monkeypatch.setattr(native_binary, "sha256_file", hashing)
+    monkeypatch.setattr(native_binary, "_metadata", metadata)
+    target = BinaryTarget(binary="prog")
+    tools = ["clang", "dwarfdump", "dsymutil"]
+
+    def judge(hashes, deadline, at):
+        shutil.rmtree(at, ignore_errors=True)
+        at.mkdir()
+        target._judge(root, binary, "prog", "clang", "dwarfdump", tools, {}, at, deadline, hashes)
+
+    with pytest.raises(Reached):
+        judge(False, time.monotonic() + 40, scratch)
+    assert hashed == []
+    # Preparing a run hashes them: the objects twice (before and after dsymutil), the dSYM.
+    with pytest.raises(Reached):
+        judge(True, time.monotonic() + 40, scratch)
+    assert sorted(set(hashed)) == sorted(
+        [*map(str, objects), str(scratch / "prog.dSYM" / "Contents/Resources/DWARF/prog")]
+    )
+    # Past its deadline, the debug map's check stops.
+    with pytest.raises(TimeoutError, match="ran past Peeky's deadline"):
+        judge(False, time.monotonic() - 1, scratch)

@@ -222,7 +222,7 @@ session default (c, remote): state: stopped at src/util.c:3 in scale, hit 1 (pau
   as the binary was built with them, and those may differ from yours.
 - **A binary the worker refuses,** such as one without debug information, is refused before the
   probe or session is sent: `The worker refuses its binary: …`, with the worker's code and reason.
-- **At most 4096 files and 16 MiB in all,** counted before any file is read. A binary whose units
+- **At most 4096 files and 16 MiB in all,** counted before any of them is read. A binary whose units
   name more is refused, with `UNSUPPORTED`: `The worker refuses its binary: prog's units name 5,000 files under the target
   directory. A worker compares at most 4,096 files, 16 MiB in all, with a remote client's
   copies: run Peeky on the binary's own host`.

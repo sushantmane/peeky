@@ -129,12 +129,17 @@ A process running as the same user, or as root, isn't covered.
 - A remote client's copies are compared with the files under the root, at most 4096 files and
   16 MiB in all. Headers outside the root aren't compared with a client's: the worker checks them
   against their MD5s.
-- To list those files (`inputs`), the worker reads the binary's debug information: dsymutil on
-  macOS, and llvm-dwarfdump, within 40 s. Any client holding the token can make it do so. One
-  listing runs at a time: another request waits for it, or is `BUSY`. The list is kept until the
-  binary's size, time or inode changes. The 4096 files and 16 MiB are counted before any file is
-  read, and the listing hashes none: preparing a run checks each against its MD5. `version` reads
-  nothing of the binary.
+- To list those files (`inputs`), the worker reads the binary's debug information with
+  llvm-dwarfdump, and on macOS makes a dSYM with dsymutil. Any client holding the token can make
+  it do so. One listing runs at a time: another request waits for it, or is `BUSY`. The list is
+  kept until the binary's size, time or inode changes. `version` reads nothing of the binary.
+- A listing hashes no file. On macOS, the objects the debug map names are checked by their
+  timestamps and stat identities, an archive by its members' headers, and the dSYM not at all.
+  The 4096 files and 16 MiB are counted from the line tables, by `stat`, before any of those
+  files is read. Preparing a run then hashes each, and checks it against its MD5.
+- Each step of a listing stops at its 40 s deadline: the tools, the debug map's objects and
+  archives, and the count. The debug map itself is read whole first, as the binary's symbol table
+  holds it, at most 16 Mi symbols.
 
 **Target memory and source**
 
