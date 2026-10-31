@@ -242,23 +242,29 @@ def optimization(words):
     compiler (`-Xclang -O2`) counts too. Only these: whether an option such as
     `-ffast-math` changes what the code computes is judged apart.
 
-    Read from the words alone, never by running the compiler on them. Raises
-    NotRecorded naming what can't be read, rather than guess: an option passed with
-    `-mllvm` or `-Xarch_…`, or with `-Xclang` but not known; a response file or
-    configuration file (`@file`, `--config`), which the recorded words should hold
-    expanded; an unknown `-O` level; or a word like an `-O` or LTO option where it may be
-    another option's value: after one taking a value (`-o -O0`), or after any option
-    not known to take none (`-resource-dir -O0`, `-fmodules-user-build-path -O0`)."""
+    Read from the words alone, never by running the compiler on them. Each option's
+    number of values is known: none (``_COMPLETE_WORDS``, ``_COMPLETE``) or one
+    (``_SEPARATE``). A word that is no option is an input. Raises NotRecorded naming what
+    can't be read, rather than guess: an option passed with `-mllvm` or `-Xarch_…`, or
+    with `-Xclang` but not known; a response or configuration file (`@file`,
+    `--config`), which the recorded words should hold expanded; an unknown `-O` level; a
+    word like an `-O` or LTO option that is a known option's value (`-o -O0`); and any
+    `-O` or LTO word after an option whose number of values isn't known
+    (`-fdepscan-prefix-map /old -O0`): it may take that word, and any between."""
     _forwarded(words)
-    level, lto, at = "0", False, 1
+    level, lto, at, unknown = "0", False, 1, None
     while at < len(words):
         word = words[at]
         at += 1
+        if word == "--":
+            break  # Inputs only, after it.
         if word.startswith("@") or word.startswith("--config"):
             raise NotRecorded(f"records {word}, which Peeky can't judge")
         if word in ("-Xclang", "-mllvm"):
             forwarded = words[at] if at < len(words) else ""
             at += 1
+            if _optimizing(forwarded) and unknown:
+                raise NotRecorded(f"records {forwarded} after {unknown}, which Peeky can't judge")
             if forwarded.startswith("-O") and forwarded[2:] in _LEVELS:
                 level = _LEVELS[forwarded[2:]]
             elif re.fullmatch(r"-flto(?:=(?:full|thin))?", forwarded):
@@ -270,22 +276,23 @@ def optimization(words):
             if _optimizing(value):
                 raise NotRecorded(f"records {word} {value}, which Peeky can't judge")
             continue
-        if not _optimizing(word):
+        if _optimizing(word):
+            if unknown:
+                raise NotRecorded(f"records {word} after {unknown}, which Peeky can't judge")
+            if word.startswith("-O"):
+                if word[2:] not in _LEVELS:
+                    raise NotRecorded(f"records {word}, which Peeky can't judge")
+                level = _LEVELS[word[2:]]
+            else:
+                lto = word != "-fno-lto"
             continue
-        before = words[at - 2]
         if (
-            at > 2
-            and before.startswith("-")
-            and before not in _COMPLETE_WORDS
-            and not _COMPLETE.fullmatch(before)
+            word.startswith("-")
+            and word != "-"
+            and word not in _COMPLETE_WORDS
+            and not _COMPLETE.fullmatch(word)
         ):
-            raise NotRecorded(f"records {word} after {before}, which Peeky can't judge")
-        if word.startswith("-O"):
-            if word[2:] not in _LEVELS:
-                raise NotRecorded(f"records {word}, which Peeky can't judge")
-            level = _LEVELS[word[2:]]
-        else:
-            lto = word != "-fno-lto"
+            unknown = unknown or word
     return level, lto
 
 

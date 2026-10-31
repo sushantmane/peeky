@@ -338,6 +338,10 @@ def test_a_dwarf_5_table_must_name_its_unit_as_file_0():
         ),
         ("-O0 -Xclang -Wno-error=allocator-wrappers -mmacos-version-min=27.0", ("0", False)),
         ("-O2 -Wl,-O1 -Wall -fno-omit-frame-pointer -O0", ("0", False)),
+        # An unknown option after the last -O and LTO option changes neither.
+        ("-O0 -c main.c -frobnicate a b", ("0", False)),
+        # After `--`, every word is an input.
+        ("-O0 -c -- -O2", ("0", False)),
     ],
 )
 def test_optimization_is_the_last_option_s(arguments, found):
@@ -364,6 +368,11 @@ def test_optimization_is_the_last_option_s(arguments, found):
         # clang takes `-O0` as the resource directory, and builds at -O2.
         ("-O2 -nostdinc -resource-dir -O0", "-resource-dir -O0"),
         ("-O2 -nostdinc -frobnicate -O0", "-O0 after -frobnicate"),
+        # An option whose number of values isn't known may take any words after it.
+        ("-O2 -fdepscan-prefix-map /old -O0 -nostdinc", "-O0 after -fdepscan-prefix-map"),
+        ("-O0 -flto=thin -fdepscan-prefix-map /old -fno-lto", "-fno-lto after -fdepscan"),
+        ("-O2 -frobnicate a b c -O0", "-O0 after -frobnicate"),
+        ("-O2 -frobnicate -c main.c -Xclang -O0", "-O0 after -frobnicate"),
         # What the recorded words should hold expanded can't be read from them.
         ("-O0 @args.rsp", "@args.rsp"),
         ("--config=x.cfg -O0", "--config=x.cfg"),

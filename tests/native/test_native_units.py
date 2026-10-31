@@ -199,7 +199,9 @@ def test_a_recorded_option_s_value_is_never_read_as_an_option(tmp_path):
     assert "-O2" in _compiled_at(compiler, words, unit.comp_dir)
     with pytest.raises(NotRecorded, match="-fmodules-user-build-path -O0"):
         optimization(words)
-    # So for the resource directory, and for LTO: thin LTO stays.
+    # So for the resource directory, and for LTO: thin LTO stays. Apple's clang takes two
+    # values after `-fdepscan-prefix-map`: an option whose number of values isn't known
+    # may take any words after it.
     for asked, compiled, why in (
         (["-O2", "-nostdinc", "-resource-dir", "-O0"], "-O2", "-resource-dir -O0"),
         (
@@ -207,11 +209,23 @@ def test_a_recorded_option_s_value_is_never_read_as_an_option(tmp_path):
             "-flto=thin",
             "-fmodules-user-build-path -fno-lto",
         ),
+        (
+            ["-O2", "-fdepscan-prefix-map", "/old", "-O0", "-nostdinc"],
+            "-O2",
+            "-O0 after -fdepscan-prefix-map",
+        ),
+        (
+            ["-O0", "-flto=thin", "-fdepscan-prefix-map", "/old", "-fno-lto"],
+            "-flto=thin",
+            "-fno-lto after -fdepscan-prefix-map",
+        ),
     ):
         words = [compiler, *asked, "-c", "main.c", "-o", "other.o"]
-        assert compiled in _compiled_at(compiler, words, tmp_path)
         with pytest.raises(NotRecorded, match=why):
             optimization(words)
+        if "-fdepscan-prefix-map" in asked and sys.platform != "darwin":
+            continue  # Apple's clang's own option: others refuse it.
+        assert compiled in _compiled_at(compiler, words, tmp_path), asked
 
 
 def test_the_options_known_to_take_no_value_take_none(tmp_path):
