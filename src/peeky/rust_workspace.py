@@ -25,6 +25,7 @@ from pathlib import Path
 
 from peeky.build import _inside, _relative
 from peeky.digest import sha256_file
+from peeky.textlines import split_lines
 
 # The fields of a workspace's configuration (the tools are RustTarget's).
 CONFIG_FIELDS = frozenset(
@@ -1129,7 +1130,7 @@ def host_cfgs(rustc, env, timeout=30):
     """The host target's `cfg` values (`rustc --print cfg`), which say whether a target
     table of Cargo's configuration applies."""
     output = _cargo((str(rustc), "--print", "cfg"), Path(env["CARGO_HOME"]), env, timeout)
-    return tuple(line.strip() for line in output.splitlines() if line.strip())
+    return tuple(line.strip() for line in split_lines(output) if line.strip())
 
 
 def recheck(digests, workspace, host, cfgs, above, vendor_directory, vendor, digest=None):
