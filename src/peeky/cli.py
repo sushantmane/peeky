@@ -3876,7 +3876,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import sys
 import threading
 
@@ -3884,12 +3883,28 @@ import pytest
 
 NONCE = {nonce!r}
 FOLDER = {folder!r}
-STARTED = {{"count": 0, "python": 0, "examples": []}}
+# The processes the tests started: "unknown" counts those not proven to be no Python.
+STARTED = {{"count": 0, "unknown": 0, "examples": []}}
 WORKERS = set()
 RAN = [0]
 # subprocess.Popen's own spawn (os.posix_spawn) is the same process: counted once.
 _SPAWNING = threading.local()
-_PYTHON = re.compile(r"python[0-9.]*")
+# multiprocessing's spawn and forkserver start Python with no audit event: these modules,
+# imported as it starts a process, show it did.
+_MULTIPROCESSING = ("multiprocessing.popen_fork", "multiprocessing.popen_spawn_posix",
+                    "multiprocessing.popen_forkserver", "multiprocessing.popen_spawn_win32")
+_LOADED = {{name for name in _MULTIPROCESSING if name in sys.modules}}
+_PYTHON = re.compile(r"(?:python|pypy)[0-9.]*[tdm]*", re.IGNORECASE)
+# Programs that start whatever they are given, Python included.
+_LAUNCHERS = frozenset({{
+    "env", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "xargs", "nice",
+    "nohup", "timeout", "time", "stdbuf", "sudo", "doas", "arch", "xcrun", "exec", "uv",
+    "uvx", "pipx", "poetry", "hatch", "pdm", "nox", "tox", "conda", "mamba", "make",
+}})
+# A native executable's first bytes: ELF, Mach-O (both byte orders, 32 and 64 bits), and a
+# universal (fat) Mach-O.
+_NATIVE = (b"\\x7fELF", b"\\xfe\\xed\\xfa\\xce", b"\\xfe\\xed\\xfa\\xcf", b"\\xce\\xfa\\xed\\xfe",
+           b"\\xcf\\xfa\\xed\\xfe", b"\\xca\\xfe\\xba\\xbe", b"\\xbe\\xba\\xfe\\xca")
 
 
 def _words(args):
@@ -3905,47 +3920,95 @@ def _words(args):
         return []
 
 
-def _is_python(word):
-    """Whether a program word starts Python: by its name, its file's, or its `#!` lines."""
-    found = word if os.sep in word else shutil.which(word)
-    for path in (word, found, found and os.path.realpath(found)):
-        if path and _PYTHON.fullmatch(os.path.basename(path)):
-            return True
+def _resolve(program, cwd, env):
+    """The file the child runs for ``program``: a path is its cwd's; a name is looked
+    up on its own PATH (relative entries are its cwd's)."""
+    if not program:
+        return None
+    if os.sep in program:
+        found = [os.path.join(cwd, program)]
+    else:
+        path = os.environ.get("PATH") if env is None else (env.get("PATH") or env.get(b"PATH"))
+        path = os.fsdecode(path) if path else os.defpath
+        found = [os.path.join(cwd, entry, program) for entry in path.split(os.pathsep)]
+    return next((each for each in found if os.path.isfile(each) and os.access(each, os.X_OK)), None)
+
+
+def _kind(program, cwd, env, depth=0):
+    """("other", None) for a program proven not to start Python: a native executable
+    that isn't Python or a launcher (``_LAUNCHERS``), or a script whose `#!` names one;
+    else ("unknown", why)."""
+    path = _resolve(program, cwd, env)
+    if path is None:
+        return "unknown", f"Peeky can't find {{program}}"
+    for name in (os.path.basename(path), os.path.basename(os.path.realpath(path))):
+        if _PYTHON.fullmatch(name):
+            return "unknown", "it is Python"
+        if name in _LAUNCHERS:
+            return "unknown", f"{{name}} starts what it is given, Python too"
     try:
-        with open(found, "rb") as stream:
-            head = stream.read(512).split(b"\\n")[:2]
-    except (OSError, TypeError):
-        return False
-    return head[0].startswith(b"#!") and any(b"python" in line for line in head)
+        with open(os.path.realpath(path), "rb") as stream:
+            head = stream.read(512)
+    except OSError:
+        return "unknown", "Peeky can't read it"
+    if head.startswith(_NATIVE):
+        return "other", None
+    if not head.startswith(b"#!") or depth:
+        return "unknown", "it isn't a native program, and has no `#!` naming one"
+    line = head[2:].split(b"\\n")[0].decode(errors="replace").strip().split(None, 1)
+    if not line:
+        return "unknown", "its `#!` names nothing"
+    interpreter, rest = line[0], (line[1] if len(line) > 1 else "")
+    if os.path.basename(interpreter) != "env":
+        return _kind(interpreter, cwd, env, depth + 1)
+    words, at = rest.split(), 0
+    while at < len(words) and (words[at].startswith("-") or "=" in words[at]):
+        # `env -u NAME`, `env -C DIR`, `env -P PATH` take a value; `-S` splits the rest.
+        at += 2 if words[at] in ("-u", "-C", "-P") else 1
+    if at >= len(words):
+        return "unknown", "its `#!/usr/bin/env` names no program"
+    return _kind(words[at], cwd, env, depth + 1)
+
+
+def _started(words, kind, why):
+    STARTED["count"] += 1
+    STARTED["unknown"] += kind == "unknown"
+    listed = [each for each in STARTED["examples"] if each["kind"] == kind]
+    if len(listed) < 5:
+        STARTED["examples"].append({{"args": words[:6], "kind": kind, "why": why}})
 
 
 def _audit(event, args):
     try:
+        cwd, env = os.getcwd(), None
+        if event in ("os.fork", "os.forkpty"):
+            _started([event], "unknown",
+                     "a copy of the test process, which Peeky doesn't follow")
+            return
         if event == "subprocess.Popen":
-            words, shell = _words(args[1]), isinstance(args[1], (str, bytes))
-            program = os.fsdecode(args[0]) if args[0] else ("/bin/sh" if shell else "")
-            program = program or (words[0] if words else "")
-            _SPAWNING.popen = True
+            program, words = os.fsdecode(args[0] or ""), _words(args[1])
+            cwd = os.path.join(cwd, os.fsdecode(args[2])) if args[2] else cwd
+            env = args[3]
+            _SPAWNING.executable = program
         elif event in ("os.exec", "os.posix_spawn"):
-            if getattr(_SPAWNING, "popen", False):
-                _SPAWNING.popen = False
+            program, words, env = os.fsdecode(args[0]), _words(args[1]), args[2]
+            if program == getattr(_SPAWNING, "executable", None):
+                _SPAWNING.executable = None
                 return
-            program, words, shell = os.fsdecode(args[0]), _words(args[1]), False
         elif event == "os.spawn":
-            program, words, shell = os.fsdecode(args[1]), _words(args[2]), False
+            program, words, env = os.fsdecode(args[1]), _words(args[2]), args[3]
         elif event == "os.system":
-            program, words, shell = "/bin/sh", _words(args[0]), True
+            program, words = "/bin/sh", ["/bin/sh", "-c", os.fsdecode(args[0])]
         else:
             return
         if any("exec(eval(sys.stdin.readline()))" in word for word in words):
             return  # execnet starting a pytest-xdist worker, which reports itself
-        python = any(_is_python(word) for word in [program, *(words if shell else words[:1])] if word)
-        STARTED["count"] += 1
-        STARTED["python"] += python
-        if len(STARTED["examples"]) < 10:
-            STARTED["examples"].append({{"args": words[:6] or [program], "python": python}})
+        _started(words or [program], *_kind(program or (words[0] if words else ""), cwd, env))
     except Exception:
-        pass
+        try:
+            _started(["?"], "unknown", "Peeky couldn't read how it was started")
+        except Exception:
+            pass
 
 
 sys.addaudithook(_audit)
@@ -3966,6 +4029,8 @@ def pytest_testnodeready(node):
 
 def pytest_sessionfinish(session):
     worker = getattr(session.config, "workerinput", None)
+    if started := [name for name in _MULTIPROCESSING if name in sys.modules and name not in _LOADED]:
+        _started(["multiprocessing"], "unknown", f"multiprocessing started a process ({{started[0]}})")
     tests = set()
     for item in getattr(session, "items", None) or ():
         path = getattr(item, "path", None) or getattr(item, "fspath", None)
@@ -4017,13 +4082,14 @@ def _with_pytest_plugin(ran, words, candidate, environment):
     return [*ran[:at], "-p", name, *ran[at:]], (folder / "reports", nonce, plugin)
 
 
-def _example(started, python):
-    """`python -c ...`: one process the tests started (a Python one, or not), as a short
-    example; "" if none is listed."""
-    examples = [
-        each for each in started.get("examples") or () if bool(each.get("python")) == python
-    ]
-    return shlex.join(str(word) for word in (examples[0].get("args") or [])[:6]) if examples else ""
+def _example(started, kind):
+    """`python -c ...: it is Python`: one process the tests started of ``kind`` ("unknown":
+    not proven to be no Python, with why; "other"), as a short example; "" if none."""
+    examples = [each for each in started.get("examples") or () if each.get("kind") == kind]
+    if not examples:
+        return ""
+    shown = shlex.join(str(word) for word in (examples[0].get("args") or [])[:6])
+    return f"{shown}: {examples[0]['why']}" if kind == "unknown" else shown
 
 
 def _pytest_reports(reading, candidate, names):
@@ -4033,8 +4099,9 @@ def _pytest_reports(reading, candidate, names):
     one that isn't this run's plugin's (``reading``: folder, nonce, plugin file); a
     pytest-xdist worker the main process started with no report; no test file collected;
     a test file, conftest or module loaded from your project instead of the copy, or a
-    module of the project's (``names``) from outside the copy; a Python process the tests
-    started, whose imports Peeky didn't check. Other processes they started are a note."""
+    module of the project's (``names``) from outside the copy; a process the tests started
+    that the plugin couldn't prove isn't Python, whose imports Peeky didn't check. Other
+    processes they started are a note."""
     folder, nonce, plugin = reading
     copy = Path(os.path.realpath(candidate.root))
     reports, problems, notes = [], [], []
@@ -4070,21 +4137,19 @@ def _pytest_reports(reading, candidate, names):
     if missing:
         problems.insert(0, f"pytest-xdist's worker {', '.join(missing)} wrote no report")
     started = [report.get("started") or {} for report in reports]
-    python = sum(int(each.get("python") or 0) for each in started)
+    unknown = sum(int(each.get("unknown") or 0) for each in started)
     count = sum(int(each.get("count") or 0) for each in started)
-    if python:
-        example = next((_example(each, True) for each in started if each.get("python")), "")
+    if unknown:
+        example = next((found for each in started if (found := _example(each, "unknown"))), "")
         problems.append(
-            f"the tests started {python} Python process{'es' if python > 1 else ''} "
-            f"({example}), and Peeky didn't check what they imported"
+            f"the tests started {unknown} process{'es' if unknown > 1 else ''} Peeky can't "
+            f"prove isn't Python ({example}), and Peeky didn't check what they imported"
         )
-    if count > python:
-        example = next(
-            (found for each in started if (found := _example(each, False))),
-            "",
-        )
+    if count > unknown:
+        example = next((found for each in started if (found := _example(each, "other"))), "")
+        others = count - unknown
         notes.append(
-            f"The tests started {count - python} other process{'es' if count - python > 1 else ''} "
+            f"The tests started {others} other process{'es' if others > 1 else ''} "
             f"({example}), and Peeky didn't check what they loaded"
         )
     tests = {file for report in reports for file in report.get("tests") or ()}
@@ -4178,9 +4243,8 @@ def _verify_command(args, root, source, words, deadline):
                     ),
                 )
             )
-            if not count and (result["timed_out"] or result["output_limit_exceeded"]):
-                problems.insert(0, f"{_command_reason(result)} before pytest's report")
-            elif not count:
+            stopped = result["timed_out"] or result["output_limit_exceeded"]
+            if not count and not stopped:
                 why = plugin_off or "-p no:<its name> turned it off, or pytest stopped first"
                 problems.insert(
                     0,
@@ -4192,7 +4256,10 @@ def _verify_command(args, root, source, words, deadline):
                 problems.append("pytest ran no test, so its pass shows nothing of the edit")
             result["pytest_report"] = {"reports": count, "test_files": tests, "problems": problems}
             provenance += problems
-        if no_tests := _no_tests(result):
+        if result["timed_out"] or result["output_limit_exceeded"]:
+            # Peeky stopped it at its bound: no verdict, whatever runner it is.
+            result.update(verdict="unknown", no_verdict=_command_reason(result))
+        elif no_tests := _no_tests(result):
             # No test ran: what the run loaded is beside the point.
             result.update(verdict="unknown", no_verdict=no_tests)
         elif provenance:
@@ -4510,7 +4577,9 @@ def _command_reason(result):
     if result.get("timed_out"):
         return f"the check command ran past {command.get('timeout_s')} s and was stopped"
     if result.get("output_limit_exceeded"):
-        return "the check command printed over 1 MiB and was stopped"
+        return (
+            "the check command printed over 1 MiB of output, both streams together, and was stopped"
+        )
     streams = [result.get(key) or "" for key in ("stdout", "stderr")]
     chosen = None
     for stream in streams:

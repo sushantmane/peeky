@@ -119,23 +119,20 @@ def test_a_command_past_its_time_is_stopped(project, capsys, monkeypatch):
     result = json.loads(out.out)
     assert time.monotonic() - started < 30
     assert code == 1 and result["timed_out"] is True and result["exit_code"] is None, result
-    # Stopped before pytest's report, the run may have loaded anything: no verdict.
-    assert result["verdict"] == "unknown"
-    assert result["reason"] == (
-        "no verdict: the check command ran past 1 s and was stopped before pytest's report"
-    )
+    # Peeky stopped it: no verdict on the program, which a failure would claim.
+    stopped = "the check command ran past 1 s and was stopped"
+    assert result["verdict"] == "unknown" and result["no_verdict"] == stopped, result
+    assert result["reason"] == stopped
     code, out = verify(capsys, project, "--check-command", slow, "--baseline")
     assert out.out.startswith("verdict: unknown  passed: False  stage: verification"), out.out
     assert out.out.rstrip().endswith(
-        "baseline: the unedited program, no edit (the check command ran past 1 s and was "
-        "stopped before pytest's report, so this says nothing about the bug)"
+        f"baseline: the unedited program, no edit ({stopped}, so this says nothing about the bug)"
     ), out.out
-    # A command other than pytest that runs past its time fails.
+    # Any command, not only pytest.
     sleep = ["python", "-c", "import time; time.sleep(60)"]
-    code, out = verify(capsys, project, "--baseline", "--json", "--check-command", "--", *sleep)
+    code, out = verify(capsys, project, *FIX, "--json", "--check-command", "--", *sleep)
     result = json.loads(out.out)
-    assert result["verdict"] == "failed", result
-    assert result["reason"] == "the check command ran past 1 s and was stopped"
+    assert code == 1 and result["verdict"] == "unknown" and result["no_verdict"] == stopped
     # A --timeout shorter than the command's own bound: TIMEOUT, as with a checker.
     monkeypatch.setattr(agent, "CHECK_S", 20)
     code, out = verify(capsys, project, "--check-command", slow, *FIX, "--timeout", "3", "--json")
@@ -371,7 +368,7 @@ def test_a_commands_reason_is_the_line_that_names_the_failed_test():
     assert reason("no failure line here\nlast line\n") == "last line"
     assert reason() == "the check command exited 1"
     assert reason(output_limit_exceeded=True, exit_code=None) == (
-        "the check command printed over 1 MiB and was stopped"
+        "the check command printed over 1 MiB of output, both streams together, and was stopped"
     )
 
 
@@ -916,8 +913,13 @@ def test_a_python_process_the_tests_start_is_no_verdict(project, capsys):
     code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
     result = json.loads(out.out)
     assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
-    assert result["no_verdict"].startswith("the tests started 1 Python process ("), result
-    assert "-I -c 'print(1)'), and Peeky didn't check what they imported" in result["no_verdict"]
+    assert result["no_verdict"].startswith(
+        "the tests started 1 process Peeky can't prove isn't Python ("
+    ), result
+    assert (
+        "-I -c 'print(1)': it is Python), and Peeky didn't check what they imported"
+        in (result["no_verdict"])
+    )
 
 
 def test_another_process_the_tests_start_is_a_note(project, capsys):
@@ -956,7 +958,7 @@ def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_p
     def report(**extra):
         return {"nonce": "n1", "plugin": str(plugin), "role": "main", "worker": None,
                 "workers": [], "tests": [str(copy / "tests/test_x.py")], "conftests": [],
-                "modules": {}, "started": {"count": 0, "python": 0, "examples": []},
+                "modules": {}, "started": {"count": 0, "unknown": 0, "examples": []},
                 **extra}  # fmt: skip
 
     def read(*reports):
@@ -984,14 +986,15 @@ def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_p
         f"pytest loaded {yours / 'conftest.py'} from your project, not the copy",
         f"`pkg` was loaded from {tmp_path / 'site/pkg/__init__.py'}, outside the copy",
     ]
-    # Python processes the tests started are a problem, other processes a note.
-    started = {"count": 3, "python": 1, "examples": [
-        {"args": ["git", "status"], "python": False},
-        {"args": ["/v/bin/python", "-I", "-c", "import pkg"], "python": True}]}  # fmt: skip
+    # A process not proven to be no Python is a problem, another process a note.
+    started = {"count": 3, "unknown": 1, "examples": [
+        {"args": ["git", "status"], "kind": "other", "why": None},
+        {"args": ["/v/bin/python", "-I", "-c", "import pkg"], "kind": "unknown",
+         "why": "it is Python"}]}  # fmt: skip
     _, _, _, problems, notes = read(report(started=started))
     assert problems == [
-        "the tests started 1 Python process (/v/bin/python -I -c 'import pkg'), and Peeky "
-        "didn't check what they imported"
+        "the tests started 1 process Peeky can't prove isn't Python (/v/bin/python -I -c "
+        "'import pkg': it is Python), and Peeky didn't check what they imported"
     ]
     assert notes == [
         "The tests started 2 other processes (git status), and Peeky didn't check what they loaded"
@@ -1006,3 +1009,88 @@ def test_a_pass_that_ran_no_test_is_no_verdict(project, capsys):
     assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
     assert result["no_verdict"] == "pytest ran no test, so its pass shows nothing of the edit"
     assert result["pytest_report"]["test_files"] == 1
+
+
+# Review round 4: a process the tests start is "other" only where proven no Python.
+
+FORK = """\
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    os.waitpid(pid, 0)"""
+SPAWN = """\
+    import multiprocessing
+
+    process = multiprocessing.get_context("spawn").Process(target=os.getpid)
+    process.start()
+    process.join()"""
+
+
+@pytest.mark.parametrize(
+    ("body", "verdict", "said"),
+    [
+        # Launchers and shells can start Python.
+        ('subprocess.run(["/usr/bin/env", "python3", "-c", "pass"], check=True)', "unknown",
+         "(/usr/bin/env python3 -c pass: env starts what it is given, Python too)"),
+        ('subprocess.run("python3 -c pass", shell=True, check=True)', "unknown",
+         "(/bin/sh -c 'python3 -c pass': sh starts what it is given, Python too)"),
+        (FORK, "unknown", "(os.fork: a copy of the test process, which Peeky doesn't follow)"),
+        (SPAWN, "unknown", "(multiprocessing: multiprocessing started a process ("),
+        # Found on the child's own PATH, or from its own working directory: echo.
+        ('subprocess.run(["mytool", "x"], env={"PATH": TOOLS}, check=True)', "passed",
+         "(mytool x)"),
+        ('subprocess.run(["./mytool", "x"], cwd=TOOLS, check=True)', "passed", "(./mytool x)"),
+        # A link to Python, by its target's name.
+        ('subprocess.run(["pylink", "-c", "pass"], env={"PATH": TOOLS}, check=True)', "unknown",
+         "(pylink -c pass: it is Python)"),
+        # A script's first line only: `#!/bin/echo` is no Python, whatever comes next.
+        ('subprocess.run([TOOLS + "/echoscript"], check=True)', "passed", "echoscript)"),
+        ('subprocess.run([TOOLS + "/envscript"], check=True)', "passed", "envscript)"),
+        ('subprocess.run([TOOLS + "/shscript"], check=True)', "unknown",
+         "shscript: sh starts what it is given, Python too)"),
+        ('subprocess.run(["no-such-program-x"])', "unknown",
+         "(no-such-program-x: Peeky can't find no-such-program-x)"),
+    ],
+)  # fmt: skip
+def test_only_a_process_proven_not_python_leaves_the_verdict(
+    project, capsys, tmp_path, body, verdict, said
+):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "mytool").symlink_to("/bin/echo")
+    (tools / "pylink").symlink_to(os.path.realpath(sys.executable))
+    for name, text in (
+        ("echoscript", "#!/bin/echo\n# python\n"),
+        ("envscript", "#!/usr/bin/env -S echo hi\n# python\n"),
+        ("shscript", "#!/bin/sh\necho hi\n"),
+    ):
+        (tools / name).write_text(text)
+        (tools / name).chmod(0o755)
+    call = body if "\n" in body else f"    {body}"
+    if "no-such" in body:
+        call = f"    try:\n    {call}\n    except FileNotFoundError:\n        pass"
+    (project / "tests" / "test_child.py").write_text(
+        f"import os\nimport subprocess\nimport sys\n\nTOOLS = {str(tools)!r}\n\n\n"
+        f"def test_child():\n{call}\n"
+    )
+    command = "python -m pytest -q -p no:cacheprovider tests"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert result["exit_code"] == 0 and result["verdict"] == verdict, result
+    if verdict == "unknown":
+        assert result["no_verdict"].startswith(
+            "the tests started 1 process Peeky can't prove isn't Python "
+        ), result["no_verdict"]
+        assert said in result["no_verdict"], result["no_verdict"]
+    else:
+        assert any(said in warning and "other process" in warning for warning in result["warnings"])
+
+
+def test_a_command_past_its_output_bound_is_no_verdict(project, capsys):
+    loud = ["python", "-c", "import sys; sys.stdout.write('x' * 2000000)"]
+    code, out = verify(capsys, project, *FIX, "--json", "--check-command", "--", *loud)
+    result = json.loads(out.out)
+    assert code == 1 and result["output_limit_exceeded"] is True, result
+    assert result["verdict"] == "unknown" and result["no_verdict"] == (
+        "the check command printed over 1 MiB of output, both streams together, and was stopped"
+    )

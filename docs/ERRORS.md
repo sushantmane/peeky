@@ -130,8 +130,8 @@ The last column is the `retryable` field.
   has no location.
 - `verify ran past its --timeout while the check command was running` means that `--timeout` cut a
   `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
-  that runs past its own 20 s isn't an error: the verify fails, and `reason` says so
-  ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+  that runs past its own 20 s isn't an error: the verify's `verdict` is `unknown`, and `reason`
+  says so ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
 
 ### DEBUGGER_ERROR
 

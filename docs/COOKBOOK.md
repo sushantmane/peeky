@@ -4031,8 +4031,8 @@ command that installs or writes there changes your environment.
 
 #### What it runs
 
-- It passes when the command exits 0. Other exit codes fail, and so does a command that runs past
-  its time or prints over 1 MiB, both streams together.
+- It passes when the command exits 0, and fails on another status. A command Peeky stops, past
+  its time or over 1 MiB of output across both streams, has no verdict.
 - It runs on the program's interpreter, the one the `python:` line names
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)). `python` and `python3`
   are that interpreter. Other names are found on `PATH`, with the interpreter's directory first, so
@@ -4057,7 +4057,8 @@ command that installs or writes there changes your environment.
   ```
 
 - The command gets 20 seconds, as a checker does. `--timeout` can only shorten that. A command
-  that runs longer is stopped: `reason: the check command ran past 20 s and was stopped`.
+  that runs longer is stopped, with no verdict: `reason: the check command ran past 20 s and was
+  stopped`. A `--timeout` that cuts it short is a `TIMEOUT` error.
 - The command gets no worker token, and Python writes no bytecode (`PYTHONDONTWRITEBYTECODE=1`).
 - `--check-command` runs only in the `peeky` command. No worker request runs it.
 
@@ -4099,14 +4100,21 @@ command that installs or writes there changes your environment.
   - no report from the main process, or a worker's missing;
   - a test file, conftest or module loaded from your project instead of the copy;
   - a module of the project's loaded from outside the copy, such as a stale install;
-  - a Python process the tests started, whose imports Peeky didn't check;
+  - a process the tests started that Peeky can't prove isn't Python (below);
   - a pass with no test run, as with `--collect-only` or all tests skipped.
 - That holds whatever the exit status, and at `--baseline` too: a run on stale code says nothing
   about the edit, or the bug.
 - Peeky sees the processes started through `subprocess`, `os.exec*`, `os.spawn*`,
-  `os.posix_spawn` and `os.system`. A process that isn't Python is a warning only.
+  `os.posix_spawn`, `os.system` and `os.fork`. It sees multiprocessing by the modules it loads to
+  start a process.
+- A process is only a warning when Peeky proves it isn't Python. It must be a native program, ELF
+  or Mach-O, found as the process would find it: from its own working directory, or on its own
+  `PATH`. Neither its name nor its file's may be Python's, or a launcher's: `env`, a shell,
+  `xargs`, `nice`, `timeout`, `sudo`, `uv`, `pipx`, `poetry`, `hatch`, `nox`, `tox` and the like.
+  A script counts when the first line's `#!` names such a program, through `env -S` too.
+- Anything else is no verdict: `shell=True` and `os.system`, a launcher, a Python, a program Peeky
+  can't find or read, `os.fork`, and multiprocessing.
 - `-I` and `-E` ignore `PYTHONPATH`, so pytest runs without the plugin, and there is no report.
-- A run stopped for its time or output wrote no report: no verdict either.
 - `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
 - The text has a `pytest report:` line, and JSON a `pytest_report`: `reports`, `test_files` and
   `problems`.
@@ -4120,7 +4128,8 @@ command that installs or writes there changes your environment.
   `unknown` is no failure of the edit: Peeky can't tell. `no_verdict` says why. `passed` stays,
   true only for `passed`.
 - `unknown` comes from what the run loaded (above), or a test runner that ran no test: pytest's
-  3, 4 and 5, and unittest's 5. A command other than pytest that runs past its time fails.
+  3, 4 and 5, and unittest's 5. So does a command Peeky stopped at its time or output bound,
+  whatever runs it: `the check command ran past 20 s and was stopped`.
 - `stdout` and `stderr` keep the last 16,000 bytes of each stream, where pytest's summary is.
 - `reason` is looked for in both streams. pytest's first `FAILED` line comes first, then unittest's
   `FAIL:` header with its exception. Then comes the first line that starts like a failure

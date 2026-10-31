@@ -154,8 +154,10 @@ Peeky debugs Python with debugpy, Python's debugger.
   command's own Python starts. Uninstall it, or install the project editable
   ([6.7](../COOKBOOK.md#what-it-imports)).
 - For pytest, Peeky's plugin reports what the run loaded. A run that loaded your project's files or
-  stale code, started a Python process, or reported nothing, is no verdict
-  ([6.7](../COOKBOOK.md#what-pytest-loaded)).
+  stale code, or reported nothing, is no verdict. So is one whose tests started a process Peeky
+  can't prove isn't Python, such as a shell ([6.7](../COOKBOOK.md#what-pytest-loaded)).
+- A command Peeky stopped at its time or output bound is no verdict too
+  ([6.7](../COOKBOOK.md#what-it-reports)).
 - The result leads with `verdict: passed`, `failed` or `unknown`. `unknown` is no failure of the
   edit: Peeky can't tell, and `reason: no verdict: …` says why
   ([6.7](../COOKBOOK.md#what-it-reports)).
