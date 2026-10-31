@@ -647,6 +647,22 @@ def _entry(root, run, language):
     return _confined(root, run, language)
 
 
+def _module(args, language):
+    """`--run-module`'s module, checked; None without one."""
+    module = getattr(args, "run_module", None)
+    if module is None:
+        return None
+    if language != "python":
+        raise ValueError("--run-module is supported only for Python targets")
+    if getattr(args, "run", None) is not None:
+        raise ValueError(
+            "Pass --run or --run-module, not both: --run names a script, --run-module a module"
+        )
+    from peeky.adapters import check_module
+
+    return check_module(module)
+
+
 def _default_program(program, data, command):
     if program is not None:
         return program
@@ -674,7 +690,7 @@ def describe(args):
     program = _confined(root, _default_program(program, data, "describe"), language)
     _python_option(args, language)
     run = (
-        " [--run <script.py>] [--arg A ...]"
+        " [--run <script.py> | --run-module <module>] [--arg A ...]"
         if language == "python"
         else ""
         if language == "java-attach"
@@ -1250,6 +1266,7 @@ def _probe_request(args):
         args.until if args.until != "auto" else ("hits" if language == "java-attach" else "exit"),
         args.set_hit,
         entry=_entry(root, args.run, language),
+        module=_module(args, language),
         args=tuple(args.arg),
         expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
         edit=edit,
@@ -3064,6 +3081,7 @@ def _probe_remote(args, root, request, client, expected):
         until=request.until,
         set_hit=request.set_hit,
         entry=request.entry,
+        module=request.module,
         args=request.args,
         # The worker refuses before launching when its sources differ.
         expect_sha256=expected,
@@ -3171,6 +3189,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         breakpoints=[{"line": line}],
         max_pause=max_pause,
         **({"entry": entry} if entry else {}),
+        **({"module": module} if (module := _module(args, language)) else {}),
         **({"args": list(args.arg)} if args.arg else {}),
         expect_sha256=expected,
         expect_inputs=inputs,
@@ -3413,6 +3432,7 @@ def _start_local(args, root, program, line, language, data, max_pause):
             breakpoints=[{"line": line}],
             max_pause=max_pause,
             **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
+            **({"module": module} if (module := _module(args, language)) else {}),
             **({"args": list(args.arg)} if args.arg else {}),
         )
         record.update(session_id=launch["session_id"], state="running", stop_id=None)
@@ -4343,6 +4363,12 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
     )
+    sub.add_argument(
+        "--run-module",
+        metavar="MODULE",
+        help="Python: run this module, as `python -m` does, when --at is in code it runs; its "
+        "arguments go after `--` (--run-module pytest -- tests/test_x.py::test_y -q)",
+    )
     python_option(sub)
     sub.add_argument(
         "--worker",
@@ -4436,6 +4462,11 @@ def _main(argv, _job, _edits):
     common(start)
     start.add_argument("--at", required=True)
     start.add_argument("--run", help="Python: script to run when --at is in an imported module")
+    start.add_argument(
+        "--run-module",
+        metavar="MODULE",
+        help="Python: run this module, as `python -m` does (--run-module pytest -- TEST)",
+    )
     python_option(start)
     start.add_argument(
         "--worker",

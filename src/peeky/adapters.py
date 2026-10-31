@@ -209,6 +209,55 @@ def skipped_message(name):
     )
 
 
+# `--run-module`: a module run as `python -m` runs it, such as `pytest`.
+MAX_MODULE = 200
+# Modules that run pytest, which rewrites test files' asserts unless told not to.
+PYTEST_MODULES = frozenset({"pytest", "py.test"})
+# The note on a pytest run Peeky turned rewriting off for (``module_arguments``).
+PLAIN_ASSERTS = (
+    "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change "
+    "the test files' code from the source Peeky reads. So a failing assert shows less detail"
+)
+
+
+# The note on a script that may run pytest, which then rewrites asserts (``script_notes``).
+PYTEST_SCRIPT = (
+    "The script that runs imports pytest. If it runs pytest, pytest rewrites the test files' "
+    "asserts, so their code differs from the source Peeky reads, and a line there may stop "
+    "more than once per pass. Use --run-module pytest instead, which turns rewriting off"
+)
+_IMPORTS_PYTEST = re.compile(
+    rb"^[ \t]*(?:from[ \t]+_?pytest\b|import[ \t][^\n#;]*(?<![\w.])_?pytest\b)", re.M
+)
+
+
+def check_module(name):
+    """Refuse a `--run-module` that is not a module's dotted name (`pytest`, `app.cli`)."""
+    if (
+        not isinstance(name, str)
+        or not 0 < len(name) <= MAX_MODULE
+        or not all(part.isidentifier() for part in name.split("."))
+    ):
+        raise ValueError(
+            f"--run-module takes a module's name, as `python -m` does (such as pytest or "
+            f"app.cli), at most {MAX_MODULE} characters; not {str(name)[:80]!r}"
+        )
+    return name
+
+
+def _assert_mode(args):
+    """The `--assert` mode pytest's arguments ``args`` set last, or None."""
+    mode = None
+    for at, arg in enumerate(args):
+        if arg == "--":
+            break
+        if arg.startswith("--assert="):
+            mode = arg.split("=", 1)[1]
+        elif arg == "--assert":
+            mode = args[at + 1] if at + 1 < len(args) else ""
+    return mode
+
+
 def _shadowed(names, places):
     """Whether a module of one of ``names`` may not be the standard library's where the
     program imports it: a module or package of that name (any case: a volume may ignore
@@ -1045,13 +1094,18 @@ class PythonCandidate:
     def source_path(self, original):
         return self.staged if Path(original).resolve() == self.original else original
 
-    def launch_args(self, program, root, args=(), **options):
-        if Path(program).resolve() != self.original:
-            # `--run` would be the user's entry script, outside the copy.
+    def launch_args(self, program, root, args=(), *, module=None, **options):
+        if module is not None or Path(program).resolve() != self.original:
+            # `--run` would be the user's entry script, outside the copy; `--run-module`
+            # would import the user's files too.
             raise ValueError(
-                "A Python candidate runs the edited --at file itself; with --run, the entry "
-                "script would import the original module. Probe the edited file directly, "
-                "or check the edit with `peeky verify`"
+                "A Python candidate runs the edited --at file itself; with "
+                + (
+                    "--run-module, the module would import your original --at file, not the edit"
+                    if module is not None
+                    else "--run, the entry script would import the original module"
+                )
+                + ". Probe the edited file directly, or check the edit with `peeky verify`"
             )
         launch = self.adapter.launch_args(self.staged, self.root, args, **options)
         if self._pythonpath is not None:
@@ -1499,11 +1553,62 @@ class PythonAdapter:
             return False
         return isinstance(directories, list) and under(path, directories)
 
-    def launch_args(self, program, root, args=(), *, library=False):
-        """debugpy's launch of ``program``. ``library``: the breakpoints are in installed
-        code (``installed``), which debugpy then stops in too, and lists in the stack."""
+    def module_arguments(self, module, args):
+        """``(args, notes)``: what `--run-module` ``module`` gets, and why it differs. pytest
+        rewrites each test file's asserts as it imports it, so the code that runs is not
+        what Peeky reads (other lines have code; at -O the asserts still run): it gets
+        `--assert=plain` first. Refused where that would change the run: an `--assert`
+        of the program's own other than plain, or an optimization level above 0, where
+        pytest's plain asserts would not run."""
+        if module not in PYTEST_MODULES:
+            return list(args), []
+        if (mode := _assert_mode(list(args))) not in (None, "plain"):
+            raise ValueError(
+                f"--run-module {module} runs pytest with --assert=plain, and its arguments set "
+                f"--assert={mode}: pytest's rewritten asserts are not the code Peeky reads. "
+                "Leave --assert out"
+            )
+        if self.program_optimize():
+            raise ValueError(
+                f"--run-module {module} runs pytest with --assert=plain, and the program runs "
+                "at -O (PYTHONOPTIMIZE), where plain asserts don't run: pytest runs them at -O "
+                "only by rewriting them, which changes the code from what Peeky reads. Unset "
+                "PYTHONOPTIMIZE"
+            )
+        return ["--assert=plain", *args], [PLAIN_ASSERTS]
+
+    @staticmethod
+    def script_notes(path):
+        """Notes on the script that runs: one that imports pytest may run it, rewriting
+        asserts (``module_arguments``) as Peeky can't turn off for a script."""
+        try:
+            with open(path, "rb") as stream:
+                text = stream.read(1 << 20)
+        except OSError:
+            return []
+        return [PYTEST_SCRIPT] if _IMPORTS_PYTEST.search(text) else []
+
+    def program_optimize(self):
+        """The program's optimization level (`sys.flags.optimize`), as its interpreter
+        reports it with the program's environment."""
+        level = (self.identity or {}).get("optimize")
+        if type(level) is int:
+            return level
+        from peeky.python_interpreter import identify
+
+        return identify(self.interpreter, "--python").optimize
+
+    def launch_args(self, program, root, args=(), *, library=False, module=None):
+        """debugpy's launch of ``program``; with ``module`` (`--run-module`), of that
+        module, as `python -m` runs it, in ``root``. ``library``: the breakpoints are in
+        installed code (``installed``), which debugpy then stops in too, and lists in the
+        stack."""
         return {
-            "program": str(program),
+            **(
+                {"module": check_module(module)}
+                if module is not None
+                else {"program": str(program)}
+            ),
             "args": list(args),
             "cwd": str(root),
             "console": "internalConsole",

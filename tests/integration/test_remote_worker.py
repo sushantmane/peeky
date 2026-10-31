@@ -539,6 +539,27 @@ def test_an_installed_file_is_compared_by_its_hash_and_checked_while_it_runs(
     assert f"differs for the program {library}" in result["error"]["message"], result
 
 
+def test_a_remote_probe_runs_a_pytest_test_as_a_module(remote, capsys):
+    # `--run-module` (protocol 13): the worker runs pytest as `python -m pytest` does, on
+    # its own sources, compared with yours; and pytest gets --assert=plain there too.
+    host, local, worker, _ = remote
+    test = "from helper import page\n\n\ndef test_page():\n    assert page() == 3\n"
+    for root in (host, local):
+        (root / "helper.py").write_text(HELPER)
+        (root / "test_page.py").write_text(test)
+    _, port = worker()
+    code, out = run(
+        capsys,
+        *("probe", local, "--at", "helper.py:2", "--worker", f"http://127.0.0.1:{port}"),
+        *("--capture", "page", "--run-module", "pytest", "--json"),
+        *("--", "-q", "-p", "no:cacheprovider", "test_page.py"),
+    )
+    result = json.loads(out.out)
+    assert code == 0 and result["status"] == "completed", result
+    assert result["program_args"][0] == "--assert=plain", result["program_args"]
+    assert "1 passed" in result["output"], result["output"]
+
+
 def test_a_stale_pyc_in_the_tree_is_never_used(remote, capsys):
     # The worker host's __pycache__ holds a helper.pyc compiled from other code, marked
     # unchecked: Python loads it without looking at helper.py.

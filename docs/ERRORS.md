@@ -1,4 +1,4 @@
-# Error codes (protocol 12)
+# Error codes (protocol 13)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -197,6 +197,12 @@ file lists what it reads.
 - A Python candidate edit of an installed file, such as one in the root's `.venv`: `A Python
   candidate cannot edit …`. Its copy links the environment to yours. Edit a checkout of the
   package, installed editable, instead.
+- `--run-module` with `--run`, or a name that isn't a module's, such as `tests/test_x.py`. Name
+  the module as `python -m` takes it: `--run-module pytest`.
+- `--run-module pytest` whose arguments set `--assert` to other than `plain`, or a program run at
+  `-O` (`PYTHONOPTIMIZE`). Peeky runs pytest with `--assert=plain`, so the test files run as Peeky
+  reads them. At `-O`, plain asserts don't run. Leave `--assert` out, and unset `PYTHONOPTIMIZE`
+  ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
 - `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
   reads no value there, and the session goes on. `session step` reaches your code's next line.
 
@@ -561,6 +567,10 @@ request a client sends.
   `venv`, or the worker's `--python`. The launch's `target_identity` names it, and a probe's
   `python`. A protocol 11 worker runs it on its own interpreter, and names none
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
+- **Protocol 13** runs a Python module, as `python -m` does: `launch` and `probe` take
+  `module` (`--run-module pytest`), and pytest gets `--assert=plain`. A protocol 12 worker
+  ignores `module` and runs the `--at` file itself
+  ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

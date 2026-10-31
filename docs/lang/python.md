@@ -15,9 +15,14 @@ Peeky debugs Python with debugpy, Python's debugger.
 - To stop in a module that a script imports, name the script with `--run`:
   `peeky probe app/ --at lib/parse.py:42 --run main.py`
   ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
-- To stop in code that a pytest test runs, `--run` a two-line script that calls `pytest.main`.
-  Name the test after `--`: `--run peeky_pytest.py -- -q tests/test_x.py::test_y`
-  ([guide](../AGENT_GUIDE.md#your-first-command)).
+- To stop in code that a pytest test runs, run pytest as a module. Name the test after `--`:
+  `--run-module pytest -- -q tests/test_x.py::test_y`. `--run-module M` runs any module, as
+  `python -m M` does, in the root ([Python 0](python-cookbook.md#run-a-pytest-test)).
+- Peeky gives pytest `--assert=plain`. pytest's assert rewriting changes a test file's code from
+  the source Peeky reads: a line in a loop can stop twice per pass. So a failing assert shows less
+  detail ([Python 0](python-cookbook.md#run-a-pytest-test)).
+- A `--run` script that runs pytest lets it rewrite asserts, and a warning says so. Use
+  `--run-module pytest` instead ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - `--at` and `--run` name `.py` files inside the root. `--at` may name an installed package's
   file, such as one in the root's `.venv`: debugpy then stops in library code too, and the stack
   lists library frames ([Python 0](python-cookbook.md#stop-in-an-installed-package)).
@@ -129,7 +134,7 @@ Peeky debugs Python with debugpy, Python's debugger.
   ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - If the program reads or imports anything above the root, give the project directory as the
   target ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
-- A candidate with `--run` is refused. Probe the edited file directly, or check the edit with
-  `verify` ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
+- A candidate with `--run` or `--run-module` is refused. Probe the edited file directly, or check
+  the edit with `verify` ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - An edit with a syntax error fails with `NO_STOP`. The output shows the `SyntaxError`
   ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).

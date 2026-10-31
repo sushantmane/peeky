@@ -42,7 +42,10 @@ from peeky.textlines import split_lines
 # environment, or the worker's `--python`), and names it in the launch's
 # `target_identity`; a protocol 11 worker runs it on its own interpreter, and a protocol
 # 11 client would not say which one ran it.
-PROTOCOL_VERSION = 12
+# 13: a Python `launch` or `probe` takes `module`, a module the worker runs as `python -m`
+# does (`--run-module pytest`), and gives pytest `--assert=plain`; a protocol 12 worker
+# ignores `module` and runs the --at file itself.
+PROTOCOL_VERSION = 13
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (

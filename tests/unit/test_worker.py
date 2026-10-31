@@ -1575,3 +1575,19 @@ def test_each_runtime_proves_a_no_op_by_the_values_type_never_its_name():
     # Where Peeky cannot read the type, or has no frame: never proven.
     assert Session(None).exact_text(lossy, frame={}, root=lossy) is False
     assert Session(3).exact_text(lossy) is False
+
+
+def test_a_launch_runs_a_module_named_as_python_minus_m_takes_it(tmp_path):
+    # `module` (protocol 13): a module's dotted name, never with a script (`entry`).
+    from peeky.probe import Probe
+
+    DebugWorker.validate("launch", {"program": "a.py", "module": "pytest"})
+    for module in ("py test", "", 7, "tests/test_x.py"):
+        with pytest.raises(ValueError, match="--run-module takes a module's name"):
+            DebugWorker.validate("launch", {"program": "a.py", "module": module})
+    with pytest.raises(ValueError, match="not both"):
+        DebugWorker.validate("launch", {"program": "a.py", "module": "pytest", "entry": "b.py"})
+    with pytest.raises(ValueError, match="not both"):
+        Probe("a.py", 1, module="pytest", entry="b.py")
+    with pytest.raises(ValueError, match="--run-module takes a module's name"):
+        Probe("a.py", 1, module="-m pytest")

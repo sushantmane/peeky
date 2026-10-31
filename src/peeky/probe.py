@@ -464,6 +464,8 @@ class Probe:
     set_hit: int = 1
     # Python: the script to run when the breakpoint is in a module it imports.
     entry: str | None = None
+    # Python: or the module to run, as `python -m` runs it (`--run-module pytest`).
+    module: str | None = None
     # Python: command-line arguments for the launched script.
     args: tuple[str, ...] = ()
     # Remote clients: (role, sha256) pairs the worker checks before launching.
@@ -607,6 +609,12 @@ class Probe:
             )
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
             raise ValueError("Probe entry must be a relative script path")
+        if self.module is not None:
+            from peeky.adapters import check_module
+
+            check_module(self.module)
+            if self.entry is not None:
+                raise ValueError("Pass --run or --run-module, not both")
         if self.edit is not None:
             edit = self.edit
             single = (
@@ -4869,6 +4877,7 @@ def run_probe(
                 "breakpoints": [{"line": number} for number in lines],
                 **({"edit": {"old": old, "new": new}} if probe.edit else {}),
                 **({"entry": probe.entry} if probe.entry else {}),
+                **({"module": probe.module} if probe.module else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
                 **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
                 **(

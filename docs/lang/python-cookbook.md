@@ -14,6 +14,7 @@ Peeky debugs Python with debugpy, Python's debugger.
 - [Setup](#0-setup)
   - [Which interpreter runs the program](#which-interpreter-runs-the-program)
   - [Stop in an installed package](#stop-in-an-installed-package)
+  - [Run a pytest test](#run-a-pytest-test)
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See which module globals a function reads](#see-which-module-globals-a-function-reads)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
@@ -175,6 +176,53 @@ peeky probe . --at .venv/lib/python3.12/site-packages/tally/core.py:14 --capture
 A project installed without `-e` runs its copy in `site-packages`, not its source. So a breakpoint
 in `src/pkg/mod.py` never stops, and the probe ends `no-stop`. Install it editable,
 `pip install -e .`, or name the installed copy.
+
+### Run a pytest test
+
+`--run-module M` runs the module `M` in the root, as `python -m M` does. Its arguments go after
+`--`. To stop in your code while a pytest test runs:
+
+```sh
+peeky probe . --at src/shop/cart.py:4 --capture cut,1:d --hits all \
+  --run-module pytest -- -q tests/test_cart.py::test_total
+```
+
+```
+hit  phase     line  function    selector  type   value
+1    observed  4     total       cut       float  3.0
+1    observed  6     test_total  1:d       float  0.1
+2    observed  4     total       cut       float  6.0
+2    observed  6     test_total  1:d       float  0.2
+status: completed  hits: 2 (all)  seconds: 1.054  max pause: 12.6 ms
+python: /home/me/shop/.venv/bin/python, Python 3.12.4 (the root's .venv)
+warning: pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail
+output:
+  .                                                                        [100%]
+  1 passed in 0.02s
+```
+
+- pytest runs on the interpreter Peeky chooses, so that one needs pytest
+  ([Which interpreter runs the program](#which-interpreter-runs-the-program)).
+- Peeky gives pytest `--assert=plain`, before your arguments. pytest rewrites each test file's
+  asserts as it imports it, so the code that runs isn't the source Peeky reads. For example, a
+  line inside an assert that spans lines stopped twice per pass of a loop. With plain asserts,
+  the test files run as written. A failing assert then shows less detail.
+- Arguments that set `--assert` to anything but `plain` are refused, before anything runs. So is
+  a program that runs at `-O` (`PYTHONOPTIMIZE`). pytest runs asserts at `-O` only by rewriting
+  them, and plain ones wouldn't run.
+- `--json`'s `program_args` lists what pytest got, `--assert=plain` first. The probe's `module`
+  names the module. In the evidence store, the run's `entry` is `-m pytest`.
+- Plugins run as they do under pytest. One that changes code as it imports it, as assert
+  rewriting does, makes Peeky's readings of that code wrong.
+- Peeky stops only in the process it starts. A test that a plugin runs in another process, as
+  pytest-xdist's `-n` does, never stops there.
+- A `--run` script that imports pytest gets a warning. If it runs pytest, pytest rewrites asserts,
+  and Peeky can't change a script's arguments. Use `--run-module pytest` instead.
+- `session start` takes `--run-module` too. A candidate with `--run-module` is refused, as one
+  with `--run` is.
+- A remote worker runs the module from its own environment, which isn't compared with yours. The
+  test files under its root are compared, as every `.py` file there is
+  ([REMOTE.md](../REMOTE.md#source-identity)).
 
 ## 1.1 What Can I Ask?
 
