@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
-from peeky.java import JavaSession, _bundle, _hash, _tool, bundle_directory
+from peeky.java import JavaSession, _bundle, _hash, _shown_java, adapter_java, bundle_directory
 from peeky.java_metadata import MAX_CLASS_BYTES, _class_metadata
 from peeky.textlines import source_lines
 
@@ -130,7 +130,8 @@ class JavaAttachTarget:
     port: int
     sources: tuple[str, ...]
     class_roots: tuple[str, ...]
-    java: str = "java"
+    # The config's java, which runs the adapter; None: its bundle's (adapter_java).
+    java: str | None = None
     host: str = "127.0.0.1"
     timeout_ms: int = 10000
 
@@ -184,8 +185,9 @@ class JavaAttachTarget:
             raise ValueError("Program is not a declared attached source")
         sources = [_inside(root, name, "source") for name in self.sources]
         class_roots = [_inside(root, name, "class root") for name in self.class_roots]
-        java = _tool(self.java)
         bundle = bundle_directory(self.bundle)
+        # The JVM runs already: java runs only the adapter.
+        java = adapter_java(bundle, self.java, launched=False)
         command, bundle_hash = _bundle(bundle, java)
         parsed = {}
         mapping = attached_source_map(class_roots, sources, deadline, parsed)
@@ -222,6 +224,9 @@ class JavaAttachSession(JavaSession):
         self, target, root, java, bundle, command, bundle_hash, mapping_path, workspace, parsed
     ):
         self.target, self.root, self.java, self.bundle = target, root, java, bundle
+        self.adapter_java = java
+        # The JVM runs on whatever JDK started it: a run shows only the adapter's `java`.
+        self.java_runtimes = {"adapter": _shown_java(java)}
         self.workspace = workspace
         self._command = (*command, str(mapping_path))
         self.bundle_hash = bundle_hash
@@ -308,7 +313,7 @@ class JavaAttachSession(JavaSession):
 
     def assert_current(self):
         try:
-            command, bundle_hash = _bundle(self.bundle, self.java)
+            command, bundle_hash = _bundle(self.bundle, self.adapter_java)
             unchanged = (
                 bundle_hash == self.bundle_hash
                 and (*command, str(self.mapping_path)) == self.command
