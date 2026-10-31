@@ -101,7 +101,8 @@ SMALLNUM = f"{rw.CRATES_IO}#smallnum@1.0.0"
 
 
 def metadata(root, editions=None, extra=()):
-    """`cargo metadata`'s JSON for the fixture workspace (its fields Peeky reads)."""
+    """`cargo metadata --no-deps`'s JSON for the fixture workspace (its fields Peeky reads):
+    its members."""
     editions = editions or {}
 
     def package(name, kinds, source):
@@ -123,20 +124,8 @@ def metadata(root, editions=None, extra=()):
             ],
         }
 
-    packages = [
-        package("app", ["bin"], "src/main.rs"),
-        package("util", ["lib"], "src/lib.rs"),
-        {
-            "id": SMALLNUM,
-            "name": "smallnum",
-            "version": "1.0.0",
-            "source": rw.CRATES_IO,
-            "manifest_path": str(root / "vendor/smallnum/Cargo.toml"),
-            "edition": "2015",
-            "targets": [],
-        },
-        *extra,
-    ]
+    packages = [package("app", ["bin"], "src/main.rs"), package("util", ["lib"], "src/lib.rs")]
+    packages += extra
     return {
         "workspace_root": str(root),
         "workspace_members": [ident(root, "app"), ident(root, "util")],
@@ -151,6 +140,7 @@ PROFILE = {
     "debuginfo": 2,
     "panic": "unwind",
     "strip": {"resolved": "None"},
+    "split_debuginfo": rw.SPLIT_DEBUGINFO,
 }
 
 
@@ -177,8 +167,15 @@ def graph(root, *, util=None, extra=()):
     return {"version": 1, "units": units, "roots": [0]}
 
 
+def print_cfg(flags):
+    """`rustc --print cfg` with ``flags``: the host's cfgs and each `--cfg` given."""
+    added = [value for flag, value in zip(flags, flags[1:]) if flag == "--cfg"]
+    added += [flag[len("--cfg=") :] for flag in flags if flag.startswith("--cfg=")]
+    return CFGS + tuple(added)
+
+
 def checked(root, chosen=None):
-    return rw.preflight(root, chosen or config(vendor="vendor"), HOST, CFGS)
+    return rw.preflight(root, chosen or config(vendor="vendor"), HOST, print_cfg)
 
 
 def shape(root, data=None, units=None, **overrides):
@@ -273,6 +270,8 @@ def test_a_workspace_config_is_told_from_a_crates():
         "[target.'cfg(clippy)']\nrustflags = [\"-Wclippy::use_self\"]\n",
         '# [build]\n# rustflags = ["--cfg", "tokio_unstable"]\n',
         f'[build]\nrustflags = ["--cfg", "x"]\njobs = 4\n[target.{HOST}]\nrunner = "qemu"\n',
+        '[build]\nrustflags = "--cfg=x --check-cfg cfg(x)"\ntarget-dir = "elsewhere"\n',
+        "[target.'cfg(false)']\nlinker = \"cc\"\n",
         '[alias]\nb = "build"\n[net]\noffline = true\n[profile.dev]\nopt-level = 1\n',
         # A table for another host changes nothing here.
         "[target.'cfg(windows)']\nlinker = \"link.exe\"\n",
@@ -303,6 +302,13 @@ def test_cargo_configuration_peeky_accounts_for_is_accepted(tmp_path, text):
         ),
         (f'[target.{HOST}.z]\nrustc-link-lib = ["z"]\n', f"`target.{HOST}.z`"),
         ("[unstable]\nbuild-std = ['std']\n", "`unstable`"),
+        ("[target.'cfg(true)']\nlinker = \"cc\"\n", "`target.cfg(true).linker`"),
+        ('[build]\nrustflags = ["-C", "target-cpu=native"]\n', "`build.rustflags`"),
+        (f'[target.{HOST}]\nrustflags = "-Copt-level=3"\n', f"`target.{HOST}.rustflags`"),
+        (
+            '[target.\'cfg(unix)\']\nrustflags = ["--cfg", "a", "-Zx"]\n',
+            "`target.cfg(unix).rustflags`",
+        ),
     ],
 )
 def test_cargo_configuration_that_changes_the_build_is_refused(tmp_path, text, named):
@@ -327,13 +333,27 @@ def test_cargo_configuration_that_changes_the_build_is_refused(tmp_path, text, n
         ("cfg(all())", True),
         ("cfg(any())", False),
         ("cfg(clippy)", False),
+        ("cfg(true)", True),
+        ("cfg(false)", False),
+        ("cfg(not(false))", True),
+        ("cfg(all(true, unix))", True),
     ],
 )
 def test_a_target_tables_cfg_is_evaluated_for_this_host(key, expected):
     assert rw.cfg_applies(key, CFGS) is expected
 
 
-@pytest.mark.parametrize("key", ["cfg(unix", "cfg(not(unix, windows))", "cfg(x = y)", "cfg(=)"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "cfg(unix",
+        "cfg(not(unix, windows))",
+        "cfg(x = y)",
+        "cfg(=)",
+        'cfg(true = "x")',
+        "cfg(unix windows)",
+    ],
+)
 def test_a_cfg_peeky_cant_evaluate_is_refused_saying_so(tmp_path, key):
     path = tmp_path / "config.toml"
     path.write_text(f"[target.'{key}']\nlinker = \"cc\"\n")
@@ -352,7 +372,7 @@ def ours(configs, root):
 
 
 def test_cargo_configuration_above_the_workspace_is_accepted_under_the_same_rules(workspace):
-    text = '[net]\noffline = true\n[build]\nrustflags = ["-C", "x"]\n'
+    text = '[net]\noffline = true\n[build]\nrustflags = ["--cfg", "x"]\n'
     write(workspace.parent, {".cargo/config.toml": text})
     found = shape(workspace)
     path = str(workspace.parent / ".cargo/config.toml")
@@ -436,44 +456,125 @@ def test_the_workspaces_own_cargo_configuration_is_an_input(workspace):
 # What Cargo reads is checked again after it ran.
 
 
-def recheck(found, root):
-    rw.recheck(
-        found.digests,
-        found.workspace,
-        HOST,
-        CFGS,
-        found.configs_above,
-        found.vendor_directory,
-        "vendor",
-    )
-
-
 @pytest.mark.parametrize(
-    "change",
-    ["util/Cargo.toml", "Cargo.lock", "vendor/smallnum/src/lib.rs", "far/Cargo.toml"],
+    "change", ["util/Cargo.toml", "Cargo.lock", "Cargo.toml", "vendor/smallnum/src/lib.rs"]
 )
 def test_a_file_cargo_read_that_changes_before_peeky_rechecks_is_refused(workspace, change):
-    write(workspace, {"far/Cargo.toml": '[package]\nname = "far"\nversion = "0.1.0"\n'})
     found = shape(workspace)
-    recheck(found, workspace)
+    assert rw.recheck(found.watch) is None
     path = workspace / change
     path.write_text(path.read_text() + "\n# changed\n")
     with pytest.raises(ValueError) as caught:
-        recheck(found, workspace)
-    assert str(caught.value).startswith(f"Provenance: {path} changed while Peeky read")
+        rw.changed(found.watch)
+    assert str(caught.value).startswith("Provenance: ")
+    assert "while Peeky read the workspace and Cargo ran" in str(caught.value)
+    assert change in str(caught.value)
     assert code(caught) == "PROVENANCE_CHANGED"
 
 
-def test_configuration_that_appears_before_peeky_rechecks_is_refused(workspace):
+def test_a_manifest_swapped_for_a_link_to_the_same_bytes_is_noticed(tmp_path, workspace):
     found = shape(workspace)
-    write(workspace.parent, {".cargo/config.toml": "[net]\nretry = 2\n"})
-    with pytest.raises(ValueError, match="configuration above the workspace changed") as caught:
-        recheck(found, workspace)
+    copy = tmp_path / "same.toml"
+    copy.write_bytes((workspace / "util/Cargo.toml").read_bytes())
+    (workspace / "util/Cargo.toml").unlink()
+    (workspace / "util/Cargo.toml").symlink_to(copy)
+    assert rw.recheck(found.watch) == f"{workspace / 'util/Cargo.toml'} changed"
+
+
+def test_a_member_cargo_could_now_discover_is_noticed_wherever_it_is(workspace):
+    manifest = workspace / "Cargo.toml"
+    manifest.write_text(manifest.read_text().replace('"util"]', '"util", "crates/*"]'))
+    write(workspace, {"crates/one/Cargo.toml": '[package]\nname = "one"\n'})
+    found = shape(workspace)
+    assert str(workspace / "crates/one/Cargo.toml") in found.watch["candidates"]
+    assert rw.recheck(found.watch) is None
+    for hidden in (".hidden", "target"):
+        write(workspace, {f"crates/{hidden}/Cargo.toml": '[package]\nname = "x"\n'})
+        reason = rw.recheck(found.watch)
+        assert reason == (
+            f"the workspace's members changed ({workspace / 'crates' / hidden / 'Cargo.toml'})"
+        )
+        (workspace / f"crates/{hidden}/Cargo.toml").unlink()
+    assert rw.recheck(found.watch) is None
+
+
+def test_a_new_or_linked_vendored_file_is_noticed(tmp_path, workspace):
+    found = shape(workspace)
+    copy = workspace / "vendor/smallnum"
+    write(copy, {"src/new.rs": "pub fn new() {}\n"})
+    reason = rw.recheck(found.watch)
+    assert (
+        reason.startswith("the vendored copies changed (") and "doesn't list src/new.rs" in reason
+    )
+    (copy / "src/new.rs").unlink()
+    same = tmp_path / "same.rs"
+    same.write_bytes((copy / "src/lib.rs").read_bytes())
+    (copy / "src/lib.rs").unlink()
+    (copy / "src/lib.rs").symlink_to(same)
+    # Its bytes are the same; it is a link now.
+    assert rw.recheck(found.watch) == "vendored vendor/smallnum/src/lib.rs changed"
+
+
+def test_configuration_that_appears_before_peeky_rechecks_is_a_provenance_change(workspace):
+    found = shape(workspace)
+    # Off the rules, too: the set of files is compared before any is read.
+    write(workspace.parent, {".cargo/config.toml": '[env]\nX = "1"\n'})
+    with pytest.raises(ValueError) as caught:
+        rw.changed(found.watch)
+    assert f"Cargo's configuration {workspace.parent / '.cargo/config.toml'} appeared" in str(
+        caught.value
+    )
     assert code(caught) == "PROVENANCE_CHANGED"
     (workspace.parent / ".cargo/config.toml").unlink()
     write(workspace, {".cargo/config.toml": "[net]\nretry = 2\n"})
-    with pytest.raises(ValueError, match="config.toml appeared while Peeky read"):
-        recheck(found, workspace)
+    assert rw.recheck(found.watch) == (
+        f"Cargo's configuration {workspace / '.cargo/config.toml'} appeared"
+    )
+
+
+# The project's rustflags.
+
+
+def test_the_projects_cfg_rustflags_are_kept_as_cargo_chooses_them(workspace):
+    write(workspace, {".cargo/config.toml": '[build]\nrustflags = ["--cfg", "special"]\n'})
+    found = checked(workspace)
+    assert found.rustflags == ("--cfg", "special") and "special" in found.cfgs
+    # A target table's rustflags apply instead of build.rustflags, as Cargo chooses them.
+    write(
+        workspace.parent, {".cargo/config.toml": f'[target.{HOST}]\nrustflags = "--cfg=hosted"\n'}
+    )
+    found = checked(workspace)
+    assert found.rustflags == ("--cfg=hosted",) and "special" not in found.cfgs
+    assert shape(workspace).rustflags == ("--cfg=hosted",)
+
+
+def test_a_cfg_table_applies_with_the_projects_cfg_flags(workspace):
+    write(
+        workspace,
+        {
+            ".cargo/config.toml": '[build]\nrustflags = ["--cfg", "special"]\n'
+            "[target.'cfg(special)']\nlinker = \"cc\"\n"
+        },
+    )
+    with pytest.raises(ValueError, match=r"`target\.cfg\(special\)\.linker`") as caught:
+        checked(workspace)
+    assert code(caught) == "UNSUPPORTED"
+
+
+def test_cfg_rustflags_that_change_which_tables_apply_are_refused(workspace):
+    write(
+        workspace,
+        {
+            ".cargo/config.toml": '[target.\'cfg(not(special))\']\nrustflags = ["--cfg", "special"]\n'
+        },
+    )
+    with pytest.raises(ValueError) as caught:
+        checked(workspace)
+    assert str(caught.value).startswith(
+        "Peeky can't tell which of Cargo's [target.'cfg(...)'] tables apply: the `--cfg` "
+        "rustflags of `cfg(not(special))`"
+    )
+    assert code(caught) == "UNSUPPORTED"
 
 
 # The manifest, the lockfile and the vendored copies.
@@ -636,9 +737,8 @@ def test_vendored_copies_are_found_by_their_manifest_and_others_ignored(workspac
     vendored_crate(workspace / "vendor", "unused", "3.0.0", checksum="ef" * 32)
     found = shape(workspace)
     assert found.vendored == {("smallnum", "1.0.0"): "vendor/smallnum-1.0.0"}
-    digests = dict(found.digests)
-    assert str(workspace / "vendor/smallnum-1.0.0/src/lib.rs") in digests
-    assert str(workspace / "vendor/unused/src/lib.rs") not in digests
+    assert "vendor/smallnum-1.0.0/src/lib.rs" in found.watch["vendored"]
+    assert not any(path.startswith("vendor/unused/") for path in found.watch["vendored"])
     vendored_crate(workspace / "vendor", "smallnum", "1.0.0", directory="again")
     with pytest.raises(ValueError, match="holds `smallnum 1.0.0` twice"):
         shape(workspace)
@@ -761,6 +861,7 @@ def test_an_analysed_path_dependency_that_isnt_a_member_is_refused(workspace):
         ({"lto": "fat"}, "lto fat"),
         ({"strip": {"resolved": {"Named": "symbols"}}}, "strip {'Named': 'symbols'}"),
         ({"panic": "abort"}, "panic abort"),
+        ({"split_debuginfo": "unpacked"}, "split-debuginfo unpacked"),
     ],
 )
 def test_an_analysed_package_built_otherwise_than_peeky_needs_is_refused(workspace, changes, said):
@@ -776,27 +877,36 @@ def test_an_analysed_package_built_otherwise_than_peeky_needs_is_refused(workspa
 
 
 def test_a_compiled_path_package_outside_the_root_is_refused(tmp_path, workspace):
-    far = {
-        "id": f"path+file://{tmp_path / 'far'}#0.1.0",
+    far = f"path+file://{tmp_path / 'far'}#0.1.0"
+    extra = [unit(far, "far", ["lib"], tmp_path / "far/src/lib.rs")]
+    with pytest.raises(ValueError) as caught:
+        shape(workspace, units=graph(workspace, extra=extra))
+    assert f"`far` is at {tmp_path / 'far'} (the build compiles it)" in str(caught.value)
+    assert code(caught) == "UNSUPPORTED"
+    # A member outside the root is refused too: Cargo reads its manifest.
+    data = metadata(workspace)
+    member = {
+        "id": far,
         "name": "far",
         "version": "0.1.0",
-        "source": None,
         "manifest_path": str(tmp_path / "far/Cargo.toml"),
         "edition": "2021",
         "targets": [],
     }
-    data = metadata(workspace, extra=[far])
-    # Not compiled by this run (an optional dependency it doesn't enable): not refused.
-    shape(workspace, data=data)
-    extra = [unit(far["id"], "far", ["lib"], tmp_path / "far/src/lib.rs")]
-    with pytest.raises(ValueError) as caught:
-        shape(workspace, data=data, units=graph(workspace, extra=extra))
-    assert f"`far` is at {tmp_path / 'far'} (the build compiles it)" in str(caught.value)
-    assert code(caught) == "UNSUPPORTED"
-    # A member outside the root is refused too: Cargo reads its manifest.
-    data["workspace_members"].append(far["id"])
+    data["packages"].append(member)
+    data["workspace_members"].append(far)
     with pytest.raises(ValueError, match=r"\(it is a member\)"):
         shape(workspace, data=data)
+
+
+def test_a_path_package_the_run_compiles_that_isnt_a_member_is_described_by_its_units(workspace):
+    inner = f"path+file://{workspace / 'inner'}#inner@0.2.0"
+    extra = [unit(inner, "inner", ["lib"], workspace / "inner/src/lib.rs")]
+    found = shape(workspace, units=graph(workspace, extra=extra))
+    package = next(each for each in found.local if each.name == "inner")
+    assert (package.version, package.directory, package.member) == ("0.2.0", "inner", False)
+    assert package.targets == (rw.Target("inner", ("lib",), "inner/src/lib.rs", "2021"),)
+    assert "inner/Cargo.toml" in found.inputs
 
 
 def test_what_cargo_builds_must_be_what_run_names(workspace):
@@ -841,16 +951,20 @@ def test_a_target_two_packages_have_needs_the_package_named(workspace):
 
 
 def test_the_build_environment_sets_the_profile_settings_peeky_relies_on(tmp_path):
-    env = rw.build_environment("/t/bin/rustc", tmp_path, ("-C", "linker=/usr/bin/cc"))
+    env = rw.build_environment(
+        "/t/bin/rustc", tmp_path, tmp_path / "t", ("-C", "linker=/usr/bin/cc")
+    )
+    assert env["CARGO_TARGET_DIR"] == str(tmp_path / "t")
     assert env["CARGO_ENCODED_RUSTFLAGS"] == "-C\x1flinker=/usr/bin/cc"
     for profile in ("DEV", "TEST"):
         assert env[f"CARGO_PROFILE_{profile}_OPT_LEVEL"] == "0"
         assert env[f"CARGO_PROFILE_{profile}_DEBUG"] == "2"
         assert env[f"CARGO_PROFILE_{profile}_LTO"] == "false"
         assert env[f"CARGO_PROFILE_{profile}_STRIP"] == "none"
+        assert env[f"CARGO_PROFILE_{profile}_SPLIT_DEBUGINFO"] == rw.SPLIT_DEBUGINFO
     assert env["CARGO_INCREMENTAL"] == "0" and env["RUSTC_WRAPPER"] == ""
     # No configuration's rustflags apply, even with none of Peeky's own.
-    assert rw.build_environment("/t/bin/rustc", tmp_path)["CARGO_ENCODED_RUSTFLAGS"] == ""
+    assert rw.build_environment("/t/bin/rustc", tmp_path, tmp_path)["CARGO_ENCODED_RUSTFLAGS"] == ""
 
 
 def test_a_vendor_command_quotes_the_path():
@@ -867,14 +981,31 @@ def test_a_vendor_command_quotes_the_path():
     ("change", "said"),
     [
         (lambda g: g.update(version=2), "wrote version 2"),
+        (lambda g: g.update(version=True), "wrote version True"),
         (lambda g: g.pop("version"), "wrote version None"),
         (lambda g: g.pop("roots"), "one without `units` or `roots`"),
         (lambda g: g.update(roots=[9]), "roots that name no unit"),
-        (lambda g: g["units"][1].pop("mode"), "a unit without `mode` as Peeky reads it"),
+        (lambda g: g.update(roots=[True]), "roots that name no unit"),
+        (lambda g: g["units"].append(None), "an entry that isn't an object"),
+        (lambda g: g["units"][1].pop("mode"), "an entry without `mode` as Peeky reads it"),
+        (
+            lambda g: g["units"][1].update(target=None),
+            "an entry without `target` as Peeky reads it",
+        ),
         (lambda g: g["units"][1]["target"].pop("src_path"), "without `target.src_path`"),
         (lambda g: g["units"][1]["profile"].update(opt_level=0), "without `profile.opt_level`"),
-        (lambda g: g["units"][1]["profile"].pop("strip"), "a unit without `profile.strip`"),
+        (lambda g: g["units"][1]["profile"].update(debuginfo=True), "without `profile.debuginfo`"),
+        (lambda g: g["units"][1]["profile"].pop("strip"), "without `profile.strip`"),
         (lambda g: g["units"][1]["target"].update(kind=[1]), "without `target.kind`"),
+        (lambda g: g["units"][1].update(pkg_id="util 0.1.0"), "a package ID Peeky doesn't read"),
+        (
+            lambda g: g["units"][0].update(dependencies=[{"index": 7}]),
+            "dependencies aren't units' indices",
+        ),
+        (
+            lambda g: g["units"][0].update(dependencies=[{"index": True}]),
+            "dependencies aren't units' indices",
+        ),
     ],
 )
 def test_a_unit_graph_peeky_doesnt_read_is_refused_naming_cargo(workspace, change, said):
@@ -886,8 +1017,33 @@ def test_a_unit_graph_peeky_doesnt_read_is_refused_naming_cargo(workspace, chang
             workspace, chosen, checked(workspace), metadata(workspace), units, "cargo 1.99.0 (x)"
         )
     message = str(caught.value)
-    assert message.startswith(
-        "Peeky reads only the unit graph Cargo 1.96 writes (version 1), and cargo 1.99.0 (x) wrote "
+    assert message.startswith("Cargo's unit graph is not one Peeky reads: cargo 1.99.0 (x) wrote ")
+    assert said in message and "doesn't guess at another" in message
+    assert code(caught) == "UNSUPPORTED"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda m: m["packages"][0].update(edition=None),
+        lambda m: m["packages"][0]["targets"][0].pop("kind"),
+        lambda m: m.update(workspace_members=[1]),
+        lambda m: m.pop("packages"),
+    ],
+)
+def test_metadata_peeky_doesnt_read_is_refused_naming_cargo(workspace, change):
+    data = metadata(workspace)
+    change(data)
+    with pytest.raises(ValueError) as caught:
+        rw.read_workspace(
+            workspace,
+            config(vendor="vendor"),
+            checked(workspace),
+            data,
+            graph(workspace),
+            "cargo 1.99.0",
+        )
+    assert str(caught.value).startswith(
+        "Cargo's metadata is not one Peeky reads: cargo 1.99.0 wrote"
     )
-    assert said in message and "so Peeky doesn't read it" in message
     assert code(caught) == "UNSUPPORTED"

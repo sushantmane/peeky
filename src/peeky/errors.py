@@ -348,10 +348,17 @@ _RULES = (
         r"with `)|builds crates\.io dependencies only|analyses only (?:editions|code the program "
         r"runs|code built at|the workspace's members)|builds only files inside |reads only "
         r"Cargo\.lock versions|builds a Rust workspace only where Cargo reads no manifest|can't "
-        r"tell whether `target|reads only the unit graph Cargo)",
+        r"tell (?:whether `target|which of Cargo's))",
         "UNSUPPORTED",
         "Nothing was built. Change what the message names in the workspace or its "
         "configuration, or analyse another package.",
+        False,
+    ),
+    (
+        r"^Cargo's (?:unit graph|metadata) is not one Peeky reads",
+        "UNSUPPORTED",
+        "Nothing was built. Build with Rust 1.96, whose Cargo output Peeky reads, as the "
+        "message says.",
         False,
     ),
     (
