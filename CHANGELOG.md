@@ -32,8 +32,11 @@
   directory first on `PATH` and no worker token. It runs no shell, and gets a checker's 20 s. The
   result names the command, its exit code and the end of its output. `--baseline` says the tests
   fail on the bug only when pytest's or unittest's output shows failed tests. An edit is refused
-  when a module the project supplies would import from outside the copy, such as a stale install.
-  The command is trusted, not sandboxed. Other languages are refused for now (#448).
+  when a module the project supplies would import from outside the copy, such as a stale install,
+  as the command's own Python starts. For pytest, a plugin of Peeky's reports what the run loaded:
+  a pass that loaded your project's files is no verdict. The command is trusted, not sandboxed.
+  Other languages are refused for now. A build's output limit now counts both streams together,
+  and a Cargo build past it is `BUILD_FAILED` (#448).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

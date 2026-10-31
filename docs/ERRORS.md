@@ -112,6 +112,8 @@ The last column is the `retryable` field.
 - A probe's failed build is a refusal before launch: exit 2, `refused_before_launch`, and no run
   saved.
 - `verify`'s failed build is a failed verify: exit 1.
+- A build command that runs past its time, or prints over 1 MiB, both streams together, is a
+  failed build too: `cargo wrote more output than Peeky keeps`.
 
 ### TIMEOUT
 
@@ -176,8 +178,9 @@ file lists what it reads.
   `$`, `[` …), or start by setting a variable (`FOO=1 …`). Its program may not be on `PATH`, or be
   outside the root. Or `--check` came with it. The message says which, and what to pass instead
   ([6.7](COOKBOOK.md#what-it-runs)).
-- A `verify --check-command` that would read your files or run another Python: an argument that
-  names a path inside the root by its absolute path, another Python, or a script that runs on one.
+- A `verify --check-command` that would read your files or run another Python: an argument, or a
+  `PYTEST_ADDOPTS` word, that names a path inside the root by its absolute path, another Python, or
+  a script that runs on one.
   `tox` and `nox` are refused too: give the test command they run ([6.7](COOKBOOK.md#what-it-runs)).
 - A `verify --check-command` edit that a module the project supplies may not import from the copy:
   `verify --check-command can't test this edit: …`. The message names where `import pkg` finds

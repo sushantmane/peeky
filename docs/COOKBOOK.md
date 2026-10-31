@@ -4036,8 +4036,8 @@ command that installs or writes there changes your environment.
   are that interpreter. Other names are found on `PATH`, with the interpreter's directory first, so
   `pytest` is its environment's. `VIRTUAL_ENV` names that environment.
 - The working directory is the copy's root. A path such as `./run_tests.sh` names a file in it. A
-  program that `PATH` finds inside the root runs as the copy's file, and so do `PATH`'s entries
-  there.
+  program that `PATH` finds inside the root runs as the copy's file. `PATH`'s entries there are
+  the copy's, and so are its relative and empty entries.
 - An argument that names a path inside the root by its absolute path is refused: the command would
   read your file, not the copy's. Give it relative to the root.
 - Another Python is refused, such as a `python3.11` found on `PATH`. So is a Python script whose
@@ -4065,14 +4065,37 @@ command that installs or writes there changes your environment.
   ([Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it)). Nothing above the
   root is copied. A warning says so unless the root is a project's. It warns even when the edited
   file imports nothing, because the tests may import anything.
-- Each module the project supplies, in its root or `src`, must import from the copy. Peeky looks
-  each one up on the command's `PYTHONPATH`, as any process it starts would.
+- For a command other than pytest, each module the project supplies must import from the copy. So
+  must each package on the way to the edited file. Those in its root and `src` count, as do those
+  in a `PYTHONPATH` entry of the copy.
+- Peeky looks each one up as the command's own Python starts, without importing it. It takes the
+  same `-I`, `-E`, `-P`, `-s` and `-S`, and the same environment. The working directory comes first
+  for `-c` and `-m`, and a script's own directory for a script. A console script, such as
+  `.venv/bin/mytool`, runs on the Python its first line names, with its own directory first.
 - An edit is refused when one imports from elsewhere. That may be an installed copy in
   `site-packages`, an outside `PYTHONPATH` entry, or an editable install Peeky can't redirect. The
   message names where it is found. Uninstall it, or install the project editable
   (`pip install -e .`), or check the edit with a `--check` checker. At `--baseline`, a warning says
   so instead.
+- A namespace package, one without `__init__.py`, may have parts elsewhere, from other
+  distributions. Then only the edited module's path through it must be the copy's. A part found
+  first elsewhere shadows it, and is refused.
 - A relative `PYTHONPATH` entry means the root's, so `PYTHONPATH=src` is the copy's `src`.
+
+#### What pytest loaded
+
+- For pytest, Peeky reads what the run itself loaded. It adds its own plugin, `-p
+  peeky_check_report`, after pytest's word, from a directory of its own at the end of
+  `PYTHONPATH`. At the session's end, the plugin writes each test file collected, each conftest
+  loaded, and each module's file.
+- An edit passes only if that report exists, and shows nothing loaded from your project and each
+  of the project's modules from the copy. Otherwise `passed` is false, with `reason: no verdict:
+  …` and `no_verdict` in JSON. Examples are a config's absolute `testpaths`, or a stale install.
+- With `-p no:peeky_check_report`, there is no report. Nor under `-I` or `-E`, which ignore
+  `PYTHONPATH`: then pytest runs without the plugin. Either is no verdict.
+- `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
+- The text has a `pytest report:` line, and JSON a `pytest_report`: `reports`, `test_files` and
+  `problems`.
 
 #### What it reports
 
@@ -4090,7 +4113,8 @@ command that installs or writes there changes your environment.
   line asks you to check that its output shows the bug.
 - `--keep` keeps the copy, named by `kept` in JSON, with the edited file at `candidate:`.
 - JSON adds `check_command`: `argv` as given, `ran` as run, `copy_of` and `timeout_s`. `exit_code`,
-  `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy.
+  `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy. For
+  pytest, `pytest_report`, and `no_verdict` where it blocked a pass.
 - Only Python targets take it for now. Others are refused with `UNSUPPORTED`: write a checker
   ([6.5](#65-writing-a-checker)). A Cargo crate's tests run with its checker anyway
   ([6.1](#a-cargo-crates-tests)).

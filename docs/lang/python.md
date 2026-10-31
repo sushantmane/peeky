@@ -149,9 +149,12 @@ Peeky debugs Python with debugpy, Python's debugger.
   ([6.7](../COOKBOOK.md#what-it-runs)).
 - It gets 20 seconds, as a checker does. Its output keeps each stream's end, where pytest's summary
   is ([6.7](../COOKBOOK.md#what-it-reports)).
-- An edit is refused when a module the project supplies imports from outside the copy, as from a
-  stale install in `site-packages`. Uninstall it, or install the project editable
+- For a command other than pytest, an edit is refused when a module the project supplies imports
+  from outside the copy, as from a stale install in `site-packages`. Peeky looks it up as the
+  command's own Python starts. Uninstall it, or install the project editable
   ([6.7](../COOKBOOK.md#what-it-imports)).
+- For pytest, Peeky's plugin reports what the run loaded. A pass that loaded your project's files,
+  or none reported, is no verdict ([6.7](../COOKBOOK.md#what-pytest-loaded)).
 - `baseline:` says the tests fail on the bug only for pytest or unittest output that shows failed
   tests ([6.7](../COOKBOOK.md#what-it-reports)).
 - Nothing above the root is copied, and a warning says so unless the root is a project's. The

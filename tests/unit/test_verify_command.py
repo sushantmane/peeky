@@ -64,7 +64,11 @@ def test_the_projects_tests_fail_at_baseline_and_pass_with_the_fix(project, caps
         "FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3 (and 1 more)"
     )
     command = result["check_command"]
-    assert command["argv"] == PYTEST.split() and command["ran"][1:] == PYTEST.split()[1:]
+    # pytest runs with Peeky's report plugin, which saw one test file, from the copy.
+    words = PYTEST.split()
+    assert command["argv"] == words
+    assert command["ran"][1:] == [*words[1:3], "-p", "peeky_check_report", *words[3:]]
+    assert result["pytest_report"] == {"reports": 1, "test_files": 1, "problems": []}
     # `python` is the program's interpreter, the one `python:` names.
     assert Path(command["ran"][0]).resolve() == Path(sys.executable).resolve()
     assert command["copy_of"] == str(project.resolve()) and command["timeout_s"] == 20
@@ -631,3 +635,181 @@ def test_the_output_limit_counts_both_streams(tmp_path):
     ]
     result = agent.execute(command, tmp_path, 20, tail=True)
     assert result["output_limit_exceeded"] is True and result["exit_code"] is None, result
+
+
+# Review round 2: the import check is the command's own start; pytest reports what it
+# loaded; relative PATH entries are the copy's.
+
+FLAT_IMPORT = ["python", "-c", "import pkg; assert pkg.VALUE == 2, pkg.__file__"]
+
+
+def test_python_dash_i_ignores_pythonpath_so_a_stale_install_refuses_the_edit(
+    src_project, capsys, monkeypatch
+):
+    # PYTHONPATH=src made the check find the copy, but `python -I` ignores it, and the
+    # stale install answered: `passed: true` for a command that never ran the edit.
+    _, site = make_venv(src_project / ".venv")
+    (site / "pkg").mkdir()
+    (site / "pkg" / "__init__.py").write_text(PKG)
+    monkeypatch.setenv("PYTHONPATH", "src")
+    stale = ["python", "-I", "-c", "import pkg; assert pkg.VALUE == 1"]
+    code = main(["verify", str(src_project), *SET_VALUE, "--json", "--check-command", "--"]
+                + stale)  # fmt: skip
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and "site-packages/pkg/__init__.py, outside the copy" in error["message"]
+    # Without -I, PYTHONPATH=src puts the copy's `src` first: the edit is tested.
+    code = main(["verify", str(src_project), *SET_VALUE, "--json", "--check-command", "--",
+                 "python", "-c", "import pkg; assert pkg.VALUE == 2"])  # fmt: skip
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["passed"] is True, result
+
+
+def test_a_flat_package_first_in_the_working_directory_is_the_copys(tmp_path, capsys, monkeypatch):
+    # `python -c` puts the working directory, the copy's root, first: its `pkg` wins over
+    # a stale install, which was refused.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    root = tmp_path / "flat"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "pkg"\nversion = "0"\n')
+    (root / "pkg" / "__init__.py").write_text(PKG)
+    _, site = make_venv(root / ".venv")
+    (site / "pkg").mkdir()
+    (site / "pkg" / "__init__.py").write_text(PKG)
+    argv = ["verify", str(root), "--at", "pkg/__init__.py", "--old", "VALUE = 1", "--new",
+            "VALUE = 2", "--json", "--check-command", "--"]  # fmt: skip
+    code = main([*argv, *FLAT_IMPORT])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["passed"] is True, result
+    # A script in a subdirectory has that directory first, not the root: the stale one.
+    (root / "checks").mkdir()
+    (root / "checks" / "run.py").write_text("import pkg\nassert pkg.VALUE == 2, pkg.__file__\n")
+    code = main([*argv, "python", "checks/run.py"])
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and "site-packages/pkg/__init__.py, outside the copy" in error["message"]
+
+
+NAMESPACE = ("--at", "src/acme/foo/mod.py", "--old", "VALUE = 1", "--new", "VALUE = 2")
+IMPORT_MOD = ["python", "-c", "import acme.foo.mod as m; assert m.VALUE == 2, m.__file__"]
+
+
+@pytest.fixture
+def namespace_project(tmp_path, monkeypatch):
+    """`acme`, a namespace package split across distributions: the project supplies
+    `acme.foo.mod`, another `acme.bar`."""
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    root = tmp_path / "ns"
+    (root / "src" / "acme" / "foo").mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "acme-foo"\nversion = "0"\n')
+    (root / "src" / "acme" / "foo" / "mod.py").write_text("VALUE = 1\n")
+    other = tmp_path / "other"
+    (other / "acme").mkdir(parents=True)
+    (other / "acme" / "bar.py").write_text("BAR = 1\n")
+    return root, other
+
+
+def test_a_namespace_package_split_across_distributions_is_not_refused(
+    namespace_project, capsys, monkeypatch
+):
+    # `acme` has a part outside the copy, but `acme.foo.mod` is the copy's: refused.
+    root, other = namespace_project
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(other), "src"]))
+    code = main(["verify", str(root), *NAMESPACE, "--json", "--check-command", "--", *IMPORT_MOD])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["passed"] is True, result
+    # Another distribution's `acme/foo/mod.py`, first on the path, shadows the copy's.
+    (other / "acme" / "foo").mkdir()
+    (other / "acme" / "foo" / "mod.py").write_text("VALUE = 1\n")
+    code = main(["verify", str(root), *NAMESPACE, "--json", "--check-command", "--", *IMPORT_MOD])
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2, error
+    assert (
+        f"`import acme.foo.mod` finds {other / 'acme' / 'foo' / 'mod.py'}, outside the copy"
+        in (error["message"])
+    )
+
+
+def test_pytest_addopts_naming_your_project_is_refused(project, capsys, monkeypatch):
+    # PYTEST_ADDOPTS=<root>/tests/test_original.py collected your test, not the copy's.
+    monkeypatch.setenv("PYTEST_ADDOPTS", f"-q {project.resolve()}/tests/test_calc.py")
+    code, out = verify(capsys, project, "--check-command", PYTEST, *FIX, "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["message"].startswith(
+        f"--check-command's PYTEST_ADDOPTS word {project.resolve()}/tests/test_calc.py names a "
+        "path in your project"
+    ), error
+
+
+def test_pytest_tests_collected_from_your_project_are_no_verdict(project, capsys):
+    # A config's absolute `testpaths` reaches your tests from the copy: they pass, but
+    # they are not the copy's.
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "calc"\nversion = "0"\n\n[tool.pytest.ini_options]\n'
+        f'testpaths = ["{project.resolve()}/tests"]\n'
+    )
+    command = "python -m pytest -q -p no:cacheprovider"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["passed"] is False, result
+    collected = f"pytest collected {project.resolve()}/tests/test_calc.py from your project"
+    assert result["no_verdict"].startswith(collected), result["no_verdict"]
+    assert result["reason"] == f"no verdict: {result['no_verdict']}"
+    assert result["pytest_report"]["problems"][0] == result["no_verdict"]
+
+
+def test_a_stale_package_pytest_loads_is_no_verdict(src_project, capsys):
+    # The tests import `pkg`, which the stale install serves: they pass on it.
+    import _pytest
+
+    _, site = make_venv(src_project / ".venv")
+    (site / "pkg").mkdir()
+    (site / "pkg" / "__init__.py").write_text(PKG)
+    # pytest, from Peeky's own environment, after the stale `pkg`.
+    (site / "with_pytest.pth").write_text(f"{Path(_pytest.__file__).parents[1]}\n")
+    (src_project / "tests").mkdir()
+    (src_project / "tests" / "test_pkg.py").write_text(
+        "import pkg\n\n\ndef test_value():\n    assert pkg.VALUE == 1\n"
+    )
+    code = main(["verify", str(src_project), *SET_VALUE, "--json", "--check-command",
+                 "python -m pytest -q -p no:cacheprovider tests"])  # fmt: skip
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["exit_code"] == 0 and result["passed"] is False, result
+    assert result["no_verdict"].startswith("`pkg` was loaded from "), result["no_verdict"]
+    assert "site-packages/pkg/__init__.py, outside the copy" in result["no_verdict"]
+
+
+def test_a_pytest_run_without_peekys_report_is_no_verdict(project, capsys):
+    command = f"{PYTEST} -p no:peeky_check_report"
+    code, out = verify(capsys, project, "--check-command", command, *FIX)
+    assert code == 1 and "passed: False" in out.out, out.out
+    assert (
+        "reason: no verdict: pytest wrote no report from Peeky's plugin (-p "
+        "no:peeky_check_report turned it off, or pytest stopped first), so Peeky can't tell "
+        "whether the tests loaded your project's files instead of the copy's\n"
+    ) in out.out
+    # Under -I, which ignores PYTHONPATH, pytest runs without it.
+    (project / "conftest.py").write_text("")
+    isolated = "python -I -m pytest -q -p no:cacheprovider tests/test_calc.py"
+    code, out = verify(capsys, project, "--check-command", isolated, *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0, result
+    assert "peeky_check_report" not in result["check_command"]["ran"]
+    assert "(-I ignores PYTHONPATH, where the plugin is)" in result["no_verdict"]
+
+
+def test_relative_path_entries_are_the_copys_root(project, capsys, monkeypatch, tmp_path):
+    # `PATH=bin:$PATH` from another directory: `bin` was Peeky's working directory's.
+    (project / "bin").mkdir()
+    script = project / "bin" / "runtests"
+    script.write_text(RUNTESTS)
+    script.chmod(0o755)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{os.environ['PATH']}")
+    code, out = verify(capsys, project, "--check-command", "runtests", *FIX, "--json")
+    result = json.loads(out.out)
+    ran = Path(result["check_command"]["ran"][0])
+    assert code == 0 and result["passed"] is True, result
+    assert ran.parent.name == "bin" and not ran.is_relative_to(project.resolve())

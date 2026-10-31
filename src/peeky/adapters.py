@@ -173,6 +173,85 @@ def _command_copy_note(root, above, at):
     )
 
 
+# What a test command's Python finds for the project's modules (PythonCandidate.
+# command_imports), never importing them: run as `python FLAGS -c THIS FIRST COUNT NAMES...
+# DOTTED...`, in the copy's root. It takes out the entry `-c` put first on the import path
+# (none under -I, -P or PYTHONSAFEPATH), imports only `json`, then puts FIRST there as the
+# command's own start would ("-": none). Modules loaded before it ran are what an import
+# of their name gets. A package on the way to the edited module is a stand-in, whose code
+# never runs.
+_COMMAND_IMPORTS = """\
+import sys
+startup = {name: module for name, module in sys.modules.items()}
+inserted = sys.path[:1] == [""]
+if inserted:
+    del sys.path[0]
+import json
+first, count = sys.argv[1], int(sys.argv[2])
+names, dotted = sys.argv[3 : 3 + count], sys.argv[3 + count :]
+if inserted and first != "-":
+    sys.path.insert(0, first)
+
+
+def locate(fullname, path):
+    if fullname in startup:
+        return getattr(startup[fullname], "__spec__", None) or False
+    for finder in sys.meta_path:
+        find = getattr(finder, "find_spec", None)
+        if find is not None:
+            spec = find(fullname, path)
+            if spec is not None:
+                return spec
+    return None
+
+
+def described(spec):
+    if spec is False:
+        return {"places": ["a module loaded at start-up"], "namespace": False}
+    locations = [str(place) for place in (spec.submodule_search_locations or ())]
+    namespace = spec.origin in (None, "namespace") and spec.submodule_search_locations is not None
+    if namespace:
+        return {"places": locations, "namespace": True}
+    origin = spec.origin if isinstance(spec.origin, str) else "a module with no file"
+    return {"places": [origin, *locations], "namespace": False}
+
+
+found = {}
+for name in names:
+    try:
+        spec = locate(name, None)
+    except Exception:
+        found[name] = None
+        continue
+    if spec is not None:
+        found[name] = described(spec)
+chains = []
+for name in dotted:
+    chain, path, parts = [], None, name.split(".")
+    for at in range(len(parts)):
+        fullname = ".".join(parts[: at + 1])
+        try:
+            spec = locate(fullname, path)
+        except Exception:
+            chain.append([fullname, None])
+            break
+        if spec is None:
+            break
+        chain.append([fullname, described(spec)])
+        path = list(getattr(spec, "submodule_search_locations", None) or ()) or None
+        if path is None:
+            break
+        if fullname not in sys.modules:
+            # A package's stand-in, its code never run: a namespace part below it is
+            # found through its parent's `__path__`.
+            stub = type(sys)(fullname)
+            stub.__path__ = path
+            sys.modules[fullname] = stub
+    chains.append(chain)
+print(json.dumps({"names": found, "chains": chains}))
+"""
+
+
 def _shadowed(names, places):
     """Whether a module of one of ``names`` may not be the standard library's where the
     program imports it: a module or package of that name (any case: a volume may ignore
@@ -889,7 +968,7 @@ class PythonCandidate:
         will (its script's directory first, its `PYTHONPATH`), and note each one served
         from the user's tree. A test command's: ``_check_command_imports``."""
         if self._command:
-            self._check_command_imports(pythonpath, redirected)
+            # A test command's are checked as its own Python starts (command_imports).
             return
         names = (
             _module_names(self._source) | _module_names(self._source / "src") | {self.original.stem}
@@ -941,74 +1020,141 @@ class PythonCandidate:
                     "ahead of every import path, and may rebuild there"
                 )
 
-    def _check_command_imports(self, pythonpath, redirected):
-        """For a test command: each top-level name the project supplies (in its root, its
-        `src`, a copied `PYTHONPATH` entry, and the edited file's) must import from the
-        copy. Each is looked up (`find_spec`, never imported) as any process the command
-        starts finds it: on ``pythonpath``, with no script directory first (a console
-        script's is its environment's `bin`). Every place found must be inside the copy;
-        one elsewhere (an installed copy in site-packages, an outside `PYTHONPATH` entry,
-        an import hook serving your tree) is named in ``unedited_imports``."""
+    def project_names(self, roots=()):
+        """The top-level modules the project supplies: in its root, its `src`, and
+        ``roots`` (directories of the copy, as a `PYTHONPATH` entry or a script's
+        directory), with the edited file's own top-level name in each."""
         names = set()
-        for base in (self._source, self._source / "src"):
+        for base in self._import_roots(roots):
             names |= _module_names(base)
             if self.original.is_relative_to(base):
                 first = self.original.relative_to(base).parts[0]
                 # `src` itself is no package where it is an import root.
                 if not (base == self._source and first == "src"):
                     names.add(first.removesuffix(".py"))
-        for entry in redirected:
-            if entry and Path(entry).is_relative_to(self.root):
-                names |= _module_names(Path(entry))
-        names = sorted(name for name in names if name.isidentifier())
-        script = (
-            "import sys\nif sys.path and sys.path[0] == '':\n    del sys.path[0]\n"
-            "import importlib.util, json\nfound = {}\n"
-            "for name in sys.argv[1:]:\n"
-            "    try:\n        spec = importlib.util.find_spec(name)\n"
-            "    except Exception:\n        found[name] = None\n        continue\n"
-            "    if spec is None:\n        continue\n"
-            "    places = [spec.origin] if isinstance(spec.origin, str) else []\n"
-            "    places += [p for p in (spec.submodule_search_locations or [])"
-            " if isinstance(p, str)]\n"
-            "    found[name] = places\n"
-            "print(json.dumps(found))\n"
-        )
-        found = self._interpreter(script, pythonpath, *names)
-        if not isinstance(found, dict):
-            return
+        return sorted(name for name in names if name.isidentifier())
+
+    def _import_roots(self, roots=()):
+        """The root, its `src`, and each of ``roots`` inside the copy, as your tree's."""
+        found = [self._source, self._source / "src"]
+        for entry in roots:
+            if entry and os.path.isabs(entry):
+                real = Path(os.path.realpath(entry))
+                if real.is_relative_to(os.path.realpath(self.root)):
+                    original = self._source / real.relative_to(os.path.realpath(self.root))
+                    if original not in found:
+                        found.append(original)
+        return found
+
+    def _edited_modules(self, roots=()):
+        """The dotted names the edited file imports as, under each import root holding it
+        (`acme.foo.mod` for `src/acme/foo/mod.py`)."""
+        found = []
+        for base in self._import_roots(roots):
+            if not self.original.is_relative_to(base):
+                continue
+            parts = list(self.original.relative_to(base).with_suffix("").parts)
+            if parts and parts[-1] == "__init__":
+                parts.pop()
+            if base == self._source and parts[:1] == ["src"]:
+                continue
+            if parts and all(part.isidentifier() for part in parts):
+                found.append(".".join(parts))
+        return found
+
+    def command_imports(self, python, flags, first, environment):
+        """For a test command: each top-level module the project supplies, and each module
+        on the way to the edited file, must import from the copy, as the command's own
+        Python starts. That is ``python`` with ``flags`` (`-I`, `-E`, `-P`, `-s`, `-S`)
+        and ``environment``, in the copy's root, its import path's first entry ``first``:
+        "" for the working directory (`-c`, `-m`), a script's directory, or None (none,
+        as for a program Peeky can't see into, whose Pythons it can't know). Each is found
+        as an import would find it (each `sys.meta_path` finder's `find_spec`; a module
+        loaded at start-up is that one), but never imported. A regular module or package
+        found outside the copy is the reason returned, and a note. A namespace package
+        may have parts elsewhere: what the edited module's path finds through it must be
+        the copy's, and one found first elsewhere shadows it."""
+        pythonpath = environment.get("PYTHONPATH") or ""
+        roots = [*pythonpath.split(os.pathsep), *([first] if first else [])]
+        names = self.project_names(roots)
+        dotted = self._edited_modules(roots)
+        try:
+            found = json.loads(
+                subprocess.run(
+                    [
+                        python,
+                        *flags,
+                        "-c",
+                        _COMMAND_IMPORTS,
+                        "-" if first is None else first,
+                        str(len(names)),
+                        *names,
+                        *dotted,
+                    ],  # fmt: skip
+                    cwd=self.root,
+                    env=without_credentials(environment),
+                    capture_output=True,
+                    text=True,
+                    timeout=self._interpreter_timeout(),
+                    check=True,
+                ).stdout
+            )
+            names_found, chains = found["names"], found["chains"]
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            reason = (
+                "Peeky could not ask the command's Python where the project's modules import "
+                "from, so the command may not run the edit"
+            )
+            self._notes.append(reason)
+            return [reason]
         copy = Path(os.path.realpath(self.root))
-        for name in names:
-            if name not in found:
-                continue
-            places = found[name]
-            if not isinstance(places, list):
-                outside = "a place Peeky could not find (its lookup failed)"
-            else:
-                outside = next(
-                    (
-                        str(place)
-                        for place in places
-                        if not (
-                            isinstance(place, str)
-                            and os.path.isabs(place)
-                            and Path(os.path.realpath(place)).is_relative_to(copy)
-                        )
-                    ),
-                    None,
-                )
-            if outside is None:
-                continue
-            self.unedited_imports.append(
-                f"`import {name}` finds {outside}, outside the copy, so the command may not "
-                "run the edit: uninstall that, or install the project editable "
-                "(`pip install -e .`)"
+
+        def outside(described):
+            if not isinstance(described, dict):
+                return "a place Peeky could not find (its lookup failed)"
+            return next(
+                (
+                    str(place)
+                    for place in described.get("places") or ()
+                    if not (
+                        isinstance(place, str)
+                        and os.path.isabs(place)
+                        and Path(os.path.realpath(place)).is_relative_to(copy)
+                    )
+                ),
+                None,
+            )
+
+        reasons, refused = [], set()
+
+        def refuse(name, place):
+            if name in refused:
+                return
+            refused.add(name)
+            reasons.append(
+                f"`import {name}` finds {place}, outside the copy, so the command may not run "
+                "the edit: uninstall that, or install the project editable (`pip install -e .`)"
             )
             self._notes.append(
-                f"The check command's `import {name}` finds {outside}, outside the copy, so "
-                "the command may not run the code in the copy: an installed copy, an outside "
+                f"The check command's `import {name}` finds {place}, outside the copy, so the "
+                "command may not run the code in the copy: an installed copy, an outside "
                 "`PYTHONPATH` entry or an import hook serves it"
             )
+
+        for name in names:
+            described = names_found.get(name, False)
+            if described is False or (isinstance(described, dict) and described["namespace"]):
+                continue
+            if (place := outside(described)) is not None:
+                refuse(name, place)
+        for chain in chains:
+            for name, described in chain:
+                if isinstance(described, dict) and described["namespace"]:
+                    continue
+                if (place := outside(described)) is not None:
+                    refuse(name, place)
+                    break
+        return reasons
 
     def _self_contained(self, text):
         """_self_contained, as the program's interpreter imports the standard modules, with
