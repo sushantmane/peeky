@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 from native_compilers import default_cc, default_cxx, gcc, is_gcc
@@ -213,39 +214,53 @@ def test_a_file_changed_since_the_build_refuses_the_binary_by_name(project):
 def test_an_object_rebuilt_since_the_link_refuses_the_binary_on_macos(project, archived):
     # dsymutil reads the debug information of the objects the binary's debug map names, as
     # they are now: one rebuilt without a relink would give the old binary the new
-    # source's line tables, MD5s and all.
+    # source's line tables, MD5s and all. The map records each object's time in seconds,
+    # and the linker wrote the binary after reading them: one rebuilt after the link, in
+    # the same second, is newer than the binary.
     compiler = _clang()
     if sys.platform != "darwin":
         pytest.skip("a Mach-O debug map; Linux keeps the debug information in the binary")
     _build(project, compiler, {})
+    second = int(time.time()) - 100
+    at = lambda fraction: second * 10**9 + fraction * 10**8  # noqa: E731
+    for name in ("main.o", "util.o", "fast.o"):
+        os.utime(project / name, ns=(at(1), at(1)))
+    objects = ["main.o", "util.o", "fast.o"]
     if archived:
         subprocess.run(["ar", "rcs", "libutil.a", "util.o"], cwd=project, check=True)
-        subprocess.run(
-            [compiler, *_sysroot(), "main.o", "libutil.a", "fast.o", "-o", "prog"],
-            cwd=project,
-            check=True,
-        )
+        os.utime(project / "libutil.a", ns=(at(2), at(2)))
+        objects[1] = "libutil.a"
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=project, check=True)
+    os.utime(project / "prog", ns=(at(5), at(5)))
     target = _target(compiler)
-    assert run_probe(project, Probe("src/util.c", STOP, ("x",)), adapter=target)["status"] == (
-        "completed"
-    )
+
+    def probe():
+        return run_probe(project, Probe("src/util.c", STOP, ("x",)), adapter=target)
+
+    assert probe()["status"] == "completed"
+    # A binary touched (or copied) later is still newer than its objects.
+    os.utime(project / "prog", None)
+    assert probe()["status"] == "completed"
+    os.utime(project / "prog", ns=(at(5), at(5)))
     (project / "src" / "util.c").write_text(UTIL.replace("x * 2", "x * 4"))
     subprocess.run(
         [compiler, *FLAGS, "-O0", *_sysroot(), "-c", "src/util.c", "-o", "util.o"],
         cwd=project,
         check=True,
     )
-    later = os.stat(project / "util.o").st_mtime + 10
-    os.utime(project / "util.o", (later, later))
+    # Rebuilt in the second the debug map records, after the link.
+    os.utime(project / "util.o", ns=(at(9), at(9)))
     named = "util.o"
     if archived:
         subprocess.run(["ar", "rcs", "libutil.a", "util.o"], cwd=project, check=True)
-        named = "libutil.a(util.o)"
-    result = run_probe(project, Probe("src/util.c", STOP, ("x",)), adapter=target)
+        os.utime(project / "libutil.a", ns=(at(9), at(9)))
+        named = "libutil.a"
+    result = probe()
     error = result.get("error") or {}
     assert error.get("code") == "PROVENANCE_CHANGED", result
     assert (
-        f"the binary is stale: {named} changed since the binary was linked" in (error["message"])
+        f"the binary is stale: {named} is newer than prog: rebuilt after the link?"
+        in (error["message"])
     ), error
     assert result.get("refused_before_launch") is True and not result.get("output")
 

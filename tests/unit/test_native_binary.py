@@ -142,6 +142,7 @@ def test_a_unit_clang_built_at_o0_with_an_md5_of_every_file_is_judged(root):
                 ("-ffp-contract=fast-honor-pragmas", ""),
                 ("-mrecip", ""),
                 ("-mrecip=all", ", which estimates reciprocals"),
+                ("-mrecip=!div,sqrt:1", ", which estimates reciprocals"),
                 ("-fdenormal-fp-math=preserve-sign", ", which flushes denormals"),
                 ("-fdenormal-fp-math-f32=positive-zero", ", which flushes denormals"),
             )
@@ -163,6 +164,14 @@ def test_a_unit_peeky_cant_judge_says_why(root, change, why):
     assert why in judged.why, judged.why
 
 
+def test_an_mrecip_value_peeky_hasnt_classified_says_only_that(root):
+    unit = _unit(root, producer=f"{CLANG} /usr/bin/clang -O0 -mrecip=fast-ish -c src/main.c")
+    assert judge(unit, _tables(root), CLANG, root).why == (
+        "built with -mrecip=fast-ish, whose value Peeky hasn't classified (its recorded flags): "
+        "rebuild without it"
+    )
+
+
 def test_floating_point_options_that_keep_ieee_results_are_judged(root):
     for option in (
         "-ffp-model=precise",
@@ -171,6 +180,8 @@ def test_floating_point_options_that_keep_ieee_results_are_judged(root):
         "-ffp-contract=on",
         "-fdenormal-fp-math=ieee",
         "-fno-fast-math",
+        "-mrecip=none",
+        "-mrecip=!div,!vec-sqrtf:2",
     ):
         unit = _unit(root, producer=f"{CLANG} /usr/bin/clang -O0 {option} -c src/main.c")
         assert judge(unit, _tables(root), CLANG, root).status == JUDGED, option
@@ -613,10 +624,25 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
     ]
     binary = tmp_path / "prog"
     binary.write_bytes(_macho(entries))
+    linked = 1_700_000_000 * 10**9 + 500_000_000
+    os.utime(library, ns=(linked - 1, linked - 1))
+    os.utime(binary, ns=(linked, linked))
     found = debug_map(binary)
     assert found == [(str(obj), 1_700_000_000), (f"{library}(util.o)", 1_600_000_000)]
-    hashes = check_debug_map(found, tmp_path)
+    hashes = check_debug_map(found, tmp_path, binary)
     assert set(hashes) == {str(obj), str(library)}
+    # Rebuilt within the second the map records, after the link: newer than the binary.
+    os.utime(obj, ns=(linked + 1, linked + 1))
+    with pytest.raises(
+        BinaryChanged, match=r"main\.o is newer than prog: rebuilt after the link\?"
+    ):
+        check_debug_map(found, tmp_path, binary)
+    os.utime(library, ns=(linked + 1, linked + 1))
+    with pytest.raises(BinaryChanged, match=r"libu\.a is newer than prog"):
+        check_debug_map(found[1:], tmp_path, binary)
+    # A binary touched or copied later still has its objects older than it.
+    os.utime(binary, None)
+    assert set(check_debug_map(found, tmp_path, binary)) == {str(obj), str(library)}
     # Rebuilt since the link, gone, or a member not there: the binary is stale, by name.
     for entries, said in (
         ([(str(obj), 1_699_999_999)], "main.o changed since the binary was linked"),
@@ -625,11 +651,11 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
         ([(str(tmp_path / "missing.o"), 7)], "missing.o is gone or unreadable"),
     ):
         with pytest.raises(BinaryChanged, match=re.escape(said)) as stale:
-            check_debug_map(entries, tmp_path)
+            check_debug_map(entries, tmp_path, binary)
         assert classify(stale.value)["code"] == "PROVENANCE_CHANGED"
     # A time of 0 (ZERO_AR_DATE) can't tell a rebuilt object from the one linked.
     with pytest.raises(BinaryRefused, match="records no time of main.o") as zero:
-        check_debug_map([(str(obj), 0)], tmp_path)
+        check_debug_map([(str(obj), 0)], tmp_path, binary)
     assert classify(zero.value)["code"] == "UNSUPPORTED"
     binary.write_bytes(_macho([])[:40])
     with pytest.raises(ValueError):

@@ -80,22 +80,52 @@ _IMPLIES = {
 }
 
 
+# An -mrecip= item clang reads: an operation, negated or not, with a refinement count.
+_RECIP_ITEM = re.compile(r"(!?)(?:all|default|(?:vec-)?(?:div|sqrt)[df]?)(?::[0-9]+)?")
+
+
+def _reciprocals(value):
+    """What `-mrecip=` ``value`` does: None where it estimates nothing (`none`, or each
+    item negated), "estimates" where it may, "unclassified" for a value Peeky doesn't
+    read."""
+    if value == "none":
+        return None
+    items = [_RECIP_ITEM.fullmatch(item) for item in value.split(",")]
+    if not all(items):
+        return "unclassified"
+    return None if all(item[1] for item in items) else "estimates"
+
+
 def changes(word):
-    """Why ``word`` (a recorded option) changes what code computes, or None: an option
-    of SEMANTICS, one implying some (``_IMPLIES``), reciprocal estimates (`-mrecip=`),
-    denormals flushed (`-fdenormal-fp-math=` but `ieee`), or a sanitizer's
-    instrumentation, which Peeky's proofs aren't checked under either."""
+    """Why ``word`` (a recorded option) leaves its unit unjudged, as a refusal, or None:
+    an option of SEMANTICS, one implying some (``_IMPLIES``), reciprocal estimates
+    (`-mrecip`, `-mrecip=` but `none`), denormals flushed (`-fdenormal-fp-math=` but
+    `ieee`), a sanitizer's instrumentation, which Peeky's proofs aren't checked under; or
+    an `-mrecip=` value Peeky hasn't classified."""
+    how = None
     if word in SEMANTICS:
-        return ""
-    if word in _IMPLIES:
-        return _IMPLIES[word]
-    if word.startswith("-mrecip="):
-        return "estimates reciprocals"
-    if re.fullmatch(r"-fdenormal-fp-math(?:-f32)?=(?!ieee(?:,ieee)?$).*", word):
-        return "flushes denormals"
-    if word.startswith("-fsanitize="):
-        return "instruments the code"
-    return None
+        how = ""
+    elif word in _IMPLIES:
+        how = _IMPLIES[word]
+    elif word.startswith("-mrecip="):
+        found = _reciprocals(word.removeprefix("-mrecip="))
+        if found == "unclassified":
+            return (
+                f"built with {word}, whose value Peeky hasn't classified (its recorded "
+                "flags): rebuild without it"
+            )
+        how = "estimates reciprocals" if found else None
+    elif re.fullmatch(r"-fdenormal-fp-math(?:-f32)?=(?!ieee(?:,ieee)?$).*", word):
+        how = "flushes denormals"
+    elif word.startswith("-fsanitize="):
+        how = "instruments the code"
+    if how is None:
+        return None
+    said = f", which {how}" if how else ""
+    return (
+        f"built with {word}{said}, under which Peeky's proofs aren't checked (its recorded "
+        "flags): rebuild without it"
+    )
 
 
 # The most files the units Peeky reads may name (each hashed, and checked before every
@@ -227,12 +257,8 @@ def judge(unit, tables, version, root, optimized=False):
             why += ": set the config's compiler to the clang that built it"
         return refused(why)
     for word in words[1:]:
-        if (how := changes(word)) is not None:
-            said = f", which {how}" if how else ""
-            return refused(
-                f"built with {word}{said}, under which Peeky's proofs aren't checked (its "
-                "recorded flags): rebuild without it"
-            )
+        if (why := changes(word)) is not None:
+            return refused(why)
     try:
         level, lto = optimization(words)
     except NotRecorded as exc:
@@ -618,7 +644,7 @@ class BinaryTarget:
                 raise _refused(
                     "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
                 ) from None
-            objects = check_debug_map(entries, root)
+            objects = check_debug_map(entries, root, binary)
             said = _run(
                 [tools[-1], str(binary), "-o", str(bundle)],
                 scratch,
@@ -634,7 +660,7 @@ class BinaryTarget:
                     f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
                     "again"
                 )
-            if check_debug_map(debug_map(binary), root) != objects:
+            if check_debug_map(debug_map(binary), root, binary) != objects:
                 raise BinaryChanged(
                     "Provenance: an object the binary's debug map names changed while "
                     "dsymutil read it"
@@ -894,13 +920,17 @@ def _members(archive):
     raise ValueError("too many members")
 
 
-def check_debug_map(entries, root):
+def check_debug_map(entries, root, binary):
     """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name, each
-    checked to be what the linker read: there, with the modification time it recorded
-    (an archive's member by its header's). One changed or gone since the link makes the
-    binary stale (BinaryChanged, naming it); a time of 0 (`ZERO_AR_DATE`) can't be
-    checked: refused (UNSUPPORTED)."""
+    checked by the linker's timestamps, as LLDB and dsymutil check them: there, with the
+    modification time the linker recorded, in seconds (an archive's member by its
+    header's), and the file itself no newer than ``binary``, to the nanosecond: the linker
+    wrote the binary after reading it. One rebuilt after the link, gone, or changed makes
+    the binary stale (BinaryChanged, naming it). Timestamps forged on purpose aren't
+    caught, as no same-user tampering is. A time of 0 (`ZERO_AR_DATE`) can't be checked:
+    refused (UNSUPPORTED)."""
     hashes, stale = {}, []
+    linked = os.stat(binary).st_mtime_ns
     for name, moment in entries:
         member = re.fullmatch(r"(.+)\(([^()]+)\)", name)
         path = member[1] if member else name
@@ -921,12 +951,17 @@ def check_debug_map(entries, root):
                 current = moment if moment in times else times[0]
             else:
                 current = int(os.stat(path).st_mtime)
+            newer = os.stat(path).st_mtime_ns > linked
             hashes[path] = sha256_file(path)
         except (OSError, ValueError):
             stale.append(f"{shown} is gone or unreadable")
             continue
         if current != moment:
             stale.append(f"{shown} changed since the binary was linked")
+        elif newer:
+            # Within the second the debug map records, rebuilt after the link all the same.
+            named = _shown(os.path.realpath(path), Path(root))
+            stale.append(f"{named} is newer than {Path(binary).name}: rebuilt after the link?")
     if stale:
         listed = "; ".join(stale[:LISTED_REASONS])
         more = f" (and {len(stale) - LISTED_REASONS} more)" if len(stale) > LISTED_REASONS else ""
