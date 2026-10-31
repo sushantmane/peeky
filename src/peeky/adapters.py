@@ -217,16 +217,17 @@ PLAIN_ASSERTS = (
     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change "
     "the test files' code from the source Peeky reads. So a failing assert shows less detail"
 )
-# The note on a pytest run whose own arguments turned its assertion plugin off.
+# The note on a pytest run whose own arguments keep its assertion plugin from loading.
 NO_ASSERTION = (
-    "pytest ran with its assertion plugin off (-p no:assertion), so it rewrote no asserts: the "
-    "test files ran as Peeky reads them. Peeky added nothing"
+    "pytest ran with -p no:assertion in its arguments, so it never loaded its assertion plugin "
+    "and rewrote no asserts: the test files ran as Peeky reads them. Peeky added nothing"
 )
 # The note where pytest refused the --assert=plain Peeky added (``refused_plain``).
 REFUSED_PLAIN = (
     "pytest refused the --assert=plain that Peeky added (`unrecognized arguments`): its "
-    "configuration turns its assertion plugin off. So it ran nothing. Pass -p no:assertion "
-    "after `--`, and Peeky adds nothing"
+    "assertion plugin was off when it read its arguments, through its configuration, "
+    "PYTEST_ADDOPTS or -p. So no test ran. Pass only -p no:assertion after `--`, and Peeky "
+    "adds nothing"
 )
 
 
@@ -252,15 +253,31 @@ def check_module(name):
     return name
 
 
-def _plugin_off(args):
-    """Whether pytest's arguments ``args`` turn its assertion plugin off (`-p
-    no:assertion`), which then rewrites nothing and takes no --assert."""
-    for at, arg in enumerate(args):
-        if arg == "--":
-            break
-        if arg == "-pno:assertion" or (arg == "-p" and args[at + 1 : at + 2] == ["no:assertion"]):
-            return True
-    return False
+def _plugins(args):
+    """The `-p` values in pytest's arguments ``args``, in order, as pytest reads them
+    before anything else: `-p NAME` and `-pNAME`, anywhere (`--` too), stripped."""
+    found, at = [], 0
+    while at < len(args):
+        arg, at = args[at], at + 1
+        if arg == "-p":
+            if at >= len(args):
+                break
+            found.append(args[at].strip())
+            at += 1
+        elif arg.startswith("-p"):
+            found.append(arg[2:].strip())
+    return found
+
+
+def _plugin_never_loads(added, args):
+    """Whether pytest never loads its assertion plugin, so it rewrites nothing and takes no
+    --assert: its own arguments ``args`` block it (`-p no:assertion`), which pytest reads
+    before it loads any plugin, and nothing loads it again (`-p assertion`), in them or in
+    PYTEST_ADDOPTS (``added``). A config file's `addopts` come before both. Where
+    anything loads it again, it does not say: Peeky adds --assert=plain, which whenever
+    pytest takes it keeps pytest from rewriting (it decides that by its --assert)."""
+    given, extra = _plugins(args), _plugins(added)
+    return "no:assertion" in given and "assertion" not in given + extra
 
 
 def refused_plain(output):
@@ -1580,8 +1597,9 @@ class PythonAdapter:
         """``(args, notes)``: what `--run-module` ``module`` (pytest) gets, and why it
         differs. pytest rewrites each test file's asserts as it imports it, so the code
         that runs is not what Peeky reads (other lines have code; at -O the asserts still
-        run): it gets `--assert=plain` first, unless its arguments or `PYTEST_ADDOPTS`
-        (in ``environ``, the program's) turn its assertion plugin off. Refused where
+        run): it gets `--assert=plain` first, unless its arguments keep its assertion plugin
+        from loading (``_plugin_never_loads``, with `PYTEST_ADDOPTS` from ``environ``, the
+        program's). Refused where
         that would change the run: an `--assert` of the program's own other than plain,
         or an optimization level above 0, where pytest's plain asserts would not run."""
         import shlex
@@ -1591,8 +1609,12 @@ class PythonAdapter:
         try:
             added = shlex.split(environ.get("PYTEST_ADDOPTS") or "")
         except ValueError:
-            added = []
-        if _plugin_off(list(args)) or _plugin_off(added):
+            raise ValueError(
+                "--run-module pytest reads PYTEST_ADDOPTS as pytest does, and it can't be split "
+                "into arguments (an unclosed quote), so Peeky can't tell whether pytest "
+                "rewrites asserts. Fix or unset PYTEST_ADDOPTS"
+            ) from None
+        if _plugin_never_loads(added, list(args)):
             return list(args), [NO_ASSERTION]
         if (mode := _assert_mode(list(args))) not in (None, "plain"):
             raise ValueError(

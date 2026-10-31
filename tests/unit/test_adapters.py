@@ -133,20 +133,29 @@ def test_pytest_runs_with_plain_asserts_or_is_refused():
 
 
 def test_pytest_without_its_assertion_plugin_gets_nothing_added():
-    # Its assertion plugin off, pytest rewrites nothing, and refuses --assert (exit 4).
+    # pytest reads its own `-p no:assertion` before it loads any plugin: it never loads
+    # that one, rewrites nothing, and refuses --assert (exit 4).
     adapter = PythonAdapter(identity={"optimize": 1})
+    for args in (["-p", "no:assertion", "-q"], ["-pno:assertion"], ["-p", " no:assertion "]):
+        given, notes = adapter.module_arguments("pytest", args, {})
+        assert given == args and "never loaded its assertion plugin" in notes[0], notes
+    plain = PythonAdapter(identity={"optimize": 0})
+    # A later `-p assertion`, there or in PYTEST_ADDOPTS, loads it again: it stopped at
+    # the first `no:assertion` and said rewriting was off. And `-p no:assertion` only in
+    # PYTEST_ADDOPTS is read after pytest decided to rewrite: it rewrote, unsaid.
     for args, environ in (
-        (["-p", "no:assertion", "-q"], {}),
-        (["-pno:assertion"], {}),
-        (["-q"], {"PYTEST_ADDOPTS": "-x -p no:assertion"}),
+        (["-p", "no:assertion", "-p", "assertion"], {}),
+        (["-pno:assertion", "-passertion"], {}),
+        (["-p", "assertion"], {"PYTEST_ADDOPTS": "-p no:assertion"}),
+        (["-p", "no:assertion"], {"PYTEST_ADDOPTS": "-p assertion"}),
+        ([], {"PYTEST_ADDOPTS": "-x -p no:assertion"}),
+        (["--", "x.py"], {}),
     ):
-        given, notes = adapter.module_arguments("pytest", args, environ)
-        assert given == args and "assertion plugin off (-p no:assertion)" in notes[0], notes
-    # After `--`, `-p` is a file name.
-    after = PythonAdapter(identity={"optimize": 0}).module_arguments(
-        "pytest", ["--", "-p", "no:assertion"], {}
-    )
-    assert after[0][0] == "--assert=plain", after
+        given, notes = plain.module_arguments("pytest", args, environ)
+        assert given == ["--assert=plain", *args], (args, environ)
+        assert "pytest ran with --assert=plain" in notes[0], notes
+    with pytest.raises(ValueError, match="Fix or unset PYTEST_ADDOPTS"):
+        plain.module_arguments("pytest", [], {"PYTEST_ADDOPTS": "-k 'unclosed"})
     assert refused_plain("ERROR: usage: ...\nerror: unrecognized arguments: --assert=plain\n")
     assert not refused_plain("1 passed") and not refused_plain(None)
 

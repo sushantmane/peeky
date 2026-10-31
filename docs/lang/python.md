@@ -23,8 +23,8 @@ Peeky debugs Python with debugpy, Python's debugger.
   ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - Peeky gives pytest `--assert=plain`. pytest's assert rewriting changes a test file's code from
   the source Peeky reads: a line in a loop can stop twice per pass. So a failing assert shows less
-  detail. With `-p no:assertion`, pytest rewrites nothing, and Peeky adds nothing
-  ([Python 0](python-cookbook.md#run-a-pytest-test)).
+  detail. With `-p no:assertion` after `--`, pytest never loads that plugin, and Peeky adds
+  nothing ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - A `--run` script that runs pytest lets it rewrite asserts, and a warning says so. Use
   `--run-module pytest` instead ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - `--at` and `--run` name `.py` files inside the root. `--at` may name an installed package's

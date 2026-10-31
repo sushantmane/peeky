@@ -207,19 +207,23 @@ output:
   ([Which interpreter runs the program](#which-interpreter-runs-the-program)). Peeky asks that
   interpreter, as the program runs, where `python -m pytest` finds pytest. It must be a package
   in one of that interpreter's site-packages directories. Another found first, such as a
-  `pytest.py` in the root, is refused before anything runs, and so is none. The message names
-  the file.
+  `pytest.py` in the root, is refused before debugpy starts pytest, and so is none. The message
+  names the file. The interpreter's startup has run by then, to find pytest: its `.pth` files and
+  `sitecustomize`, which may run project code.
 - Peeky gives pytest `--assert=plain`, before your arguments. pytest rewrites each test file's
   asserts as it imports it, so the code that runs isn't the source Peeky reads. For example, a
   line inside an assert that spans lines stopped twice per pass of a loop. With plain asserts,
   the test files run as written. A failing assert then shows less detail.
-- Arguments that set `--assert` to anything but `plain` are refused, before anything runs. So is
+- Arguments that set `--assert` to anything but `plain` are refused before debugpy starts pytest. So is
   a program that runs at `-O` (`PYTHONOPTIMIZE`). pytest runs asserts at `-O` only by rewriting
   them, and plain ones wouldn't run.
-- With `-p no:assertion` in its arguments or in `PYTEST_ADDOPTS`, pytest rewrites nothing. It
-  would refuse `--assert=plain` then, so Peeky adds nothing, and a note says so. If pytest still
-  refuses it, because its own configuration turns the plugin off, the note says that instead:
-  pass `-p no:assertion` after `--`.
+- With `-p no:assertion` in its arguments after `--`, pytest never loads its assertion plugin, so
+  it rewrites nothing. It would refuse `--assert=plain` then, so Peeky adds nothing, and a note
+  says so. A `-p assertion` there or in `PYTEST_ADDOPTS` loads the plugin again, so Peeky adds
+  `--assert=plain`. pytest decides whether to rewrite by its `--assert`, and Peeky's comes last.
+- In `PYTEST_ADDOPTS` or a config file's `addopts`, `-p no:assertion` doesn't stop rewriting:
+  pytest reads it after it has decided. So Peeky adds `--assert=plain` then too. If pytest refuses
+  it, no test runs, and the note says why: pass only `-p no:assertion` after `--`.
 - `--json`'s `program_args` lists what pytest got, `--assert=plain` first. The probe's `module`
   names the module. In the evidence store, the run's `entry` is `-m pytest`.
 - Plugins run as they do under pytest. One that changes code as it imports it, as assert

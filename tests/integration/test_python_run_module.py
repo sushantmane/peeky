@@ -194,4 +194,67 @@ def test_pytest_without_its_assertion_plugin_runs_as_it_is(project, capsys):
     result = json.loads(out.out)
     assert code == 0 and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
     assert "--assert=plain" not in result["program_args"], result["program_args"]
-    assert any("assertion plugin off (-p no:assertion)" in note for note in result["warnings"])
+    assert any("never loaded its assertion plugin" in note for note in result["warnings"])
+
+
+def _stops_at_9(capsys, project, *args):
+    """A probe of the assert's line 9 in a loop: its result."""
+    code, out = run(
+        capsys,
+        *("probe", project, "--at", "tests/test_cart.py:9", "--capture", "d", "--hits", "all"),
+        *("--run-module", "pytest", "--json", "--no-save"),
+        *("--", *QUIET, *args, "tests/test_cart.py::test_total"),
+    )
+    result = json.loads(out.out)
+    assert "status" in result, result
+    return result
+
+
+def _plain(result):
+    """Whether Peeky gave pytest --assert=plain, and said so, and nothing says rewriting
+    is off for another reason."""
+    notes = result.get("warnings") or []
+    return (
+        result["program_args"][0] == "--assert=plain"
+        and any("pytest ran with --assert=plain" in note for note in notes)
+        and not any("never loaded its assertion plugin" in note for note in notes)
+    )
+
+
+def test_a_reloaded_assertion_plugin_gets_plain_asserts(project, capsys, monkeypatch):
+    # Peeky stopped at the first `-p no:assertion` and added nothing, though a later
+    # `-p assertion` loads the plugin again; and `-p no:assertion` in PYTEST_ADDOPTS,
+    # which pytest reads after it decides to rewrite, was taken for rewriting off.
+    result = _stops_at_9(capsys, project, "-p", "no:assertion", "-p", "assertion")
+    assert _plain(result) and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:assertion")
+    result = _stops_at_9(capsys, project)
+    assert _plain(result) and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
+    # Loaded again on the command line: never a second stop per pass. (pytest 9.1.1 itself
+    # fails here, "option names {'--assert'} already added", before any test runs.)
+    result = _stops_at_9(capsys, project, "-p", "assertion")
+    assert _plain(result), result
+    assert [row["value"] for row in result["rows"]] in ([], ["0.1", "0.2"]), result
+
+
+def test_assert_rewrite_from_pytest_addopts_or_config_is_overridden(project, capsys, monkeypatch):
+    # Peeky's --assert=plain comes after a config file's addopts and PYTEST_ADDOPTS, so it
+    # is the one pytest takes: the line stops once per pass.
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--assert=rewrite")
+    result = _stops_at_9(capsys, project)
+    assert _plain(result) and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
+    monkeypatch.delenv("PYTEST_ADDOPTS")
+    (project / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\npythonpath = ["src"]\naddopts = "--assert=rewrite"\n'
+    )
+    result = _stops_at_9(capsys, project)
+    assert _plain(result) and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
+    # Without Peeky's, the config's rewriting stops it twice per pass (a runner script).
+    (project / "run_tests.py").write_text(RUNNER)
+    code, out = run(
+        capsys,
+        *("probe", project, "--at", "tests/test_cart.py:9", "--capture", "d", "--hits", "all"),
+        *("--run", "run_tests.py", "--json", "--no-save", "--", *QUIET),
+        "tests/test_cart.py::test_total",
+    )
+    assert len(json.loads(out.out)["rows"]) == 4, out.out
