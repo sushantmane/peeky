@@ -1967,7 +1967,7 @@ def _remote_session(name, record):
     client = _RemoteSession(record)
     # The sources are those the worker named at the session's start, as compared then: a
     # binary's are what its units named, whatever the worker's binary is now.
-    version = Client.call(client, "version", sources=False)
+    version = Client.call(client, "version")
     protocol = version.get("protocol") if isinstance(version, dict) else None
     if protocol != PROTOCOL_VERSION:
         raise ValueError(
@@ -3188,6 +3188,24 @@ def _binary_of(root, data):
     return binary_name(root, data["binary"])
 
 
+def _binary_inputs(client):
+    """For a worker on a binary target (its `version`'s sources name only the binary), the
+    files to compare, as its `inputs` lists them: asked only for a run on it."""
+    if (client.sources or {}).get("kind") != "binary":
+        return
+    listed = client.call("inputs")
+    if (
+        not isinstance(listed, dict)
+        or listed.get("kind") != "declared"
+        or listed.get("binary") != client.sources.get("binary")
+    ):
+        raise ValueError(
+            "The worker's list of its binary's files is not one this client reads: install "
+            "the same Peeky version on both hosts"
+        )
+    client.sources = listed
+
+
 def _worker_binary(client, binary):
     """Refuse a run on a worker whose configuration names another binary than this
     command's (``binary``: its `--binary` or config's, or None): the worker debugs only
@@ -3225,6 +3243,7 @@ def _remote_probe(args, root, request, binary=None):
     client, _ = _remote(args.worker)
     client.client_root = root
     _worker_binary(client, binary)
+    _binary_inputs(client)
     inputs = client_sources(root, client.sources)
     expected = _expected(root, request.program, request.entry)
     client.hashed = _hashed(root, client.sources, inputs, expected, request.program, request.entry)
@@ -3369,6 +3388,7 @@ def _start_remote(args, root, program, line, language, max_pause, binary=None):
     client, token = _remote(args.worker)
     client.client_root = root
     _worker_binary(client, binary)
+    _binary_inputs(client)
     inputs = client_sources(root, client.sources)
     entry = _entry(root, args.run, language)
     expected = _expected(root, program, entry)
@@ -3633,8 +3653,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
             root=str(root), program=program, language=language, cwd=os.getcwd(), line=line
         )
         # Its worker's protocol, asked before anything runs and kept: each later command
-        # checks it before it sends a request. Its sources are compared with none.
-        version = client.call("version", sources=False)
+        # checks it before it sends a request.
+        version = client.call("version")
         protocol = version.get("protocol") if isinstance(version, dict) else None
         if protocol != PROTOCOL_VERSION:
             raise RuntimeError(

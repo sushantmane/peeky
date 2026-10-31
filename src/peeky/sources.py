@@ -135,12 +135,28 @@ def declared(adapter, root=None):
 
 def describe(adapter, root=None):
     """The worker's `version` field that tells a client which sources to hash. A binary
-    target's says its binary too, by its name under ``root``, and why the worker
-    compares none where it refuses the binary (``kind`` `refused`, with the error)."""
+    target's names only its binary, by its name under ``root``: listing its files reads
+    the binary's debug information, which only the `inputs` operation does (listed)."""
     if getattr(adapter, "remote_inputs", None) is None:
         names = declared(adapter)
         return {"kind": "python"} if names is None else {"kind": "declared", "names": list(names)}
-    from peeky.errors import classify
+    from peeky.native_binary import binary_name
+
+    try:
+        shown = binary_name(root, adapter.binary)
+    except ValueError:
+        shown = adapter.binary
+    return {"kind": "binary", "binary": shown}
+
+
+def listed(adapter, root):
+    """The worker's `inputs` answer: a binary target's files, as `version` gives other
+    targets' (``{"kind": "declared", "names": [...], "binary": ...}``), listed once per
+    binary (BinaryTarget.remote_inputs). A binary the worker refuses is refused, saying so:
+    a client's request is never what is wrong."""
+    if getattr(adapter, "remote_inputs", None) is None:
+        return describe(adapter, root)
+    from peeky.errors import Refused, classify
     from peeky.native_binary import binary_name
 
     try:
@@ -148,7 +164,17 @@ def describe(adapter, root=None):
         names = declared(adapter, root)
     except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
         error = classify(exc, session_closed=False)
-        return {"kind": "refused", "binary": adapter.binary, "error": error}
+        if error["code"] == "BUSY":
+            raise
+        hint = error["hint"]
+        if error["code"] == "INVALID_REQUEST":
+            hint = (
+                "Nothing ran. Fix it on the worker's host: its own configuration names the "
+                "binary and its tools."
+            )
+        raise Refused(
+            error["code"], f"The worker refuses its binary: {error['message']}", hint
+        ) from None
     return {"kind": "declared", "names": list(names), "binary": shown}
 
 
@@ -230,28 +256,8 @@ def worker_sources(adapter, root):
 
 
 def client_sources(root, info):
-    """{name: sha256} of the local copies of the sources the worker says it reads. Where
-    the worker says why it compares none (a binary it refuses), that refusal."""
-    if isinstance(info, dict) and info.get("kind") == "refused":
-        from peeky.errors import ERROR_CODES, Refused
-
-        error = info.get("error") if isinstance(info.get("error"), dict) else {}
-        code, message, hint = error.get("code"), error.get("message"), error.get("hint")
-        if code not in ERROR_CODES or not isinstance(message, str):
-            code, message = "INVALID_REQUEST", "The worker refuses its binary without saying why"
-        # The worker's own hint, which says what to do about its reason; but a request of
-        # this client's is never what is wrong.
-        hint = (
-            hint[:2000]
-            if isinstance(hint, str) and code != "INVALID_REQUEST"
-            else (
-                "Nothing ran. Fix it on the worker's host: its own configuration names the binary "
-                "and its tools."
-            )
-        )
-        refused = Refused(code, f"The worker refuses its binary: {message[:2000]}", hint)
-        refused.before_launch = True
-        raise refused
+    """{name: sha256} of the local copies of the sources the worker says it reads (for a
+    binary target, as its `inputs` answer lists them)."""
     if not isinstance(info, dict) or info.get("kind") not in ("python", "declared"):
         raise ValueError(
             "The worker does not say which sources it reads, so they cannot be compared: "

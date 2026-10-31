@@ -7,6 +7,7 @@ import hashlib
 import json
 import struct
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,7 @@ import pytest
 from peeky import cli, native_binary, sources
 from peeky.adapters import PythonAdapter
 from peeky.client import Client
-from peeky.errors import PROTOCOL_VERSION, Refused, classify
+from peeky.errors import PROTOCOL_VERSION, PeekyError, Refused, classify
 from peeky.native_binary import BinaryRefused, BinarySession, BinaryTarget
 from peeky.probe import _caller_rows
 from peeky.worker import DebugWorker, load_native_target, make_server
@@ -70,9 +71,7 @@ def served(tmp_path):
         thread.join(timeout=3)
 
 
-def test_a_binary_workers_version_names_its_binary_and_the_files_its_units_name(
-    served, monkeypatch
-):
+def test_a_binary_workers_version_names_its_binary_and_inputs_lists_its_files(served, monkeypatch):
     root, start = served
     listed = []
 
@@ -83,90 +82,141 @@ def test_a_binary_workers_version_names_its_binary_and_the_files_its_units_name(
     monkeypatch.setattr(BinaryTarget, "remote_inputs", remote_inputs)
     client = start(BinaryTarget(binary="./out/../out/prog"))
     version = client.call("version")
-    assert version["protocol"] == PROTOCOL_VERSION
-    assert version["sources"] == {
+    # `version` stays cheap: it reads none of the binary's debug information.
+    assert version["protocol"] == PROTOCOL_VERSION and "inputs" in version["operations"]
+    assert version["sources"] == {"kind": "binary", "binary": "out/prog"} and listed == []
+    assert client.call("inputs") == {
         "kind": "declared",
         "names": ["src/a.c", "src/a.h"],
         "binary": "out/prog",
     }
     assert [str(at) for at in listed] == [str(root)]
-    # A session's own client asks for none: listing them reads the binary's debug
-    # information.
-    assert "sources" not in client.call("version", sources=False) and len(listed) == 1
 
     def refused(self, at):
         raise BinaryRefused("out/prog has no debug information: rebuild with -g -gdwarf-5")
 
     monkeypatch.setattr(BinaryTarget, "remote_inputs", refused)
-    said = client.call("version")["sources"]
-    assert said["kind"] == "refused" and said["binary"] == "./out/../out/prog"
-    assert said["error"]["code"] == "UNSUPPORTED", said
-    with pytest.raises(Refused) as found:
-        sources.client_sources(root, said)
-    assert found.value.code == "UNSUPPORTED"
-    assert str(found.value) == (
+    with pytest.raises(PeekyError) as found:
+        client.call("inputs")
+    error = found.value.payload
+    assert error["code"] == "UNSUPPORTED" and error["message"] == (
         "The worker refuses its binary: out/prog has no debug information: rebuild with -g "
         "-gdwarf-5"
     )
-    assert found.value.before_launch is True
     # The worker's own hint says what to do about its reason.
-    assert classify(found.value)["hint"] == said["error"]["hint"]
-    said = {**said, "error": {**said["error"], "code": "INVALID_REQUEST"}}
-    with pytest.raises(Refused) as found:
-        sources.client_sources(root, said)
-    # A request of this client's is never what is wrong.
-    assert classify(found.value)["hint"] == (
+    assert error["hint"] == classify(BinaryRefused("x has no debug information"))["hint"]
+
+    def missing(self, at):
+        raise Refused("INVALID_REQUEST", f"No binary out/prog in {at}")
+
+    monkeypatch.setattr(BinaryTarget, "remote_inputs", missing)
+    with pytest.raises(PeekyError) as found:
+        client.call("inputs")
+    # A request of the client's is never what is wrong.
+    assert found.value.payload["hint"] == (
         "Nothing ran. Fix it on the worker's host: its own configuration names the binary and "
         "its tools."
     )
 
 
-def test_the_files_a_client_compares_are_bounded_and_listed_once_per_binary(tmp_path, monkeypatch):
+@pytest.fixture
+def listing(tmp_path, monkeypatch):
+    """A binary in a root, and a stand-in for its units' judging: ``files`` is what the
+    units read name; ``calls``, each judging's binary."""
     root = (tmp_path / "project").resolve()
     (root / "src").mkdir(parents=True)
     (root / "src" / "a.c").write_text("int a;\n" * 4)
     (root / "src" / "b.c").write_text("int b;\n")
     (root / "prog").write_bytes(b"binary")
-    judged = []
+    state = SimpleNamespace(root=root, calls=[], delay=0.0)
+    state.files = [str(root / "src" / "a.c"), str(root / "src" / "b.c"), "/usr/include/stdio.h"]
 
     def judge(self, at, binary, shown, *args):
-        judged.append(shown)
-        return SimpleNamespace(
-            files={
-                str(at / "src" / "a.c"): "1" * 64,
-                str(at / "src" / "b.c"): "2" * 64,
-                "/usr/include/stdio.h": "3" * 64,
-            }
-        )
+        state.calls.append(shown)
+        time.sleep(state.delay)
+        # Never asked to hash: the listing checks its bounds first, and hashes nothing.
+        assert args[-1] is False, args
+        read = SimpleNamespace(files=tuple((path, "0" * 32) for path in state.files))
+        return SimpleNamespace(read=[read])
+
+    def never(*args):
+        raise AssertionError("a listing hashed a file")
 
     monkeypatch.setattr(native_binary, "_executable", lambda binary, shown: None)
     monkeypatch.setattr(native_binary, "_tool", lambda name: name)
     monkeypatch.setattr(native_binary.sys, "platform", "linux")
+    monkeypatch.setattr(native_binary, "check_files", never)
+    monkeypatch.setattr(native_binary, "_hashes", never)
     monkeypatch.setattr(BinaryTarget, "_judge", judge)
     native_binary._REMOTE_INPUTS.clear()
+    yield state
+    native_binary._REMOTE_INPUTS.clear()
+
+
+def test_the_files_a_client_compares_are_listed_once_per_binary(listing):
     target = BinaryTarget(binary="prog")
     # Only the files under the root: the worker checks the others against their MD5s.
-    assert target.remote_inputs(root) == ("src/a.c", "src/b.c")
-    assert target.remote_inputs(root) == ("src/a.c", "src/b.c") and judged == ["prog"]
-    (root / "prog").write_bytes(b"rebuilt binary")
-    assert target.remote_inputs(root) == ("src/a.c", "src/b.c") and judged == ["prog"] * 2
-    for limits in ((1, 1 << 20), (4096, 30)):
-        monkeypatch.setattr(sources, "MAX_PYTHON_INPUTS", limits[0])
-        monkeypatch.setattr(sources, "MAX_PYTHON_BYTES", limits[1])
-        (root / "prog").write_bytes(b"binary, built again" + bytes(len(judged)))
+    assert target.remote_inputs(listing.root) == ("src/a.c", "src/b.c")
+    assert target.remote_inputs(listing.root) == ("src/a.c", "src/b.c")
+    assert listing.calls == ["prog"]
+    (listing.root / "prog").write_bytes(b"rebuilt binary")
+    assert target.remote_inputs(listing.root) == ("src/a.c", "src/b.c")
+    assert listing.calls == ["prog"] * 2
+
+
+def test_concurrent_requests_wait_for_one_listing_or_are_busy(listing, monkeypatch):
+    listing.delay = 0.5
+    target, answers = BinaryTarget(binary="prog"), []
+    threads = [
+        threading.Thread(target=lambda: answers.append(target.remote_inputs(listing.root)))
+        for _ in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    # One listing ran; the others waited for it, and answered from it.
+    assert listing.calls == ["prog"] and answers == [("src/a.c", "src/b.c")] * 8
+    (listing.root / "prog").write_bytes(b"rebuilt binary")
+    monkeypatch.setattr(native_binary, "REMOTE_INPUTS_SECONDS", 0.05)
+    native_binary._LISTING.acquire()
+    try:
         with pytest.raises(Refused) as found:
-            target.remote_inputs(root)
-        assert found.value.code == "UNSUPPORTED" and found.value.before_launch is True
-        assert str(found.value).startswith(
-            "prog's units name 2 files under the target directory (0.0 MiB). A worker compares "
-            f"at most {limits[0]:,} files, {limits[1] >> 20} MiB in all, with a remote client's "
-            "copies: run Peeky on the binary's own host"
-        ), str(found.value)
-        assert classify(found.value)["hint"] == (
-            "Nothing ran. Run Peeky on the binary's own host, where no file is compared with a "
-            "client's."
-        )
-    native_binary._REMOTE_INPUTS.clear()
+            target.remote_inputs(listing.root)
+    finally:
+        native_binary._LISTING.release()
+    error = classify(found.value)
+    assert error["code"] == "BUSY" and error["retryable"] is True, error
+    assert error["message"] == (
+        "The worker is still listing prog's files for another client: nothing ran"
+    )
+    assert listing.calls == ["prog"]
+
+
+def test_too_many_files_are_refused_before_any_is_read(listing, monkeypatch):
+    target = BinaryTarget(binary="prog")
+    monkeypatch.setattr(sources, "MAX_PYTHON_INPUTS", 1)
+    with pytest.raises(Refused) as found:
+        target.remote_inputs(listing.root)
+    assert found.value.code == "UNSUPPORTED" and str(found.value) == (
+        "prog's units name 2 files under the target directory. A worker compares at most 1 "
+        "files, 16 MiB in all, with a remote client's copies: run Peeky on the binary's own host"
+    )
+    assert classify(found.value)["hint"] == (
+        "Nothing ran. Run Peeky on the binary's own host, where no file is compared with a "
+        "client's."
+    )
+    monkeypatch.setattr(sources, "MAX_PYTHON_INPUTS", 4096)
+    monkeypatch.setattr(sources, "MAX_PYTHON_BYTES", 30)
+    (listing.root / "prog").write_bytes(b"rebuilt binary")
+    with pytest.raises(Refused) as found:
+        target.remote_inputs(listing.root)
+    assert str(found.value).startswith(
+        "prog's units name 2 files under the target directory (0.0 MiB or more). A worker "
+        "compares at most 4,096 files, 0 MiB in all"
+    ), str(found.value)
+    # Nothing was cached: each listing refused.
+    assert native_binary._REMOTE_INPUTS == {}
 
 
 def test_a_client_runs_only_on_the_binary_the_worker_names():
@@ -206,7 +256,7 @@ def test_a_remote_session_keeps_the_sources_compared_at_its_start(tmp_path, monk
     client = cli._remote_session("s", record)
     # What the worker named at the start, whatever its binary's units name now.
     assert client.sources == named and client.worker_root == "/srv/app"
-    assert asked == [("version", {"sources": False})]
+    assert asked == [("version", {})]
 
 
 class Binary:

@@ -1008,11 +1008,10 @@ def test_a_worker_debugs_a_binary_for_a_remote_client(project, tmp_path, capsys,
     shutil.copytree(project / "src", local / "src")
     url = worker_on(project, _target(compiler, returns_twice=()))
     names = ["src/fast.c", "src/main.c", "src/util.c"]
-    assert Client(url, TOKEN).call("version")["sources"] == {
-        "kind": "declared",
-        "names": names,
-        "binary": "prog",
-    }
+    client = Client(url, TOKEN)
+    # `version` names the binary; `inputs` lists the files its judged units name.
+    assert client.call("version")["sources"] == {"kind": "binary", "binary": "prog"}
+    assert client.call("inputs") == {"kind": "declared", "names": names, "binary": "prog"}
     probe = ["probe", str(local), "--binary", "./prog", "--worker", url, "--no-save", "--quiet"]
     probe += ["--at", f"src/util.c:{SELF_STOP}", "--capture", "doubled,x,1:base"]
     code, result = _json(capsys, probe)

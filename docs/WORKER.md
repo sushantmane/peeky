@@ -91,13 +91,14 @@ A client on another host must show that its sources are the worker's.
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
      directory holding `pyvenv.cfg`);
-   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root. A binary
-     target's adds `"binary"`, its name under the root: the files are those its judged units name;
-   - `{"kind": "refused", "binary": ..., "error": {...}}`: the worker refuses its binary, and
-     compares nothing. The error says why, with its code.
+   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root;
+   - `{"kind": "binary", "binary": "prog"}`: a binary target, by its name under the root. Call
+     `inputs` for its files: `{"kind": "declared", "names": [...], "binary": "prog"}`, those its
+     judged units name. Listing them reads the binary's debug information, so the worker lists
+     them once per binary, one listing at a time. Another `inputs` waits for it, then answers
+     from it, or gets `BUSY` after 40 s. A binary the worker refuses is refused, with its code.
 
-   Its `root` is the worker's `--root`. A `version` request of `{"sources": false}` lists none:
-   a binary target's list takes reading its debug information.
+   Its `root` is the worker's `--root`.
 2. With `launch` or `probe`, send `protocol`, the protocol your client speaks. It must be the
    worker's, which `version` gives. Send `expect_sha256` (`program`, and `entry` for a `--run`
    script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least one.

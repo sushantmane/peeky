@@ -129,9 +129,12 @@ A process running as the same user, or as root, isn't covered.
 - A remote client's copies are compared with the files under the root, at most 4096 files and
   16 MiB in all. Headers outside the root aren't compared with a client's: the worker checks them
   against their MD5s.
-- To list those files for `version`, the worker reads the binary's debug information: dsymutil on
-  macOS, and llvm-dwarfdump, within 40 s. Any client holding the token can make it do so. The list
-  is kept until the binary's size, time or inode changes.
+- To list those files (`inputs`), the worker reads the binary's debug information: dsymutil on
+  macOS, and llvm-dwarfdump, within 40 s. Any client holding the token can make it do so. One
+  listing runs at a time: another request waits for it, or is `BUSY`. The list is kept until the
+  binary's size, time or inode changes. The 4096 files and 16 MiB are counted before any file is
+  read, and the listing hashes none: preparing a run checks each against its MD5. `version` reads
+  nothing of the binary.
 
 **Target memory and source**
 

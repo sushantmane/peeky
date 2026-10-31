@@ -49,9 +49,9 @@ from peeky.textlines import split_lines
 # is refused with BUILD_REQUIRED, which names the build command; an agent builds, then
 # repeats the request. A protocol 13 client would take an unknown code for another failure.
 # 15: a worker's `--native-config` may name a `binary` the project built. `version` says
-# so (`sources.binary`), lists the files its judged units name, or says why it compares
-# none (`sources.kind` `refused`); `{"sources": false}` asks it to list none. A client
-# checks the binary is the one it names, and a session keeps the names compared at its start.
+# so (`sources`: `{"kind": "binary", "binary": ...}`), and the `inputs` operation lists the
+# files its judged units name, once per binary. A client checks the binary is the one it
+# names, and a session keeps the names compared at its start.
 PROTOCOL_VERSION = 15
 
 # (pattern on the message, code, hint, retryable). First match wins.

@@ -35,6 +35,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -186,10 +187,13 @@ REPLAY_MARGIN = 2.0
 MAX_REPLAY_ERRORS = 16000
 # How many names a config's `returns_twice` may give.
 MAX_RETURNS_TWICE = 100
-# How long a worker takes, at most, to list a binary's inputs for a remote client.
+# How long a worker takes, at most, to list a binary's inputs for a remote client; and how
+# long another client's request waits for that listing before it is BUSY.
 REMOTE_INPUTS_SECONDS = 40
 # The last binary listed so: {(binary, root, size, time, inode, target): its inputs}.
 _REMOTE_INPUTS = {}
+# One listing at a time: it runs dsymutil and llvm-dwarfdump over the whole binary.
+_LISTING = threading.Lock()
 
 
 class BinaryChanged(RuntimeError):
@@ -1607,10 +1611,12 @@ class BinaryTarget:
             raise _refused("INVALID_REQUEST", f"No binary {self.binary} in {root}")
         return path
 
-    def _judge(self, root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline):
+    def _judge(
+        self, root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, hashed=True
+    ):
         """The binary's units, each judged, and the files those Peeky reads name, each
-        checked against its MD5 ({absolute path: SHA-256}); on macOS, through the dSYM
-        Peeky makes in ``scratch``."""
+        checked against its MD5 ({absolute path: SHA-256}; None, unread, unless
+        ``hashed``); on macOS, through the dSYM Peeky makes in ``scratch``."""
         version = _version_line(compiler)
         symbols, dsym = binary, ()
         if sys.platform == "darwin":
@@ -1698,7 +1704,7 @@ class BinaryTarget:
                 + ", ".join(each.name for each in read if each.language == "cpp")[:200]
                 + '): set "language": "cpp"',
             )
-        files = check_files(read, root)
+        files = check_files(read, root) if hashed else None
         return SimpleNamespace(
             version=version,
             symbols=symbols,
@@ -1712,56 +1718,92 @@ class BinaryTarget:
 
     def remote_inputs(self, root):
         """The files under ``root`` a remote client's copies are compared with: those the
-        units Peeky reads name, by their relative names, as the binary is now (cached by
-        its size, time and inode). Past Python's bounds (sources.MAX_PYTHON_INPUTS files,
-        MAX_PYTHON_BYTES in all): UNSUPPORTED, as is a binary Peeky doesn't read."""
-        from peeky.sources import MAX_PYTHON_BYTES, MAX_PYTHON_INPUTS
-
+        units Peeky reads name, by their relative names, as the binary is now. Listed once
+        per binary (cached by its size, time and inode), one listing at a time: another
+        caller waits for it, or is BUSY. Within REMOTE_INPUTS_SECONDS, and Python's bounds
+        (sources.MAX_PYTHON_INPUTS files, MAX_PYTHON_BYTES in all), checked before any file
+        is read: no file is hashed (preparation checks each against its MD5). UNSUPPORTED
+        past them, as for a binary Peeky doesn't read."""
         root = Path(root).resolve(strict=True)
         binary = self.located(root)
         shown = binary.relative_to(root).as_posix()
         _executable(binary, shown)
         info = binary.stat()
         key = (str(binary), str(root), info.st_size, info.st_mtime_ns, info.st_ino, self)
-        if key not in _REMOTE_INPUTS:
-            compiler, dwarfdump = _tool(self.compiler), _tool(self.dwarfdump)
-            tools = [compiler, dwarfdump]
-            if sys.platform == "darwin":
-                tools.append(_tool(self.dsymutil or "dsymutil"))
-            elif sys.platform != "linux":
-                raise ValueError("Native targets support Linux and macOS hosts only")
-            env = without_credentials(
-                {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+        if key in _REMOTE_INPUTS:
+            return _REMOTE_INPUTS[key]
+        if not _LISTING.acquire(timeout=REMOTE_INPUTS_SECONDS):
+            raise Refused(
+                "BUSY",
+                f"The worker is still listing {shown}'s files for another client: nothing ran",
+                "Retry in a moment: the worker lists a binary's files once, then answers at once.",
             )
-            scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
-            try:
-                deadline = time.monotonic() + REMOTE_INPUTS_SECONDS
-                found = self._judge(
-                    root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline
-                )
-            finally:
-                shutil.rmtree(scratch, ignore_errors=True)
-            names = sorted(
+        try:
+            if key not in _REMOTE_INPUTS:
+                names = self._list_inputs(root, binary, shown)
+                _REMOTE_INPUTS.clear()
+                _REMOTE_INPUTS[key] = names
+            return _REMOTE_INPUTS[key]
+        finally:
+            _LISTING.release()
+
+    def _list_inputs(self, root, binary, shown):
+        from peeky.sources import MAX_PYTHON_BYTES, MAX_PYTHON_INPUTS
+
+        compiler, dwarfdump = _tool(self.compiler), _tool(self.dwarfdump)
+        tools = [compiler, dwarfdump]
+        if sys.platform == "darwin":
+            tools.append(_tool(self.dsymutil or "dsymutil"))
+        elif sys.platform != "linux":
+            raise ValueError("Native targets support Linux and macOS hosts only")
+        env = without_credentials(
+            {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+        )
+        deadline = time.monotonic() + REMOTE_INPUTS_SECONDS
+        scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
+        try:
+            found = self._judge(
+                root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, False
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        names = sorted(
+            {
                 Path(path).relative_to(root).as_posix()
-                for path in found.files
+                for each in found.read
+                for path, _ in each.files
                 if Path(path).is_relative_to(root)
+            }
+        )
+
+        def refused(size):
+            return Refused(
+                "UNSUPPORTED",
+                f"{shown}'s units name {len(names):,} files under the target directory"
+                + (f" ({size / (1 << 20):.1f} MiB or more)" if size is not None else "")
+                + f". A worker compares at most {MAX_PYTHON_INPUTS:,} files, "
+                f"{MAX_PYTHON_BYTES >> 20} MiB in all, with a remote client's copies: run Peeky "
+                "on the binary's own host",
+                "Nothing ran. Run Peeky on the binary's own host, where no file is compared "
+                "with a client's.",
             )
-            size = sum((root / name).stat().st_size for name in names)
-            if len(names) > MAX_PYTHON_INPUTS or size > MAX_PYTHON_BYTES:
-                refused = Refused(
-                    "UNSUPPORTED",
-                    f"{shown}'s units name {len(names):,} files under the target directory "
-                    f"({size / (1 << 20):.1f} MiB). A worker compares at most "
-                    f"{MAX_PYTHON_INPUTS:,} files, {MAX_PYTHON_BYTES >> 20} MiB in all, with "
-                    "a remote client's copies: run Peeky on the binary's own host",
-                    "Nothing ran. Run Peeky on the binary's own host, where no file is "
-                    "compared with a client's.",
+
+        if len(names) > MAX_PYTHON_INPUTS:
+            raise refused(None)
+        size = 0
+        for name in names:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Listing {shown}'s files took over {REMOTE_INPUTS_SECONDS} s: nothing ran"
                 )
-                refused.before_launch = True
-                raise refused
-            _REMOTE_INPUTS.clear()
-            _REMOTE_INPUTS[key] = tuple(names)
-        return _REMOTE_INPUTS[key]
+            try:
+                size += (root / name).stat().st_size
+            except OSError:
+                # Preparation refuses it, by name, as gone.
+                continue
+            if size > MAX_PYTHON_BYTES:
+                raise refused(size)
+        return tuple(names)
 
     def prepare(self, program, root, *, edit=None, deadline=None):
         if edit is not None:

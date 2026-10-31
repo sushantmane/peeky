@@ -241,7 +241,7 @@ HTTP/1.0 200 OK
 ...
 X-Peeky-Protocol: 15
 ...
-{"protocol": 15, "sources": {"kind": "python"}, "root": "/srv/app", "operations": ["breakpoints", "close", "continue", "expand", "hello", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUILD_FAILED", "BUILD_REQUIRED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "NO_STOP", "PROGRAM_CRASHED", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
+{"protocol": 15, "sources": {"kind": "python"}, "root": "/srv/app", "operations": ["breakpoints", "close", "continue", "expand", "hello", "inputs", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUILD_FAILED", "BUILD_REQUIRED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "NO_STOP", "PROGRAM_CRASHED", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
 ```
 
 `version` is answered whatever `X-Peeky-Protocol` a request names, or none. Any other request
@@ -272,7 +272,8 @@ the token or any request ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundarie
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |
 | probe | one stateless request: `at`, `capture`, optional `set` and the probe's other options ([ADR 0004](adr/0004-stateless-probes.md)) | the probe's result |
-| version | optional `sources: false`, which lists none (a binary target's list reads its debug information; protocol 15) | protocol version, the sources a client hashes (a binary target's name its binary, or why the worker refuses it), the worker's root, operations, error codes |
+| version | none | protocol version, the sources a client hashes (a binary target's: its binary, protocol 15), the worker's root, operations, error codes |
+| inputs | none; a binary target's worker (protocol 15) | the files under the root its judged units name, which a client hashes: listed once per binary, one listing at a time (`BUSY` after 40 s) |
 | hello | `nonce`; no token | `protocol` and `proof` only |
 | shutdown | none | the worker closes its session and stops |
 

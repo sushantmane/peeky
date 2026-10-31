@@ -216,16 +216,19 @@ session default (c, remote): state: stopped at src/util.c:3 in scale, hit 1 (pau
 ```
 
 - **The files compared** are those under the root that the binary's judged units name, as its
-  debug information records them. The worker lists them for `version`, and compares them once it
-  has judged the units, before the debugger starts. Headers outside the root aren't compared with
+  debug information records them. The worker lists them when a client asks (`inputs`), once per
+  binary, and compares them once it has judged the units, before the debugger starts. Headers outside the root aren't compared with
   yours: the worker checks each against its MD5. So values reflect the worker's system headers,
   as the binary was built with them, and those may differ from yours.
 - **A binary the worker refuses,** such as one without debug information, is refused before the
   probe or session is sent: `The worker refuses its binary: …`, with the worker's code and reason.
-- **At most 4096 files and 16 MiB in all.** A binary whose units name more is refused, with
-  `UNSUPPORTED`: `The worker refuses its binary: prog's units name 5,000 files under the target
-  directory (21.3 MiB). A worker compares at most 4,096 files, 16 MiB in all, with a remote
-  client's copies: run Peeky on the binary's own host`.
+- **At most 4096 files and 16 MiB in all,** counted before any file is read. A binary whose units
+  name more is refused, with `UNSUPPORTED`: `The worker refuses its binary: prog's units name 5,000 files under the target
+  directory. A worker compares at most 4,096 files, 16 MiB in all, with a remote client's
+  copies: run Peeky on the binary's own host`.
+- **One listing at a time.** While the worker lists the files for one client, another waits for
+  that listing, or is `BUSY` after 40 s: `The worker is still listing prog's files for another
+  client: nothing ran`. Retry it.
 - **Another binary is refused:** `The worker debugs the binary prog, which its configuration
   names, not build/prog: pass --binary prog`. So is `--binary` on a worker that names no binary.
 - A request names no tool, path or flag. The worker runs only what its own configuration names.

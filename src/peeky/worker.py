@@ -75,6 +75,7 @@ OPERATIONS = frozenset(
         "probe",
         "shutdown",
         "version",
+        "inputs",
         "hello",
     }
 )
@@ -7584,19 +7585,20 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
 
                     result = {
                         "protocol": PROTOCOL_VERSION,
-                        # Which sources a client hashes for expect_inputs: not listed where
-                        # it says it needs none (`sources: false`), as a binary target's
-                        # list takes reading its debug information.
-                        **(
-                            {}
-                            if args.get("sources") is False
-                            else {"sources": describe(worker.adapter, worker.root)}
-                        ),
+                        # Which sources a client hashes for expect_inputs (a binary target's:
+                        # ask `inputs`).
+                        "sources": describe(worker.adapter, worker.root),
                         # Where its paths start: a remote client shows them as its own.
                         "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(ERROR_CODES),
                     }
+                elif operation == "inputs":
+                    from peeky.sources import listed
+
+                    # A binary target's files, which reading its debug information lists:
+                    # once per binary, one listing at a time, never under the session's lock.
+                    result = listed(worker.adapter, worker.root)
                 elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
                     with worker.lock:
