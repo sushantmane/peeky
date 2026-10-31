@@ -111,7 +111,10 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   file may be gone. So does `#embed`, `__has_embed`, an operand Peeky can't read, and a quoted
   or `_next` probe in a macro. A probe in a macro no input names never runs.
 - So does a recorded `-D` (`_defined_probe`) whose value names a probe, holds `#` or `##`,
-  which may paste one together, or holds a piece of a probe's name. String literals don't count.
+  which may paste one together, or holds any three characters of a probe's name. String
+  literals don't count. A probe the source itself pastes together from pieces is outside what
+  Peeky checks: it needs a deliberate construction, and a file whose presence changed since
+  the build.
 - Units built from one file with different commands leave its text unread (`replay_units`):
   Peeky reads a unit's text by its file's name. Alike, they share one replay.
 - `UnitText` keeps the replay's `Preprocessed` and `Statements` (`_preprocessed`), whether it may
@@ -139,13 +142,17 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   - By name, only where C and C++ reserve it for the implementation, as it begins with `_`
     (`_RESERVED_STARTUP`, `_ATOMICS`): `_start`, `_init`, `__libc_csu_init`, `__aarch64_*`. A
     program defining such a name is outside what Peeky checks.
-  - Other names by their place (`_proven_startup`), local to their object: `frame_dummy` and
-    `init_have_lse_atomics` where `.init_array` calls them, crtbegin.o's `tm_clones` pair in
-    its block before `__do_global_dtors_aux` and `frame_dummy`, and glibc's AArch64
-    `call_weak_fn` where `.init` calls it. A program's own `frame_dummy` counts.
-  - `.init` and `.fini` hold what every object puts there. Only the code crti.o begins them
-    with and crtn.o ends them with is the toolchain's (`toolchain_frames`, from the config's
-    compiler's `-print-file-name`). Anything else there counts.
+  - Other startup names (`_MATCHED_STARTUP`: `frame_dummy`, the `tm_clones` pair,
+    `init_have_lse_atomics`, `call_weak_fn`) by their bytes. `toolchain_startup` asks the
+    config's compiler for its startup objects (`-print-file-name`: `crtbegin.o`,
+    `crtbeginS.o`, `crtbeginT.o`, `crti.o`, `crtn.o`; and libgcc's archive member holding
+    `init_have_lse_atomics`). A symbol is the toolchain's where the code at it is one of their
+    sections, byte for byte, but the bytes a relocation fills in (`StartupPiece`). A
+    program's own `frame_dummy`, even a local constructor, counts.
+  - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
+    tail, matched byte for byte, are the toolchain's. Anything else there counts.
+  - Peeky asks the compiler in its own environment (`replay_environment`), never the one the
+    program launches with.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 

@@ -483,12 +483,16 @@ def probes(text):
 
 
 _PROBE_NAMES = ("__has_include_next", "__has_include", "__has_embed")
+# Every three characters of a probe's name: any longer part holds one.
+_PROBE_PIECES = tuple(
+    dict.fromkeys(name[at : at + 3] for name in _PROBE_NAMES for at in range(len(name) - 2))
+)
 
 
 def _defined_probe(arguments):
     """Why a macro the recorded command defines (`-D`) may ask whether a file exists, or
-    None: its value names a probe, may paste one together (`#`, `##`), or holds a piece
-    of a probe's name that another macro could paste to the rest."""
+    None: its value names a probe, may paste one together (`#`, `##`), or holds any three
+    characters of a probe's name, which another macro could paste to the rest."""
     values = [
         arguments[index + 1] if word == "-D" else word[2:]
         for index, word in enumerate(arguments)
@@ -506,17 +510,12 @@ def _defined_probe(arguments):
             )
         if "#" in code:
             return f"{said}, which may paste together a probe such as __has_include"
-        pieces = [
-            word
-            for word in re.findall(r"[A-Za-z_]\w*", code)
-            if len(word) >= 3
-            and any(
-                probe != word and (probe.startswith(word) or probe.endswith(word))
-                for probe in _PROBE_NAMES
+        piece = next((part for part in _PROBE_PIECES if part in code), None)
+        if piece is not None:
+            return (
+                f"{said}, which holds {piece}, part of a probe's name (__has_include) that a "
+                "macro may paste together"
             )
-        ]
-        if pieces:
-            return f"{said}, which a macro may paste into a probe such as __has_include"
     return None
 
 
@@ -946,10 +945,16 @@ _RESERVED_STARTUP = frozenset(
 _ATOMICS = re.compile(
     r"__aarch64_(?:cas|swp|ldadd|ldclr|ldeor|ldset)(?:1|2|4|8|16)_(?:relax|acq|rel|acq_rel|sync)"
 )
-# The toolchain's startup code whose names a program may use too: each counts as the
-# toolchain's only where its place proves it (``_proven_startup``).
-_CRTBEGIN = ("deregister_tm_clones", "register_tm_clones", "__do_global_dtors_aux", "frame_dummy")
-_CALLED_AT_START = frozenset({"frame_dummy", "init_have_lse_atomics"})
+# The toolchain's startup functions a program may name too (no name of them is
+# reserved): each is the toolchain's only where its bytes are a startup object's that
+# the config's compiler links (``toolchain_startup``).
+_MATCHED_STARTUP = frozenset(
+    {"deregister_tm_clones", "register_tm_clones", "frame_dummy", "init_have_lse_atomics"}
+    | {"call_weak_fn"}
+)
+_STARTUP_OBJECTS = ("crtbegin.o", "crtbeginS.o", "crtbeginT.o", "crti.o", "crtn.o")
+# libgcc's AArch64 constructor, found in the archive by name.
+_LIBGCC_STARTUP = b"init_have_lse_atomics"
 
 
 @dataclass(frozen=True)
@@ -977,13 +982,32 @@ class CodeSymbol:
 @dataclass(frozen=True)
 class CodeMap:
     """What code_symbols reads of an executable: its symbols at code (None where it has
-    no symbol table), its CodeSections, the addresses its `.init_array` and `.fini_array`
-    call (``started``), and those `.init`'s AArch64 `bl`s call (``init_calls``)."""
+    no symbol table) and its CodeSections."""
 
     symbols: list | None
     sections: list
-    started: frozenset = frozenset()
-    init_calls: frozenset = frozenset()
+
+
+@dataclass(frozen=True)
+class StartupPiece:
+    """A code section of one of the toolchain's startup objects: where it comes from
+    (``origin``), its name, its bytes, with those the linker fills in zeroed
+    (``cleared``, at ``masked`` offsets), and its symbols {name: offset}."""
+
+    origin: str
+    section: str
+    cleared: bytes
+    masked: tuple
+    symbols: dict
+
+    def matches(self, data):
+        """Whether ``data`` is this piece as linked: its bytes, but those relocated."""
+        if data is None or len(data) != len(self.cleared):
+            return False
+        data = bytearray(data)
+        for at in self.masked:
+            data[at] = 0
+        return bytes(data) == self.cleared
 
 
 # Sections of stubs the linker makes: never the program's code.
@@ -992,9 +1016,6 @@ _TOOLCHAIN_SECTIONS = frozenset(
 )
 # Sections whose code crti.o begins and crtn.o ends, around what other objects add.
 _FRAMED_SECTIONS = {".init": "_init", ".fini": "_fini"}
-_EM_AARCH64 = 183
-# R_AARCH64_RELATIVE, R_X86_64_RELATIVE: a pointer the loader relocates by its addend.
-_RELATIVE = {183: 1027, 62: 8}
 
 
 def code_symbols(binary):
@@ -1012,7 +1033,6 @@ def _elf_symbols(stream, header):
     if len(header) < 64 or header[4:6] != b"\x02\x01":
         raise ValueError("Expected a 64-bit little-endian ELF executable")
     size = os.fstat(stream.fileno()).st_size
-    machine = struct.unpack_from("<H", header, 18)[0]
     offset = struct.unpack_from("<Q", header, 40)[0]
     entry, count, names_at = struct.unpack_from("<HHH", header, 58)
     if entry != 64 or not 0 < count <= 65535 or names_at >= count or offset + count * 64 > size:
@@ -1036,39 +1056,9 @@ def _elf_symbols(stream, header):
         for name, kind, flags, address, at, length, *_ in sections
         if flags & 0x4 and kind == 1  # SHF_EXECINSTR, SHT_PROGBITS
     ]
-    started = set()
-    arrays = [section for section in sections if section[1] in (14, 15)]  # INIT/FINI_ARRAY
-    for _, kind, _, address, at, length, *_ in arrays:
-        if kind == 14 or kind == 15:
-            data = read(at, length, 1 << 20)
-            started |= {value for (value,) in struct.iter_unpack("<Q", data[: length - length % 8])}
-    # A position-independent executable's arrays are filled at load, by relative relocations.
-    relative = _RELATIVE.get(machine)
-    for _, kind, _, _, at, length, _, _, _, width in sections:
-        if kind != 4 or width != 24 or relative is None:  # SHT_RELA
-            continue
-        for place, info, addend in struct.iter_unpack(
-            "<QQq", read(at, length - length % 24, MAX_SYMBOLS * 24)
-        ):
-            if info & 0xFFFFFFFF == relative and any(
-                address <= place < address + length for _, _, _, address, _, length, *_ in arrays
-            ):
-                started.add(addend)
-    init_calls = set()
-    init = next((section for section in code if section.name == ".init"), None)
-    if machine == _EM_AARCH64 and init is not None:
-        data = read(init.offset, init.high - init.low, 1 << 20)
-        for index, (word,) in enumerate(
-            struct.iter_unpack("<I", data[: len(data) - len(data) % 4])
-        ):
-            if word & 0xFC000000 == 0x94000000:  # BL
-                step = word & 0x3FFFFFF
-                step -= 1 << 26 if step & 1 << 25 else 0
-                init_calls.add(init.low + index * 4 + step * 4)
-    started.discard(0)
     tables = [section for section in sections if section[1] == 2]  # SHT_SYMTAB
     if not tables:
-        return CodeMap(None, code, frozenset(started), frozenset(init_calls))
+        return CodeMap(None, code)
     _, _, _, _, table, length, link, _, _, width = tables[0]
     if width != 24 or link >= count:
         raise ValueError("Invalid ELF symbol table")
@@ -1085,7 +1075,7 @@ def _elf_symbols(stream, header):
         # ARM's mapping symbols ($x, $d) and local labels mark no code of their own.
         if text and not text.startswith(("$", ".L")):
             found.append(CodeSymbol(text, value, extent, info >> 4 == 0))  # STB_LOCAL
-    return CodeMap(found, code, frozenset(started), frozenset(init_calls))
+    return CodeMap(found, code)
 
 
 def _macho_symbols(stream, header):
@@ -1146,15 +1136,15 @@ def _macho_symbols(stream, header):
     return CodeMap(found, code)
 
 
-def toolchain_frames(compiler, env, timeout=10):
-    """{".init": (head, tail), ".fini": ...}: the sizes of the code crti.o begins each
-    section with and crtn.o ends it with, of the files the config's ``compiler`` links,
-    each (size, alignment); or why Peeky can't tell."""
-    parts = {}
-    for name in ("crti.o", "crtn.o"):
+def toolchain_startup(compiler, env, timeout=10):
+    """(pieces, why): the StartupPieces of the startup objects the config's ``compiler``
+    links (``_STARTUP_OBJECTS``, as its `-print-file-name` finds them, and libgcc's
+    archive member holding ``_LIBGCC_STARTUP``), and why some can't be read, or None."""
+
+    def find(option):
         try:
             done = subprocess.run(
-                [compiler, "--no-default-config", f"-print-file-name={name}"],
+                [compiler, "--no-default-config", option],
                 env=env,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -1163,78 +1153,137 @@ def toolchain_frames(compiler, env, timeout=10):
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return f"{compiler} didn't say where its {name} is ({exc})"
+            return None, f"{compiler} {option} failed ({exc})"
         path = done.stdout.strip()
         if done.returncode or not os.path.isabs(path) or not os.path.isfile(path):
-            return f"{compiler} names no {name}"
-        try:
-            parts[name] = _object_sections(path, tuple(_FRAMED_SECTIONS))
-        except (OSError, ValueError, struct.error) as exc:
-            return f"Peeky can't read {path} ({exc})"
-    return {
-        section: (parts["crti.o"].get(section, (0, 1)), parts["crtn.o"].get(section, (0, 1)))
-        for section in _FRAMED_SECTIONS
-    }
+            wanted = option.split("=", 1)[1] if "=" in option else "libgcc"
+            return None, f"{compiler} finds no {wanted}"
+        return path, None
 
-
-def _object_sections(path, wanted):
-    """{name: (size, alignment)} of a 64-bit little-endian ELF object's ``wanted`` sections."""
-    with open(path, "rb") as stream:
-        header = stream.read(64)
-        if header[:4] != b"\x7fELF" or header[4:6] != b"\x02\x01":
-            raise ValueError("not a 64-bit little-endian ELF object")
-        offset = struct.unpack_from("<Q", header, 40)[0]
-        entry, count, names_at = struct.unpack_from("<HHH", header, 58)
-        if entry != 64 or not 0 < count <= 4096 or names_at >= count:
-            raise ValueError("invalid section headers")
-        stream.seek(offset)
-        sections = [struct.unpack_from("<IIQQQQIIQQ", stream.read(64)) for _ in range(count)]
-        stream.seek(sections[names_at][4])
-        titles = stream.read(min(sections[names_at][5], 1 << 20))
-    found = {}
-    for name, _, _, _, _, length, _, _, align, _ in sections:
-        end = titles.find(b"\0", name)
-        title = titles[name:end].decode("latin-1") if end >= 0 else ""
-        if title in wanted:
-            found[title] = (length, max(align, 1))
-    return found
-
-
-def _proven_startup(code):
-    """The addresses of the symbols of startup code a program may also name, where their
-    place proves them the toolchain's: local to their object, and, for crtbegin.o's
-    frame_dummy and libgcc's init_have_lse_atomics, called by `.init_array` or
-    `.fini_array`; for crtbegin.o's tm_clones functions, in its block, before
-    __do_global_dtors_aux and frame_dummy, which those arrays call; for glibc's AArch64
-    call_weak_fn, called by `.init`."""
-    proven = set()
-    ordered = sorted(code.symbols, key=lambda symbol: symbol.address)
-    for index, symbol in enumerate(ordered):
-        if not symbol.local:
+    pieces, missing = [], []
+    for name in _STARTUP_OBJECTS:
+        path, why = find(f"-print-file-name={name}")
+        if path is None:
+            missing.append(why)
             continue
-        if symbol.name in _CALLED_AT_START and symbol.address in code.started:
-            proven.add(symbol.address)
-        elif symbol.name == "call_weak_fn" and symbol.address in code.init_calls:
-            proven.add(symbol.address)
-        block = ordered[index : index + len(_CRTBEGIN)]
-        if (
-            tuple(each.name for each in block) == _CRTBEGIN
-            and all(each.local for each in block)
-            and block[2].address in code.started
-            and block[3].address in code.started
-        ):
-            proven |= {each.address for each in block}
-    return proven
+        try:
+            with open(path, "rb") as stream:
+                pieces += _object_pieces(stream.read(1 << 22), name)
+        except (OSError, ValueError, struct.error) as exc:
+            missing.append(f"Peeky can't read {path} ({exc})")
+    path, why = find("-print-libgcc-file-name")
+    if path is None:
+        missing.append(why)
+    else:
+        try:
+            for member, data in _archive_members(path, _LIBGCC_STARTUP):
+                pieces += _object_pieces(data, f"{Path(path).name}({member})")
+        except (OSError, ValueError, struct.error) as exc:
+            missing.append(f"Peeky can't read {path} ({exc})")
+    return pieces, "; ".join(missing) or None
 
 
-def _startup(symbol, proven):
-    """Whether ``symbol`` is the toolchain's startup code: by a name reserved to it, or by
-    its place (``proven``)."""
-    return (
-        symbol.name in _RESERVED_STARTUP
-        or bool(_ATOMICS.fullmatch(symbol.name))
-        or symbol.address in proven
-    )
+def _archive_members(path, wanted):
+    """(name, bytes) of each ELF member of the `ar` archive ``path`` whose bytes hold
+    ``wanted``."""
+    with open(path, "rb") as stream:
+        data = stream.read(1 << 26)
+    if not data.startswith(b"!<arch>\n"):
+        raise ValueError("not an ar archive")
+    at, names = 8, b""
+    while at + 60 <= len(data):
+        header = data[at : at + 60]
+        if header[58:60] != b"`\n":
+            raise ValueError("invalid member header")
+        name, size = header[:16].rstrip(), int(header[48:58])
+        body = data[at + 60 : at + 60 + size]
+        if name == b"//":
+            names = body
+        elif name not in (b"/", b"/SYM64/"):
+            if name.startswith(b"/") and name[1:].isdigit():
+                start = int(name[1:])
+                name = names[start : names.find(b"/\n", start)]
+            if wanted in body and body.startswith(b"\x7fELF"):
+                yield name.rstrip(b"/").decode("latin-1"), body
+        at += 60 + size + (size & 1)
+
+
+def _relocated(machine, kind, offset):
+    """The bytes a relocation of ``kind`` at ``offset`` may change: an AArch64
+    instruction's word (8 bytes for ABS64 and PREL64); x86-64's 4 or 8, and the opcode
+    before a GOTPCRELX, which the linker may rewrite."""
+    if machine == 183:  # EM_AARCH64
+        return range(offset, offset + (8 if kind in (257, 260) else 4))
+    if machine == 62:  # EM_X86_64
+        if kind in (41, 42):  # R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX
+            return range(max(offset - 3, 0), offset + 4)
+        return range(offset, offset + (8 if kind in (1, 24, 25, 26) else 4))
+    raise ValueError(f"Peeky doesn't know machine {machine}'s relocations")
+
+
+def _object_pieces(blob, origin):
+    """The StartupPieces of a 64-bit little-endian ELF object's code sections."""
+    if blob[:4] != b"\x7fELF" or blob[4:6] != b"\x02\x01" or len(blob) < 64:
+        raise ValueError("not a 64-bit little-endian ELF object")
+    machine = struct.unpack_from("<H", blob, 18)[0]
+    offset = struct.unpack_from("<Q", blob, 40)[0]
+    entry, count, names_at = struct.unpack_from("<HHH", blob, 58)
+    if entry != 64 or not 0 < count <= 4096 or names_at >= count or offset + count * 64 > len(blob):
+        raise ValueError("invalid section headers")
+    sections = [
+        struct.unpack_from("<IIQQQQIIQQ", blob, offset + 64 * index) for index in range(count)
+    ]
+
+    def string(table, at):
+        end = table.find(b"\0", at)
+        return table[at:end].decode("latin-1") if 0 <= at and end >= 0 else ""
+
+    def body(index):
+        _, kind, _, _, at, length, *_ = sections[index]
+        if kind == 8:  # SHT_NOBITS
+            return b""
+        if at + length > len(blob):
+            raise ValueError("a section past the object's end")
+        return blob[at : at + length]
+
+    titles = body(names_at)
+    code = {
+        index: string(titles, name)
+        for index, (name, kind, flags, *_) in enumerate(sections)
+        if kind == 1 and flags & 0x4 and sections[index][5]  # PROGBITS, SHF_EXECINSTR
+    }
+    masked = {index: set() for index in code}
+    named = {index: {} for index in code}
+    for index, (_, kind, _, _, _, length, link, info, _, width) in enumerate(sections):
+        if kind == 4 and info in code and width == 24:  # SHT_RELA
+            for place, rinfo, _ in struct.iter_unpack("<QQq", body(index)[: length - length % 24]):
+                masked[info].update(_relocated(machine, rinfo & 0xFFFFFFFF, place))
+        elif kind == 2 and width == 24 and link < count:  # SHT_SYMTAB
+            strings = body(link)
+            for name, sinfo, _, shndx, value, _ in struct.iter_unpack(
+                "<IBBHQQ", body(index)[: length - length % 24]
+            ):
+                text = string(strings, name)
+                if shndx in code and sinfo & 0xF in (0, 2) and text and not text.startswith("$"):
+                    named[shndx][text] = value
+    pieces = []
+    for index, title in code.items():
+        data = bytearray(body(index))
+        spots = tuple(sorted(at for at in masked[index] if at < len(data)))
+        for at in spots:
+            data[at] = 0
+        pieces.append(StartupPiece(origin, title, bytes(data), spots, named[index]))
+    return pieces
+
+
+def _read_at(stream, sections, address, length):
+    """The binary's ``length`` bytes at ``address``, within one of its code sections, or
+    None."""
+    section = next((each for each in sections if each.low <= address < each.high), None)
+    if section is None or address + length > section.high:
+        return None
+    stream.seek(section.offset + address - section.low)
+    return stream.read(length)
 
 
 # What fills the space between functions: zeros, AArch64's `nop`, x86's `nop`s and `int3`.
@@ -1293,17 +1342,18 @@ def _code_between(stream, section, low, high):
     return None
 
 
-def uncovered_code(binary, units, frames=None):
+def uncovered_code(binary, units, startup=None):
     """What of ``binary``'s code no unit of its debug information covers (``units``:
     native_units.Unit, each with its code ranges), but the toolchain's own: each symbol
     there (hand-written assembly built without -g, a library linked without debug
     information), and code at an address no symbol names (a symbol table stripped of
     it), but what pads the space between functions. The toolchain's own: the linker's
-    stubs (``_TOOLCHAIN_SECTIONS``), and its startup code (``_startup``), to its size, or
-    to the next symbol where it has none. `.init` and `.fini` are the toolchain's only as
-    far as crti.o and crtn.o fill them (``frames``: a callable giving toolchain_frames'):
-    what other objects add there is the program's. Each as a phrase, for a note; where
-    the binary has no symbol table, or one Peeky can't read, that instead."""
+    stubs (``_TOOLCHAIN_SECTIONS``); startup code by a name reserved to the
+    implementation (``_RESERVED_STARTUP``, ``_ATOMICS``), to its size, or to the next
+    symbol where it has none; and code whose bytes are a startup object's
+    (``startup``: a callable giving toolchain_startup's), as other startup names and
+    crti.o's and crtn.o's parts of `.init` and `.fini` must be. Each as a phrase, for a
+    note; where the binary has no symbol table, or one Peeky can't read, that instead."""
     import bisect
 
     try:
@@ -1316,29 +1366,47 @@ def uncovered_code(binary, units, frames=None):
     symbols, sections = code.symbols, code.sections
     if symbols is None:
         return ["the binary has no symbol table, so Peeky can't tell what code no unit covers"]
-    proven = _proven_startup(code)
     covered = sorted(span for unit in units for span in unit.ranges)
+    framed = {
+        section.name: section
+        for section in sections
+        if section.name in _FRAMED_SECTIONS and section.high > section.low
+    }
+    matched, unframed, pieces, why = set(), {}, [], None
+    with open(binary, "rb") as stream:
+        if framed or any(symbol.name in _MATCHED_STARTUP for symbol in symbols):
+            pieces, why = startup() if startup is not None else ([], "Peeky has no compiler to ask")
+        for symbol in symbols:
+            if symbol.name not in _MATCHED_STARTUP or symbol.address in matched:
+                continue
+            for piece in pieces:
+                if symbol.name not in piece.symbols:
+                    continue
+                base = symbol.address - piece.symbols[symbol.name]
+                if piece.matches(_read_at(stream, sections, base, len(piece.cleared))):
+                    covered.append((base, base + len(piece.cleared)))
+                    matched |= {base + at for at in piece.symbols.values()}
+                    break
+        for name, section in framed.items():
+            # crti.o begins the section and crtn.o ends it; others add what lies between.
+            head = [piece for piece in pieces if piece.origin == "crti.o" and piece.section == name]
+            tail = [piece for piece in pieces if piece.origin == "crtn.o" and piece.section == name]
+            if not head or not tail:
+                unframed[name] = why or "Peeky found no crti.o or crtn.o"
+                continue
+            start, end = len(head[0].cleared), len(tail[0].cleared)
+            if head[0].matches(_read_at(stream, sections, section.low, start)):
+                covered.append((section.low, section.low + start))
+            if tail[0].matches(_read_at(stream, sections, section.high - end, end)):
+                covered.append((section.high - end, section.high))
+
+    def reserved(symbol):
+        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
+
     starts = sorted(symbol.address for symbol in symbols)
-    framed = {}
-    for section in sections:
-        if section.name in _FRAMED_SECTIONS and section.high > section.low:
-            framed[section.name] = section
-    known = frames() if framed and frames is not None else "Peeky has no compiler to ask"
-    unframed = {name: f"its {_FRAMED_SECTIONS[name]} symbol isn't at its start" for name in framed}
     for symbol in symbols:
-        if not _startup(symbol, proven):
-            continue
         section = next((each for each in sections if each.low <= symbol.address < each.high), None)
-        if section is not None and section.name in framed:
-            # crti.o's head and crtn.o's tail of the section, around what others add.
-            if _FRAMED_SECTIONS[section.name] != symbol.name or symbol.address != section.low:
-                continue
-            if isinstance(known, str):
-                unframed[section.name] = known
-                continue
-            (head, _), (tail, _) = known[section.name]
-            covered += [(section.low, section.low + head), (section.high - tail, section.high)]
-            unframed[section.name] = None
+        if not reserved(symbol) or (section is not None and section.name in framed):
             continue
         # A startup symbol's code is its size, where its symbol gives one; else it runs to
         # the next symbol, or its section's end.
@@ -1358,13 +1426,25 @@ def uncovered_code(binary, units, frames=None):
         at = bisect.bisect_right(lows, address) - 1
         return at >= 0 and address < spans[at][1]
 
-    named = [
-        symbol for symbol in symbols if not _startup(symbol, proven) and not held(symbol.address)
-    ]
-    found = [
-        f"{symbol.name} is code no unit's debug information covers (assembly built without -g?)"
-        for symbol in named
-    ]
+    named, found = [], []
+    for symbol in symbols:
+        if reserved(symbol) or symbol.address in matched or held(symbol.address):
+            continue
+        named.append(symbol)
+        said = f"{symbol.name} is code no unit's debug information covers"
+        if symbol.name not in _MATCHED_STARTUP:
+            found.append(f"{said} (assembly built without -g?)")
+            continue
+        origins = sorted({piece.origin for piece in pieces if symbol.name in piece.symbols})
+        if origins:
+            found.append(
+                f"{said}, and its bytes are none of the toolchain's ({', '.join(origins)})"
+            )
+        else:
+            found.append(
+                f"{said}, and Peeky found no toolchain startup object holding it "
+                f"({why or 'none names it'})"
+            )
     with open(binary, "rb") as stream:
         for section in sections:
             if section.name in _TOOLCHAIN_SECTIONS or section.high <= section.low:
@@ -1378,13 +1458,13 @@ def uncovered_code(binary, units, frames=None):
                     inside = any(cursor <= symbol.address < gap_end for symbol in named)
                     at = None if inside else _code_between(stream, section, cursor, gap_end)
                     if at is not None and section.name in framed:
-                        why = unframed.get(section.name)
+                        reason = unframed.get(section.name)
                         found.append(
                             f"the code at 0x{at:x}, in {section.name}, may be the program's: "
                             + (
-                                f"Peeky can't tell crti.o's and crtn.o's code there ({why})"
-                                if why
-                                else "crti.o and crtn.o don't fill it"
+                                f"Peeky can't compare it with crti.o's and crtn.o's ({reason})"
+                                if reason
+                                else "it isn't crti.o's or crtn.o's"
                             )
                         )
                     elif at is not None:
@@ -1839,9 +1919,10 @@ class BinaryTarget:
         texts = replay_units(read, compiler, scratch, root, deadline)
         any_call = None
         if self.returns_twice is None:
-            env = replay_environment(scratch)
+            # The toolchain's own environment, never the program's (``env``).
+            tools = replay_environment(scratch)
             uncovered = uncovered_code(
-                binary, units, lambda: toolchain_frames(compiler, env, _remaining(deadline, 10))
+                binary, units, lambda: toolchain_startup(compiler, tools, _remaining(deadline, 10))
             )
             any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()

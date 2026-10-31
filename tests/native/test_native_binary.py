@@ -916,5 +916,41 @@ def test_code_an_object_adds_to_init_counts(project, capsys):
     twice = _describe_twice(project, capsys)
     assert (
         twice["any"]
-        and "in .init, may be the program's: crti.o and crtn.o don't fill it" in (twice["why"])
+        and "in .init, may be the program's: it isn't crti.o's or crtn.o's" in (twice["why"])
     ), twice
+
+
+@pytest.mark.timeout(300)
+def test_a_program_s_local_frame_dummy_called_at_start_still_counts(project, capsys):
+    # A static constructor named frame_dummy is local and called by .init_array, as
+    # crtbegin.o's is; only its bytes tell them apart.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    (project / "dummy.c").write_text(
+        "static int ran;\n__attribute__((constructor)) static void frame_dummy(void) { ran = 1; }\n"
+    )
+    subprocess.run(
+        [compiler, *_sysroot(), "-O0", "-c", "dummy.c", "-o", "dummy.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "dummy.o"]
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"] and "frame_dummy is code no unit's debug information covers" in (twice["why"])
+    ), twice
+
+
+@pytest.mark.timeout(300)
+def test_the_program_s_environment_is_the_same_with_or_without_returns_twice(project):
+    # Without the key, Peeky asks the compiler for its startup objects: in its own
+    # environment, never the one the program launches with.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    launched = {}
+    for claim in (None, ()):
+        session = _target(compiler, returns_twice=claim).prepare(project / "prog", project)
+        try:
+            launched[claim] = dict(session.prepared.manifest.effective_environment)
+        finally:
+            session.prepared.cleanup()
+    assert launched[None] == launched[()], launched

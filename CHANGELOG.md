@@ -56,7 +56,7 @@
   A unit's text is withheld where a `__has_include` finds no file (the build may have), for
   `-march=native`, for a `-D` that names a probe or may paste one, and where one file is built
   twice with different commands. `vfork` returns twice, as setjmp does. Startup code whose name
-  a program may use counts as the program's unless its place proves it the toolchain's.
+  a program may use counts as the program's unless its bytes are the toolchain's.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and

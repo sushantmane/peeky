@@ -1076,78 +1076,104 @@ def test_a_joined_sysroot_holds_the_sdk_settings_too(root, tmp_path):
     assert isinstance(_replay(root, tmp_path, words=words), UnitText)
 
 
-def test_startup_names_a_program_may_use_count_unless_their_place_proves_them(root, monkeypatch):
+def _piece(origin, section, data, masked=(), **symbols):
+    from peeky.native_binary import StartupPiece
+
+    cleared = bytearray(data)
+    for at in masked:
+        cleared[at] = 0
+    return StartupPiece(origin, section, bytes(cleared), tuple(masked), symbols)
+
+
+RET = b"\xc0\x03\x5f\xd6"  # ret
+BL = b"\x46\x00\x00\x94"  # bl, its target filled in by the linker
+MOV = b"\xe9\x03\x09\xaa"  # mov x9, x9
+
+
+def test_startup_names_count_unless_their_bytes_are_the_toolchain_s(root, monkeypatch):
     # frame_dummy, init_have_lse_atomics and the like aren't reserved names: a program
-    # may define its own, without debug information.
+    # may define its own, even local, and called by .init_array.
     from peeky import native_binary
     from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
 
     binary = root / "prog"
-    binary.write_bytes(bytes(0x100))
+    text = bytearray(0x100)
+    text[0x40:0x48] = BL + RET  # crtbeginS.o's block, as linked
+    binary.write_bytes(bytes(text))
     sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    crtbegin = _piece(
+        "crtbeginS.o",
+        ".text",
+        b"\0\0\0\x94" + RET,
+        (0, 1, 2, 3),
+        register_tm_clones=0,
+        frame_dummy=4,
+    )
 
-    def code(*symbols, started=(), init_calls=()):
-        return CodeMap(list(symbols), sections, frozenset(started), frozenset(init_calls))
+    def found(*symbols, pieces=(crtbegin,), why=None):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
+        )
+        return uncovered_code(binary, [], lambda: (list(pieces), why))
 
-    def found(map_):
-        monkeypatch.setattr(native_binary, "code_symbols", lambda binary: map_)
-        return uncovered_code(binary, [])
-
-    said = "{} is code no unit's debug information covers (assembly built without -g?)"
+    said = "{} is code no unit's debug information covers"
+    # crtbeginS.o's bytes, its call's target masked: the toolchain's, the block whole.
+    block = (
+        CodeSymbol("register_tm_clones", 0x1040, 0, True),
+        CodeSymbol("frame_dummy", 0x1044, 0, True),
+    )
+    assert found(*block) == []
     # Reserved to the implementation: by name.
-    assert found(code(CodeSymbol("_start", 0x1000, 8, False))) == []
-    assert found(code(CodeSymbol("__aarch64_ldadd4_acq_rel", 0x1000, 8, False))) == []
-    # Local, and called by .init_array: the toolchain's. Else the program's.
-    dummy = CodeSymbol("frame_dummy", 0x1010, 0, True)
-    assert found(code(dummy, started={0x1010})) == []
-    assert found(code(dummy)) == [said.format("frame_dummy")]
-    own = CodeSymbol("frame_dummy", 0x1010, 0, False)
-    assert found(code(own, started={0x1010})) == [said.format("frame_dummy")]
-    atomics = CodeSymbol("init_have_lse_atomics", 0x1020, 44, True)
-    assert found(code(atomics, started={0x1020})) == []
-    assert found(code(atomics)) == [said.format("init_have_lse_atomics")]
-    # crtbegin.o's block, whose last two the arrays call.
-    block = [
-        CodeSymbol("deregister_tm_clones", 0x1040, 0, True),
-        CodeSymbol("register_tm_clones", 0x1050, 0, True),
-        CodeSymbol("__do_global_dtors_aux", 0x1060, 0, True),
-        CodeSymbol("frame_dummy", 0x1070, 0, True),
+    assert found(*block, CodeSymbol("_start", 0x1000, 8, False)) == []
+    assert found(*block, CodeSymbol("__aarch64_ldadd4_acq_rel", 0x1000, 8, False)) == []
+    # Other bytes, though local: the program's.
+    own = CodeSymbol("frame_dummy", 0x1080, 0, True)
+    assert found(own) == [
+        said.format("frame_dummy") + ", and its bytes are none of the toolchain's (crtbeginS.o)"
     ]
-    assert found(code(*block, started={0x1060, 0x1070})) == []
-    assert found(code(*block, started={0x1060})) == [
-        said.format("deregister_tm_clones"),
-        said.format("register_tm_clones"),
-        said.format("frame_dummy"),
+    assert found(own, pieces=(), why="clang finds no crtbeginS.o") == [
+        said.format("frame_dummy")
+        + ", and Peeky found no toolchain startup object holding it (clang finds no crtbeginS.o)"
     ]
-    # glibc's AArch64 call_weak_fn: called by .init's _init.
-    weak = CodeSymbol("call_weak_fn", 0x1080, 20, True)
-    assert found(code(weak, init_calls={0x1080})) == []
-    assert found(code(weak)) == [said.format("call_weak_fn")]
 
 
-def test_init_is_the_toolchain_s_only_as_far_as_crti_and_crtn_fill_it(root, monkeypatch):
+def test_a_startup_piece_masks_what_the_linker_fills_in():
+    piece = _piece("crti.o", ".init", b"\0\0\0\x94" + RET, (0, 1, 2, 3))
+    assert piece.matches(BL + RET) and not piece.matches(BL + MOV) and not piece.matches(BL)
+    assert not piece.matches(None)
+
+
+def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_bytes_are(root, monkeypatch):
     # .init and .fini hold whatever objects put there, around crti.o's head and crtn.o's
     # tail; their _init and _fini symbols have no size.
     from peeky import native_binary
     from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
 
-    word = b"\xe9\x03\x09\xaa"  # mov x9, x9
     binary = root / "prog"
-    sections = [CodeSection(".init", 0x2000, 0x2018, 0)]
     symbols = [CodeSymbol("_init", 0x2000, 0, False)]
-    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
-    frames = {".init": ((16, 4), (8, 4)), ".fini": ((0, 1), (0, 1))}
-    binary.write_bytes(word * 6)
-    assert uncovered_code(binary, [], lambda: frames) == []
-    # Four bytes more than crti.o and crtn.o hold: another object's.
-    sections[0] = CodeSection(".init", 0x2000, 0x201C, 0)
-    binary.write_bytes(word * 7)
-    assert uncovered_code(binary, [], lambda: frames) == [
-        "the code at 0x2010, in .init, may be the program's: crti.o and crtn.o don't fill it"
+    head = _piece("crti.o", ".init", MOV + b"\0\0\0\x94", (4, 5, 6, 7))
+    tail = _piece("crtn.o", ".init", RET)
+
+    def found(data, pieces=(head, tail), why=None):
+        binary.write_bytes(data)
+        sections = [CodeSection(".init", 0x2000, 0x2000 + len(data), 0)]
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections)
+        )
+        return uncovered_code(binary, [], lambda: (list(pieces), why))
+
+    assert found(MOV + BL + RET) == []
+    # Another object's code between them.
+    assert found(MOV + BL + MOV + RET) == [
+        "the code at 0x2008, in .init, may be the program's: it isn't crti.o's or crtn.o's"
     ]
-    assert uncovered_code(binary, [], lambda: "clang names no crti.o") == [
-        "the code at 0x2000, in .init, may be the program's: Peeky can't tell crti.o's and "
-        "crtn.o's code there (clang names no crti.o)"
+    # Not crti.o's head at all.
+    assert found(RET + BL + RET) == [
+        "the code at 0x2000, in .init, may be the program's: it isn't crti.o's or crtn.o's"
+    ]
+    assert found(MOV + BL + RET, pieces=(), why="clang finds no crti.o") == [
+        "the code at 0x2000, in .init, may be the program's: Peeky can't compare it with "
+        "crti.o's and crtn.o's (clang finds no crti.o)"
     ]
 
 
@@ -1158,7 +1184,9 @@ def test_init_is_the_toolchain_s_only_as_far_as_crti_and_crtn_fill_it(root, monk
         ("-DHAVE=__has_include_next", "defines HAVE as __has_include_next, which asks"),
         ("-DP=__has_##include", "which may paste together a probe"),
         ("-DCAT(a,b)=a##b", "defines CAT as a##b, which may paste together a probe"),
-        ("-DLEFT=__has_", "which a macro may paste into a probe"),
+        ("-DLEFT=__has_", "which holds __h, part of a probe's name"),
+        ("-DMID=has_inclu", "which holds has, part of a probe's name"),
+        ("-DEND=lude_next", "which holds lud, part of a probe's name"),
     ],
 )
 def test_a_probe_a_recorded_define_may_hold_leaves_the_text_unread(root, tmp_path, defined, said):
