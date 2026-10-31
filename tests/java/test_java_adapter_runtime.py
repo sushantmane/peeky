@@ -84,14 +84,21 @@ def first_on_path(monkeypatch, directory):
     monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
 
 
+def javac_of(java):
+    """The javac beside ``java``: the program's classes must be ones its JVM runs."""
+    return str(Path(java).parent / "javac")
+
+
 def wrapper(tmp_path, java, folder="path-jdk/bin"):
     """A `java` that is not the bundle's: a script that runs ``java``, telling the program
-    that it ran through PATH's `java` (the system property peeky.via)."""
+    that it ran through PATH's `java` (the system property peeky.via). Its `javac` is the
+    one beside ``java``."""
     directory = tmp_path / folder
     directory.mkdir(parents=True)
     script = directory / "java"
     script.write_text(f'#!/bin/sh\nexec "{java}" -Dpeeky.via=path "$@"\n')
     script.chmod(0o755)
+    (directory / "javac").symlink_to(javac_of(java))
     return directory, script
 
 
@@ -142,7 +149,7 @@ def test_a_config_naming_another_java_is_refused_before_anything_runs(
     assert f"The config's java is {script}, another one" in error["message"]
     assert f"Or set the config's java to {named}." in error["message"]
     # The bundle's own java, named, runs both.
-    root, config = shop(tmp_path / "named", bundle, java=named)
+    root, config = shop(tmp_path / "named", bundle, java=named, javac=javac_of(java))
     code, result = probe(capsys, root, config)
     assert code == 0, result.get("error")
 
