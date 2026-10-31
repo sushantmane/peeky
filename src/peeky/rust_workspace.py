@@ -742,7 +742,8 @@ def vendor_arguments(workspace, vendor):
 
 def manifest_above(workspace):
     """Refuse a manifest above the workspace: Cargo could take the workspace for a member
-    of another."""
+    of another. The paths checked, each absent (for the watch)."""
+    checked = []
     for parent in Path(workspace).parents:
         manifest = parent / "Cargo.toml"
         if manifest.exists() or manifest.is_symlink():
@@ -750,6 +751,8 @@ def manifest_above(workspace):
                 f"Peeky builds a Rust workspace only where Cargo reads no manifest above it, and "
                 f"{manifest} is above {workspace}. Move it, or the workspace"
             )
+        checked.append(str(manifest))
+    return checked
 
 
 def check_configs_above(configs):
@@ -858,14 +861,15 @@ def members_now(state):
     return member_candidates(state["workspace"], state["patterns"], state.get("exclude", ()))
 
 
-def watch(workspace, configs, manifest, vendor, copies, files, seen, digest=None):
+def watch(workspace, configs, manifest, vendor, copies, files, seen, digest=None, absent=()):
     """What Peeky checks again before and once Cargo has run (recheck): the configuration
     files Cargo reads (``configs``, the paths Peeky read), the lockfile, the root
     manifest (``manifest``, as parsed) and every manifest its member patterns can name,
     each by its identity (kind, resolved location, SHA-256), and the vendored copies
     ({path relative to the workspace: SHA-256}, rechecked file by file). What Peeky
     checked has the identity of the bytes it parsed (``seen``, _read_bytes's); only the
-    member manifests Cargo reads first are read here."""
+    member manifests Cargo reads first are read here. ``absent``: paths Peeky found
+    absent, as it requires (a manifest above the workspace), recorded so (``["missing"]``)."""
     workspace = Path(workspace)
     section = manifest.get("workspace") if isinstance(manifest.get("workspace"), dict) else {}
     patterns, exclude = _strings(section, "members"), _strings(section, "exclude")
@@ -879,13 +883,24 @@ def watch(workspace, configs, manifest, vendor, copies, files, seen, digest=None
         "exclude": exclude,
         "candidates": candidates,
         "files": {
-            path: seen[path] if path in seen else identity(path, digest)
-            for path in dict.fromkeys(tracked)
+            **{
+                path: seen[path] if path in seen else identity(path, digest)
+                for path in dict.fromkeys(tracked)
+            },
+            **dict.fromkeys(absent, ["missing"]),
         },
+        "absent": sorted(absent),
         "vendor": vendor if copies else None,
         "vendor_directory": str(workspace / vendor) if copies else None,
         "vendored": dict(files),
     }
+
+
+def absent_too(state, paths):
+    """``state`` (watch's) with ``paths``, which Peeky found absent as it requires (Cargo's
+    home's configuration), recorded so."""
+    files = {**state["files"], **dict.fromkeys(map(str, paths), ["missing"])}
+    return {**state, "files": files, "absent": sorted({*state.get("absent", ()), *map(str, paths)})}
 
 
 def watched(state, paths, digest=None):
@@ -910,7 +925,7 @@ def recheck(state, digest=None):
         return f"Cargo's configuration {', '.join(added or gone)} {'appeared' if added else 'went'}"
     for path, recorded in state["files"].items():
         if identity(path, digest) != recorded:
-            return f"{path} changed"
+            return f"{path} {'appeared' if recorded == ['missing'] else 'changed'}"
     candidates = members_now(state)
     if candidates != state["candidates"]:
         added = sorted(set(candidates) - set(state["candidates"]))
@@ -973,7 +988,7 @@ def preflight(root, config, host, print_cfg, own=(), digest=None):
     if not (workspace / "Cargo.toml").is_file():
         raise ValueError(f"{workspace} has no Cargo.toml: name the workspace's directory")
     workspace = workspace.resolve(strict=True)
-    manifest_above(workspace)
+    absent = manifest_above(workspace)
     if (workspace / ".cargo").is_symlink():
         raise ValueError(f"Cargo's configuration directory can't be a link: {workspace / '.cargo'}")
     tables, seen, configs = [], {}, config_paths(workspace)
@@ -1008,7 +1023,17 @@ def preflight(root, config, host, print_cfg, own=(), digest=None):
         )
     locked = read_lock(lock, seen)
     copies, vendored_files = vendored(workspace, config.vendor, locked, digest)
-    state = watch(workspace, configs, manifest, config.vendor, copies, vendored_files, seen, digest)
+    state = watch(
+        workspace,
+        configs,
+        manifest,
+        config.vendor,
+        copies,
+        vendored_files,
+        seen,
+        digest,
+        absent=absent,
+    )
     return Preflight(
         workspace,
         locked,
@@ -1497,12 +1522,16 @@ def _run_package(run, metadata):
     )
 
 
+# What Cargo reads in its home, which Peeky's own must not hold.
+HOME_FILES = ("config", "config.toml", "credentials", "credentials.toml")
+
+
 def cargo_environment(rustc, cargo_home):
     """The environment Peeky runs Cargo in for a workspace: offline, with ``cargo_home``
     (Peeky's own, without configuration) as CARGO_HOME, and no rustc wrapper from any
     configuration."""
     home = Path(cargo_home)
-    for name in ("config", "config.toml", "credentials", "credentials.toml"):
+    for name in HOME_FILES:
         if (home / name).exists() or (home / name).is_symlink():
             raise ValueError(f"Peeky's own CARGO_HOME holds configuration: {home / name}")
     return {
@@ -1605,7 +1634,11 @@ def read(root, config, cargo, rustc, cargo_home, target_dir, timeout=60, rustfla
     checked = preflight(
         root, config, host, lambda flags: host_cfgs(rustc, own, flags), rustflags, digest
     )
-    env = build_environment(rustc, cargo_home, target_dir, (*rustflags, *checked.rustflags))
+    # Found absent by build_environment, as Peeky requires: watched so.
+    home = Path(cargo_home)
+    checked = replace(checked, watch=absent_too(checked.watch, [home / n for n in HOME_FILES]))
+    # As ``own``, with the project's `--cfg` rustflags; its home as checked, and watched.
+    env = {**own, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join((*rustflags, *checked.rustflags))}
     extra = vendor_arguments(checked.workspace, config.vendor) if checked.vendored else ()
     common = ("--offline", "--locked", *extra)
     members = [str(cargo), "metadata", "--format-version", "1", "--no-deps", *common]

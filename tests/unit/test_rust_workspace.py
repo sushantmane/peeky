@@ -1250,7 +1250,7 @@ def test_every_manifest_cargos_metadata_names_is_watched(tmp_path, workspace, mo
     found = read(tmp_path, workspace)
     assert found.watch["files"][str(outside / "Cargo.toml")] == ["missing"]
     write(outside, {"Cargo.toml": '[package]\nname = "outside"\n'})
-    assert rw.recheck(found.watch) == f"{outside / 'Cargo.toml'} changed"
+    assert rw.recheck(found.watch) == f"{outside / 'Cargo.toml'} appeared"
 
 
 def test_a_file_changed_after_peeky_checked_it_is_refused_before_cargo_starts(
@@ -1271,4 +1271,40 @@ def test_a_file_changed_after_peeky_checked_it_is_refused_before_cargo_starts(
         f"Provenance: {workspace / 'Cargo.lock'} changed while Peeky checked the workspace. "
         "Build again"
     )
+    assert not any(argv[1] == "metadata" for argv in calls)
+
+
+def test_what_must_be_absent_is_watched_as_absent(tmp_path, workspace, monkeypatch):
+    # A manifest above the workspace, and configuration in Cargo's home, would change how
+    # Cargo reads it: each found absent is watched so, before and after Cargo runs.
+    fake_cargo(monkeypatch, workspace, [graph(workspace)])
+    found = read(tmp_path, workspace)
+    above = workspace.parent / "Cargo.toml"
+    home = tmp_path / "home"
+    for path in (above, *(home / name for name in rw.HOME_FILES)):
+        assert found.watch["files"][str(path)] == ["missing"]
+        assert str(path) in found.watch["absent"]
+    above.write_text("[workspace]\n")
+    assert rw.recheck(found.watch) == f"{above} appeared"
+    above.unlink()
+    (home / "config.toml").write_text('[build]\nrustc-wrapper = "x"\n')
+    assert rw.recheck(found.watch) == f"{home / 'config.toml'} appeared"
+    (home / "config.toml").unlink()
+    # One that appears after Peeky checked it, before Cargo starts, is refused then.
+    original = rw.preflight
+
+    def appears(*args, **kwargs):
+        checked = original(*args, **kwargs)
+        (home / "credentials.toml").write_text("")
+        return checked
+
+    calls = fake_cargo(monkeypatch, workspace, [graph(workspace)])
+    monkeypatch.setattr(rw, "preflight", appears)
+    with pytest.raises(ValueError) as caught:
+        read(tmp_path, workspace)
+    assert str(caught.value) == (
+        f"Provenance: {home / 'credentials.toml'} appeared while Peeky checked the workspace. "
+        "Build again"
+    )
+    assert code(caught) == "PROVENANCE_CHANGED"
     assert not any(argv[1] == "metadata" for argv in calls)
