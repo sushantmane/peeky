@@ -917,15 +917,21 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   crate's code for a type the crate names (only it may implement its trait for one), and "?"
   for a type parameter or a trait object: another crate, the program's binary, may implement a
   public trait. So is a type rooted at one (`T::Item`, `<T as Source>::Item`,
-  `_generic_rooted`), read before its arguments are left out. A dependency's trait's method is
+  `_generic_rooted`), read before its arguments are left out. So is a type parameter in `&`,
+  `Box` or `Pin`, which are `#[fundamental]`: the binary may write `impl util::Sink for
+  Box<AppType>`. A trait object in one is the crate's. A dependency's trait's method is
   the crate's code where the crate's own `impl` of it for `S` defines `m` and names the trait
   in full in its header (`_dependency_method`: `impl smallnum::Keep for Mine`). Otherwise it is
   the dependency's (its default method, its blanket `impl`). A standard trait's method is
   judged by `S`.
 - An `impl` block's type is placed from the crate's root (`_local_impls`, `_impl_self_place`):
   a bare name in its function's module (the segments before `<impl at …>`), and `crate::`,
-  `self::` and `super::` paths followed. Another path, or a bare name the debug information
-  places in another module only (a `use` may have brought it), isn't placed. An inherent
+  `self::` and `super::` paths followed. `&`, `Box` and `Pin` are kept around the type
+  (`_canonical_type`: `std::boxed::Box<a::Mine>`), as the MIR names the call's type. A bare
+  `Box` or `Pin` counts as the standard library's only where a function's `self`, as the MIR
+  prints it in full, says so: a `use` may bring another. Another path, a generic type
+  (`Vec<Mine>`), or a bare name the debug information places in another module only (a `use`
+  may have brought it), isn't placed. An inherent
   `impl`, and one of another trait named in full (`tokio::Keep`, `crate::Keep`), is no
   doubt. Peeky resolves no `use` line: an `impl` that defines `m` but names its trait by a bare
   name, an alias or a module's alias, or isn't placed, gives "?impl", and the note says Peeky

@@ -1397,6 +1397,16 @@ def _impl_self_path(block, texts):
     """The path the `impl` block ``block``'s header names its type by, without arguments:
     `m::Wrap` of `impl fmt::Display for m::Wrap<T>`. None where its header can't be read,
     or names no plain path (`impl dyn Tr`, a derive's span)."""
+    target = _impl_self_type(block, texts)
+    if target is None:
+        return None
+    named = re.fullmatch(r"(?:::)?(?:\w+::)*\w+", _plain_path(target))
+    return named[0] if named else None
+
+
+def _impl_self_type(block, texts):
+    """The type the `impl` block ``block``'s header names, as written: `Box<Mine>` of `impl
+    smallnum::Keep for Box<Mine>`. None where its header can't be read."""
     header = _impl_header(block, texts)
     if header is None:
         return None
@@ -1425,31 +1435,78 @@ def _impl_self_path(block, texts):
             depth -= 1
         elif depth == 0 and rest.startswith(" for ", at):
             start = at + len(" for ")
-    target = _plain_path(rest[start:].strip())
-    named = re.fullmatch(r"(?:::)?(?:\w+::)*\w+", target)
-    return named[0] if named else None
+    return rest[start:].strip() or None
 
 
-def _impl_self_place(path, module, types=None):
-    """The type an `impl` header names by ``path`` (``_impl_self_path``), as the MIR names
-    the crate's own: its path from the crate's root (`a::Mine`). A bare name is the block's
-    ``module``'s (its function's path's segments before `<impl at …>`), `crate::`, `self::`
-    and `super::` paths are followed. "" where Peeky can't place it: another path (through
-    a `use`, or a module's), or a bare name ``types`` (the crate's type paths, from the debug
-    information) says is no type of that module's while one elsewhere has it, as a `use` may
-    have brought."""
-    if not path or path.startswith("::"):
+# The standard library's `#[fundamental]` wrappers: another crate may implement a trait for
+# one of a type of its own (`impl util::Sink for Box<AppType>`), as for a reference.
+_BOX_PATHS = frozenset({"std::boxed::Box", "alloc::boxed::Box"})
+_PIN_PATHS = frozenset({"std::pin::Pin", "core::pin::Pin"})
+_REFERENCE = re.compile(r"^&(?:'\w+\s+)?(mut\s+)?")
+_BARE_WRAPPER = re.compile(r"(?<![\w:])(?:Box|Pin)\s*<")
+
+
+def _type_head(text):
+    """(the path of the type ``text`` before its arguments, its top-level arguments):
+    (`std::boxed::Box`, [`a::Mine`]) of `std::boxed::Box<a::Mine>`."""
+    text = (text or "").strip()
+    at = text.find("<")
+    if at < 0 or not text.endswith(">"):
+        return text, []
+    return text[:at].strip(), [each.strip() for each in _top_level_items(text[at + 1 : -1])]
+
+
+def _canonical_type(text):
+    """The MIR's type ``text`` as `impl` headers are compared with it (``_impl_self_place``):
+    a reference, and the standard library's `Box` and `Pin`, kept (`&mut a::Mine`,
+    `std::boxed::Box<a::Mine>`, `std::pin::Pin<&mut a::Mine>`); any other type by its path
+    without arguments (`a::Wrap` of `a::Wrap<u32>`)."""
+    text = (text or "").strip()
+    if found := _REFERENCE.match(text):
+        return ("&mut " if found[1] else "&") + _canonical_type(text[found.end() :])
+    head, arguments = _type_head(text)
+    head = head.removeprefix("::")
+    if head in _BOX_PATHS and arguments:
+        return f"std::boxed::Box<{_canonical_type(arguments[0])}>"
+    if head in _PIN_PATHS and arguments:
+        return f"std::pin::Pin<{_canonical_type(arguments[0])}>"
+    return head
+
+
+def _impl_self_place(text, module, types=None):
+    """The type an `impl` header names as ``text`` (``_impl_self_type``), in
+    ``_canonical_type``'s form, its crate's paths from the crate's root (`a::Mine`): a bare name
+    the block's ``module``'s (its function's path's segments before `<impl at …>`), `crate::`,
+    `self::` and `super::` paths followed, a reference and the standard library's `Box` and
+    `Pin` kept (`&a::Mine`, `std::boxed::Box<a::Mine>`), a path rooted at the standard
+    library's as named. "" where Peeky can't place it: another path (through a `use`, or a
+    module's), a bare name ``types`` (the crate's type paths, from the debug information)
+    doesn't have in that module (a `use` may have brought it, or the prelude: `String`), any
+    other type (a tuple, a slice, a trait object, another generic one: `Vec<Mine>`)."""
+    text = (text or "").strip()
+    if not text:
         return ""
-    segments, module = path.split("::"), list(module)
+    if found := _REFERENCE.match(text):
+        inner = _impl_self_place(text[found.end() :], module, types)
+        return ("&mut " if found[1] else "&") + inner if inner else ""
+    head, arguments = _type_head(text)
+    plain = head.removeprefix("::")
+    for paths, name in ((_BOX_PATHS, "Box"), (_PIN_PATHS, "Pin")):
+        ours = types is not None and any(each.rsplit("::", 1)[-1] == name for each in types)
+        if plain in paths or (plain == name and not ours):
+            inner = _impl_self_place(arguments[0], module, types) if arguments else ""
+            wrapper = "std::boxed::Box" if name == "Box" else "std::pin::Pin"
+            return f"{wrapper}<{inner}>" if inner else ""
+    if not re.fullmatch(r"(?:\w+::)*\w+", plain) or (
+        arguments and plain.split("::")[0] in _STD_CRATES
+    ):
+        return ""
+    segments, module = plain.split("::"), list(module)
+    if segments[0] in _STD_CRATES:
+        return plain
     if len(segments) == 1:
-        placed = "::".join([*module, path])
-        if (
-            types
-            and placed not in types
-            and any(each.rsplit("::", 1)[-1] == path for each in types if not each.startswith("::"))
-        ):
-            return ""
-        return placed
+        placed = "::".join([*module, plain])
+        return "" if types is not None and placed not in types else placed
     if segments[0] == "crate":
         return "::".join(segments[1:])
     if segments[0] in ("self", "super"):
@@ -1708,7 +1765,7 @@ def _dependency_method(subject, trait, rest, root, blocks, foreign, generics):
         return "?"
     method = re.split(r"::|<", rest or "", maxsplit=1)[0]
     wanted = _strip_arguments(trait).removeprefix("::")
-    placed = _plain_type(subject)
+    placed = _canonical_type(subject)
     full = set(foreign) | _STD_CRATES | {"crate", "self", "super"}
     own, doubts = False, []
     for kind, found, methods, named in blocks:
@@ -1750,23 +1807,23 @@ def _crate_type_paths(layouts):
     return None if crate is None else frozenset(crate)
 
 
-def _plain_type(text):
-    """The type ``text`` as the crate's root names it, without references or arguments:
-    `a::Mine` of `&a::Mine<'_>`."""
-    plain = re.sub(r"^(?:&(?:'\w+ )?(?:mut )?|\*(?:const|mut) )+", "", (text or "").strip())
-    return _strip_arguments(plain).removeprefix("::").strip()
-
-
-def _generic_rooted(subject, generics):
+def _generic_rooted(subject, generics, wrapped=False):
     """Whether the type ``subject`` (a call's self type, as the MIR prints it) is a type
     parameter of ``generics``, or rooted at one (`T`, `T::Item`, `<T as Source>::Item`, `&T`),
-    or a trait object or an `impl` type, which any type may be behind."""
+    or a trait object or an `impl` type, which any type may be behind. The standard
+    library's `#[fundamental]` wrappers (`&`, `Box`, `Pin`) count by what they wrap: another
+    crate may implement a trait for one of a type of its own (`impl util::Sink for
+    Box<AppType>`). A trait object or `impl` type a wrapper holds (``wrapped``) is the crate
+    whose trait it names': no other crate implements a trait for `Box<dyn util::Sink>`."""
     text = re.sub(r"^(?:&(?:'\w+ )?(?:mut )?|\*(?:const|mut) )+", "", (subject or "").strip())
     if text.startswith(("dyn ", "impl ")):
-        return True
+        return not wrapped
     if text.startswith("<"):
         found = _qualified_call(text)
         return found is not None and _generic_rooted(found[0], generics)
+    head, arguments = _type_head(text)
+    if arguments and head.removeprefix("::") in (*_BOX_PATHS, *_PIN_PATHS, "Box", "Pin"):
+        return _generic_rooted(arguments[0], generics, True)
     return bool(generics) and re.split(r"::|<", text, maxsplit=1)[0] in generics
 
 
@@ -1775,20 +1832,28 @@ def _local_impls(bodies, texts, types=None):
     crate's root (``_impl_self_place``; "" where Peeky can't place it), the trait
     (``_impl_trait``), the names of the functions it defines, the type as its header names
     it), each block once. ``types``: the crate's type paths, from the debug information."""
-    blocks = {}
+    blocks, receivers = {}, {}
     for body in bodies:
         segments = _segments(body.path)
         if len(segments) < 2 or not segments[-2].startswith("<impl at "):
             continue
         block = segments[-2]
         if block not in blocks:
-            named = _impl_self_path(block, texts)
+            named = _impl_self_type(block, texts)
             placed = _impl_self_place(named, segments[:-2], types)
             blocks[block] = (placed, _impl_trait(block, texts), set(), named or "")
         blocks[block][2].add(segments[-1])
-    return tuple(
-        (kind, trait, frozenset(names), named) for kind, trait, names, named in blocks.values()
-    )
+        if any(found[0] == 1 for found in body.bindings.get("self", ())):
+            receivers.setdefault(block, set()).add(_canonical_type(body.types.get(1)))
+    found = []
+    for block, (kind, trait, names, named) in blocks.items():
+        if kind and _BARE_WRAPPER.search(named):
+            # A bare `Box` or `Pin` is the standard library's only where no `use` or local
+            # item shadows it: a function's `self`, as the MIR prints it in full, says so.
+            if not {kind, f"&{kind}", f"&mut {kind}"} & receivers.get(block, set()):
+                kind = ""
+        found.append((kind, trait, frozenset(names), named))
+    return tuple(found)
 
 
 def _foreign_rows(body, found):

@@ -194,6 +194,29 @@ pub fn via_generic(t: &dyn Sink, arg: u32) -> u32 {
     generic(t, arg)
 }
 
+/// A type of the crate's whose box implements `Sink`, as the binary's `AppType`'s does: `Box`
+/// is `#[fundamental]`, so another crate may implement the crate's trait for a box of its own.
+pub struct Plain;
+
+impl Sink for Box<Plain> {
+    fn sink(&self, _x: &u32) {}
+}
+
+pub fn boxed<T>(b: &Box<T>, arg: u32) -> u32
+where
+    Box<T>: Sink,
+{
+    let x = std::hint::black_box(arg);
+    b.sink(&x); // SINK_BOXED
+    let k = std::hint::black_box(1); // BOXED
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
+pub fn via_boxed(arg: u32) -> u32 {
+    boxed(&Box::new(Plain), arg)
+}
+
 pub fn dynamic(t: &dyn Sink, arg: u32) -> u32 {
     let x = std::hint::black_box(arg);
     t.sink(&x); // SINK_DYN
@@ -238,6 +261,14 @@ impl util::Sink for Keeper {
     }
 }
 
+struct AppType;
+
+impl util::Sink for Box<AppType> {
+    fn sink(&self, x: &u32) {
+        smallnum::keep(x);
+    }
+}
+
 struct Src(Keeper);
 
 impl util::Source for Src {
@@ -267,6 +298,8 @@ fn main() {
     println!("GENERIC {}", util::via_generic(&Keeper, 27));
     println!("DYNAMIC {}", util::dynamic(&Keeper, 29));
     println!("PROJECTED {}", util::via_projected(&Src(Keeper), 35));
+    println!("BOXED {}", util::via_boxed(37));
+    println!("APP_BOXED {}", util::boxed(&Box::new(AppType), 39));
 }
 """
 SMALLNUM = """use std::sync::atomic::{AtomicU32, Ordering};
@@ -496,6 +529,11 @@ def test_a_change_a_dependency_may_keep_a_copy_of_is_refused_naming_the_call(bui
         "DYNAMIC": "a call to `<dyn Sink as Sink>::sink` (code another crate's type may "
         f"supply: a trait object or a type parameter) on line {line_of('SINK_DYN')} is given "
         "a pointer into `x`",
+        # A box of a type parameter: the binary implements the crate's trait for a box of
+        # its own type.
+        "BOXED": "a call to `<std::boxed::Box<T> as Sink>::sink` (code another crate's type "
+        f"may supply: a trait object or a type parameter) on line {line_of('SINK_BOXED')} is "
+        "given a pointer into `x`",
         # An associated type of a type parameter: the binary chooses it, and its `impl`.
         "PROJECTED": "(code another crate's type may supply: a trait object or a type "
         f"parameter) on line {line_of('SINK_PROJECTED')} is given a pointer into `x`",

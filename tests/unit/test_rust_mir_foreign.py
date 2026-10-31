@@ -559,8 +559,19 @@ def test_a_crate_traits_impl_for_a_dependencys_type_keeps_nothing_by_that_type()
         ("<T::Item as Sink>::sink", "?"),
         ("<<T as Source>::Item as Sink>::sink", "?"),
         ("<&T as Sink>::sink", "?"),
-        # A type of the crate's, whatever its arguments: the crate's `impl`.
+        # `Box` and `Pin` are `#[fundamental]`: another crate may implement the crate's trait
+        # for a box of a type of its own (`impl util::Sink for Box<AppType>`).
+        ("<std::boxed::Box<T> as Sink>::sink", "?"),
+        ("<&mut std::boxed::Box<T> as Sink>::sink", "?"),
+        ("<std::pin::Pin<&mut T> as Sink>::sink", "?"),
+        ("<std::pin::Pin<std::boxed::Box<T::Item>> as Sink>::sink", "?"),
+        # A type of the crate's, whatever its arguments: the crate's `impl`. No other crate
+        # implements the crate's trait for a `Vec` (not fundamental), or a box of a trait
+        # object of the crate's.
         ("<Wrap<T> as Sink>::sink", None),
+        ("<std::vec::Vec<T> as Sink>::sink", None),
+        ("<std::boxed::Box<dyn Sink> as Sink>::sink", None),
+        ("<std::boxed::Box<Wrap> as Sink>::sink", None),
     ],
 )
 def test_a_type_rooted_at_a_type_parameter_may_be_another_crates(path, root):
@@ -588,9 +599,15 @@ def test_global_state_reads_a_bodys_type_parameters():
     assert state.call("slot", kinds, path, ()) == frozenset()
 
 
-def impl_of(module, file, span, name="noted"):
+def impl_of(module, file, span, name="noted", receiver=None):
+    """A function of the `impl` block at ``span`` of ``file`` in ``module``: one taking
+    `self` as the MIR prints its type in full (``receiver``), if given."""
     path = "::".join([*module, f"<impl at {file}:{span}>", name])
-    return body(path, f"fn {path}(_1: &Mine) -> u32 {{", ["let mut _0: u32;"], {0: ["return;"]})
+    declarations = ["let mut _0: u32;"]
+    if receiver is not None:
+        declarations.append("debug self => _1;")
+    header = f"fn {path}(_1: {receiver or '&Mine'}) -> u32 {{"
+    return body(path, header, declarations, {0: ["return;"]})
 
 
 PLACES = {
@@ -598,6 +615,9 @@ PLACES = {
     "src/b.rs": "impl smallnum::Keep for Mine {\nimpl Mine {\nimpl tokio::Keep for Mine {\n"
     "impl crate::Keep for Mine {\nimpl Keep for Mine {\nimpl super::b::Mine {\n",
     "src/other/path.rs": "impl smallnum::Keep for Mine {\n",
+    "src/c.rs": "impl smallnum::Keep for Box<Mine> {\nimpl smallnum::Keep for &Mine {\n"
+    "impl<'a> smallnum::Keep for Pin<&'a mut Mine> {\n"
+    "impl smallnum::Keep for std::boxed::Box<Mine> {\nimpl smallnum::Keep for Vec<Mine> {\n",
 }
 
 
@@ -636,3 +656,48 @@ def test_a_bare_type_name_a_use_may_have_brought_is_not_placed():
     assert call("<b::Mine as smallnum::Keep>::noted", (), state(blocks=blocks))[1].startswith(
         "?impl\x1f`impl smallnum::Keep for Mine`"
     )
+
+
+TYPES = frozenset({"a::Mine", "b::Mine", "c::Mine"})
+
+
+def test_the_crates_impl_of_a_dependency_trait_for_a_wrapper_of_its_type_is_its_own():
+    # `impl smallnum::Keep for Box<Mine>` (in `c`), `for &Mine`, `for Pin<&mut Mine>`: the
+    # MIR names the type as `std::boxed::Box<c::Mine>`, `&c::Mine`, `std::pin::Pin<&mut c::Mine>`.
+    cases = {
+        "1:1: 1:34": ("std::boxed::Box<c::Mine>", "&std::boxed::Box<c::Mine>"),
+        "2:1: 2:30": ("&c::Mine", "&&c::Mine"),
+        "3:1: 3:46": ("std::pin::Pin<&mut c::Mine>", "&std::pin::Pin<&mut c::Mine>"),
+        "4:1: 4:46": ("std::boxed::Box<c::Mine>", "&std::boxed::Box<c::Mine>"),
+    }
+    for span, (kind, receiver) in cases.items():
+        blocks = _local_impls([impl_of(["c"], "src/c.rs", span, receiver=receiver)], PLACES, TYPES)
+        noted = f"<{kind} as smallnum::Keep>::noted"
+        assert call(noted, (), state(blocks=blocks)) is None, span
+        # Not the `impl` of another wrapper, or of the type itself: the dependency's code.
+        for other in ("c::Mine", "&mut c::Mine", "std::boxed::Box<&c::Mine>"):
+            if other != kind:
+                found = call(f"<{other} as smallnum::Keep>::noted", (), state(blocks=blocks))
+                assert found[1] == "smallnum", (span, other)
+
+
+def test_a_bare_box_or_pin_is_the_standard_librarys_where_the_mir_says_so():
+    # A `use` may bring another `Box` or `Pin`: the `self` the MIR prints in full says which.
+    other = impl_of(["c"], "src/c.rs", "1:1: 1:34", receiver="&smallnum::Box<c::Mine>")
+    blocks = _local_impls([other], PLACES, TYPES)
+    assert call("<std::boxed::Box<c::Mine> as smallnum::Keep>::noted", (), state(blocks=blocks))[
+        1
+    ] == ("?impl\x1f`impl smallnum::Keep for Box<Mine>`\x1fsmallnum::Keep")
+    # A function without `self` says nothing.
+    unsaid = _local_impls([impl_of(["c"], "src/c.rs", "3:1: 3:46")], PLACES, TYPES)
+    assert call("<std::pin::Pin<&mut c::Mine> as smallnum::Keep>::noted", (), state(blocks=unsaid))[
+        1
+    ].startswith("?impl\x1f`impl smallnum::Keep for Pin<&'a mut Mine>`")
+    # A type Peeky can't place (`Vec<Mine>`): it can't tell whether it is that `impl`, never
+    # the dependency's code.
+    vec = _local_impls(
+        [impl_of(["c"], "src/c.rs", "5:1: 5:34", receiver="&Vec<c::Mine>")], PLACES, TYPES
+    )
+    assert call("<std::vec::Vec<c::Mine> as smallnum::Keep>::noted", (), state(blocks=vec))[
+        1
+    ].startswith("?impl\x1f`impl smallnum::Keep for Vec<Mine>`")
