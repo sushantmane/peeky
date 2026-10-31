@@ -255,8 +255,8 @@ probe, read its JSON.
   failed Cargo tests and `--details`: 6.1.
 - At `stage: build`, read the compiler diagnostics and try again. Provenance or toolchain errors are
   fatal: stop and report them.
-- `--check-command` (Python) runs in a copy of the root, with no shell, for at most 20 s. It isn't
-  sandboxed. `verdict: unknown` is no fail (6.7).
+- `--check-command` (Python) runs in a copy of the root, no shell, at most 20 s, not sandboxed.
+  `verdict: unknown` is no fail (6.7).
 
 ### Targets and selectors
 
