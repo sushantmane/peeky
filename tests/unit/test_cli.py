@@ -512,3 +512,34 @@ def test_describe_names_each_functions_settable_root_locals():
         "can change there): tally::count: start; tally::main: arg, n. Such fields" in line
     ), line
     assert "Never settable, kept in a register" in line and "tally::show: t" in line, line
+
+
+def test_describe_leaves_a_rust_sessions_units_alone(tmp_path, monkeypatch, capsys):
+    # A binary target's `describe` read `units` from the runtime, as a RustSession's
+    # application units are named: "'RustUnit' object is not subscriptable".
+    from peeky import cli
+    from peeky.rust_symbols import RustUnit
+
+    class Target(_Target):
+        language = "rust"
+
+        def prepare(self, program, root):
+            return Rust()
+
+    class Rust(_Prepared):
+        target = Target()
+        units = (RustUnit(0, 11, 400, 0, "/w/@/c.abc12345-cgu.0"),)
+
+    crate = tmp_path / "crate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "c"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (crate / "src" / "main.rs").write_text("fn main() {}\n")
+    monkeypatch.setattr(cli, "adapter_for", lambda language, data: Target())
+    monkeypatch.setattr(cli, "rust_tools", lambda: {})
+    assert cli.main(["describe", str(crate)]) == 0, capsys.readouterr().out
+    assert "units:" not in capsys.readouterr().out
+    assert cli.main(["describe", str(crate), "--json"]) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["language"] == "rust" and "units" not in manifest, manifest

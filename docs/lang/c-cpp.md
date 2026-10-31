@@ -36,8 +36,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - To pin the compiler and debugger, name them in a `--config`
   ([C and C++ 7.1](c-cpp-cookbook.md#name-the-tools-in-a-config)).
 - Peeky builds the program itself, with no flags, include paths or libraries of the project's. A
-  project with its own build (Make, CMake, autotools) isn't supported yet
-  ([guide](../AGENT_GUIDE.md#your-first-command)).
+  project with its own build (Make, CMake, autotools) can give Peeky the binary it built instead
+  ([below](#a-binary-your-project-built)).
 - Peeky launches the program. It doesn't attach to a running one, evaluate expressions, or deploy
   a remote debug server ([WORKER](../WORKER.md#what-the-c-and-c-worker-does)).
 - To debug on another host, run a worker there with `--native-config`. Then add `--worker URL`
@@ -227,6 +227,34 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   `session get return` reads the value again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 - A `void` function returns no value: `(return): void (no value: the function returns nothing)`.
   A probe's row has the type `void` ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+
+## A binary your project built
+
+- Build with clang `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux a build ID. Then
+  `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`. Recipes for Make, CMake and
+  autotools: [C and C++ 7.1](c-cpp-cookbook.md#debug-a-binary-your-project-built).
+- Or name it in a `--config`: `{"binary": "jq", "compiler": "/usr/bin/clang-18", …}`, without
+  `sources`. Either path is relative to the target directory, and inside it.
+- Peeky runs the binary where it is, and writes nothing beside it. On macOS, it makes the dSYM
+  in a directory of its own.
+- `peeky describe . --binary ./jq` lists each unit, judged or not and why:
+  `src/fast.c: built with -O2 (its recorded flags)`.
+- A unit is judged when clang built it at `-O0` without LTO, with DWARF 5 and its command line
+  recorded, and its line table holds an MD5 of every file, each still matching
+  ([ADR 0008](../adr/0008-native-project-reach.md#phase-1-a-binary-the-project-built-c-and-c)).
+- A file changed since the build, or on macOS an object rebuilt without a relink, refuses the
+  binary by name: `PROVENANCE_CHANGED`. On a filesystem keeping whole seconds, relink (or touch)
+  a binary written in its objects' second.
+- A frame in a unit Peeky doesn't judge shows nothing, saying why. So does a frame whose code
+  several functions share (`--icf`). A breakpoint where no judged unit has code is refused.
+- `"optimized": true` reads units built at another `-O` level, or with LTO, as an optimized
+  build: rows carry the warning, and changes are refused.
+- GCC, DWARF 4, no recorded command line, `-ffast-math` and its kin, sanitizers and libtool
+  wrapper scripts are refused, with what to do.
+- A `#line` naming another file leaves a unit with no MD5s (use `bison -l`, `flex -L`), as do
+  libc++'s headers without `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`, and inheriting constructors.
+- For now, Peeky doesn't read a unit's text: the rules that need it withhold, saying so. Probes
+  and `describe` work; sessions, `verify` and candidate edits don't.
 
 ## Builds
 

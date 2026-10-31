@@ -338,6 +338,11 @@ def test_a_dwarf_5_table_must_name_its_unit_as_file_0():
         ),
         ("-O0 -Xclang -Wno-error=allocator-wrappers -mmacos-version-min=27.0", ("0", False)),
         ("-O2 -Wl,-O1 -Wall -fno-omit-frame-pointer -O0", ("0", False)),
+        # clang++ records its driver's mode first (Linux's clang 18, Apple's clang 21).
+        ("--driver-mode=g++ -g -gdwarf-5 -grecord-command-line -O0 -c a.cpp -o l.o", ("0", False)),
+        ("--driver-mode=g++ -O2 -c a.cpp", ("2", False)),
+        ("--driver-mode=gcc -O0 -c a.c", ("0", False)),
+        ("--driver-mode=cpp -O0 -c a.c", ("0", False)),
         # An unknown option after the last -O and LTO option changes neither.
         ("-O0 -c main.c -frobnicate a b", ("0", False)),
         # After `--`, every word is an input, whatever it looks like.
@@ -390,6 +395,10 @@ def test_optimization_is_the_last_option_s(arguments, found):
         ("-O0 -Xclang", "-Xclang "),
         # What the recorded words should hold expanded can't be read from them.
         ("-O0 @args.rsp", "@args.rsp"),
+        # clang-cl's mode reads its own options: `/clang:-O2` builds at -O2.
+        ("--driver-mode=cl /clang:-O2 /c main.c", "--driver-mode=cl"),
+        ("--driver-mode=flang -O0", "--driver-mode=flang"),
+        ("-O0 --driver-mode cl", "--driver-mode"),
         ("--config=x.cfg -O0", "--config=x.cfg"),
         ("-O5", "-O5"),
         ("-Xclang", "-Xclang "),
