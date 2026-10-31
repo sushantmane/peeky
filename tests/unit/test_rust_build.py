@@ -886,9 +886,67 @@ def test_a_missing_input_is_kept_only_where_its_absence_before_was_recorded(tmp_
         "`util`'s build script ran"
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"
-    # Nor where the snapshot was cut short.
+    # Nor where the snapshot was cut short, which the refusal says.
     (Path(messages[0]["out_dir"]).parent / "output").write_text(
         "cargo::rerun-if-changed=gone.txt\n"
     )
-    with pytest.raises(ValueError, match="Peeky can't tell whether"):
-        rb._build_inputs(shape, root, messages, {}, {**before, ":complete": False}, LATER, None)
+    cut = {**before, ":limit": [200_000, str(root)]}
+    with pytest.raises(ValueError) as caught:
+        rb._build_inputs(shape, root, messages, {}, cut, LATER, None)
+    assert str(caught.value).endswith(
+        "missing now, and Peeky's record of the workspace before the build stopped at its "
+        "limit, 200,000 entries. Keep fewer than 200,000 files under the workspace (move data "
+        "the build doesn't use out of it), or take the line out of the build script"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    assert "fewer files under the workspace" in classify(caught.value)["hint"]
+
+
+def test_the_snapshot_proves_no_absence_where_it_couldnt_read(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/src/lib.rs": "", "util/locked/x.txt": ""})
+    write(root, {"util/flaky/y.txt": ""})
+    shape = fake_shape(tmp_path, local=("util",))
+    locked = (root / "util/locked").resolve()
+    flaky = (root / "util/flaky/y.txt").resolve()
+    real_lstat, real_scandir = os.lstat, os.scandir
+
+    # A directory it can't list (os.walk's error), and an entry it can't read.
+    def scandir(path="."):
+        if os.path.normpath(path) == str(locked):
+            raise PermissionError(13, "Permission denied", str(locked))
+        return real_scandir(path)
+
+    def lstat(path, *args, **kwargs):
+        if os.path.normpath(path) == str(flaky):
+            raise PermissionError(13, "Permission denied", str(flaky))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(os, "lstat", lstat)
+    before = rb._snapshot(shape, None)
+    monkeypatch.setattr(os, "scandir", real_scandir)
+    monkeypatch.setattr(os, "lstat", real_lstat)
+    assert before[":limit"] is None
+    assert {Path(path) for path, _ in before[":uncovered"]} == {locked, flaky}
+    # Nothing under them is proven absent; elsewhere it is.
+    why = rb._absent_before(locked / "gone.txt", before)
+    assert why[0] == "unread" and why[1].startswith(f"Peeky couldn't read {locked} before")
+    assert rb._absent_before(flaky, before)[0] == "unread"
+    assert rb._absent_before(root.resolve() / "util/src/gone.rs", before) is None
+    assert rb._absent_before(root.resolve() / "util/nothing/deeper/gone.rs", before) is None
+
+
+def test_the_snapshot_keeps_one_status_per_entry_and_follows_links(tmp_path):
+    root = tmp_path / "ws"
+    write(root, {"util/src/lib.rs": "", "util/.git/HEAD": "ref\n", "target/debug/x": ""})
+    (root / "util/linked.rs").symlink_to("src/lib.rs")
+    before = rb._snapshot(fake_shape(tmp_path, local=("util",)), None)
+    real = root.resolve()
+    keys = {key for key in before if not key.startswith(":")}
+    assert {key[:2] for key in keys} == {"l:", "f:", "d:"}
+    assert "l:" + str(real / "util/.git/HEAD") in before
+    assert "f:" + str(real / "util/linked.rs") in before
+    assert not any("target/debug" in key for key in keys)
+    # One status per entry, a link's target besides: files count once against the limit.
+    assert all(os.path.islink(key[2:]) for key in keys if key.startswith("f:"))

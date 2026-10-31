@@ -416,54 +416,98 @@ def _digest(store):
 
 def _snapshot(shape, vendor):
     """What is there before Cargo runs, to tell what changed while it ran from what changed
-    before: {path: (mtime, ctime, size)} of each file, and {"l:" path: the same, not
-    followed} of every entry, directories and links too. Everything under the workspace,
-    hidden directories included, and under each local package outside it; not a `target`
-    directory at their tops. ":tops", ":skipped" and ":complete" (all of it recorded,
-    within _MAX_SNAPSHOT entries) say what an entry's absence proves (_absent_before)."""
+    before: {"l:" path: (mtime, ctime, size), not followed} of every entry, directories
+    and links too, and {"f:" path: the same, followed} of each link; {"d:" directory:
+    True} of each directory listed whole. Everything under the workspace, hidden
+    directories (`.git`) included, and under each local package outside it; not a
+    `target` directory at their tops. What its absence of an entry proves
+    (_absent_before) depends on ":tops", ":skipped", ":uncovered" (each path Peeky
+    couldn't list or read, and why) and ":limit" (where it stopped, at _MAX_SNAPSHOT
+    entries)."""
     tops = [shape.workspace.resolve()]
     for package in shape.local:
         top = (shape.root / package.directory).resolve()
         if not any(top.is_relative_to(each) for each in tops):
             tops.append(top)
     skipped = [str(top / "target") for top in tops]
-    found = {":tops": [str(top) for top in tops], ":skipped": skipped, ":complete": False}
-    seen = set()
+    uncovered = []
+    found = {":tops": [str(top) for top in tops], ":skipped": skipped, ":uncovered": uncovered}
+    found[":limit"] = None
+    count, seen = 0, set()
+
+    def failed(error):
+        uncovered.append([str(error.filename or "?"), error.strerror or str(error)])
+
     for top in tops:
-        for base, folders, files in os.walk(top):
+        for base, folders, files in os.walk(top, onerror=failed):
             if base in seen:
                 folders[:] = []
                 continue
             seen.add(base)
             folders[:] = [name for name in folders if str(Path(base, name)) not in skipped]
-            # Each entry itself, not followed ("l:"), a directory or link too.
             for name in (".", *folders, *files):
-                if len(found) >= _MAX_SNAPSHOT:
+                if count >= _MAX_SNAPSHOT:
+                    found[":limit"] = [count, base]
                     return found
                 path = os.path.normpath(os.path.join(base, name))
-                with contextlib.suppress(OSError):
+                try:
                     info = os.lstat(path)
                     found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-            for name in files:
-                path = os.path.join(base, name)
-                with contextlib.suppress(OSError):
-                    info = os.stat(path)
-                    found[path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-    found[":complete"] = True
+                    count += 1
+                    if stat.S_ISLNK(info.st_mode):
+                        with contextlib.suppress(FileNotFoundError):
+                            info = os.stat(path)
+                            found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+                except OSError as error:
+                    failed(error)
+            # Listed whole: an entry it doesn't name wasn't there.
+            found["d:" + os.path.normpath(base)] = True
     return found
 
 
+# What to do where Peeky can't tell whether a missing input was there (_absent_before).
+_ABSENCE_REMEDY = {
+    "limit": f"Keep fewer than {_MAX_SNAPSHOT:,} files under the workspace (move data the "
+    "build doesn't use out of it), or take the line out of the build script",
+    "outside": "Create it, or take the line out of the build script",
+    "unread": "Make that path readable, or take the line out of the build script",
+    "there": "Take the line out of the build script, or name the path without a link",
+}
+
+
 def _absent_before(path, before):
-    """Whether ``before`` (_snapshot's) proves ``path`` wasn't there before Cargo ran: it
-    recorded everything, under one of its tops and outside what it skipped, and not
-    ``path``."""
-    path = os.path.normpath(path)
-    return bool(
-        before.get(":complete")
-        and any(Path(path).is_relative_to(top) for top in before.get(":tops", ()))
-        and not any(Path(path).is_relative_to(each) for each in before.get(":skipped", ()))
-        and "l:" + path not in before
-    )
+    """None where ``before`` (_snapshot's) proves ``path`` wasn't there before Cargo ran,
+    else why it doesn't: it stopped at its limit; the path is outside what it records
+    (its tops, less what it skipped); a directory on the way couldn't be listed or read;
+    or the path, or the first of its directories that wasn't listed, was there."""
+    path = Path(os.path.normpath(path))
+    if before.get(":limit"):
+        count, _ = before[":limit"]
+        return (
+            "limit",
+            f"Peeky's record of the workspace before the build stopped at its limit, {count:,} "
+            "entries",
+        )
+    if not any(path.is_relative_to(top) for top in before.get(":tops", ())) or any(
+        path.is_relative_to(each) for each in before.get(":skipped", ())
+    ):
+        return (
+            "outside",
+            "it is outside what Peeky records before a build (the workspace, less a `target` "
+            "directory at its top)",
+        )
+    for failing, why in before.get(":uncovered", ()):
+        if path.is_relative_to(failing) or Path(failing).is_relative_to(path):
+            return ("unread", f"Peeky couldn't read {failing} before the build ({why})")
+    # The deepest directory on the way that was listed whole: the next step down from it
+    # wasn't among its entries, so nothing under it was there.
+    for ancestor in path.parents:
+        if before.get("d:" + str(ancestor)):
+            step = ancestor / path.relative_to(ancestor).parts[0]
+            if "l:" + str(step) in before:
+                return ("there", f"{step} was there before the build")
+            return None
+    return ("outside", "it is outside what Peeky records before a build")
 
 
 def _messages(stdout):
@@ -565,10 +609,13 @@ def _dependency_file(filenames):
 
 
 def _changed_during(path, before, started_ns):
+    """Whether the file ``path`` (followed) changed while Cargo ran: its status differs
+    from _snapshot's, or, with none there, it changed after the build started."""
     info = os.stat(path)
     now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-    if str(path) in before:
-        return before[str(path)] != now
+    key = ("f:" if os.path.islink(path) else "l:") + os.path.normpath(path)
+    if key in before:
+        return tuple(before[key]) != now
     return max(info.st_mtime_ns, info.st_ctime_ns) >= started_ns - _SETTLE_NS
 
 
@@ -1217,15 +1264,15 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                 _spend(budget, path)
                 unchanged(path)
                 files[str(path)] = rust_workspace.identity(path)
-                if files[str(path)] == ["missing"] and not _absent_before(path, before):
+                unproven = files[str(path)] == ["missing"] and _absent_before(path, before)
+                if unproven:
                     # Not there now, and nothing says it wasn't there while the build
                     # script ran (deleted since, where Peeky recorded nothing before).
+                    kind, why = unproven
                     raise ValueError(
                         f"Peeky can't tell whether {_shown(path, root)} was there while "
                         f"`{name}`'s build script ran: the script says it reads it, it is "
-                        "missing now, and it is outside what Peeky records before a build "
-                        "(the workspace, less a `target` directory at its top). Create it, "
-                        "or take the line out of the build script"
+                        f"missing now, and {_shown(why, root)}. {_ABSENCE_REMEDY[kind]}"
                     )
     macros = {
         str(Path(str(message.get("manifest_path"))).resolve().parent)
