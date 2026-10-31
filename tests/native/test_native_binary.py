@@ -880,6 +880,52 @@ def test_a_normal_build_has_no_code_no_unit_covers(project, capsys, link):
     assert twice["any"] is False, twice
 
 
+# Calls into the toolchain's static archives: glibc's libc_nonshared.a (atexit) and, on
+# AArch64, libgcc's long double arithmetic (__extenddftf2, __gttf2).
+ARCHIVE_UTIL = """int atexit(void (*)(void));
+
+static void done(void) {}
+
+int scale(int x) {
+    long double wide = (double)x;
+    atexit(done);
+    int doubled = x * 2;
+    return doubled + (wide > 1e9L) + 1;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a and libgcc's archive")
+def test_code_linked_from_the_toolchain_s_archives_is_the_toolchain_s(project, capsys):
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] is False, twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a")
+def test_a_program_s_own_function_named_like_an_archive_member_counts(project, capsys):
+    # The program's own atexit, without debug information: libc_nonshared.a's isn't
+    # linked, and its bytes are other.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    (project / "own.c").write_text("int atexit(void (*f)(void)) { return f == 0; }\n")
+    subprocess.run([compiler, "-O0", "-c", "own.c", "-o", "own.o"], cwd=project, check=True)
+    objects = ["main.o", "util.o", "fast.o", "own.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and (
+            "atexit is code no unit's debug information covers, and its bytes are none of the "
+            "toolchain's (libc_nonshared.a(atexit.oS))"
+        )
+        in twice["why"]
+    ), twice
+
+
 @pytest.mark.timeout(300)
 def test_a_program_s_own_frame_dummy_without_debug_information_counts(project, capsys):
     # frame_dummy isn't reserved: crtbegin.o's is local and called by .init_array; one

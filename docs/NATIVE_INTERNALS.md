@@ -156,6 +156,13 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     relaxed to `lea` or `mov $imm`, still pointing there. A relocation kind not seen in the real objects
     (`_AARCH64`, `_X86_64`) never matches. A program's own `frame_dummy`, even a local
     constructor, counts.
+  - Functions linked from the toolchain's static archives, by their bytes, as startup code
+    is. Every symbol no unit covers is looked for among the members of libgcc's archive
+    (`-print-libgcc-file-name`: `__extenddftf2`, `__sfp_handle_exceptions`) and glibc's
+    `libc_nonshared.a` (`-print-file-name`: `atexit`, `pthread_atfork`). Each member defining
+    it, by the archive's symbol index, is placed as above. One the program defines itself, by
+    such a name but with other bytes, counts, naming the member. A symbol of the returns-twice
+    family is never looked for: it counts, whatever its bytes.
   - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
     tail, matched byte for byte, are the toolchain's. Anything else there counts.
   - Peeky asks the compiler in its own environment (`replay_environment`), never the one the

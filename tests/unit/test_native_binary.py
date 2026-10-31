@@ -1146,7 +1146,7 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
         monkeypatch.setattr(
             native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
         )
-        return uncovered_code(binary, [], lambda: (list(pieces), why))
+        return uncovered_code(binary, [], lambda names=(): (list(pieces), why))
 
     said = "{} is code no unit's debug information covers"
     # crtbeginS.o's code, its call relocated to its function: the toolchain's, whole.
@@ -1172,6 +1172,73 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
     assert found(*block)[0].startswith(said.format("register_tm_clones"))
 
 
+def test_code_linked_from_the_toolchain_s_archives_counts_unless_its_bytes_are_theirs(
+    root, monkeypatch
+):
+    # atexit (libc_nonshared.a) and __extenddftf2 (libgcc.a) are linked without debug
+    # information. Each is the toolchain's only where its bytes are the archive member's,
+    # as linked: by its relocations' immediate fields, each pointing where it must.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x00:0x08] = _bl(0x1000, 0x1700) + RET  # atexit: b __cxa_atexit, as linked
+    text[0x20:0x28] = MOV + RET  # __extenddftf2
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_atexit={0x1700})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    atexit = _piece(
+        "libc_nonshared.a(atexit.oS)", ".text", _bl(0, 0) + RET, _call(0, "__cxa_atexit"), atexit=0
+    )
+    extend = _piece("libgcc.a(extenddftf2.o)", ".text", MOV + RET, __extenddftf2=0)
+    asked = []
+
+    def found(*symbols, pieces=(atexit, extend), units=()):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
+        )
+
+        def startup(names=()):
+            asked.append(list(names))
+            return list(pieces), None
+
+        return uncovered_code(binary, units, startup)
+
+    said = "{} is code no unit's debug information covers"
+    linked = (CodeSymbol("atexit", 0x1000, 8, False), CodeSymbol("__extenddftf2", 0x1020, 8, True))
+    assert found(*linked) == []
+    # Peeky looks for the names no unit covers, and no other.
+    unit = SimpleNamespace(ranges=((0x1040, 0x1080),))
+    assert found(*linked, CodeSymbol("scale", 0x1040, 8, True), units=[unit]) == []
+    assert asked[-1] == ["__extenddftf2", "atexit"]
+    # A function of the program's own, by an archive member's name but with other bytes,
+    # or calling another function: the program's.
+    own = CodeSymbol("atexit", 0x1020, 8, False)
+    assert found(own) == [
+        said.format("atexit")
+        + ", and its bytes are none of the toolchain's (libc_nonshared.a(atexit.oS))"
+    ]
+    _linked(monkeypatch, 0x1000, __cxa_atexit={0x1800})
+    assert found(*linked) == [
+        said.format("atexit")
+        + ", and its bytes are none of the toolchain's (libc_nonshared.a(atexit.oS))"
+    ]
+    # No archive member defines it: as before.
+    assert found(CodeSymbol("nlr_push", 0x1020, 8, False), pieces=()) == [
+        said.format("nlr_push") + " (assembly built without -g?)"
+    ]
+    # One of the returns-twice family is never taken for the toolchain's, whatever its
+    # bytes: Peeky looks for no archive member of it.
+    _linked(monkeypatch, 0x1000, __cxa_atexit={0x1700})
+    vfork = _piece("libc_nonshared.a(vfork.oS)", ".text", MOV + RET, vfork=0)
+    del asked[:]
+    assert found(CodeSymbol("vfork", 0x1020, 8, False), pieces=(vfork,)) == [
+        said.format("vfork") + " (assembly built without -g?)"
+    ]
+    assert asked == []
+
+
 def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkeypatch):
     # .init and .fini hold whatever objects put there, around crti.o's head and crtn.o's
     # tail; their _init and _fini symbols have no size.
@@ -1192,7 +1259,7 @@ def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkey
         monkeypatch.setattr(
             native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections)
         )
-        return uncovered_code(binary, [], lambda: (list(pieces), why))
+        return uncovered_code(binary, [], lambda names=(): (list(pieces), why))
 
     assert found(MOV + call + RET) == []
     # Another object's code between them.

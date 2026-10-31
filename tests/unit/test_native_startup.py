@@ -214,3 +214,35 @@ def test_only_a_weak_symbol_nothing_defines_is_0():
     assert not place(call, BASE, Image(EM_AARCH64, BASE, _bl(BASE, 0) + RET))
     weak_call = _piece(_bl(0, 0) + RET, _external(0, 283, "exit", weak=True))
     assert place(weak_call, BASE, Image(EM_AARCH64, BASE, _bl(BASE, 0) + RET))
+
+
+def _member(name, body):
+    header = f"{name:<16}{0:<12}{0:<6}{0:<6}{644:<8}{len(body):<10}`\n".encode()
+    return header + body + (b"\n" if len(body) % 2 else b"")
+
+
+def test_an_archive_s_members_are_found_by_the_names_its_symbol_index_says_they_define(tmp_path):
+    # A GNU archive's `/` member: a big-endian count, each name's member offset, the names.
+    atexit = b"\x7fELF" + b"\0atexit\0" + b"\0" * 4
+    extend = b"\x7fELF" + b"\0__extenddftf2\0\0"
+    offsets = []
+    at = 8 + 60 + (4 + 4 * 2 + len(b"atexit\0__extenddftf2\0") + 1) // 2 * 2
+    for body in (atexit, extend):
+        offsets.append(at)
+        at += 60 + len(body) + len(body) % 2
+    index = struct.pack(">I", 2) + b"".join(struct.pack(">I", each) for each in offsets)
+    index += b"atexit\0__extenddftf2\0"
+    archive = tmp_path / "libc_nonshared.a"
+    archive.write_bytes(
+        b"!<arch>\n"
+        + _member("/", index)
+        + _member("atexit.oS/", atexit)
+        + _member("extenddftf2.o/", extend)
+    )
+    assert [name for name, _ in archive_members(archive, defining={"atexit"})] == ["atexit.oS"]
+    assert [name for name, _ in archive_members(archive, defining={"__extenddftf2"})] == [
+        "extenddftf2.o"
+    ]
+    assert list(archive_members(archive, defining={"nlr_push"})) == []
+    # By bytes, as libgcc's local constructor is found.
+    assert [name for name, _ in archive_members(archive, b"__extenddftf2")] == ["extenddftf2.o"]

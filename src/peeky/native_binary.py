@@ -1176,10 +1176,13 @@ def uncovered_code(binary, units, startup=None):
     it), but what pads the space between functions. The toolchain's own: the linker's
     stubs (``_TOOLCHAIN_SECTIONS``); startup code by a name reserved to the
     implementation (``_RESERVED_STARTUP``, ``_ATOMICS``), to its size, or to the next
-    symbol where it has none; and code whose bytes are a startup object's
-    (``startup``: a callable giving toolchain_startup's), as other startup names and
-    crti.o's and crtn.o's parts of `.init` and `.fini` must be. Each as a phrase, for a
-    note; where the binary has no symbol table, or one Peeky can't read, that instead."""
+    symbol where it has none; and code whose bytes are a startup object's or a toolchain
+    archive member's (``startup``: a callable given the names to look for, giving
+    toolchain_startup's), as other startup names, crti.o's and crtn.o's parts of `.init`
+    and `.fini`, and functions linked from libgcc's archive or libc_nonshared.a
+    (`__extenddftf2`, `atexit`) must be. Never one of the returns-twice family. Each as a
+    phrase, for a note; where the binary has no symbol table, or one Peeky can't read,
+    that instead."""
     import bisect
 
     try:
@@ -1198,17 +1201,34 @@ def uncovered_code(binary, units, startup=None):
         for section in sections
         if section.name in _FRAMED_SECTIONS and section.high > section.low
     }
+
+    def reserved(symbol):
+        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
+
+    units_hold = _holder(covered)
+    # Symbols whose code may be the toolchain's: startup names, and any other no unit
+    # covers, but the returns-twice family's, which are never taken for the toolchain's.
+    wanted = [
+        symbol
+        for symbol in symbols
+        if not reserved(symbol)
+        and symbol.name not in RETURNS_TWICE_NAMES
+        and (symbol.name in _MATCHED_STARTUP or not units_hold(symbol.address))
+    ]
     matched, unframed, pieces, why = set(), {}, [], None
-    if framed or any(symbol.name in _MATCHED_STARTUP for symbol in symbols):
-        pieces, why = startup() if startup is not None else ([], "Peeky has no compiler to ask")
+    if framed or wanted:
+        names = sorted({symbol.name for symbol in wanted} - _MATCHED_STARTUP)
+        pieces, why = (
+            startup(names) if startup is not None else ([], "Peeky has no compiler to ask")
+        )
     image = None
     if pieces:
         try:
             image = native_startup.Image(binary)
         except (OSError, ValueError, struct.error) as exc:
             pieces, why = [], f"Peeky can't read the binary's sections ({exc})"
-    for symbol in symbols:
-        if symbol.name not in _MATCHED_STARTUP or symbol.address in matched:
+    for symbol in wanted:
+        if symbol.address in matched:
             continue
         for piece in pieces:
             if symbol.name not in piece.symbols:
@@ -1231,9 +1251,6 @@ def uncovered_code(binary, units, startup=None):
         if native_startup.place(tail[0], section.high - end, image):
             covered.append((section.high - end, section.high))
 
-    def reserved(symbol):
-        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
-
     starts = sorted(symbol.address for symbol in symbols)
     for symbol in symbols:
         section = next((each for each in sections if each.low <= symbol.address < each.high), None)
@@ -1245,28 +1262,18 @@ def uncovered_code(binary, units, startup=None):
         end = starts[at] if at < len(starts) else section.high if section else symbol.address
         end = symbol.address + symbol.size if symbol.size else end
         covered.append((symbol.address, min(end, section.high) if section else end))
-    spans = []
-    for low, high in sorted(covered):
-        if spans and low <= spans[-1][1]:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], high))
-        else:
-            spans.append((low, high))
-    lows = [low for low, _ in spans]
-
-    def held(address):
-        at = bisect.bisect_right(lows, address) - 1
-        return at >= 0 and address < spans[at][1]
-
+    spans = _merged(covered)
+    held = _holder(covered)
     named, found = [], []
     for symbol in symbols:
         if reserved(symbol) or symbol.address in matched or held(symbol.address):
             continue
         named.append(symbol)
         said = f"{symbol.name} is code no unit's debug information covers"
-        if symbol.name not in _MATCHED_STARTUP:
+        origins = sorted({piece.origin for piece in pieces if symbol.name in piece.symbols})
+        if symbol.name not in _MATCHED_STARTUP and not origins:
             found.append(f"{said} (assembly built without -g?)")
             continue
-        origins = sorted({piece.origin for piece in pieces if symbol.name in piece.symbols})
         if origins:
             found.append(
                 f"{said}, and its bytes are none of the toolchain's ({', '.join(origins)})"
@@ -1307,6 +1314,31 @@ def uncovered_code(binary, units, startup=None):
                 if cursor >= section.high:
                     break
     return list(dict.fromkeys(found))
+
+
+def _merged(spans):
+    """``spans`` ([low, high) pairs) sorted, those that meet or overlap joined."""
+    joined = []
+    for low, high in sorted(spans):
+        if joined and low <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], high))
+        else:
+            joined.append((low, high))
+    return joined
+
+
+def _holder(spans):
+    """Whether an address is in one of ``spans``, as a function."""
+    import bisect
+
+    joined = _merged(spans)
+    lows = [low for low, _ in joined]
+
+    def holds(address):
+        at = bisect.bisect_right(lows, address) - 1
+        return at >= 0 and address < joined[at][1]
+
+    return holds
 
 
 def any_call_returns_twice(judged, texts, uncovered=()):
@@ -1755,7 +1787,9 @@ class BinaryTarget:
             uncovered = uncovered_code(
                 binary,
                 units,
-                lambda: native_startup.toolchain_startup(compiler, tools, _remaining(deadline, 10)),
+                lambda names: native_startup.toolchain_startup(
+                    compiler, tools, _remaining(deadline, 10), names
+                ),
             )
             any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()

@@ -1,8 +1,11 @@
-"""The toolchain's startup objects, and whether a binary's code is theirs as linked.
+"""The toolchain's startup objects and static archives, and whether a binary's code is
+theirs as linked.
 
 A program links code no unit of its debug information covers: crtbegin.o's, crti.o's and
-crtn.o's, and libgcc's. Some of it has names a program may use too (`frame_dummy`), so it
-is the toolchain's only where its bytes are, as the linker relocates them. Each
+crtn.o's, and the members of the toolchain's static archives it calls: libc_nonshared.a's
+(`atexit`) and libgcc's (`__extenddftf2`). A program may use those names too (`frame_dummy`,
+`atexit`), so such code is the toolchain's only where its bytes are, as the linker relocates
+them. Each
 relocation's immediate field is decoded, and where it points checked: into the matched
 code itself, at the binary's symbol of the name the object names, at a GOT slot or PLT
 stub for it, or at 0 for a weak symbol nothing defines. A relocation of a kind not seen
@@ -19,6 +22,9 @@ from pathlib import Path
 STARTUP_OBJECTS = ("crtbegin.o", "crtbeginS.o", "crtbeginT.o", "crti.o", "crtn.o")
 # libgcc's AArch64 constructor, found in its archive by name.
 LIBGCC_STARTUP = b"init_have_lse_atomics"
+# The static archives besides libgcc's (`-print-libgcc-file-name`) a program links, as the
+# compiler's `-print-file-name` finds them: glibc's functions every program links whole.
+ARCHIVES = ("libc_nonshared.a",)
 # Peeky reads at most this much of libgcc's archive.
 MAX_ARCHIVE = 1 << 26
 
@@ -79,10 +85,11 @@ class StartupPiece:
     unread: str | None = None
 
 
-def toolchain_startup(compiler, env, timeout=10):
+def toolchain_startup(compiler, env, timeout=10, names=()):
     """(pieces, why): the StartupPieces of the startup objects the config's ``compiler``
     links (STARTUP_OBJECTS, as its `-print-file-name` finds them, and libgcc's archive
-    member holding LIBGCC_STARTUP), and why some can't be read, or None."""
+    member holding LIBGCC_STARTUP), and of each member of its static archives (libgcc's,
+    and ARCHIVES) that defines one of ``names``; and why some can't be read, or None."""
 
     def find(option):
         try:
@@ -114,28 +121,36 @@ def toolchain_startup(compiler, env, timeout=10):
                 pieces += object_pieces(stream.read(1 << 22), name)
         except (OSError, ValueError, struct.error) as exc:
             missing.append(f"Peeky can't read {path} ({exc})")
-    path, why = find("-print-libgcc-file-name")
-    if path is None:
-        missing.append(why)
-    else:
+    # LIBGCC_STARTUP is a local symbol, which the archive's symbol index leaves out.
+    archives = [("-print-libgcc-file-name", (LIBGCC_STARTUP,))]
+    archives += [(f"-print-file-name={name}", ()) for name in ARCHIVES if names]
+    for option, wanted in archives:
+        path, why = find(option)
+        if path is None:
+            missing.append(why)
+            continue
         try:
-            for member, data in archive_members(path, LIBGCC_STARTUP):
+            for member, data in archive_members(path, wanted, defining=names):
                 pieces += object_pieces(data, f"{Path(path).name}({member})")
         except (OSError, ValueError, struct.error) as exc:
             missing.append(f"Peeky can't read {path} ({exc})")
     return pieces, "; ".join(missing) or None
 
 
-def archive_members(path, wanted, limit=MAX_ARCHIVE):
+def archive_members(path, wanted=(), limit=MAX_ARCHIVE, defining=()):
     """(name, bytes) of each ELF member of the `ar` archive ``path`` whose bytes hold
-    ``wanted``. ValueError where it is no archive, or larger than ``limit``."""
+    ``wanted`` (bytes, or a tuple of them: any), or that the archive's symbol index says
+    defines one of ``defining`` (names). ValueError where it is no archive, or larger than
+    ``limit``."""
+    wanted = (wanted,) if isinstance(wanted, bytes) else tuple(wanted)
+    defining = frozenset(defining)
     if os.path.getsize(path) > limit:
         raise ValueError(f"the archive exceeds Peeky's read limit, {limit >> 20} MiB")
     with open(path, "rb") as stream:
         data = stream.read(limit)
     if not data.startswith(b"!<arch>\n"):
         raise ValueError("not an ar archive")
-    at, names = 8, b""
+    at, names, index = 8, b"", {}
     while at + 60 <= len(data):
         header = data[at : at + 60]
         if header[58:60] != b"`\n":
@@ -146,13 +161,39 @@ def archive_members(path, wanted, limit=MAX_ARCHIVE):
         body = data[at + 60 : at + 60 + size]
         if name == b"//":
             names = body
-        elif name not in (b"/", b"/SYM64/"):
+        elif name in (b"/", b"/SYM64/"):
+            if defining:
+                index = _symbol_index(body, 8 if name == b"/SYM64/" else 4)
+        else:
             if name.startswith(b"/") and name[1:].isdigit():
                 start = int(name[1:])
                 name = names[start : names.find(b"/\n", start)]
-            if wanted in body and body.startswith(b"\x7fELF"):
+            if body.startswith(b"\x7fELF") and (
+                any(each in body for each in wanted) or index.get(at, frozenset()) & defining
+            ):
                 yield name.rstrip(b"/").decode("latin-1"), body
         at += 60 + size + (size & 1)
+
+
+def _symbol_index(body, width):
+    """{member header's offset: the global names it defines}, from a GNU archive's symbol
+    index (`/`, or `/SYM64/` with 8-byte offsets): a big-endian count, the offsets, then the
+    names."""
+    form = ">I" if width == 4 else ">Q"
+    if len(body) < width:
+        raise ValueError("invalid symbol index")
+    count = struct.unpack_from(form, body)[0]
+    start = width * (count + 1)
+    if start > len(body):
+        raise ValueError("invalid symbol index")
+    offsets = [struct.unpack_from(form, body, width * (at + 1))[0] for at in range(count)]
+    strings = body[start:].split(b"\0")
+    if len(strings) < count:
+        raise ValueError("invalid symbol index")
+    found = {}
+    for offset, name in zip(offsets, strings, strict=False):
+        found.setdefault(offset, set()).add(name.decode("latin-1"))
+    return {offset: frozenset(each) for offset, each in found.items()}
 
 
 def _headers(blob):
