@@ -648,7 +648,10 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
     # was written first can't be told. In an earlier second, the object was.
     second = 1_700_000_000 * 10**9
     os.utime(library, ns=(second - 10**9, second - 10**9))
-    for written, linked in ((second, second + 500_000_000), (second, second)):
+    # A whole-second binary with an object later in its second: the binary's time may be
+    # rounded down, so the object isn't proven newer either.
+    cases = ((second, second + 500_000_000), (second, second), (second + 100_000_000, second))
+    for written, linked in cases:
         os.utime(obj, ns=(written, written))
         os.utime(binary, ns=(linked, linked))
         with pytest.raises(BinaryRefused, match="main.o and prog were written in the same") as same:

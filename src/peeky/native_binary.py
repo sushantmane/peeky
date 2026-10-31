@@ -954,9 +954,13 @@ def check_debug_map(entries, root, binary):
             else:
                 current = int(os.stat(path).st_mtime)
             written = os.stat(path).st_mtime_ns
-            newer = written > linked
-            coarse = written % 10**9 == 0 or linked % 10**9 == 0
-            if not newer and coarse and written // 10**9 == linked // 10**9:
+            # In one second, where either time has no part of a second (it may be rounded
+            # down), neither order is proven: refused as such, never as newer or older.
+            ambiguous = written // 10**9 == linked // 10**9 and (
+                written % 10**9 == 0 or linked % 10**9 == 0
+            )
+            newer = not ambiguous and written > linked
+            if ambiguous:
                 unordered = unordered or _shown(os.path.realpath(path), Path(root))
             hashes[path] = sha256_file(path)
         except (OSError, ValueError):
