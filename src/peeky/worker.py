@@ -1114,6 +1114,12 @@ class DebugWorker:
         caught, ignored = masks
         return not any((caught | ignored) >> (int(number) - 1) & 1 for number in numbers)
 
+    def library_of(self, runtime, frame):
+        """The shared library ``frame`` runs, by its path, where the runtime reads only its
+        binary's own units (native_binary.BinarySession.library_path); else None."""
+        check = getattr(runtime, "library_path", None)
+        return None if check is None or self.dap is None else check(self.dap, frame)
+
     def library_refusal(self, runtime, frame, index):
         """The UNSUPPORTED refusal of ``frame`` (frame ``index`` of the stop) where it runs
         a shared library, and the runtime reads only its binary's own units
@@ -2983,6 +2989,8 @@ class DebugWorker:
                     return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
                 # The user's own step left the program (into a library, or out of main):
                 # nothing there is read or changed, and the session stays usable.
+                # A binary target names the shared library the step went into.
+                library = self.library_of(runtime, frames[0])
                 raise ValueError(
                     (
                         "Another thread's stop interrupted the step"
@@ -2990,6 +2998,7 @@ class DebugWorker:
                         else "The step stopped"
                     )
                     + f" outside the program's sources (in {frames[0].get('name')}"
+                    + (f", in the shared library {library}" if library else "")
                     + (
                         f"), and frame {index} ({selected_frame.get('name')}) is outside them too"
                         if index

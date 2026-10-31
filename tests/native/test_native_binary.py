@@ -1139,10 +1139,10 @@ def test_a_frame_in_a_shared_library_is_unsupported_naming_it(project, tmp_path,
     library = _build_with_library(
         project, compiler, project / "build" if inside else tmp_path / "outside"
     )
-    shown = library.relative_to(project).as_posix() if inside else str(library)
+    shown_library = library.relative_to(project).as_posix() if inside else str(library)
     why = (
-        f"Nothing in frame 1 (apply) is read: this frame runs {shown}; Peeky reads only prog's "
-        "own units"
+        f"Nothing in frame 1 (apply) is read: this frame runs {shown_library}; Peeky reads only "
+        "prog's own units"
     )
     result = run_probe(
         project,
@@ -1165,6 +1165,22 @@ def test_a_frame_in_a_shared_library_is_unsupported_naming_it(project, tmp_path,
         assert shown["error"]["message"] == why and shown["error"]["session_closed"] is False
         code, shown = _values(capsys, ["session", "get", "y", "--name", "lib"])
         assert code == 0 and shown == {"y": "5"}, shown
+    finally:
+        main(["session", "close", "--name", "lib"])
+        capsys.readouterr()
+    # A step into the library names it.
+    calls = next(n for n, text in enumerate(CALLER.splitlines(), 1) if "apply(callback" in text)
+    code, state = _json(capsys, [*start, "--at", f"src/main.c:{calls}"])
+    assert code == 0, state
+    try:
+        code, state = _json(capsys, ["session", "step", "--into", "--name", "lib"])
+        assert code == 0 and state["state"] == "stopped", state
+        code, shown = _json(capsys, ["session", "get", "doubled", "--name", "lib"])
+        assert code == 2, shown
+        assert shown["error"]["message"].startswith(
+            f"The step stopped outside the program's sources (in apply, in the shared library "
+            f"{shown_library}); `session step --out` returns to your code"
+        ), shown
     finally:
         main(["session", "close", "--name", "lib"])
         capsys.readouterr()

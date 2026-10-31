@@ -218,7 +218,8 @@ session default (c, remote): state: stopped at src/util.c:3 in scale, hit 1 (pau
 - **The files compared** are those under the root that the binary's judged units name, as its
   debug information records them. The worker lists them for `version`, and compares them once it
   has judged the units, before the debugger starts. Headers outside the root aren't compared with
-  yours: the worker checks each against its MD5.
+  yours: the worker checks each against its MD5. So values reflect the worker's system headers,
+  as the binary was built with them, and those may differ from yours.
 - **A binary the worker refuses,** such as one without debug information, is refused before the
   probe or session is sent: `The worker refuses its binary: …`, with the worker's code and reason.
 - **At most 4096 files and 16 MiB in all.** A binary whose units name more is refused, with

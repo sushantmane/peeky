@@ -1281,7 +1281,8 @@ output:
 ```
 
 - The worker compares the files under the root that the judged units name with your copies: at
-  most 4096 files and 16 MiB in all ([REMOTE](../REMOTE.md#a-binary-your-project-built)).
+  most 4096 files and 16 MiB in all ([REMOTE](../REMOTE.md#a-binary-your-project-built)). System
+  headers are the worker's, checked against their MD5s, and may differ from yours.
 - A frame in a shared library is never read, even one built from sources under the root. A
   probe's row for it, and `session get --frame N`, are refused with `UNSUPPORTED`, naming the
   library. The session goes on:

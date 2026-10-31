@@ -2238,13 +2238,22 @@ class BinarySession(NativeSession):
         }
 
     def library_frame(self, dap, frame):
-        """Why nothing of ``frame`` is read where the debugger's modules prove it runs a
-        shared library, never the binary: `this frame runs <library>; Peeky reads only
-        <binary>'s own units`, the library by its path (relative to the root, where it is
-        under it). Its module is the frame's moduleId where the debugger gives one (macOS);
-        else, on Linux (LLVM 18's lldb-dap gives none), the one module whose loaded
-        executable segments hold the frame's address. None where the frame runs the
-        binary's code, or which module it runs can't be told."""
+        """Why nothing of ``frame`` is read where it runs a shared library, never the
+        binary (library_path): `this frame runs <library>; Peeky reads only <binary>'s own
+        units`. None where it runs the binary's code, or which module it runs can't be told."""
+        shown = self.library_path(dap, frame)
+        if shown is None:
+            return None
+        binary = self.prepared.manifest.binary.path
+        return f"this frame runs {shown}; Peeky reads only {binary}'s own units"
+
+    def library_path(self, dap, frame):
+        """The shared library ``frame`` runs, where the debugger's modules prove it runs
+        one, never the binary: its path, relative to the root where it is under it. Its
+        module is the frame's moduleId where the debugger gives one (macOS); else, on Linux
+        (LLVM 18's lldb-dap gives none), the one module whose loaded executable segments
+        hold the frame's address. None where the frame runs the binary's code, or which
+        module it runs can't be told."""
         try:
             listed = dap.request("modules", {"startModule": 0, "moduleCount": MAX_MODULES})
         except (RuntimeError, TimeoutError, ValueError, OSError):
@@ -2266,8 +2275,7 @@ class BinarySession(NativeSession):
             return None
         root = self.prepared.source_root
         shown = Path(path).relative_to(root).as_posix() if Path(path).is_relative_to(root) else path
-        binary = self.prepared.manifest.binary.path
-        return f"this frame runs {shown[:500]}; Peeky reads only {binary}'s own units"
+        return shown[:500]
 
     def _own_module(self, module):
         """Whether the debugger's ``module`` is the binary: by its build ID or UUID, or by

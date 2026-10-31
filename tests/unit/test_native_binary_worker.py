@@ -348,6 +348,9 @@ class Runtime(PythonAdapter):
             return "this frame runs build/libfoo.so; Peeky reads only prog's own units"
         return None
 
+    def library_path(self, dap, frame):
+        return "/usr/lib/libfoo.so" if frame["id"] == 13 else None
+
 
 class Backend:
     def __init__(self, root):
@@ -437,3 +440,23 @@ def test_a_session_on_a_binary_starts_its_worker_with_the_binarys_config(
         ("src/a.c", 1, "c", {"binary": "prog", "compiler": "cc", "language": None}),
         ("src/a.c", 1, "c", {"binary": "prog", "language": None, "compiler": "cc", "adapter": "d"}),
     ]
+
+
+def test_a_step_into_a_shared_library_names_it(tmp_path):
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.runtime = Backend(tmp_path), Runtime()
+    # The step went into apply, in a library built outside the root.
+    worker.dap.frames = [
+        {"id": 13, "name": "apply", "line": 3, "source": {"path": "/opt/foo/foo.c"}},
+        *worker.dap.frames,
+    ]
+    worker.session, worker.stop_id, worker.state = "session", "stop", "stopped"
+    worker.thread_id, worker.capabilities, worker.launched_at = 1, {}, 1000.0
+    worker.stop_reason, worker.stop_returns = "step", True
+    with pytest.raises(ValueError) as found:
+        worker.dispatch("inspect", {"session_id": "session", "stop_id": "stop"})
+    assert str(found.value) == (
+        "The step stopped outside the program's sources (in apply, in the shared library "
+        "/usr/lib/libfoo.so); `session step --out` returns to your code, or `session continue`"
+    )
+    assert worker.state == "stopped" and worker.dap is not None
