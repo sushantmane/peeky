@@ -1,0 +1,7 @@
+{
+ "judge_id": "a018",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The latitude grid\u2019s upper-bound calculation overflowed near 90\u00b0, incorrectly rejecting valid points.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no value: the attempt ran only `peeky --help`."
+}

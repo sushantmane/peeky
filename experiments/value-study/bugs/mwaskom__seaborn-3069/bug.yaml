@@ -1,0 +1,35 @@
+id: mwaskom__seaborn-3069
+language: python
+repo: mwaskom/seaborn
+source: SWE-bench Verified
+base_commit: 54cab15bdacfaa05a88fbc5502a5b322d99f148e
+upstream: https://github.com/mwaskom/seaborn/pull/3069
+category: B
+categories_applicable: [B]
+category_rationale: >-
+  The wrong limits, grid and orientation come from matplotlib's own autoscaling margins, style grid
+  and axis handling, which seaborn's objects interface leaves in place for Nominal scales; getting
+  the expected axes needs the behaviour of matplotlib's Axes/Axis code, outside seaborn's sources.
+root_cause: >-
+  Plotter._finalize_figure in seaborn/_core/plot.py only applies user-given limits and does nothing
+  for axes with a Nominal (categorical) scale, so matplotlib's default autoscaling margins, the
+  theme's grid and the normal y direction remain. The fix, for an axis whose scale is Nominal,
+  turns its grid off and, unless the user set limits, sets the limits to -0.5 .. n-0.5 from the
+  number of major ticks (reversed on the y axis, so it is inverted).
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with seaborn installed in editable mode. Run tests
+  with `cd /testbed && pytest tests/<file>.py` (the whole suite is `pytest tests`).
+python: "3.11"
+image: peeky-study/mwaskom__seaborn-3069:control
+build_minutes: 0.6
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Deviation from the SWE-bench spec: pandas 1.5.3 instead of 2.0.0. pandas 2.0 removed the
+  `mode.use_inf_as_null` option this seaborn uses, so under the spec 76 of the 170 tests in the
+  hidden tests' module error at base, with or without the fix; with 1.5.3 the module runs cleanly
+  and the instance's FAIL_TO_PASS/PASS_TO_PASS lists hold unchanged. Python 3.11 rather than 3.12:
+  the spec's pinned numpy 1.25.2 and matplotlib 3.7.2 have no 3.12 builds. Other packages are the
+  spec's pins; unpinned ones resolve as of 2024-08-01 (uv --exclude-newer). The category is a
+  judgment call between B and E: the report says what to change and where, but matching the
+  expected axes depends on matplotlib's limit and grid behaviour.

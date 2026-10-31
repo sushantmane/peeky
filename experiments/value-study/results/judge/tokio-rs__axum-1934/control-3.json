@@ -1,0 +1,7 @@
+{
+ "judge_id": "a118",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Fallback routing is inserting an internal wildcard into `MatchedPath`. A nested service then treats it as a real route match and hits the assertion.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -125,7 +125,13 @@ def test_every_relative_link_in_the_docs_resolves():
 
 
 # Tracked files that may name the patterns: this test.
-PRIVATE_NOTE_EXCLUSIONS = {"tests/unit/test_docs.py"}
+PRIVATE_NOTE_EXCLUSIONS = {
+    "tests/unit/test_docs.py",
+    # An upstream bug report, kept verbatim: its stack trace names the reporter's own path.
+    "experiments/value-study/bugs/tokio-rs__axum-1934/problem.md",
+    # Copilot CLI's own folder name for a session (`session-state`), not a note.
+    "experiments/value-study/harness/run_one.py",
+}
 PRIVATE_NOTES = (
     # A personal path; "/users/42" in an example is a route, so case matters.
     re.compile(r"/Users/"),

@@ -1,0 +1,28 @@
+id: valkey-io__valkey-1842
+language: c
+repo: valkey-io/valkey
+source: SWE-bench Multilingual
+base_commit: 4de8cf3567b4dfd3a541219462b22d46c730c4b4
+upstream: https://github.com/valkey-io/valkey/pull/1842
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The crash only shows on a replica, which needs a primary-replica setup and its replication
+  client to be among the connected clients. The server is built with -O3 and LTO.
+root_cause: >-
+  ACLLoadFromFile in src/acl.c, after loading the new users, walks server.clients to re-point
+  each client at its user in the new user table, and dereferences c->user->name for every
+  client. Not every client has a user: on a replica, the client that represents the connection
+  from its primary has c->user == NULL, so ACL LOAD on a replica dereferences a NULL pointer and
+  the server crashes. The fix skips clients that have no user.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (binaries in src/).
+  Run tests with `cd /testbed && ./runtest --single unit/<suite>` (optionally `--only "<test name or /regex>"`); suites live under tests/.
+image: peeky-study/valkey-io__valkey-1842:control
+build_minutes: 0.9
+grade_minutes: 1.7
+pass_to_pass_removed: []
+notes: >-
+  Build follows the SWE-bench spec (make distclean && make; the image build uses make -j). The
+  grading script keeps the spec's `make distclean && make`, about 1.7 minutes on 4 CPUs; an
+  incremental make plus the ACL LOAD tests takes well under a minute.

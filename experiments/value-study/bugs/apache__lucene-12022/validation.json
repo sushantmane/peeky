@@ -1,0 +1,29 @@
+[
+  {
+    "name": "base",
+    "f2p": {
+      "org.apache.lucene.document.TestLatLonShape > testFlatPolygonDoesNotContainIntersectingLine": "FAILED"
+    },
+    "p2p_failed": [],
+    "solved": false,
+    "seconds": 20
+  },
+  {
+    "name": "gold-1",
+    "f2p": {
+      "org.apache.lucene.document.TestLatLonShape > testFlatPolygonDoesNotContainIntersectingLine": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 26
+  },
+  {
+    "name": "gold-2",
+    "f2p": {
+      "org.apache.lucene.document.TestLatLonShape > testFlatPolygonDoesNotContainIntersectingLine": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 22
+  }
+]

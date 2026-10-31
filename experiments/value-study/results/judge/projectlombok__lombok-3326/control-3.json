@@ -1,0 +1,7 @@
+{
+ "judge_id": "a102",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`@UtilityClass` made nested classes static but left javac\u2019s cached erasure referencing their former enclosing type.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

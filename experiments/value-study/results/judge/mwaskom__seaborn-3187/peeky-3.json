@@ -1,0 +1,7 @@
+{
+ "judge_id": "a146",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Both APIs drop the formatter\u2019s multiplier or additive offset, so values such as `1000000` appear as `1`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

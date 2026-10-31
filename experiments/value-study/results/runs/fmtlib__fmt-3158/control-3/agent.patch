@@ -1,0 +1,234 @@
+diff --git a/doc/api.rst b/doc/api.rst
+index 2d65d5b3..b833ab77 100644
+--- a/doc/api.rst
++++ b/doc/api.rst
+@@ -446,6 +446,11 @@ The library also supports convenient formatting of ranges and tuples::
+   // Prints "('a', 1, 2.0)"
+   fmt::print("{}", t);
+ 
++Character ranges other than strings are formatted as sequences of quoted
++characters, including when nested in other ranges. For example,
++``std::vector<char>{'a', 'b'}`` is formatted as ``['a', 'b']``. This also applies
++to character ranges produced by C++20 range views such as ``std::views::split``.
++
+ 
+ NOTE: currently, the overload of ``fmt::join`` for iterables exists in the main
+ ``format.h`` header, but expect this to change in the future.
+diff --git a/include/fmt/core.h b/include/fmt/core.h
+index 5f44a974..31a50941 100644
+--- a/include/fmt/core.h
++++ b/include/fmt/core.h
+@@ -576,6 +576,20 @@ template <typename S>
+ struct is_string : std::is_class<decltype(to_string_view(std::declval<S>()))> {
+ };
+ 
++// Checks implicit conversions without considering the C++23 range constructor.
++template <typename T, typename Char> class is_std_string_view_like {
++  template <typename U>
++  static auto check(int)
++      -> decltype(std::declval<const U&>().operator std_string_view<Char>(),
++                  std::true_type());
++  template <typename> static auto check(...) -> std::false_type;
++
++ public:
++  static constexpr const bool value =
++      std::is_convertible<const T&, std_string_view<Char>>::value &&
++      (is_string<T>::value || decltype(check<T>(0))::value);
++};
++
+ template <typename S, typename = void> struct char_t_impl {};
+ template <typename S> struct char_t_impl<S, enable_if_t<is_string<S>::value>> {
+   using result = decltype(to_string_view(std::declval<S>()));
+@@ -1446,7 +1460,7 @@ template <typename Context> struct arg_mapper {
+   }
+   template <typename T,
+             FMT_ENABLE_IF(
+-                std::is_convertible<T, std_string_view<char_type>>::value &&
++                is_std_string_view_like<T, char_type>::value &&
+                 !std::is_convertible<T, basic_string_view<char_type>>::value &&
+                 !is_string<T>::value && !has_formatter<T, Context>::value &&
+                 !has_fallback_formatter<T, char_type>::value)>
+diff --git a/include/fmt/format.h b/include/fmt/format.h
+index 0c3231b5..a390cb6d 100644
+--- a/include/fmt/format.h
++++ b/include/fmt/format.h
+@@ -1915,9 +1915,15 @@ template <typename Char, typename OutputIt>
+ FMT_CONSTEXPR auto write_char(OutputIt out, Char value,
+                               const basic_format_specs<Char>& specs)
+     -> OutputIt {
+-  bool is_debug = specs.type == presentation_type::debug;
++  if (specs.type == presentation_type::debug) {
++    // The longest escape is 2 quotes + "\\U" + 8 hex digits.
++    Char buf[12] = {};
++    auto size = to_unsigned(write_escaped_char(buf, value) - buf);
++    return write_padded(out, specs, size, [&](reserve_iterator<OutputIt> it) {
++      return copy_str<Char>(buf, buf + size, it);
++    });
++  }
+   return write_padded(out, specs, 1, [=](reserve_iterator<OutputIt> it) {
+-    if (is_debug) return write_escaped_char(it, value);
+     *it++ = value;
+     return it;
+   });
+@@ -3442,7 +3448,10 @@ FMT_CONSTEXPR auto write(OutputIt out, const T& value)
+                     typename Context::template formatter_type<T>,
+                     fallback_formatter<T, Char>>;
+   auto ctx = Context(out, {}, {});
+-  return formatter_type().format(value, ctx);
++  auto f = formatter_type();
++  auto parse_ctx = basic_format_parse_context<Char>({});
++  f.parse(parse_ctx);
++  return f.format(value, ctx);
+ }
+ 
+ // An argument visitor that formats the argument and writes it via the output
+diff --git a/include/fmt/ranges.h b/include/fmt/ranges.h
+index 2105a668..64a66830 100644
+--- a/include/fmt/ranges.h
++++ b/include/fmt/ranges.h
+@@ -57,7 +57,7 @@ template <typename T> class is_std_string_like {
+  public:
+   static constexpr const bool value =
+       is_string<T>::value ||
+-      std::is_convertible<T, std_string_view<char>>::value ||
++      is_std_string_view_like<T, char>::value ||
+       !std::is_void<decltype(check<T>(nullptr))>::value;
+ };
+ 
+@@ -289,7 +289,7 @@ auto write_range_entry(OutputIt out, basic_string_view<Char> str) -> OutputIt {
+ }
+ 
+ template <typename Char, typename OutputIt, typename T,
+-          FMT_ENABLE_IF(std::is_convertible<T, std_string_view<char>>::value)>
++          FMT_ENABLE_IF(is_std_string_view_like<T, Char>::value)>
+ inline auto write_range_entry(OutputIt out, const T& str) -> OutputIt {
+   auto sv = std_string_view<Char>(str);
+   return write_range_entry<Char>(out, basic_string_view<Char>(sv));
+@@ -377,7 +377,7 @@ template <typename T, typename Char> struct is_range {
+   static constexpr const bool value =
+       detail::is_range_<T>::value && !detail::is_std_string_like<T>::value &&
+       !std::is_convertible<T, std::basic_string<Char>>::value &&
+-      !std::is_convertible<T, detail::std_string_view<Char>>::value;
++      !detail::is_std_string_view_like<T, Char>::value;
+ };
+ 
+ namespace detail {
+@@ -386,8 +386,8 @@ template <typename Context> struct range_mapper {
+ 
+   template <typename T,
+             FMT_ENABLE_IF(has_formatter<remove_cvref_t<T>, Context>::value)>
+-  static auto map(T&& value) -> T&& {
+-    return static_cast<T&&>(value);
++  static auto map(T&& value) -> T& {
++    return static_cast<T&>(value);
+   }
+   template <typename T,
+             FMT_ENABLE_IF(!has_formatter<remove_cvref_t<T>, Context>::value)>
+@@ -475,7 +475,7 @@ struct range_formatter<
+     auto end = ctx.end();
+     if (it == end || *it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it == 'n') {
+@@ -483,9 +483,10 @@ struct range_formatter<
+       ++it;
+     }
+ 
+-    if (*it == '}') {
++    if (it == end || *it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      ctx.advance_to(it);
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it != ':')
+diff --git a/test/compile-test.cc b/test/compile-test.cc
+index 5c868b84..f5eb1d59 100644
+--- a/test/compile-test.cc
++++ b/test/compile-test.cc
+@@ -10,6 +10,7 @@
+ #include <type_traits>
+ 
+ #include "fmt/chrono.h"
++#include "fmt/ranges.h"
+ #include "gmock/gmock.h"
+ #include "gtest-extra.h"
+ 
+@@ -76,6 +77,19 @@ TEST(compile_test, compile_type_with_get) {
+   EXPECT_EQ("42", fmt::format(FMT_COMPILE("{}"), type_with_get()));
+ }
+ 
++TEST(compile_test, character_ranges) {
++  auto chars = std::vector<std::vector<char>>{{'a', 'b'}};
++  EXPECT_EQ(fmt::format(FMT_COMPILE("{}"), chars), "[['a', 'b']]");
++  EXPECT_EQ(fmt::format(FMT_COMPILE("{}!"), chars), "[['a', 'b']]!");
++  EXPECT_EQ(fmt::format(FMT_COMPILE("{:::}"), chars), "[[a, b]]");
++}
++
++TEST(compile_test, escaped_character_ranges) {
++  auto chars = std::vector<char>{'\n', '\'', '\x01'};
++  EXPECT_EQ(fmt::format(FMT_COMPILE("{}!"), chars),
++            "['\\n', '\\'', '\\x01']!");
++}
++
+ #if defined(__cpp_if_constexpr) && defined(__cpp_return_type_deduction)
+ struct test_formattable {};
+ 
+diff --git a/test/core-test.cc b/test/core-test.cc
+index 6d1309fe..d911d8e4 100644
+--- a/test/core-test.cc
++++ b/test/core-test.cc
+@@ -906,6 +906,27 @@ TEST(core_test, format_implicitly_convertible_to_string_view) {
+   EXPECT_EQ("foo", fmt::format("{}", implicitly_convertible_to_string_view()));
+ }
+ 
++#ifdef FMT_USE_STRING_VIEW
++struct implicitly_convertible_to_std_string_view {
++  operator std::string_view() const { return "foo"; }
++};
++
++TEST(core_test, format_implicitly_convertible_to_std_string_view) {
++  EXPECT_EQ("foo", fmt::format("{}", implicitly_convertible_to_std_string_view()));
++}
++
++struct non_const_convertible_to_std_string_view {
++  operator std::string_view() { return "foo"; }
++};
++
++TEST(core_test, non_const_string_view_conversion) {
++  EXPECT_FALSE(
++      fmt::is_formattable<non_const_convertible_to_std_string_view>::value);
++  EXPECT_FALSE(
++      fmt::is_formattable<const non_const_convertible_to_std_string_view&>::value);
++}
++#endif
++
+ // std::is_constructible is broken in MSVC until version 2015.
+ #if !FMT_MSC_VERSION || FMT_MSC_VERSION >= 1900
+ struct explicitly_convertible_to_string_view {
+diff --git a/test/xchar-test.cc b/test/xchar-test.cc
+index 608af350..4e4ee76a 100644
+--- a/test/xchar-test.cc
++++ b/test/xchar-test.cc
+@@ -211,6 +211,17 @@ TEST(xchar_test, join) {
+   EXPECT_EQ(fmt::format(L"({})", fmt::join(t, L", ")), L"(a, 1, 2)");
+ }
+ 
++TEST(xchar_test, character_ranges) {
++  auto chars = std::vector<std::vector<wchar_t>>{{L'a', L'b'}};
++  EXPECT_EQ(fmt::format(L"{}", chars), L"[['a', 'b']]");
++  EXPECT_EQ(fmt::format(L"{:::}", chars), L"[[a, b]]");
++  EXPECT_EQ(fmt::format(L"{}", std::make_tuple(std::wstring(L"ab"))), L"(\"ab\")");
++  if (sizeof(wchar_t) > 2) {
++    auto escaped = std::vector<wchar_t>{static_cast<wchar_t>(0x40000)};
++    EXPECT_EQ(fmt::format(L"{}", escaped), L"['\\U00040000']");
++  }
++}
++
+ enum streamable_enum {};
+ 
+ std::wostream& operator<<(std::wostream& os, streamable_enum) {

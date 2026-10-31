@@ -1,0 +1,7 @@
+{
+ "judge_id": "a139",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Cascade deletion fetched all fields of related objects, unnecessarily decoding unused text.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

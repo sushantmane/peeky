@@ -27,6 +27,11 @@
 
 ### Other changes
 
+- **A study of Peeky's value on real bugs** (`experiments/value-study`, #441). A coding agent
+  attempted 29 real bugs, 3 times each, with and without Peeky. The outcome was the same: 89%
+  of bugs solved without Peeky and 86% with it, a paired difference of −2 points (95% interval
+  −8 to +2). The Peeky arm used about 1.2 more AI credits per bug. Agents read Peeky's guide but
+  ran Peeky in only 3 of 87 attempts. The report says why, and what to change.
 - **`python -OO`:** `peeky` and `peeky setup-java` no longer fail at start when Python drops
   docstrings (`-OO` or `PYTHONOPTIMIZE=2`).
 - **A Python program runs on its project's interpreter (protocol 12):** `--python PATH`, else the

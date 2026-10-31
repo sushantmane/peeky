@@ -1,0 +1,7 @@
+{
+ "judge_id": "a128",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Closing the channel advances the tail past a closure marker. `resubscribe` starts at that advanced position, missing the marker and waiting for messages that can never arrive.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

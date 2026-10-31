@@ -1,0 +1,63 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..f3be34c1 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,7 +4,7 @@ Release History
+ dev
+ ---
+ 
+-- \[Short description of non-trivial change.\]
++- Fixed proxy authentication by preserving credentials when normalizing proxy URLs.
+ 
+ 2.27.0 (2022-01-03)
+ -------------------
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..2754ad6c 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -960,6 +960,7 @@ def guess_json_utf(data):
+ def prepend_scheme_if_needed(url, new_scheme):
+     """Given a URL that may or may not have a scheme, prepend the given scheme.
+     Does not replace a present scheme with the one provided as an argument.
++    Preserves authentication components in the URL.
+ 
+     :rtype: str
+     """
+@@ -974,6 +975,8 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth is not None:
++        netloc = '@'.join([auth, netloc])
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 29b3aca8..4077b953 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1896,6 +1896,24 @@ class TestRequests:
+         headers = adapter.proxy_headers("http://user:@httpbin.org")
+         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}
+ 
++    @pytest.mark.parametrize('scheme', ['http', 'https'])
++    @pytest.mark.parametrize('proxy_scheme', ['//', 'http://', 'https://'])
++    @pytest.mark.parametrize('auth, expected', [
++        ('user:pass', 'Basic dXNlcjpwYXNz'),
++        ('user:', 'Basic dXNlcjo='),
++        ('user%40name:p%40ss%3Aword', 'Basic dXNlckBuYW1lOnBAc3M6d29yZA=='),
++    ])
++    def test_proxy_auth_preserved_in_connection(self, scheme, proxy_scheme,
++                                               auth, expected):
++        proxy = proxy_scheme + auth + '@proxy.example:3128'
++        adapter = HTTPAdapter()
++        try:
++            conn = adapter.get_connection(scheme + '://example.org/',
++                                          proxies={scheme: proxy})
++            assert conn.proxy_headers == {'Proxy-Authorization': expected}
++        finally:
++            adapter.close()
++
+     def test_response_json_when_content_is_None(self, httpbin):
+         r = requests.get(httpbin('/status/204'))
+         # Make sure r.content is None

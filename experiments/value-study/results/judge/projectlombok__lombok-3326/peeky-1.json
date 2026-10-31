@@ -1,0 +1,7 @@
+{
+ "judge_id": "a105",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fixed the crash: `@UtilityClass` made nested classes static but left javac\u2019s cached erased type referencing the old enclosing class.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,206 @@
+{
+ "bug": "pydata__xarray-6599",
+ "arm": "control",
+ "rep": 2,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/pydata__xarray-6599:control",
+ "image_digest": "sha256:2369a496624d8af7a2481c6f5bd88fb002160b2e2c7625515624168e2e265a9a",
+ "peeky_sha": null,
+ "container": "study-pydata__xarray-6599-control-2-c37aa5",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:36:47+00:00",
+ "ended": "2026-10-31T03:37:58+00:00",
+ "wall_seconds": 71.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "xarray/tests/test_computation.py::test_polyval[timedelta-False]": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 2.1,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "56cd9a7f607e2ebc1e4dbaf97648052f385901d3b242d3f2b72072ca18b2d404",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "doc/whats-new.rst",
+  "xarray/core/computation.py"
+ ],
+ "patch_bytes": 2202,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 266
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 10,
+ "ai_credits": 12.0077,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 154497,
+  "output": 4961,
+  "cache_read": 131567,
+  "cache_write": 22900,
+  "reasoning": 1635
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 14,
+ "tool_calls_by_name": {
+  "bash": 14
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls -d /testbed; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && rg -n 'def polyval|_ensure_numeric|polyval\\(' xarray/core/computation.py xarray/tests/test_computation.py",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'datetime_to_numeric|def _to_numeric|def _ensure_numeric' xarray/core && ls doc/whats-new* && sed -n '1,150p' pyproject.toml",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'def polyval|_ensure_numeric|polyval\\(' xarray/core/computation.py xarray/tests/test_computation.py && sed -n '1,140p' pyproject.toml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'datetime_to_numeric|def _to_numeric|def _ensure_numeric' xarray/core/*.py && ls doc/whats-new* && sed -n '1,100p' setup.cfg",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1840,1970p' xarray/core/computation.py && sed -n '1860,2055p' xarray/tests/test_computation.py && sed -n '1,100p' xarray/tests/test_computation.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '380,470p' xarray/core/duck_array_ops.py && sed -n '1,170p' doc/whats-new.rst && grep -n '_ensure_numeric' xarray/core/*.py && grep -nE 'polyval|timedelta' doc/user-guide/computation.rst | tail -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport numpy as np\nimport xarray as xr\nfrom xarray.core.computation import _ensure_numeric\nfor values in [np.array([0, 10, 20], dtype='timedelta64[s]'), np.array(['2021-04-01T05:25:19','2021-04-01T05:25:29','2021-04-01T05:25:39'], dtype='datetime64[ns]')]:\n    arr = xr.DataArray(values, dims='time', coords={'time': values})\n    try:\n        print(arr.dtype, _ensure_numeric(arr).values)\n        print(xr.polyval(arr, xr.DataArray([0,1e-9],dims='degree',coords={'degree':[0,1]})))\n    except Exception as exc:\n        print(type(exc).__name__, str(exc))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '6655,6770p' xarray/core/dataset.py && sed -n '2490,2530p' xarray/core/variable.py && sed -n '430,478p' doc/user-guide/computation.rst && grep -nE 'datetime_to_numeric|timedelta_to_numeric' xarray/tests/test_duck_array_ops.py && git --no-pager log -3 --oneline",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: xarray/tests/test_computation.py\n@@\n-def test_polyval_degree_dim_checks():\n+@pytest.mark.parametrize(\"use_dask\", [False, True])\n+@pytest.mark.parametrize(\"as_dataset\", [False, True])\n+def test_polyval_timedelta(use_dask: bool, as_dataset: bool) -> None:\n+    x = xr.DataArray(\n+        pd.to_timedelta([-10, 0, 10, 20, np.nan], unit=\"s\"),\n+        dims=\"x\",\n+        coords={\"x\": pd.date_range(\"2021-04-01\", periods=5)},\n+        name=\"a\",\n+    )\n+    coeffs = xr.DataArray(\n+        [2e-18, 3e-9, 4], dims=\"degree\", coords={\"degree\": [2, 1, 0]}\n+    )\n+    expected = x.copy(data=[174, 4, 234, 864, np.nan])\n+    if as_dataset:\n+        x = x.to_dataset()\n+        expected = expected.to_dataset()\n+    if use_dask:\n+        if not has_dask:\n+            pytest.skip(\"requires dask\")\n+        x = x.chunk({\"x\": 2})\n+        coeffs = coeffs.chunk({\"degree\": 2})\n+    with raise_if_dask_computes():\n+        actual = xr.polyval(x, coeffs)\n+    xr.testing.assert_allclose(actual, expected)\n+\n+\n+def test_polyval_degree_dim_checks():\n*** End Patch\nPATCH\npytest -q xarray/tests/test_computation.py -k test_polyval_timedelta",
+   "exit_code": 5,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('xarray/tests/test_computation.py')\ntext = path.read_text()\nold = 'def test_polyval_degree_dim_checks():\\n'\nnew = '''@pytest.mark.parametrize(\"use_dask\", [False, True])\n@pytest.mark.parametrize(\"as_dataset\", [False, True])\ndef test_polyval_timedelta(use_dask: bool, as_dataset: bool) -> None:\n    x = xr.DataArray(\n        pd.to_timedelta([-10, 0, 10, 20, np.nan], unit=\"s\"),\n        dims=\"x\",\n        coords={\"x\": pd.date_range(\"2021-04-01\", periods=5)},\n        name=\"a\",\n    )\n    coeffs = xr.DataArray(\n        [2e-18, 3e-9, 4], dims=\"degree\", coords={\"degree\": [2, 1, 0]}\n    )\n    expected = x.copy(data=[174, 4, 234, 864, np.nan])\n    if as_dataset:\n        x = x.to_dataset()\n        expected = expected.to_dataset()\n    if use_dask:\n        if not has_dask:\n            pytest.skip(\"requires dask\")\n        x = x.chunk({\"x\": 2})\n        coeffs = coeffs.chunk({\"degree\": 2})\n    with raise_if_dask_computes():\n        actual = xr.polyval(x, coeffs)\n    xr.testing.assert_allclose(actual, expected)\n\n\n'''+old\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npytest -q xarray/tests/test_computation.py -k test_polyval_timedelta --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('xarray/core/computation.py')\ntext = path.read_text()\nold = '''    coord : DataArray or Dataset\n        Values at which to evaluate the polynomial.\n'''\nnew = '''    coord : DataArray or Dataset\n        Values at which to evaluate the polynomial. Datetime values are\n        converted to nanoseconds since 1970-01-01. Timedelta values are\n        converted to nanoseconds.\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\ntext = text.replace('''    \"\"\"Converts all datetime64 variables to float64\n''', '''    \"\"\"Converts all datetime64 and timedelta64 variables to float64\n''')\ntext = text.replace('''        Variables with datetime64 dtypes converted to float64.\n''', '''        Variables with datetime64 or timedelta64 dtypes converted to float64.\n''')\nold = '''        if x.dtype.kind in \"mM\":\n            return x.copy(\n                data=datetime_to_numeric(\n                    x.data,\n                    offset=np.datetime64(\"1970-01-01\"),\n                    datetime_unit=\"ns\",\n                ),\n            )\n'''\nnew = '''        if x.dtype.kind in \"mM\":\n            offset = (\n                np.datetime64(\"1970-01-01\")\n                if x.dtype.kind == \"M\"\n                else np.timedelta64(0, \"ns\")\n            )\n            return x.copy(\n                data=datetime_to_numeric(\n                    x.data,\n                    offset=offset,\n                    datetime_unit=\"ns\",\n                ),\n            )\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('doc/whats-new.rst')\ntext = path.read_text()\nold = 'Bug fixes\\n~~~~~~~~~\\n\\n'\nassert old in text\npath.write_text(text.replace(old, old + '- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to nanoseconds.\\n', 1))\nPY\npytest -q xarray/tests/test_computation.py -k polyval",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git --no-pager diff --stat && git --no-pager diff -- xarray/core/computation.py xarray/tests/test_computation.py doc/whats-new.rst",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport numpy as np\nimport xarray as xr\n\nvalues = np.array([\n    '2021-04-01T05:25:19.000000000',\n    '2021-04-01T05:25:29.000000000',\n    '2021-04-01T05:25:39.000000000',\n    '2021-04-01T05:25:49.000000000',\n    '2021-04-01T05:25:59.000000000',\n    '2021-04-01T05:26:09.000000000',\n], dtype='datetime64[ns]')\ntime = xr.DataArray(values, name='azimuth_time', coords={'azimuth_time': values-values[0]})\ncoeffs = xr.DataArray([\n    [2.33333335e-43, 1.62499999e-43, 2.79166678e-43],\n    [-1.15316667e-30, 1.49518518e-31, 9.08833333e-31],\n    [-2.50272583e-18, -1.23851062e-18, -2.99098229e-18],\n    [5.83965193e-06, -1.53321770e-07, -4.84640242e-06],\n    [4.44739216e6, 1.45053974e6, 5.29960857e6],\n], dims=('degree','axis'), coords={'axis':[0,1,2], 'degree':[4,3,2,1,0]})\nexpected = xr.DataArray([\n    [4447392.16, 1450539.74, 5299608.57],\n    [4505537.25588366, 1448882.82238152, 5250846.359196],\n    [4563174.92026797, 1446979.12250014, 5201491.44401733],\n    [4620298.31815291, 1444829.59596699, 5151549.377964],\n    [4676900.67053846, 1442435.23739315, 5101025.78153601],\n    [4732975.25442459, 1439797.08038974, 5049926.34223336],\n], dims=('azimuth_time', 'axis'), coords={'azimuth_time':time.azimuth_time, 'axis':coeffs.axis})\nfor chunked in [False, True]:\n    x = time.azimuth_time.chunk({'azimuth_time':2}) if chunked else time.azimuth_time\n    actual = xr.polyval(x, coeffs).transpose('azimuth_time', 'axis')\n    xr.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-8)\nprint('Reported polynomial matches all expected values with explicit timedelta coordinate, eager and dask.')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 3,
+ "build_or_test_commands": [
+  "cd /testbed && apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: xarray/tests/test_computation.py\n@@\n-def test_polyval_degree_dim_checks():\n+@pytest.mark.parametrize(\"use_dask\", [False, True])\n+@pytest.mark.parametrize(\"as_dataset\", [False, True])\n+def test_polyval_timedelta(use_dask: bool, as_dataset: bool) -> None:\n+    x = xr.DataArray(\n+        pd.to_timedelta([-10, 0, 10, 20, np.nan], unit=\"s\"),\n+        dims=\"x\",\n+        coords={\"x\": pd.date_range(\"2021-04-01\", periods=5)},\n+        name=\"a\",\n+    )\n+    coeffs = xr.DataArray(\n+        [2e-18, 3e-9, 4], dims=\"degree\", coords={\"degree\": [2, 1, 0]}\n+    )\n+    expected = x.copy(data=[174, 4, 234, 864, np.nan])\n+    if as_dataset:\n+        x = x.to_dataset()\n+        expected = expected.to_dataset()\n+    if use_dask:\n+        if not has_dask:\n+            pytest.skip(\"requires dask\")\n+        x = x.chunk({\"x\": 2})\n+        coeffs = coeffs.chunk({\"degree\": 2})\n+    with raise_if_dask_computes():\n+        actual = xr.polyval(x, coeffs)\n+    xr.testing.assert_allclose(actual, expected)\n+\n+\n+def test_polyval_degree_dim_checks():\n*** End Patch\nPATCH\npytest -q xarray/tests/test_computation.py -k test_polyval_timedelta",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('xarray/tests/test_computation.py')\ntext = path.read_text()\nold = 'def test_polyval_degree_dim_checks():\\n'\nnew = '''@pytest.mark.parametrize(\"use_dask\", [False, True])\n@pytest.mark.parametrize(\"as_dataset\", [False, True])\ndef test_polyval_timedelta(use_dask: bool, as_dataset: bool) -> None:\n    x = xr.DataArray(\n        pd.to_timedelta([-10, 0, 10, 20, np.nan], unit=\"s\"),\n        dims=\"x\",\n        coords={\"x\": pd.date_range(\"2021-04-01\", periods=5)},\n        name=\"a\",\n    )\n    coeffs = xr.DataArray(\n        [2e-18, 3e-9, 4], dims=\"degree\", coords={\"degree\": [2, 1, 0]}\n    )\n    expected = x.copy(data=[174, 4, 234, 864, np.nan])\n    if as_dataset:\n        x = x.to_dataset()\n        expected = expected.to_dataset()\n    if use_dask:\n        if not has_dask:\n            pytest.skip(\"requires dask\")\n        x = x.chunk({\"x\": 2})\n        coeffs = coeffs.chunk({\"degree\": 2})\n    with raise_if_dask_computes():\n        actual = xr.polyval(x, coeffs)\n    xr.testing.assert_allclose(actual, expected)\n\n\n'''+old\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npytest -q xarray/tests/test_computation.py -k test_polyval_timedelta --tb=short",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('xarray/core/computation.py')\ntext = path.read_text()\nold = '''    coord : DataArray or Dataset\n        Values at which to evaluate the polynomial.\n'''\nnew = '''    coord : DataArray or Dataset\n        Values at which to evaluate the polynomial. Datetime values are\n        converted to nanoseconds since 1970-01-01. Timedelta values are\n        converted to nanoseconds.\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\ntext = text.replace('''    \"\"\"Converts all datetime64 variables to float64\n''', '''    \"\"\"Converts all datetime64 and timedelta64 variables to float64\n''')\ntext = text.replace('''        Variables with datetime64 dtypes converted to float64.\n''', '''        Variables with datetime64 or timedelta64 dtypes converted to float64.\n''')\nold = '''        if x.dtype.kind in \"mM\":\n            return x.copy(\n                data=datetime_to_numeric(\n                    x.data,\n                    offset=np.datetime64(\"1970-01-01\"),\n                    datetime_unit=\"ns\",\n                ),\n            )\n'''\nnew = '''        if x.dtype.kind in \"mM\":\n            offset = (\n                np.datetime64(\"1970-01-01\")\n                if x.dtype.kind == \"M\"\n                else np.timedelta64(0, \"ns\")\n            )\n            return x.copy(\n                data=datetime_to_numeric(\n                    x.data,\n                    offset=offset,\n                    datetime_unit=\"ns\",\n                ),\n            )\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('doc/whats-new.rst')\ntext = path.read_text()\nold = 'Bug fixes\\n~~~~~~~~~\\n\\n'\nassert old in text\npath.write_text(text.replace(old, old + '- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to nanoseconds.\\n', 1))\nPY\npytest -q xarray/tests/test_computation.py -k polyval"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed timedelta conversion to use a zero-duration offset instead of a datetime epoch, preserving missing values and lazy evaluation.\n\nThe example also encounters an intentional API change: `polyval` now evaluates data, not its index. Use `xr.polyval(azimuth_time.azimuth_time, polyfit_coefficients)` to recover the expected values.",
+ "assistant_messages": [
+  "The refactor intentionally made `polyval` evaluate the supplied data rather than its index. I also found a separate bug: timedelta data is converted using a datetime offset. I\u2019ll fix that conversion while preserving the documented behavior.\n",
+  "Fixed timedelta conversion to use a zero-duration offset instead of a datetime epoch, preserving missing values and lazy evaluation.\n\nThe example also encounters an intentional API change: `polyval` now evaluates data, not its index. Use `xr.polyval(azimuth_time.azimuth_time, polyfit_coefficients)` to recover the expected values."
+ ],
+ "assistant_reasoning": [
+  "**Running Tests for Validation**\n\nI need to establish that simple tests combined with direct example validation will be sufficient. I should run additional tests before applying any fixes to verify that they fail as expected. Once I ensure the failures, it will allow me to conduct coherent edits to tests, documentation, and source code. Then I'll run the tests again to confirm everything is functioning properly. Should I use the `apply_patch` command available in bash for this?",
+  "**Evaluating patch options**\n\nIt looks like I can only use bash tools since the apply_patch isn't installed. I need to ensure that Python is permissible for what I want to do, especially when I can\u2019t use the apply patch. I can read and replace content in a batch across files using Python. I'll run some tests first, then use pytest to confirm everything works correctly.",
+  "**Considering type annotations and tests**\n\nI need to ensure my approach is concise while being correct regarding type annotations for tests with mypy, specifically looking at union types with DataArray and Dataset. It seems I could annotate `x` to indicate that it might be either a `xr.DataArray` or `xr.Dataset`, but I wonder if simplifying that to a new parameter at the call branch could be better. Also, it looks like existing tests might not be running as they should. Additionally, I\u2019m verifying the source offset variable based on specific conditions.\n\n**Clarifying datetime handling**\n\nI don't need to branch for `astype` since that avoids NaT issues. The docstrings should clearly state that the return types are \"datetime64 and timedelta64.\" The documentation explains that datetimes are converted to nanoseconds since 1970, while timedeltas are also in nanoseconds. I think preserving the direct argument is sufficient, as generic values are enough. The release notes help clarify that they fixed the conversion of `timedelta64` inputs to nanoseconds, which should fit the overall requirements without needing an author mention.",
+  "**Evaluating computations and edge cases**\n\nI need to verify a full computation for the smallest -k polynomial. It's crucial only to use _ensure_numeric where needed. We'll also consider independent parallel validation and whether a regression test should be added. The user pointed out an example that's wrong, and I have to maintain semantics while addressing it. I need to explain how the refactor worked, especially regarding handling datetime issues. There's also the question of implementing _ensure_numeric directly versus keeping expected tests, focusing on dtype handling.\n\n**Reviewing testing procedures**\n\nI should include a test for coordinate scenarios involving timedeltas and self-coordinates, using minimal working examples (MVCEs). The current tests cover duration data but not time coordinates, so I\u2019m considering adding a parameter for time selection. I need to ensure we only test with simple unindexed timedeltas instead of datetime coordinates. Also, it's essential to revise the source documentation regarding dtypes for clarity. Finally, I\u2019ll validate using a tool to check comparisons and keep track of expected outputs with xarray."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 73.6
+}

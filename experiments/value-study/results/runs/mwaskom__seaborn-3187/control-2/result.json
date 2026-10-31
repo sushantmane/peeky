@@ -1,0 +1,207 @@
+{
+ "bug": "mwaskom__seaborn-3187",
+ "arm": "control",
+ "rep": 2,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/mwaskom__seaborn-3187:control",
+ "image_digest": "sha256:000243f4874513c88d6e85f777c2fe760d4633485ed7152c6d4cd2a22b970e9b",
+ "peeky_sha": null,
+ "container": "study-mwaskom__seaborn-3187-control-2-4c4538",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:35:07+00:00",
+ "ended": "2026-10-31T03:36:32+00:00",
+ "wall_seconds": 85.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset": "PASSED",
+  "tests/test_relational.py::TestRelationalPlotter::test_legend_has_no_offset": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 13.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "f30ce1a19582d88d48fb385e9ea982cc7466a3c415316d1399675a3482583b4a",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "doc/whatsnew/v0.12.2.rst",
+  "seaborn/_core/scales.py",
+  "seaborn/utils.py",
+  "tests/_core/test_scales.py",
+  "tests/test_utils.py"
+ ],
+ "patch_bytes": 4827,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 251
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 10,
+ "ai_credits": 15.3308,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 204071,
+  "output": 5505,
+  "cache_read": 171627,
+  "cache_write": 32414,
+  "reasoning": 1487
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 14,
+ "tool_calls_by_name": {
+  "bash": 14
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls -a /testbed | head; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg -n 'ScalarFormatter|locator_to_legend_entries|format_ticks|legend_formatter' seaborn tests -g '*.py'",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,250p' seaborn/_core/scales.py && sed -n '250,470p' seaborn/_core/scales.py && cat pyproject.toml && sed -n '1,180p' setup.cfg",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -RnE 'ScalarFormatter|locator_to_legend_entries|format_ticks' seaborn tests --include='*.py' && sed -n '530,690p' seaborn/_core/scales.py && sed -n '1,150p' tests/test_utils.py && ls doc/whatsnew && ls tests/_core",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,260p' tests/_core/test_scales.py && grep -nE 'legend|locator_to' tests/test_relational.py tests/test_utils.py seaborn/utils.py seaborn/relational.py && sed -n '1,170p' tests/conftest.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '680,722p' seaborn/utils.py && sed -n '302,345p' tests/test_utils.py && sed -n '395,690p' tests/_core/test_scales.py && cat doc/whatsnew/v0.12.2.rst",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '180,310p' seaborn/relational.py && grep -nE 'legend|^class ' tests/test_relational.py | head -90 && grep -nE 'legend|^class ' tests/_core/test_plot.py | tail -65 && cat tests/conftest.py | head -100 && sed -n '1,90p' seaborn/utils.py && sed -n '1,55p' tests/_core/test_scales.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '55,150p' tests/_core/test_scales.py && sed -n '285,325p' tests/_core/test_scales.py && sed -n '1860,1935p' tests/_core/test_plot.py && sed -n '1475,1590p' tests/test_relational.py && sed -n '1,55p' tests/test_relational.py && grep -nE 'legend =|def legend|class (Color|PointSize|Coordinate)' seaborn/_core/properties.py && sed -n '1,80p' seaborn/conftest.py && command -v apply_patch",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport matplotlib as mpl\nfrom matplotlib.ticker import FixedLocator\nimport pandas as pd\nfrom seaborn._core.scales import Continuous\nfrom seaborn._core.properties import Color\nfrom seaborn.utils import locator_to_legend_entries\nprint('matplotlib', mpl.__version__)\nfor ticks in ([2e6, 3e6, 4e6], [2e-6, 3e-6, 4e-6], [1e6, 1e6 + 1, 1e6 + 2]):\n    s = Continuous().tick(at=ticks)._setup(pd.Series(ticks), Color())\n    print(ticks, 'scale:', s._legend, 'helper:', locator_to_legend_entries(FixedLocator(ticks), (min(ticks), max(ticks)), float))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v apply_patch && apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: tests/_core/test_scales.py\n@@\n     ObjectProperty,\n     Coordinate,\n+    PointSize,\n     Alpha,\n@@\n     def test_color_with_transform(self, x):\n@@\n         assert_array_equal(s(x), cmap([0, .5, 1])[:, :3])  # FIXME RGBA\n \n+    @pytest.mark.parametrize(\"prop\", [Color, PointSize])\n+    @pytest.mark.parametrize(\"use_offset\", [True, False])\n+    @pytest.mark.parametrize(\"values, labels\", [\n+        ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n+        ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n+        ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n+    ])\n+    def test_legend_scalar_formatter(self, prop, use_offset, values, labels):\n+\n+        with mpl.rc_context({\n+            \"axes.formatter.useoffset\": use_offset,\n+            \"axes.formatter.offset_threshold\": 2,\n+            \"axes.formatter.use_mathtext\": False,\n+        }):\n+            s = Continuous().tick(at=values)._setup(pd.Series(values), prop())\n+\n+        assert s._legend == (values, labels)\n+\n+    def test_coordinate_scalar_formatter_offset(self):\n+\n+        values = [1e6, 1e6 + 1, 1e6 + 2]\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=True)\n+        s = Continuous().label(formatter)._setup(pd.Series(values), Coordinate())\n+        a = PseudoAxis(s._matplotlib_scale)\n+        a.set_view_interval(min(values), max(values))\n+        formatter.format_ticks(values)\n+\n+        assert formatter.get_offset()\n+\n     def test_tick_locator(self, x):\n*** Update File: tests/test_utils.py\n@@\n-def test_move_legend_matplotlib_objects():\n+@pytest.mark.parametrize(\"use_offset\", [True, False])\n+@pytest.mark.parametrize(\"values, labels\", [\n+    ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n+    ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n+    ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n+])\n+def test_locator_to_legend_entries_scalar_formatter(use_offset, values, labels):\n+\n+    locator = mpl.ticker.FixedLocator(values)\n+    with mpl.rc_context({\n+        \"axes.formatter.useoffset\": use_offset,\n+        \"axes.formatter.offset_threshold\": 2,\n+        \"axes.formatter.use_mathtext\": False,\n+    }):\n+        levels, str_levels = utils.locator_to_legend_entries(\n+            locator, (min(values), max(values)), float\n+        )\n+\n+    assert levels == values\n+    assert str_levels == labels\n+\n+\n+def test_move_legend_matplotlib_objects():\n*** End Patch\nPATCH\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'scalar_formatter' --tb=short",
+   "exit_code": 5,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\npath = Path('tests/_core/test_scales.py')\ntext = path.read_text()\ntext = text.replace('    Coordinate,\\n', '    Coordinate,\\n    PointSize,\\n', 1)\nanchor = '    def test_tick_locator(self, x):\\n'\naddition = '''    @pytest.mark.parametrize(\"prop\", [Color, PointSize])\n    @pytest.mark.parametrize(\"use_offset\", [True, False])\n    @pytest.mark.parametrize(\"values, labels\", [\n        ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n        ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n        ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n    ])\n    def test_legend_scalar_formatter(self, prop, use_offset, values, labels):\n\n        with mpl.rc_context({\n            \"axes.formatter.useoffset\": use_offset,\n            \"axes.formatter.offset_threshold\": 2,\n            \"axes.formatter.use_mathtext\": False,\n        }):\n            s = Continuous().tick(at=values)._setup(pd.Series(values), prop())\n\n        assert s._legend == (values, labels)\n\n    def test_coordinate_scalar_formatter_offset(self):\n\n        values = [1e6, 1e6 + 1, 1e6 + 2]\n        formatter = mpl.ticker.ScalarFormatter(useOffset=True)\n        s = Continuous().label(formatter)._setup(pd.Series(values), Coordinate())\n        a = PseudoAxis(s._matplotlib_scale)\n        a.set_view_interval(min(values), max(values))\n        formatter.format_ticks(values)\n\n        assert formatter.get_offset()\n\n'''\nassert text.count(anchor) == 1\npath.write_text(text.replace(anchor, addition + anchor, 1))\n\npath = Path('tests/test_utils.py')\ntext = path.read_text()\nanchor = 'def test_move_legend_matplotlib_objects():\\n'\naddition = '''@pytest.mark.parametrize(\"use_offset\", [True, False])\n@pytest.mark.parametrize(\"values, labels\", [\n    ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n    ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n    ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n])\ndef test_locator_to_legend_entries_scalar_formatter(use_offset, values, labels):\n\n    locator = mpl.ticker.FixedLocator(values)\n    with mpl.rc_context({\n        \"axes.formatter.useoffset\": use_offset,\n        \"axes.formatter.offset_threshold\": 2,\n        \"axes.formatter.use_mathtext\": False,\n    }):\n        levels, str_levels = utils.locator_to_legend_entries(\n            locator, (min(values), max(values)), float\n        )\n\n    assert levels == values\n    assert str_levels == labels\n\n\n'''\nassert text.count(anchor) == 1\npath.write_text(text.replace(anchor, addition + anchor, 1))\nPY\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'scalar_formatter' --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\nchanges = [\n    ('seaborn/_core/scales.py',\n     '            labels = axis.major.formatter.format_ticks(locs)\\n',\n     '            formatter = axis.major.formatter\\n'\n     '            if isinstance(formatter, ScalarFormatter):\\n'\n     '                formatter.set_useOffset(False)\\n'\n     '                formatter.set_scientific(False)\\n'\n     '            labels = formatter.format_ticks(locs)\\n'),\n    ('seaborn/utils.py',\n     '        formatter = mpl.ticker.ScalarFormatter()\\n',\n     '        formatter = mpl.ticker.ScalarFormatter(useOffset=False)\\n'\n     '        formatter.set_scientific(False)\\n'),\n    ('doc/whatsnew/v0.12.2.rst',\n     '- |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\\n',\n     '- |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\\n\\n'\n     '- |Fix| Fixed incorrect numeric legend labels for large or small values and narrow ranges in relational plots and the objects interface.\\n'),\n]\nfor filename, before, after in changes:\n    path = Path(filename)\n    text = path.read_text()\n    assert text.count(before) == 1, filename\n    path.write_text(text.replace(before, after))\nPY\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'scalar_formatter or locator_to_legend_entries' --tb=short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && pytest -q tests/_core/test_scales.py tests/test_utils.py tests/_core/test_plot.py::TestLegend tests/test_relational.py -k 'not get_dataset_names and not load_dataset' --tb=short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- seaborn/_core/scales.py seaborn/utils.py tests/_core/test_scales.py tests/test_utils.py doc/whatsnew/v0.12.2.rst && python - <<'PY'\nimport matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\nimport numpy as np\nimport seaborn as sns\nimport seaborn.objects as so\n\nfor values in (np.linspace(2.5e6, 6.5e6, 20), np.linspace(2.5e-6, 6.5e-6, 20), np.linspace(1e6, 1e6 + 4, 20)):\n    x = np.arange(len(values))\n    for semantic in ('hue', 'size'):\n        fig, ax = plt.subplots()\n        sns.scatterplot(x=x, y=x, legend='brief', ax=ax, **{semantic: values})\n        labels = [text.get_text() for text in ax.legend_.get_texts()]\n        numbers = np.array([float(label) for label in labels])\n        assert np.all(numbers >= values.min()) and np.all(numbers <= values.max()), labels\n        assert np.all(np.diff(numbers) > 0), labels\n        fig.canvas.draw()\n        plt.close(fig)\n    for semantic in ('color', 'pointsize'):\n        plot = so.Plot(x=x, y=x, **{semantic: values}).add(so.Dot()).plot()\n        labels = [text.get_text() for text in plot._figure.legends[0].get_texts()]\n        numbers = np.array([float(label) for label in labels])\n        assert np.all(numbers >= values.min()) and np.all(numbers <= values.max()), labels\n        assert np.all(np.diff(numbers) > 0), labels\n        plot._figure.canvas.draw()\n        plt.close(plot._figure)\nprint('Rendered legends retain full numeric values in both plotting APIs.')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && command -v apply_patch && apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: tests/_core/test_scales.py\n@@\n     ObjectProperty,\n     Coordinate,\n+    PointSize,\n     Alpha,\n@@\n     def test_color_with_transform(self, x):\n@@\n         assert_array_equal(s(x), cmap([0, .5, 1])[:, :3])  # FIXME RGBA\n \n+    @pytest.mark.parametrize(\"prop\", [Color, PointSize])\n+    @pytest.mark.parametrize(\"use_offset\", [True, False])\n+    @pytest.mark.parametrize(\"values, labels\", [\n+        ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n+        ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n+        ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n+    ])\n+    def test_legend_scalar_formatter(self, prop, use_offset, values, labels):\n+\n+        with mpl.rc_context({\n+            \"axes.formatter.useoffset\": use_offset,\n+            \"axes.formatter.offset_threshold\": 2,\n+            \"axes.formatter.use_mathtext\": False,\n+        }):\n+            s = Continuous().tick(at=values)._setup(pd.Series(values), prop())\n+\n+        assert s._legend == (values, labels)\n+\n+    def test_coordinate_scalar_formatter_offset(self):\n+\n+        values = [1e6, 1e6 + 1, 1e6 + 2]\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=True)\n+        s = Continuous().label(formatter)._setup(pd.Series(values), Coordinate())\n+        a = PseudoAxis(s._matplotlib_scale)\n+        a.set_view_interval(min(values), max(values))\n+        formatter.format_ticks(values)\n+\n+        assert formatter.get_offset()\n+\n     def test_tick_locator(self, x):\n*** Update File: tests/test_utils.py\n@@\n-def test_move_legend_matplotlib_objects():\n+@pytest.mark.parametrize(\"use_offset\", [True, False])\n+@pytest.mark.parametrize(\"values, labels\", [\n+    ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n+    ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n+    ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n+])\n+def test_locator_to_legend_entries_scalar_formatter(use_offset, values, labels):\n+\n+    locator = mpl.ticker.FixedLocator(values)\n+    with mpl.rc_context({\n+        \"axes.formatter.useoffset\": use_offset,\n+        \"axes.formatter.offset_threshold\": 2,\n+        \"axes.formatter.use_mathtext\": False,\n+    }):\n+        levels, str_levels = utils.locator_to_legend_entries(\n+            locator, (min(values), max(values)), float\n+        )\n+\n+    assert levels == values\n+    assert str_levels == labels\n+\n+\n+def test_move_legend_matplotlib_objects():\n*** End Patch\nPATCH\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'scalar_formatter' --tb=short",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\npath = Path('tests/_core/test_scales.py')\ntext = path.read_text()\ntext = text.replace('    Coordinate,\\n', '    Coordinate,\\n    PointSize,\\n', 1)\nanchor = '    def test_tick_locator(self, x):\\n'\naddition = '''    @pytest.mark.parametrize(\"prop\", [Color, PointSize])\n    @pytest.mark.parametrize(\"use_offset\", [True, False])\n    @pytest.mark.parametrize(\"values, labels\", [\n        ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n        ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n        ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n    ])\n    def test_legend_scalar_formatter(self, prop, use_offset, values, labels):\n\n        with mpl.rc_context({\n            \"axes.formatter.useoffset\": use_offset,\n            \"axes.formatter.offset_threshold\": 2,\n            \"axes.formatter.use_mathtext\": False,\n        }):\n            s = Continuous().tick(at=values)._setup(pd.Series(values), prop())\n\n        assert s._legend == (values, labels)\n\n    def test_coordinate_scalar_formatter_offset(self):\n\n        values = [1e6, 1e6 + 1, 1e6 + 2]\n        formatter = mpl.ticker.ScalarFormatter(useOffset=True)\n        s = Continuous().label(formatter)._setup(pd.Series(values), Coordinate())\n        a = PseudoAxis(s._matplotlib_scale)\n        a.set_view_interval(min(values), max(values))\n        formatter.format_ticks(values)\n\n        assert formatter.get_offset()\n\n'''\nassert text.count(anchor) == 1\npath.write_text(text.replace(anchor, addition + anchor, 1))\n\npath = Path('tests/test_utils.py')\ntext = path.read_text()\nanchor = 'def test_move_legend_matplotlib_objects():\\n'\naddition = '''@pytest.mark.parametrize(\"use_offset\", [True, False])\n@pytest.mark.parametrize(\"values, labels\", [\n    ([2e6, 3e6, 4e6], [\"2000000\", \"3000000\", \"4000000\"]),\n    ([2e-6, 3e-6, 4e-6], [\"0.000002\", \"0.000003\", \"0.000004\"]),\n    ([1e6, 1e6 + 1, 1e6 + 2], [\"1000000\", \"1000001\", \"1000002\"]),\n])\ndef test_locator_to_legend_entries_scalar_formatter(use_offset, values, labels):\n\n    locator = mpl.ticker.FixedLocator(values)\n    with mpl.rc_context({\n        \"axes.formatter.useoffset\": use_offset,\n        \"axes.formatter.offset_threshold\": 2,\n        \"axes.formatter.use_mathtext\": False,\n    }):\n        levels, str_levels = utils.locator_to_legend_entries(\n            locator, (min(values), max(values)), float\n        )\n\n    assert levels == values\n    assert str_levels == labels\n\n\n'''\nassert text.count(anchor) == 1\npath.write_text(text.replace(anchor, addition + anchor, 1))\nPY\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'scalar_formatter' --tb=short",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\nchanges = [\n    ('seaborn/_core/scales.py',\n     '            labels = axis.major.formatter.format_ticks(locs)\\n',\n     '            formatter = axis.major.formatter\\n'\n     '            if isinstance(formatter, ScalarFormatter):\\n'\n     '                formatter.set_useOffset(False)\\n'\n     '                formatter.set_scientific(False)\\n'\n     '            labels = formatter.format_ticks(locs)\\n'),\n    ('seaborn/utils.py',\n     '        formatter = mpl.ticker.ScalarFormatter()\\n',\n     '        formatter = mpl.ticker.ScalarFormatter(useOffset=False)\\n'\n     '        formatter.set_scientific(False)\\n'),\n    ('doc/whatsnew/v0.12.2.rst',\n     '- |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\\n',\n     '- |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\\n\\n'\n     '- |Fix| Fixed incorrect numeric legend labels for large or small values and narrow ranges in relational plots and the objects interface.\\n'),\n]\nfor filename, before, after in changes:\n    path = Path(filename)\n    text = path.read_text()\n    assert text.count(before) == 1, filename\n    path.write_text(text.replace(before, after))\nPY\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'scalar_formatter or locator_to_legend_entries' --tb=short",
+  "cd /testbed && pytest -q tests/_core/test_scales.py tests/test_utils.py tests/_core/test_plot.py::TestLegend tests/test_relational.py -k 'not get_dataset_names and not load_dataset' --tb=short"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "`ScalarFormatter` abbreviated legend values using scale factors or offsets that legends never displayed. Disabled these abbreviations for numeric legends in both plotting APIs, so labels show full values while axis formatting remains unchanged. Added regression coverage for large, small, and narrow numeric ranges.",
+ "assistant_messages": [
+  "I\u2019ll check how both plotting APIs format numeric legends and fix the shared behavior.\n",
+  "Both APIs drop the formatter\u2019s separate scale or offset text. I\u2019ll disable those abbreviations for scalar legend labels so each label shows its full value, while leaving axis formatting unchanged.\n",
+  "`ScalarFormatter` abbreviated legend values using scale factors or offsets that legends never displayed. Disabled these abbreviations for numeric legends in both plotting APIs, so labels show full values while axis formatting remains unchanged. Added regression coverage for large, small, and narrow numeric ranges."
+ ],
+ "assistant_reasoning": [],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 99.2
+}

@@ -1,0 +1,30 @@
+id: fmtlib__fmt-3158
+language: cpp
+repo: fmtlib/fmt
+source: SWE-bench Multilingual
+base_commit: 80f8d34427d40ec5e7ce3b10ededc46bd4bd5759
+upstream: https://github.com/fmtlib/fmt/pull/3158
+category: C
+categories_applicable: [C, B]
+category_rationale: >-
+  The faulty state is in nested formatter objects (a range_formatter holding the element
+  formatter of an inner range of char), in a Release (-O3) build, and the reporter can't tell
+  the cause. The reported C++23 symptom also involves how std::views::split ranges are treated.
+root_cause: >-
+  range_formatter::parse in include/fmt/ranges.h returns early, without calling
+  underlying_.parse(ctx), when the format spec is empty or ends right after the 'n' flag. The
+  element formatter is then never parsed, so for nested ranges the inner range_formatter's own
+  parse never runs and never switches its char elements to debug (quoted) format; a range of
+  ranges of char prints its chars unquoted (e.g. [[a, b], ...] instead of [['a', 'b'], ...]).
+  The fix forwards to underlying_.parse(ctx) in both early-return paths.
+test_hint: |-
+  Build a test with `cd /testbed && cmake -B build -S . && cmake --build build --parallel 4 --target <name>-test` (sources in test/<name>-test.cc).
+  Run it with `ctest --test-dir build -V -R <name>-test` (binaries in build/bin/).
+image: peeky-study/fmtlib__fmt-3158:control
+build_minutes: 0.3
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Build follows the SWE-bench spec (cmake -B build, target ranges-test); fmt defaults to a Release
+  build, and ranges-test compiles as gnu++11 with GCC 13. The reporter's C++23 std::views::split
+  example can't be compiled that way; the hidden test checks nested std::vector<char> ranges.

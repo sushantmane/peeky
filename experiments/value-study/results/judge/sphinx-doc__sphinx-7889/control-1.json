@@ -1,0 +1,7 @@
+{
+ "judge_id": "a116",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The mock treats every subscription key as a string, so `Base[T]` passes a `TypeVar` where a class name is expected.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

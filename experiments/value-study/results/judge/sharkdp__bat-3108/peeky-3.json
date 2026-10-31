@@ -1,0 +1,7 @@
+{
+ "judge_id": "a122",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The options currently override each other: `--plain` discards an earlier `--paging=never`, while a later `--paging` discards plain styling.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "name": "base",
+    "f2p": {
+      "TestLatLonDocValuesQueries > testNarrowPolygonCloseToNorthPole": "FAILED"
+    },
+    "p2p_failed": [],
+    "solved": false,
+    "seconds": 28
+  },
+  {
+    "name": "gold-1",
+    "f2p": {
+      "TestLatLonDocValuesQueries > testNarrowPolygonCloseToNorthPole": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 32
+  },
+  {
+    "name": "gold-2",
+    "f2p": {
+      "TestLatLonDocValuesQueries > testNarrowPolygonCloseToNorthPole": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 32
+  }
+]

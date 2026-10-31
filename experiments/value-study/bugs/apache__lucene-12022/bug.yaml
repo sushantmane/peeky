@@ -1,0 +1,33 @@
+id: apache__lucene-12022
+language: java
+repo: apache/lucene
+source: SWE-bench Multilingual
+base_commit: 11f2bc205652f1f2b2f61ba286cbfd2d77fd2d1b
+upstream: https://github.com/apache/lucene/pull/12022
+category: D
+categories_applicable: [D, A]
+category_rationale: >-
+  The false positive needs a very flat polygon whose tessellated, quantized triangle collapses to a
+  line segment, then a CONTAINS query against an intersecting line; the faulty edge flags live in
+  decoded triangles, not in anything the report's inputs show directly.
+root_cause: >-
+  ShapeField.resolveTriangleType turns a decoded triangle with two identical vertices into a LINE
+  (or POINT) but leaves the edge flags as they were: the line keeps the `ab` flag of the original
+  first edge, which may be an internal tessellation edge, instead of taking the flag from the edges
+  that survive the collapse. The CONTAINS query then sees no outer polygon edge crossing the query
+  line and wrongly decides the polygon contains it. The fix merges the flags of the retained edges
+  into `ab` in each collapse case.
+test_hint: >-
+  Lucene builds with its Gradle wrapper on JDK 17, offline: run a test class with
+  `cd /testbed && ./gradlew test --tests <fully.qualified.TestClass>`.
+image: peeky-study/apache__lucene-12022:control
+build_minutes: 2.8
+grade_minutes: 0.4
+pass_to_pass_removed: []
+notes: >-
+  JDK 17 per the SWE-bench spec; Gradle provisions the JDK 19 toolchain lucene/core's main19 source
+  set needs (Temurin 19, arm64) at build time. gradle.properties (generated, git-ignored) is set to
+  4 workers and 4 test JVMs; Gradle is forced offline by /root/.gradle/init.d/offline.gradle.
+  eval.sh applies SWE-bench's testLogging change at grading time, so the working tree is clean.
+  Not A: a clean build plus the test class takes 21 s in a 4-CPU container. The tests are
+  randomized (random seed per run); P2P passed in all three validation runs.

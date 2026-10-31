@@ -1,0 +1,53 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..36a16caa 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,7 +4,7 @@ Release History
+ dev
+ ---
+ 
+-- \[Short description of non-trivial change.\]
++- Fixed a regression that dropped authentication credentials from proxy URLs.
+ 
+ 2.27.0 (2022-01-03)
+ -------------------
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..15e536d5 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -974,6 +974,8 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth:
++        netloc = '@'.join([auth, netloc])
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 29b3aca8..629855a7 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1896,6 +1896,22 @@ class TestRequests:
+         headers = adapter.proxy_headers("http://user:@httpbin.org")
+         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}
+ 
++    @pytest.mark.parametrize('scheme', ('http', 'https'))
++    @pytest.mark.parametrize('proxy_scheme', ('//', 'http://', 'https://'))
++    @pytest.mark.parametrize('auth, expected', (
++        ('user:pass', 'Basic dXNlcjpwYXNz'),
++        ('user:', 'Basic dXNlcjo='),
++        ('user:p%40ss', 'Basic dXNlcjpwQHNz'),
++    ))
++    def test_proxy_auth_preserved_by_get_connection(self, scheme, proxy_scheme, auth, expected):
++        proxy = proxy_scheme + auth + '@proxy.example:8080'
++        with requests.Session() as session:
++            adapter = session.get_adapter(scheme + '://')
++            adapter.get_connection(scheme + '://example.org/', proxies={scheme: proxy})
++            assert len(adapter.proxy_manager) == 1
++            manager = next(iter(adapter.proxy_manager.values()))
++            assert manager.proxy_headers == {'Proxy-Authorization': expected}
++
+     def test_response_json_when_content_is_None(self, httpbin):
+         r = requests.get(httpbin('/status/204'))
+         # Make sure r.content is None

@@ -1,0 +1,121 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ba427f9..0bb067c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,7 @@ Unreleased changes. Release notes have not yet been written.
+ 
+ Bug fixes:
+ 
++* Fix multiline replacements including content beyond the matching lines.
+ * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):
+   Fix bug when using `-w` with a regex that can match the empty string.
+ * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):
+diff --git a/crates/printer/src/util.rs b/crates/printer/src/util.rs
+index 434deec..cc09204 100644
+--- a/crates/printer/src/util.rs
++++ b/crates/printer/src/util.rs
+@@ -47,9 +47,10 @@ impl<M: Matcher> Replacer<M> {
+         Replacer { space: None }
+     }
+ 
+-    /// Executes a replacement on the given subject string by replacing all
+-    /// matches with the given replacement. To access the result of the
+-    /// replacement, use the `replacement` method.
++    /// Executes a replacement on the given range of the subject string by
++    /// replacing all matches with the given replacement. The surrounding
++    /// subject is used as context for look-around assertions. To access the
++    /// result of the replacement, use the `replacement` method.
+     ///
+     /// This can fail if the underlying matcher reports an error.
+     pub fn replace_all<'a>(
+@@ -82,26 +83,30 @@ impl<M: Matcher> Replacer<M> {
+             dst.clear();
+             matches.clear();
+ 
++            let mut last_match = range.start;
+             matcher
+-                .replace_with_captures_at(
+-                    subject,
+-                    range.start,
+-                    caps,
+-                    dst,
+-                    |caps, dst| {
+-                        let start = dst.len();
+-                        caps.interpolate(
+-                            |name| matcher.capture_index(name),
+-                            subject,
+-                            replacement,
+-                            dst,
+-                        );
+-                        let end = dst.len();
+-                        matches.push(Match::new(start, end));
+-                        true
+-                    },
+-                )
++                .captures_iter_at(subject, range.start, caps, |caps| {
++                    let m = caps.get(0).unwrap();
++                    if is_multi_line && m.start() >= range.end {
++                        return false;
++                    }
++                    dst.extend_from_slice(&subject[last_match..m.start()]);
++                    last_match = m.end();
++                    let start = dst.len();
++                    caps.interpolate(
++                        |name| matcher.capture_index(name),
++                        subject,
++                        replacement,
++                        dst,
++                    );
++                    let end = dst.len();
++                    matches.push(Match::new(start, end));
++                    true
++                })
+                 .map_err(io::Error::error_message)?;
++            // Preserve unmatched bytes, but not the look-ahead context.
++            let end = std::cmp::min(range.end, subject.len());
++            dst.extend_from_slice(&subject[last_match..end]);
+         }
+         Ok(())
+     }
+diff --git a/tests/multiline.rs b/tests/multiline.rs
+index d084c96..38fb425 100644
+--- a/tests/multiline.rs
++++ b/tests/multiline.rs
+@@ -42,6 +42,37 @@ rgtest!(dot_all, |dir: Dir, mut cmd: TestCommand| {
+     eqnice!(expected, cmd.stdout());
+ });
+ 
++rgtest!(replace, |dir: Dir, mut cmd: TestCommand| {
++    let haystack = format!(
++        "before\nfoo\nbar\nafter\nfoo\nbaz\n{}",
++        "trailing context\n".repeat(20),
++    );
++    dir.create("test", &haystack);
++    cmd.args(&["-U", "-r", "$value", r"foo\n(?P<value>.+)", "test"]);
++    eqnice!("bar\nbaz\n", cmd.stdout());
++});
++
++rgtest!(replace_only_matching, |dir: Dir, mut cmd: TestCommand| {
++    dir.create("test", "before\nfoo\nbar\nafter\nfoo\nbaz\ntail\n");
++    cmd.args(&["-U", "-o", "-r", "$value", r"foo\n(?P<value>.+)", "test"]);
++    eqnice!("bar\nbaz\n", cmd.stdout());
++});
++
++rgtest!(replace_lookaround, |dir: Dir, mut cmd: TestCommand| {
++    if !dir.is_pcre2() {
++        return;
++    }
++    dir.create("test", "before\nfoo\nbar\nafter\n");
++    cmd.args(&[
++        "-U",
++        "-r",
++        "$value",
++        r"(?<=before\n)foo\n(?P<value>bar)(?=\nafter)",
++        "test",
++    ]);
++    eqnice!("bar\n", cmd.stdout());
++});
++
+ // Tests that --only-matching works in multiline mode.
+ rgtest!(only_matching, |dir: Dir, mut cmd: TestCommand| {
+     dir.create("sherlock", SHERLOCK);

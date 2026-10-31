@@ -1,0 +1,7 @@
+{
+ "judge_id": "a097",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Resubscribing started after the channel\u2019s closure marker, causing `recv` to hang and `try_recv` to report `Empty`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

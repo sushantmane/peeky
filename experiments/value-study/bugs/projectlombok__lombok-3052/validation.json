@@ -1,0 +1,32 @@
+[
+  {
+    "name": "base",
+    "f2p": {
+      "javac-BuilderDefaultsTargetTyping.java(lombok.transform.TestWithDelombok)": "FAILED",
+      "javac-SuperBuilderWithDefaultsAndTargetTyping.java(lombok.transform.TestWithDelombok)": "FAILED"
+    },
+    "p2p_failed": [],
+    "solved": false,
+    "seconds": 9
+  },
+  {
+    "name": "gold-1",
+    "f2p": {
+      "javac-BuilderDefaultsTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED",
+      "javac-SuperBuilderWithDefaultsAndTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 9
+  },
+  {
+    "name": "gold-2",
+    "f2p": {
+      "javac-BuilderDefaultsTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED",
+      "javac-SuperBuilderWithDefaultsAndTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 8
+  }
+]

@@ -81,6 +81,7 @@ describes Peeky as it was on its date ([evaluations/](evaluations/README.md)).
 | Eleventh | [2026-10-23: C++ grades, a Rust rota, Java seats and C tides](evaluations/2026-10-23-agent-eleventh-round.md) |
 | Twelfth | [2026-10-25: Python rainfall, Rust laps, a C++ playlist and Java desks](evaluations/2026-10-25-agent-twelfth-round.md) |
 | Thirteenth | [2026-10-29: a GCC stock depot, a lambda's stale tariff, a static's leftovers and a night car park](evaluations/2026-10-29-agent-thirteenth-round.md) |
+| Value study | [2026-10-30: 29 real bugs, 174 attempts, with and without Peeky](../experiments/value-study/REPORT.md) |
 
 ## Decisions
 

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a127",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"`_MockObject.__getitem__` assumed subscription keys were strings, passing `TypeVar` objects into string concatenation.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

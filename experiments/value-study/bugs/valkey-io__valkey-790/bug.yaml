@@ -1,0 +1,32 @@
+id: valkey-io__valkey-790
+language: c
+repo: valkey-io/valkey
+source: SWE-bench Multilingual
+base_commit: 35a188833335332980a16239ac2efebf241c8a6a
+upstream: https://github.com/valkey-io/valkey/pull/790
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  It needs a running cluster in which a primary fails and its replica takes over, and the wrong
+  answer comes from which node of a shard's node list (cluster dict -> list -> clusterNode) is
+  consulted. The server is built with -O3 and LTO.
+root_cause: >-
+  CLUSTER SHARDS (clusterCommandShards and addShardReplyForClusterShards in
+  src/cluster_legacy.c) reports a shard's slot ranges from the slot_info_pairs of
+  clusterNodeGetPrimary() applied to the first node in that shard's node list. After a failover
+  that first node can be the old primary that failed: the other nodes still see it as a primary,
+  but it no longer owns any slots, so its slot_info_pairs is NULL and the shard is reported with
+  an empty "slots" array although the promoted replica serves them. The fix scans the shard's
+  nodes for one that has slot info.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (binaries in src/).
+  Run tests with `cd /testbed && ./runtest --single unit/<suite>` (optionally `--only "<test name or /regex>"`); suites live under tests/.
+image: peeky-study/valkey-io__valkey-790:control
+build_minutes: 0.9
+grade_minutes: 1.5
+pass_to_pass_removed: []
+notes: >-
+  Build follows the SWE-bench spec (make distclean && make; the image build uses make -j). The
+  hidden test file is new (tests/unit/cluster/cluster-shards.tcl), so its pass-to-pass tests are
+  the setup steps in the same file. The grading script keeps the spec's `make distclean && make`,
+  about 1.5 minutes on 4 CPUs.

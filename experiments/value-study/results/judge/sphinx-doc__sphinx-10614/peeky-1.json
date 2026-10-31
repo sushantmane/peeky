@@ -1,0 +1,7 @@
+{
+ "judge_id": "a010",
+ "wrong_root_cause": true,
+ "evidence": "Message 3: \"Fixed SVG inheritance-diagram links. They were incorrectly rebased using page-relative paths.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "ranges_test.format_vector": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "ranges_test.format_vector": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.7
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "ranges_test.format_vector": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.5
+ }
+]

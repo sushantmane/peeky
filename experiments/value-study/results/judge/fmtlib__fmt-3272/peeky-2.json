@@ -1,0 +1,7 @@
+{
+ "judge_id": "a095",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The padding calculation counts grouping separators across all significant digits, including fractional digits, while the writer groups only the integer part.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

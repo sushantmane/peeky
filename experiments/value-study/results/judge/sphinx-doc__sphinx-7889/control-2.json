@@ -1,0 +1,7 @@
+{
+ "judge_id": "a150",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The crash occurred because mock subscriptions passed `TypeVar` objects and tuples to `_make_subclass`, which requires a string name.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

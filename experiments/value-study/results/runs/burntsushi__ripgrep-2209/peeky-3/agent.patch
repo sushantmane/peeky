@@ -1,0 +1,148 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ba427f9..6d6f5e0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,6 +8,8 @@ Bug fixes:
+   Fix bug when using `-w` with a regex that can match the empty string.
+ * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):
+   Disable mmap searching in all non-64-bit environments.
++* Fix a bug where `--replace` with `--multiline` could print or replace content
++  beyond the matching lines.
+ 
+ 
+ 13.0.0 (2021-06-12)
+diff --git a/crates/printer/src/util.rs b/crates/printer/src/util.rs
+index 434deec..40033e4 100644
+--- a/crates/printer/src/util.rs
++++ b/crates/printer/src/util.rs
+@@ -47,9 +47,9 @@ impl<M: Matcher> Replacer<M> {
+         Replacer { space: None }
+     }
+ 
+-    /// Executes a replacement on the given subject string by replacing all
+-    /// matches with the given replacement. To access the result of the
+-    /// replacement, use the `replacement` method.
++    /// Executes a replacement on the given range of the subject string by
++    /// replacing all matches with the given replacement. To access the result
++    /// of the replacement, use the `replacement` method.
+     ///
+     /// This can fail if the underlying matcher reports an error.
+     pub fn replace_all<'a>(
+@@ -82,26 +82,30 @@ impl<M: Matcher> Replacer<M> {
+             dst.clear();
+             matches.clear();
+ 
++            let mut last_match = range.start;
+             matcher
+-                .replace_with_captures_at(
+-                    subject,
+-                    range.start,
+-                    caps,
+-                    dst,
+-                    |caps, dst| {
+-                        let start = dst.len();
+-                        caps.interpolate(
+-                            |name| matcher.capture_index(name),
+-                            subject,
+-                            replacement,
+-                            dst,
+-                        );
+-                        let end = dst.len();
+-                        matches.push(Match::new(start, end));
+-                        true
+-                    },
+-                )
++                .captures_iter_at(subject, range.start, caps, |caps| {
++                    let m = caps.get(0).unwrap();
++                    if m.start() >= range.end && range.end < subject.len() {
++                        return false;
++                    }
++                    dst.extend_from_slice(&subject[last_match..m.start()]);
++                    last_match = m.end();
++                    let start = dst.len();
++                    caps.interpolate(
++                        |name| matcher.capture_index(name),
++                        subject,
++                        replacement,
++                        dst,
++                    );
++                    let end = dst.len();
++                    matches.push(Match::new(start, end));
++                    true
++                })
+                 .map_err(io::Error::error_message)?;
++            // Look-ahead context must not be copied into the replacement.
++            let end = std::cmp::min(subject.len(), range.end);
++            dst.extend_from_slice(&subject[last_match..end]);
+         }
+         Ok(())
+     }
+diff --git a/tests/multiline.rs b/tests/multiline.rs
+index d084c96..a8991bd 100644
+--- a/tests/multiline.rs
++++ b/tests/multiline.rs
+@@ -24,6 +24,64 @@ rgtest!(dot_no_newline, |dir: Dir, mut cmd: TestCommand| {
+     cmd.assert_err();
+ });
+ 
++rgtest!(replace_named_capture, |dir: Dir, _: TestCommand| {
++    for suffix in &["    body\n}\n".to_string(), "x".repeat(256)] {
++        dir.create("test", &format!("# doc\nfunc () {{  # usage\n{}", suffix));
++        let output = dir
++            .command()
++            .args(&[
++                "-NU",
++                "-r",
++                "$usage",
++                r"(?P<doc># .*\n)func \(\) \{  #(?P<usage> .+)",
++                "test",
++            ])
++            .stdout();
++        eqnice!(" usage\n", output);
++    }
++});
++
++rgtest!(replace_multiple, |dir: Dir, _: TestCommand| {
++    dir.create(
++        "test",
++        "before\nfoo\nbar tail\nunmatched\nfoo\nbar tail\nlast\n",
++    );
++    for flag in &["--no-heading", "--only-matching", "--vimgrep"] {
++        let output = dir
++            .command()
++            .args(&["-U", "-rquux", flag, r"foo\nbar", "test"])
++            .stdout();
++        let expected = match *flag {
++            "--only-matching" => "quux\nquux\n",
++            "--vimgrep" => "test:2:1:quux tail\ntest:5:1:quux tail\n",
++            _ => "quux tail\nquux tail\n",
++        };
++        eqnice!(expected, output);
++    }
++});
++
++rgtest!(replace_empty_at_eof, |dir: Dir, _: TestCommand| {
++    dir.create("test", "abc");
++    for flag in &["-N", "-NU"] {
++        let output = dir.command().args(&[flag, "-rX", "$", "test"]).stdout();
++        eqnice!("abcX\n", output);
++    }
++});
++
++rgtest!(replace_look_ahead, |dir: Dir, mut cmd: TestCommand| {
++    if !dir.is_pcre2() {
++        return;
++    }
++    dir.create("test", "before\nfoo\nbar\nafter\nfoo\nbar\nafter\n");
++    cmd.args(&[
++        "-NU",
++        "-r${word}",
++        r"foo\n(?P<word>bar)(?=\nafter)",
++        "test",
++    ]);
++    eqnice!("bar\nbar\n", cmd.stdout());
++});
++
+ // Tests that the --multiline-dotall flag causes '.' to match a newline.
+ rgtest!(dot_all, |dir: Dir, mut cmd: TestCommand| {
+     dir.create("sherlock", SHERLOCK);

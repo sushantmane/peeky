@@ -1,0 +1,7 @@
+{
+ "judge_id": "a076",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Fallback routing is exposing its internal catch-all as a `MatchedPath`. That stale value causes the assertion failure when the fallback router enters `nest_service`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

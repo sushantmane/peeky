@@ -1,0 +1,7 @@
+{
+ "judge_id": "a031",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The cache reader never advances the post-aggregator index, so each value overwrites the same slot.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

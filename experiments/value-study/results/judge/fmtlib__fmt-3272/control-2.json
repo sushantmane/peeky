@@ -1,0 +1,7 @@
+{
+ "judge_id": "a100",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The formatter counts fractional digits when estimating thousands separators, so it under-pads numbers with nonzero integer parts.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

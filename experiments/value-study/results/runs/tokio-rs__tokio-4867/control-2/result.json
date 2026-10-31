@@ -1,0 +1,198 @@
+{
+ "bug": "tokio-rs__tokio-4867",
+ "arm": "control",
+ "rep": 2,
+ "language": "rust",
+ "category": "C",
+ "image": "peeky-study/tokio-rs__tokio-4867:control",
+ "image_digest": "sha256:2d9995683cafff43ae829c2c2b9d81cb2a03664eda81126c31ed751c66e76a3b",
+ "peeky_sha": null,
+ "container": "study-tokio-rs__tokio-4867-control-2-a54d1c",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:10:31+00:00",
+ "ended": "2026-10-31T03:11:35+00:00",
+ "wall_seconds": 63.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "resubscribe_to_closed_channel": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.8,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "4225c9d6b88f83d20e3f5afd231237548990d6ff5b214dbd1bbb26dcbebe918e",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "tokio/src/sync/broadcast.rs"
+ ],
+ "patch_bytes": 900,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 23
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 10,
+ "ai_credits": 11.1722,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 168792,
+  "output": 4074,
+  "cache_read": 146243,
+  "cache_write": 22519,
+  "reasoning": 1572
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 13,
+ "tool_calls_by_name": {
+  "bash": 13
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed; fi && pwd && git --no-pager status --short && rg -n 'resubscribe|fn new_receiver|closed|rx_cnt|tx_cnt' tokio/src/sync/broadcast.rs && rg -n 'resubscribe|closed' tokio/tests/sync_broadcast.rs",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'resubscribe|fn new_receiver|closed|rx_cnt|tx_cnt' tokio/src/sync/broadcast.rs && sed -n '1,260p' tokio/src/sync/broadcast.rs && sed -n '420,1020p' tokio/src/sync/broadcast.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat Cargo.toml && grep -nE 'resubscribe|closed' tokio/tests/sync_broadcast.rs && sed -n '1,320p' tokio/tests/sync_broadcast.rs && grep -nE 'features|default|sync|test' tokio/Cargo.toml && find . -name AGENTS.md -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '292,345p' tokio/src/sync/broadcast.rs && sed -n '430,485p' tokio/src/sync/broadcast.rs && sed -n '585,655p' tokio/src/sync/broadcast.rs && sed -n '785,915p' tokio/src/sync/broadcast.rs && sed -n '1000,1170p' tokio/src/sync/broadcast.rs && sed -n '1280,1350p' tokio/src/sync/broadcast.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '320,550p' tokio/tests/sync_broadcast.rs && sed -n '1,105p' tokio/Cargo.toml && ls .cargo && grep -nE 'new_receiver|closed =|closed:' tokio/src/sync/broadcast.rs && find tokio/src -path '*broadcast*' -print && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '650,805p' tokio/src/sync/broadcast.rs && sed -n '888,970p' tokio/src/sync/broadcast.rs && sed -n '1,260p' tokio/src/sync/tests/loom_broadcast.rs && cat .cargo/config",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && type apply_patch || true; cd /testbed && git --no-pager status --short && cargo --version && ls /usr/local/bin/*patch* /usr/bin/*patch* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tokio/tests/sync_broadcast.rs\n+++ b/tokio/tests/sync_broadcast.rs\n@@ -523,3 +523,47 @@\n     assert_empty!(rx);\n     assert_empty!(rx_resub);\n }\n+\n+#[test]\n+fn resubscribe_closed() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            let mut recv = task::spawn(rx_resub.recv());\n+            assert!(is_closed(assert_ready_err!(recv.poll())));\n+        }\n+    }\n+}\n+\n+#[test]\n+fn resubscribe_closed_try_recv() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            assert_closed!(rx_resub.try_recv());\n+        }\n+    }\n+}\nPATCH\ncargo test --offline --test sync_broadcast --features full resubscribe_closed > target/broadcast-regression-before.log 2>&1; result=$?; tail -n 75 target/broadcast-regression-before.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tokio/tests/sync_broadcast.rs\n+++ b/tokio/tests/sync_broadcast.rs\n@@ -523,3 +523,40 @@\n     assert_empty!(rx);\n     assert_empty!(rx_resub);\n }\n+\n+#[test]\n+fn resubscribe_closed() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            let mut recv = task::spawn(rx_resub.recv());\n+            assert!(is_closed(assert_ready_err!(recv.poll())));\n+        }\n+    }\n+}\n+\n+#[test]\n+fn resubscribe_closed_try_recv() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            assert_closed!(rx_resub.try_recv());\n+        }\n+    }\n+}\nPATCH\nif [ \"$?\" -ne 0 ]; then exit 1; fi\ncargo test --offline --test sync_broadcast --features full resubscribe_closed > target/broadcast-regression-before.log 2>&1; result=$?; tail -n 40 target/broadcast-regression-before.log; exit \"$result\"",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff -- tokio/tests/sync_broadcast.rs && patch -p1 <<'PATCH'\n--- a/tokio/src/sync/broadcast.rs\n+++ b/tokio/src/sync/broadcast.rs\n@@ -666,7 +666,12 @@\n \n     tail.rx_cnt = tail.rx_cnt.checked_add(1).expect(\"overflow\");\n \n-    let next = tail.pos;\n+    // A closed channel's tail points one past the slot marking the closure.\n+    let next = if tail.closed {\n+        tail.pos.wrapping_sub(1)\n+    } else {\n+        tail.pos\n+    };\n \n     drop(tail);\n \n@@ -897,6 +902,8 @@\n     /// **after** it has resubscribed. This will not include elements that are\n     /// in the queue of the current receiver. Consider the following example.\n     ///\n+    /// If the channel is closed, the returned receiver will also be closed.\n+    ///\n     /// # Examples\n     ///\n     /// ```\nPATCH\nif [ \"$?\" -ne 0 ]; then exit 1; fi\ncargo test --offline --test sync_broadcast --features full > target/broadcast-regression-after.log 2>&1; result=$?; tail -n 40 target/broadcast-regression-after.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rustfmt --check --edition 2018 tokio/src/sync/broadcast.rs tokio/tests/sync_broadcast.rs",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git --no-pager diff --stat && git --no-pager diff -- tokio/src/sync/broadcast.rs && git --no-pager status --short && find tokio/src/sync tokio/tests -maxdepth 1 \\( -name '*.orig' -o -name '*.rej' \\) -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm tokio/tests/sync_broadcast.rs.orig target/broadcast-regression-before.log target/broadcast-regression-after.log && git diff --check && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 3,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tokio/tests/sync_broadcast.rs\n+++ b/tokio/tests/sync_broadcast.rs\n@@ -523,3 +523,47 @@\n     assert_empty!(rx);\n     assert_empty!(rx_resub);\n }\n+\n+#[test]\n+fn resubscribe_closed() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            let mut recv = task::spawn(rx_resub.recv());\n+            assert!(is_closed(assert_ready_err!(recv.poll())));\n+        }\n+    }\n+}\n+\n+#[test]\n+fn resubscribe_closed_try_recv() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            assert_closed!(rx_resub.try_recv());\n+        }\n+    }\n+}\nPATCH\ncargo test --offline --test sync_broadcast --features full resubscribe_closed > target/broadcast-regression-before.log 2>&1; result=$?; tail -n 75 target/broadcast-regression-before.log; exit \"$result\"",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tokio/tests/sync_broadcast.rs\n+++ b/tokio/tests/sync_broadcast.rs\n@@ -523,3 +523,40 @@\n     assert_empty!(rx);\n     assert_empty!(rx_resub);\n }\n+\n+#[test]\n+fn resubscribe_closed() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            let mut recv = task::spawn(rx_resub.recv());\n+            assert!(is_closed(assert_ready_err!(recv.poll())));\n+        }\n+    }\n+}\n+\n+#[test]\n+fn resubscribe_closed_try_recv() {\n+    for capacity in [1, 2, 4].iter().copied() {\n+        for messages in [0, 1, 8].iter().copied() {\n+            let (tx, rx) = broadcast::channel(capacity);\n+            for value in 0..messages {\n+                assert_ok!(tx.send(value));\n+            }\n+            drop(tx);\n+\n+            let mut rx_resub = rx.resubscribe();\n+            drop(rx);\n+\n+            assert_closed!(rx_resub.try_recv());\n+        }\n+    }\n+}\nPATCH\nif [ \"$?\" -ne 0 ]; then exit 1; fi\ncargo test --offline --test sync_broadcast --features full resubscribe_closed > target/broadcast-regression-before.log 2>&1; result=$?; tail -n 40 target/broadcast-regression-before.log; exit \"$result\"",
+  "cd /testbed && git --no-pager diff -- tokio/tests/sync_broadcast.rs && patch -p1 <<'PATCH'\n--- a/tokio/src/sync/broadcast.rs\n+++ b/tokio/src/sync/broadcast.rs\n@@ -666,7 +666,12 @@\n \n     tail.rx_cnt = tail.rx_cnt.checked_add(1).expect(\"overflow\");\n \n-    let next = tail.pos;\n+    // A closed channel's tail points one past the slot marking the closure.\n+    let next = if tail.closed {\n+        tail.pos.wrapping_sub(1)\n+    } else {\n+        tail.pos\n+    };\n \n     drop(tail);\n \n@@ -897,6 +902,8 @@\n     /// **after** it has resubscribed. This will not include elements that are\n     /// in the queue of the current receiver. Consider the following example.\n     ///\n+    /// If the channel is closed, the returned receiver will also be closed.\n+    ///\n     /// # Examples\n     ///\n     /// ```\nPATCH\nif [ \"$?\" -ne 0 ]; then exit 1; fi\ncargo test --offline --test sync_broadcast --features full > target/broadcast-regression-after.log 2>&1; result=$?; tail -n 40 target/broadcast-regression-after.log; exit \"$result\""
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Resubscribing started past the channel\u2019s closure marker, causing `recv` to hang and `try_recv` to report `Empty`. The fix positions new receivers at that marker when the channel is closed, so both return `Closed`. Added regression coverage; all 26 broadcast integration tests pass.",
+ "assistant_messages": [
+  "I\u2019ll check how resubscribing handles channel closure, fix the shared state logic, and add a regression test for both receive methods.\n",
+  "Closing the channel advances the tail past a closure marker. A resubscribed receiver starts at that advanced tail, skips the marker, and waits for messages that cannot arrive. I\u2019ll make closed-channel subscriptions start at the marker.\n",
+  "Resubscribing started past the channel\u2019s closure marker, causing `recv` to hang and `try_recv` to report `Empty`. The fix positions new receivers at that marker when the channel is closed, so both return `Closed`. Added regression coverage; all 26 broadcast integration tests pass."
+ ],
+ "assistant_reasoning": [
+  "**Investigating patch issues**\n\nI'm noticing that an important patch was inserted at line 517, but it's unclear about the original line closings at 525. There seems to be a line count discrepancy involving a grep version that notes 523. I suspect the original file had 519, and the first failed patch might have truncated six lines. I need to inspect the git diff right before the fix because the patch error appears to be linked to an unexpected partial original file."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 64.9
+}

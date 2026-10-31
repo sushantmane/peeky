@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user:pass@example.com/path?query-http://user:pass@example.com/path?query]": "FAILED",
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user:pass@example.com/path?query-http://user:pass@example.com/path?query]": "PASSED",
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user:pass@example.com/path?query-http://user:pass@example.com/path?query]": "PASSED",
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.3
+ }
+]

@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "basic usage > conversion to json via free-functions": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "basic usage > conversion to json via free-functions": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 2.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "basic usage > conversion to json via free-functions": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 2.5
+ }
+]

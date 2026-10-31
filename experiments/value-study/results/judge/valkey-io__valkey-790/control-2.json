@@ -1,0 +1,7 @@
+{
+ "judge_id": "a073",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`CLUSTER SHARDS` could select the stopped former primary after failover, returning its now-empty slot ranges.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

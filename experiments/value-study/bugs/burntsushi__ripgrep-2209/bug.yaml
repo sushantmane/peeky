@@ -1,0 +1,32 @@
+id: burntsushi__ripgrep-2209
+language: rust
+repo: burntsushi/ripgrep
+source: SWE-bench Multilingual
+base_commit: 4dc6c73c5a9203c5a8a89ce2161feca542329812
+upstream: https://github.com/burntsushi/ripgrep/pull/2209
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The wrong output needs a particular configuration: multiline search (-U) together with
+  --replace, where the printer hands the replacer a buffer that extends past the match. The
+  faulty values are byte ranges into the searcher's buffer and the regex captures.
+root_cause: >-
+  In crates/printer/src/util.rs, Replacer::replace_all calls the matcher's
+  replace_with_captures_at(subject, range.start, ...), which ignores the end of the match range:
+  it replaces every match from range.start to the end of `subject` and then copies the rest of
+  `subject` after the last match into the output. In multiline mode the subject extends beyond
+  the matched range, so the replacement output gains the following lines. The fix adds
+  replace_with_captures_in_context, which stops at matches starting at or after range.end and
+  copies the trailing bytes only up to range.end.
+test_hint: >-
+  Run the integration tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --package
+  ripgrep --test integration -- <filter>` (e.g. `-- misc::`); the build cache was made with these
+  RUSTFLAGS. Crate tests: `cargo test -p grep-printer`. The debug binary is target/debug/rg.
+image: peeky-study/burntsushi__ripgrep-2209:control
+build_minutes: 0.4
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it with the repo's Cargo.lock. Test
+  command from the dataset's eval_script (runs only regression::r2208; the dataset's
+  PASS_TO_PASS is empty), run offline.

@@ -1,0 +1,11 @@
+{
+  "parser": "parse_log_maven",
+  "fail_to_pass": [
+    "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testCacheStrategy"
+  ],
+  "pass_to_pass": [
+    "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testResultLevelCacheKeyWithSubTotalsSpec",
+    "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testMultiColumnCacheStrategy"
+  ],
+  "timeout_s": 1200
+}

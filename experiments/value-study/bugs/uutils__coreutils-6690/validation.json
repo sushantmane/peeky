@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_cp::test_cp_no_file": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 4.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_cp::test_cp_no_file": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_cp::test_cp_no_file": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.5
+ }
+]

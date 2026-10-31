@@ -1,0 +1,32 @@
+id: sphinx-doc__sphinx-7889
+language: python
+repo: sphinx-doc/sphinx
+source: SWE-bench Verified
+base_commit: ec9af606c6cfa515f946d74da9b51574f2f9b16f
+upstream: https://github.com/sphinx-doc/sphinx/pull/7889
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the failing function (autodoc mock's _make_subclass) and the exact error (str
+  concatenated with a TypeVar); reading mock.py shows the subscript key passed through unconverted.
+root_cause: >-
+  _MockObject.__getitem__ in sphinx/ext/autodoc/mock.py passes the subscript key straight to
+  _make_subclass, which builds the new class name by concatenating strings with that key. When a
+  mocked class is parametrized with a TypeVar (class C(mocked.Base[T])), the key is a TypeVar, so
+  the concatenation raises TypeError. The fix converts the key with str(key) before building the
+  subclass.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with Sphinx installed in editable mode. Run tests
+  with `cd /testbed && python -m pytest tests/<file>.py` (the whole suite is `python -m pytest tests`).
+python: "3.12"
+image: peeky-study/sphinx-doc__sphinx-7889:control
+build_minutes: 0.5
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench runs this through tox --current-env; the image runs the same pytest command directly
+  (`python -m pytest -rA --durations 25` with tox.ini's PYTHONWARNINGS). The spec's setup.py edits
+  (Jinja2<3.0, markupsafe<=2.0.1, alabaster<0.7.12 and sphinxcontrib caps) are applied as pip
+  constraints, so the checkout stays clean; other packages resolve as of 2024-08-01 (uv
+  --exclude-newer), which keeps setuptools' pkg_resources that Sphinx 3.2 imports. Some unrelated
+  autodoc tests fail on this environment (newer docutils/Python); none are in this bug's tests.

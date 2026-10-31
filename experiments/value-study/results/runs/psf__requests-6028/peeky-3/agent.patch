@@ -1,0 +1,102 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..3700d306 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,7 +4,8 @@ Release History
+ dev
+ ---
+ 
+-- \[Short description of non-trivial change.\]
++- Fixed proxy URL normalization dropping authentication credentials, causing
++  authenticated proxies to return HTTP 407.
+ 
+ 2.27.0 (2022-01-03)
+ -------------------
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..b9e13e04 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -974,6 +974,9 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth is not None:
++        netloc = '@'.join([auth, netloc])
++
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_proxy_auth.py b/tests/test_proxy_auth.py
+new file mode 100644
+index 00000000..807402f5
+--- /dev/null
++++ b/tests/test_proxy_auth.py
+@@ -0,0 +1,68 @@
++from contextlib import closing
++
++import pytest
++import requests
++
++from requests.adapters import HTTPAdapter
++from requests.utils import prepend_scheme_if_needed
++
++from .testserver.server import Server, consume_socket_content
++
++
++@pytest.mark.parametrize('scheme', ('http', 'https', 'socks5', 'socks5h'))
++@pytest.mark.parametrize('auth', ('user:pass', 'user:', 'us%40er:p%3Ass'))
++def test_prepend_scheme_preserves_auth(scheme, auth):
++    url = '{}://{}@[::1]:8080/path?query=yes#fragment'.format(scheme, auth)
++    assert prepend_scheme_if_needed(url, 'http') == url
++
++
++def test_prepend_missing_scheme_preserves_auth():
++    url = '//user:pass@proxy.example:8080'
++    assert prepend_scheme_if_needed(url, 'http') == 'http:' + url
++
++
++@pytest.mark.parametrize('url_scheme', ('http', 'https'))
++@pytest.mark.parametrize('proxy_prefix', ('http://', 'https://', '//'))
++@pytest.mark.parametrize('auth, expected', (
++    ('user:pass', 'Basic dXNlcjpwYXNz'),
++    ('user:', 'Basic dXNlcjo='),
++    ('us%40er:p%3Ass', 'Basic dXNAZXI6cDpzcw=='),
++))
++def test_proxy_connection_preserves_auth(url_scheme, proxy_prefix, auth, expected):
++    proxy = '{}{}@proxy.example:8080'.format(proxy_prefix, auth)
++    normalized_proxy = proxy if proxy_prefix != '//' else 'http:' + proxy
++    with closing(HTTPAdapter()) as adapter:
++        adapter.get_connection(
++            '{}://example.org/'.format(url_scheme),
++            proxies={url_scheme: proxy},
++        )
++        manager = adapter.proxy_manager[normalized_proxy]
++        assert manager.proxy_headers == {'Proxy-Authorization': expected}
++
++
++@pytest.mark.parametrize('proxy_prefix', ('http://', '//'))
++@pytest.mark.parametrize('auth, expected', (
++    ('user:pass', b'Basic dXNlcjpwYXNz'),
++    ('user:', b'Basic dXNlcjo='),
++    ('us%40er:p%3Ass', b'Basic dXNAZXI6cDpzcw=='),
++))
++def test_authenticated_proxy_request(proxy_prefix, auth, expected):
++    def proxy_handler(sock):
++        request = consume_socket_content(sock)
++        header = b'Proxy-Authorization: ' + expected + b'\r\n'
++        if header in request:
++            status = b'200 OK'
++        else:
++            status = b'407 Proxy Authentication Required'
++        sock.sendall(b'HTTP/1.1 ' + status + b'\r\nContent-Length: 0\r\n\r\n')
++        return request
++
++    with Server(proxy_handler) as (host, port):
++        proxy = '{}{}@{}:{}'.format(proxy_prefix, auth, host, port)
++        with requests.Session() as session:
++            session.trust_env = False
++            response = session.get(
++                'http://example.org/', proxies={'http': proxy}, timeout=5,
++            )
++
++    assert response.status_code == 200

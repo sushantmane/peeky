@@ -1,0 +1,32 @@
+id: apache__lucene-13704
+language: java
+repo: apache/lucene
+source: SWE-bench Multilingual
+base_commit: ce4f56e74ad1087df8bdc019fc09d1b40438e8b3
+upstream: https://github.com/apache/lucene/pull/13704
+category: D
+categories_applicable: [D, A]
+category_rationale: >-
+  It only shows for a very narrow polygon at the top of the latitude range, queried through the
+  doc-values path, where the predicate's precomputed grid values sit near Integer.MAX_VALUE; the
+  faulty data are those computed ints, which the report doesn't show.
+root_cause: >-
+  GeoEncodingUtils.Component2DPredicate.test (and DistancePredicate.test, which has the same check)
+  rejects a point when `lat2 >= latBase + maxLatDelta`. For polygons close to latitude 90 the
+  shifted encoded latitude base is near the top of the int range, so `latBase + maxLatDelta`
+  overflows to a negative number and every point is rejected, so the doc-values query matches
+  nothing. The fix compares `lat2 - latBase >= maxLatDelta` instead.
+test_hint: >-
+  Lucene builds with its Gradle wrapper on JDK 21, offline: run a test class with
+  `cd /testbed && ./gradlew test --tests <fully.qualified.TestClass>`.
+image: peeky-study/apache__lucene-13704:control
+build_minutes: 2.9
+grade_minutes: 0.5
+pass_to_pass_removed: []
+notes: >-
+  JDK 21 per the SWE-bench spec, Gradle 8.10 wrapper. gradle.properties (generated, git-ignored) is
+  set to 4 workers and 4 test JVMs; Gradle is forced offline by /root/.gradle/init.d/offline.gradle.
+  eval.sh applies SWE-bench's testLogging change at grading time, so the working tree is clean.
+  The hidden test is added to lucene/test-framework's BaseGeoPointTestCase. Not A: a clean build
+  plus the test class takes 24 s in a 4-CPU container. The tests are randomized (random seed per
+  run); P2P passed in all three validation runs.

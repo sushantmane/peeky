@@ -1,0 +1,7 @@
+{
+ "judge_id": "a123",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Disposal before the inner `onSubscribe` skipped queue initialization, but seeded `scan` could still emit, causing the NPE.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

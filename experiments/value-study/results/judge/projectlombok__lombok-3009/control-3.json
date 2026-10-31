@@ -1,0 +1,7 @@
+{
+ "judge_id": "a134",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Both compiler backends exclude interfaces and annotations from global field defaults, but miss records.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

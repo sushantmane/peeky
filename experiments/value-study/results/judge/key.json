@@ -1,0 +1,872 @@
+{
+ "a001": [
+  "jqlang__jq-2650",
+  "control",
+  3
+ ],
+ "a002": [
+  "fmtlib__fmt-3272",
+  "control",
+  3
+ ],
+ "a003": [
+  "sharkdp__bat-3108",
+  "peeky",
+  1
+ ],
+ "a004": [
+  "sphinx-doc__sphinx-10614",
+  "control",
+  1
+ ],
+ "a005": [
+  "mwaskom__seaborn-3069",
+  "peeky",
+  3
+ ],
+ "a006": [
+  "fmtlib__fmt-3158",
+  "peeky",
+  3
+ ],
+ "a007": [
+  "projectlombok__lombok-3009",
+  "control",
+  2
+ ],
+ "a008": [
+  "valkey-io__valkey-790",
+  "peeky",
+  1
+ ],
+ "a009": [
+  "uutils__coreutils-6690",
+  "peeky",
+  1
+ ],
+ "a010": [
+  "sphinx-doc__sphinx-10614",
+  "peeky",
+  1
+ ],
+ "a011": [
+  "projectlombok__lombok-3052",
+  "control",
+  2
+ ],
+ "a012": [
+  "apache__lucene-13704",
+  "peeky",
+  2
+ ],
+ "a013": [
+  "projectlombok__lombok-3052",
+  "peeky",
+  1
+ ],
+ "a014": [
+  "apache__lucene-12022",
+  "control",
+  2
+ ],
+ "a015": [
+  "pallets__flask-5014",
+  "peeky",
+  2
+ ],
+ "a016": [
+  "fmtlib__fmt-3158",
+  "control",
+  2
+ ],
+ "a017": [
+  "uutils__coreutils-6690",
+  "peeky",
+  3
+ ],
+ "a018": [
+  "apache__lucene-13704",
+  "peeky",
+  1
+ ],
+ "a019": [
+  "nlohmann__json-4237",
+  "control",
+  2
+ ],
+ "a020": [
+  "mwaskom__seaborn-3069",
+  "peeky",
+  2
+ ],
+ "a021": [
+  "apache__druid-15402",
+  "control",
+  3
+ ],
+ "a022": [
+  "pallets__flask-5014",
+  "peeky",
+  3
+ ],
+ "a023": [
+  "pallets__flask-5014",
+  "control",
+  3
+ ],
+ "a024": [
+  "pydata__xarray-6599",
+  "control",
+  3
+ ],
+ "a025": [
+  "django__django-11087",
+  "peeky",
+  2
+ ],
+ "a026": [
+  "reactivex__rxjava-7597",
+  "control",
+  3
+ ],
+ "a027": [
+  "valkey-io__valkey-1842",
+  "control",
+  3
+ ],
+ "a028": [
+  "fmtlib__fmt-3158",
+  "peeky",
+  2
+ ],
+ "a029": [
+  "reactivex__rxjava-7597",
+  "peeky",
+  2
+ ],
+ "a030": [
+  "django__django-11087",
+  "control",
+  3
+ ],
+ "a031": [
+  "apache__druid-15402",
+  "peeky",
+  2
+ ],
+ "a032": [
+  "sphinx-doc__sphinx-10614",
+  "control",
+  2
+ ],
+ "a033": [
+  "jqlang__jq-2650",
+  "peeky",
+  2
+ ],
+ "a034": [
+  "tokio-rs__tokio-6752",
+  "peeky",
+  2
+ ],
+ "a035": [
+  "micropython__micropython-13569",
+  "peeky",
+  1
+ ],
+ "a036": [
+  "nlohmann__json-4237",
+  "control",
+  3
+ ],
+ "a037": [
+  "apache__lucene-13704",
+  "control",
+  2
+ ],
+ "a038": [
+  "jqlang__jq-2650",
+  "control",
+  2
+ ],
+ "a039": [
+  "tokio-rs__axum-1934",
+  "control",
+  1
+ ],
+ "a040": [
+  "apache__druid-15402",
+  "control",
+  2
+ ],
+ "a041": [
+  "projectlombok__lombok-3326",
+  "control",
+  1
+ ],
+ "a042": [
+  "uutils__coreutils-6690",
+  "peeky",
+  2
+ ],
+ "a043": [
+  "reactivex__rxjava-7597",
+  "peeky",
+  1
+ ],
+ "a044": [
+  "burntsushi__ripgrep-2209",
+  "control",
+  2
+ ],
+ "a045": [
+  "projectlombok__lombok-3009",
+  "peeky",
+  2
+ ],
+ "a046": [
+  "projectlombok__lombok-3326",
+  "peeky",
+  2
+ ],
+ "a047": [
+  "projectlombok__lombok-3009",
+  "peeky",
+  3
+ ],
+ "a048": [
+  "psf__requests-6028",
+  "peeky",
+  3
+ ],
+ "a049": [
+  "psf__requests-6028",
+  "control",
+  2
+ ],
+ "a050": [
+  "apache__lucene-13704",
+  "control",
+  1
+ ],
+ "a051": [
+  "mwaskom__seaborn-3187",
+  "peeky",
+  1
+ ],
+ "a052": [
+  "projectlombok__lombok-3326",
+  "control",
+  2
+ ],
+ "a053": [
+  "sphinx-doc__sphinx-10614",
+  "peeky",
+  3
+ ],
+ "a054": [
+  "valkey-io__valkey-1842",
+  "control",
+  1
+ ],
+ "a055": [
+  "jqlang__jq-2650",
+  "control",
+  1
+ ],
+ "a056": [
+  "valkey-io__valkey-1842",
+  "peeky",
+  2
+ ],
+ "a057": [
+  "valkey-io__valkey-790",
+  "control",
+  1
+ ],
+ "a058": [
+  "tokio-rs__axum-1934",
+  "peeky",
+  3
+ ],
+ "a059": [
+  "tokio-rs__tokio-4867",
+  "peeky",
+  2
+ ],
+ "a060": [
+  "tokio-rs__axum-1934",
+  "peeky",
+  2
+ ],
+ "a061": [
+  "astropy__astropy-13398",
+  "control",
+  1
+ ],
+ "a062": [
+  "django__django-11087",
+  "control",
+  2
+ ],
+ "a063": [
+  "mwaskom__seaborn-3187",
+  "control",
+  3
+ ],
+ "a064": [
+  "pallets__flask-5014",
+  "peeky",
+  1
+ ],
+ "a065": [
+  "nlohmann__json-4237",
+  "peeky",
+  3
+ ],
+ "a066": [
+  "jqlang__jq-2650",
+  "peeky",
+  1
+ ],
+ "a067": [
+  "apache__druid-15402",
+  "peeky",
+  3
+ ],
+ "a068": [
+  "jqlang__jq-2650",
+  "peeky",
+  3
+ ],
+ "a069": [
+  "apache__lucene-12022",
+  "peeky",
+  2
+ ],
+ "a070": [
+  "burntsushi__ripgrep-2209",
+  "peeky",
+  1
+ ],
+ "a071": [
+  "burntsushi__ripgrep-2209",
+  "peeky",
+  3
+ ],
+ "a072": [
+  "sphinx-doc__sphinx-10614",
+  "control",
+  3
+ ],
+ "a073": [
+  "valkey-io__valkey-790",
+  "control",
+  2
+ ],
+ "a074": [
+  "mwaskom__seaborn-3069",
+  "control",
+  2
+ ],
+ "a075": [
+  "valkey-io__valkey-790",
+  "control",
+  3
+ ],
+ "a076": [
+  "tokio-rs__axum-1934",
+  "control",
+  2
+ ],
+ "a077": [
+  "pydata__xarray-6599",
+  "peeky",
+  2
+ ],
+ "a078": [
+  "tokio-rs__tokio-6752",
+  "peeky",
+  1
+ ],
+ "a079": [
+  "sphinx-doc__sphinx-7889",
+  "control",
+  3
+ ],
+ "a080": [
+  "projectlombok__lombok-3326",
+  "peeky",
+  3
+ ],
+ "a081": [
+  "projectlombok__lombok-3009",
+  "control",
+  1
+ ],
+ "a082": [
+  "micropython__micropython-13569",
+  "peeky",
+  2
+ ],
+ "a083": [
+  "projectlombok__lombok-3009",
+  "peeky",
+  1
+ ],
+ "a084": [
+  "astropy__astropy-13398",
+  "peeky",
+  2
+ ],
+ "a085": [
+  "valkey-io__valkey-1842",
+  "peeky",
+  3
+ ],
+ "a086": [
+  "tokio-rs__tokio-6752",
+  "control",
+  3
+ ],
+ "a087": [
+  "micropython__micropython-13569",
+  "control",
+  3
+ ],
+ "a088": [
+  "fmtlib__fmt-3272",
+  "control",
+  1
+ ],
+ "a089": [
+  "tokio-rs__tokio-6752",
+  "control",
+  1
+ ],
+ "a090": [
+  "sharkdp__bat-3108",
+  "control",
+  2
+ ],
+ "a091": [
+  "projectlombok__lombok-3052",
+  "control",
+  1
+ ],
+ "a092": [
+  "pydata__xarray-6599",
+  "control",
+  1
+ ],
+ "a093": [
+  "tokio-rs__axum-1934",
+  "peeky",
+  1
+ ],
+ "a094": [
+  "micropython__micropython-13569",
+  "control",
+  1
+ ],
+ "a095": [
+  "fmtlib__fmt-3272",
+  "peeky",
+  2
+ ],
+ "a096": [
+  "valkey-io__valkey-790",
+  "peeky",
+  3
+ ],
+ "a097": [
+  "tokio-rs__tokio-4867",
+  "peeky",
+  1
+ ],
+ "a098": [
+  "tokio-rs__tokio-4867",
+  "control",
+  2
+ ],
+ "a099": [
+  "burntsushi__ripgrep-2209",
+  "control",
+  3
+ ],
+ "a100": [
+  "fmtlib__fmt-3272",
+  "control",
+  2
+ ],
+ "a101": [
+  "nlohmann__json-4237",
+  "control",
+  1
+ ],
+ "a102": [
+  "projectlombok__lombok-3326",
+  "control",
+  3
+ ],
+ "a103": [
+  "sphinx-doc__sphinx-7889",
+  "peeky",
+  2
+ ],
+ "a104": [
+  "pydata__xarray-6599",
+  "peeky",
+  3
+ ],
+ "a105": [
+  "projectlombok__lombok-3326",
+  "peeky",
+  1
+ ],
+ "a106": [
+  "apache__lucene-12022",
+  "control",
+  1
+ ],
+ "a107": [
+  "projectlombok__lombok-3052",
+  "peeky",
+  3
+ ],
+ "a108": [
+  "apache__lucene-13704",
+  "peeky",
+  3
+ ],
+ "a109": [
+  "burntsushi__ripgrep-2209",
+  "peeky",
+  2
+ ],
+ "a110": [
+  "micropython__micropython-13569",
+  "peeky",
+  3
+ ],
+ "a111": [
+  "psf__requests-6028",
+  "peeky",
+  2
+ ],
+ "a112": [
+  "apache__lucene-13704",
+  "control",
+  3
+ ],
+ "a113": [
+  "mwaskom__seaborn-3069",
+  "peeky",
+  1
+ ],
+ "a114": [
+  "reactivex__rxjava-7597",
+  "control",
+  1
+ ],
+ "a115": [
+  "nlohmann__json-4237",
+  "peeky",
+  1
+ ],
+ "a116": [
+  "sphinx-doc__sphinx-7889",
+  "control",
+  1
+ ],
+ "a117": [
+  "valkey-io__valkey-790",
+  "peeky",
+  2
+ ],
+ "a118": [
+  "tokio-rs__axum-1934",
+  "control",
+  3
+ ],
+ "a119": [
+  "astropy__astropy-13398",
+  "peeky",
+  3
+ ],
+ "a120": [
+  "astropy__astropy-13398",
+  "control",
+  3
+ ],
+ "a121": [
+  "uutils__coreutils-6690",
+  "control",
+  1
+ ],
+ "a122": [
+  "sharkdp__bat-3108",
+  "peeky",
+  3
+ ],
+ "a123": [
+  "reactivex__rxjava-7597",
+  "peeky",
+  3
+ ],
+ "a124": [
+  "pallets__flask-5014",
+  "control",
+  1
+ ],
+ "a125": [
+  "mwaskom__seaborn-3187",
+  "control",
+  1
+ ],
+ "a126": [
+  "valkey-io__valkey-1842",
+  "control",
+  2
+ ],
+ "a127": [
+  "sphinx-doc__sphinx-7889",
+  "peeky",
+  3
+ ],
+ "a128": [
+  "tokio-rs__tokio-4867",
+  "peeky",
+  3
+ ],
+ "a129": [
+  "psf__requests-6028",
+  "peeky",
+  1
+ ],
+ "a130": [
+  "tokio-rs__tokio-4867",
+  "control",
+  1
+ ],
+ "a131": [
+  "sharkdp__bat-3108",
+  "peeky",
+  2
+ ],
+ "a132": [
+  "sharkdp__bat-3108",
+  "control",
+  3
+ ],
+ "a133": [
+  "mwaskom__seaborn-3187",
+  "control",
+  2
+ ],
+ "a134": [
+  "projectlombok__lombok-3009",
+  "control",
+  3
+ ],
+ "a135": [
+  "astropy__astropy-13398",
+  "peeky",
+  1
+ ],
+ "a136": [
+  "pydata__xarray-6599",
+  "control",
+  2
+ ],
+ "a137": [
+  "apache__lucene-12022",
+  "control",
+  3
+ ],
+ "a138": [
+  "tokio-rs__tokio-4867",
+  "control",
+  3
+ ],
+ "a139": [
+  "django__django-11087",
+  "control",
+  1
+ ],
+ "a140": [
+  "apache__lucene-12022",
+  "peeky",
+  1
+ ],
+ "a141": [
+  "fmtlib__fmt-3272",
+  "peeky",
+  3
+ ],
+ "a142": [
+  "mwaskom__seaborn-3069",
+  "control",
+  3
+ ],
+ "a143": [
+  "django__django-11087",
+  "peeky",
+  1
+ ],
+ "a144": [
+  "valkey-io__valkey-1842",
+  "peeky",
+  1
+ ],
+ "a145": [
+  "apache__lucene-12022",
+  "peeky",
+  3
+ ],
+ "a146": [
+  "mwaskom__seaborn-3187",
+  "peeky",
+  3
+ ],
+ "a147": [
+  "sphinx-doc__sphinx-7889",
+  "peeky",
+  1
+ ],
+ "a148": [
+  "fmtlib__fmt-3158",
+  "control",
+  3
+ ],
+ "a149": [
+  "apache__druid-15402",
+  "peeky",
+  1
+ ],
+ "a150": [
+  "sphinx-doc__sphinx-7889",
+  "control",
+  2
+ ],
+ "a151": [
+  "projectlombok__lombok-3052",
+  "control",
+  3
+ ],
+ "a152": [
+  "mwaskom__seaborn-3069",
+  "control",
+  1
+ ],
+ "a153": [
+  "fmtlib__fmt-3158",
+  "control",
+  1
+ ],
+ "a154": [
+  "astropy__astropy-13398",
+  "control",
+  2
+ ],
+ "a155": [
+  "pallets__flask-5014",
+  "control",
+  2
+ ],
+ "a156": [
+  "pydata__xarray-6599",
+  "peeky",
+  1
+ ],
+ "a157": [
+  "django__django-11087",
+  "peeky",
+  3
+ ],
+ "a158": [
+  "uutils__coreutils-6690",
+  "control",
+  3
+ ],
+ "a159": [
+  "tokio-rs__tokio-6752",
+  "control",
+  2
+ ],
+ "a160": [
+  "projectlombok__lombok-3052",
+  "peeky",
+  2
+ ],
+ "a161": [
+  "sphinx-doc__sphinx-10614",
+  "peeky",
+  2
+ ],
+ "a162": [
+  "burntsushi__ripgrep-2209",
+  "control",
+  1
+ ],
+ "a163": [
+  "mwaskom__seaborn-3187",
+  "peeky",
+  2
+ ],
+ "a164": [
+  "psf__requests-6028",
+  "control",
+  3
+ ],
+ "a165": [
+  "apache__druid-15402",
+  "control",
+  1
+ ],
+ "a166": [
+  "tokio-rs__tokio-6752",
+  "peeky",
+  3
+ ],
+ "a167": [
+  "nlohmann__json-4237",
+  "peeky",
+  2
+ ],
+ "a168": [
+  "reactivex__rxjava-7597",
+  "control",
+  2
+ ],
+ "a169": [
+  "micropython__micropython-13569",
+  "control",
+  2
+ ],
+ "a170": [
+  "sharkdp__bat-3108",
+  "control",
+  1
+ ],
+ "a171": [
+  "fmtlib__fmt-3158",
+  "peeky",
+  1
+ ],
+ "a172": [
+  "uutils__coreutils-6690",
+  "control",
+  2
+ ],
+ "a173": [
+  "psf__requests-6028",
+  "control",
+  1
+ ],
+ "a174": [
+  "fmtlib__fmt-3272",
+  "peeky",
+  1
+ ]
+}

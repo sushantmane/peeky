@@ -1,0 +1,7 @@
+{
+ "judge_id": "a077",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The refactor made `polyval` evaluate the supplied data rather than its coordinate labels. It also incorrectly applies a datetime offset to timedeltas.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

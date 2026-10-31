@@ -1,0 +1,7 @@
+{
+ "judge_id": "a124",
+ "wrong_root_cause": false,
+ "evidence": "Message 1: \"The constructor rejects dotted names but allows an empty name.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

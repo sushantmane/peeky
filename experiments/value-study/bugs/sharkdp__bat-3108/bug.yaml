@@ -1,0 +1,30 @@
+id: sharkdp__bat-3108
+language: rust
+repo: sharkdp/bat
+source: SWE-bench Multilingual
+base_commit: 2be3a14a7e2c74360765a5fa213750f727f2c5bb
+upstream: https://github.com/sharkdp/bat/pull/3108
+category: B
+categories_applicable: [B, D]
+category_rationale: >-
+  The wrong paging mode comes from clap's `overrides_with` semantics (a later argument resets an
+  overridden one to its default), which lives in the clap dependency, not in bat's sources. It
+  also only shows for a particular combination and order of flags.
+root_cause: >-
+  In src/bin/bat/clap_app.rs the `plain` and `paging` arguments are declared to override each
+  other (`.overrides_with("paging")` on plain, `.overrides_with("plain")` on paging), so clap
+  discards an earlier `--paging=never` when `--plain` follows it (paging falls back to its default
+  "auto", which pages on a terminal), and discards `--plain` when `--paging` follows. The fix
+  removes both overrides and, in App::config (src/bin/bat/app.rs), lets a second `-p` (`-pp`)
+  given after `--paging=always` disable paging by comparing the arguments' indices.
+test_hint: >-
+  Run the integration tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --package bat
+  --test integration_tests <filter>` (e.g. `tabs`), unit tests with `--lib`; the build cache was
+  made with these RUSTFLAGS. The debug binary is target/debug/bat.
+image: peeky-study/sharkdp__bat-3108:control
+build_minutes: 0.8
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it with the repo's Cargo.lock. Test
+  command from the dataset's eval_script, run offline.

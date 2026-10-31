@@ -1,0 +1,7 @@
+{
+ "judge_id": "a027",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fixed the crash: `ACL LOAD` dereferenced the primary connection\u2019s intentionally NULL user pointer.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

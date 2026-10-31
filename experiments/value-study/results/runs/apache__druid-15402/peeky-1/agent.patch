@@ -1,0 +1,25 @@
+diff --git a/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java b/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java
+index 9c746dd414..16bd2d5b8b 100644
+--- a/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java
++++ b/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java
+@@ -62,7 +62,6 @@ import org.apache.druid.query.SubqueryQueryRunner;
+ import org.apache.druid.query.aggregation.AggregatorFactory;
+ import org.apache.druid.query.aggregation.MetricManipulationFn;
+ import org.apache.druid.query.aggregation.MetricManipulatorFns;
+-import org.apache.druid.query.aggregation.PostAggregator;
+ import org.apache.druid.query.cache.CacheKeyBuilder;
+ import org.apache.druid.query.context.ResponseContext;
+ import org.apache.druid.query.dimension.DefaultDimensionSpec;
+@@ -651,10 +650,9 @@ public class GroupByQueryQueryToolChest extends QueryToolChest<ResultRow, GroupB
+             );
+ 
+             if (isResultLevelCache) {
+-              Iterator<PostAggregator> postItr = query.getPostAggregatorSpecs().iterator();
+               int postPos = 0;
+-              while (postItr.hasNext() && results.hasNext()) {
+-                resultRow.set(postAggregatorStart + postPos, results.next());
++              while (postPos < query.getPostAggregatorSpecs().size() && results.hasNext()) {
++                resultRow.set(postAggregatorStart + postPos++, results.next());
+               }
+             }
+             if (dimsIter.hasNext() || results.hasNext()) {

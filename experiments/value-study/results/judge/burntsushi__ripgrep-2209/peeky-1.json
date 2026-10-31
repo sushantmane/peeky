@@ -1,0 +1,7 @@
+{
+ "judge_id": "a070",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The capture is correct; the replacement code is appending text it was given for look-ahead.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

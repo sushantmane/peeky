@@ -1,0 +1,7 @@
+{
+ "judge_id": "a161",
+ "wrong_root_cause": true,
+ "evidence": "Message 2: \"The links use the wrong base twice: inheritance diagrams assume a root-level page, and Graphviz\u2019s SVG rewrite uses the page-relative image path.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,34 @@
+id: psf__requests-6028
+language: python
+repo: psf/requests
+source: SWE-bench Verified
+base_commit: 0192aac24123735b3eaf9b08df46429bb770c283
+upstream: https://github.com/psf/requests/pull/6028
+category: B
+categories_applicable: [B, D]
+category_rationale: >-
+  The report only shows a 407 from an authenticated proxy on one Python version; the credentials
+  are lost because urllib3's parse_url().netloc omits the userinfo, so understanding the failure
+  needs urllib3's (and the standard library's URL parsing) behaviour. Reproducing it needs an
+  authenticated proxy configuration.
+root_cause: >-
+  Proxy URLs pass through prepend_scheme_if_needed in requests/utils.py, which rebuilds the URL
+  from urllib3's parse_url() result using its .netloc. That netloc holds only host and port, not
+  the user:password part, so the proxy credentials are dropped and the proxy answers 407. The fix
+  re-attaches the auth part to netloc ("auth@netloc") before calling urlunparse.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with requests installed in editable mode. Run tests
+  with `cd /testbed && pytest tests/<file>.py` (tests that need httpbin or the network can't run
+  here).
+python: "3.12"
+image: peeky-study/psf__requests-6028:control
+build_minutes: 0.2
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  The SWE-bench spec installs the package non-editable (`pip install .`) and reinstalls before each
+  test run; the image installs it editable instead, so eval.sh needs no reinstall. Only pytest is
+  added, as in the spec (so tests using the `mocker` fixture error, as they did there; none are in
+  the grading lists). The image build clears /tmp after the warm-up run, and eval.sh removes
+  /tmp/test_utils.py: requests' extract_zipped_paths caches files there, and a stale copy from an
+  earlier run of tests/test_utils.py makes test_zipped_paths_extracted (in PASS_TO_PASS) fail.

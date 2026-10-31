@@ -1,0 +1,7 @@
+{
+ "judge_id": "a080",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`@UtilityClass` made nested classes static but left javac\u2019s cached erased type referencing the original enclosing instance.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no value: `peeky describe` was refused (\"Adapter command does not match the trusted Java bundle layout\")."
+}

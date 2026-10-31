@@ -1,0 +1,227 @@
+{
+ "bug": "django__django-11087",
+ "arm": "control",
+ "rep": 1,
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/django__django-11087:control",
+ "image_digest": "sha256:68a25a564a069b1f20eca166fa546d90669b1e4f07f29adfedb72af28d7f027b",
+ "peeky_sha": null,
+ "container": "study-django__django-11087-control-1-ccb3ef",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:39:12+00:00",
+ "ended": "2026-10-31T03:41:37+00:00",
+ "wall_seconds": 145.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "test_only_referenced_fields_selected (delete.tests.DeletionTests)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.5,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "84897ef3228974b89fbdf140d26731188cf3ae667a967a89a97510522253f37a",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "django/db/models/deletion.py",
+  "docs/releases/3.0.txt"
+ ],
+ "patch_bytes": 3125,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 49
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 12,
+ "ai_credits": 22.4293,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 338093,
+  "output": 9611,
+  "cache_read": 298763,
+  "cache_write": 39294,
+  "reasoning": 4874
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 17,
+ "tool_calls_by_name": {
+  "bash": 17
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls /testbed | head; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short && sed -n '1,380p' django/db/models/deletion.py && grep -n -A45 'def delete(' django/db/models/query.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls tests/delete && sed -n '1,300p' tests/delete/models.py && sed -n '1,300p' tests/delete/tests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls docs/releases | tail && grep -n -E 'delet|signal|defer' docs/ref/models/querysets.txt | tail -35 && cat setup.cfg | head -100",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '300,850p' tests/delete/tests.py && sed -n '1,260p' docs/releases/3.0.txt",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls tests/delete_regress && sed -n '1,320p' tests/delete_regress/models.py && grep -n -E 'defer|only|select_related|manager|to_field|signals|Generic|generic|inherit|delete' tests/delete_regress/tests.py | head -110 && grep -n -A65 'def get_deferred_fields\\|def _get_next_or_previous_by_FIELD' django/db/models/base.py && grep -n -A65 'class ForwardOneToOneDescriptor' django/db/models/fields/related_descriptors.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -E 'foreign_related_fields|local_related_fields' django/db/models/fields/related.py && sed -n '1,130p' django/db/models/fields/related.py && sed -n '440,475p' django/contrib/contenttypes/fields.py && sed -n '2520,2548p' docs/ref/models/querysets.txt && command -v apply_patch && python --version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,150p' tests/delete_regress/tests.py && sed -n '1,100p' tests/runtests.py && sed -n '1,150p' tests/test_sqlite.py && ls /opt/venv/bin/python* && command -v patch; command -v apply_patch; python --version",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -A65 'def deferred_to_data\\|def add_immediate_loading' django/db/models/sql/query.py && grep -n -E 'patch.object.*_base_manager|mock.patch.object.*get_queryset|captured_queries\\[0\\].*sql' tests/delete*/tests.py tests/managers_regress/tests.py && sed -n '472,489p' django/contrib/contenttypes/fields.py && git --no-pager log -1 --oneline",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/models.py b/tests/delete/models.py\n--- a/tests/delete/models.py\n+++ b/tests/delete/models.py\n@@ -146,3 +146,20 @@\n class RelToBase(models.Model):\n     base = models.ForeignKey(Base, models.DO_NOTHING)\n+\n+\n+class Origin(models.Model):\n+    pass\n+\n+\n+class Referrer(models.Model):\n+    origin = models.ForeignKey(Origin, models.CASCADE)\n+    code = models.CharField(max_length=30, unique=True)\n+    payload = models.TextField()\n+\n+\n+class Leaf(models.Model):\n+    referrer = models.ForeignKey(Referrer, models.CASCADE, to_field='code')\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,4 +1,5 @@\n from math import ceil\n+from unittest import mock\n \n from django.db import IntegrityError, connection, models\n@@ -8,6 +9,6 @@\n from .models import (\n-    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, M, M2MFrom,\n-    M2MTo, MRNull, Parent, R, RChild, S, T, User, create_a, get_default_r,\n+    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, Leaf, M, M2MFrom,\n+    M2MTo, MRNull, Origin, Parent, R, RChild, Referrer, S, T, User, create_a,\n+    get_default_r,\n )\n@@ -475,3 +476,67 @@\n-class FastDeleteTests(TestCase):\n+class DeletionFieldSelectionTests(TestCase):\n+    @classmethod\n+    def setUpTestData(cls):\n+        cls.origin = Origin.objects.create()\n+        cls.referrer = Referrer.objects.create(\n+            origin=cls.origin, code='referrer', payload='unneeded data',\n+        )\n+        Leaf.objects.create(referrer=cls.referrer)\n+\n+    def test_only_required_fields(self):\n+        expected_sql = str(\n+            Referrer.objects.filter(origin=self.origin).only('pk', 'code').query\n+        )\n+        with self.assertNumQueries(5) as ctx:\n+            deleted = Origin.objects.filter(pk=self.origin.pk).delete()\n+        self.assertEqual(ctx.captured_queries[1]['sql'], expected_sql)\n+        self.assertEqual(deleted, (3, {\n+            'delete.Origin': 1, 'delete.Referrer': 1, 'delete.Leaf': 1,\n+        }))\n+        self.assertFalse(Origin.objects.exists())\n+        self.assertFalse(Referrer.objects.exists())\n+        self.assertFalse(Leaf.objects.exists())\n+\n+    def _test_signal(self, signal):\n+        receiver = mock.Mock()\n+        signal.connect(receiver, sender=Referrer)\n+        try:\n+            with self.assertNumQueries(4):\n+                self.origin.delete()\n+        finally:\n+            signal.disconnect(receiver, sender=Referrer)\n+        receiver.assert_called_once()\n+        instance = receiver.call_args[1]['instance']\n+        self.assertEqual(instance.get_deferred_fields(), set())\n+        self.assertEqual(instance.payload, self.referrer.payload)\n+\n+    def test_pre_delete_signal(self):\n+        self._test_signal(models.signals.pre_delete)\n+\n+    def test_post_delete_signal(self):\n+        self._test_signal(models.signals.post_delete)\n+\n+    def test_select_related(self):\n+        queryset = Referrer.objects.select_related('origin')\n+        expected_sql = str(queryset.filter(origin=self.origin).query)\n+        with mock.patch.object(Referrer._base_manager, 'get_queryset', return_value=queryset):\n+            with self.assertNumQueries(4) as ctx:\n+                self.origin.delete()\n+        self.assertEqual(ctx.captured_queries[0]['sql'], expected_sql)\n+\n+\n+class FastDeleteTests(TestCase):\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldSelectionTests",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short && grep -n -B4 -A4 'class FastDeleteTests' tests/delete/tests.py && tail -12 tests/delete/models.py && git --no-pager log -1 --oneline",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/models.py b/tests/delete/models.py\n--- a/tests/delete/models.py\n+++ b/tests/delete/models.py\n@@ -146,3 +146,20 @@\n class RelToBase(models.Model):\n     base = models.ForeignKey(Base, models.DO_NOTHING)\n+\n+\n+class Origin(models.Model):\n+    pass\n+\n+\n+class Referrer(models.Model):\n+    origin = models.ForeignKey(Origin, models.CASCADE)\n+    code = models.CharField(max_length=30, unique=True)\n+    payload = models.TextField()\n+\n+\n+class Leaf(models.Model):\n+    referrer = models.ForeignKey(Referrer, models.CASCADE, to_field='code')\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,4 +1,5 @@\n from math import ceil\n+from unittest import mock\n \n from django.db import IntegrityError, connection, models\n@@ -8,6 +9,6 @@\n from .models import (\n-    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, M, M2MFrom,\n-    M2MTo, MRNull, Parent, R, RChild, S, T, User, create_a, get_default_r,\n+    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, Leaf, M, M2MFrom,\n+    M2MTo, MRNull, Origin, Parent, R, RChild, Referrer, S, T, User, create_a,\n+    get_default_r,\n )\n@@ -441,4 +442,55 @@\n+class DeletionFieldSelectionTests(TestCase):\n+    @classmethod\n+    def setUpTestData(cls):\n+        cls.origin = Origin.objects.create()\n+        cls.referrer = Referrer.objects.create(\n+            origin=cls.origin, code='referrer', payload='unneeded data',\n+        )\n+        Leaf.objects.create(referrer=cls.referrer)\n+\n+    def test_only_required_fields(self):\n+        expected_sql = str(\n+            Referrer.objects.filter(origin=self.origin).only('pk', 'code').query\n+        )\n+        with self.assertNumQueries(5) as ctx:\n+            deleted = Origin.objects.filter(pk=self.origin.pk).delete()\n+        self.assertEqual(ctx.captured_queries[1]['sql'], expected_sql)\n+        self.assertEqual(deleted, (3, {\n+            'delete.Origin': 1, 'delete.Referrer': 1, 'delete.Leaf': 1,\n+        }))\n+        self.assertFalse(Origin.objects.exists())\n+        self.assertFalse(Referrer.objects.exists())\n+        self.assertFalse(Leaf.objects.exists())\n+\n+    def _test_signal(self, signal):\n+        receiver = mock.Mock()\n+        signal.connect(receiver, sender=Referrer)\n+        try:\n+            with self.assertNumQueries(4):\n+                self.origin.delete()\n+        finally:\n+            signal.disconnect(receiver, sender=Referrer)\n+        receiver.assert_called_once()\n+        instance = receiver.call_args[1]['instance']\n+        self.assertEqual(instance.get_deferred_fields(), set())\n+        self.assertEqual(instance.payload, self.referrer.payload)\n+\n+    def test_pre_delete_signal(self):\n+        self._test_signal(models.signals.pre_delete)\n+\n+    def test_post_delete_signal(self):\n+        self._test_signal(models.signals.post_delete)\n+\n+    def test_select_related(self):\n+        queryset = Referrer.objects.select_related('origin')\n+        expected_sql = str(queryset.filter(origin=self.origin).query)\n+        with mock.patch.object(Referrer._base_manager, 'get_queryset', return_value=queryset):\n+            with self.assertNumQueries(4) as ctx:\n+                self.origin.delete()\n+        self.assertEqual(ctx.captured_queries[0]['sql'], expected_sql)\n+\n+\n class FastDeleteTests(TestCase):\n \n     def test_fast_delete_fk(self):\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldSelectionTests; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -441,15 +441,14 @@\n class DeletionFieldSelectionTests(TestCase):\n-    @classmethod\n-    def setUpTestData(cls):\n-        cls.origin = Origin.objects.create()\n-        cls.referrer = Referrer.objects.create(\n-            origin=cls.origin, code='referrer', payload='unneeded data',\n+    def setUp(self):\n+        self.origin = Origin.objects.create()\n+        self.referrer = Referrer.objects.create(\n+            origin=self.origin, code='referrer', payload='unneeded data',\n         )\n-        Leaf.objects.create(referrer=cls.referrer)\n+        Leaf.objects.create(referrer=self.referrer)\n \n     def test_only_required_fields(self):\n         expected_sql = str(\n-            Referrer.objects.filter(origin=self.origin).only('pk', 'code').query\n+            Referrer.objects.filter(origin__in=[self.origin]).only('pk', 'code').query\n         )\n@@ -483,7 +483,7 @@\n     def test_select_related(self):\n         queryset = Referrer.objects.select_related('origin')\n-        expected_sql = str(queryset.filter(origin=self.origin).query)\n+        expected_sql = str(queryset.filter(origin__in=[self.origin]).query)\n         with mock.patch.object(Referrer._base_manager, 'get_queryset', return_value=queryset):\n             with self.assertNumQueries(4) as ctx:\n                 self.origin.delete()\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldSelectionTests; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -117,6 +117,13 @@\n             (field, value), set()).update(objs)\n \n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n     def can_fast_delete(self, objs, from_field=None):\n@@ -140,9 +147,7 @@\n         else:\n             return False\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n         # The use of from_field comes from the need to avoid cascade back to\n@@ -236,6 +241,21 @@\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n-                        field.remote_field.on_delete(self, field, sub_objs, self.using)\n+                    else:\n+                        related_model = related.related_model\n+                        # Signal receivers may need any field. Queries using\n+                        # select_related() must retain their selected fields.\n+                        if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                            referenced_fields = {\n+                                related_field.attname\n+                                for rel in get_candidate_relations_to_delete(related_model._meta)\n+                                for related_field in rel.field.foreign_related_fields\n+                            }\n+                            sub_objs = sub_objs.only('pk', *referenced_fields)\n+                        if sub_objs:\n+                            field.remote_field.on_delete(self, field, sub_objs, self.using)\n             for field in model._meta.private_fields:\n                 if hasattr(field, 'bulk_related_objects'):\ndiff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt\n--- a/docs/releases/3.0.txt\n+++ b/docs/releases/3.0.txt\n@@ -207,6 +207,9 @@\n   treatment of nonexistent and ambiguous datetimes.\n \n+* :meth:`.QuerySet.delete` now avoids fetching unnecessary fields of related\n+  objects when there are no deletion signal listeners.\n+\n Requests and Responses\n ~~~~~~~~~~~~~~~~~~~~~~\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- django/db/models/deletion.py tests/delete/models.py tests/delete/tests.py docs/releases/3.0.txt",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls -d tests/*inherit* tests/*generic* tests/*foreign* tests/*defer* tests/*signal* && grep -n -E 'def test_.*delet|assertNumQueries|[.]only\\(' tests/model_inheritance/tests.py tests/model_inheritance_regress/tests.py tests/generic_relations/tests.py tests/generic_relations_regress/tests.py tests/foreign_object/tests.py tests/signals/tests.py | head -110",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -144,6 +144,19 @@\n         self.assertIsNone(a.o2o_setnull)\n \n+    def test_setnull_only_required_fields(self):\n+        a = create_a('setnull')\n+        collector = Collector(using='default')\n+        collector.collect([a.setnull])\n+        field = A._meta.get_field('setnull')\n+        instances = collector.field_updates[A][(field, None)]\n+        self.assertEqual(len(instances), 1)\n+        instance = instances.pop()\n+        self.assertEqual(instance.get_deferred_fields(), {\n+            f.attname for f in A._meta.concrete_fields if not f.primary_key\n+        })\n+\n \n class DeletionTests(TestCase):\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress generic_relations generic_relations_regress model_inheritance model_inheritance_regress foreign_object signals && git --no-pager diff --check; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/models.py b/tests/delete/models.py\n--- a/tests/delete/models.py\n+++ b/tests/delete/models.py\n@@ -146,3 +146,20 @@\n class RelToBase(models.Model):\n     base = models.ForeignKey(Base, models.DO_NOTHING)\n+\n+\n+class Origin(models.Model):\n+    pass\n+\n+\n+class Referrer(models.Model):\n+    origin = models.ForeignKey(Origin, models.CASCADE)\n+    code = models.CharField(max_length=30, unique=True)\n+    payload = models.TextField()\n+\n+\n+class Leaf(models.Model):\n+    referrer = models.ForeignKey(Referrer, models.CASCADE, to_field='code')\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,4 +1,5 @@\n from math import ceil\n+from unittest import mock\n \n from django.db import IntegrityError, connection, models\n@@ -8,6 +9,6 @@\n from .models import (\n-    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, M, M2MFrom,\n-    M2MTo, MRNull, Parent, R, RChild, S, T, User, create_a, get_default_r,\n+    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, Leaf, M, M2MFrom,\n+    M2MTo, MRNull, Origin, Parent, R, RChild, Referrer, S, T, User, create_a,\n+    get_default_r,\n )\n@@ -475,3 +476,67 @@\n-class FastDeleteTests(TestCase):\n+class DeletionFieldSelectionTests(TestCase):\n+    @classmethod\n+    def setUpTestData(cls):\n+        cls.origin = Origin.objects.create()\n+        cls.referrer = Referrer.objects.create(\n+            origin=cls.origin, code='referrer', payload='unneeded data',\n+        )\n+        Leaf.objects.create(referrer=cls.referrer)\n+\n+    def test_only_required_fields(self):\n+        expected_sql = str(\n+            Referrer.objects.filter(origin=self.origin).only('pk', 'code').query\n+        )\n+        with self.assertNumQueries(5) as ctx:\n+            deleted = Origin.objects.filter(pk=self.origin.pk).delete()\n+        self.assertEqual(ctx.captured_queries[1]['sql'], expected_sql)\n+        self.assertEqual(deleted, (3, {\n+            'delete.Origin': 1, 'delete.Referrer': 1, 'delete.Leaf': 1,\n+        }))\n+        self.assertFalse(Origin.objects.exists())\n+        self.assertFalse(Referrer.objects.exists())\n+        self.assertFalse(Leaf.objects.exists())\n+\n+    def _test_signal(self, signal):\n+        receiver = mock.Mock()\n+        signal.connect(receiver, sender=Referrer)\n+        try:\n+            with self.assertNumQueries(4):\n+                self.origin.delete()\n+        finally:\n+            signal.disconnect(receiver, sender=Referrer)\n+        receiver.assert_called_once()\n+        instance = receiver.call_args[1]['instance']\n+        self.assertEqual(instance.get_deferred_fields(), set())\n+        self.assertEqual(instance.payload, self.referrer.payload)\n+\n+    def test_pre_delete_signal(self):\n+        self._test_signal(models.signals.pre_delete)\n+\n+    def test_post_delete_signal(self):\n+        self._test_signal(models.signals.post_delete)\n+\n+    def test_select_related(self):\n+        queryset = Referrer.objects.select_related('origin')\n+        expected_sql = str(queryset.filter(origin=self.origin).query)\n+        with mock.patch.object(Referrer._base_manager, 'get_queryset', return_value=queryset):\n+            with self.assertNumQueries(4) as ctx:\n+                self.origin.delete()\n+        self.assertEqual(ctx.captured_queries[0]['sql'], expected_sql)\n+\n+\n+class FastDeleteTests(TestCase):\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldSelectionTests",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/models.py b/tests/delete/models.py\n--- a/tests/delete/models.py\n+++ b/tests/delete/models.py\n@@ -146,3 +146,20 @@\n class RelToBase(models.Model):\n     base = models.ForeignKey(Base, models.DO_NOTHING)\n+\n+\n+class Origin(models.Model):\n+    pass\n+\n+\n+class Referrer(models.Model):\n+    origin = models.ForeignKey(Origin, models.CASCADE)\n+    code = models.CharField(max_length=30, unique=True)\n+    payload = models.TextField()\n+\n+\n+class Leaf(models.Model):\n+    referrer = models.ForeignKey(Referrer, models.CASCADE, to_field='code')\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,4 +1,5 @@\n from math import ceil\n+from unittest import mock\n \n from django.db import IntegrityError, connection, models\n@@ -8,6 +9,6 @@\n from .models import (\n-    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, M, M2MFrom,\n-    M2MTo, MRNull, Parent, R, RChild, S, T, User, create_a, get_default_r,\n+    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, Leaf, M, M2MFrom,\n+    M2MTo, MRNull, Origin, Parent, R, RChild, Referrer, S, T, User, create_a,\n+    get_default_r,\n )\n@@ -441,4 +442,55 @@\n+class DeletionFieldSelectionTests(TestCase):\n+    @classmethod\n+    def setUpTestData(cls):\n+        cls.origin = Origin.objects.create()\n+        cls.referrer = Referrer.objects.create(\n+            origin=cls.origin, code='referrer', payload='unneeded data',\n+        )\n+        Leaf.objects.create(referrer=cls.referrer)\n+\n+    def test_only_required_fields(self):\n+        expected_sql = str(\n+            Referrer.objects.filter(origin=self.origin).only('pk', 'code').query\n+        )\n+        with self.assertNumQueries(5) as ctx:\n+            deleted = Origin.objects.filter(pk=self.origin.pk).delete()\n+        self.assertEqual(ctx.captured_queries[1]['sql'], expected_sql)\n+        self.assertEqual(deleted, (3, {\n+            'delete.Origin': 1, 'delete.Referrer': 1, 'delete.Leaf': 1,\n+        }))\n+        self.assertFalse(Origin.objects.exists())\n+        self.assertFalse(Referrer.objects.exists())\n+        self.assertFalse(Leaf.objects.exists())\n+\n+    def _test_signal(self, signal):\n+        receiver = mock.Mock()\n+        signal.connect(receiver, sender=Referrer)\n+        try:\n+            with self.assertNumQueries(4):\n+                self.origin.delete()\n+        finally:\n+            signal.disconnect(receiver, sender=Referrer)\n+        receiver.assert_called_once()\n+        instance = receiver.call_args[1]['instance']\n+        self.assertEqual(instance.get_deferred_fields(), set())\n+        self.assertEqual(instance.payload, self.referrer.payload)\n+\n+    def test_pre_delete_signal(self):\n+        self._test_signal(models.signals.pre_delete)\n+\n+    def test_post_delete_signal(self):\n+        self._test_signal(models.signals.post_delete)\n+\n+    def test_select_related(self):\n+        queryset = Referrer.objects.select_related('origin')\n+        expected_sql = str(queryset.filter(origin=self.origin).query)\n+        with mock.patch.object(Referrer._base_manager, 'get_queryset', return_value=queryset):\n+            with self.assertNumQueries(4) as ctx:\n+                self.origin.delete()\n+        self.assertEqual(ctx.captured_queries[0]['sql'], expected_sql)\n+\n+\n class FastDeleteTests(TestCase):\n \n     def test_fast_delete_fk(self):\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldSelectionTests; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -441,15 +441,14 @@\n class DeletionFieldSelectionTests(TestCase):\n-    @classmethod\n-    def setUpTestData(cls):\n-        cls.origin = Origin.objects.create()\n-        cls.referrer = Referrer.objects.create(\n-            origin=cls.origin, code='referrer', payload='unneeded data',\n+    def setUp(self):\n+        self.origin = Origin.objects.create()\n+        self.referrer = Referrer.objects.create(\n+            origin=self.origin, code='referrer', payload='unneeded data',\n         )\n-        Leaf.objects.create(referrer=cls.referrer)\n+        Leaf.objects.create(referrer=self.referrer)\n \n     def test_only_required_fields(self):\n         expected_sql = str(\n-            Referrer.objects.filter(origin=self.origin).only('pk', 'code').query\n+            Referrer.objects.filter(origin__in=[self.origin]).only('pk', 'code').query\n         )\n@@ -483,7 +483,7 @@\n     def test_select_related(self):\n         queryset = Referrer.objects.select_related('origin')\n-        expected_sql = str(queryset.filter(origin=self.origin).query)\n+        expected_sql = str(queryset.filter(origin__in=[self.origin]).query)\n         with mock.patch.object(Referrer._base_manager, 'get_queryset', return_value=queryset):\n             with self.assertNumQueries(4) as ctx:\n                 self.origin.delete()\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldSelectionTests; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -117,6 +117,13 @@\n             (field, value), set()).update(objs)\n \n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n     def can_fast_delete(self, objs, from_field=None):\n@@ -140,9 +147,7 @@\n         else:\n             return False\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n         # The use of from_field comes from the need to avoid cascade back to\n@@ -236,6 +241,21 @@\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n-                        field.remote_field.on_delete(self, field, sub_objs, self.using)\n+                    else:\n+                        related_model = related.related_model\n+                        # Signal receivers may need any field. Queries using\n+                        # select_related() must retain their selected fields.\n+                        if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                            referenced_fields = {\n+                                related_field.attname\n+                                for rel in get_candidate_relations_to_delete(related_model._meta)\n+                                for related_field in rel.field.foreign_related_fields\n+                            }\n+                            sub_objs = sub_objs.only('pk', *referenced_fields)\n+                        if sub_objs:\n+                            field.remote_field.on_delete(self, field, sub_objs, self.using)\n             for field in model._meta.private_fields:\n                 if hasattr(field, 'bulk_related_objects'):\ndiff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt\n--- a/docs/releases/3.0.txt\n+++ b/docs/releases/3.0.txt\n@@ -207,6 +207,9 @@\n   treatment of nonexistent and ambiguous datetimes.\n \n+* :meth:`.QuerySet.delete` now avoids fetching unnecessary fields of related\n+  objects when there are no deletion signal listeners.\n+\n Requests and Responses\n ~~~~~~~~~~~~~~~~~~~~~~\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -144,6 +144,19 @@\n         self.assertIsNone(a.o2o_setnull)\n \n+    def test_setnull_only_required_fields(self):\n+        a = create_a('setnull')\n+        collector = Collector(using='default')\n+        collector.collect([a.setnull])\n+        field = A._meta.get_field('setnull')\n+        instances = collector.field_updates[A][(field, None)]\n+        self.assertEqual(len(instances), 1)\n+        instance = instances.pop()\n+        self.assertEqual(instance.get_deferred_fields(), {\n+            f.attname for f in A._meta.concrete_fields if not f.primary_key\n+        })\n+\n \n class DeletionTests(TestCase):\nPATCH\nif [ $? -eq 0 ]; then ./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress generic_relations generic_relations_regress model_inheritance model_inheritance_regress foreign_object signals && git --no-pager diff --check; fi"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Cascade deletion fetched all fields of related objects, unnecessarily decoding unused text. The collector now fetches only primary keys and fields needed for cascading, while preserving full loading for signal listeners and `select_related()`. Added regression coverage and a release note.",
+ "assistant_messages": [
+  "I\u2019ll inspect how cascade deletion collects related objects, then limit fetched fields without changing signal or relationship behavior.\n",
+  "The collector fetches every field of related objects even when it only needs keys for cascading. I\u2019ll narrow those queries while preserving full loading for signal listeners and `select_related()`, with regression coverage for non-primary-key references.\n",
+  "Cascade deletion fetched all fields of related objects, unnecessarily decoding unused text. The collector now fetches only primary keys and fields needed for cascading, while preserving full loading for signal listeners and `select_related()`. Added regression coverage and a release note."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating Django design**\n\nI need to design a Django commit for handling signal listeners \u2014 it seems expected to include pre/post and many-to-many fields. Currently, _has_stream only includes pre/post but I think I should maintain the existing behavior for many-to-many. I\u2019ll also defer fields in related collections. This should involve selecting attributes while checking if necessary conditions are met. Maybe I should inspect the related collections and run more tests to confirm this.",
+  "**Evaluating command options**\n\nI\u2019m noticing that the `apply_patch` command might be missing since the output is blank when I check it. Given that I can only use Bash tools, I plan to use the patch command instead, but I want to avoid an overly complicated exploration.\n\nNext, I need to check for commands and specify which models to add or delete. My plan involves creating new models without altering existing ones to ensure everything runs smoothly. I'll create classes like `DeleteTop`, `DeleteMiddle`, and others while ensuring proper cascading deletions with the intended structure.\n\n**Considering model structure**\n\nI\u2019m thinking about whether to reuse the existing Avatar as a top model instead of creating a new one, as it might lead to clutter. I need to name the models carefully, like introducing a new class named Nullable FK. I'm contemplating testing foreign keys that don't have a primary key and requiring unique identifiers.\n\nI want to explore adding Middle as a foreign key with uniqueness, and it seems there are ways to parameterize using isolated dynamic models without complicating things too much. I'll also focus on better naming conventions, aiming for clarity while keeping everything concise.\n\n**Clarifying delete functionality**\n\nI\u2019m considering a situation where `can_fast_delete` returns false, which may signal issues with parent-child relationships. If a generic class lacks primary keys and references, I\u2019ll need to explicitly include 'pk' in the `.only()` method to keep those fields.\n\nIt's important to ensure I'm retaining the primary key alongside any referenced fields. Even though Django typically utilizes `.only(*tuple(...))`, if the set is empty, it behaves strangely. So, I need to make sure I\u2019m correctly including the necessary fields.",
+  "**Examining test setup**\n\nI\u2019m setting up a new class called `DeletionFieldSelectionTests` to test signals. It includes a method for setting up test data. There are three tests to run. For `test_only_required_fields`, I\u2019ll filter `Origin` objects and delete based on the primary key. I need to ensure the initial SELECT retrieves the correct root ID, along with related SELECTs for the referrer and that the delete counts are accurate when comparing to instances.",
+  "**Investigating git apply issues**\n\nI'm wondering why there's a failed hunk at the class line count. It seems like git apply requires some default context, maybe three lines? The exact class is present, starting at line 475, but the actual line count feels around 480 \u2014 which is confusing. I need to search for more information to understand why this discrepancy occurs and how I can resolve the issue effectively. So, let's dig deeper into this!",
+  "**Considering Git Context Options**\n\nI'm thinking about whether I need to use the `-unidiff-zero` option for applying a patch. The hunk within `class FastDeleteTests` has no unchanged context and only includes replacements. It seems like I can use `git apply --unidiff-zero` properly here. However, it's interesting that including context lines could be useful, perhaps using context set to 3 to include the next blank and the `def`. Let\u2019s clarify this as I go along!",
+  "**Evaluating SQL Assertions**\n\nI'm focusing on SQL assertions and noticing that using `str(query)` might be necessary, especially with backend expectations for integers and named parameters. I think the Oracle string should be acceptable, too. The default table prefixes and full alias setups seem crucial for robustness. I'm considering how we can ensure everything's properly set up to maximize efficiency and effectiveness in handling these SQL assertions. There's a lot to keep track of, but it feels manageable!",
+  "**Evaluating testing methods**\n\nI could choose a few testing methods instead of using the module directory requirement, which encourages a structured approach. The root tests are generic and the parent tests target specific classes, so broad changes aren't necessary. I may mention root tests and address regression coverage, although the user didn't explicitly ask for extensive testing. I just need to verify persistent changes and check with git diff. Let\u2019s finish this efficiently but still ensure all relevant aspects are covered."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 146.6
+}

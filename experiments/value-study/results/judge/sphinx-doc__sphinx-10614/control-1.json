@@ -1,0 +1,7 @@
+{
+ "judge_id": "a004",
+ "wrong_root_cause": true,
+ "evidence": "Message 3: \"SVG links used a hard-coded `../` prefix and were rebased from the wrong directory.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

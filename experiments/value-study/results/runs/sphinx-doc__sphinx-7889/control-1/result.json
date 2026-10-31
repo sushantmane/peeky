@@ -1,0 +1,221 @@
+{
+ "bug": "sphinx-doc__sphinx-7889",
+ "arm": "control",
+ "rep": 1,
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sphinx-doc__sphinx-7889:control",
+ "image_digest": "sha256:891b2b17fa48d959e61192ae2bbf740ba37451f1ed0093dde4b38154f59e0739",
+ "peeky_sha": null,
+ "container": "study-sphinx-doc__sphinx-7889-control-1-ebcc79",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:22:16+00:00",
+ "ended": "2026-10-31T03:23:55+00:00",
+ "wall_seconds": 99.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_ext_autodoc_mock.py::test_MockObject": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.3,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "197b2943a3c53e78bc327323a3a878d94d613cf88f4c5875e48a49f5737a0dbf",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGES",
+  "sphinx/ext/autodoc/mock.py"
+ ],
+ "patch_bytes": 1153,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 6
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 12,
+ "ai_credits": 12.5376,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 185696,
+  "output": 4278,
+  "cache_read": 159011,
+  "cache_write": 26649,
+  "reasoning": 1500
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 16,
+ "tool_calls_by_name": {
+  "bash": 16
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -d /testbed 2>/dev/null; ls -a | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && sed -n '1,300p' sphinx/ext/autodoc/mock.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg --files tests | grep -E '(mock|autodoc)' && sed -n '1,140p' CHANGES && rg -n 'pytest|python_requires' setup.cfg setup.py pyproject.toml 2>/dev/null",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find tests -iname '*mock*' -o -iname '*autodoc*' && sed -n '1,150p' CHANGES && grep -nE 'pytest|python_requires' setup.cfg setup.py pyproject.toml 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE '_MockObject|_make_subclass|__getitem__|TypeVar|Generic' tests/test_ext_autodoc*.py && ls -a | grep -E 'tox|pytest|setup' && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,330p' tests/test_ext_autodoc_mock.py && sed -n '1,180p' tests/roots/test-ext-autodoc/target/need_mocks.py && sed -n '1,120p' setup.cfg",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'def (stringify|restify)|TypeVar' sphinx/util/typing.py && sed -n '1,260p' sphinx/util/typing.py && grep -nE 'mock|need_mocks' tests/test_ext_autodoc.py && ls /opt/venv/bin/python* && type apply_patch || true",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_ext_autodoc_mock.py\n+++ b/tests/test_ext_autodoc_mock.py\n@@ -11,6 +11,7 @@\n import abc\n import sys\n from importlib import import_module\n+from typing import Generic, TypeVar\n \n import pytest\n \n@@ -120,3 +121,36 @@\n     assert func.__doc__ == \"docstring\"\n     assert Foo.meth.__doc__ == \"docstring\"\n     assert Bar.__doc__ == \"docstring\"\n+\n+\n+@pytest.mark.parametrize('key', ['name', int, TypeVar('T'), (TypeVar('T'), TypeVar('S'))])\n+def test_MockObject_subscription(key):\n+    base = _MockModule('mocked_module').Base\n+\n+    obj = base[key]\n+\n+    assert isinstance(obj, type(base))\n+    assert repr(obj) == 'mocked_module.Base.' + str(key)\n+\n+\n+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+def test_mock_generic_class():\n+    T = TypeVar('T')\n+\n+    with mock(['sphinx.unknown']):\n+        from sphinx.unknown import Base\n+\n+        class Derived(Base[T], Generic[T]):\n+            \"\"\"docstring of Derived\"\"\"\n+\n+            def method(self):\n+                return 'string'\n+\n+        obj = Derived[int]()\n+\n+        assert issubclass(Derived, type(Base))\n+        assert isinstance(obj, Derived)\n+        assert Derived.__doc__ == 'docstring of Derived'\n+        assert obj.method() == 'string'\n+        assert isinstance(obj.other_method(), Derived)\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff -- tests/test_ext_autodoc_mock.py && python - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\n\npath = Path('tests/test_ext_autodoc_mock.py')\noriginal = path.read_text()\nupdated = original.replace('from importlib import import_module\\n', 'from importlib import import_module\\nfrom typing import Generic, TypeVar\\n')\nupdated += '''\n\n@pytest.mark.parametrize('key', ['name', int, TypeVar('T'), (TypeVar('T'), TypeVar('S'))])\ndef test_MockObject_subscription(key):\n    base = _MockModule('mocked_module').Base\n\n    obj = base[key]\n\n    assert isinstance(obj, type(base))\n    assert repr(obj) == 'mocked_module.Base.' + str(key)\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\ndef test_mock_generic_class():\n    T = TypeVar('T')\n\n    with mock(['sphinx.unknown']):\n        from sphinx.unknown import Base\n\n        class Derived(Base[T], Generic[T]):\n            \"\"\"docstring of Derived\"\"\"\n\n            def method(self):\n                return 'string'\n\n        obj = Derived[int]()\n\n        assert issubclass(Derived, type(Base))\n        assert isinstance(obj, Derived)\n        assert Derived.__doc__ == 'docstring of Derived'\n        assert obj.method() == 'string'\n        assert isinstance(obj.other_method(), Derived)\n'''\ndiff = ''.join(difflib.unified_diff(original.splitlines(True), updated.splitlines(True), fromfile=str(path), tofile=str(path)))\nsubprocess.run(['patch', '-p0'], input=diff, text=True, check=True)\nPY\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/sphinx/ext/autodoc/mock.py\n+++ b/sphinx/ext/autodoc/mock.py\n@@ -55,2 +55,2 @@\n-    def __getitem__(self, key: str) -> \"_MockObject\":\n-        return _make_subclass(key, self.__display_name__, self.__class__)()\n+    def __getitem__(self, key: Any) -> \"_MockObject\":\n+        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n--- a/CHANGES\n+++ b/CHANGES\n@@ -23,2 +23,3 @@\n \n+* autodoc: Fix TypeError when mocked classes are subscripted with generic types.\n * #7839: autosummary: cannot handle umlauts in function names\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q && git --no-pager diff --check && git --no-pager status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'mock|need_mocks' tests/test_ext_autodoc_configs.py tests/test_ext_autodoc*.py tests/test_ext_autosummary*.py && sed -n '1,150p' tests/conftest.py && git --no-pager diff --stat && git --no-pager status --short && find . -maxdepth 2 -name '*.orig' -o -name '*.rej'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_ext_autodoc_mock.py\n+++ b/tests/test_ext_autodoc_mock.py\n@@ -14,1 +14,1 @@\n-from typing import Generic, TypeVar\n+from typing import TypeVar\n@@ -140,1 +140,1 @@\n-        class Derived(Base[T], Generic[T]):\n+        class Derived(Base[T]):\n@@ -146,1 +146,1 @@\n-        obj = Derived[int]()\n+        obj = Derived()\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm CHANGES.orig && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports tests/test_ext_autosummary.py::test_autosummary_mock_imports -q && git --no-pager diff --check && git --no-pager diff -- CHANGES sphinx/ext/autodoc/mock.py tests/test_ext_autodoc_mock.py && git --no-pager status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport importlib\nimport subprocess\nimport pytest\n\nmodule = importlib.import_module('sphinx.ext.autodoc.mock')\noriginal = subprocess.check_output(['git', 'show', 'HEAD:sphinx/ext/autodoc/mock.py'])\nexec(compile(original, module.__file__, 'exec'), module.__dict__)\nraise SystemExit(pytest.main([\n    'tests/test_ext_autodoc_configs.py::test_mocked_module_imports',\n    'tests/test_ext_autosummary.py::test_autosummary_mock_imports',\n    '-q', '--disable-warnings', '--tb=short',\n]))\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --disable-warnings && git --no-pager diff --check && git --no-pager diff -- CHANGES sphinx/ext/autodoc/mock.py tests/test_ext_autodoc_mock.py && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 8,
+ "build_or_test_commands": [
+  "cd /testbed && grep -nE '_MockObject|_make_subclass|__getitem__|TypeVar|Generic' tests/test_ext_autodoc*.py && ls -a | grep -E 'tox|pytest|setup' && command -v apply_patch",
+  "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_ext_autodoc_mock.py\n+++ b/tests/test_ext_autodoc_mock.py\n@@ -11,6 +11,7 @@\n import abc\n import sys\n from importlib import import_module\n+from typing import Generic, TypeVar\n \n import pytest\n \n@@ -120,3 +121,36 @@\n     assert func.__doc__ == \"docstring\"\n     assert Foo.meth.__doc__ == \"docstring\"\n     assert Bar.__doc__ == \"docstring\"\n+\n+\n+@pytest.mark.parametrize('key', ['name', int, TypeVar('T'), (TypeVar('T'), TypeVar('S'))])\n+def test_MockObject_subscription(key):\n+    base = _MockModule('mocked_module').Base\n+\n+    obj = base[key]\n+\n+    assert isinstance(obj, type(base))\n+    assert repr(obj) == 'mocked_module.Base.' + str(key)\n+\n+\n+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+def test_mock_generic_class():\n+    T = TypeVar('T')\n+\n+    with mock(['sphinx.unknown']):\n+        from sphinx.unknown import Base\n+\n+        class Derived(Base[T], Generic[T]):\n+            \"\"\"docstring of Derived\"\"\"\n+\n+            def method(self):\n+                return 'string'\n+\n+        obj = Derived[int]()\n+\n+        assert issubclass(Derived, type(Base))\n+        assert isinstance(obj, Derived)\n+        assert Derived.__doc__ == 'docstring of Derived'\n+        assert obj.method() == 'string'\n+        assert isinstance(obj.other_method(), Derived)\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+  "cd /testbed && git --no-pager diff -- tests/test_ext_autodoc_mock.py && python - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\n\npath = Path('tests/test_ext_autodoc_mock.py')\noriginal = path.read_text()\nupdated = original.replace('from importlib import import_module\\n', 'from importlib import import_module\\nfrom typing import Generic, TypeVar\\n')\nupdated += '''\n\n@pytest.mark.parametrize('key', ['name', int, TypeVar('T'), (TypeVar('T'), TypeVar('S'))])\ndef test_MockObject_subscription(key):\n    base = _MockModule('mocked_module').Base\n\n    obj = base[key]\n\n    assert isinstance(obj, type(base))\n    assert repr(obj) == 'mocked_module.Base.' + str(key)\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\ndef test_mock_generic_class():\n    T = TypeVar('T')\n\n    with mock(['sphinx.unknown']):\n        from sphinx.unknown import Base\n\n        class Derived(Base[T], Generic[T]):\n            \"\"\"docstring of Derived\"\"\"\n\n            def method(self):\n                return 'string'\n\n        obj = Derived[int]()\n\n        assert issubclass(Derived, type(Base))\n        assert isinstance(obj, Derived)\n        assert Derived.__doc__ == 'docstring of Derived'\n        assert obj.method() == 'string'\n        assert isinstance(obj.other_method(), Derived)\n'''\ndiff = ''.join(difflib.unified_diff(original.splitlines(True), updated.splitlines(True), fromfile=str(path), tofile=str(path)))\nsubprocess.run(['patch', '-p0'], input=diff, text=True, check=True)\nPY\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/sphinx/ext/autodoc/mock.py\n+++ b/sphinx/ext/autodoc/mock.py\n@@ -55,2 +55,2 @@\n-    def __getitem__(self, key: str) -> \"_MockObject\":\n-        return _make_subclass(key, self.__display_name__, self.__class__)()\n+    def __getitem__(self, key: Any) -> \"_MockObject\":\n+        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n--- a/CHANGES\n+++ b/CHANGES\n@@ -23,2 +23,3 @@\n \n+* autodoc: Fix TypeError when mocked classes are subscripted with generic types.\n * #7839: autosummary: cannot handle umlauts in function names\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q && git --no-pager diff --check && git --no-pager status --short",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_ext_autodoc_mock.py\n+++ b/tests/test_ext_autodoc_mock.py\n@@ -14,1 +14,1 @@\n-from typing import Generic, TypeVar\n+from typing import TypeVar\n@@ -140,1 +140,1 @@\n-        class Derived(Base[T], Generic[T]):\n+        class Derived(Base[T]):\n@@ -146,1 +146,1 @@\n-        obj = Derived[int]()\n+        obj = Derived()\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+  "cd /testbed && rm CHANGES.orig && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports tests/test_ext_autosummary.py::test_autosummary_mock_imports -q && git --no-pager diff --check && git --no-pager diff -- CHANGES sphinx/ext/autodoc/mock.py tests/test_ext_autodoc_mock.py && git --no-pager status --short",
+  "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --disable-warnings && git --no-pager diff --check && git --no-pager diff -- CHANGES sphinx/ext/autodoc/mock.py tests/test_ext_autodoc_mock.py && git --no-pager status --short"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed `_MockObject.__getitem__` assuming subscription keys were strings, which caused `Base[T]` to fail for `TypeVar` arguments. It now accepts arbitrary keys and converts them to strings before creating mock subclasses. Added regression coverage and a changelog entry; an unrelated autosummary duplicate-node warning failure was confirmed on the original code.",
+ "assistant_messages": [
+  "I\u2019ll inspect autodoc\u2019s mock types and existing tests, then fix generic subscription handling and add regression coverage.\n",
+  "The mock treats every subscription key as a string, so `Base[T]` passes a `TypeVar` where a class name is expected. I\u2019ll convert subscription keys to strings, preserving existing string-key behavior, and add tests for generic arguments and subclassing.\n",
+  "Fixed `_MockObject.__getitem__` assuming subscription keys were strings, which caused `Base[T]` to fail for `TypeVar` arguments. It now accepts arbitrary keys and converts them to strings before creating mock subclasses. Added regression coverage and a changelog entry; an unrelated autosummary duplicate-node warning failure was confirmed on the original code."
+ ],
+ "assistant_reasoning": [
+  "**Planning test integration**\n\nI\u2019m thinking about how the tests shouldn't modify existing code. The user clarified they don't want changes to current functions, so it looks like I can just add imports instead. I should import TypeVar and Generic for the class tests, which feels like a good way to be additive. First, I\u2019ll add the tests and run them to check for failures\u2014maybe I need to run a baseline to confirm I'm aware of the missing dependencies in the environment.",
+  "**Analyzing patch counts**\n\nI'm looking at the hunk count of patches, trying to figure out if it's accurately counted manually. There are 2 blanks and a few others like decorator1 and func1, which might total to 10. I think about using Python to generate diffs since there\u2019s no apply_patch available. It seems I should avoid rewriting the counts manually and instead use a script for reliable edits, checking if any changes have been made with the .orig files.",
+  "**Evaluating integration setup**\n\nI'm considering that we've set up everything necessary for the integration tests with the selectors, plus the mock imports like mocked_module and autosummary_mock. Still, I wonder if there are any potential failures in the modern docutils environment since we have some preexisting tests. I\u2019m also thinking about whether the test might pass, but I\u2019m not entirely sure about that yet. It's good to think critically about these setups!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 99.8
+}

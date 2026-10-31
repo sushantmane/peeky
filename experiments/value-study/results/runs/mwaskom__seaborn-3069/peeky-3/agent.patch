@@ -1,0 +1,70 @@
+diff --git a/doc/whatsnew/v0.12.1.rst b/doc/whatsnew/v0.12.1.rst
+index 6ba57d5b..a97532bd 100644
+--- a/doc/whatsnew/v0.12.1.rst
++++ b/doc/whatsnew/v0.12.1.rst
+@@ -10,6 +10,8 @@ v0.12.1 (Unreleased)
+ 
+ - |Enhancement| The :class:`Jitter` move now applies a small amount of jitter by default (:pr:`3066`).
+ 
++- |Enhancement| Coordinate axes with a :class:`objects.Nominal` scale now use categorical plot conventions: fixed half-category margins, no grid lines by default, and an inverted y axis. Explicit :meth:`objects.Plot.limit` values and :meth:`objects.Plot.theme` grid settings override these defaults.
++
+ - |Enhancement| Marks that sort along the orient axis (e.g. :class:`Line`) now use a stable algorithm (:pr:`3064`).
+ 
+ - |Fix| Make :class:`objects.PolyFit` robust to missing data (:pr:`3010`).
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..764214ff 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1627,6 +1626,20 @@ class Plotter:
+ 
+     def _finalize_figure(self, p: Plot) -> None:
+ 
++        for sub in self._subplots:
++            ax = sub["ax"]
++            for axis in "xy":
++                if isinstance(self._scales.get(sub[axis]), Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    if not p._theme.get("axes.grid", False):
++                        axis_obj.grid(False, which="both")
++                    n = len(axis_obj.get_majorticklocs())
++                    if n:
++                        limits = (-.5, n - .5)
++                        if axis == "y":
++                            limits = limits[::-1]
++                        getattr(ax, f"set_{axis}lim")(limits, auto=None)
++
+         for sub in self._subplots:
+             ax = sub["ax"]
+             for axis in "xy":
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..91339c15 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -138,6 +138,10 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    Coordinate axes use fixed margins of half a category at either end. The
++    y axis is inverted so that categories read from top to bottom. Grid lines
++    are hidden unless explicitly enabled with :meth:`Plot.theme`.
+     """
+     # Categorical (convert to strings), un-sortable
+ 

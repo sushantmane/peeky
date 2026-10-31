@@ -6,6 +6,8 @@ include examples/real/ipaddress_mapped/LICENSE-PSF
 recursive-include skills *.md
 recursive-include tests *.py
 recursive-include scripts *.py
+# The value study's pages, which HISTORY.md links (its data and harness stay in the repository).
+include experiments/value-study/README.md experiments/value-study/BUGS.md experiments/value-study/REPORT.md
 # The pages, their measurements, and the presentation the README links.
 recursive-include docs *.md *.json *.pdf *.pptx
 recursive-include src/peeky/java_adapter *.java *.json *.md

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a033",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: The error stems from missing grammar rules for dotted bracket indexes in jq 1.6. This checkout already contains that fix, and the reported command works, so no source change was needed.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

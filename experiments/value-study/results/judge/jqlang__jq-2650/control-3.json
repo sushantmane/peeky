@@ -1,0 +1,7 @@
+{
+ "judge_id": "a001",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The reported quoted-key syntax already worked in this checkout, but separate grammar rules still rejected dotted iteration and slice chains.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

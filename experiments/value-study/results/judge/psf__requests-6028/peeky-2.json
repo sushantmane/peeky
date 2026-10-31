@@ -1,0 +1,7 @@
+{
+ "judge_id": "a111",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Proxy URL normalization dropped credentials because urllib3\u2019s `netloc` excludes authentication information, causing 407 responses.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

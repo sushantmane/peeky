@@ -1,0 +1,270 @@
+{
+ "bug": "sphinx-doc__sphinx-10614",
+ "arm": "peeky",
+ "rep": 2,
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/sphinx-doc__sphinx-10614:peeky",
+ "image_digest": "sha256:7223e0ee41d5b27649b70d6db09a87bcebbfc36ccd10c292463e756beca475a1",
+ "peeky_sha": "360b3f17322f05423803ba223c0c9628da3bcee7",
+ "container": "study-sphinx-doc__sphinx-10614-peeky-2-fee08f",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:58:24+00:00",
+ "ended": "2026-10-31T04:02:28+00:00",
+ "wall_seconds": 244.1,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": false,
+ "f2p": {
+  "tests/test_ext_inheritance_diagram.py::test_inheritance_diagram_svg_html": "FAILED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.8,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "769dd76da6fabff68036c430696d0ba84f9289afd58fe6b496b721c49c3b9dac",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGES",
+  "sphinx/ext/graphviz.py",
+  "sphinx/ext/inheritance_diagram.py",
+  "tests/test_ext_graphviz.py"
+ ],
+ "patch_bytes": 6802,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 6
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 19,
+ "ai_credits": 37.7396,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 680741,
+  "output": 16962,
+  "cache_read": 622520,
+  "cache_write": 58164,
+  "reasoning": 9518
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 24,
+ "tool_calls_by_name": {
+  "bash": 24
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -d /testbed /opt/peeky/docs/AGENT_GUIDE.md 2>/dev/null; ls -a | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/AGENT_GUIDE.md; git --no-pager status --short; sed -n '1,260p' sphinx/ext/inheritance_diagram.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls tests/*inherit* tests/*graphviz*; sed -n '1,280p' tests/test_ext_inheritance_diagram.py; sed -n '1,300p' sphinx/ext/graphviz.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,100p' /opt/peeky/docs/AGENT_GUIDE.md; git --no-pager status --short; sed -n '300,560p' sphinx/ext/inheritance_diagram.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,240p' tests/test_ext_inheritance_diagram.py; find tests/roots/test-inheritance -type f | sort; sed -n '210,340p' sphinx/ext/graphviz.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,90p' sphinx/ext/inheritance_diagram.py; sed -n '1,300p' tests/test_ext_graphviz.py; cat tests/roots/test-ext-inheritance_diagram/conf.py tests/roots/test-ext-inheritance_diagram/index.rst; head -70 CHANGES; grep -n -E 'imgpath|imagedir|current_docname' sphinx/builders/html/__init__.py sphinx/builders/dirhtml.py; sed -n '1,100p' tox.ini",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -E 'svg|relative|inheritance|refuri' tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; find tests/roots/test-ext-inheritance_diagram -maxdepth 3 -type f | sort; sed -n '300,560p' tests/test_ext_graphviz.py; sed -n '1,120p' sphinx/builders/dirhtml.py; command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '650,700p' sphinx/builders/html/__init__.py; cat tests/roots/test-ext-inheritance_diagram/test.py; grep -n -E 'urljoin|relative_uri|posixpath' sphinx/ext/{viewcode,intersphinx,graphviz,inheritance_diagram}.py sphinx/util/osutil.py; grep -n -E 'make_app|buildername.*param|parametrize.*buildername|srcdir.*mkdir' tests/test_ext_viewcode.py tests/test_ext_intersphinx.py tests/test_ext_inheritance_diagram.py | head -55; sed -n '1,150p' tests/conftest.py; ls /usr/local/bin/*patch* /opt/venv/bin/*patch* /tmp/*patch* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,100p' /opt/peeky/docs/lang/python.md; sed -n '1,115p' sphinx/util/osutil.py; sed -n '1,130p' sphinx/testing/fixtures.py; ls -a | grep -E 'ruff|pre-commit'; grep -n -E 'ruff|isort|flake8|pytest' pyproject.toml | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -E 'parametrize|make_app\\(' tests/test_build_html.py tests/test_ext_viewcode.py tests/test_ext_autodoc.py | head -65; sed -n '130,175p' sphinx/testing/fixtures.py; sed -n '130,155p' pyproject.toml; ls /opt; ls /usr/bin/patch; sed -n '1,100p' tests/test_build_dirhtml.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager log -1 --oneline; grep -n -E '^def test_|^@' tests/test_ext_inheritance_diagram.py | tail -35; sed -n '1,80p' sphinx/ext/graphviz.py; python -m pytest --version",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -3,6 +3,8 @@\n import os\n import re\n import sys\n+import xml.etree.ElementTree as ET\n+from urllib.parse import urljoin\n \n import pytest\n@@ -174,3 +176,62 @@\n+@pytest.mark.sphinx(testroot='ext-inheritance_diagram')\n+@pytest.mark.usefixtures('if_graphviz_found')\n+@pytest.mark.parametrize('buildername', ['html', 'dirhtml'])\n+@pytest.mark.parametrize('output_format', ['png', 'svg'])\n+def test_inheritance_diagram_links(app_params, make_app, buildername, output_format):\n+    app = make_app(buildername=buildername, **app_params.kwargs,\n+                   confoverrides={'graphviz_output_format': output_format})\n+    classes = {\n+        'links': 'Foo',\n+        'nested/index': 'Bar',\n+        'nested/deep/diagram': 'Baz',\n+    }\n+    for docname, classname in classes.items():\n+        source = app.srcdir / (docname + '.rst')\n+        source.parent.mkdir(parents=True, exist_ok=True)\n+        source.write_text(':orphan:\\n\\nClasses\\n=======\\n\\n'\n+                          f'.. py:class:: test.{classname}\\n\\n'\n+                          '.. inheritance-diagram:: test.Baz\\n', encoding='utf8')\n+\n+    app.build()\n+    assert app.statuscode == 0\n+    assert app._warning.getvalue() == ''\n+\n+    if buildername == 'html':\n+        targets = ['links.html', 'nested/index.html', 'nested/deep/diagram.html']\n+    else:\n+        targets = ['links/', 'nested/', 'nested/deep/diagram/']\n+    expected = {f'/{target}#test.{classname}'\n+                for target, classname in zip(targets, classes.values())}\n+\n+    for target in targets:\n+        filename = target + 'index.html' if target.endswith('/') else target\n+        content = (app.outdir / filename).read_text(encoding='utf8')\n+        if output_format == 'svg':\n+            match = re.search(r'<object data=\"([^\"]+\\.svg)\"', content)\n+            assert match\n+            image_uri = urljoin('/' + target, match.group(1))\n+            image = ET.parse(app.outdir / image_uri.lstrip('/'))\n+            links = [element.get('{http://www.w3.org/1999/xlink}href')\n+                     for element in image.findall('.//{http://www.w3.org/2000/svg}a')]\n+            base_uri = image_uri\n+        else:\n+            links = re.findall(r'<area [^>]*href=\"([^\"]+)\"', content)\n+            base_uri = '/' + target\n+\n+        assert len(links) == 3\n+        assert {urljoin(base_uri, link) for link in links} == expected\n+\n+\n @pytest.mark.sphinx('latex', testroot='ext-inheritance_diagram')\n @pytest.mark.usefixtures('if_graphviz_found')\n def test_inheritance_diagram_latex(app, status, warning):\nPATCH\npython -m pytest -q tests/test_ext_inheritance_diagram.py -k test_inheritance_diagram_links",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -A18 -B5 'def if_graphviz_found' sphinx/testing/fixtures.py; sed -n '175,215p' sphinx/testing/fixtures.py; sed -n '400,450p' tests/test_ext_viewcode.py; grep -n -A30 'def sphinx_test_tempdir' sphinx/testing/fixtures.py; grep -n -A25 'def rollback_sysmodules' sphinx/testing/fixtures.py; git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -176,11 +176,14 @@\n-@pytest.mark.sphinx(testroot='ext-inheritance_diagram')\n+@pytest.mark.sphinx(testroot='ext-inheritance_diagram',\n+                    srcdir='ext-inheritance_diagram-links')\n @pytest.mark.usefixtures('if_graphviz_found')\n-@pytest.mark.parametrize('buildername', ['html', 'dirhtml'])\n+@pytest.mark.parametrize('buildername', [\n+    pytest.param('html', marks=pytest.mark.sphinx('html')),\n+    pytest.param('dirhtml', marks=pytest.mark.sphinx('dirhtml')),\n+])\n @pytest.mark.parametrize('output_format', ['png', 'svg'])\n-def test_inheritance_diagram_links(app_params, make_app, buildername, output_format):\n-    app = make_app(buildername=buildername, **app_params.kwargs,\n-                   confoverrides={'graphviz_output_format': output_format})\n+def test_inheritance_diagram_links(app, buildername, output_format):\n+    app.config.graphviz_output_format = output_format\n@@ -195,3 +198,3 @@\n-    app.build()\n+    app.builder.build_all()\n     assert app.statuscode == 0\n     assert app._warning.getvalue() == ''\nPATCH\npython -m pytest -q tests/test_ext_inheritance_diagram.py -k test_inheritance_diagram_links",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -173,13 +173,16 @@\n \n \n-@pytest.mark.sphinx(testroot='ext-inheritance_diagram')\n+@pytest.mark.sphinx(testroot='ext-inheritance_diagram',\n+                    srcdir='ext-inheritance_diagram-links')\n @pytest.mark.usefixtures('if_graphviz_found')\n-@pytest.mark.parametrize('buildername', ['html', 'dirhtml'])\n+@pytest.mark.parametrize('buildername', [\n+    pytest.param('html', marks=pytest.mark.sphinx('html')),\n+    pytest.param('dirhtml', marks=pytest.mark.sphinx('dirhtml')),\n+])\n @pytest.mark.parametrize('output_format', ['png', 'svg'])\n-def test_inheritance_diagram_links(app_params, make_app, buildername, output_format):\n-    app = make_app(buildername=buildername, **app_params.kwargs,\n-                   confoverrides={'graphviz_output_format': output_format})\n+def test_inheritance_diagram_links(app, buildername, output_format):\n+    app.config.graphviz_output_format = output_format\n     classes = {\n         'links': 'Foo',\n         'nested/index': 'Bar',\n@@ -192,7 +195,7 @@\n                           f'.. py:class:: test.{classname}\\n\\n'\n                           '.. inheritance-diagram:: test.Baz\\n', encoding='utf8')\n \n-    app.build()\n+    app.builder.build_all()\n     assert app.statuscode == 0\n     assert app._warning.getvalue() == ''\n \nPATCH\nif [ $? -eq 0 ]; then python -m pytest -q tests/test_ext_inheritance_diagram.py -k test_inheritance_diagram_links; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py\n--- a/sphinx/ext/inheritance_diagram.py\n+++ b/sphinx/ext/inheritance_diagram.py\n@@ -38,6 +38,7 @@\n from collections.abc import Iterable\n from importlib import import_module\n from typing import Any, cast\n+from urllib.parse import urljoin\n \n from docutils import nodes\n from docutils.nodes import Node\n@@ -400,8 +401,7 @@\n def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diagram) -> None:\n     \"\"\"\n-    Output the graph for HTML.  This will insert a PNG with clickable\n-    image map.\n+    Output the graph for HTML with clickable links.\n     \"\"\"\n     graph = node['graph']\n \n@@ -410,15 +410,15 @@\n     # Create a mapping from fully-qualified class names to URLs.\n     graphviz_output_format = self.builder.env.config.graphviz_output_format.upper()\n-    current_filename = self.builder.current_docname + self.builder.out_suffix\n+    current_filename = self.builder.get_target_uri(self.builder.current_docname)\n     urls = {}\n     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)\n     for child in pending_xrefs:\n         if child.get('refuri') is not None:\n             if graphviz_output_format == 'SVG':\n-                urls[child['reftitle']] = \"../\" + child.get('refuri')\n+                urls[child['reftitle']] = urljoin(current_filename, child.get('refuri'))\n             else:\n                 urls[child['reftitle']] = child.get('refuri')\n         elif child.get('refid') is not None:\n             if graphviz_output_format == 'SVG':\n-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')\n+                urls[child['reftitle']] = current_filename + '#' + child.get('refid')\n             else:\n                 urls[child['reftitle']] = '#' + child.get('refid')\n \ndiff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py\n--- a/sphinx/ext/graphviz.py\n+++ b/sphinx/ext/graphviz.py\n@@ -220,7 +220,7 @@\n def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:\n-    \"\"\"Change relative links in generated svg files to be relative to imgpath.\"\"\"\n+    \"\"\"Change relative links to be relative to the generated SVG file.\"\"\"\n     tree = ET.parse(filepath)  # NoQA: S314\n     root = tree.getroot()\n@@ -239,7 +239,7 @@\n         old_path = path.join(self.builder.outdir, url)\n         new_path = path.relpath(\n             old_path,\n-            start=path.join(self.builder.outdir, self.builder.imgpath),\n+            start=path.dirname(filepath),\n         )\n         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))\n \ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -202,7 +202,8 @@\n     else:\n         targets = ['links/', 'nested/', 'nested/deep/diagram/']\n-    expected = {f'/{target}#test.{classname}'\n+    output_uri = 'https://example.invalid/docs/'\n+    expected = {f'{output_uri}{target}#test.{classname}'\n                 for target, classname in zip(targets, classes.values())}\n \n@@ -217,10 +218,10 @@\n             links = [element.get('{http://www.w3.org/1999/xlink}href')\n                      for element in image.findall('.//{http://www.w3.org/2000/svg}a')]\n-            base_uri = image_uri\n+            base_uri = urljoin(output_uri, image_uri.lstrip('/'))\n         else:\n             links = re.findall(r'<area [^>]*href=\"([^\"]+)\"', content)\n-            base_uri = '/' + target\n+            base_uri = output_uri + target\n \n         assert len(links) == 3\n         assert {urljoin(base_uri, link) for link in links} == expected\n \ndiff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -44,6 +44,8 @@\n Bugs fixed\n ----------\n \n+* inheritance-diagram: Fix SVG links from diagrams on nested pages.\n+\n * #11077: graphviz: Fix relative links from within the graph.\n   Patch by Ralf Grubenmann.\n * #11529: Line Block in LaTeX builder outputs spurious empty token.\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py\n--- a/sphinx/ext/graphviz.py\n+++ b/sphinx/ext/graphviz.py\n@@ -26,7 +26,7 @@\n from sphinx.util.docutils import SphinxDirective, SphinxTranslator\n from sphinx.util.i18n import search_image_for_language\n from sphinx.util.nodes import set_source_info\n-from sphinx.util.osutil import ensuredir\n+from sphinx.util.osutil import canon_path, ensuredir\n from sphinx.util.typing import OptionSpec\n from sphinx.writers.html import HTML5Translator\n from sphinx.writers.latex import LaTeXTranslator\n@@ -237,11 +237,11 @@\n             continue\n \n         old_path = path.join(self.builder.outdir, url)\n-        new_path = path.relpath(\n-            old_path,\n-            start=path.dirname(filepath),\n-        )\n+        new_path = canon_path(path.relpath(old_path, start=path.dirname(filepath)))\n+        if url.endswith('/'):\n+            new_path += '/'\n         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))\n \n         element.set(href_name, modified_url)\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- sphinx/ext/inheritance_diagram.py sphinx/ext/graphviz.py tests/test_ext_inheritance_diagram.py CHANGES",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "command -v ruff; command -v flake8; command -v isort; sed -n '145,195p' pyproject.toml; sed -n '1,100p' .flake8; git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '275,380p' pyproject.toml; sed -n '1,90p' tests/test_ext_viewcode.py; grep -n -E 'ET\\.parse|ET\\.fromstring' tests/test_ext_*.py | head -20; python -m ruff --version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -185,6 +185,7 @@\n def test_inheritance_diagram_links(app, buildername, output_format):\n     app.config.graphviz_output_format = output_format\n     classes = {\n+        'index': 'Qux',\n         'links': 'Foo',\n         'nested/index': 'Bar',\n         'nested/deep/diagram': 'Baz',\n@@ -195,7 +196,7 @@\n         source.write_text(':orphan:\\n\\nClasses\\n=======\\n\\n'\n                           f'.. py:class:: test.{classname}\\n\\n'\n-                          '.. inheritance-diagram:: test.Baz\\n', encoding='utf8')\n+                          '.. inheritance-diagram:: test.Baz test.Qux\\n', encoding='utf8')\n \n     app.builder.build_all()\n     assert app.statuscode == 0\n@@ -202,16 +203,17 @@\n     assert app._warning.getvalue() == ''\n \n     if buildername == 'html':\n-        targets = ['links.html', 'nested/index.html', 'nested/deep/diagram.html']\n+        targets = ['index.html', 'links.html', 'nested/index.html',\n+                   'nested/deep/diagram.html']\n     else:\n-        targets = ['links/', 'nested/', 'nested/deep/diagram/']\n+        targets = ['', 'links/', 'nested/', 'nested/deep/diagram/']\n     output_uri = 'https://example.invalid/docs/'\n     expected = {f'{output_uri}{target}#test.{classname}'\n                 for target, classname in zip(targets, classes.values())}\n \n     for target in targets:\n-        filename = target + 'index.html' if target.endswith('/') else target\n+        filename = target + 'index.html' if not target or target.endswith('/') else target\n         content = (app.outdir / filename).read_text(encoding='utf8')\n         if output_format == 'svg':\n@@ -215,7 +217,7 @@\n             assert match\n             image_uri = urljoin('/' + target, match.group(1))\n-            image = ET.parse(app.outdir / image_uri.lstrip('/'))\n+            image = ET.parse(app.outdir / image_uri.lstrip('/'))  # NoQA: S314\n             links = [element.get('{http://www.w3.org/1999/xlink}href')\n                      for element in image.findall('.//{http://www.w3.org/2000/svg}a')]\n@@ -224,6 +226,6 @@\n             links = re.findall(r'<area [^>]*href=\"([^\"]+)\"', content)\n             base_uri = output_uri + target\n \n-        assert len(links) == 3\n+        assert len(links) == len(classes)\n         assert {urljoin(base_uri, link) for link in links} == expected\n \n \ndiff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -42,7 +42,6 @@\n ----------\n \n * inheritance-diagram: Fix SVG links from diagrams on nested pages.\n-\n * #11077: graphviz: Fix relative links from within the graph.\n   Patch by Ralf Grubenmann.\n * #11529: Line Block in LaTeX builder outputs spurious empty token.\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py && git --no-pager diff --check; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -H -o 'href=\"[^\"]*\"' /tmp/pytest-of-root/pytest-5/ext-inheritance_diagram-links/_build/dirhtml/_images/inheritance-*.svg; python - <<'PY'\nfrom urllib.parse import urljoin\nfor base, url in [('', '#test.Qux'), ('links/', '../#test.Qux'), ('nested/', '../#test.Qux'), ('nested/deep/diagram/', '../../../#test.Qux')]:\n    print(repr(base), repr(url), '->', repr(urljoin(base, url)))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py\n--- a/sphinx/ext/inheritance_diagram.py\n+++ b/sphinx/ext/inheritance_diagram.py\n@@ -412,11 +412,12 @@\n     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)\n     for child in pending_xrefs:\n         if child.get('refuri') is not None:\n-            if graphviz_output_format == 'SVG':\n-                urls[child['reftitle']] = urljoin(current_filename, child.get('refuri'))\n-            else:\n-                urls[child['reftitle']] = child.get('refuri')\n+            refuri = child['refuri']\n+            if graphviz_output_format == 'SVG' and not refuri.startswith('/'):\n+                # Keep paths relative to the build root, even for dirhtml's root page.\n+                refuri = urljoin(current_filename, refuri).lstrip('/')\n+            urls[child['reftitle']] = refuri\n         elif child.get('refid') is not None:\n             if graphviz_output_format == 'SVG':\n                 urls[child['reftitle']] = current_filename + '#' + child.get('refid')\ndiff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py\n--- a/sphinx/ext/graphviz.py\n+++ b/sphinx/ext/graphviz.py\n@@ -230,7 +230,7 @@\n     ):\n         scheme, hostname, url, query, fragment = urlsplit(element.attrib[href_name])\n-        if hostname:\n+        if scheme or hostname or url.startswith('/'):\n             # not a relative link\n             continue\n \nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_graphviz.py b/tests/test_ext_graphviz.py\n--- a/tests/test_ext_graphviz.py\n+++ b/tests/test_ext_graphviz.py\n@@ -1,6 +1,7 @@\n \"\"\"Test sphinx.ext.graphviz extension.\"\"\"\n \n import re\n+import xml.etree.ElementTree as ET\n \n import pytest\n@@ -96,6 +97,35 @@\n     assert '<ns0:a ns1:href=\"..#graphviz\"' in image_content\n \n \n+@pytest.mark.sphinx('html', testroot='ext-graphviz', srcdir='ext-graphviz-svg-links',\n+                    confoverrides={'graphviz_output_format': 'svg'})\n+@pytest.mark.usefixtures('if_graphviz_found')\n+def test_graphviz_svg_links_from_nested_page(app):\n+    source = app.srcdir / 'nested' / 'graph.rst'\n+    source.parent.mkdir()\n+    source.write_text(':orphan:\\n\\nGraph\\n=====\\n\\n'\n+                      '.. graphviz::\\n\\n'\n+                      '   digraph {\\n'\n+                      '      local [URL=\"index.html#graphviz\"];\\n'\n+                      '      directory [URL=\"nested/?query=value#graphviz\"];\\n'\n+                      '      external [URL=\"https://example.org/reference/#class\"];\\n'\n+                      '      absolute [URL=\"/reference/#class\"];\\n'\n+                      '      protocol_relative [URL=\"//example.org/reference/#class\"];\\n'\n+                      '      mail [URL=\"mailto:docs@example.org\"];\\n'\n+                      '   }\\n', encoding='utf8')\n+    app.builder.build_all()\n+\n+    content = (app.outdir / 'nested' / 'graph.html').read_text(encoding='utf8')\n+    match = re.search(r'<object data=\"../_images/([^\"]+\\.svg)\"', content)\n+    assert match\n+    image = ET.parse(app.outdir / '_images' / match.group(1))  # NoQA: S314\n+    links = {element.get('{http://www.w3.org/1999/xlink}href')\n+             for element in image.findall('.//{http://www.w3.org/2000/svg}a')}\n+    assert links == {'../index.html#graphviz', '../nested/?query=value#graphviz',\n+                     'https://example.org/reference/#class', '/reference/#class',\n+                     '//example.org/reference/#class', 'mailto:docs@example.org'}\n+\n+\n @pytest.mark.sphinx('latex', testroot='ext-graphviz')\n @pytest.mark.usefixtures('if_graphviz_found')\n def test_graphviz_latex(app, status, warning):\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py && git --no-pager diff --check; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 9,
+ "build_or_test_commands": [
+  "git --no-pager log -1 --oneline; grep -n -E '^def test_|^@' tests/test_ext_inheritance_diagram.py | tail -35; sed -n '1,80p' sphinx/ext/graphviz.py; python -m pytest --version",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -3,6 +3,8 @@\n import os\n import re\n import sys\n+import xml.etree.ElementTree as ET\n+from urllib.parse import urljoin\n \n import pytest\n@@ -174,3 +176,62 @@\n+@pytest.mark.sphinx(testroot='ext-inheritance_diagram')\n+@pytest.mark.usefixtures('if_graphviz_found')\n+@pytest.mark.parametrize('buildername', ['html', 'dirhtml'])\n+@pytest.mark.parametrize('output_format', ['png', 'svg'])\n+def test_inheritance_diagram_links(app_params, make_app, buildername, output_format):\n+    app = make_app(buildername=buildername, **app_params.kwargs,\n+                   confoverrides={'graphviz_output_format': output_format})\n+    classes = {\n+        'links': 'Foo',\n+        'nested/index': 'Bar',\n+        'nested/deep/diagram': 'Baz',\n+    }\n+    for docname, classname in classes.items():\n+        source = app.srcdir / (docname + '.rst')\n+        source.parent.mkdir(parents=True, exist_ok=True)\n+        source.write_text(':orphan:\\n\\nClasses\\n=======\\n\\n'\n+                          f'.. py:class:: test.{classname}\\n\\n'\n+                          '.. inheritance-diagram:: test.Baz\\n', encoding='utf8')\n+\n+    app.build()\n+    assert app.statuscode == 0\n+    assert app._warning.getvalue() == ''\n+\n+    if buildername == 'html':\n+        targets = ['links.html', 'nested/index.html', 'nested/deep/diagram.html']\n+    else:\n+        targets = ['links/', 'nested/', 'nested/deep/diagram/']\n+    expected = {f'/{target}#test.{classname}'\n+                for target, classname in zip(targets, classes.values())}\n+\n+    for target in targets:\n+        filename = target + 'index.html' if target.endswith('/') else target\n+        content = (app.outdir / filename).read_text(encoding='utf8')\n+        if output_format == 'svg':\n+            match = re.search(r'<object data=\"([^\"]+\\.svg)\"', content)\n+            assert match\n+            image_uri = urljoin('/' + target, match.group(1))\n+            image = ET.parse(app.outdir / image_uri.lstrip('/'))\n+            links = [element.get('{http://www.w3.org/1999/xlink}href')\n+                     for element in image.findall('.//{http://www.w3.org/2000/svg}a')]\n+            base_uri = image_uri\n+        else:\n+            links = re.findall(r'<area [^>]*href=\"([^\"]+)\"', content)\n+            base_uri = '/' + target\n+\n+        assert len(links) == 3\n+        assert {urljoin(base_uri, link) for link in links} == expected\n+\n+\n @pytest.mark.sphinx('latex', testroot='ext-inheritance_diagram')\n @pytest.mark.usefixtures('if_graphviz_found')\n def test_inheritance_diagram_latex(app, status, warning):\nPATCH\npython -m pytest -q tests/test_ext_inheritance_diagram.py -k test_inheritance_diagram_links",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -176,11 +176,14 @@\n-@pytest.mark.sphinx(testroot='ext-inheritance_diagram')\n+@pytest.mark.sphinx(testroot='ext-inheritance_diagram',\n+                    srcdir='ext-inheritance_diagram-links')\n @pytest.mark.usefixtures('if_graphviz_found')\n-@pytest.mark.parametrize('buildername', ['html', 'dirhtml'])\n+@pytest.mark.parametrize('buildername', [\n+    pytest.param('html', marks=pytest.mark.sphinx('html')),\n+    pytest.param('dirhtml', marks=pytest.mark.sphinx('dirhtml')),\n+])\n @pytest.mark.parametrize('output_format', ['png', 'svg'])\n-def test_inheritance_diagram_links(app_params, make_app, buildername, output_format):\n-    app = make_app(buildername=buildername, **app_params.kwargs,\n-                   confoverrides={'graphviz_output_format': output_format})\n+def test_inheritance_diagram_links(app, buildername, output_format):\n+    app.config.graphviz_output_format = output_format\n@@ -195,3 +198,3 @@\n-    app.build()\n+    app.builder.build_all()\n     assert app.statuscode == 0\n     assert app._warning.getvalue() == ''\nPATCH\npython -m pytest -q tests/test_ext_inheritance_diagram.py -k test_inheritance_diagram_links",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -173,13 +173,16 @@\n \n \n-@pytest.mark.sphinx(testroot='ext-inheritance_diagram')\n+@pytest.mark.sphinx(testroot='ext-inheritance_diagram',\n+                    srcdir='ext-inheritance_diagram-links')\n @pytest.mark.usefixtures('if_graphviz_found')\n-@pytest.mark.parametrize('buildername', ['html', 'dirhtml'])\n+@pytest.mark.parametrize('buildername', [\n+    pytest.param('html', marks=pytest.mark.sphinx('html')),\n+    pytest.param('dirhtml', marks=pytest.mark.sphinx('dirhtml')),\n+])\n @pytest.mark.parametrize('output_format', ['png', 'svg'])\n-def test_inheritance_diagram_links(app_params, make_app, buildername, output_format):\n-    app = make_app(buildername=buildername, **app_params.kwargs,\n-                   confoverrides={'graphviz_output_format': output_format})\n+def test_inheritance_diagram_links(app, buildername, output_format):\n+    app.config.graphviz_output_format = output_format\n     classes = {\n         'links': 'Foo',\n         'nested/index': 'Bar',\n@@ -192,7 +195,7 @@\n                           f'.. py:class:: test.{classname}\\n\\n'\n                           '.. inheritance-diagram:: test.Baz\\n', encoding='utf8')\n \n-    app.build()\n+    app.builder.build_all()\n     assert app.statuscode == 0\n     assert app._warning.getvalue() == ''\n \nPATCH\nif [ $? -eq 0 ]; then python -m pytest -q tests/test_ext_inheritance_diagram.py -k test_inheritance_diagram_links; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py\n--- a/sphinx/ext/inheritance_diagram.py\n+++ b/sphinx/ext/inheritance_diagram.py\n@@ -38,6 +38,7 @@\n from collections.abc import Iterable\n from importlib import import_module\n from typing import Any, cast\n+from urllib.parse import urljoin\n \n from docutils import nodes\n from docutils.nodes import Node\n@@ -400,8 +401,7 @@\n def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diagram) -> None:\n     \"\"\"\n-    Output the graph for HTML.  This will insert a PNG with clickable\n-    image map.\n+    Output the graph for HTML with clickable links.\n     \"\"\"\n     graph = node['graph']\n \n@@ -410,15 +410,15 @@\n     # Create a mapping from fully-qualified class names to URLs.\n     graphviz_output_format = self.builder.env.config.graphviz_output_format.upper()\n-    current_filename = self.builder.current_docname + self.builder.out_suffix\n+    current_filename = self.builder.get_target_uri(self.builder.current_docname)\n     urls = {}\n     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)\n     for child in pending_xrefs:\n         if child.get('refuri') is not None:\n             if graphviz_output_format == 'SVG':\n-                urls[child['reftitle']] = \"../\" + child.get('refuri')\n+                urls[child['reftitle']] = urljoin(current_filename, child.get('refuri'))\n             else:\n                 urls[child['reftitle']] = child.get('refuri')\n         elif child.get('refid') is not None:\n             if graphviz_output_format == 'SVG':\n-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')\n+                urls[child['reftitle']] = current_filename + '#' + child.get('refid')\n             else:\n                 urls[child['reftitle']] = '#' + child.get('refid')\n \ndiff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py\n--- a/sphinx/ext/graphviz.py\n+++ b/sphinx/ext/graphviz.py\n@@ -220,7 +220,7 @@\n def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:\n-    \"\"\"Change relative links in generated svg files to be relative to imgpath.\"\"\"\n+    \"\"\"Change relative links to be relative to the generated SVG file.\"\"\"\n     tree = ET.parse(filepath)  # NoQA: S314\n     root = tree.getroot()\n@@ -239,7 +239,7 @@\n         old_path = path.join(self.builder.outdir, url)\n         new_path = path.relpath(\n             old_path,\n-            start=path.join(self.builder.outdir, self.builder.imgpath),\n+            start=path.dirname(filepath),\n         )\n         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))\n \ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -202,7 +202,8 @@\n     else:\n         targets = ['links/', 'nested/', 'nested/deep/diagram/']\n-    expected = {f'/{target}#test.{classname}'\n+    output_uri = 'https://example.invalid/docs/'\n+    expected = {f'{output_uri}{target}#test.{classname}'\n                 for target, classname in zip(targets, classes.values())}\n \n@@ -217,10 +218,10 @@\n             links = [element.get('{http://www.w3.org/1999/xlink}href')\n                      for element in image.findall('.//{http://www.w3.org/2000/svg}a')]\n-            base_uri = image_uri\n+            base_uri = urljoin(output_uri, image_uri.lstrip('/'))\n         else:\n             links = re.findall(r'<area [^>]*href=\"([^\"]+)\"', content)\n-            base_uri = '/' + target\n+            base_uri = output_uri + target\n \n         assert len(links) == 3\n         assert {urljoin(base_uri, link) for link in links} == expected\n \ndiff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -44,6 +44,8 @@\n Bugs fixed\n ----------\n \n+* inheritance-diagram: Fix SVG links from diagrams on nested pages.\n+\n * #11077: graphviz: Fix relative links from within the graph.\n   Patch by Ralf Grubenmann.\n * #11529: Line Block in LaTeX builder outputs spurious empty token.\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py\n--- a/sphinx/ext/graphviz.py\n+++ b/sphinx/ext/graphviz.py\n@@ -26,7 +26,7 @@\n from sphinx.util.docutils import SphinxDirective, SphinxTranslator\n from sphinx.util.i18n import search_image_for_language\n from sphinx.util.nodes import set_source_info\n-from sphinx.util.osutil import ensuredir\n+from sphinx.util.osutil import canon_path, ensuredir\n from sphinx.util.typing import OptionSpec\n from sphinx.writers.html import HTML5Translator\n from sphinx.writers.latex import LaTeXTranslator\n@@ -237,11 +237,11 @@\n             continue\n \n         old_path = path.join(self.builder.outdir, url)\n-        new_path = path.relpath(\n-            old_path,\n-            start=path.dirname(filepath),\n-        )\n+        new_path = canon_path(path.relpath(old_path, start=path.dirname(filepath)))\n+        if url.endswith('/'):\n+            new_path += '/'\n         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))\n \n         element.set(href_name, modified_url)\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_inheritance_diagram.py b/tests/test_ext_inheritance_diagram.py\n--- a/tests/test_ext_inheritance_diagram.py\n+++ b/tests/test_ext_inheritance_diagram.py\n@@ -185,6 +185,7 @@\n def test_inheritance_diagram_links(app, buildername, output_format):\n     app.config.graphviz_output_format = output_format\n     classes = {\n+        'index': 'Qux',\n         'links': 'Foo',\n         'nested/index': 'Bar',\n         'nested/deep/diagram': 'Baz',\n@@ -195,7 +196,7 @@\n         source.write_text(':orphan:\\n\\nClasses\\n=======\\n\\n'\n                           f'.. py:class:: test.{classname}\\n\\n'\n-                          '.. inheritance-diagram:: test.Baz\\n', encoding='utf8')\n+                          '.. inheritance-diagram:: test.Baz test.Qux\\n', encoding='utf8')\n \n     app.builder.build_all()\n     assert app.statuscode == 0\n@@ -202,16 +203,17 @@\n     assert app._warning.getvalue() == ''\n \n     if buildername == 'html':\n-        targets = ['links.html', 'nested/index.html', 'nested/deep/diagram.html']\n+        targets = ['index.html', 'links.html', 'nested/index.html',\n+                   'nested/deep/diagram.html']\n     else:\n-        targets = ['links/', 'nested/', 'nested/deep/diagram/']\n+        targets = ['', 'links/', 'nested/', 'nested/deep/diagram/']\n     output_uri = 'https://example.invalid/docs/'\n     expected = {f'{output_uri}{target}#test.{classname}'\n                 for target, classname in zip(targets, classes.values())}\n \n     for target in targets:\n-        filename = target + 'index.html' if target.endswith('/') else target\n+        filename = target + 'index.html' if not target or target.endswith('/') else target\n         content = (app.outdir / filename).read_text(encoding='utf8')\n         if output_format == 'svg':\n@@ -215,7 +217,7 @@\n             assert match\n             image_uri = urljoin('/' + target, match.group(1))\n-            image = ET.parse(app.outdir / image_uri.lstrip('/'))\n+            image = ET.parse(app.outdir / image_uri.lstrip('/'))  # NoQA: S314\n             links = [element.get('{http://www.w3.org/1999/xlink}href')\n                      for element in image.findall('.//{http://www.w3.org/2000/svg}a')]\n@@ -224,6 +226,6 @@\n             links = re.findall(r'<area [^>]*href=\"([^\"]+)\"', content)\n             base_uri = output_uri + target\n \n-        assert len(links) == 3\n+        assert len(links) == len(classes)\n         assert {urljoin(base_uri, link) for link in links} == expected\n \n \ndiff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -42,7 +42,6 @@\n ----------\n \n * inheritance-diagram: Fix SVG links from diagrams on nested pages.\n-\n * #11077: graphviz: Fix relative links from within the graph.\n   Patch by Ralf Grubenmann.\n * #11529: Line Block in LaTeX builder outputs spurious empty token.\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py && git --no-pager diff --check; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py\n--- a/sphinx/ext/inheritance_diagram.py\n+++ b/sphinx/ext/inheritance_diagram.py\n@@ -412,11 +412,12 @@\n     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)\n     for child in pending_xrefs:\n         if child.get('refuri') is not None:\n-            if graphviz_output_format == 'SVG':\n-                urls[child['reftitle']] = urljoin(current_filename, child.get('refuri'))\n-            else:\n-                urls[child['reftitle']] = child.get('refuri')\n+            refuri = child['refuri']\n+            if graphviz_output_format == 'SVG' and not refuri.startswith('/'):\n+                # Keep paths relative to the build root, even for dirhtml's root page.\n+                refuri = urljoin(current_filename, refuri).lstrip('/')\n+            urls[child['reftitle']] = refuri\n         elif child.get('refid') is not None:\n             if graphviz_output_format == 'SVG':\n                 urls[child['reftitle']] = current_filename + '#' + child.get('refid')\ndiff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py\n--- a/sphinx/ext/graphviz.py\n+++ b/sphinx/ext/graphviz.py\n@@ -230,7 +230,7 @@\n     ):\n         scheme, hostname, url, query, fragment = urlsplit(element.attrib[href_name])\n-        if hostname:\n+        if scheme or hostname or url.startswith('/'):\n             # not a relative link\n             continue\n \nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py; fi",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_graphviz.py b/tests/test_ext_graphviz.py\n--- a/tests/test_ext_graphviz.py\n+++ b/tests/test_ext_graphviz.py\n@@ -1,6 +1,7 @@\n \"\"\"Test sphinx.ext.graphviz extension.\"\"\"\n \n import re\n+import xml.etree.ElementTree as ET\n \n import pytest\n@@ -96,6 +97,35 @@\n     assert '<ns0:a ns1:href=\"..#graphviz\"' in image_content\n \n \n+@pytest.mark.sphinx('html', testroot='ext-graphviz', srcdir='ext-graphviz-svg-links',\n+                    confoverrides={'graphviz_output_format': 'svg'})\n+@pytest.mark.usefixtures('if_graphviz_found')\n+def test_graphviz_svg_links_from_nested_page(app):\n+    source = app.srcdir / 'nested' / 'graph.rst'\n+    source.parent.mkdir()\n+    source.write_text(':orphan:\\n\\nGraph\\n=====\\n\\n'\n+                      '.. graphviz::\\n\\n'\n+                      '   digraph {\\n'\n+                      '      local [URL=\"index.html#graphviz\"];\\n'\n+                      '      directory [URL=\"nested/?query=value#graphviz\"];\\n'\n+                      '      external [URL=\"https://example.org/reference/#class\"];\\n'\n+                      '      absolute [URL=\"/reference/#class\"];\\n'\n+                      '      protocol_relative [URL=\"//example.org/reference/#class\"];\\n'\n+                      '      mail [URL=\"mailto:docs@example.org\"];\\n'\n+                      '   }\\n', encoding='utf8')\n+    app.builder.build_all()\n+\n+    content = (app.outdir / 'nested' / 'graph.html').read_text(encoding='utf8')\n+    match = re.search(r'<object data=\"../_images/([^\"]+\\.svg)\"', content)\n+    assert match\n+    image = ET.parse(app.outdir / '_images' / match.group(1))  # NoQA: S314\n+    links = {element.get('{http://www.w3.org/1999/xlink}href')\n+             for element in image.findall('.//{http://www.w3.org/2000/svg}a')}\n+    assert links == {'../index.html#graphviz', '../nested/?query=value#graphviz',\n+                     'https://example.org/reference/#class', '/reference/#class',\n+                     '//example.org/reference/#class', 'mailto:docs@example.org'}\n+\n+\n @pytest.mark.sphinx('latex', testroot='ext-graphviz')\n @pytest.mark.usefixtures('if_graphviz_found')\n def test_graphviz_latex(app, status, warning):\nPATCH\nif [ $? -eq 0 ]; then PYTHONWARNINGS=error python -m pytest -q tests/test_ext_inheritance_diagram.py tests/test_ext_graphviz.py && git --no-pager diff --check; fi"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 4,
+ "peeky_mentions_in_commands": 4,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "SVG links incorrectly assumed diagrams were embedded on root-level pages. Fixed URL resolution and rebasing to use the SVG\u2019s actual directory, preserving anchors and directory-style URLs while leaving PNG behavior unchanged. Added regression coverage for root and nested pages.",
+ "assistant_messages": [
+  "I\u2019ll trace how SVG links are generated and add a regression test for diagrams on nested pages.\n",
+  "The regression reproduces broken SVG links while PNG links work. The links use the wrong base twice: inheritance diagrams assume a root-level page, and Graphviz\u2019s SVG rewrite uses the page-relative image path. I\u2019ll resolve links against the builder\u2019s page URI, then rebase them from the SVG\u2019s actual directory.\n",
+  "SVG links incorrectly assumed diagrams were embedded on root-level pages. Fixed URL resolution and rebasing to use the SVG\u2019s actual directory, preserving anchors and directory-style URLs while leaving PNG behavior unchanged. Added regression coverage for root and nested pages."
+ ],
+ "assistant_reasoning": [
+  "**Exploring graphviz fixes**\n\nI\u2019m working on a fix for a graphviz post where there's a double issue with inheritance and relative paths. My aim is to adjust the outdir and url settings while figuring out how to manage paths correctly, particularly when dealing with images. I\u2019m at the root with '../foo' leading to a potential problem with outdir/_images. I need to take a closer look at the recent code tests and what the expectations are for this setup.",
+  "**Considering patch line generation**\n\nI need to generate the exact patch line counts, and I can use `patch` with unified careful. There's also the option to use `git apply --recount` for arbitrary counts to fit my needs. Should I add imports for `ET`, `urljoin`, and `pathlib`? I think I only need `ET` and `urljoin`. I also need to test inserting something before the latex test. It's all coming together!",
+  "**Considering Git patch context**\n\nI'm wondering why there's a patch failure due to missing trailing context. Git apply seems to be expecting the full source with `classes`, but it lacks a blank line. The hunk ends with no trailing context, which default settings reject. I think I need a proper context\u2014maybe using patch -p1? I might have to try git apply with options like --recount --unidiff-zero, allowing for no context and adding that trailing context back.",
+  "**Examining Graphviz and Path Handling**\n\nI\u2019m trying to figure out how Graphviz handles URLs, especially concerning trailing slashes. It seems that it should preserve these slashes to maintain the directory structure. I\u2019m considering whether the path handling might need to change, especially for Windows since the existing implementation returns backslashes, which could cause issues. Maybe I should use POSIX path normalization instead? It feels like I\u2019m navigating a few bugs that I need to sort out.\n\n**Refining Path Handlers for Compatibility**\n\nI\u2019m modifying a helper function to ensure it accurately returns paths for different operating systems, especially for Windows. I need to focus on using POSIX-style paths for better portability and consider whether to implement a `relative_uri` utility to streamline this. It looks like I might need to import some specific functions from existing libraries for compatibility, especially regarding trailing slashes and handling absolute URLs. The goal is to prevent potential bugs and simplify the overall path handling process.\n\n**Ensuring URL Integrity in Helpers**\n\nI need to make sure that external absolute URLs, particularly `https`, are preserved correctly without any `../` prefixes. It looks like I have to change the condition for handling URLs to skip schemes and netlocs when they start with a specific path. I should also avoid fixing unrelated issues while ensuring that external links remain functional, especially in situations like corrupted SVG paths. Implementing parameter tests in the helper could help cover various link types and maintain accuracy without overcomplicating things.",
+  "**Evaluating index addition**\n\nI\u2019m considering how to add a local case root index class called Qux via the source while ensuring I don't overwrite the existing index. The easiest way seems to be by adding 'index':'Qux' to the sources. I\u2019ll be copying the necessary elements without affecting the existing caption test. It looks like I'll also need to confirm that the test remains independent from the existing regex assumptions, which should be a good marker for the unique source directory.",
+  "\n\n**Considering validation needs**\n\nI'm realizing that the user didn't explicitly ask for validation. They mentioned \"run tests with,\" which I've interpreted as yes, but I think there\u2019s no need for detailed results, just a root fix. I should definitely check the command for `git diff` and also use `python ruff` on the existing lint to make sure everything is in order. I'll ensure I\u2019m double-checking everything. It\u2019s important to be thorough!",
+  "**Considering code adjustments**\n\nI see that only 24% of the credits are being used, which means I shouldn't add anything unnecessary. I need to ensure that any new additions to the test source code still preserve Python 3.9 typing. Also, the `urljoin` child.get's optional dictionary looks fine since it returns docutils, so there shouldn't be any issues. I've added tests that use ET.parse, but I'm mindful that the linter might flag the #NoQA S314 for test security! I\u2019ll have to check on those ruff tests and their configuration.",
+  "**Evaluating test generation**\n\nI\u2019m focusing on writing a new test that generates its own copy rather than using existing ones. The expected order involves the classes Qux, Foo, Bar, and Baz to match specific targets. I need to ensure the output URI is correct; it should be '/docs/index.html#Qux' but is showing as '/docs/#Qux'. It seems okay so far, but I\u2019ll verify that classes aren\u2019t hardcoded and that Qux matches the base Foo graph.",
+  "**Improving URL handling in Graphviz**\n\nI need to enhance the URL handling when generating SVGs with Graphviz. Specifically, I'll ensure that if the `refuri` doesn't start with `//`, it processes correctly. I should add a check for local references and skip unneeded joins, keeping the absolute paths in mind. I'll add a few lines of code to address these issues while maintaining the intended behavior. Testing the new changes is crucial to ensure everything works smoothly without added complexity. I'm aiming for proper URL correctness across both local and external references."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 245.6
+}

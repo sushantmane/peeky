@@ -1,0 +1,7 @@
+{
+ "judge_id": "a106",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The shared decoder keeps the first edge\u2019s boundary flag even when that edge collapses or another surviving edge is external.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

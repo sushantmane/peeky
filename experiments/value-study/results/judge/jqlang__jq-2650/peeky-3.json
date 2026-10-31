@@ -1,0 +1,7 @@
+{
+ "judge_id": "a068",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The original cause was missing grammar rules for chained dot-bracket indexes. **This checkout already contains that parser fix**, so no source change was necessary.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a110",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler reserves space for only one hidden value in a `finally` block, but a pending return needs two. That lets the block\u2019s temporary values overwrite `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

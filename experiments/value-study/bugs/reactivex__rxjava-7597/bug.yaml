@@ -1,0 +1,29 @@
+id: reactivex__rxjava-7597
+language: java
+repo: reactivex/rxjava
+source: SWE-bench Multilingual
+base_commit: 13a8d83656940dce0c18e8e0a2a17ac157dd1ddb
+upstream: https://github.com/reactivex/rxjava/pull/7597
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The NPE needs a specific interleaving: the switchMap inner observer is disposed while it is still
+  inside onSubscribe, and the upstream (scan) then emits synchronously from that same onSubscribe.
+root_cause: >-
+  In ObservableSwitchMap.SwitchMapInnerObserver, onSubscribe creates the inner `queue` only when
+  DisposableHelper.setOnce succeeds, which it doesn't if the observer was already disposed
+  (e.g. the downstream cancelled during subscription). onNext then still calls `queue.offer(t)`
+  when `index == parent.unique`, dereferencing the null queue. The fix reads the queue into a
+  local and only offers and drains when it is non-null.
+test_hint: >-
+  RxJava builds with its Gradle wrapper on JDK 11, offline: run a test class with
+  `cd /testbed && ./gradlew --offline test --tests <fully.qualified.TestClass>`.
+image: peeky-study/reactivex__rxjava-7597:control
+build_minutes: 1.5
+grade_minutes: 0.3
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec. Gradle is forced offline by /root/.gradle/init.d/offline.gradle.
+  eval.sh applies SWE-bench's testLogging change to build.gradle at grading time, so the image's
+  working tree is clean at the base commit. The grading command runs only ObservableSwitchTest,
+  as in SWE-bench (the hidden patch also adds a Flowable test, which isn't graded).

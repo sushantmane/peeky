@@ -1,0 +1,184 @@
+{
+ "bug": "pallets__flask-5014",
+ "arm": "peeky",
+ "rep": 3,
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/pallets__flask-5014:peeky",
+ "image_digest": "sha256:8f5a76ed4f705b8b95da62f7b7cfb439b5127892b13608fc776894e539b69516",
+ "peeky_sha": "360b3f17322f05423803ba223c0c9628da3bcee7",
+ "container": "study-pallets__flask-5014-peeky-3-a09455",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T02:14:15+00:00",
+ "ended": "2026-10-31T02:14:48+00:00",
+ "wall_seconds": 32.5,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_blueprints.py::test_empty_name_not_allowed": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.3,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "f214bec04aaedea3444bbee00e740957d209af8efeb3dc3c1269e83a0a2eedfa",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGES.rst",
+  "src/flask/blueprints.py"
+ ],
+ "patch_bytes": 1259,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 60
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 10,
+ "ai_credits": 6.2427,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 123720,
+  "output": 1592,
+  "cache_read": 109491,
+  "cache_write": 14199,
+  "reasoning": 169
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 10,
+ "tool_calls_by_name": {
+  "bash": 10
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls /testbed; fi; if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg -n 'def __init__|name.*ValueError|name.*empty|Blueprint\\(' src/flask/blueprints.py tests/test_blueprints.py && sed -n '140,240p' src/flask/blueprints.py && head -80 CHANGES.rst",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,150p' /opt/peeky/docs/AGENT_GUIDE.md && cd /testbed && cat pyproject.toml && sed -n '1,160p' tests/test_blueprints.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'def __init__|ValueError|name.*empty|test.*name' src/flask/blueprints.py tests/test_blueprints.py && sed -n '110,255p' src/flask/blueprints.py && sed -n '290,370p' src/flask/blueprints.py && head -65 CHANGES.rst && grep -n -A35 -B8 'def test_.*name' tests/test_blueprints.py && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '110,215p' src/flask/blueprints.py && sed -n '285,320p' src/flask/blueprints.py && head -42 CHANGES.rst && grep -nE '^def test_.*(invalid|name|dot)' tests/test_blueprints.py && type apply_patch || true",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '232,270p' tests/test_blueprints.py && sed -n '985,1045p' tests/test_blueprints.py && python -c 'from flask import Blueprint; bp = Blueprint(\"\", __name__); print(f\"Accepted empty blueprint name: {bp.name!r}\")'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_blueprints.py\n+++ b/tests/test_blueprints.py\n@@ -251,6 +251,11 @@\n     assert templates == [\"admin/index.html\", \"frontend/index.html\"]\n \n \n+def test_empty_name_not_allowed():\n+    with pytest.raises(ValueError, match=\"'name' may not be empty\\\\.\"):\n+        flask.Blueprint(\"\", __name__)\n+\n+\n def test_dotted_name_not_allowed(app, client):\n     with pytest.raises(ValueError):\n         flask.Blueprint(\"app.ui\", __name__)\nPATCH\npython -m pytest tests/test_blueprints.py -q -k empty_name_not_allowed",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/flask/blueprints.py\n+++ b/src/flask/blueprints.py\n@@ -132,7 +132,7 @@\n     See :doc:`/blueprints` for more information.\n \n     :param name: The name of the blueprint. Will be prepended to each\n-        endpoint name.\n+        endpoint name. Must not be empty or contain a dot (``.``).\n     :param import_name: The name of the blueprint package, usually\n         ``__name__``. This helps locate the ``root_path`` for the\n         blueprint.\n@@ -190,6 +190,9 @@\n             root_path=root_path,\n         )\n \n+        if not name:\n+            raise ValueError(\"'name' may not be empty.\")\n+\n         if \".\" in name:\n             raise ValueError(\"'name' may not contain a dot '.' character.\")\n \n--- a/CHANGES.rst\n+++ b/CHANGES.rst\n@@ -35,6 +35,7 @@\n -   Ensure subdomains are applied with nested blueprints. :issue:`4834`\n -   ``config.from_file`` can use ``text=False`` to indicate that the parser wants a\n     binary file instead. :issue:`4989`\n+-   Blueprint names must not be empty. :issue:`4944`\n \n \n Version 2.2.4\nPATCH\npython -m pytest tests/test_blueprints.py -q && git --no-pager diff --check && git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && git --no-pager diff -- src/flask/blueprints.py tests/test_blueprints.py CHANGES.rst",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm src/flask/blueprints.py.orig && git --no-pager status --short && git --no-pager diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 2,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_blueprints.py\n+++ b/tests/test_blueprints.py\n@@ -251,6 +251,11 @@\n     assert templates == [\"admin/index.html\", \"frontend/index.html\"]\n \n \n+def test_empty_name_not_allowed():\n+    with pytest.raises(ValueError, match=\"'name' may not be empty\\\\.\"):\n+        flask.Blueprint(\"\", __name__)\n+\n+\n def test_dotted_name_not_allowed(app, client):\n     with pytest.raises(ValueError):\n         flask.Blueprint(\"app.ui\", __name__)\nPATCH\npython -m pytest tests/test_blueprints.py -q -k empty_name_not_allowed",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/flask/blueprints.py\n+++ b/src/flask/blueprints.py\n@@ -132,7 +132,7 @@\n     See :doc:`/blueprints` for more information.\n \n     :param name: The name of the blueprint. Will be prepended to each\n-        endpoint name.\n+        endpoint name. Must not be empty or contain a dot (``.``).\n     :param import_name: The name of the blueprint package, usually\n         ``__name__``. This helps locate the ``root_path`` for the\n         blueprint.\n@@ -190,6 +190,9 @@\n             root_path=root_path,\n         )\n \n+        if not name:\n+            raise ValueError(\"'name' may not be empty.\")\n+\n         if \".\" in name:\n             raise ValueError(\"'name' may not contain a dot '.' character.\")\n \n--- a/CHANGES.rst\n+++ b/CHANGES.rst\n@@ -35,6 +35,7 @@\n -   Ensure subdomains are applied with nested blueprints. :issue:`4834`\n -   ``config.from_file`` can use ``text=False`` to indicate that the parser wants a\n     binary file instead. :issue:`4989`\n+-   Blueprint names must not be empty. :issue:`4944`\n \n \n Version 2.2.4\nPATCH\npython -m pytest tests/test_blueprints.py -q && git --no-pager diff --check && git --no-pager diff --stat"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 2,
+ "peeky_mentions_in_commands": 3,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Blueprint validation rejected dots but allowed empty names. The constructor now raises `ValueError(\"'name' may not be empty.\")` for an empty name. Added a regression test and updated the API documentation and changelog.",
+ "assistant_messages": [
+  "The constructor rejects dots in blueprint names but accepts an empty string. I\u2019ll add an empty-name check alongside that validation and a regression test.\n",
+  "Blueprint validation rejected dots but allowed empty names. The constructor now raises `ValueError(\"'name' may not be empty.\")` for an empty name. Added a regression test and updated the API documentation and changelog."
+ ],
+ "assistant_reasoning": [
+  "**Addressing patch options**\n\nI\u2019m thinking I need a straightforward edit and should use a patch as a fallback since applying a regular patch isn't an option. It raises a question: can I define what \"apply_patch\" means? But, no, I can\u2019t use the regular patch command since it\u2019s unavailable. I should add a test, run it to see if it fails, and then fix the documentation. Definitely need to inspect the nearby tests to see how they handle this!",
+  "**Updating documentation parameters**\n\nI'm thinking about updating the patch constructor documentation to include a changelog for parameters. If the name doesn't match a known Flask fix, I should include the name in a way that's straightforward. It needs to be non-empty and without dots, just one line will do. I wonder if mentioning \"version changed\" is necessary, but maybe it's okay to leave that out if it's optional. I'll clarify these points for better understanding!",
+  "**Checking patches and status**\n\nI realize that I don\u2019t need a full test right now, just a targeted pass should suffice. I'm thinking about artifacts and whether a `.orig` patch might be necessary. It seems like checking the `git status` is a good idea, especially since patch offsets can affect the original. If the patch default results in an `.orig`, that could be important to note as well. So, let's run the `git status` check!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 33.3
+}

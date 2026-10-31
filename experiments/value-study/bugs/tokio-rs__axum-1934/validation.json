@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "routing::tests::fallback::doesnt_panic_if_used_with_nested_router": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 4.6
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "routing::tests::fallback::doesnt_panic_if_used_with_nested_router": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "routing::tests::fallback::doesnt_panic_if_used_with_nested_router": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.2
+ }
+]

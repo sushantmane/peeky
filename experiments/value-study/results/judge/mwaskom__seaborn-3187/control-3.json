@@ -1,0 +1,7 @@
+{
+ "judge_id": "a063",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: `ScalarFormatter` abbreviated legend values using scale factors or offsets that legends never displayed.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

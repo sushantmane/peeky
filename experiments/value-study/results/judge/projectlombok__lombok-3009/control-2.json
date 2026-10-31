@@ -1,0 +1,7 @@
+{
+ "judge_id": "a007",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Configuration-driven field defaults failed to exclude records, triggering class/enum-only validation.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

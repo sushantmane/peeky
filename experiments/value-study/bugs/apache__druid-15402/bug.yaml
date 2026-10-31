@@ -1,0 +1,30 @@
+id: apache__druid-15402
+language: java
+repo: apache/druid
+source: SWE-bench Multilingual
+base_commit: 1df53d6eb30a019fff69a5ff7533ebbd998a438d
+upstream: https://github.com/apache/druid/pull/15402
+category: D
+categories_applicable: [D, A]
+category_rationale: >-
+  The wrong values only appear with the broker's result-level cache enabled, a groupBy with two or
+  more post-aggregators, and a populate-then-read cache round trip; the faulty data is the result
+  row rebuilt from the cached object.
+root_cause: >-
+  In GroupByQueryQueryToolChest's cache strategy, pullFromCache (result-level cache path) restores
+  the post-aggregator values with a loop that never advances `postPos` (and never calls next() on
+  the post-aggregator iterator), so every cached post-aggregator value is written into the first
+  post-aggregator slot: that slot ends up with the last value and the other slots stay null. With a
+  single post-aggregator it happens to work. The fix loops `postPos` over all post-aggregator specs.
+test_hint: >-
+  Druid builds with Maven on JDK 11, offline (the needed modules are already installed in ~/.m2):
+  run a test with `cd /testbed && mvn test -o -pl processing -Dtest=<TestClass>#<method>`.
+image: peeky-study/apache__druid-15402:control
+build_minutes: 5.8
+grade_minutes: 1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec; Maven 3.8 from the base instead of mvnd, offline via
+  /root/.m2/settings.xml. eval.sh runs each test command even if an earlier one fails (the dataset
+  chains them with &&). Not A: an offline clean install of processing and its upstream modules takes
+  36 s and the test 12 s in a 4-CPU container.

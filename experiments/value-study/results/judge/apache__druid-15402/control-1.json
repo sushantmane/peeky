@@ -1,0 +1,7 @@
+{
+ "judge_id": "a165",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: Cache reads overwrite the first post-aggregate slot because the destination index never advances. The post-aggregator iterator also never advances.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

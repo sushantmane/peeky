@@ -1,0 +1,264 @@
+{
+ "bug": "psf__requests-6028",
+ "arm": "peeky",
+ "rep": 1,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/psf__requests-6028:peeky",
+ "image_digest": "sha256:012d8c0afa978f4097e8d734a6b3143579bae2c365647554f5dcd96f8f4417b7",
+ "peeky_sha": "360b3f17322f05423803ba223c0c9628da3bcee7",
+ "container": "study-psf__requests-6028-peeky-1-237447",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:33:12+00:00",
+ "ended": "2026-10-31T03:35:06+00:00",
+ "wall_seconds": 114.2,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_utils.py::test_prepend_scheme_if_needed[http://user:pass@example.com/path?query-http://user:pass@example.com/path?query]": "PASSED",
+  "tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.2,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "d89a9069143a5cc1f0a87f073bf2a2a593c2b2695500c2f71049101795e4c37e",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "HISTORY.md",
+  "requests/utils.py",
+  "tests/test_requests.py"
+ ],
+ "patch_bytes": 1875,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 197
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 16,
+ "ai_credits": 21.39,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 408242,
+  "output": 7265,
+  "cache_read": 366388,
+  "cache_write": 41806,
+  "reasoning": 3212
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 25,
+ "tool_calls_by_name": {
+  "bash": 25
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -la; if [ -d /testbed ]; then cd /testbed && git status --short; fi; if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'rebuild_proxies|proxy_headers|Proxy-Authorization|proxy_auth' requests tests && sed -n '1,150p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls tests && cat setup.cfg && sed -n '1,200p' tests/conftest.py && head -80 HISTORY.md && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'rebuild_proxies|proxy_headers|Proxy-Authorization|proxy_auth' requests/*.py tests/test*.py && sed -n '1,150p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,380p' requests/sessions.py && sed -n '1,270p' requests/adapters.py && sed -n '1,230p' tests/test_lowlevel.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '145,310p' requests/sessions.py && sed -n '345,510p' requests/adapters.py && sed -n '1,150p' tests/test_requests.py && sed -n '1840,1925p' tests/test_requests.py && sed -n '2250,2405p' tests/test_requests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,240p' tests/test_lowlevel.py && sed -n '1,220p' tests/testserver/server.py && grep -nE 'proxy|Proxy|resolve_proxies|select_proxy' tests/test_lowlevel.py tests/test_utils.py requests/utils.py tests/test_requests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '260,305p' requests/sessions.py && sed -n '350,407p' requests/adapters.py && sed -n '1,95p' tests/test_requests.py && sed -n '2280,2395p' tests/test_requests.py && grep -nE 'proxi|Proxy|proxy' tests/test_lowlevel.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,145p' tests/test_lowlevel.py && sed -n '1,120p' tests/testserver/server.py && sed -n '1855,1905p' tests/test_requests.py && sed -n '825,912p' requests/utils.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'def get_auth_from_url|def prepend_scheme|def get_connection|def request_url' requests/utils.py requests/adapters.py && sed -n '947,1006p' requests/utils.py && sed -n '285,355p' requests/adapters.py && git --no-pager log -5 --oneline && sed -n '1,140p' /opt/peeky/docs/lang/python.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport sys, inspect, requests, urllib3\nfrom requests.utils import get_auth_from_url\nprint(sys.version)\nprint('requests:', requests.__version__, requests.__file__)\nprint('urllib3:', urllib3.__version__)\nprint(inspect.getsource(get_auth_from_url))\nprint(repr(open('tests/test_requests.py').readlines()[1890]))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'get_auth_from_url|prepend_scheme|proxy_auth|url_auth|auth_from' tests/test_utils.py && sed -n '530,645p' tests/test_utils.py && sed -n '1,115p' requests/utils.py && git --no-pager show --stat 5917 2>/dev/null || true",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom requests.adapters import HTTPAdapter\nfrom requests.utils import prepend_scheme_if_needed, get_auth_from_url\nfrom urllib3.util import parse_url\nfrom urllib.parse import urlparse\nfor proxy in ['******proxy.example:8080', 'user:pass@proxy.example:8080', 'http://user:pa\\tss@proxy.example:8080', '******proxy.example:8080', '******word@proxy.example:8080', '******proxy.example:8080']:\n    print(repr(proxy), '\\n stdlib:', urlparse(proxy), '\\n urllib3:', parse_url(proxy), '\\n normalized:', prepend_scheme_if_needed(proxy, 'http'), '\\n auth:', get_auth_from_url(proxy), '\\n headers:', HTTPAdapter().proxy_headers(prepend_scheme_if_needed(proxy, 'http')))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '365,405p' tests/test_utils.py && python - <<'PY'\nimport inspect\nfrom urllib3.util.url import Url\nprint(inspect.getsource(Url.netloc.fget))\nprint(inspect.getsource(Url.url.fget))\nPY\n git --no-pager log -3 --oneline -- requests/utils.py && grep -nE 'proxi|authentication' docs/user/advanced.rst | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && pytest -q tests/test_utils.py -k 'prepend_scheme_if_needed or get_auth_from_url' tests/test_requests.py -k 'prepend_scheme_if_needed or get_auth_from_url or test_proxy_auth'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find tests -maxdepth 3 -type f -not -path '*/__pycache__/*' | sort && sed -n '220,330p' tests/test_lowlevel.py && sed -n '120,160p' tests/testserver/server.py && git --no-pager show ef59aa02 -- requests/utils.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom requests.adapters import HTTPAdapter\nfrom requests.utils import prepend_scheme_if_needed\nfrom urllib3.util import parse_url\nproxy = 'http://' + 'user:pass' + '@proxy.example:8080'\nnormalized = prepend_scheme_if_needed(proxy, 'http')\nprint('parsed credentials:', parse_url(proxy).auth)\nprint('normalized credentials:', parse_url(normalized).auth)\nprint('proxy headers:', HTTPAdapter().proxy_headers(normalized))\nPY\ncommand -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '135,205p' requests/adapters.py && sed -n '1650,1725p' tests/test_requests.py && python - <<'PY'\nfrom requests.adapters import HTTPAdapter\nfor scheme in ('http', 'https'):\n    adapter = HTTPAdapter()\n    proxy = 'http://' + 'user:pass' + '@proxy.example:8080'\n    connection = adapter.get_connection(scheme + '://example.com/', {scheme: proxy})\n    print(scheme, type(connection).__name__, 'proxy headers:', connection.proxy_headers)\n    adapter.close()\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v patch; command -v pytest; sed -n '1,30p' HISTORY.md && grep -nE 'get_connection|proxy_manager' tests/test_requests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,20 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize('scheme', ('http', 'https', None))\n+@pytest.mark.parametrize('auth', (\n+    'user:pass', 'user', 'user:', 'user%40domain:pa%3Ass', '',\n+))\n+@pytest.mark.parametrize('netloc', ('example.com:8080', '[::1]:8080'))\n+def test_prepend_scheme_if_needed_preserves_auth(scheme, auth, netloc):\n+    prefix = scheme + '://' if scheme else '//'\n+    value = '{}{}@{}/path?query=value#fragment'.format(prefix, auth, netloc)\n+    expected = '{}://{}@{}/path?query=value#fragment'.format(\n+        scheme or 'http', auth, netloc)\n+\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\n--- a/tests/test_requests.py\n+++ b/tests/test_requests.py\n@@ -1896,6 +1896,19 @@\n         headers = adapter.proxy_headers(\"******httpbin.org\")\n         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}\n \n+    @pytest.mark.parametrize('scheme', ('http', 'https'))\n+    @pytest.mark.parametrize('proxy_scheme', ('http://', 'https://', '//'))\n+    def test_proxy_auth_preserved_in_connection(self, scheme, proxy_scheme):\n+        url = '{}://example.com/'.format(scheme)\n+        proxy = '{}user:pass@proxy.example:8080'.format(proxy_scheme)\n+\n+        with contextlib.closing(HTTPAdapter()) as adapter:\n+            connection = adapter.get_connection(url, proxies={scheme: proxy})\n+\n+            assert connection.proxy_headers == {\n+                'Proxy-Authorization': 'Basic dXNlcjpwYXNz'\n+            }\n+\n     def test_response_json_when_content_is_None(self, httpbin):\n         r = requests.get(httpbin('/status/204'))\n         # Make sure r.content is None\nPATCH\npytest -q tests/test_utils.py tests/test_requests.py -k 'test_prepend_scheme_if_needed_preserves_auth or test_proxy_auth_preserved_in_connection' --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -977,6 +977,8 @@\n     netloc = parsed.netloc\n     if not netloc:\n         netloc, path = path, netloc\n+    if auth is not None:\n+        netloc = '{}@{}'.format(auth, netloc)\n \n     if scheme is None:\n         scheme = new_scheme\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed a regression that stripped credentials from proxy URLs during URL\n+  normalization, causing authenticated proxies to return HTTP 407.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\npytest -q tests/test_utils.py tests/test_requests.py -k 'prepend_scheme_if_needed or get_auth_from_url or test_proxy_auth' --ignore-glob='unused' --deselect=tests/test_requests.py::TestRequests::test_proxy_authorization_preserved_on_request",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom urllib3.util import parse_url\nprint('Empty userinfo parses as:', repr(parse_url('http://@example.com').auth))\nPY\npatch -p1 <<'PATCH'\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -973,7 +973,7 @@\n     netloc = parsed.netloc\n     if not netloc:\n         netloc, path = path, netloc\n-    if auth is not None:\n+    if auth:\n         netloc = '{}@{}'.format(auth, netloc)\n \n     if scheme is None:\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -609,7 +609,7 @@\n \n @pytest.mark.parametrize('scheme', ('http', 'https', None))\n @pytest.mark.parametrize('auth', (\n-    'user:pass', 'user', 'user:', 'user%40domain:pa%3Ass', '',\n+    'user:pass', 'user', 'user:', 'user%40domain:pa%3Ass',\n ))\n @pytest.mark.parametrize('netloc', ('example.com:8080', '[::1]:8080'))\n def test_prepend_scheme_if_needed_preserves_auth(scheme, auth, netloc):\nPATCH\npytest -q tests/test_utils.py tests/test_requests.py -k 'prepend_scheme_if_needed or get_auth_from_url or test_proxy_auth' --deselect=tests/test_requests.py::TestRequests::test_proxy_authorization_preserved_on_request && git diff --check && git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff -- HISTORY.md requests/utils.py tests/test_utils.py tests/test_requests.py && git status --short --untracked-files=all && find requests tests -name '*.orig' -o -name '*.rej'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport requests\nfrom tests.testserver.server import Server, consume_socket_content\n\nexpected = b'Proxy-Authorization: Basic dXNlcjpwYXNz\\r\\n'\n\ndef authenticate(sock):\n    request = consume_socket_content(sock)\n    status = b'200 OK' if expected in request else b'407 Proxy Authentication Required'\n    sock.sendall(b'HTTP/1.1 ' + status + b'\\r\\nContent-Length: 0\\r\\n\\r\\n')\n    return request\n\nserver = Server(authenticate)\nwith requests.Session() as session:\n    session.trust_env = False\n    with server as (host, port):\n        proxy = '******{}:{}'.format(host, port)\n        response = session.get('http://example.org/', proxies={'http': proxy}, timeout=5)\n        assert response.status_code == 200, response.status_code\n    assert len(server.handler_results) == 1\n    assert expected in server.handler_results[0]\n    print('Local authenticated proxy returned HTTP', response.status_code)\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm requests/utils.py.orig && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && pytest -q tests/test_utils.py -k 'prepend_scheme_if_needed or get_auth_from_url' tests/test_requests.py -k 'prepend_scheme_if_needed or get_auth_from_url or test_proxy_auth'",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,20 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize('scheme', ('http', 'https', None))\n+@pytest.mark.parametrize('auth', (\n+    'user:pass', 'user', 'user:', 'user%40domain:pa%3Ass', '',\n+))\n+@pytest.mark.parametrize('netloc', ('example.com:8080', '[::1]:8080'))\n+def test_prepend_scheme_if_needed_preserves_auth(scheme, auth, netloc):\n+    prefix = scheme + '://' if scheme else '//'\n+    value = '{}{}@{}/path?query=value#fragment'.format(prefix, auth, netloc)\n+    expected = '{}://{}@{}/path?query=value#fragment'.format(\n+        scheme or 'http', auth, netloc)\n+\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\n--- a/tests/test_requests.py\n+++ b/tests/test_requests.py\n@@ -1896,6 +1896,19 @@\n         headers = adapter.proxy_headers(\"******httpbin.org\")\n         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}\n \n+    @pytest.mark.parametrize('scheme', ('http', 'https'))\n+    @pytest.mark.parametrize('proxy_scheme', ('http://', 'https://', '//'))\n+    def test_proxy_auth_preserved_in_connection(self, scheme, proxy_scheme):\n+        url = '{}://example.com/'.format(scheme)\n+        proxy = '{}user:pass@proxy.example:8080'.format(proxy_scheme)\n+\n+        with contextlib.closing(HTTPAdapter()) as adapter:\n+            connection = adapter.get_connection(url, proxies={scheme: proxy})\n+\n+            assert connection.proxy_headers == {\n+                'Proxy-Authorization': 'Basic dXNlcjpwYXNz'\n+            }\n+\n     def test_response_json_when_content_is_None(self, httpbin):\n         r = requests.get(httpbin('/status/204'))\n         # Make sure r.content is None\nPATCH\npytest -q tests/test_utils.py tests/test_requests.py -k 'test_prepend_scheme_if_needed_preserves_auth or test_proxy_auth_preserved_in_connection' --tb=short",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -977,6 +977,8 @@\n     netloc = parsed.netloc\n     if not netloc:\n         netloc, path = path, netloc\n+    if auth is not None:\n+        netloc = '{}@{}'.format(auth, netloc)\n \n     if scheme is None:\n         scheme = new_scheme\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed a regression that stripped credentials from proxy URLs during URL\n+  normalization, causing authenticated proxies to return HTTP 407.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\npytest -q tests/test_utils.py tests/test_requests.py -k 'prepend_scheme_if_needed or get_auth_from_url or test_proxy_auth' --ignore-glob='unused' --deselect=tests/test_requests.py::TestRequests::test_proxy_authorization_preserved_on_request",
+  "cd /testbed && python - <<'PY'\nfrom urllib3.util import parse_url\nprint('Empty userinfo parses as:', repr(parse_url('http://@example.com').auth))\nPY\npatch -p1 <<'PATCH'\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -973,7 +973,7 @@\n     netloc = parsed.netloc\n     if not netloc:\n         netloc, path = path, netloc\n-    if auth is not None:\n+    if auth:\n         netloc = '{}@{}'.format(auth, netloc)\n \n     if scheme is None:\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -609,7 +609,7 @@\n \n @pytest.mark.parametrize('scheme', ('http', 'https', None))\n @pytest.mark.parametrize('auth', (\n-    'user:pass', 'user', 'user:', 'user%40domain:pa%3Ass', '',\n+    'user:pass', 'user', 'user:', 'user%40domain:pa%3Ass',\n ))\n @pytest.mark.parametrize('netloc', ('example.com:8080', '[::1]:8080'))\n def test_prepend_scheme_if_needed_preserves_auth(scheme, auth, netloc):\nPATCH\npytest -q tests/test_utils.py tests/test_requests.py -k 'prepend_scheme_if_needed or get_auth_from_url or test_proxy_auth' --deselect=tests/test_requests.py::TestRequests::test_proxy_authorization_preserved_on_request && git diff --check && git --no-pager diff --stat"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 4,
+ "peeky_mentions_in_commands": 5,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "URL normalization discarded proxy credentials because urllib3\u2019s `netloc` excludes authentication information. Updated `prepend_scheme_if_needed` to preserve credentials, restoring proxy authentication, and added regression coverage for HTTP and HTTPS connections.",
+ "assistant_messages": [
+  "I\u2019ll trace proxy authentication handling and look for an offline regression test.\n",
+  "The proxy URL normalization step drops embedded credentials before the adapter builds the authentication header. I\u2019ll preserve those credentials and add offline coverage for proxy requests.\n",
+  "URL normalization discarded proxy credentials because urllib3\u2019s `netloc` excludes authentication information. Updated `prepend_scheme_if_needed` to preserve credentials, restoring proxy authentication, and added regression coverage for HTTP and HTTPS connections."
+ ],
+ "assistant_reasoning": [
+  "**Investigating Python headers and changes**\n\nI'm exploring Python 3.8.12 and its behavior regarding HTTP headers splitting on \\r\\n. There's a notable change with urllib.parse that removes \\n, \\r, and \\t from URLs to prevent injection issues (bpo43882). I'm questioning if there's a potential block with http.client. It's important to examine the changelog, especially since the user has no network access. I need to look at the current files and git history without relying on external resources.",
+  "**Checking proxy settings**\n\nI'm focusing on testing the utility parameter matrix along with the test requests adapter. I need to confirm that the target scheme uses `get_connection`, and it should validate the `pool.proxy_headers` with the appropriate headers. I wonder if the `urllib3` connection pool\u2019s `_proxy_headers` attribute is available. It seems like there are specific Python details to check to ensure everything works as intended. Let's ensure I'm looking into the details clearly!",
+  "**Analyzing HTTP parameters**\n\nI'm looking at a somewhat complex but precise combination of parameters for an HTTP helper. It involves defining a scheme with 'http', 'https', or None, and forming a prefix. I note that handling IPv6 adds some complexity. It's essential to ensure raw unreserved authentication with proper token handling, but it seems there's no need for real socket integration. The low-level HTTP 200 function might be excessive, yet it might ensure proper verification. I'll also need to validate actual responses via terminal scripts later on."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 114.9
+}

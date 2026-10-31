@@ -1,0 +1,7 @@
+{
+ "judge_id": "a022",
+ "wrong_root_cause": false,
+ "evidence": "Message 1: \"The constructor rejects dots in blueprint names but accepts an empty string.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

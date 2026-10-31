@@ -1,0 +1,8 @@
+{
+ "parser": "parse_log_cargo",
+ "fail_to_pass": [
+  "regression::r2208"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

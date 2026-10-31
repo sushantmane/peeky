@@ -1,0 +1,37 @@
+id: django__django-11087
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: 8180ffba21bf10f4be905cb0d4890dc2bcff2788
+upstream: https://github.com/django/django/pull/11087
+category: D
+categories_applicable: [D, B]
+category_rationale: >-
+  The reported crash needs MySQL through mysqlclient on Python 3 with undecodable bytes in a column
+  that a cascading delete fetches; locating the cause means following the deletion Collector's
+  cascade through related querysets and signal checks. mysqlclient's decoding is the external part.
+root_cause: >-
+  When Collector.collect in django/db/models/deletion.py cascades a delete, it loads the related
+  objects with a SELECT of every column, although deletion only needs the primary key and the
+  fields other relations point at; loading unneeded columns (here a text column mysqlclient can't
+  decode) can fail and wastes work. The fix, when the related model has no pre_delete/post_delete
+  receivers and the queryset has no select_related, limits it with .only() to the fields referenced
+  by relations to that model, and moves the signal check into a _has_signal_listeners helper (which
+  can_fast_delete now uses, no longer counting m2m_changed receivers).
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-11087:control
+build_minutes: 0.8
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Dependencies are tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached
+  and a native build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale
+  as the spec does. parse.py adds a documented adaptation to SWE-bench's Django parser: Python 3.11's
+  unittest prints "test_x (module.Class.test_x)" where the SWE-bench lists have
+  "test_x (module.Class)", and a test with a docstring is reported under both its docstring line
+  and its name (this bug's FAIL_TO_PASS test has a docstring but is listed by name). eval.sh sends
+  stderr to stdout because Django's runner reports on stderr.

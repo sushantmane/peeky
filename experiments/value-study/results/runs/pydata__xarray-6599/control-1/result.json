@@ -1,0 +1,222 @@
+{
+ "bug": "pydata__xarray-6599",
+ "arm": "control",
+ "rep": 1,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/pydata__xarray-6599:control",
+ "image_digest": "sha256:2369a496624d8af7a2481c6f5bd88fb002160b2e2c7625515624168e2e265a9a",
+ "peeky_sha": null,
+ "container": "study-pydata__xarray-6599-control-1-16ed5d",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:05:41+00:00",
+ "ended": "2026-10-31T03:07:37+00:00",
+ "wall_seconds": 115.9,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "xarray/tests/test_computation.py::test_polyval[timedelta-False]": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 2.2,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "56cd9a7f607e2ebc1e4dbaf97648052f385901d3b242d3f2b72072ca18b2d404",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "doc/whats-new.rst",
+  "xarray/core/computation.py"
+ ],
+ "patch_bytes": 2430,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 266
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 13,
+ "ai_credits": 19.7859,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 300829,
+  "output": 8322,
+  "cache_read": 265589,
+  "cache_write": 35201,
+  "reasoning": 3255
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 16,
+ "tool_calls_by_name": {
+  "bash": 16
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a | head -35 && if [ -d /testbed ]; then cd /testbed; fi && pwd && git --no-pager status --short && rg -n 'def polyval|def _ensure_numeric|test_polyval' xarray/core xarray/tests",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'def polyval|def _ensure_numeric' xarray/core/*.py && grep -n 'test_polyval' xarray/tests/test_*.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls doc/whats-new* && sed -n '1,180p' setup.cfg && sed -n '1,150p' pyproject.toml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1790,1970p' xarray/core/computation.py && sed -n '1860,2070p' xarray/tests/test_computation.py && sed -n '1,100p' xarray/tests/test_computation.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE '_ensure_numeric|datetime_to_numeric|def _to_numeric' xarray/core/*.py && sed -n '1,160p' doc/whats-new.rst && grep -nE 'polyval|timedelta' xarray/tests/test_computation.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '380,485p' xarray/core/duck_array_ops.py && sed -n '2470,2540p' xarray/core/variable.py && grep -nE 'polyval|_ensure_numeric|timedelta_to_numeric' xarray/tests/test_duck_array_ops.py doc/user-guide/computation.rst && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport numpy as np\nimport xarray as xr\nprint('versions:', xr.__version__, np.__version__)\ncoeffs = xr.DataArray([0, 1], dims='degree', coords={'degree': [0, 1]})\nfor dtype in ['timedelta64[ns]', 'datetime64[ns]']:\n    coord = xr.DataArray(np.array([0, 1, 2], dtype=dtype), dims='x')\n    try:\n        print(dtype, xr.polyval(coord, coeffs))\n    except Exception as e:\n        print(dtype, type(e).__name__, str(e))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v patch && sed -n '440,475p' doc/user-guide/computation.rst && sed -n '1,100p' .pre-commit-config.yaml && pytest xarray/tests/test_computation.py -k polyval -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2028,6 +2028,35 @@\n     xr.testing.assert_allclose(actual, expected)\n \n \n+@pytest.mark.parametrize(\"use_dask\", [False, True])\n+@pytest.mark.parametrize(\"use_dataset\", [False, True])\n+@pytest.mark.parametrize(\"dtype\", [\"datetime64[s]\", \"timedelta64[s]\"])\n+def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n+    coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n+    x = xr.DataArray(\n+        np.array([-2, 1, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords\n+    )\n+    coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n+    expected = xr.DataArray(\n+        [-4e9 + 1, 2e9 + 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n+    )\n+    if use_dataset:\n+        x = x.to_dataset(name=\"a\")\n+        coeffs = coeffs.to_dataset(name=\"a\")\n+        expected = expected.to_dataset(name=\"a\")\n+    if use_dask:\n+        if not has_dask:\n+            pytest.skip(\"requires dask\")\n+        x = x.chunk({\"x\": 2})\n+        coeffs = coeffs.chunk({\"degree\": 2})\n+\n+    with raise_if_dask_computes():\n+        actual = xr.polyval(coord=x, coeffs=coeffs)\n+\n+    xr.testing.assert_allclose(actual, expected)\n+\n+\n def test_polyval_degree_dim_checks():\n     x = (xr.DataArray([1, 2, 3], dims=\"x\"),)\n     coeffs = xr.DataArray([2, 3, 4], dims=\"degree\", coords={\"degree\": [0, 1, 2]})\nPATCH\npytest xarray/tests/test_computation.py -k polyval_datetime_like -q",
+   "exit_code": 5,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/tests/test_computation.py b/xarray/tests/test_computation.py\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2028,6 +2028,35 @@\n     xr.testing.assert_allclose(actual, expected)\n \n \n+@pytest.mark.parametrize(\"use_dask\", [False, True])\n+@pytest.mark.parametrize(\"use_dataset\", [False, True])\n+@pytest.mark.parametrize(\"dtype\", [\"datetime64[s]\", \"timedelta64[s]\"])\n+def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n+    coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n+    x = xr.DataArray(\n+        np.array([-2, 1, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords\n+    )\n+    coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n+    expected = xr.DataArray(\n+        [-4e9 + 1, 2e9 + 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n+    )\n+    if use_dataset:\n+        x = x.to_dataset(name=\"a\")\n+        coeffs = coeffs.to_dataset(name=\"a\")\n+        expected = expected.to_dataset(name=\"a\")\n+    if use_dask:\n+        if not has_dask:\n+            pytest.skip(\"requires dask\")\n+        x = x.chunk({\"x\": 2})\n+        coeffs = coeffs.chunk({\"degree\": 2})\n+\n+    with raise_if_dask_computes():\n+        actual = xr.polyval(coord=x, coeffs=coeffs)\n+\n+    xr.testing.assert_allclose(actual, expected)\n+\n+\n def test_polyval_degree_dim_checks():\n     x = (xr.DataArray([1, 2, 3], dims=\"x\"),)\n     coeffs = xr.DataArray([2, 3, 4], dims=\"degree\", coords={\"degree\": [0, 1, 2]})\nPATCH\npytest xarray/tests/test_computation.py -k polyval_datetime_like -q",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/core/computation.py b/xarray/core/computation.py\n--- a/xarray/core/computation.py\n+++ b/xarray/core/computation.py\n@@ -1877,7 +1877,10 @@\n     Parameters\n     ----------\n     coord : DataArray or Dataset\n-        Values at which to evaluate the polynomial.\n+        Values at which to evaluate the polynomial, not the dimension coordinates.\n+        Datetime64 values are converted to nanoseconds since 1970-01-01, and\n+        timedelta64 values to nanoseconds. To evaluate along a coordinate of\n+        another array, pass that coordinate explicitly (e.g. ``array[\"time\"]``).\n     coeffs : DataArray or Dataset\n         Coefficients of the polynomial.\n@@ -1921,7 +1924,7 @@\n-    \"\"\"Converts all datetime64 variables to float64\n+    \"\"\"Converts all datetime64 and timedelta64 variables to float64.\n \n     Parameters\n     ----------\n     data : DataArray or Dataset\n-        Variables with possible datetime dtypes.\n+        Variables with possible datetime or timedelta dtypes.\n@@ -1930,7 +1933,7 @@\n     -------\n     DataArray or Dataset\n-        Variables with datetime64 dtypes converted to float64.\n+        Variables with datetime64 or timedelta64 dtypes converted to float64.\n@@ -1937,7 +1940,11 @@\n             return x.copy(\n                 data=datetime_to_numeric(\n                     x.data,\n-                    offset=np.datetime64(\"1970-01-01\"),\n+                    offset=(\n+                        np.datetime64(\"1970-01-01\")\n+                        if x.dtype.kind == \"M\"\n+                        else np.timedelta64(0, \"ns\")\n+                    ),\n                     datetime_unit=\"ns\",\n                 ),\n             )\ndiff --git a/doc/whats-new.rst b/doc/whats-new.rst\n--- a/doc/whats-new.rst\n+++ b/doc/whats-new.rst\n@@ -99,6 +99,8 @@\n Bug fixes\n ~~~~~~~~~\n \n+- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to numeric\n+  nanosecond values.\n - Set ``skipna=None`` for all ``quantile`` methods (e.g. :py:meth:`Dataset.quantile`) and\n   ensure it skips missing values for float dtypes (consistent with other methods). This should\n   not change the behavior (:pull:`6303`).\nPATCH\npytest xarray/tests/test_computation.py -k polyval -q && git --no-pager diff --check && git --no-pager diff --stat",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/core/computation.py b/xarray/core/computation.py\n--- a/xarray/core/computation.py\n+++ b/xarray/core/computation.py\n@@ -1877,9 +1877,12 @@\n     Parameters\n     ----------\n     coord : DataArray or Dataset\n-        Values at which to evaluate the polynomial.\n+        Values at which to evaluate the polynomial, not the dimension coordinates.\n+        Datetime64 values are converted to nanoseconds since 1970-01-01, and\n+        timedelta64 values to nanoseconds. To evaluate along a coordinate of\n+        another array, pass that coordinate explicitly (e.g. ``array[\"time\"]``).\n     coeffs : DataArray or Dataset\n         Coefficients of the polynomial.\n     degree_dim : Hashable, default: \"degree\"\n@@ -1920,25 +1923,29 @@\n def _ensure_numeric(data: T_Xarray) -> T_Xarray:\n-    \"\"\"Converts all datetime64 variables to float64\n+    \"\"\"Converts all datetime64 and timedelta64 variables to float64.\n \n     Parameters\n     ----------\n     data : DataArray or Dataset\n-        Variables with possible datetime dtypes.\n+        Variables with possible datetime or timedelta dtypes.\n \n     Returns\n     -------\n     DataArray or Dataset\n-        Variables with datetime64 dtypes converted to float64.\n+        Variables with datetime64 or timedelta64 dtypes converted to float64.\n     \"\"\"\n     from .dataset import Dataset\n \n     def to_floatable(x: DataArray) -> DataArray:\n         if x.dtype.kind in \"mM\":\n             return x.copy(\n                 data=datetime_to_numeric(\n                     x.data,\n-                    offset=np.datetime64(\"1970-01-01\"),\n+                    offset=(\n+                        np.datetime64(\"1970-01-01\")\n+                        if x.dtype.kind == \"M\"\n+                        else np.timedelta64(0, \"ns\")\n+                    ),\n                     datetime_unit=\"ns\",\n                 ),\n             )\ndiff --git a/doc/whats-new.rst b/doc/whats-new.rst\n--- a/doc/whats-new.rst\n+++ b/doc/whats-new.rst\n@@ -99,6 +99,8 @@\n Bug fixes\n ~~~~~~~~~\n \n+- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to numeric\n+  nanosecond values.\n - Set ``skipna=None`` for all ``quantile`` methods (e.g. :py:meth:`Dataset.quantile`) and\n   ensure it skips missing values for float dtypes (consistent with other methods). This should\n   not change the behavior (:pull:`6303`).\nPATCH\nif [ $? -eq 0 ]; then pytest xarray/tests/test_computation.py -k polyval -q && git --no-pager diff --check && git --no-pager diff --stat; else exit 1; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff && git --no-pager status --short && if command -v black >/dev/null 2>&1; then black --check xarray/core/computation.py xarray/tests/test_computation.py; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport numpy as np\nimport xarray as xr\n\nvalues = np.datetime64('2021-04-01T05:25:19', 'ns') + np.arange(6) * np.timedelta64(10, 's')\nazimuth_time = xr.DataArray(values, name='azimuth_time', coords={'azimuth_time': values - values[0]})\ncoeffs = xr.DataArray(\n    [[2.33333335e-43, 1.62499999e-43, 2.79166678e-43],\n     [-1.15316667e-30, 1.49518518e-31, 9.08833333e-31],\n     [-2.50272583e-18, -1.23851062e-18, -2.99098229e-18],\n     [5.83965193e-06, -1.53321770e-07, -4.84640242e-06],\n     [4.44739216e06, 1.45053974e06, 5.29960857e06]],\n    dims=('degree', 'axis'), coords={'axis': [0, 1, 2], 'degree': [4, 3, 2, 1, 0]},\n)\nexpected = np.array([\n    [4447392.16, 1450539.74, 5299608.57],\n    [4505537.25588366, 1448882.82238152, 5250846.359196],\n    [4563174.92026797, 1446979.12250014, 5201491.44401733],\n    [4620298.31815291, 1444829.59596699, 5151549.377964],\n    [4676900.67053846, 1442435.23739315, 5101025.78153601],\n    [4732975.25442459, 1439797.08038974, 5049926.34223336],\n])\nfor use_dask in [False, True]:\n    coord = azimuth_time.azimuth_time\n    coefficients = coeffs\n    if use_dask:\n        coord = coord.chunk({'azimuth_time': 2})\n        coefficients = coefficients.chunk({'degree': 2})\n    actual = xr.polyval(coord, coefficients).transpose('azimuth_time', 'axis')\n    np.testing.assert_allclose(actual.values, expected, rtol=1e-13, atol=1e-8)\n    xr.testing.assert_identical(actual.azimuth_time, azimuth_time.azimuth_time)\nprint('Reported elapsed-time results match for NumPy and Dask; coordinates are preserved.')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/tests/test_computation.py b/xarray/tests/test_computation.py\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2033,11 +2033,9 @@\n def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n     coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n-    x = xr.DataArray(\n-        np.array([-2, 1, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords\n-    )\n+    x = xr.DataArray(np.array([-2, 0, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords)\n     coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n     expected = xr.DataArray(\n-        [-4e9 + 1, 2e9 + 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n+        [-4e9 + 1, 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n     )\n     if use_dataset:\n         x = x.to_dataset(name=\"a\")\nPATCH\nif [ $? -eq 0 ]; then pytest xarray/tests/test_computation.py -k polyval -q && git --no-pager diff --check && git --no-pager status --short; else exit 1; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/tests/test_computation.py b/xarray/tests/test_computation.py\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2033,9 +2033,7 @@\n def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n     coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n     x = xr.DataArray(np.array([-2, 0, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords)\n     coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n-    expected = xr.DataArray(\n-        [-4e9 + 1, 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n-    )\n+    expected = xr.DataArray([-4e9 + 1, 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords)\n     if use_dataset:\n         x = x.to_dataset(name=\"a\")\nPATCH\nif [ $? -eq 0 ]; then git --no-pager diff --check && pytest xarray/tests/test_computation.py -k polyval -q; else exit 1; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "cd /testbed && command -v patch && sed -n '440,475p' doc/user-guide/computation.rst && sed -n '1,100p' .pre-commit-config.yaml && pytest xarray/tests/test_computation.py -k polyval -q",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2028,6 +2028,35 @@\n     xr.testing.assert_allclose(actual, expected)\n \n \n+@pytest.mark.parametrize(\"use_dask\", [False, True])\n+@pytest.mark.parametrize(\"use_dataset\", [False, True])\n+@pytest.mark.parametrize(\"dtype\", [\"datetime64[s]\", \"timedelta64[s]\"])\n+def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n+    coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n+    x = xr.DataArray(\n+        np.array([-2, 1, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords\n+    )\n+    coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n+    expected = xr.DataArray(\n+        [-4e9 + 1, 2e9 + 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n+    )\n+    if use_dataset:\n+        x = x.to_dataset(name=\"a\")\n+        coeffs = coeffs.to_dataset(name=\"a\")\n+        expected = expected.to_dataset(name=\"a\")\n+    if use_dask:\n+        if not has_dask:\n+            pytest.skip(\"requires dask\")\n+        x = x.chunk({\"x\": 2})\n+        coeffs = coeffs.chunk({\"degree\": 2})\n+\n+    with raise_if_dask_computes():\n+        actual = xr.polyval(coord=x, coeffs=coeffs)\n+\n+    xr.testing.assert_allclose(actual, expected)\n+\n+\n def test_polyval_degree_dim_checks():\n     x = (xr.DataArray([1, 2, 3], dims=\"x\"),)\n     coeffs = xr.DataArray([2, 3, 4], dims=\"degree\", coords={\"degree\": [0, 1, 2]})\nPATCH\npytest xarray/tests/test_computation.py -k polyval_datetime_like -q",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/tests/test_computation.py b/xarray/tests/test_computation.py\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2028,6 +2028,35 @@\n     xr.testing.assert_allclose(actual, expected)\n \n \n+@pytest.mark.parametrize(\"use_dask\", [False, True])\n+@pytest.mark.parametrize(\"use_dataset\", [False, True])\n+@pytest.mark.parametrize(\"dtype\", [\"datetime64[s]\", \"timedelta64[s]\"])\n+def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n+    coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n+    x = xr.DataArray(\n+        np.array([-2, 1, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords\n+    )\n+    coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n+    expected = xr.DataArray(\n+        [-4e9 + 1, 2e9 + 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n+    )\n+    if use_dataset:\n+        x = x.to_dataset(name=\"a\")\n+        coeffs = coeffs.to_dataset(name=\"a\")\n+        expected = expected.to_dataset(name=\"a\")\n+    if use_dask:\n+        if not has_dask:\n+            pytest.skip(\"requires dask\")\n+        x = x.chunk({\"x\": 2})\n+        coeffs = coeffs.chunk({\"degree\": 2})\n+\n+    with raise_if_dask_computes():\n+        actual = xr.polyval(coord=x, coeffs=coeffs)\n+\n+    xr.testing.assert_allclose(actual, expected)\n+\n+\n def test_polyval_degree_dim_checks():\n     x = (xr.DataArray([1, 2, 3], dims=\"x\"),)\n     coeffs = xr.DataArray([2, 3, 4], dims=\"degree\", coords={\"degree\": [0, 1, 2]})\nPATCH\npytest xarray/tests/test_computation.py -k polyval_datetime_like -q",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/core/computation.py b/xarray/core/computation.py\n--- a/xarray/core/computation.py\n+++ b/xarray/core/computation.py\n@@ -1877,7 +1877,10 @@\n     Parameters\n     ----------\n     coord : DataArray or Dataset\n-        Values at which to evaluate the polynomial.\n+        Values at which to evaluate the polynomial, not the dimension coordinates.\n+        Datetime64 values are converted to nanoseconds since 1970-01-01, and\n+        timedelta64 values to nanoseconds. To evaluate along a coordinate of\n+        another array, pass that coordinate explicitly (e.g. ``array[\"time\"]``).\n     coeffs : DataArray or Dataset\n         Coefficients of the polynomial.\n@@ -1921,7 +1924,7 @@\n-    \"\"\"Converts all datetime64 variables to float64\n+    \"\"\"Converts all datetime64 and timedelta64 variables to float64.\n \n     Parameters\n     ----------\n     data : DataArray or Dataset\n-        Variables with possible datetime dtypes.\n+        Variables with possible datetime or timedelta dtypes.\n@@ -1930,7 +1933,7 @@\n     -------\n     DataArray or Dataset\n-        Variables with datetime64 dtypes converted to float64.\n+        Variables with datetime64 or timedelta64 dtypes converted to float64.\n@@ -1937,7 +1940,11 @@\n             return x.copy(\n                 data=datetime_to_numeric(\n                     x.data,\n-                    offset=np.datetime64(\"1970-01-01\"),\n+                    offset=(\n+                        np.datetime64(\"1970-01-01\")\n+                        if x.dtype.kind == \"M\"\n+                        else np.timedelta64(0, \"ns\")\n+                    ),\n                     datetime_unit=\"ns\",\n                 ),\n             )\ndiff --git a/doc/whats-new.rst b/doc/whats-new.rst\n--- a/doc/whats-new.rst\n+++ b/doc/whats-new.rst\n@@ -99,6 +99,8 @@\n Bug fixes\n ~~~~~~~~~\n \n+- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to numeric\n+  nanosecond values.\n - Set ``skipna=None`` for all ``quantile`` methods (e.g. :py:meth:`Dataset.quantile`) and\n   ensure it skips missing values for float dtypes (consistent with other methods). This should\n   not change the behavior (:pull:`6303`).\nPATCH\npytest xarray/tests/test_computation.py -k polyval -q && git --no-pager diff --check && git --no-pager diff --stat",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/core/computation.py b/xarray/core/computation.py\n--- a/xarray/core/computation.py\n+++ b/xarray/core/computation.py\n@@ -1877,9 +1877,12 @@\n     Parameters\n     ----------\n     coord : DataArray or Dataset\n-        Values at which to evaluate the polynomial.\n+        Values at which to evaluate the polynomial, not the dimension coordinates.\n+        Datetime64 values are converted to nanoseconds since 1970-01-01, and\n+        timedelta64 values to nanoseconds. To evaluate along a coordinate of\n+        another array, pass that coordinate explicitly (e.g. ``array[\"time\"]``).\n     coeffs : DataArray or Dataset\n         Coefficients of the polynomial.\n     degree_dim : Hashable, default: \"degree\"\n@@ -1920,25 +1923,29 @@\n def _ensure_numeric(data: T_Xarray) -> T_Xarray:\n-    \"\"\"Converts all datetime64 variables to float64\n+    \"\"\"Converts all datetime64 and timedelta64 variables to float64.\n \n     Parameters\n     ----------\n     data : DataArray or Dataset\n-        Variables with possible datetime dtypes.\n+        Variables with possible datetime or timedelta dtypes.\n \n     Returns\n     -------\n     DataArray or Dataset\n-        Variables with datetime64 dtypes converted to float64.\n+        Variables with datetime64 or timedelta64 dtypes converted to float64.\n     \"\"\"\n     from .dataset import Dataset\n \n     def to_floatable(x: DataArray) -> DataArray:\n         if x.dtype.kind in \"mM\":\n             return x.copy(\n                 data=datetime_to_numeric(\n                     x.data,\n-                    offset=np.datetime64(\"1970-01-01\"),\n+                    offset=(\n+                        np.datetime64(\"1970-01-01\")\n+                        if x.dtype.kind == \"M\"\n+                        else np.timedelta64(0, \"ns\")\n+                    ),\n                     datetime_unit=\"ns\",\n                 ),\n             )\ndiff --git a/doc/whats-new.rst b/doc/whats-new.rst\n--- a/doc/whats-new.rst\n+++ b/doc/whats-new.rst\n@@ -99,6 +99,8 @@\n Bug fixes\n ~~~~~~~~~\n \n+- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to numeric\n+  nanosecond values.\n - Set ``skipna=None`` for all ``quantile`` methods (e.g. :py:meth:`Dataset.quantile`) and\n   ensure it skips missing values for float dtypes (consistent with other methods). This should\n   not change the behavior (:pull:`6303`).\nPATCH\nif [ $? -eq 0 ]; then pytest xarray/tests/test_computation.py -k polyval -q && git --no-pager diff --check && git --no-pager diff --stat; else exit 1; fi",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/tests/test_computation.py b/xarray/tests/test_computation.py\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2033,11 +2033,9 @@\n def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n     coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n-    x = xr.DataArray(\n-        np.array([-2, 1, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords\n-    )\n+    x = xr.DataArray(np.array([-2, 0, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords)\n     coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n     expected = xr.DataArray(\n-        [-4e9 + 1, 2e9 + 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n+        [-4e9 + 1, 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n     )\n     if use_dataset:\n         x = x.to_dataset(name=\"a\")\nPATCH\nif [ $? -eq 0 ]; then pytest xarray/tests/test_computation.py -k polyval -q && git --no-pager diff --check && git --no-pager status --short; else exit 1; fi",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/xarray/tests/test_computation.py b/xarray/tests/test_computation.py\n--- a/xarray/tests/test_computation.py\n+++ b/xarray/tests/test_computation.py\n@@ -2033,9 +2033,7 @@\n def test_polyval_datetime_like(use_dask, use_dataset, dtype):\n     coords = {\"x\": pd.date_range(\"2021-04-01\", periods=4)}\n     x = xr.DataArray(np.array([-2, 0, 3, \"NaT\"], dtype=dtype), dims=\"x\", coords=coords)\n     coeffs = xr.DataArray([1, 2], dims=\"degree\", coords={\"degree\": [0, 1]})\n-    expected = xr.DataArray(\n-        [-4e9 + 1, 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords\n-    )\n+    expected = xr.DataArray([-4e9 + 1, 1, 6e9 + 1, np.nan], dims=\"x\", coords=coords)\n     if use_dataset:\n         x = x.to_dataset(name=\"a\")\nPATCH\nif [ $? -eq 0 ]; then git --no-pager diff --check && pytest xarray/tests/test_computation.py -k polyval -q; else exit 1; fi"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed timedelta conversion to use a zero-duration origin instead of incorrectly subtracting a datetime epoch. Added regression coverage and clarified that `polyval` evaluates supplied values, not index coordinates; the example should pass `azimuth_time.azimuth_time` to reproduce elapsed-time results.",
+ "assistant_messages": [
+  "I\u2019ll inspect how `polyval` converts datetime and timedelta inputs, then add a regression test for the reported case.\n",
+  "The report involves a documented API change: `polyval` now evaluates the supplied array\u2019s values, not its index coordinate. I also found a bug in timedelta conversion\u2014it subtracts a datetime epoch. I\u2019ll fix that without reverting the API change and clarify how to evaluate elapsed-time coordinates.\n",
+  "Fixed timedelta conversion to use a zero-duration origin instead of incorrectly subtracting a datetime epoch. Added regression coverage and clarified that `polyval` evaluates supplied values, not index coordinates; the example should pass `azimuth_time.azimuth_time` to reproduce elapsed-time results."
+ ],
+ "assistant_reasoning": [
+  "**Addressing a technical issue**\n\nI\u2019m running into a significant issue with a direct coordinate function where I can't seem to revert back. I need to fix the `timedelta` to ensure it's numeric and properly converts to float instead of a datetime offset. The documentation mentions expected behavior for calling `xr.polyval(azimuth_time.azimuth_time,...)`. I need to inspect the helper and also review the minimal history to see what might be causing the breakdown. Let's get this sorted!",
+  "**Evaluating timedelta function testing**\n\nI'm considering how to test the timedelta function with different dataset options like using Dask and coordinating datetime for clarity. I expect outputs like [-2e9, 1e9, 3e9, nan] and need to verify the coefficients are shaped correctly. There seems to be some confusion around data types; for instance, wrong dtype subtraction causes failures. It\u2019s vital to make sure coordinates match and that names are asserted properly. I'm thinking about how to structure the output effectively.\n\n**Reconstructing regression tests**\n\nI'm seeing the need to reconstruct the MVCE for the regression tests, particularly comparing timedelta against datetime differences. I plan to implement a single test called `test_polyval_timedelta` using the inputs from a DataArray with timedeltas, expecting specific outputs. There\u2019s also a need to ensure that there\u2019s a clear distinction between timedelta data and datetime coordinates. I should remember to mention the original issue about arithmetic invalidity due to how timedeltas were processed, emphasizing my changes to preserve datetime behavior while ensuring correct evaluations.",
+  "**Evaluating test structure**\n\nI\u2019m going through the testing approach, where 2*2*2*2 equals 16, which feels a bit cumbersome. I'm considering using a simple `use_dataset` boolean that covers both coordinates and coeffs to streamline things. I notice that the `dtype` includes datetime, which complicates things slightly. There are 8 tests in total with 4 failures\u2014 I want to check if adding a separate test might help clarify expectations without excess constants. Efficiency is key here!",
+  "**Considering git commands**\n\nI\u2019m trying to figure out if I need to count additions. Using `git apply --recount` seems like it can help solve issues with hand counts. I want to check the git status, but if there's no change, the patch likely failed. I could use the same command again to see if that resolves the problem. It\u2019s a little tricky, but I\u2019m focused on getting it right!",
+  "**Analyzing code fixes**\n\nI\u2019m reviewing a test related to Pandas and the preservation of different dimension labels in datasets. I noticed that cleaning up after tests shows no untracked changes, which is good. I\u2019m considering using a simpler offset if using a timedelta. There\u2019s a concern about copyright restrictions on code, so I aim for concise documentation. I need to emphasize the root cause of previous errors while also focusing on explaining adjustments made, especially around the `timedelta` conversion and `polyval` functionality."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 118.8
+}

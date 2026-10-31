@@ -1,0 +1,103 @@
+diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst
+index 8eeb8f19..e41030b4 100644
+--- a/doc/whatsnew/v0.12.2.rst
++++ b/doc/whatsnew/v0.12.2.rst
+@@ -6,6 +6,8 @@ v0.12.2 (Unreleased)
+ 
+ - |Enhancement| Automatic mark widths are now calculated separately for unshared facet axes (:pr:`3119`).
+ 
++- |Fix| Fixed a bug in numeric legends where large or small values could be incorrectly labeled due to missing scientific notation or offsets.
++
+ - |Fix| Fixed a regression in v0.12.0 where manually-added labels could have duplicate legend entries (:pr:`3116`).
+ 
+ - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..9088eb77 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -378,7 +378,12 @@ class ContinuousBase(Scale):
+             axis.set_view_interval(vmin, vmax)
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+-            labels = axis.major.formatter.format_ticks(locs)
++            formatter = axis.major.formatter
++            if isinstance(formatter, ScalarFormatter):
++                # Legend labels cannot show a separate offset or magnitude.
++                formatter.set_useOffset(False)
++                formatter.set_scientific(False)
++            labels = formatter.format_ticks(locs)
+             new._legend = list(locs), list(labels)
+ 
+         return new
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..94db60b0 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -698,7 +698,8 @@ def locator_to_legend_entries(locator, limits, dtype):
+     if isinstance(locator, mpl.ticker.LogLocator):
+         formatter = mpl.ticker.LogFormatter()
+     else:
+-        formatter = mpl.ticker.ScalarFormatter()
++        formatter = mpl.ticker.ScalarFormatter(useOffset=False)
++        formatter.set_scientific(False)
+     formatter.axis = dummy_axis()
+ 
+     # TODO: The following two lines should be replaced
+diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py
+index c4b39f5d..e944323e 100644
+--- a/tests/_core/test_scales.py
++++ b/tests/_core/test_scales.py
+@@ -238,6 +238,26 @@ class TestContinuous:
+         assert np.allclose(np.diff(np.log10(pos_ticks[1:])), 1)
+         assert pos_ticks[0] == 0
+ 
++    @pytest.mark.parametrize("use_offset", [True, False])
++    @pytest.mark.parametrize("custom_formatter", [True, False])
++    @pytest.mark.parametrize("values, expected", [
++        ([1e6, 2e6, 3e6], ["1000000", "2000000", "3000000"]),
++        ([1e-6, 2e-6, 3e-6], ["0.000001", "0.000002", "0.000003"]),
++        ([1e6, 1e6 + 1, 1e6 + 2], ["1000000", "1000001", "1000002"]),
++    ])
++    def test_legend_scalar_labels(
++        self, values, expected, use_offset, custom_formatter,
++    ):
++
++        with mpl.rc_context({"axes.formatter.useoffset": use_offset}):
++            s = Continuous().tick(at=values)
++            if custom_formatter:
++                s = s.label(mpl.ticker.ScalarFormatter())
++            s = s._setup(pd.Series(values), Color())
++
++        assert_array_equal(s._legend[0], values)
++        assert s._legend[1] == expected
++
+     def test_label_formatter(self, x):
+ 
+         fmt = mpl.ticker.FormatStrFormatter("%.3f")
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 02839a02..a3fa4354 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -335,6 +335,22 @@ def test_locator_to_legend_entries():
+         assert re.match(f"1e.0{exp}", str_levels[i])
+ 
+ 
++@pytest.mark.parametrize("use_offset", [True, False])
++@pytest.mark.parametrize("limits, expected", [
++    ((1e6, 3e6), ["1000000", "2000000", "3000000"]),
++    ((1e-6, 3e-6), ["0.000001", "0.000002", "0.000003"]),
++    ((1e6, 1e6 + 2), ["1000000", "1000001", "1000002"]),
++])
++def test_locator_to_legend_entries_scalar_labels(limits, expected, use_offset):
++
++    locator = mpl.ticker.LinearLocator(numticks=3)
++    with mpl.rc_context({"axes.formatter.useoffset": use_offset}):
++        levels, labels = utils.locator_to_legend_entries(locator, limits, float)
++
++    assert_array_equal(levels, np.linspace(*limits, 3))
++    assert labels == expected
++
++
+ def test_move_legend_matplotlib_objects():
+ 
+     fig, ax = plt.subplots()

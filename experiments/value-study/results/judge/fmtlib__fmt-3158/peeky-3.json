@@ -1,0 +1,7 @@
+{
+ "judge_id": "a006",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed two root causes: nested formatters skipped default parsing, losing character quotes and escaping, and temporary range elements couldn't bind to mutable formatter parameters.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

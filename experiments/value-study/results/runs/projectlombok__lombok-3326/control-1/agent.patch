@@ -1,0 +1,46 @@
+diff --git a/doc/changelog.markdown b/doc/changelog.markdown
+index a3703316..a20ebc2f 100644
+--- a/doc/changelog.markdown
++++ b/doc/changelog.markdown
+@@ -2,7 +2,7 @@ Lombok Changelog
+ ----------------
+ 
+ ### v1.18.25 "Edgy Guinea Pig"
+-* No new changes since the release of v1.18.24
++* BUGFIX: `@UtilityClass` no longer causes javac to crash when generic method calls and overloaded methods use a nested class.
+ 
+ ### v1.18.24 (April 18th, 2022)
+ 
+diff --git a/src/core/lombok/javac/handlers/HandleUtilityClass.java b/src/core/lombok/javac/handlers/HandleUtilityClass.java
+index 716d6d63..81aa3040 100644
+--- a/src/core/lombok/javac/handlers/HandleUtilityClass.java
++++ b/src/core/lombok/javac/handlers/HandleUtilityClass.java
+@@ -128,8 +128,14 @@ public class HandleUtilityClass extends JavacAnnotationHandler<UtilityClass> {
+ 				JCClassDecl innerClassDecl = (JCClassDecl) element.get();
+ 				innerClassDecl.mods.flags |= Flags.STATIC;
+ 				ClassSymbol innerClassSymbol = innerClassDecl.sym;
+-				if (innerClassSymbol != null && innerClassSymbol.type instanceof ClassType) {
+-					((ClassType) innerClassSymbol.type).setEnclosingType(Type.noType);
++				if (innerClassSymbol != null) {
++					if (innerClassSymbol.type instanceof ClassType) {
++						((ClassType) innerClassSymbol.type).setEnclosingType(Type.noType);
++					}
++					// The erasure may have been cached before the class was made static.
++					if (innerClassSymbol.erasure_field instanceof ClassType) {
++						((ClassType) innerClassSymbol.erasure_field).setEnclosingType(Type.noType);
++					}
+ 				}
+ 			}
+ 		}
+diff --git a/src/stubs/com/sun/tools/javac/code/Symbol.java b/src/stubs/com/sun/tools/javac/code/Symbol.java
+index f389f1a8..56de53a5 100644
+--- a/src/stubs/com/sun/tools/javac/code/Symbol.java
++++ b/src/stubs/com/sun/tools/javac/code/Symbol.java
+@@ -22,6 +22,7 @@ import com.sun.tools.javac.util.List;
+ import com.sun.tools.javac.util.Name;
+ 
+ public abstract class Symbol implements Element {
++	public Type erasure_field;
+ 	public Type type;
+ 	public Name name;
+ 	public Symbol owner;

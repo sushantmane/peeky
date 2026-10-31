@@ -1,0 +1,7 @@
+{
+ "judge_id": "a079",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`_MockObject.__getitem__` passed `TypeVar` objects to `_make_subclass`, which expected string names.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

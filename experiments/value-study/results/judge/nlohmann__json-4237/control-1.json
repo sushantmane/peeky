@@ -1,0 +1,7 @@
+{
+ "judge_id": "a101",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed enum serialization, which always selected signed storage regardless of the enum\u2019s underlying type.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

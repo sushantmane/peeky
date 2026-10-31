@@ -1,0 +1,7 @@
+{
+ "judge_id": "a164",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"proxy URL normalization drops the username and password, leaving urllib3 without a `Proxy-Authorization` header.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a140",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The decoder moves vertex C to B when A and B collapse to the same point, but leaves AB\u2019s flag unchanged.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

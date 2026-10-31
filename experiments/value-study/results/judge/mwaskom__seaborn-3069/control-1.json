@@ -1,0 +1,7 @@
+{
+ "judge_id": "a152",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Nominal axes inherited Matplotlib\u2019s continuous-axis defaults.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

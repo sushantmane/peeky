@@ -1,0 +1,135 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ba427f9..fa6957a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,7 @@ Unreleased changes. Release notes have not yet been written.
+ 
+ Bug fixes:
+ 
++* Fix multiline replacements printing or replacing text beyond matching lines.
+ * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):
+   Fix bug when using `-w` with a regex that can match the empty string.
+ * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):
+diff --git a/crates/printer/src/util.rs b/crates/printer/src/util.rs
+index 434deec..0f2c790 100644
+--- a/crates/printer/src/util.rs
++++ b/crates/printer/src/util.rs
+@@ -51,6 +51,9 @@ impl<M: Matcher> Replacer<M> {
+     /// matches with the given replacement. To access the result of the
+     /// replacement, use the `replacement` method.
+     ///
++    /// Only the given range is included in the replacement. Bytes outside of
++    /// the range may be used to resolve look-around assertions.
++    ///
+     /// This can fail if the underlying matcher reports an error.
+     pub fn replace_all<'a>(
+         &'a mut self,
+@@ -82,26 +85,29 @@ impl<M: Matcher> Replacer<M> {
+             dst.clear();
+             matches.clear();
+ 
++            let mut last_match = range.start;
+             matcher
+-                .replace_with_captures_at(
+-                    subject,
+-                    range.start,
+-                    caps,
+-                    dst,
+-                    |caps, dst| {
+-                        let start = dst.len();
+-                        caps.interpolate(
+-                            |name| matcher.capture_index(name),
+-                            subject,
+-                            replacement,
+-                            dst,
+-                        );
+-                        let end = dst.len();
+-                        matches.push(Match::new(start, end));
+-                        true
+-                    },
+-                )
++                .captures_iter_at(subject, range.start, caps, |caps| {
++                    let m = caps.get(0).unwrap();
++                    if is_multi_line && m.start() >= range.end {
++                        return false;
++                    }
++                    dst.extend_from_slice(&subject[last_match..m.start()]);
++                    last_match = m.end();
++                    let start = dst.len();
++                    caps.interpolate(
++                        |name| matcher.capture_index(name),
++                        subject,
++                        replacement,
++                        dst,
++                    );
++                    let end = dst.len();
++                    matches.push(Match::new(start, end));
++                    true
++                })
+                 .map_err(io::Error::error_message)?;
++            let end = range.end.min(subject.len());
++            dst.extend_from_slice(&subject[last_match..end]);
+         }
+         Ok(())
+     }
+diff --git a/tests/multiline.rs b/tests/multiline.rs
+index d084c96..a6ff41d 100644
+--- a/tests/multiline.rs
++++ b/tests/multiline.rs
+@@ -119,3 +119,56 @@ rgtest!(context, |dir: Dir, mut cmd: TestCommand| {
+ ";
+     eqnice!(expected, cmd.stdout());
+ });
++
++rgtest!(replacement, |dir: Dir, mut cmd: TestCommand| {
++    dir.create("test", "# doc\nfunc () {  # usage\n    body\n}\n");
++    cmd.args(&[
++        "-NU",
++        "-r",
++        "$usage",
++        r"^(# .*\n)*(?P<name>func) \(\) \{  #(?P<usage> .+)",
++        "test",
++    ]);
++    eqnice!(" usage\n", cmd.stdout());
++});
++
++rgtest!(replacement_match_boundaries, |dir: Dir, mut cmd: TestCommand| {
++    dir.create(
++        "test",
++        "before\nabc\ndef tail\nnot matched\nabc\ndef tail\nafter\n",
++    );
++    cmd.args(&["-NU", "-r", "X", r"abc\ndef", "test"]);
++    eqnice!("X tail\nX tail\n", cmd.stdout());
++
++    cmd.arg("-o");
++    eqnice!("X\nX\n", cmd.stdout());
++});
++
++rgtest!(replacement_lookaround, |dir: Dir, mut cmd: TestCommand| {
++    if !dir.is_pcre2() {
++        return;
++    }
++    dir.create(
++        "test",
++        "\
++before
++abc
++def tail
++lookahead
++not matched
++before
++abc
++def tail
++lookahead
++after
++",
++    );
++    cmd.args(&[
++        "-NU",
++        "-r",
++        "X",
++        r"(?<=before\n)abc\ndef(?= tail\nlookahead)",
++        "test",
++    ]);
++    eqnice!("X tail\nX tail\n", cmd.stdout());
++});

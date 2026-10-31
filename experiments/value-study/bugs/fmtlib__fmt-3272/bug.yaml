@@ -1,0 +1,31 @@
+id: fmtlib__fmt-3272
+language: cpp
+repo: fmtlib/fmt
+source: SWE-bench Multilingual
+base_commit: 0f42c17d85f26bbbd6a30d71ce8306d371426bfc
+upstream: https://github.com/fmtlib/fmt/pull/3272
+category: C
+categories_applicable: [C, D]
+category_rationale: >-
+  The wrong value is a padding size derived from the decimal_fp significand/exponent and a
+  locale-derived digit_grouping, in a Release (-O3) build. It only shows with localized ('L')
+  formatting plus a width and a fractional part, and the report blames the wrong values.
+root_cause: >-
+  In do_write_float (include/fmt/format.h), the fixed-notation branch for numbers with both an
+  integer and a fractional part (`exp > 0`, e.g. 1234e-2 -> 12.34) computes the output size used
+  for padding with grouping.count_separators(significand_size), counting thousands separators
+  over all significant digits including the fractional ones, instead of over the integer digits
+  (exp). With localized formatting and a width, that size is too large whenever the digit count
+  crosses a grouping boundary, so those values get too little padding; numbers whose integer
+  part is zero take another branch and are padded correctly, which makes them look misaligned.
+  The fix uses count_separators(exp).
+test_hint: |-
+  Build a test with `cd /testbed && cmake -B build -S . && cmake --build build --parallel 4 --target <name>-test` (sources in test/<name>-test.cc).
+  Run it with `ctest --test-dir build -V -R <name>-test` (binaries in build/bin/).
+image: peeky-study/fmtlib__fmt-3272:control
+build_minutes: 0.4
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  Build follows the SWE-bench spec (cmake -B build, target xchar-test); fmt defaults to a Release
+  build. The image's default compiler is GCC 13.

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a041",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`@UtilityClass` cleared the nested class\u2019s enclosing type but left javac\u2019s cached erased type unchanged, causing generic inference to crash.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

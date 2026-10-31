@@ -1,0 +1,7 @@
+{
+ "judge_id": "a043",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Disposal before the inner observer\u2019s `onSubscribe` left its queue uninitialized, but `scan` could still emit its seed and trigger the NPE.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}
