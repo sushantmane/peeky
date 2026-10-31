@@ -1,6 +1,6 @@
 # ADR 0008: Native projects with their own builds, and Rust crates with dependencies
 
-Status: proposed. Motivated by the value study ([#441](https://github.com/sushantmane/peeky/issues/441)). Phase 1 starts once the items under "Not yet verified" are checked.
+Status: accepted, with the owner's decisions below. Motivated by the value study ([#441](https://github.com/sushantmane/peeky/issues/441)). Phase 1 starts by checking the items under "Not yet verified".
 
 ## Context
 
@@ -179,7 +179,18 @@ Each also checks a change refused with a note naming a dependency call, and one 
 - Agents must rebuild with Peeky's flags first. Every refusal names them, and `describe` says which units fall short.
 - Phase 1 runs no project code but the program. Phase 2 runs build scripts and macros, from trusted configs only.
 
-## Open questions for the owner
+## Decisions on the open questions
+
+1. **GCC binaries:** refused in phase 1, with the flags to rebuild with clang. If the check under "Not yet verified" finds that GCC writes the checksums after all, GCC binaries are read like clang's.
+2. **Dependencies are taken as sound, as std is.** The docs say so: a value can be wrong only if a dependency's own unsafe code breaks Rust's rules.
+3. **A separate `peeky build`, plus `--build` on probes and sessions.** `--build` runs the same build first, with the build's own deadline, so one command still works. Without either, a probe never builds.
+4. **Optimized units: by opt-in** (`"optimized": true`), read with today's `optimized` warning, as Peeky's own optimized builds are.
+5. **`BUILD_REQUIRED`: yes.** It is a new code and a protocol bump, since an agent acts on it differently from other refusals.
+6. **Dependency sources: `cargo vendor` in phase 2.** The refusal of a missing vendor directory gives the exact command. The user's own Cargo cache can follow later.
+7. **`returns_twice`: yes**, as a trusted config's claim, documented as one. The broad note stays the default.
+8. **Project lanes run nightly and on demand,** not on every PR. Every PR keeps small fixtures of each new shape.
+
+## Open questions for the owner (answered above)
 
 1. GCC binaries: refuse them in phase 1 for lack of checksums, or read them with a provenance note on every row?
 2. Take dependencies as sound, as std is? Without that, no memory read is possible in a crate with dependencies.
