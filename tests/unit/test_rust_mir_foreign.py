@@ -571,6 +571,11 @@ def test_a_crate_traits_impl_for_a_dependencys_type_keeps_nothing_by_that_type()
         ("<Wrap<T> as Sink>::sink", None),
         ("<std::vec::Vec<T> as Sink>::sink", None),
         ("<std::boxed::Box<dyn Sink> as Sink>::sink", None),
+        # Nor for a reference to a trait object or an `impl` type (E0117).
+        ("<&dyn Sink as Sink>::sink", None),
+        ("<&mut dyn Sink as Sink>::sink", None),
+        ("<&impl Sink as Sink>::sink", None),
+        ("<&&dyn Sink as Sink>::sink", None),
         ("<std::boxed::Box<Wrap> as Sink>::sink", None),
     ],
 )
@@ -701,3 +706,38 @@ def test_a_bare_box_or_pin_is_the_standard_librarys_where_the_mir_says_so():
     assert call("<std::vec::Vec<c::Mine> as smallnum::Keep>::noted", (), state(blocks=vec))[
         1
     ].startswith("?impl\x1f`impl smallnum::Keep for Vec<Mine>`")
+
+
+@pytest.mark.parametrize("subject", ["&dyn Sink", "&mut dyn Sink", "&impl Sink"])
+def test_the_crates_impl_for_a_reference_to_a_trait_object_is_its_own(subject):
+    # `impl Sink for &dyn Sink { fn sink(&self, _: &u32) {} }`: no other crate may write such
+    # an `impl`, so the call runs the crate's, which keeps nothing.
+    noop = body(
+        "<impl at src/lib.rs:1:1: 1:26>::sink",
+        "fn <impl at src/lib.rs:1:1: 1:26>::sink(_1: &&dyn Sink, _2: &u32) -> () {",
+        ["let mut _0: ();"],
+        {0: ["return;"]},
+    )
+    caller = run(f"<{subject} as Sink>::sink")
+    matched(noop, caller)
+    assert caller.foreign_given(2, [(2, 0)]) == []
+    # A trait object's own method may be any type's.
+    dynamic = run("<dyn Sink as Sink>::sink")
+    matched(noop, dynamic)
+    assert [found[2] for found in dynamic.foreign_given(2, [(2, 0)])] == ["?"]
+
+
+def test_a_dependency_traits_method_on_a_reference_to_a_trait_object_is_an_impls_of_ours_or_its():
+    # `&dyn Sink`'s `smallnum::Keep`: the crate's `impl` or the dependency's, never a third
+    # crate's type's.
+    path = "<&dyn Sink as smallnum::Keep>::noted"
+    assert call(path, ("&&dyn Sink",))[1] == "smallnum"
+    blocks = _local_impls(
+        [impl_of([], "src/d.rs", "1:1: 1:35", receiver="&&dyn Sink")],
+        {"src/d.rs": "impl smallnum::Keep for &dyn Sink {\n"},
+        TYPES,
+    )
+    # Peeky can't place `&dyn Sink` as the MIR names it: it can't tell.
+    assert call(path, ("&&dyn Sink",), state(blocks=blocks))[1].startswith(
+        "?impl\x1f`impl smallnum::Keep for &dyn Sink`"
+    )

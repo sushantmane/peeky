@@ -1716,17 +1716,16 @@ def _call_runs(path, kinds, foreign, generics=(), known=frozenset(), blocks=()):
         trait_root = _foreign_root(_strip_arguments(trait), foreign, ()) if trait else None
         if trait_root:
             return _dependency_method(subject, trait, rest, trait_root, blocks, foreign, generics)
-        subject_root = (
-            "?"
-            if _generic_rooted(subject, generics)
-            else _foreign_root(_strip_arguments(subject), foreign, generics)
-        )
+        generic = _generic_rooted(subject, generics)
         first = _strip_arguments(trait).removeprefix("::").split("::")[0] if trait else ""
         if trait and first not in _STD_CRATES:
             # The crate's own trait: a type's `impl` of it is the crate's (no other crate
-            # may implement it for a type it can name here), but a type parameter's or a
-            # trait object's may be another crate's.
-            return "?" if subject_root == "?" else None
+            # may implement it for a type it can name here, `&dyn Sink` too), but a type
+            # parameter's or a trait object's may be another crate's.
+            return "?" if generic else None
+        subject_root = (
+            "?" if generic else _foreign_root(_strip_arguments(subject), foreign, generics)
+        )
         if subject_root:
             return subject_root
         head_std = True
@@ -1760,7 +1759,10 @@ def _dependency_method(subject, trait, rest, root, blocks, foreign, generics):
     Peeky can't tell whether it is that `impl`: "?impl", what it is, and the trait, joined
     by U+001F."""
     if _generic_rooted(subject, generics) or (
-        _foreign_root(_strip_arguments(subject), foreign, generics) == "?"
+        # A reference counts by what it holds (``_generic_rooted``): no other crate
+        # implements a trait for `&dyn util::Sink`.
+        not _REFERENCE.match((subject or "").strip())
+        and _foreign_root(_strip_arguments(subject), foreign, generics) == "?"
     ):
         return "?"
     method = re.split(r"::|<", rest or "", maxsplit=1)[0]
@@ -1810,12 +1812,15 @@ def _crate_type_paths(layouts):
 def _generic_rooted(subject, generics, wrapped=False):
     """Whether the type ``subject`` (a call's self type, as the MIR prints it) is a type
     parameter of ``generics``, or rooted at one (`T`, `T::Item`, `<T as Source>::Item`, `&T`),
-    or a trait object or an `impl` type, which any type may be behind. The standard
-    library's `#[fundamental]` wrappers (`&`, `Box`, `Pin`) count by what they wrap: another
-    crate may implement a trait for one of a type of its own (`impl util::Sink for
-    Box<AppType>`). A trait object or `impl` type a wrapper holds (``wrapped``) is the crate
-    whose trait it names': no other crate implements a trait for `Box<dyn util::Sink>`."""
-    text = re.sub(r"^(?:&(?:'\w+ )?(?:mut )?|\*(?:const|mut) )+", "", (subject or "").strip())
+    or a trait object or an `impl` type, which any type may be behind. The `#[fundamental]`
+    wrappers (`&`, `&mut`, `Box`, `Pin`) count by what they wrap: another crate may implement
+    a trait for one of a type of its own (`impl util::Sink for Box<AppType>`, `for &AppType`).
+    A trait object or `impl` type a wrapper holds (``wrapped``) is no other crate's to
+    implement a trait for: none may write `impl util::Sink for &dyn util::Sink` (E0117)."""
+    text = (subject or "").strip()
+    if found := _REFERENCE.match(text):
+        return _generic_rooted(text[found.end() :], generics, True)
+    text = re.sub(r"^(?:\*(?:const|mut) )+", "", text)
     if text.startswith(("dyn ", "impl ")):
         return not wrapped
     if text.startswith("<"):
