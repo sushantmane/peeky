@@ -65,9 +65,9 @@ Gradle dependencies: `{"sources": ["pkg/Main.java"], "main_class": "pkg.Main"}`.
 flags or libraries. With a project's own build (Make, CMake, autotools), build with clang
 `-O0 -g -gdwarf-5 -grecord-command-line`, then add `--binary ./prog`.
 
-**Rust:** `peeky probe CRATE --at src/main.rs:LINE --capture a,b.c`. Only a binary crate with no
-dependencies works, as from `cargo new`, with its `Cargo.lock`. A crate with dependencies, a
-`src/lib.rs`, `src/bin` or `build.rs` isn't supported yet.
+**Rust:** `peeky probe CRATE --at src/main.rs:LINE --capture a,b.c` for a `cargo new` crate. A crate
+with dependencies, or a workspace: run `cargo vendor --locked vendor`, name what to analyse and run
+in `rust.json`, then `peeky build . --config rust.json`, and probe with that `--config` (7.2).
 
 ## The loop
 
@@ -185,7 +185,7 @@ Report what you observed, changed and verified, quoting the commands.
 - **What:** the stopped function's own variables. In C, C++ and Rust, also integer fields and
   elements (`s.end`, `xs[2]`, `t.__0`) of a struct, tuple or array local the frame holds itself. In
   Rust, that local must be in memory and MIR-proven initialized. In Java, also scalar fields and
-  array elements reached from locals (`current.end=10`, `workers[1].load=5`). A text in double
+  array elements reached from locals (`workers[1].load=5`). A text in double
   quotes (`--set 'name="apple"'`) changes a string, where the debugger can write it. Each language's
   types, values and texts: its page, and 2.3.
 - **Never** through a pointer, reference or Box, nor in a union, enum, packed, std or JDK type,

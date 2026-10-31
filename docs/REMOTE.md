@@ -155,6 +155,7 @@ the same keys as `--config`. Its paths are relative to `--root`.
 | --- | --- | --- |
 | C or C++ | `--native-config` | `sources`, `headers`, `compiler`, `adapter`, `dwarfdump`; `"language": "cpp"` for C++ |
 | A Cargo crate | `--rust-config` | `sources`, `tests`, and every tool: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump` |
+| A Rust workspace | `--rust-config` | `analyse`, `run`, `vendor` and the rest of [its configuration](lang/rust-cookbook.md#set-up-the-workspace), and every tool |
 
 - The host needs the toolchain: a C or C++ compiler (clang or GCC), lldb-dap and llvm-dwarfdump,
   and for Rust, cargo, rustc and a linker ([WORKER.md](WORKER.md#start-a-c-or-c-worker)).
@@ -196,6 +197,41 @@ not in that copy. Other paths are marked `worker:` ([Paths in results](#paths-in
 seccomp profile refuses that call (`personality set failed`). So run the container with
 `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`.
 
+### A Rust workspace
+
+A workspace's worker builds it only from its own `--rust-config`, as `peeky build` does on its
+host ([Rust 7.2](lang/rust-cookbook.md#a-rust-workspace)). A probe never builds. From your
+checkout, `peeky build . --worker URL` asks the worker to build, and so does `--build` on a probe
+or `session start`. A request names no tool, path or flag. Leave out `--config`: the worker's
+configuration decides.
+
+```
+$ peeky probe . --at util/src/lib.rs:26 --capture x --worker http://127.0.0.1:8765
+error [BUILD_REQUIRED]: No current Peeky build of this workspace: none has been made for this configuration. Run `peeky build . --worker http://127.0.0.1:8765` first, or add --build
+$ peeky build . --worker http://127.0.0.1:8765
+built worker:/srv/ws in 0.94 s: analysed util; runs bin app
+executable: worker:/var/lib/peeky/rust-builds/fe20a816526c85b41756de90/runs/8aef58a9c40281ee/bin/app
+build: 4f867190f755e3b750befa87e5d366eca94d09113a6514ad3ae5bc6597a4a34f
+$ peeky probe . --at util/src/lib.rs:26 --capture x --set x=100 --worker http://127.0.0.1:8765
+hit  phase      line  function        selector  type  value
+1    observed   26    util::std_only  x         u32   5  [settable]
+1    after-set  26    util::std_only  x         u32   100  [settable]
+set x: 5 -> 100
+```
+
+- **A refusal names your command.** `BUILD_REQUIRED` from the worker says `peeky build .
+  --worker URL`, not the command on its host.
+- **The build runs on the worker,** one at a time. The client asks again every 30 s until it
+  ends, within the build's deadline of 900 s. A build that outlives the client goes on there:
+  run the same command again to wait for it.
+- **The files compared** are the build's: every `Cargo.toml` of its packages, `Cargo.lock`, the
+  workspace's own Cargo configuration, and every file the analysed packages' compiles read
+  ([Source identity](#source-identity)). The binary's other members, and vendored copies, are
+  not compared: `Cargo.lock` ties each copy to its checksum. Before any build, only the
+  workspace's `Cargo.toml` and `Cargo.lock` are compared.
+- **More than 4096 such files** can't all be compared, and a remote run is refused. Analyse fewer
+  packages, or run Peeky on the worker's host.
+
 ### Source identity
 
 Before anything launches, the worker compares its copy of each source in the table below with
@@ -217,6 +253,7 @@ and sends the hashes with the request.
 | Java, launched or attached | the config's `sources` |
 | C and C++ | the config's `sources` and `headers` |
 | Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
+| A Rust workspace | the build's manifests, `Cargo.lock` and Cargo configuration, and the analysed compiles' files ([A Rust workspace](#a-rust-workspace)) |
 
 - **Python counts every `.py` file,** in hidden directories and `.git` too, because the program
   may import any of them. A stray file on one side is refused too:

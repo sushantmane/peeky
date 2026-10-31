@@ -215,3 +215,12 @@ def test_a_workers_workspace_is_the_workers_to_read(tmp_path):
     assert resolve(root, "util/src/lib.rs:1", tools=False)[1:4] == ("util/src/lib.rs", 1, "rust")
     with pytest.raises(ValueError, match="Unsupported Cargo manifest tables"):
         resolve(root, "util/src/lib.rs:1")
+
+
+def test_a_remote_builds_refusals_say_what_to_do():
+    from peeky.errors import classify
+
+    found = classify(ValueError(sources.too_many(5000)))
+    assert found["code"] == "INVALID_REQUEST" and "fewer packages in analyse" in found["hint"]
+    found = classify(TimeoutError("The worker's build is still running past the deadline"))
+    assert found["code"] == "TIMEOUT" and "goes on on the worker" in found["hint"]

@@ -90,6 +90,50 @@ Every message is read before deciding. These are fatal instead:
 - A compile failure, and `close`, remove the workspace and its parent. A removal that fails is
   raised, or attached to the original error, never ignored.
 
+## A workspace's build
+
+`peeky.rust_build.RustWorkspaceTarget` is a workspace's configuration (`analyse`, `run`,
+`vendor`): `peeky build` builds it, and a probe or session reads that build. The decisions, and
+what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decision).
+
+- `rust_workspace` reads the workspace's shape before any build: its manifests, `Cargo.lock`,
+  the vendored copies and their checksums, Cargo's configuration under an allowlist, and Cargo's
+  unit graph.
+- `rust_build.build` runs `cargo build` (or `cargo test --no-run`) offline and locked, into a
+  private target directory in the state directory. Peeky's rustc wrapper compiles the analysed
+  crates with `RUSTC_BOOTSTRAP=<crate>`, `-Zmir-opt-level=0`, legacy mangling and
+  `-Ztrim-diagnostic-paths=false`. It dumps their MIR, LLVM IR and expansion.
+- The build's manifest records what it read and made, hashed: the inputs, the analysed sources,
+  each build script's inputs and variables, the artifacts. `current_build` checks it again
+  before every probe: a source changed is `BUILD_REQUIRED`, and what identifies the build
+  changed is `PROVENANCE_CHANGED`. A probe holds a lease on its build while it runs.
+- `rust_workspace_session.prepare_session` makes a `RustSession` of one analysed crate's
+  compile: the crate whose files hold the breakpoint. It reads only that crate's units of the
+  executable's debug information (`application_symbols`), and proves values with its MIR alone.
+- A stop in a file of the crate, in code its units don't define, is another crate's build of
+  the crate's generic or inlined function. Its frame's symbol hash isn't one of the units'
+  functions, and its address is in none of them (`_other_crates_code`). Such a stop reads no
+  value, and says why (`macro_stop_note`), and the session goes on.
+- A breakpoint on a line of a function none of whose lines has a row in the crate's units is
+  refused before launch (`unplaceable_line`): only other crates' builds have code of it.
+
+**On a worker.** The worker's target is the workspace's `--rust-config`.
+
+- `compared_names` gives the files a client's are compared with: `compared_sources` of the
+  recorded build, every manifest, the lockfile, the workspace's Cargo configuration, and each
+  analysed compile's sources. Before any build, the workspace's `Cargo.toml` and `Cargo.lock`.
+  The names are read again only once the record changes (`recorded_names`).
+- After the launch's `assert_current`, the session's `source_manifest` (the build's own record
+  of those files) is compared with the client's again.
+- A probe's process gets the target as its configuration (`trusted_config`), which
+  `RustWorkspaceTarget.from_config` reads back as the same target, so the same build.
+- `build` (`_RemoteBuilds`) runs `RustWorkspaceTarget.build` in a thread, one at a time. A
+  request waits at most 30 s, within the client's 45 s timeout. The client (`_remote_build`)
+  asks again with the build's `request` id until it ends.
+- The client rewrites a worker's `BUILD_REQUIRED` to name its own command (`_remote_build_required`).
+  A client resolves the target without a `--config`: a manifest Peeky doesn't build itself is the
+  worker's to read (`resolve`, `tools=False`).
+
 ## The MIR build
 
 Every build compiles the binary crate through a small rustc wrapper, set as

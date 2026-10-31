@@ -49,6 +49,27 @@ Peeky is not:
   only to report where they lead.
 - A request to a worker can't name an interpreter. Only the worker's `--python` and its root do.
 
+**A Rust workspace's build (ADR 0008, phase 2)**
+
+- Build scripts and procedural macros, the workspace's and its dependencies', are the project's
+  code, as the program is. `peeky build` runs them as `cargo build` does, with your permissions,
+  in no sandbox. Build only workspaces you trust.
+- Dependencies are taken as sound, as the standard library is. Their code isn't read, and unsafe
+  code their macros write counts as theirs. A dependency that breaks Rust's rules can defeat
+  Peeky's proofs.
+- Each vendored copy must hold exactly the files its `.cargo-checksum.json` lists, with those
+  hashes, and give `Cargo.lock`'s checksum. That proves what `cargo vendor` wrote, unless the
+  checksum file was edited to match. It authenticates nothing beyond `Cargo.lock`.
+- `RUSTC_BOOTSTRAP` is set for the analysed crates' compiles alone. A procedural macro runs in
+  that rustc, and could read it. So the build refuses an analysed crate, or a local procedural
+  macro, whose sources mention it, or whose compile records a read of it.
+- Cargo configuration in the workspace and above it, `~/.cargo/config.toml` included, is accepted
+  only under an allowlist. Each file is recorded by path and SHA-256: a change is
+  `PROVENANCE_CHANGED`.
+- A worker builds only from its own `--rust-config`. A client's `build` names no tool, path, flag
+  or configuration. Still, anyone with the worker's token can make it build, and so run the
+  project's build scripts on its host.
+
 **The worker proves it holds the token (protocol 11)**
 
 - A client sends a worker nothing, and not the token, before the worker answers its `hello`.
@@ -165,7 +186,8 @@ A process running as the same user, or as root, isn't covered.
     operation.
 - Cargo's own configuration isn't a file the compiler reads. Before each Cargo command, Peeky
   refuses a `.cargo/config.toml`, `.cargo/config` or `Cargo.toml` in any directory above the
-  build. It also refuses any of those directories that another user can write.
+  build. It also refuses any of those directories that another user can write. A workspace's
+  build instead records each such configuration file, under its allowlist (above).
 - Cargo runs with `RUSTC_WRAPPER` set empty, so no configured `build.rustc-wrapper` runs. A file
   that the same user adds between that check and Cargo's read isn't caught.
 - A Java adapter bundle's `adapter.json` lists its files' hashes, so it vouches only for itself.

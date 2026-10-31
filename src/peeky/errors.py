@@ -513,6 +513,21 @@ _RULES = (
         False,
     ),
     (
+        # A Rust workspace's build on a worker (`peeky build --worker`, `--build`).
+        r"^The worker's build is still running",
+        "TIMEOUT",
+        "The build goes on on the worker: run the same `peeky build --worker` command again to "
+        "wait for it.",
+        False,
+    ),
+    (
+        r"^The worker's target reads \d+ files, more than",
+        "INVALID_REQUEST",
+        "Nothing ran. Run Peeky on the worker's host, or give the worker a smaller target (fewer "
+        "packages in analyse).",
+        False,
+    ),
+    (
         r"^The debuggee did not start",
         "TIMEOUT",
         "Retry once it can read its path and every directory above it: a hung disk or macOS "

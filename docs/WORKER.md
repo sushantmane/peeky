@@ -150,6 +150,25 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD/examples/c" \
   mutually exclusive: a worker serves one target. Without a config, it serves Python.
 - A config field that Peeky doesn't know is refused, and `sources` is required.
 
+## Start a Rust workspace's worker
+
+A workspace's `--rust-config` is its configuration ([Rust 7.2](lang/rust-cookbook.md#set-up-the-workspace)),
+with every tool named: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump`, and `dsymutil` on
+macOS. Its paths are relative to `--root`.
+
+- The worker builds only from that configuration. A `peeky build` on its host builds the same
+  build, which the worker's probes then use.
+- The `build` operation builds it for a client: no field names a tool, path or flag. It takes
+  only `wait`, at most 30 s, and `request`, a running build's id. It answers with the build's
+  summary, its error, or `{"status": "building", "request": ID}`. Ask again with that `request`
+  until it ends. One build runs at a time; a second request joins it.
+- `version` names the files to compare: the recorded build's manifests, lockfile and Cargo
+  configuration, and the analysed compiles' files. Before any build, the workspace's `Cargo.toml`
+  and `Cargo.lock`. After `launch`, the build's own record is compared again.
+- A launch on no current build is refused with `BUILD_REQUIRED`
+  ([ERRORS](ERRORS.md#build_required)). The worker's message names the build command on its
+  host. `peeky probe --worker` shows the client's own instead: `peeky build . --worker URL`.
+
 ## Inspect and change a C value
 
 `examples/c/branch_bug.c` has an integer `value`, a pointer to it, an integer array, and a branch.

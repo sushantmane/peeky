@@ -27,7 +27,7 @@ The last column is the `retryable` field.
 | `NOT_FOUND` | A name or selector isn't visible ([details](#not_found)). | Use a name from the message's `visible:` or `children:` list. | no |
 | `MUTATION_REJECTED` | Peeky can't make that change there. Nothing was written. | Follow the hint: it names the one way around the rule ([the rules](#when-a-change-is-refused-mutation_rejected)). | no |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached, or a probe's limit of signal stops in a row ([details](#budget_exhausted)). | Narrow the request. | no |
-| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. In Python, debugpy may skip the file as library code ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)). | Use a line that `peeky describe` lists, or probe the code that calls the library. | no |
+| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. In Python, debugpy may skip the file as library code ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)). In a Rust workspace, the line is in a generic or inlined function only another crate's build has code of ([Rust 7.2](lang/rust-cookbook.md#what-peeky-reads-in-a-workspace)). | Use a line that `peeky describe` lists, or probe the code that calls the library. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
@@ -136,6 +136,9 @@ The last column is the `retryable` field.
   `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
   that runs past its own 20 s isn't an error: the verify's `verdict` is `unknown`, and `reason`
   says so ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- `The worker's build is still running past the deadline` means that a Rust workspace's build on a
+  worker outlived the client's wait. It goes on there: run the same command again to wait for it
+  ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 
 ### DEBUGGER_ERROR
 
@@ -213,6 +216,11 @@ file lists what it reads.
   16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
   directory, or start the worker with another `--root`.
 - A remote session started by an older Peeky, without source provenance. Start it again.
+- A remote run whose worker's target reads more files than a client may send: `The worker's
+  target reads 5000 files, more than the 4096 Peeky compares with a remote client's`. Run Peeky on
+  the worker's host, or analyse fewer packages ([REMOTE.md](REMOTE.md#a-rust-workspace)).
+- `peeky build --worker` with `--config`: the worker builds from its own `--rust-config`. A
+  `build` request to a worker whose target isn't a Rust workspace is refused too.
 - A `--python` that names no executable file, or an interpreter that can't say its version:
   `--python …: no executable file there`, or `Peeky could not run the Python interpreter …`. Pass
   the program's interpreter, or `--python peeky` for Peeky's own. A `--python` with `--worker`, or
@@ -258,6 +266,8 @@ file lists what it reads.
   or add --build`.
 - `--build` on the probe or `session start` builds first, under the build's own deadline
   (900 s). Without it, nothing is built.
+- Through a worker, the message names your own command: `peeky build . --worker URL`, which
+  builds on the worker's host ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - What identifies the build is `PROVENANCE_CHANGED` instead: Cargo's configuration, the lockfile, a
   vendored copy, a tool or the build's own output. So is a change during a build or a run.
 
@@ -602,7 +612,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 14`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 15`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients

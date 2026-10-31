@@ -85,6 +85,14 @@
   code is unknown code, taken as sound: a change it may keep a copy of is refused, naming the
   call, its line and its crate. So is one the crate's own code may hand on to it. A dependency's
   frame is read as a library's. The source scans read the crate as rustc expands it.
+- **A Rust workspace through a worker (protocol 15; ADR 0008, phase 2):** a worker started with a
+  workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
+  from its own configuration only. It compares the build's manifests, lockfile, Cargo
+  configuration and analysed sources with the client's, and its `BUILD_REQUIRED` names the
+  client's own command. A line of a generic function only another crate uses is refused before
+  launch, naming it, where it was a `DEBUGGER_ERROR`. A stop in another crate's copy of the
+  crate's code reads no value, and says why: it was read as the crate's own, with none of the
+  checks of that copy. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
