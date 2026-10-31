@@ -27,6 +27,12 @@
 
 ### Other changes
 
+- **Rust: a function whose signature spans several lines is read (#466).** rustc puts no MIR
+  span on such a function's `fn` line, so Peeky matched no MIR to it. Every change in it was
+  refused, saying Peeky couldn't tell, and its rows lost their MIR types. rustfmt writes a long
+  signature so, as in ripgrep's `grep_printer::util`. It is matched now by the lines its
+  signature spans in the source.
+
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
   into the static, yet `x` was marked `[settable]`: a change didn't reach the static's copy,
