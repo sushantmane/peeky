@@ -399,7 +399,7 @@ def test_a_qualified_call_names_its_type_and_trait(path, parts):
     assert _qualified_call(path) == parts
 
 
-MINE = ("Mine", ("smallnum::Keep", False), frozenset({"keep_it", "value"}))
+MINE = ("Mine", ("smallnum::Keep", False), frozenset({"keep_it", "value"}), "Mine")
 
 
 def test_a_dependency_traits_method_the_crates_own_impl_defines_is_the_crates_code():
@@ -417,23 +417,23 @@ def test_a_dependency_traits_method_the_crates_own_impl_defines_is_the_crates_co
 
 def test_an_impl_is_the_dependency_traits_only_where_its_header_names_it_in_full():
     path = "<Mine as smallnum::Keep>::keep_it"
-    full = ("Mine", ("::smallnum::Keep", False), frozenset({"keep_it"}))
+    full = ("Mine", ("::smallnum::Keep", False), frozenset({"keep_it"}), "Mine")
     assert call(path, (), state(blocks=(full,))) is None
     # A bare name, an alias, a module's alias: Peeky resolves no `use`, and says so.
     for named in ("Keep", "Kept", "sn::Keep"):
-        block = ("Mine", (named, False), frozenset({"keep_it"}))
+        block = ("Mine", (named, False), frozenset({"keep_it"}), "Mine")
         root = call(path, (), state(blocks=(block,)))[1]
         assert root == f"?impl\x1f`impl {named} for Mine`\x1fsmallnum::Keep", root
     # A header Peeky can't read (a macro's), and a derive's.
-    unread = (None, None, frozenset({"keep_it"}))
+    unread = ("", None, frozenset({"keep_it"}), "")
     assert call(path, (), state(blocks=(unread,)))[1].startswith(
         "?impl\x1fan `impl` whose header Peeky can't read"
     )
-    derived = (None, ("smallnum::Keep", True), frozenset({"keep_it"}))
+    derived = ("", ("smallnum::Keep", True), frozenset({"keep_it"}), "")
     assert "`#[derive(smallnum::Keep)]` made" in call(path, (), state(blocks=(derived,)))[1]
     # An `impl` of a standard trait, or one that doesn't define the method, is no doubt.
-    display = ("Mine", ("std::fmt::Display", False), frozenset({"keep_it"}))
-    other = ("Mine", ("Keep", False), frozenset({"value"}))
+    display = ("Mine", ("std::fmt::Display", False), frozenset({"keep_it"}), "Mine")
+    other = ("Mine", ("Keep", False), frozenset({"value"}), "Mine")
     assert call(path, (), state(blocks=(display, other)))[1] == "smallnum"
     # A trait object or a type parameter: any type's `impl`.
     assert call("<dyn smallnum::Keep as smallnum::Keep>::keep_it")[1] == "?"
@@ -550,3 +550,89 @@ def test_a_crate_traits_impl_for_a_dependencys_type_keeps_nothing_by_that_type()
     # A dependency's own call keeps what it is given.
     keeps = run("smallnum::keep")
     assert "run" in matched(keeps)._keepers()
+
+
+@pytest.mark.parametrize(
+    ("path", "root"),
+    [
+        # A type rooted at a type parameter: its `impl` may be another crate's.
+        ("<T::Item as Sink>::sink", "?"),
+        ("<<T as Source>::Item as Sink>::sink", "?"),
+        ("<&T as Sink>::sink", "?"),
+        # A type of the crate's, whatever its arguments: the crate's `impl`.
+        ("<Wrap<T> as Sink>::sink", None),
+    ],
+)
+def test_a_type_rooted_at_a_type_parameter_may_be_another_crates(path, root):
+    assert _call_runs(path, ("&u32",), FOREIGN, ("T",)) == root
+    assert _foreign_root("T::Item", FOREIGN, ("T",)) == "?"
+
+
+def test_global_state_reads_a_bodys_type_parameters():
+    state = GlobalState(
+        names={"sink": frozenset()},
+        closures={},
+        impls=frozenset(),
+        every=frozenset({"&Mutex<u32>"}),
+        unknown=frozenset(),
+        trusted=frozenset({"std", "core", "alloc"}),
+        layouts=None,
+        foreign=FOREIGN,
+    )
+    state = state._replace(returns=state)
+    path, kinds = "<T as Slots>::slot", ("&T",)
+    # A type parameter's `impl` may be another crate's: any global, and a pointer into any.
+    assert "&Mutex<u32>" in state.call("slot", kinds, path, ("T",))
+    assert "&Mutex<u32>" in state.returned("slot", kinds, path, ("T",))
+    # Read as the crate's own, it would be `slot`'s, which the crate doesn't define.
+    assert state.call("slot", kinds, path, ()) == frozenset()
+
+
+def impl_of(module, file, span, name="noted"):
+    path = "::".join([*module, f"<impl at {file}:{span}>", name])
+    return body(path, f"fn {path}(_1: &Mine) -> u32 {{", ["let mut _0: u32;"], {0: ["return;"]})
+
+
+PLACES = {
+    "src/a.rs": "impl smallnum::Keep for Mine {\n",
+    "src/b.rs": "impl smallnum::Keep for Mine {\nimpl Mine {\nimpl tokio::Keep for Mine {\n"
+    "impl crate::Keep for Mine {\nimpl Keep for Mine {\nimpl super::b::Mine {\n",
+    "src/other/path.rs": "impl smallnum::Keep for Mine {\n",
+}
+
+
+def test_an_impls_type_is_placed_by_its_module():
+    # `a::Mine` overrides `noted`; `b::Mine`'s `impl` doesn't: its default is the dependency's.
+    a = impl_of(["a"], "src/a.rs", "1:1: 1:30")
+    b = impl_of(["b"], "src/b.rs", "1:1: 1:30", "keep_it")
+    blocks = _local_impls([a, b], PLACES)
+    assert call("<b::Mine as smallnum::Keep>::noted", (), state(blocks=blocks))[1] == "smallnum"
+    assert call("<a::Mine as smallnum::Keep>::noted", (), state(blocks=blocks)) is None
+    # A `#[path]` module's file: the module is its function's path's.
+    inner = impl_of(["inner"], "src/other/path.rs", "1:1: 1:30")
+    blocks = _local_impls([inner], PLACES)
+    assert call("<inner::Mine as smallnum::Keep>::noted", (), state(blocks=blocks)) is None
+    assert call("<Mine as smallnum::Keep>::noted", (), state(blocks=blocks))[1] == "smallnum"
+
+
+def test_inherent_impls_and_other_traits_named_in_full_are_no_doubt():
+    found = [
+        impl_of(["b"], "src/b.rs", span)
+        for span in ("2:1: 2:10", "3:1: 3:27", "4:1: 4:27", "6:1: 6:21")
+    ]
+    blocks = _local_impls(found, PLACES)
+    assert call("<b::Mine as smallnum::Keep>::noted", (), state(blocks=blocks))[1] == "smallnum"
+    # A bare name may be the dependency's trait.
+    bare = _local_impls([impl_of(["b"], "src/b.rs", "5:1: 5:20")], PLACES)
+    assert call("<b::Mine as smallnum::Keep>::noted", (), state(blocks=bare))[1] == (
+        "?impl\x1f`impl Keep for Mine`\x1fsmallnum::Keep"
+    )
+
+
+def test_a_bare_type_name_a_use_may_have_brought_is_not_placed():
+    # `impl smallnum::Keep for Mine` in `a`, where the debug information has `b::Mine` and
+    # no `a::Mine`: Peeky can't tell which `Mine` it is for.
+    blocks = _local_impls([impl_of(["a"], "src/a.rs", "1:1: 1:30")], PLACES, {"b::Mine", "::Mine"})
+    assert call("<b::Mine as smallnum::Keep>::noted", (), state(blocks=blocks))[1].startswith(
+        "?impl\x1f`impl smallnum::Keep for Mine`"
+    )

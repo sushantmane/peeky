@@ -916,13 +916,23 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   path's first segment. For `<S as T>::m`, the trait. The crate's own trait's method is the
   crate's code for a type the crate names (only it may implement its trait for one), and "?"
   for a type parameter or a trait object: another crate, the program's binary, may implement a
-  public trait. A dependency's trait's method is the crate's code where the crate's own `impl`
-  of it for `S` defines `m` and names the trait in full in its header (`_dependency_method`,
-  `_local_impls`: `impl smallnum::Keep for Mine`). Otherwise it is the dependency's (its
-  default method, its blanket `impl`). Peeky resolves no `use` line. An `impl` of the crate's
-  for `S` may define `m` but name its trait by a bare name, an alias or a module's alias. Then
-  the note says Peeky can't tell whether it implements that trait ("?impl"). So it does for a
-  derive's `impl`, and a header it can't read. A standard trait's method is judged by `S`.
+  public trait. So is a type rooted at one (`T::Item`, `<T as Source>::Item`,
+  `_generic_rooted`), read before its arguments are left out. A dependency's trait's method is
+  the crate's code where the crate's own `impl` of it for `S` defines `m` and names the trait
+  in full in its header (`_dependency_method`: `impl smallnum::Keep for Mine`). Otherwise it is
+  the dependency's (its default method, its blanket `impl`). A standard trait's method is
+  judged by `S`.
+- An `impl` block's type is placed from the crate's root (`_local_impls`, `_impl_self_place`):
+  a bare name in its function's module (the segments before `<impl at …>`), and `crate::`,
+  `self::` and `super::` paths followed. Another path, or a bare name the debug information
+  places in another module only (a `use` may have brought it), isn't placed. An inherent
+  `impl`, and one of another trait named in full (`tokio::Keep`, `crate::Keep`), is no
+  doubt. Peeky resolves no `use` line: an `impl` that defines `m` but names its trait by a bare
+  name, an alias or a module's alias, or isn't placed, gives "?impl", and the note says Peeky
+  can't tell whether it implements that trait. So does a derive's, or a header it can't read.
+- `global_state`, `GlobalState.call` and `GlobalState.returned` take each body's type
+  parameters (matched, else `guessed_generics`), so a call on one touches, and returns a
+  pointer into, any global state.
 - What the types a call is given may run is asked of the standard library's functions alone. A
   function of the crate's is read, and its body says what it runs and touches.
 - A call through a function pointer (`move _6(…)`) may run a dependency's code ("?fn"). So may

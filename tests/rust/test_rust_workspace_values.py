@@ -202,6 +202,25 @@ pub fn dynamic(t: &dyn Sink, arg: u32) -> u32 {
     k + smallnum::kept()
 }
 
+/// A trait whose associated type the program's binary chooses: its `Sink`, the binary's.
+pub trait Source {
+    type Item: Sink + ?Sized;
+
+    fn item(&self) -> &Self::Item;
+}
+
+pub fn projected<S: Source + ?Sized>(s: &S, arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    s.item().sink(&x); // SINK_PROJECTED
+    let k = std::hint::black_box(1); // PROJECTED
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
+pub fn via_projected(s: &dyn Source<Item = dyn Sink>, arg: u32) -> u32 {
+    projected(s, arg)
+}
+
 pub fn blanket(arg: u32) -> u32 {
     use smallnum::Stash;
     let x = std::hint::black_box(arg);
@@ -216,6 +235,16 @@ MAIN = """struct Keeper;
 impl util::Sink for Keeper {
     fn sink(&self, x: &u32) {
         smallnum::keep(x);
+    }
+}
+
+struct Src(Keeper);
+
+impl util::Source for Src {
+    type Item = dyn util::Sink;
+
+    fn item(&self) -> &(dyn util::Sink + 'static) {
+        &self.0
     }
 }
 
@@ -237,6 +266,7 @@ fn main() {
     println!("BLANKET {}", util::blanket(25));
     println!("GENERIC {}", util::via_generic(&Keeper, 27));
     println!("DYNAMIC {}", util::dynamic(&Keeper, 29));
+    println!("PROJECTED {}", util::via_projected(&Src(Keeper), 35));
 }
 """
 SMALLNUM = """use std::sync::atomic::{AtomicU32, Ordering};
@@ -466,6 +496,9 @@ def test_a_change_a_dependency_may_keep_a_copy_of_is_refused_naming_the_call(bui
         "DYNAMIC": "a call to `<dyn Sink as Sink>::sink` (code another crate's type may "
         f"supply: a trait object or a type parameter) on line {line_of('SINK_DYN')} is given "
         "a pointer into `x`",
+        # An associated type of a type parameter: the binary chooses it, and its `impl`.
+        "PROJECTED": "(code another crate's type may supply: a trait object or a type "
+        f"parameter) on line {line_of('SINK_PROJECTED')} is given a pointer into `x`",
         # The dependency's blanket `impl`.
         "BLANKET": "a call to `<u32 as smallnum::Stash>::stash` (dependency `smallnum`) on line "
         f"{line_of('STASH')} is given a pointer into `x`",
@@ -664,3 +697,73 @@ def test_a_crate_function_given_a_dependencys_type_is_the_crates_code(
     assert rows(result, "after-set")["x"]["value"] == "100"
     # `w` is 2 + 31, then `k + x` with the change.
     assert printed(result, "TYPED") == ["133"], result["output"]
+
+
+# A trait the program's binary implements, whose method returns a pointer into a static of
+# the crate's: `x` is copied there.
+SLOTS = """
+static SLOT: std::sync::Mutex<u32> = std::sync::Mutex::new(0);
+
+pub fn slot() -> &'static std::sync::Mutex<u32> {
+    &SLOT
+}
+
+pub fn slot_value() -> u32 {
+    *SLOT.lock().unwrap()
+}
+
+pub trait Slots {
+    fn slot(&self) -> &'static std::sync::Mutex<u32>;
+}
+
+#[inline(never)]
+fn lock_set(m: &std::sync::Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+pub fn slotted<T: Slots + ?Sized>(t: &T, arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    lock_set(t.slot(), x);
+    let k = std::hint::black_box(1); // SLOTTED
+    std::hint::black_box(&x);
+    k + slot_value()
+}
+
+pub fn via_slotted(t: &dyn Slots, arg: u32) -> u32 {
+    slotted(t, arg)
+}
+"""
+SLOTTER = """struct Slotter;
+
+impl util::Slots for Slotter {
+    fn slot(&self) -> &'static std::sync::Mutex<u32> {
+        util::slot()
+    }
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_pointer_another_crates_impl_returns_may_point_into_the_crates_static(
+    tmp_path, monkeypatch, capsys
+):
+    # `t.slot()` is the binary's `impl`, which returns `&SLOT`: `x` is copied into the static,
+    # and `slot_value()` goes on with that copy, which a change of `x` would not reach (the
+    # program prints 1 + 37 whatever `x` is then).
+    text = UTIL + SLOTS
+    main = SLOTTER + MAIN.replace(
+        '    println!("DOUBLE',
+        '    println!("SLOTTED {}", util::via_slotted(&Slotter, 37));\n    println!("DOUBLE',
+    )
+    root, config = make(
+        tmp_path, monkeypatch, {**FILES, "util/src/lib.rs": text, "app/src/main.rs": main}
+    )
+    assert run(capsys, "build", str(root), "--config", str(config), "--quiet")[0] == 0
+    code, result = probe(capsys, (root, config), "SLOTTED", "--set", "x=100", text=text)
+    error = result["error"]
+    assert error["code"] == "MUTATION_REJECTED", error
+    # What `t.slot()` returned may point at the copy, as `t` may.
+    assert "may point at a copy of `x` that it goes on with" in error["message"], error
+    code, result = probe(capsys, (root, config), "SLOTTED", "--capture", "x", text=text)
+    assert code == 0, result
+    assert printed(result, "SLOTTED") == ["38"], result["output"]

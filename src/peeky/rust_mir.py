@@ -1066,9 +1066,9 @@ class GlobalState(NamedTuple):
         """What a call that may run any of the crate's code may touch."""
         return self.every | ({_ANY_GLOBAL} if self.unknown else frozenset())
 
-    def call(self, name, kinds, path=""):
+    def call(self, name, kinds, path="", generics=()):
         """What a call of a function named ``name`` (``_callee``), given values of the MIR
-        types ``kinds``, may touch: a function of the crate's so named, or the code of the
+        types ``kinds``, by a body with the type parameters ``generics``, may touch: a function of the crate's so named, or the code of the
         crate's that what it is given may carry (``carried``). Where its ``path`` names the
         standard library's own (``_std_callee``: `std::hint::black_box`, `Cell::<u32>::set`),
         no function of the crate's is so called. The types its path names count too
@@ -1076,7 +1076,7 @@ class GlobalState(NamedTuple):
         `<u32 as Into<Wrap>>::into`, and `direct_set` for `for_each::<fn(u32) {direct_set}>`;
         there, a name that is no type of the crate's is taken for the standard library's, as
         the instance's types show where it is called."""
-        if _call_runs(path, kinds, self.foreign, (), self.known, self.blocks):
+        if _call_runs(path, kinds, self.foreign, generics, self.known, self.blocks):
             # A dependency's code, or one a dependency's may be: it may run any code of the
             # crate's ever handed to a dependency.
             return self.every | {_ANY_GLOBAL}
@@ -1093,12 +1093,14 @@ class GlobalState(NamedTuple):
             found |= self.carried(kind, named=True)
         return frozenset(found)
 
-    def returned(self, name, kinds, path=""):
+    def returned(self, name, kinds, path="", generics=()):
         """What a pointer such a call returns may point into, of the crate's global state:
         what the function it names may return (``Body.returned_globals``),
         or code of the crate's what it is given carries; the standard library's own returns
         point only into what it is given, which ``Body._made_from`` follows."""
-        return frozenset() if self.returns is None else self.returns.call(name, kinds, path)
+        if self.returns is None:
+            return frozenset()
+        return self.returns.call(name, kinds, path, generics)
 
     def resolve(self, path):
         """The keys of ``paths`` the call path ``path`` (as the MIR prints it) may name:
@@ -1387,6 +1389,14 @@ def _impl_self(block, texts):
     """The last segment of the type the `impl` block ``block`` is for: `Wrap`
     of `impl<T> Wrap<T>` or of `impl fmt::Display for m::Wrap`. None where its header can't
     be read, or names no plain path (`impl dyn Tr`, a derive's span)."""
+    path = _impl_self_path(block, texts)
+    return None if path is None else path.rsplit("::", 1)[-1]
+
+
+def _impl_self_path(block, texts):
+    """The path the `impl` block ``block``'s header names its type by, without arguments:
+    `m::Wrap` of `impl fmt::Display for m::Wrap<T>`. None where its header can't be read,
+    or names no plain path (`impl dyn Tr`, a derive's span)."""
     header = _impl_header(block, texts)
     if header is None:
         return None
@@ -1416,8 +1426,40 @@ def _impl_self(block, texts):
         elif depth == 0 and rest.startswith(" for ", at):
             start = at + len(" for ")
     target = _plain_path(rest[start:].strip())
-    named = re.fullmatch(r"(?:::)?(?:\w+::)*(\w+)", target)
-    return named[1] if named else None
+    named = re.fullmatch(r"(?:::)?(?:\w+::)*\w+", target)
+    return named[0] if named else None
+
+
+def _impl_self_place(path, module, types=None):
+    """The type an `impl` header names by ``path`` (``_impl_self_path``), as the MIR names
+    the crate's own: its path from the crate's root (`a::Mine`). A bare name is the block's
+    ``module``'s (its function's path's segments before `<impl at …>`), `crate::`, `self::`
+    and `super::` paths are followed. "" where Peeky can't place it: another path (through
+    a `use`, or a module's), or a bare name ``types`` (the crate's type paths, from the debug
+    information) says is no type of that module's while one elsewhere has it, as a `use` may
+    have brought."""
+    if not path or path.startswith("::"):
+        return ""
+    segments, module = path.split("::"), list(module)
+    if len(segments) == 1:
+        placed = "::".join([*module, path])
+        if (
+            types
+            and placed not in types
+            and any(each.rsplit("::", 1)[-1] == path for each in types if not each.startswith("::"))
+        ):
+            return ""
+        return placed
+    if segments[0] == "crate":
+        return "::".join(segments[1:])
+    if segments[0] in ("self", "super"):
+        while segments and segments[0] in ("self", "super"):
+            if segments.pop(0) == "super":
+                if not module:
+                    return ""
+                module.pop()
+        return "::".join([*module, *segments])
+    return ""
 
 
 def _crate_traits(texts):
@@ -1617,7 +1659,11 @@ def _call_runs(path, kinds, foreign, generics=(), known=frozenset(), blocks=()):
         trait_root = _foreign_root(_strip_arguments(trait), foreign, ()) if trait else None
         if trait_root:
             return _dependency_method(subject, trait, rest, trait_root, blocks, foreign, generics)
-        subject_root = _foreign_root(_strip_arguments(subject), foreign, generics)
+        subject_root = (
+            "?"
+            if _generic_rooted(subject, generics)
+            else _foreign_root(_strip_arguments(subject), foreign, generics)
+        )
         first = _strip_arguments(trait).removeprefix("::").split("::")[0] if trait else ""
         if trait and first not in _STD_CRATES:
             # The crate's own trait: a type's `impl` of it is the crate's (no other crate
@@ -1646,44 +1692,89 @@ def _call_runs(path, kinds, foreign, generics=(), known=frozenset(), blocks=()):
 def _dependency_method(subject, trait, rest, root, blocks, foreign, generics):
     """The crate whose code `<subject as trait>::method` runs, the trait a dependency's
     (``root``). None where the crate's own `impl` of it for ``subject`` defines the method:
-    one whose header names the trait in full (`impl smallnum::Keep for Mine`), whose body is
-    read. The trait's crate where no `impl` of the crate's for ``subject`` defines the
-    method (its default method, its blanket `impl`, a dependency's own). "?" for a trait
-    object or a type parameter. Where an `impl` of the crate's that defines it names its
-    trait otherwise (`impl Keep for Mine`, an alias, a module's alias), or a derive made it,
-    or Peeky can't read its header, Peeky can't tell whether it is that `impl`: "?impl", what
-    it is, and the trait, joined by U+001F."""
-    if _foreign_root(_strip_arguments(subject), foreign, generics) == "?":
+    one whose header names the trait in full (`impl smallnum::Keep for Mine`) and the type
+    as ``subject`` is (from the crate's root, ``_local_impls``), whose body is read. The
+    trait's crate where no `impl` of the crate's that defines the method may be that one
+    (its default method, its blanket `impl`, a dependency's own). "?" for a trait object or
+    a type parameter, or a type rooted at one. An inherent `impl`, or one of a trait named
+    in full otherwise (`tokio::Keep`, `crate::Keep`), or for another type, is not that one.
+    Where an `impl` that defines it names its trait by a bare name, an alias or a module
+    alias, or a derive made it, or Peeky can't read its header, or can't place its type,
+    Peeky can't tell whether it is that `impl`: "?impl", what it is, and the trait, joined
+    by U+001F."""
+    if _generic_rooted(subject, generics) or (
+        _foreign_root(_strip_arguments(subject), foreign, generics) == "?"
+    ):
         return "?"
     method = re.split(r"::|<", rest or "", maxsplit=1)[0]
-    wanted, kind_wanted = _strip_arguments(trait).removeprefix("::"), _last_segment(subject)
+    wanted = _strip_arguments(trait).removeprefix("::")
+    placed = _plain_type(subject)
+    full = set(foreign) | _STD_CRATES | {"crate", "self", "super"}
     own, doubts = False, []
-    for kind, found, methods in blocks:
+    for kind, found, methods, named in blocks:
         if method not in methods:
             continue
-        if found is None or kind is None:
-            doubts.append(
-                "an `impl` whose header Peeky can't read"
-                if found is None
-                else f"the `impl` `#[derive({found[0]})]` made"
-            )
+        if found is None:
+            doubts.append("an `impl` whose header Peeky can't read")
             continue
-        if kind != kind_wanted:
+        path, derived = _strip_arguments(found[0]).removeprefix("::"), found[1]
+        if derived:
+            if _last_segment(path) == _last_segment(wanted):
+                doubts.append(f"the `impl` `#[derive({found[0]})]` made")
             continue
-        named = _strip_arguments(found[0]).removeprefix("::")
-        if named == wanted:
+        if not path:
+            # An inherent `impl`: not a trait's.
+            continue
+        if path == wanted:
+            same = True
+        elif "::" in path and path.split("::")[0] in full:
+            # Another trait, named in full.
+            continue
+        else:
+            same = False
+        if kind and kind != placed:
+            continue
+        if same and kind:
             own = True
-        elif named.split("::")[0] not in _STD_CRATES:
-            doubts.append(f"`impl {found[0]} for {kind}`")
+        else:
+            doubts.append(f"`impl {found[0]} for {named or '…'}`")
     if own:
         return None
     return f"?impl\x1f{doubts[0]}\x1f{wanted}" if doubts else root
 
 
-def _local_impls(bodies, texts):
-    """The crate's `impl` blocks the dump has functions of: (the type's last segment
-    (``_impl_self``), the trait (``_impl_trait``), the names of the functions it defines),
-    each block once."""
+def _crate_type_paths(layouts):
+    """The paths of the crate's types the debug information names (``TypeLayouts.crate``'s
+    keys), or None where not known."""
+    crate = getattr(layouts, "crate", None)
+    return None if crate is None else frozenset(crate)
+
+
+def _plain_type(text):
+    """The type ``text`` as the crate's root names it, without references or arguments:
+    `a::Mine` of `&a::Mine<'_>`."""
+    plain = re.sub(r"^(?:&(?:'\w+ )?(?:mut )?|\*(?:const|mut) )+", "", (text or "").strip())
+    return _strip_arguments(plain).removeprefix("::").strip()
+
+
+def _generic_rooted(subject, generics):
+    """Whether the type ``subject`` (a call's self type, as the MIR prints it) is a type
+    parameter of ``generics``, or rooted at one (`T`, `T::Item`, `<T as Source>::Item`, `&T`),
+    or a trait object or an `impl` type, which any type may be behind."""
+    text = re.sub(r"^(?:&(?:'\w+ )?(?:mut )?|\*(?:const|mut) )+", "", (subject or "").strip())
+    if text.startswith(("dyn ", "impl ")):
+        return True
+    if text.startswith("<"):
+        found = _qualified_call(text)
+        return found is not None and _generic_rooted(found[0], generics)
+    return bool(generics) and re.split(r"::|<", text, maxsplit=1)[0] in generics
+
+
+def _local_impls(bodies, texts, types=None):
+    """The crate's `impl` blocks the dump has functions of: (the type it is for, from the
+    crate's root (``_impl_self_place``; "" where Peeky can't place it), the trait
+    (``_impl_trait``), the names of the functions it defines, the type as its header names
+    it), each block once. ``types``: the crate's type paths, from the debug information."""
     blocks = {}
     for body in bodies:
         segments = _segments(body.path)
@@ -1691,9 +1782,13 @@ def _local_impls(bodies, texts):
             continue
         block = segments[-2]
         if block not in blocks:
-            blocks[block] = (_impl_self(block, texts), _impl_trait(block, texts), set())
+            named = _impl_self_path(block, texts)
+            placed = _impl_self_place(named, segments[:-2], types)
+            blocks[block] = (placed, _impl_trait(block, texts), set(), named or "")
         blocks[block][2].add(segments[-1])
-    return tuple((kind, trait, frozenset(names)) for kind, trait, names in blocks.values())
+    return tuple(
+        (kind, trait, frozenset(names), named) for kind, trait, names, named in blocks.values()
+    )
 
 
 def _foreign_rows(body, found):
@@ -1724,7 +1819,7 @@ def _foreign_root(text, foreign, generics=()):
         root = word.split("::", 1)[0]
         if root in foreign:
             return root
-        if word == "dyn" or (generics and word in generics):
+        if word == "dyn" or (generics and root in generics):
             return "?"
     return None
 
@@ -1810,7 +1905,14 @@ def global_state(
         for body in bodies
         for each in _SPANNED.findall(body.types.get(1, "") if body.arguments else "")
     )
-    impl_blocks = _local_impls(bodies, texts or {}) if foreign else ()
+    impl_blocks = _local_impls(bodies, texts or {}, _crate_type_paths(layouts)) if foreign else ()
+    # Each body's type parameters: a call on one may run another crate's code.
+    parameters = [
+        (body.generics if body.generics is not None else body.guessed_generics(layouts))
+        if foreign
+        else ()
+        for body in bodies
+    ]
 
     def view(touched, formatting=True):
         names, closures, impls, formats, paths, methods = {}, {}, set(), set(), {}, {}
@@ -1854,16 +1956,19 @@ def global_state(
     for _ in range(_GLOBAL_ROUNDS):
         state, memo = state_of(touched, returned), {}
         grown, gave = [], []
-        for body, found, given in zip(bodies, touched, returned):
+        for body, found, given, generics in zip(bodies, touched, returned, parameters):
             if not body.supported:
                 found = found | state.anything() | {_ANY_GLOBAL}
             for edge in body._global_edges().values():
-                if edge not in memo:
+                key = (edge, generics)
+                if key not in memo:
                     kind, name, kinds, path = edge
-                    memo[edge] = (
-                        state.drop(kinds) if kind == "drop" else state.call(name, kinds, path)
+                    memo[key] = (
+                        state.drop(kinds)
+                        if kind == "drop"
+                        else state.call(name, kinds, path, generics)
                     )
-                found = found | memo[edge]
+                found = found | memo[key]
             grown.append(found)
             gave.append(given | body.returned_globals(state, found))
         if grown == touched and gave == returned:
@@ -3715,6 +3820,9 @@ class Body:
         and other crates' types are rooted, and the crate's own print bare."""
         if self.generics is not None:
             return self.generics
+        cached = self.__dict__.get("_guessed")
+        if cached is not None and cached[0] is layouts:
+            return cached[1]
         found = set()
         for kind in self.types.values():
             for word in _TYPE_WORDS.findall(_LIFETIME.sub("", _SPANNED.sub("{}", kind or ""))):
@@ -3726,7 +3834,8 @@ class Body:
                     continue
                 if layouts is None or layouts.entry(word) is None:
                     found.add(word)
-        return tuple(sorted(found))
+        self.__dict__["_guessed"] = (layouts, tuple(sorted(found)))
+        return self.__dict__["_guessed"][1]
 
     def foreign_given(self, local, positions, free_types=frozenset()):
         """[((block, index), what it runs, the crate, how, via)] of each call or drop of
@@ -4828,11 +4937,20 @@ class Body:
                 if edge[0] == "call" and whole:
                     targets.setdefault(int(whole[1]), []).append(edge[1:])
             self._call_target_cache = targets
-        found = set()
+        found, generics = set(), self._parameters(state)
         for local in owners:
             for name, kinds, path in self._call_target_cache.get(local, ()):
-                found |= state.returned(name, kinds, path)
+                found |= state.returned(name, kinds, path, generics)
         return frozenset(found)
+
+    def _parameters(self, state):
+        """The body's type parameters, for ``state`` (a ``GlobalState``) of a workspace's
+        build: matched (``generics``), else guessed. None matter for a crate built alone."""
+        if not getattr(state, "foreign", None):
+            return ()
+        if self.generics is not None:
+            return self.generics
+        return self.guessed_generics(state.layouts)
 
     def _global_edges(self):
         """{(block, index): ("call", its function's name (``_callee``), the MIR types of the
@@ -4876,7 +4994,9 @@ class Body:
         if state is None or edge is None:
             return frozenset()
         kind, name, kinds, path = edge
-        return state.drop(kinds) if kind == "drop" else state.call(name, kinds, path)
+        if kind == "drop":
+            return state.drop(kinds)
+        return state.call(name, kinds, path, self._parameters(state))
 
     def _global_pointers(self):
         """{each local that may point into global state: the types of the globals}:
@@ -10381,8 +10501,10 @@ class OwnedLocals:
         return self._keepers_known
 
     def _local_impls(self):
-        """``_local_impls`` of the crate's bodies."""
-        return _local_impls(self.bodies, self.texts)
+        """``_local_impls`` of the crate's bodies, its types' paths from the debug
+        information (``TypeLayouts.crate``)."""
+        layouts = self._layouts()
+        return _local_impls(self.bodies, self.texts, _crate_type_paths(layouts))
 
     def _forwarding(self):
         """``_Forwarding`` of the crate: which of its functions, closures and `impl`s may
