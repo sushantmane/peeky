@@ -110,6 +110,22 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   finds none leaves the text unread: the build's environment may have added a directory, or the
   file may be gone. So does `#embed`, `__has_embed`, an operand Peeky can't read, and a quoted
   or `_next` probe in a macro. A probe in a macro no input names never runs.
+- A probe in a later branch of a group whose earlier branch asks for a file alone, and finds one
+  the line table names, never runs (`_moot`): the build found that file too, so took that
+  branch where it got there. libc++'s `__mbstate_t.h` asks for Darwin's header after glibc's.
+- The build's record of its macros (`-fdebug-macro`, on Linux) can prove a probe that finds none,
+  or finds a file the line table doesn't name (`native_macros`). Such a replay is `Pending`.
+  `replay_units` reads `.debug_macro` once for every Pending unit (`build_records`), and replays
+  each again (`_proven`). The replay with `-dD` must leave the same record (`replay_record`):
+  each file entered, by the line including it, and each `#define` and `#undef`, by line. The
+  line table must name only files the replay read. Each probe's group must be `settled`.
+- A branch's directives leave records on its own lines, so two branches leave the same record
+  only where neither leaves any. A branch surely leaves one where its top level holds a
+  `#define`, an `#undef` or an `#error`, or includes a file the replay entered by no such name.
+  So where at most one branch may leave none, an absent `#else` counting as one, the build took
+  the replay's branch. clang's `stdatomic.h` defines macros where it doesn't include the
+  system's. Branches that differ in code alone stay unproven, as do probes in macros. A header
+  reached by two names, one only in the build's environment, is outside what Peeky checks.
 - So does a recorded `-D` (`_defined_probe`) whose value names a probe, holds `#` or `##`,
   which may paste one together, or holds any three characters of a probe's name. String
   literals don't count. A probe the source itself pastes together from pieces is outside what
