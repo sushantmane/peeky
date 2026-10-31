@@ -382,8 +382,8 @@ _CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx")
 
 
 def _binary_target(path, binary, config, program, tools):
-    """(root, language, data) of `--binary`: the binary, under the target directory, with
-    this host's tools. Its units say whether it is C or C++ (``language`` None in the
+    """(root, language, data) of `--binary`: the binary, relative to the target directory
+    and inside it, with this host's tools. Its units say whether it is C or C++ (``language`` None in the
     data); the language returned is the `--at` file's, for what the command prints."""
     from peeky.errors import Refused
 
@@ -400,13 +400,10 @@ def _binary_target(path, binary, config, program, tools):
             "INVALID_REQUEST",
             "With --binary, the target is the directory the binary's sources are under",
         )
-    found = Path(binary).resolve(strict=True)
-    if not found.is_relative_to(path):
-        raise Refused(
-            "INVALID_REQUEST",
-            f"The binary {binary} is outside the target directory, {path}: give the "
-            "directory its sources are under as the target",
-        )
+    from peeky.native_binary import BinaryTarget
+
+    # Relative to the target directory, as a config's is, wherever the command runs.
+    found = BinaryTarget(binary=binary).located(path)
     language = "cpp" if str(program or "").endswith(_CPP_SUFFIXES) else "c"
     found_tools = {key: value for key, value in native_tools(language).items() if key != "sysroot"}
     data = {"binary": found.relative_to(path).as_posix(), "language": None, **found_tools}
@@ -5692,8 +5689,8 @@ def _main(argv, _job, _edits):
         sub.add_argument(
             "--binary",
             metavar="PATH",
-            help="C/C++: a binary the project built under the target directory, with clang "
-            "-O0 -g -gdwarf-5 -grecord-command-line (docs/lang/c-cpp.md)",
+            help="C/C++: a binary the project built, relative to the target directory and "
+            "inside it, with clang -O0 -g -gdwarf-5 -grecord-command-line (docs/lang/c-cpp.md)",
         )
 
     sub = commands.add_parser("describe", help="Manifest: language, breakpoint lines, views")

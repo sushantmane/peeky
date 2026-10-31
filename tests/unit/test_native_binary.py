@@ -5,6 +5,7 @@ frame in a unit Peeky doesn't read shows nothing, with why."""
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -125,7 +126,25 @@ def test_a_unit_clang_built_at_o0_with_an_md5_of_every_file_is_judged(root):
         ),
         (
             {"producer": f"{CLANG} /usr/bin/clang -O0 -fsanitize=address -c src/main.c"},
-            "built with -fsanitize=address, under which",
+            "built with -fsanitize=address, which instruments the code, under which",
+        ),
+        *(
+            (
+                {"producer": f"{CLANG} /usr/bin/clang -O0 {option} -c src/main.c"},
+                f"built with {option}{said}, under which Peeky's proofs aren't checked",
+            )
+            for option, said in (
+                ("-ffp-model=fast", ", which implies -ffast-math's options"),
+                ("-ffp-model=aggressive", ", which implies -ffast-math"),
+                ("-fapprox-func", ""),
+                ("-fno-signed-zeros", ""),
+                ("-fcx-limited-range", ""),
+                ("-ffp-contract=fast-honor-pragmas", ""),
+                ("-mrecip", ""),
+                ("-mrecip=all", ", which estimates reciprocals"),
+                ("-fdenormal-fp-math=preserve-sign", ", which flushes denormals"),
+                ("-fdenormal-fp-math-f32=positive-zero", ", which flushes denormals"),
+            )
         ),
         (
             {"producer": f"{CLANG} /usr/bin/clang -Ofast -c src/main.c"},
@@ -142,6 +161,19 @@ def test_a_unit_peeky_cant_judge_says_why(root, change, why):
     judged = judge(_unit(root, **change), _tables(root), CLANG, root)
     assert judged.status == NOT_JUDGED and not judged.read and not judged.files
     assert why in judged.why, judged.why
+
+
+def test_floating_point_options_that_keep_ieee_results_are_judged(root):
+    for option in (
+        "-ffp-model=precise",
+        "-ffp-model=strict",
+        "-fno-trapping-math",
+        "-ffp-contract=on",
+        "-fdenormal-fp-math=ieee",
+        "-fno-fast-math",
+    ):
+        unit = _unit(root, producer=f"{CLANG} /usr/bin/clang -O0 {option} -c src/main.c")
+        assert judge(unit, _tables(root), CLANG, root).status == JUDGED, option
 
 
 def test_an_optimized_unit_is_read_as_one_only_when_opted_in(root):
@@ -387,6 +419,8 @@ def test_a_binary_config_is_checked_before_anything_runs(tmp_path, monkeypatch):
     (tmp_path / "other").write_bytes(b"")
     with pytest.raises(Refused, match="outside the target directory"):
         cli.resolve(str(root), "main.c:3", binary=str(tmp_path / "other"))
+    with pytest.raises(Refused, match="outside the target directory"):
+        cli.resolve(str(root), "main.c:3", binary="../other")
     with pytest.raises(Refused, match="A worker takes a binary only from its own configuration"):
         cli.resolve(str(root), "main.c:3", binary=str(root / "prog"), tools=False)
     with pytest.raises(Refused, match="the target is the directory"):
@@ -395,6 +429,16 @@ def test_a_binary_config_is_checked_before_anything_runs(tmp_path, monkeypatch):
     found = cli.resolve(str(root), "src/main.c:3", binary=str(root / "prog"))
     assert found[3] == "c" and found[4] == {"binary": "prog", "language": None, "compiler": "cc"}
     assert os.path.samefile(found[0], root) and Path(found[0]).is_dir()
+    # `--binary ./prog` is the target's, wherever the command runs: never the cwd's.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "prog").write_bytes(b"other")
+    monkeypatch.chdir(elsewhere)
+    found = cli.resolve(str(root), "src/main.c:3", binary="./prog")
+    assert found[4]["binary"] == "prog" and os.path.samefile(found[0], root)
+    (root / "prog").unlink()
+    with pytest.raises(Refused, match="No binary ./prog in"):
+        cli.resolve(str(root), "src/main.c:3", binary="./prog")
 
 
 def test_a_frame_whose_code_several_functions_share_shows_nothing(root):
@@ -523,3 +567,70 @@ def test_only_the_line_tables_of_the_units_read_give_rows(root):
     assert len(_line_rows(every.table(), root, ("src/main.c",))) == 2
     with pytest.raises(ValueError, match="without its offset"):
         _LineParser(root, ("src/main.c",), only=frozenset()).feed(["debug_line[x]"])
+
+
+def _macho(entries):
+    """A 64-bit Mach-O executable whose symbol table holds ``entries``: (name, type, value)."""
+    import struct
+
+    strings = b"\0"
+    table = b""
+    for name, kind, value in entries:
+        table += struct.pack("<IBBHQ", len(strings), kind, 0, 0, value)
+        strings += name.encode() + b"\0"
+    symbols = 32 + 24
+    command = struct.pack(
+        "<IIIIII", 0x2, 24, symbols, len(entries), symbols + len(table), len(strings)
+    )
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, 24, 0, 0)
+    return header + command + table + strings
+
+
+def _archive(members):
+    """A BSD `ar` archive of ``members``: (name, time, bytes), long names after the header."""
+    out = b"!<arch>\n"
+    for name, moment, data in members:
+        encoded = name.encode()
+        body = encoded + data
+        head = f"#1/{len(encoded)}".ljust(16) + str(moment).ljust(12) + "0".ljust(6) * 2
+        head += "644".ljust(8) + str(len(body)).ljust(10) + "`\n"
+        out += head.encode() + body + (b"\n" if len(body) % 2 else b"")
+    return out
+
+
+def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
+    from peeky.native_binary import N_OSO, check_debug_map, debug_map
+
+    obj = tmp_path / "main.o"
+    obj.write_bytes(b"object")
+    os.utime(obj, (1_700_000_000, 1_700_000_000))
+    library = tmp_path / "libu.a"
+    library.write_bytes(_archive([("util.o", 1_600_000_000, b"util"), ("x.o", 5, b"x")]))
+    entries = [
+        (str(obj), N_OSO, 1_700_000_000),
+        ("_main", 0x0F, 0x100000328),
+        (f"{library}(util.o)", N_OSO, 1_600_000_000),
+    ]
+    binary = tmp_path / "prog"
+    binary.write_bytes(_macho(entries))
+    found = debug_map(binary)
+    assert found == [(str(obj), 1_700_000_000), (f"{library}(util.o)", 1_600_000_000)]
+    hashes = check_debug_map(found, tmp_path)
+    assert set(hashes) == {str(obj), str(library)}
+    # Rebuilt since the link, gone, or a member not there: the binary is stale, by name.
+    for entries, said in (
+        ([(str(obj), 1_699_999_999)], "main.o changed since the binary was linked"),
+        ([(f"{library}(util.o)", 7)], "libu.a(util.o) changed since the binary was linked"),
+        ([(f"{library}(gone.o)", 7)], "libu.a(gone.o) is gone"),
+        ([(str(tmp_path / "missing.o"), 7)], "missing.o is gone or unreadable"),
+    ):
+        with pytest.raises(BinaryChanged, match=re.escape(said)) as stale:
+            check_debug_map(entries, tmp_path)
+        assert classify(stale.value)["code"] == "PROVENANCE_CHANGED"
+    # A time of 0 (ZERO_AR_DATE) can't tell a rebuilt object from the one linked.
+    with pytest.raises(BinaryRefused, match="records no time of main.o") as zero:
+        check_debug_map([(str(obj), 0)], tmp_path)
+    assert classify(zero.value)["code"] == "UNSUPPORTED"
+    binary.write_bytes(_macho([])[:40])
+    with pytest.raises(ValueError):
+        debug_map(binary)

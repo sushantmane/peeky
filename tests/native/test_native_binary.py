@@ -162,7 +162,7 @@ def test_a_breakpoint_where_no_judged_unit_has_code_is_refused(project):
 
 
 @pytest.mark.timeout(300)
-def test_describe_lists_each_unit_judged_or_not_and_why(project, capsys):
+def test_describe_lists_each_unit_judged_or_not_and_why(project, capsys, monkeypatch):
     compiler = _clang()
     _build(project, compiler, {"fast": "-O2"})
     config = project.parent / "binary.json"
@@ -179,6 +179,12 @@ def test_describe_lists_each_unit_judged_or_not_and_why(project, capsys):
     )
     assert main(["describe", str(project), "--config", str(config), "--json"]) == 0
     manifest = json.loads(capsys.readouterr().out)
+    # `--binary` names it relative to the target directory, wherever the command runs.
+    elsewhere = project.parent / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert main(["describe", str(project), "--binary", "./prog", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["units"] == manifest["units"]
     units = {unit["unit"]: unit for unit in manifest["units"]}
     assert units["src/main.c"]["judged"] and units["src/util.c"]["judged"], units
     assert not units["src/fast.c"]["judged"], units
@@ -203,12 +209,55 @@ def test_a_file_changed_since_the_build_refuses_the_binary_by_name(project):
 
 
 @pytest.mark.timeout(300)
+@pytest.mark.parametrize("archived", [False, True], ids=["object", "archive member"])
+def test_an_object_rebuilt_since_the_link_refuses_the_binary_on_macos(project, archived):
+    # dsymutil reads the debug information of the objects the binary's debug map names, as
+    # they are now: one rebuilt without a relink would give the old binary the new
+    # source's line tables, MD5s and all.
+    compiler = _clang()
+    if sys.platform != "darwin":
+        pytest.skip("a Mach-O debug map; Linux keeps the debug information in the binary")
+    _build(project, compiler, {})
+    if archived:
+        subprocess.run(["ar", "rcs", "libutil.a", "util.o"], cwd=project, check=True)
+        subprocess.run(
+            [compiler, *_sysroot(), "main.o", "libutil.a", "fast.o", "-o", "prog"],
+            cwd=project,
+            check=True,
+        )
+    target = _target(compiler)
+    assert run_probe(project, Probe("src/util.c", STOP, ("x",)), adapter=target)["status"] == (
+        "completed"
+    )
+    (project / "src" / "util.c").write_text(UTIL.replace("x * 2", "x * 4"))
+    subprocess.run(
+        [compiler, *FLAGS, "-O0", *_sysroot(), "-c", "src/util.c", "-o", "util.o"],
+        cwd=project,
+        check=True,
+    )
+    later = os.stat(project / "util.o").st_mtime + 10
+    os.utime(project / "util.o", (later, later))
+    named = "util.o"
+    if archived:
+        subprocess.run(["ar", "rcs", "libutil.a", "util.o"], cwd=project, check=True)
+        named = "libutil.a(util.o)"
+    result = run_probe(project, Probe("src/util.c", STOP, ("x",)), adapter=target)
+    error = result.get("error") or {}
+    assert error.get("code") == "PROVENANCE_CHANGED", result
+    assert (
+        f"the binary is stale: {named} changed since the binary was linked" in (error["message"])
+    ), error
+    assert result.get("refused_before_launch") is True and not result.get("output")
+
+
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize(
     "flags, said",
     [
         (("-g", "-gdwarf-4", "-grecord-command-line"), "DWARF 4, which records no checksum"),
         (("-g", "-gdwarf-5"), "records no command line: rebuild with -grecord-command-line"),
         (FLAGS + ("-ffast-math",), "built with -ffast-math, under which Peeky's proofs"),
+        (FLAGS + ("-ffp-model=fast",), "built with -ffp-model=fast, which implies -ffast-math's"),
     ],
 )
 def test_units_peeky_cant_judge_are_refused_with_what_to_rebuild_with(project, flags, said):

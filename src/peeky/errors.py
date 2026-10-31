@@ -59,7 +59,8 @@ _RULES = (
         r"is a script, not an executable|is not an ELF or Mach-O executable|is a universal "
         r"binary|^\S+ is an? (ELF|Mach-O) (executable|object|library)|isn't a 64-bit "
         r"little-endian ELF|has no debug information|has no build ID Peeky can read|^A binary "
-        r"target can't take a candidate edit)",
+        r"target can't take a candidate edit|^The binary's debug map records no time of |"
+        r"^Peeky can't read \S+'s debug map: )",
         "UNSUPPORTED",
         "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 "
         "-grecord-command-line), or probe a unit `peeky describe --binary` judges.",
@@ -68,8 +69,8 @@ _RULES = (
     (
         r"^Provenance: the binary is stale",
         "PROVENANCE_CHANGED",
-        "Nothing ran. Rebuild the binary, then probe again: its line tables record each "
-        "file's MD5 as it was compiled.",
+        "Nothing ran. Rebuild the binary, then probe again: Peeky reads a binary only while "
+        "its sources and objects are as they were built.",
         False,
     ),
     (

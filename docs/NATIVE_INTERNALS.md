@@ -41,14 +41,22 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - It refuses what isn't an ELF or Mach-O executable (`#!`: a libtool script), and a binary with
   no build ID or UUID. On macOS, dsymutil writes the binary's dSYM into a directory of Peeky's
   own. lldb-dap loads it with `target symbols add` before the launch, never one the project left.
+- dsymutil reads the debug information of the objects the binary's debug map names, as they are
+  now, and gives the dSYM the binary's UUID. So `debug_map` reads each `N_OSO` stab: an object,
+  or an archive's member, and the time the linker read. `check_debug_map` requires each to be
+  there with that time, before and after dsymutil, with the same hash. One rebuilt without a
+  relink makes the binary stale, by name. A time of 0 (`ZERO_AR_DATE`) can't be checked, and
+  any dsymutil warning refuses the binary.
 - `native_units.read_units` lists the units, from `--debug-info --recurse-depth=0`, with each
   unit's code ranges. A skeleton, type or partial unit is refused (`ForeignUnits`).
 - `judge` takes each unit's main file, under the root, in C or C++. The unit must be clang's, at
   DWARF 5, with its command line recorded. The `--version` of the config's `compiler` must be
   the unit's producer.
-- It refuses the options that change what code computes (`SEMANTICS`, `-Ofast`), and sanitizers.
-  `-fwrapv` and `-fno-strict-overflow` stay: they define signed overflow, and no rule assumes
-  it undefined.
+- It refuses the options that change what code computes (`changes`): `-ffast-math` and each of
+  its own, and those implying some (`-Ofast`, `-ffp-model=fast` and `aggressive`, `-mrecip=`,
+  `-fdenormal-fp-math=` but `ieee`), and sanitizers. `-fno-trapping-math`, clang's default,
+  changes no result. `-fwrapv` and `-fno-strict-overflow` stay: they define signed overflow,
+  and no rule assumes it undefined.
 - `optimization` must read `-O0` and no LTO. With `"optimized": true`, a unit at another level
   is read as an optimized build. The session's `optimization` is then the highest of any unit
   read.

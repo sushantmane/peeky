@@ -361,6 +361,17 @@ def test_a_cpp_inheriting_constructor_names_a_file_without_an_md5(tmp_path):
     assert not table.checksummed() and table.files[1].checksum is None
 
 
+def test_another_driver_mode_reads_the_words_its_own_way(tmp_path):
+    # clang-cl's mode builds `/clang:-O2` at -O2, an option no other mode has: refused.
+    _tools()
+    compiler = _clang()
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
+    words = [compiler, "--driver-mode=cl", "/clang:-O2", "/c", "main.c"]
+    assert "-O2" in _compiled_at(compiler, words, tmp_path)
+    with pytest.raises(NotRecorded, match="--driver-mode=cl"):
+        optimization(words)
+
+
 def test_clang_plus_plus_records_its_driver_mode_first(tmp_path):
     # clang++ records `--driver-mode=g++` before the options it was given: an option of
     # one word, as the driver reads it, so the `-O0` after it is read.

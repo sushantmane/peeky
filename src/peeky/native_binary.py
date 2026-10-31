@@ -63,11 +63,41 @@ from peeky.native_units import (
 from peeky.processes import without_credentials
 
 # Options that change what a unit's code computes. Peeky's proofs aren't checked under
-# them, so a unit built with any is never read, opted in to optimized code or not.
+# them, so a unit built with any is never read, opted in to optimized code or not: each
+# of -ffast-math's own (clang's UsersManual), and those other options imply (``changes``).
+# -fno-trapping-math is clang's default, and changes no result.
 SEMANTICS = frozenset(
     """-ffast-math -ffinite-math-only -fno-honor-nans -fno-honor-infinities
-    -funsafe-math-optimizations -fassociative-math -freciprocal-math -ffp-contract=fast""".split()
+    -funsafe-math-optimizations -fassociative-math -freciprocal-math -fapprox-func
+    -fno-signed-zeros -fcx-limited-range -fcx-fortran-rules -ffp-contract=fast
+    -ffp-contract=fast-honor-pragmas -mrecip""".split()
 )
+# An option of another name that implies some of them: what it means, as a phrase.
+_IMPLIES = {
+    "-ffp-model=fast": "implies -ffast-math's options",
+    "-ffp-model=aggressive": "implies -ffast-math",
+    "-Ofast": "implies -ffast-math",
+}
+
+
+def changes(word):
+    """Why ``word`` (a recorded option) changes what code computes, or None: an option
+    of SEMANTICS, one implying some (``_IMPLIES``), reciprocal estimates (`-mrecip=`),
+    denormals flushed (`-fdenormal-fp-math=` but `ieee`), or a sanitizer's
+    instrumentation, which Peeky's proofs aren't checked under either."""
+    if word in SEMANTICS:
+        return ""
+    if word in _IMPLIES:
+        return _IMPLIES[word]
+    if word.startswith("-mrecip="):
+        return "estimates reciprocals"
+    if re.fullmatch(r"-fdenormal-fp-math(?:-f32)?=(?!ieee(?:,ieee)?$).*", word):
+        return "flushes denormals"
+    if word.startswith("-fsanitize="):
+        return "instruments the code"
+    return None
+
+
 # The most files the units Peeky reads may name (each hashed, and checked before every
 # operation), and the largest one.
 MAX_UNIT_FILES = 16384
@@ -196,19 +226,19 @@ def judge(unit, tables, version, root, optimized=False):
         if why.startswith("built by "):
             why += ": set the config's compiler to the clang that built it"
         return refused(why)
-    changing = next(
-        (word for word in words[1:] if word in SEMANTICS or word.startswith("-fsanitize=")), None
-    )
-    if changing is not None:
-        return refused(
-            f"built with {changing}, under which Peeky's proofs aren't checked (its "
-            "recorded flags): rebuild without it"
-        )
+    for word in words[1:]:
+        if (how := changes(word)) is not None:
+            said = f", which {how}" if how else ""
+            return refused(
+                f"built with {word}{said}, under which Peeky's proofs aren't checked (its "
+                "recorded flags): rebuild without it"
+            )
     try:
         level, lto = optimization(words)
     except NotRecorded as exc:
         return refused(str(exc))
     if level == "fast":
+        # An alias -Xclang passed on, which the words above don't hold.
         return refused(
             "built with -Ofast, which implies -ffast-math, under which Peeky's proofs "
             "aren't checked (its recorded flags): rebuild without it"
@@ -580,13 +610,35 @@ class BinaryTarget:
         symbols, dsym = binary, ()
         if sys.platform == "darwin":
             bundle = scratch / f"{binary.name}.dSYM"
-            _run(
+            # dsymutil reads the debug information from the objects the binary's debug map
+            # names, as they are now: each must be the one linked, before and after.
+            try:
+                entries = debug_map(binary)
+            except ValueError as exc:
+                raise _refused(
+                    "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
+                ) from None
+            objects = check_debug_map(entries, root)
+            said = _run(
                 [tools[-1], str(binary), "-o", str(bundle)],
                 scratch,
                 env,
                 _remaining(deadline, 40),
                 "dsymutil",
             )
+            if warned := next(
+                (line.strip() for line in said.split("\n") if "warning" in line.lower()), None
+            ):
+                raise BinaryChanged(
+                    "Provenance: the binary's objects may not be what it was linked from: "
+                    f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
+                    "again"
+                )
+            if check_debug_map(debug_map(binary), root) != objects:
+                raise BinaryChanged(
+                    "Provenance: an object the binary's debug map names changed while "
+                    "dsymutil read it"
+                )
             symbols = bundle / "Contents/Resources/DWARF" / binary.name
             if not symbols.is_file():
                 raise _refused(
@@ -745,6 +797,7 @@ class BinaryTarget:
 
 
 def _run(argv, cwd, env, timeout, what):
+    """Runs ``argv``; what it wrote (its output and diagnostics), or RuntimeError."""
     try:
         done = subprocess.run(
             argv,
@@ -760,6 +813,128 @@ def _run(argv, cwd, env, timeout, what):
     if done.returncode:
         detail = done.stderr.decode("utf-8", "replace").strip()[:500]
         raise RuntimeError(f"{what} failed: exit={done.returncode}, {detail}")
+    return (done.stdout + b"\n" + done.stderr).decode("utf-8", "replace")
+
+
+# A Mach-O debug map's entry naming an object the linker read (a stab, `N_OSO`): its
+# value is the object's modification time, or an archive member's.
+N_OSO = 0x66
+# The most symbols Peeky reads of a binary's symbol table, and archive members of one.
+MAX_SYMBOLS = 16 * 1024 * 1024
+MAX_MEMBERS = 1 << 20
+
+
+def debug_map(binary):
+    """[(path, time)] of each object a 64-bit Mach-O executable's debug map names (its
+    `N_OSO` stabs, as `nm -ap` lists them), in order: an object's path, or an archive's
+    member as `lib.a(member.o)`, and the modification time the linker read of it.
+    ValueError where the symbol table can't be read."""
+    with open(binary, "rb") as stream:
+        header = stream.read(32)
+        size = os.fstat(stream.fileno()).st_size
+        if len(header) < 32 or struct.unpack_from("<I", header)[0] != 0xFEEDFACF:
+            raise ValueError("Expected a 64-bit Mach-O executable")
+        count, length = struct.unpack_from("<II", header, 16)
+        if not 0 < count <= 4096 or not 0 < length <= 1 << 20:
+            raise ValueError("Invalid Mach-O load commands")
+        commands = stream.read(length)
+        cursor, table = 0, None
+        for _ in range(count):
+            if cursor + 8 > len(commands):
+                raise ValueError("Truncated Mach-O load command")
+            kind, extent = struct.unpack_from("<II", commands, cursor)
+            if extent < 8 or cursor + extent > len(commands):
+                raise ValueError("Invalid Mach-O load command size")
+            if kind == 0x2:  # LC_SYMTAB
+                table = struct.unpack_from("<IIII", commands, cursor + 8)
+            cursor += extent
+        if table is None:
+            return []
+        offset, symbols, strings, strings_size = table
+        if symbols > MAX_SYMBOLS or offset + symbols * 16 > size or strings + strings_size > size:
+            raise ValueError("Invalid Mach-O symbol table")
+        stream.seek(offset)
+        entries = stream.read(symbols * 16)
+        stream.seek(strings)
+        names = stream.read(strings_size)
+    found = []
+    for index in range(symbols):
+        start, kind, _, _, value = struct.unpack_from("<IBBHQ", entries, index * 16)
+        if kind != N_OSO:
+            continue
+        end = names.find(b"\0", start)
+        if start >= len(names) or end < 0:
+            raise ValueError("A debug map entry without its name")
+        found.append((os.fsdecode(names[start:end]), value))
+    return found
+
+
+def _members(archive):
+    """{member name: [its modification times]} of a BSD or System V `ar` archive."""
+    found = {}
+    with open(archive, "rb") as stream:
+        if stream.read(8) != b"!<arch>\n":
+            raise ValueError("not an ar archive")
+        size = os.fstat(stream.fileno()).st_size
+        at = 8
+        for _ in range(MAX_MEMBERS):
+            if at >= size:
+                return found
+            stream.seek(at)
+            header = stream.read(60)
+            if len(header) != 60 or header[58:60] != b"`\n":
+                raise ValueError("a member header Peeky can't read")
+            name, length = header[:16].decode("latin-1").rstrip(), int(header[48:58])
+            moment = int(header[16:28].strip() or b"0")
+            if name.startswith("#1/"):
+                extended = int(name[3:])
+                name = os.fsdecode(stream.read(extended).rstrip(b"\0"))
+            found.setdefault(name.rstrip("/"), []).append(moment)
+            at += 60 + length + (length & 1)
+    raise ValueError("too many members")
+
+
+def check_debug_map(entries, root):
+    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name, each
+    checked to be what the linker read: there, with the modification time it recorded
+    (an archive's member by its header's). One changed or gone since the link makes the
+    binary stale (BinaryChanged, naming it); a time of 0 (`ZERO_AR_DATE`) can't be
+    checked: refused (UNSUPPORTED)."""
+    hashes, stale = {}, []
+    for name, moment in entries:
+        member = re.fullmatch(r"(.+)\(([^()]+)\)", name)
+        path = member[1] if member else name
+        shown = _shown(os.path.realpath(path), Path(root))
+        shown = f"{shown}({member[2]})" if member else shown
+        if moment == 0:
+            raise _refused(
+                "UNSUPPORTED",
+                f"The binary's debug map records no time of {shown} (as ZERO_AR_DATE "
+                "leaves it), so Peeky can't tell it is what was linked: rebuild without it",
+            )
+        try:
+            if member:
+                times = _members(path).get(member[2])
+                if not times:
+                    stale.append(f"{shown} is gone")
+                    continue
+                current = moment if moment in times else times[0]
+            else:
+                current = int(os.stat(path).st_mtime)
+            hashes[path] = sha256_file(path)
+        except (OSError, ValueError):
+            stale.append(f"{shown} is gone or unreadable")
+            continue
+        if current != moment:
+            stale.append(f"{shown} changed since the binary was linked")
+    if stale:
+        listed = "; ".join(stale[:LISTED_REASONS])
+        more = f" (and {len(stale) - LISTED_REASONS} more)" if len(stale) > LISTED_REASONS else ""
+        raise BinaryChanged(
+            f"Provenance: the binary is stale: {listed}{more} (its debug map records each "
+            "object it was linked from, and when). Rebuild it (make), then probe again"
+        )
+    return hashes
 
 
 def _none_read(shown, judged):

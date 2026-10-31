@@ -221,8 +221,10 @@ _COMPLETE_WORDS = frozenset(
 # And by form, each a kind of option that joins its value (Options.td's Joined and
 # CommaJoined): an -O option, a warning (`-Wall`, `-Wl,-O1`), an -f, -m or -std option
 # joining its value with `=`, or the driver's mode, which clang++ records first
-# (`--driver-mode=g++`). The driver checks a word of each form too.
-_COMPLETE = re.compile(r"-O\w*|-W[\w,=+.-]*|-std=\S+|-[fm][\w-]+=\S*|--driver-mode=\S+")
+# (`--driver-mode=g++`). The driver checks a word of each form too. Another mode reads
+# every word its own way (`cl`'s `/clang:-O2`): refused (_MODES).
+_COMPLETE = re.compile(r"-O\w*|-W[\w,=+.-]*|-std=\S+|-[fm][\w-]+=\S*")
+_MODES = frozenset({"--driver-mode=gcc", "--driver-mode=g++", "--driver-mode=cpp"})
 # What the driver's -O options mean (`-O` is -O1, `-O4` is -O3: clang's own aliases).
 _LEVELS = {"": "1", "0": "0", "1": "1", "2": "2", "3": "3", "4": "3", "s": "s", "z": "z"}
 _LEVELS |= {"g": "g", "fast": "fast"}
@@ -272,6 +274,10 @@ def optimization(words):
             break  # Inputs only, after it. Not after an option that may take it.
         if word.startswith(("@", "--config", "-Xarch_", "-Xclang=", "-mllvm=")):
             refuse(word)
+        if word.startswith("--driver-mode"):
+            if word not in _MODES:
+                refuse(word)
+            continue
         if word in ("-Xclang", "-mllvm", *_SEPARATE):
             if at >= len(words):
                 refuse(f"{word} without its value")

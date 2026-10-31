@@ -230,34 +230,29 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 
 ## A binary your project built
 
-- Build with clang: `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux a build ID
-  (`-Wl,--build-id`). Then `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`
-  ([ADR 0008](../adr/0008-native-project-reach.md#phase-1-a-binary-the-project-built-c-and-c)).
-- Or name it in a `--config`: `{"binary": "jq", "compiler": "/usr/bin/clang-18", …}`. Its
-  path is relative to the target directory, and must be inside it. A config with `sources` too
-  is refused.
-- Peeky runs the binary where it is, from the target directory. It writes nothing there: on
-  macOS, it makes the binary's dSYM in a directory of its own.
+- Build with clang `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux a build ID. Then
+  `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`. Recipes for Make, CMake and
+  autotools: [C and C++ 7.1](c-cpp-cookbook.md#debug-a-binary-your-project-built).
+- Or name it in a `--config`: `{"binary": "jq", "compiler": "/usr/bin/clang-18", …}`, without
+  `sources`. Either path is relative to the target directory, and inside it.
+- Peeky runs the binary where it is, and writes nothing beside it. On macOS, it makes the dSYM
+  in a directory of its own.
 - `peeky describe . --binary ./jq` lists each unit, judged or not and why:
   `src/fast.c: built with -O2 (its recorded flags)`.
 - A unit is judged when clang built it at `-O0` without LTO, with DWARF 5 and its command line
-  recorded. Its line table must hold an MD5 of every file, and each file must still match it.
-- A file changed since the build refuses the binary by name: `PROVENANCE_CHANGED`. Rebuild, then
-  probe again.
-- A frame in a unit Peeky doesn't judge shows nothing: `not shown: this frame runs src/fast.c, a
-  unit Peeky doesn't judge: built with -O2 …`. A breakpoint there is refused: `UNSUPPORTED`.
-- So is a frame whose code several functions share, as a linker's identical code folding
-  (`--icf`) leaves them.
-- `"optimized": true` reads units built with an `-O` level or LTO as an optimized build: every
-  row carries the warning, and changes are refused.
-- GCC binaries, DWARF 4, a missing recorded command line, `-ffast-math` and its kin, and
-  sanitizers are refused, with what to rebuild with. So is a libtool wrapper script: probe the
-  program it runs, in `.libs/`.
-- A unit's line table may record no MD5s. A `#line` naming another file does that, as bison and
-  flex write: build them with `bison -l` and `flex -L`. In C++, libc++'s headers do, unless built
-  with `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`. An inheriting constructor (`using Base::Base;`)
-  does too.
-- For now, Peeky doesn't read a unit's text. The rules that need it withhold, saying so. Probes
+  recorded, and its line table holds an MD5 of every file, each still matching
+  ([ADR 0008](../adr/0008-native-project-reach.md#phase-1-a-binary-the-project-built-c-and-c)).
+- A file changed since the build, or on macOS an object rebuilt without a relink, refuses the
+  binary by name: `PROVENANCE_CHANGED`.
+- A frame in a unit Peeky doesn't judge shows nothing, saying why. So does a frame whose code
+  several functions share (`--icf`). A breakpoint where no judged unit has code is refused.
+- `"optimized": true` reads units built at another `-O` level, or with LTO, as an optimized
+  build: rows carry the warning, and changes are refused.
+- GCC, DWARF 4, no recorded command line, `-ffast-math` and its kin, sanitizers and libtool
+  wrapper scripts are refused, with what to do.
+- A `#line` naming another file leaves a unit with no MD5s (use `bison -l`, `flex -L`), as do
+  libc++'s headers without `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`, and inheriting constructors.
+- For now, Peeky doesn't read a unit's text: the rules that need it withhold, saying so. Probes
   and `describe` work; sessions, `verify` and candidate edits don't.
 
 ## Builds
