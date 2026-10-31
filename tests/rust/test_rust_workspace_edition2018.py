@@ -254,6 +254,12 @@ def rows(result, phase="observed"):
     return {row["selector"]: row for row in result["rows"] if row["phase"] == phase}
 
 
+def unread_memory(row):
+    """Whether the debugger reads no memory (lldb-dap before LLVM 20 has no readMemory): a
+    struct or `String` shows LLDB's summary, saying so."""
+    return " @ 0x" in row["value"] and "readMemory" in (row.get("note") or "")
+
+
 def printed(result, label):
     return [line.split()[1] for line in result["output"].splitlines() if line.startswith(label)]
 
@@ -266,7 +272,7 @@ def test_a_closure_captures_whole_variables_as_edition_2018_does(built, capsys):
     assert code == 0, result
     found = rows(result)
     assert (found["p.a"]["value"], found["p.b"]["value"]) == ("5", "2")
-    assert found["p"]["value"] == "Pair { a: 5, b: 2 }"
+    assert unread_memory(found["p"]) or found["p"]["value"] == "Pair { a: 5, b: 2 }", found["p"]
     assert printed(result, "CAPTURED") == ["10"]
     changed(capsys, built, "CAPTURED", "p.a", 100, "105")
     changed(capsys, built, "CAPTURED", "p.b", 100, "108")
@@ -349,7 +355,9 @@ def test_panic_takes_its_payload_and_a_lone_literal_as_edition_2018_does(built, 
     assert "LITERAL ok 6" in result["output"]
     # `panic!(text)` panics with the `String` itself.
     code, result = probe(capsys, built, "MESSAGE", "--capture", "x,text")
-    assert (rows(result)["x"]["value"], rows(result)["text"]["value"]) == ("2000", '"bad 2000"')
+    text = rows(result)["text"]
+    assert rows(result)["x"]["value"] == "2000"
+    assert unread_memory(text) or text["value"] == '"bad 2000"', text
     assert printed(result, "MESSAGE") == ["bad_2000"]
     result = changed(capsys, built, "MESSAGE", "x", 7, "ok")
     assert "MESSAGE ok 8" in result["output"]
