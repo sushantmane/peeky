@@ -3719,7 +3719,12 @@ def _runner(words):
         return None
     if Path(words[0]).name in ("pytest", "py.test"):
         return "pytest"
-    return {"pytest": "pytest", "unittest": "unittest"}.get(_module_run(words))
+    return {
+        "pytest": "pytest",
+        "pytest.__main__": "pytest",
+        "unittest": "unittest",
+        "unittest.__main__": "unittest",
+    }.get(_module_run(words))
 
 
 def _command_environment(interpreter, candidate):
@@ -3880,18 +3885,19 @@ def _invocation(ran, candidate, environment, interpreter):
     return interpreter.executable or interpreter.path, [], None
 
 
-# The pytest plugin Peeky loads into a pytest check command (-p), from a directory of its
-# own at the end of PYTHONPATH, under a name of its own for each run (no module of the
-# project's can stand in for it), with that run's nonce and report folder written in.
-# Each pytest process that loads it (pytest-xdist's workers too) writes one report at its
-# session's end: the nonce, the plugin's own file, its role, the test files it collected,
-# the conftests and modules it loaded, and the processes its tests started (an audit
-# hook). It detects accidental mistakes, not hostile tests, which run as you.
-_PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`).
+# Peeky's watch on a check command's Python, as a module of a name of the run's own (no
+# module of the project's can stand in for it), with that run's nonce and report folder
+# written in, in a directory of Peeky's at the end of the command's PYTHONPATH. Peeky's
+# bootstrap installs it before the command runs: an audit hook on process starts, and
+# multiprocessing's BaseProcess.start. As the process exits, it writes a report: the
+# nonce, its own file, each module's file, and the processes started. It detects accidental
+# mistakes, not hostile code, which runs as you.
+_WATCH_TEXT = '''"""Peeky's watch on a check command's Python (`peeky verify --check-command`).
 
 PYTEST_DONT_REWRITE: Peeky's bootstrap imports it before pytest could rewrite it.
 """
 
+import atexit
 import json
 import multiprocessing.process as _process
 import os
@@ -3899,20 +3905,16 @@ import shlex
 import sys
 import threading
 
-import pytest
-
 NONCE = {nonce!r}
 FOLDER = {folder!r}
-# The processes the tests started: "unknown" counts all but those of ``_LEAVES``.
+# The processes started: "unknown" counts all but those of ``_LEAVES``.
 STARTED = {{"count": 0, "unknown": 0, "examples": []}}
-WORKERS = set()
-RAN = [0]
 # A process start's own events (subprocess.Popen's os.posix_spawn, a multiprocessing
 # start's os.fork) are that one start: counted once.
 _SPAWNING = threading.local()
 # Programs that start no others, by their file's real name: whatever they are given, they
-# run nothing (no `-exec`, `system()`, compress program or editor). Any other program the
-# tests start may start Python, which Peeky can't follow.
+# run nothing (no `-exec`, `system()`, compress program or editor). Any other program
+# started may start Python, which Peeky can't follow.
 _LEAVES = frozenset({{
     "basename", "cat", "chmod", "cksum", "cmp", "comm", "cp", "cut", "date", "df", "diff",
     "dirname", "du", "echo", "false", "grep", "head", "id", "ln", "ls", "md5", "md5sum",
@@ -3924,6 +3926,11 @@ _LEAVES = frozenset({{
 # universal (fat) Mach-O.
 _NATIVE = (b"\\x7fELF", b"\\xfe\\xed\\xfa\\xce", b"\\xfe\\xed\\xfa\\xcf", b"\\xce\\xfa\\xed\\xfe",
            b"\\xcf\\xfa\\xed\\xfe", b"\\xca\\xfe\\xba\\xbe", b"\\xbe\\xba\\xfe\\xca")
+# Who installed the watch: "bootstrap", before the command ran; "plugin", the pytest
+# plugin as it loaded (a pytest-xdist worker, which execnet starts), after what loaded
+# before it. The process the bootstrap started writes the report at its exit.
+INSTALLED = [None]
+MAIN = [None]
 
 
 def _words(args):
@@ -3984,7 +3991,7 @@ def _audit(event, args):
             return
         cwd, env = os.getcwd(), None
         if event in ("os.fork", "os.forkpty"):
-            _started([event], "unknown", "a copy of the test process, which Peeky doesn't follow")
+            _started([event], "unknown", "a copy of the process, which Peeky doesn't follow")
             return
         if event == "subprocess.Popen":
             program, words = os.fsdecode(args[0] or ""), _words(args[1])
@@ -4029,10 +4036,28 @@ def _start(self, *args, **kwargs):
     return started
 
 
-# Who installed the watch: "bootstrap", Peeky's start of pytest, before any plugin or
-# conftest; "plugin", this module's import, after whatever loaded first (a pytest-xdist
-# worker, which execnet starts).
-INSTALLED = [None]
+def modules():
+    """Each loaded module's file."""
+    found = {{}}
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if isinstance(file, str):
+            found[name] = os.path.abspath(file)
+    return found
+
+
+def write(kind, report):
+    path = os.path.join(FOLDER, str(os.getpid()) + "-" + kind + ".json")
+    report = {{"nonce": NONCE, "watch": os.path.abspath(__file__), "kind": kind, **report}}
+    with open(path + ".part", "w") as stream:
+        json.dump(report, stream)
+    os.replace(path + ".part", path)
+
+
+def _at_exit():
+    # Not in a forked copy, which inherits this handler.
+    if os.getpid() == MAIN[0]:
+        write("process", {{"instrumented": INSTALLED[0], "modules": modules(), "started": STARTED}})
 
 
 def install(by):
@@ -4040,11 +4065,31 @@ def install(by):
         INSTALLED[0] = by
         sys.addaudithook(_audit)
         _process.BaseProcess.start = _start
+        if by == "bootstrap":
+            MAIN[0] = os.getpid()
+            atexit.register(_at_exit)
+'''
+
+# Peeky's pytest plugin, for a pytest command, beside the watch and named for the run too:
+# at each pytest process's session end it reports the test files collected, the conftests
+# loaded, the tests run, and pytest-xdist's workers (each worker writes its own report).
+_PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`).
+
+PYTEST_DONT_REWRITE: Peeky's bootstrap imports it before pytest could rewrite it.
+"""
+
+import os
+
+import pytest
+
+watch = __import__({watch!r})
+WORKERS = set()
+RAN = [0]
 
 
 def pytest_addoption(parser):
     # As this plugin is registered: where Peeky's bootstrap didn't install the watch.
-    install("plugin")
+    watch.install("plugin")
 
 
 def pytest_runtest_logreport(report):
@@ -4072,35 +4117,24 @@ def pytest_sessionfinish(session):
         file = getattr(plugin, "__file__", None)
         if isinstance(file, str) and os.path.basename(file) == "conftest.py":
             conftests.add(os.path.abspath(file))
-    modules = {{}}
-    for name, module in list(sys.modules.items()):
-        file = getattr(module, "__file__", None)
-        if isinstance(file, str):
-            modules[name] = os.path.abspath(file)
-    report = {{
-        "nonce": NONCE,
+    watch.write("pytest", {{
         "plugin": os.path.abspath(__file__),
         "role": "worker" if worker is not None else "main",
         "worker": None if worker is None else str(worker.get("workerid")),
         "workers": sorted(WORKERS),
         "tests": sorted(tests),
         "conftests": sorted(conftests),
-        "modules": modules,
-        "started": STARTED,
+        "modules": watch.modules(),
+        "started": watch.STARTED,
         "ran": RAN[0],
-        "instrumented": INSTALLED[0],
-    }}
-    path = os.path.join(FOLDER, str(os.getpid()) + ".json")
-    with open(path + ".part", "w") as stream:
-        json.dump(report, stream)
-    os.replace(path + ".part", path)
+        "instrumented": watch.INSTALLED[0],
+    }})
 '''
 
-
-# Peeky's start of a pytest check command: its watch on the processes the tests start
-# goes in first (the plugin's install), then pytest runs as `python -m pytest` or its
-# console script would, with the same import path and `sys.argv`.
-_PYTEST_BOOTSTRAP_TEXT = '''"""Peeky's start of pytest (`peeky verify --check-command`)."""
+# Peeky's start of a check command's Python: the watch goes in first, then the command
+# runs as Python would have run it: `-m MODULE`, `-c CODE` or a script (a console script
+# too), with the same import path and `sys.argv`.
+_BOOTSTRAP_TEXT = '''"""Peeky's start of a check command (`peeky verify --check-command`)."""
 
 import os
 import runpy
@@ -4109,68 +4143,123 @@ import sys
 how, target = sys.argv[1:3]
 del sys.argv[1:3]
 if not sys.flags.safe_path:
-    # This script's directory is first: as -m, the working directory; as a console
-    # script, that script's own directory.
-    sys.path[0] = os.getcwd() if how == "module" else os.path.dirname(os.path.realpath(target))
-if {plugins!r} not in sys.path:
-    sys.path.append({plugins!r})
-__import__({name!r}).install("bootstrap")
+    # This script's directory is first: Python's own for the command, instead.
+    if how == "module":
+        sys.path[0] = os.getcwd()
+    elif how == "command":
+        sys.path[0] = ""
+    elif os.path.isdir(target):
+        sys.path[0] = os.path.abspath(target)
+    else:
+        sys.path[0] = os.path.dirname(os.path.realpath(target))
+if {folder!r} not in sys.path:
+    sys.path.append({folder!r})
+__import__({watch!r}).install("bootstrap")
 if how == "module":
     runpy.run_module(target, run_name="__main__", alter_sys=True)
-else:
+elif how == "script":
     runpy.run_path(target, run_name="__main__")
+else:
+    main = type(sys)("__main__")
+    main.__builtins__ = __builtins__
+    sys.modules["__main__"] = main
+    sys.argv[0] = "-c"
+    exec(compile(target, "<string>", "exec"), main.__dict__)
 '''
+# Why a command Peeky doesn't start as Python has no verdict.
+NOT_WATCHED = (
+    "Peeky can only vouch for a Python command it starts itself; run the test command "
+    "directly, as `python -m pytest …`"
+)
 
 
-def _module_split(words):
-    """(interpreter options, module, its arguments) of `python [options] -m MODULE ...`,
-    the options word for word (`-IBmpytest` gives `-IB`), or None."""
-    found = _module_at(words)
-    if found is None:
-        return None
-    module, at = found
-    if words[at].startswith("-"):
-        prefix = words[at][: words[at].index("m")]
-        return [*words[1:at], *([prefix] if prefix != "-" else [])], module, words[at + 1 :]
-    prefix = words[at - 1][:-1]
-    return [*words[1 : at - 1], *([prefix] if prefix != "-" else [])], module, words[at + 1 :]
+def _python_split(words):
+    """(interpreter options, how, target, the rest) of `python [options] -m MODULE ...`
+    ("module"), `-c CODE ...` ("command") or `SCRIPT ...` ("script"), the options word
+    for word (`-IBmpytest` gives `-IB`); None for stdin, no program, or an option Peeky
+    doesn't know."""
+    args, options, at = words[1:], [], 0
+    while at < len(args):
+        word = args[at]
+        at += 1
+        if word == "-" or word.startswith("--"):
+            return None
+        if not word.startswith("-"):
+            return options, "script", word, args[at:]
+        for place, flag in enumerate(word[1:], 1):
+            if flag in _PYTHON_FLAGS:
+                continue
+            if flag in "WX":
+                # Its value is the rest of the word, or the next word.
+                options.append(word)
+                if place == len(word) - 1:
+                    if at >= len(args):
+                        return None
+                    options.append(args[at])
+                    at += 1
+                break
+            if flag in "mc":
+                if word[:place] != "-":
+                    options.append(word[:place])
+                value = word[place + 1 :]
+                if not value:
+                    if at >= len(args):
+                        return None
+                    value, at = args[at], at + 1
+                return options, "module" if flag == "m" else "command", value, args[at:]
+            return None
+        else:
+            options.append(word)
+    return None
 
 
-def _with_pytest_plugin(ran, words, candidate, environment):
-    """pytest's command run through Peeky's bootstrap, which installs the plugin's watch
-    on the processes the tests start before pytest starts: `python [its options]
-    <bootstrap> module pytest -p <plugin> ARGS` for `python [options] -m pytest ARGS`, and
-    `<its #! Python> [its options] <bootstrap> script <console script> -p <plugin> ARGS`
-    for a console script (one that isn't a Python script runs as given, with the plugin:
-    its watch starts late, so no verdict). The plugin has a name of this run's, and its
-    nonce and report folder, in a directory of Peeky's at the end of the command's
-    PYTHONPATH (pytest-xdist's workers import it from there). Returns (ran, how to read
-    its reports: the folder, the nonce and the plugin's file)."""
-    folder = Path(tempfile.mkdtemp(prefix="peeky-pytest-", dir=candidate.scratch))
-    name, nonce = f"peeky_check_{secrets.token_hex(8)}", secrets.token_hex(16)
-    for each in ("plugin", "start", "reports"):
+def _watched(ran, words, candidate, environment, pytest):
+    """The command run through Peeky's bootstrap, which installs the watch before it runs:
+    `python [its options] <bootstrap> module|command|script TARGET ARGS`, and for a
+    console script, its `#!` Python and options. For pytest (``pytest``), with `-p
+    <plugin>` after its word. The watch, the plugin and the bootstrap are written, with
+    the run's nonce and report folder, to a directory of Peeky's, at the end of the
+    command's PYTHONPATH. Returns (ran, how to read the reports: folder, nonce, watch
+    file, plugin file), or (ran, None) for a command that isn't a Python Peeky starts."""
+    if _PYTHON_NAME.fullmatch(Path(ran[0]).name):
+        if (split := _python_split(ran)) is None:
+            return ran, None
+        python, (options, how, target, rest) = ran[0], split
+    elif (script := _script_python(ran[0], environment)) is not None:
+        python, options, how, target, rest = script[0], script[1], "script", ran[0], ran[1:]
+    else:
+        return ran, None
+    folder = Path(tempfile.mkdtemp(prefix="peeky-watch-", dir=candidate.scratch))
+    tag, nonce = secrets.token_hex(8), secrets.token_hex(16)
+    watch, plugin = f"peeky_watch_{tag}", f"peeky_check_{tag}"
+    for each in ("modules", "start", "reports"):
         (folder / each).mkdir()
-    plugin = folder / "plugin" / f"{name}.py"
-    plugin.write_text(_PYTEST_PLUGIN_TEXT.format(nonce=nonce, folder=str(folder / "reports")))
+    modules = str(folder / "modules")
+    (folder / "modules" / f"{watch}.py").write_text(
+        _WATCH_TEXT.format(nonce=nonce, folder=str(folder / "reports"))
+    )
+    (folder / "modules" / f"{plugin}.py").write_text(_PYTEST_PLUGIN_TEXT.format(watch=watch))
     # Not on any import path: it is run, never imported.
     bootstrap = folder / "start" / "peeky_start.py"
-    bootstrap.write_text(_PYTEST_BOOTSTRAP_TEXT.format(plugins=str(folder / "plugin"), name=name))
-    given = environment.get("PYTHONPATH")
-    environment["PYTHONPATH"] = os.pathsep.join(filter(None, [given, str(folder / "plugin")]))
-    reading = (folder / "reports", nonce, plugin)
-    if (split := _module_split(words)) is not None:
-        options, module, rest = split
-        return [ran[0], *options, str(bootstrap), "module", module, "-p", name, *rest], reading
-    if (script := _script_python(ran[0], environment)) is not None:
-        python, options = script
-        return [python, *options, str(bootstrap), "script", ran[0], "-p", name, *ran[1:]], reading
-    return [ran[0], "-p", name, *ran[1:]], reading
+    bootstrap.write_text(_BOOTSTRAP_TEXT.format(folder=modules, watch=watch))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [environment.get("PYTHONPATH"), modules])
+    )
+    if pytest:
+        rest = ["-p", plugin, *rest]
+    reading = (
+        folder / "reports",
+        nonce,
+        folder / "modules" / f"{watch}.py",
+        folder / "modules" / f"{plugin}.py",
+    )
+    return [python, *options, str(bootstrap), how, target, *rest], reading
 
 
 def _example(started, kind):
-    """`/usr/bin/find . -exec ...`: one process the tests started of ``kind`` ("unknown":
-    not of a program that starts no other, with why if Peeky knows; "other"), as a short
-    example; "" if none."""
+    """`/usr/bin/find . -exec ...`: one process started of ``kind`` ("unknown": not of a
+    program that starts no other, with why if Peeky knows; "other"), as a short example;
+    "" if none."""
     examples = [each for each in started.get("examples") or () if each.get("kind") == kind]
     if not examples:
         return ""
@@ -4179,49 +4268,51 @@ def _example(started, kind):
     return f"{shown} ({why})" if kind == "unknown" and why else shown
 
 
-def _pytest_reports(reading, candidate, names):
-    """What Peeky's pytest plugin reported: (reports, test files, tests run, problems,
-    notes). A
-    problem leaves the run without a verdict: no report from pytest's main process, or
-    one that isn't this run's plugin's (``reading``: folder, nonce, plugin file); a
-    pytest-xdist worker the main process started with no report; no test file collected;
-    a test file, conftest or module loaded from your project instead of the copy, or a
-    module of the project's (``names``) from outside the copy; a process the tests started,
-    other than of a program that starts no other (the plugin's ``_LEAVES``), which Peeky
-    can't follow. Those are a note."""
-    folder, nonce, plugin = reading
+def _command_reports(reading, candidate, names, pytest):
+    """What Peeky's watch (and for pytest, its plugin) reported: (reports, test files,
+    tests run, problems, notes). A problem leaves the run without a verdict:
+    - a report that isn't this run's (``reading``: folder, nonce, watch and plugin files);
+    - no report from the command's process as it exited (os._exit, a crash, a kill);
+    - for pytest: no report from its main process, or from a pytest-xdist worker the main
+      process started; a worker watched only from the plugin's load;
+    - a test file, conftest or module loaded from your project instead of the copy, or a
+      module of the project's (``names``) from outside the copy;
+    - a process started, other than of a program that starts no other (the watch's
+      ``_LEAVES``), which Peeky can't follow. Those are a note."""
+    folder, nonce, watch, plugin = reading
     copy = Path(os.path.realpath(candidate.root))
-    reports, problems, notes = [], [], []
+    processes, pytests, problems, notes = [], [], [], []
     for path in sorted(folder.glob("*.json")):
         try:
             report = json.loads(path.read_text())
-            ours = report.get("nonce") == nonce and os.path.realpath(
-                str(report.get("plugin"))
-            ) == os.path.realpath(plugin)
-            files = [("collected", file) for file in report["tests"]]
-            files += [("loaded", file) for file in report["conftests"]]
+            kind = report.get("kind")
+            ours = (
+                report.get("nonce") == nonce
+                and os.path.realpath(str(report.get("watch"))) == os.path.realpath(watch)
+                and (
+                    kind == "process"
+                    or kind == "pytest"
+                    and os.path.realpath(str(report.get("plugin"))) == os.path.realpath(plugin)
+                )
+            )
+            files = [("collected", file) for file in report.get("tests") or ()]
+            files += [("loaded", file) for file in report.get("conftests") or ()]
             modules = dict(report["modules"])
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             ours = False
         if not ours:
-            problems.append(f"{path.name} in pytest's reports isn't from Peeky's plugin")
+            problems.append(f"{path.name} in the command's reports isn't from Peeky's watch")
             continue
-        reports.append(report)
-        if report.get("instrumented") != "bootstrap":
-            who = (
-                f"pytest-xdist's worker {report.get('worker')}"
-                if report.get("role") == "worker"
-                else "pytest's main process"
-            )
-            problems.append(
-                f"{who} started before Peeky could watch the processes its tests start (run "
-                "without -n for a verdict)"
-                if report.get("role") == "worker"
-                else f"{who} started before Peeky could watch the processes its tests start"
-            )
-        for kind, file in files:
+        (processes if kind == "process" else pytests).append(report)
+        if kind == "pytest" and report.get("role") == "worker":
+            if report.get("instrumented") != "bootstrap":
+                problems.append(
+                    f"pytest-xdist's worker {report.get('worker')} started before Peeky could "
+                    "watch the processes its tests start (run without -n for a verdict)"
+                )
+        for each, file in files:
             if candidate.copy_path(file) is not None:
-                problems.append(f"pytest {kind} {file} from your project, not the copy")
+                problems.append(f"pytest {each} {file} from your project, not the copy")
         for name, file in sorted(modules.items()):
             if candidate.copy_path(file) is not None:
                 problems.append(f"`{name}` was loaded from {file}, in your project, not the copy")
@@ -4229,40 +4320,57 @@ def _pytest_reports(reading, candidate, names):
                 copy
             ):
                 problems.append(f"`{name}` was loaded from {file}, outside the copy")
-    if reports and not any(report.get("role") == "main" for report in reports):
-        problems.insert(0, "pytest's main process wrote no report from Peeky's plugin")
-    expected = {worker for report in reports for worker in report.get("workers") or ()}
-    missing = sorted(expected - {str(report.get("worker")) for report in reports})
-    if missing:
-        problems.insert(0, f"pytest-xdist's worker {', '.join(missing)} wrote no report")
-    started = [report.get("started") or {} for report in reports]
+    if not processes:
+        problems.insert(
+            0,
+            "the command's Python wrote no report as it exited (it ended by os._exit, a crash "
+            "or a kill), so Peeky can't tell what it loaded or started",
+        )
+    if pytest:
+        if not any(report.get("role") == "main" for report in pytests):
+            problems.insert(
+                0,
+                "pytest wrote no report from Peeky's plugin (-p no:<its name> turned it off, "
+                "or pytest stopped first), so Peeky can't tell which test files it ran",
+            )
+        expected = {worker for report in pytests for worker in report.get("workers") or ()}
+        workers = {
+            str(report.get("worker")) for report in pytests if report.get("role") == "worker"
+        }
+        if missing := sorted(expected - workers):
+            problems.insert(0, f"pytest-xdist's worker {', '.join(missing)} wrote no report")
+    # The command's process reports what it started; each pytest-xdist worker, its own.
+    started = [report.get("started") or {} for report in processes]
+    started += [report.get("started") or {} for report in pytests if report.get("role") == "worker"]
     unknown = sum(int(each.get("unknown") or 0) for each in started)
     count = sum(int(each.get("count") or 0) for each in started)
     if unknown:
         example = next((found for each in started if (found := _example(each, "unknown"))), "")
         problems.append(
-            f"the tests started {example}; Peeky can't check what it ran or loaded"
+            f"the command started {example}; Peeky can't check what it ran or loaded"
             if unknown == 1
-            else f"the tests started {unknown} programs, such as {example}; Peeky can't check "
-            "what they ran or loaded"
+            else f"the command started {unknown} programs, such as {example}; Peeky can't "
+            "check what they ran or loaded"
         )
     if count > unknown:
         example = next((found for each in started if (found := _example(each, "other"))), "")
         others = count - unknown
         notes.append(
-            f"The tests started {others} process{'es' if others > 1 else ''} of programs that "
-            f"start no other ({example})"
+            f"The command started {others} process{'es' if others > 1 else ''} of programs "
+            f"that start no other ({example})"
         )
-    tests = {file for report in reports for file in report.get("tests") or ()}
-    ran = sum(int(report.get("ran") or 0) for report in reports)
-    return len(reports), len(tests), ran, list(dict.fromkeys(problems)), notes
+    tests = {file for report in pytests for file in report.get("tests") or ()}
+    ran = sum(int(report.get("ran") or 0) for report in pytests)
+    return len(processes) + len(pytests), len(tests), ran, list(dict.fromkeys(problems)), notes
 
 
 def _verify_command(args, root, source, words, deadline):
     """`verify --check-command`: run ``words`` in a fresh copy of ``root`` with the edit
-    (with --baseline, none), on the program's interpreter's environment. Its `verdict` is
-    "unknown" where the run may not be the copy's (provenance: an import from outside the
-    copy, or what pytest's report shows), or where its test runner ran no test."""
+    (with --baseline, none), on the program's interpreter's environment, through Peeky's
+    bootstrap where it is a Python Peeky starts. Its `verdict` is "unknown" where Peeky
+    stopped it, its test runner ran no test, or the run may not be the copy's: what the
+    watch reported, an import from outside the copy, or no report at all (a command that
+    isn't a Python Peeky starts)."""
     from peeky import agent
     from peeky.adapters import PythonAdapter, PythonCandidate
     from peeky.build import SourceEdit
@@ -4287,21 +4395,21 @@ def _verify_command(args, root, source, words, deadline):
     try:
         environment = _command_environment(interpreter, candidate)
         ran = [_command_program(words[0], candidate, environment, interpreter), *words[1:]]
-        static, reading = [], None
         pytest = _runner(words) == "pytest"
-        if pytest:
-            # What pytest loads, and the processes its tests start, are read from the run
-            # itself: it starts through Peeky's bootstrap, with Peeky's plugin.
-            ran, reading = _with_pytest_plugin(ran, words, candidate, environment)
-        else:
-            static = candidate.command_imports(
+        # What pytest loads it reports itself, as pytest's import path differs.
+        static = (
+            []
+            if pytest
+            else candidate.command_imports(
                 *_invocation(ran, candidate, environment, interpreter), environment
             )
+        )
         if edit is not None and (reasons := [*candidate.unedited_imports, *static]):
             raise ValueError(
                 f"verify --check-command can't test this edit: {reasons[0]}. Otherwise, check "
                 "the edit with a --check checker, which is given the edited file"
             )
+        ran, reading = _watched(ran, words, candidate, environment, pytest)
         candidate_sha256 = hashlib.sha256(candidate.staged.read_bytes()).hexdigest()
         timeout, limited = agent.CHECK_S, False
         if deadline is not None:
@@ -4328,33 +4436,26 @@ def _verify_command(args, root, source, words, deadline):
         )
         # Why the run may not be the copy's: then it is no verdict, whatever its status.
         provenance, notes = list(static), []
-        if pytest:
-            count, tests, ran_tests, problems, notes = (
-                (0, 0, 0, [], [])
-                if reading is None
-                else _pytest_reports(
-                    reading,
-                    candidate,
-                    candidate.project_names(
-                        (environment.get("PYTHONPATH") or "").split(os.pathsep)
-                    ),
-                )
+        if reading is None:
+            provenance.append(NOT_WATCHED)
+        else:
+            count, tests, ran_tests, problems, notes = _command_reports(
+                reading,
+                candidate,
+                candidate.project_names((environment.get("PYTHONPATH") or "").split(os.pathsep)),
+                pytest,
             )
-            stopped = result["timed_out"] or result["output_limit_exceeded"]
-            if not count and not stopped:
-                why = "-p no:<its name> turned it off, or pytest stopped first"
-                problems.insert(
-                    0,
-                    f"pytest wrote no report from Peeky's plugin ({why}), so Peeky can't tell "
-                    "whether the tests loaded your project's files instead of the copy's",
-                )
-            elif not ran_tests and result["exit_code"] == 0:
+            if pytest and not ran_tests and result["exit_code"] == 0 and count:
                 # A pass with no test run (`--collect-only`, all skipped) shows nothing.
                 problems.append("pytest ran no test, so its pass shows nothing of the edit")
-            result["pytest_report"] = {"reports": count, "test_files": tests, "problems": problems}
+            result["check_report"] = {
+                "reports": count,
+                **({"test_files": tests} if pytest else {}),
+                "problems": problems,
+            }
             provenance += problems
         if result["timed_out"] or result["output_limit_exceeded"]:
-            # Peeky stopped it at its bound: no verdict, whatever runner it is.
+            # Peeky stopped it at its bound: no verdict, whatever runs it.
             result.update(verdict="unknown", no_verdict=_command_reason(result))
         elif no_tests := _no_tests(result):
             # No test ran: what the run loaded is beside the point.
@@ -4473,15 +4574,15 @@ def _verify_text(result, keep=False):
             f"ran: {shlex.join(command['ran'])} (in a copy of {command['copy_of']}, for at most "
             f"{command['timeout_s']} s)"
         )
-    if (report := result.get("pytest_report")) and report.get("reports"):
+    if (report := result.get("check_report")) and report.get("reports"):
+        files, problems = report.get("test_files"), len(report["problems"])
         lines.append(
-            f"pytest report: {report['test_files']} test file"
-            + "s" * (report["test_files"] != 1)
+            "check report: "
+            + ("" if files is None else f"{files} test file" + "s" * (files != 1) + ", ")
             + (
-                f", {len(report['problems'])} problem{'s' * (len(report['problems']) > 1)}"
-                " (`reason:` names the first)"
-                if report["problems"]
-                else ", and nothing loaded from your project"
+                f"{problems} problem{'s' * (problems > 1)} (`reason:` names the first)"
+                if problems
+                else "nothing loaded from your project"
             )
         )
     if tests := result.get("tests"):

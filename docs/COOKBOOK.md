@@ -3991,8 +3991,8 @@ peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc
 verdict: failed  passed: False  stage: verification  seconds: 0.174
 python: /home/me/calc/.venv/bin/python, Python 3.12.4 (the root's .venv)
 command: python -m pytest -q tests/test_calc.py
-ran: /home/me/calc/.venv/bin/python -m pytest -p peeky_check_2f6c0e1d9a4b7c35 -q tests/test_calc.py (in a copy of /home/me/calc, for at most 20 s)
-pytest report: 1 test file, and nothing loaded from your project
+ran: /home/me/calc/.venv/bin/python /tmp/peeky-candidate-…/peeky-watch-…/start/peeky_start.py module pytest -p peeky_check_2f6c0e1d9a4b7c35 -q tests/test_calc.py (in a copy of /home/me/calc, for at most 20 s)
+check report: 1 test file, nothing loaded from your project
 reason: FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3 (and 1 more)
 command exit: 1
 output:
@@ -4015,7 +4015,7 @@ peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc
 ```
 verdict: passed  passed: True  stage: verification  seconds: 0.169
 ...
-pytest report: 1 test file, and nothing loaded from your project
+check report: 1 test file, nothing loaded from your project
 command exit: 0
 output:
 ..                                                                       [100%]
@@ -4031,13 +4031,15 @@ command that installs or writes there changes your environment.
 
 #### What it runs
 
-- It passes when the command exits 0, and fails on another status. A command Peeky stops, past
-  its time or over 1 MiB of output across both streams, has no verdict.
+- A Python command passes when it exits 0 and its report shows the copy's code, and fails on
+  another status. A command Peeky stops, past its time or over 1 MiB of output across both
+  streams, has no verdict. So has any command that isn't a Python Peeky starts
+  ([below](#what-the-command-loaded)).
 - It runs on the program's interpreter, the one the `python:` line names
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)). `python` and `python3`
   are that interpreter. Other names are found on `PATH`, with the interpreter's directory first, so
   `pytest` is its environment's. `VIRTUAL_ENV` names that environment.
-- The working directory is the copy's root. A path such as `./run_tests.sh` names a file in it. A
+- The working directory is the copy's root. A path such as `tests/check.py` names a file in it. A
   program that `PATH` finds inside the root runs as the copy's file. `PATH`'s entries there are
   the copy's, and so are its relative and empty entries.
 - An argument that names a path inside the root by its absolute path is refused: the command would
@@ -4047,7 +4049,7 @@ command that installs or writes there changes your environment.
 - `tox` and `nox` are refused: they build their own environments, outside the copy. Give the test
   command they run. The copy leaves out `.tox`, `.nox` and `.eggs`.
 - No shell runs the command. Quotes group words, and shell syntax is refused: `|`, `>`, `$`, `*`,
-  `[`, `;`, `&` and the like. For a pipe or a redirect, run a script. For a word with such
+  `[`, `;`, `&` and the like. For a pipe or a redirect, run a Python script. For a word with such
   characters, such as a test id with `[`, put the command's words last, after
   `--check-command --`:
 
@@ -4085,41 +4087,41 @@ command that installs or writes there changes your environment.
   first elsewhere shadows it, and is refused.
 - A relative `PYTHONPATH` entry means the root's, so `PYTHONPATH=src` is the copy's `src`.
 
-#### What pytest loaded
+#### What the command loaded
 
-- For pytest, Peeky reads what the run itself loaded. It adds its own plugin after pytest's word,
-  as `-p peeky_check_<16 hex digits>`, a name new for each run. The plugin is in a directory of
-  Peeky's own at the end of `PYTHONPATH`.
-- pytest runs through Peeky's bootstrap, which starts the watch on the processes the tests start
-  before pytest starts. `python -I -m pytest ARGS` runs as `python -I <bootstrap> module pytest -p
-  <plugin> ARGS`. A console script runs on the Python its `#!` names, as `<bootstrap> script
-  <script>`. `ran` shows it.
-- The bootstrap gives pytest the import path and `sys.argv` that `-m`, or the script, would. It
-  also puts the plugin's directory on the path, so `-I` and `-E` don't stop it.
-- Code that runs as Python starts, from a `.pth` file or `sitecustomize`, comes before the
-  bootstrap. Peeky doesn't see a process it starts.
-- At the session's end, the plugin writes a report. It holds the run's nonce and the plugin's own
-  file, each test file collected, each conftest loaded, each module's file, and the tests run. It
-  lists the processes the tests started, too.
-- Peeky reads only reports with this run's nonce and plugin file. With pytest-xdist, each worker
-  writes its own report, and the main process names its workers: a worker without a report counts
-  as missing.
-- pytest-xdist starts its workers itself, so their watch starts only as the plugin loads, after
-  plugins loaded before it. A run with `-n` is no verdict: run without it for one.
+- **Only a Python command that Peeky starts can pass.** That is `python -m MODULE`, `python -c`,
+  `python script.py`, or a console script on the program's interpreter. Peeky starts it through
+  its bootstrap, which installs a watch, then runs the command as Python would. The import path
+  and `sys.argv` are the same. `ran` shows it: `python -I <bootstrap> module pytest …`.
+- As that Python exits, the watch writes a report. It holds the run's nonce and the watch's own
+  file, each module's file, and the processes the command started. Peeky reads only reports
+  with this run's nonce and files.
+- Any other command, such as `make`, a shell script or a native program, runs and shows its exit
+  status and output. Its verdict is `unknown`: `Peeky can only vouch for a Python command it
+  starts itself; run the test command directly, as python -m pytest …`.
+- For pytest (`pytest`, `python -m pytest` or `-m pytest.__main__`), Peeky also loads its plugin,
+  `-p peeky_check_<16 hex digits>`, a name new for each run. At the session's end, it reports each
+  test file collected, each conftest loaded, and the tests run.
+- With pytest-xdist, each worker writes its own report, and the main process names its workers.
+  Workers start before the watch can, so a run with `-n` is no verdict: run without it for one.
+- The bootstrap puts the watch's directory on the path, so `-I` and `-E` don't stop it. Code that
+  runs as Python starts, from a `.pth` file or `sitecustomize`, comes before it: Peeky doesn't see
+  a process it starts.
 - The run is no verdict if it shows any of these:
-  - no report from the main process, or a worker's missing;
+  - no report as the command's Python exited (`os._exit`, a crash or a kill);
+  - for pytest, no report from its main process, or a worker's missing;
   - a test file, conftest or module loaded from your project instead of the copy;
   - a module of the project's loaded from outside the copy, such as a stale install;
-  - a process the tests started, unless its program starts no other (below);
-  - a pass with no test run, as with `--collect-only` or all tests skipped.
+  - a process the command started, unless its program starts no other (below);
+  - for pytest, a pass with no test run, as with `--collect-only` or all tests skipped.
 - That holds whatever the exit status, and at `--baseline` too: a run on stale code says nothing
-  about the edit, or the bug.
+  about the edit, or the bug. So `verdict: passed` always rests on a report.
 - Peeky sees the processes started through `subprocess`, `os.exec*`, `os.spawn*`,
   `os.posix_spawn`, `os.system` and `os.fork`. It sees each process multiprocessing starts,
   `concurrent.futures.ProcessPoolExecutor`'s too, whatever its start method. A start that fails
   before it makes a process counts for nothing.
-- **Tests that start other programs get `verdict: unknown`.** Peeky can't check what those
-  programs ran or loaded. The message names the first one: `the tests started /usr/bin/find .
+- **A command that starts other programs gets `verdict: unknown`.** Peeky can't check what those
+  programs ran or loaded. The message names the first one: `the command started /usr/bin/find .
   -exec …; Peeky can't check what it ran or loaded`.
 - The only exception is a native program, ELF or Mach-O, that starts no other. Peeky finds it as
   the process would, from its own working directory or on its own `PATH`. Such a process is a
@@ -4137,8 +4139,8 @@ sha256sum sleep stat tail tee touch tr true uname uniq wc whoami yes
 ```
 
 - `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
-- The text has a `pytest report:` line, and JSON a `pytest_report`: `reports`, `test_files` and
-  `problems`.
+- The text has a `check report:` line, and JSON a `check_report`: `reports`, `problems`, and for
+  pytest, `test_files`.
 - The report catches accidental mistakes, such as a stale install or a config's absolute
   `testpaths`. It doesn't stop hostile tests or candidate code: they run as you, and could write
   the report themselves ([THREAT_MODEL](THREAT_MODEL.md)).
@@ -4166,8 +4168,8 @@ sha256sum sleep stat tail tee touch tr true uname uniq wc whoami yes
   line asks you to check that its output shows the bug.
 - `--keep` keeps the copy, named by `kept` in JSON, with the edited file at `candidate:`.
 - JSON adds `check_command`: `argv` as given, `ran` as run, `copy_of` and `timeout_s`. `exit_code`,
-  `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy. For
-  pytest, `pytest_report`.
+  `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy, and
+  `check_report` the reports.
 - A checker's `verdict` is `passed` or `failed`.
 - Only Python targets take it for now. Others are refused with `UNSUPPORTED`: write a checker
   ([6.5](#65-writing-a-checker)). A Cargo crate's tests run with its checker anyway

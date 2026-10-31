@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from peeky import adapters, agent
-from peeky.cli import main
+from peeky.cli import NOT_WATCHED, main
 
 CALC = "def add(a, b):\n    return a - b\n"
 TESTS = """\
@@ -74,7 +74,8 @@ def test_the_projects_tests_fail_at_baseline_and_pass_with_the_fix(project, caps
     assert command["ran"][2:5] == ["module", "pytest", "-p"] and command["ran"][6:] == words[3:]
     # Its name is the run's own: no module of the project's stands in for it.
     assert re.fullmatch(r"peeky_check_[0-9a-f]{16}", command["ran"][5]), command["ran"]
-    assert result["pytest_report"] == {"reports": 1, "test_files": 1, "problems": []}
+    # Two reports: the watch's, as the process exited, and the plugin's.
+    assert result["check_report"] == {"reports": 2, "test_files": 1, "problems": []}
     assert result["verdict"] == "failed"
     # `python` is the program's interpreter, the one `python:` names.
     assert Path(command["ran"][0]).resolve() == Path(sys.executable).resolve()
@@ -85,7 +86,7 @@ def test_the_projects_tests_fail_at_baseline_and_pass_with_the_fix(project, caps
     assert code == 1
     assert f"command: {PYTEST}\nran: " in out.out and "\ncommand exit: 1\n" in out.out
     assert out.out.startswith("verdict: failed  passed: False  stage: verification")
-    assert "\npytest report: 1 test file, and nothing loaded from your project\n" in out.out
+    assert "\ncheck report: 1 test file, nothing loaded from your project\n" in out.out
     assert (
         "baseline: the unedited program, no edit (its tests fail on it, as they should fail on "
         "the bug)"
@@ -376,6 +377,7 @@ def test_a_commands_reason_is_the_line_that_names_the_failed_test():
 
 
 def test_a_script_of_the_project_runs_from_the_copy(project, capsys):
+    # A shell script: it runs, from the copy, but isn't a Python Peeky starts.
     script = project / "run_tests.sh"
     script.write_text('#!/bin/sh\necho "in $(pwd)"\nexit 3\n')
     script.chmod(0o755)
@@ -384,7 +386,7 @@ def test_a_script_of_the_project_runs_from_the_copy(project, capsys):
     ran = Path(result["check_command"]["ran"][0])
     assert code == 1 and result["exit_code"] == 3 and ran.name == "run_tests.sh", result
     assert not ran.is_relative_to(project) and result["stdout"] == f"in {ran.parent}\n"
-    assert result["reason"] == f"in {ran.parent}"
+    assert result["verdict"] == "unknown" and result["no_verdict"] == NOT_WATCHED
 
 
 PKG = "VALUE = 1\n"
@@ -491,9 +493,10 @@ def test_a_program_on_path_inside_the_project_runs_as_the_copys(project, capsys,
     monkeypatch.setenv("PATH", f"{project / 'bin'}{os.pathsep}{os.environ['PATH']}")
     code, out = verify(capsys, project, "--check-command", "runtests", *FIX, "--json")
     result = json.loads(out.out)
-    ran = Path(result["check_command"]["ran"][0])
-    assert code == 0 and result["passed"] is True, result
-    assert ran.name == "runtests" and not ran.is_relative_to(project.resolve())
+    # A Python script: its `#!` Python runs it through Peeky's bootstrap.
+    _, _, how, ran = result["check_command"]["ran"][:4]
+    assert code == 0 and result["passed"] is True and how == "script", result
+    assert Path(ran).name == "runtests" and not Path(ran).is_relative_to(project.resolve())
     assert result["stdout"] == f"{ran}\n"
 
 
@@ -773,10 +776,11 @@ def test_pytest_tests_collected_from_your_project_are_no_verdict(project, capsys
     code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
     result = json.loads(out.out)
     assert code == 1 and result["exit_code"] == 0 and result["passed"] is False, result
+    problems = result["check_report"]["problems"]
     collected = f"pytest collected {project.resolve()}/tests/test_calc.py from your project"
-    assert result["no_verdict"].startswith(collected), result["no_verdict"]
+    assert any(problem.startswith(collected) for problem in problems), problems
+    assert result["no_verdict"] == problems[0]
     assert result["reason"] == f"no verdict: {result['no_verdict']}"
-    assert result["pytest_report"]["problems"][0] == result["no_verdict"]
 
 
 def test_a_stale_package_pytest_loads_is_no_verdict(src_project, capsys):
@@ -807,8 +811,7 @@ def test_a_pytest_run_without_peekys_report_is_no_verdict(project, capsys):
     assert code == 1 and out.out.startswith("verdict: unknown  passed: False"), out.out
     assert (
         "reason: no verdict: pytest wrote no report from Peeky's plugin (-p no:<its name> "
-        "turned it off, or pytest stopped first), so Peeky can't tell whether the tests loaded "
-        "your project's files instead of the copy's\n"
+        "turned it off, or pytest stopped first), so Peeky can't tell which test files it ran\n"
     ) in out.out
     (project / "tests" / "conftest.py").unlink()
     # Under -I, which ignores PYTHONPATH, Peeky's bootstrap puts its plugin on the path.
@@ -917,7 +920,7 @@ def test_a_python_process_the_tests_start_is_no_verdict(project, capsys):
     code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
     result = json.loads(out.out)
     assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
-    assert result["no_verdict"].startswith("the tests started "), result
+    assert result["no_verdict"].startswith("the command started "), result
     assert result["no_verdict"].endswith(
         "-I -c 'print(1)'; Peeky can't check what it ran or loaded"
     ), result["no_verdict"]
@@ -930,7 +933,7 @@ def test_another_process_the_tests_start_is_a_note(project, capsys):
     result = json.loads(out.out)
     assert code == 0 and result["verdict"] == "passed" and result["passed"] is True, result
     assert (
-        "The tests started 1 process of programs that start no other (/bin/echo hi)"
+        "The command started 1 process of programs that start no other (/bin/echo hi)"
         in result["warnings"]
     )
 
@@ -951,66 +954,93 @@ def write_reports(folder, *reports):
         (folder / f"{number}.json").write_text(json.dumps(report))
 
 
-def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_path):
-    from peeky.cli import _pytest_reports
+def test_a_report_counts_only_from_this_runs_watch_and_every_xdist_worker(tmp_path):
+    from peeky.cli import _command_reports
 
-    copy, yours, plugin = tmp_path / "copy", tmp_path / "yours", tmp_path / "plugin.py"
+    copy, yours = tmp_path / "copy", tmp_path / "yours"
+    watch, plugin = tmp_path / "watch.py", tmp_path / "plugin.py"
     candidate = _Candidate(copy, yours)
+    quiet = {"count": 0, "unknown": 0, "examples": []}
 
-    def report(**extra):
-        return {"nonce": "n1", "plugin": str(plugin), "role": "main", "worker": None,
-                "workers": [], "tests": [str(copy / "tests/test_x.py")], "conftests": [],
-                "modules": {}, "started": {"count": 0, "unknown": 0, "examples": []},
-                "instrumented": "bootstrap",
+    def process(**extra):
+        return {"nonce": "n1", "watch": str(watch), "kind": "process",
+                "instrumented": "bootstrap", "modules": {}, "started": quiet,
                 **extra}  # fmt: skip
 
-    def read(*reports):
+    def pytest_report(**extra):
+        return {"nonce": "n1", "watch": str(watch), "kind": "pytest", "plugin": str(plugin),
+                "role": "main", "worker": None, "workers": [],
+                "tests": [str(copy / "tests/test_x.py")], "conftests": [], "modules": {},
+                "started": quiet, "ran": 1, "instrumented": "bootstrap",
+                **extra}  # fmt: skip
+
+    def read(*reports, pytest=True):
         folder = tmp_path / f"reports{len(list(tmp_path.glob('reports*')))}"
         write_reports(folder, *reports)
-        return _pytest_reports((folder, "n1", plugin), candidate, {"pkg"})
+        return _command_reports((folder, "n1", watch, plugin), candidate, {"pkg"}, pytest)
 
-    assert read(report()) == (1, 1, 0, [], [])
-    # Another nonce, or another plugin file: not this run's plugin's.
-    assert read(report(nonce="n2"))[3] == ["1.json in pytest's reports isn't from Peeky's plugin"]
-    other = report(plugin=str(tmp_path / "peeky_check_report.py"))
-    assert read(report(), other)[3] == ["2.json in pytest's reports isn't from Peeky's plugin"]
-    # pytest-xdist: the main process names its workers; each must report.
-    main_report = report(workers=["gw0", "gw1"], tests=[])
-    gw0 = report(role="worker", worker="gw0")
-    assert read(main_report, gw0)[3] == ["pytest-xdist's worker gw1 wrote no report"]
-    assert read(main_report, gw0, report(role="worker", worker="gw1"))[3] == []
-    # A worker's watch starts as the plugin loads, after what loaded before it: late.
-    late = report(role="worker", worker="gw0", instrumented="plugin")
-    assert read(main_report, late, report(role="worker", worker="gw1"))[3] == [
+    assert read(process(), pytest_report()) == (2, 1, 1, [], [])
+    assert read(process(), pytest=False) == (1, 0, 0, [], [])
+    # No report from the command's process, as it exited: os._exit, a crash, a kill.
+    assert read(pytest=False)[3] == [
+        "the command's Python wrote no report as it exited (it ended by os._exit, a crash or a "
+        "kill), so Peeky can't tell what it loaded or started"
+    ]
+    # Another nonce, or another watch or plugin file: not this run's.
+    foreign = "2.json in the command's reports isn't from Peeky's watch"
+    assert read(process(), process(nonce="n2"), pytest=False)[3] == [foreign]
+    other = process(watch=str(tmp_path / "peeky_watch.py"))
+    assert read(process(), other, pytest=False)[3] == [foreign]
+    assert read(process(), pytest_report(plugin=str(tmp_path / "x.py")))[3] == [
+        "pytest wrote no report from Peeky's plugin (-p no:<its name> turned it off, or pytest "
+        "stopped first), so Peeky can't tell which test files it ran",
+        foreign,
+    ]
+    # pytest-xdist: the main process names its workers; each must report, and each is
+    # watched only from the plugin's load, after what loaded before it.
+    main_report = pytest_report(workers=["gw0", "gw1"], tests=[])
+    gw0 = pytest_report(role="worker", worker="gw0", instrumented="plugin")
+    late = (
         "pytest-xdist's worker gw0 started before Peeky could watch the processes its tests "
         "start (run without -n for a verdict)"
+    )
+    assert read(process(), main_report, gw0)[3] == [
+        "pytest-xdist's worker gw1 wrote no report",
+        late,
     ]
-    assert read(gw0)[3] == ["pytest's main process wrote no report from Peeky's plugin"]
     # Files from your tree, and the project's modules from outside the copy.
-    loaded = report(
+    loaded = pytest_report(
         conftests=[str(yours / "conftest.py")],
         modules={"pkg": str(tmp_path / "site/pkg/__init__.py"), "json": "/usr/lib/json.py"},
     )
-    assert read(loaded)[3] == [
+    assert read(process(), loaded)[3] == [
         f"pytest loaded {yours / 'conftest.py'} from your project, not the copy",
         f"`pkg` was loaded from {tmp_path / 'site/pkg/__init__.py'}, outside the copy",
+    ]
+    assert read(process(modules={"calc": str(yours / "calc.py")}), pytest=False)[3] == [
+        f"`calc` was loaded from {yours / 'calc.py'}, in your project, not the copy"
     ]
     # A process of a program that starts no other is a note; any other a problem.
     started = {"count": 3, "unknown": 1, "examples": [
         {"args": ["echo", "hi"], "kind": "other", "why": None},
         {"args": ["/v/bin/python", "-I", "-c", "import pkg"], "kind": "unknown",
          "why": None}]}  # fmt: skip
-    _, _, _, problems, notes = read(report(started=started))
+    _, _, _, problems, notes = read(process(started=started), pytest=False)
     assert problems == [
-        "the tests started /v/bin/python -I -c 'import pkg'; Peeky can't check what it ran or "
-        "loaded"
+        "the command started /v/bin/python -I -c 'import pkg'; Peeky can't check what it ran "
+        "or loaded"
     ]
-    assert notes == ["The tests started 2 processes of programs that start no other (echo hi)"]
+    assert notes == ["The command started 2 processes of programs that start no other (echo hi)"]
     started = {"count": 2, "unknown": 2, "examples": [
-        {"args": ["os.fork"], "kind": "unknown", "why": "a copy of the test process"}]}  # fmt: skip
-    assert read(report(started=started))[3] == [
-        "the tests started 2 programs, such as os.fork (a copy of the test process); Peeky "
-        "can't check what they ran or loaded"
+        {"args": ["os.fork"], "kind": "unknown", "why": "a copy of the process"}]}  # fmt: skip
+    assert read(process(started=started), pytest=False)[3] == [
+        "the command started 2 programs, such as os.fork (a copy of the process); Peeky can't "
+        "check what they ran or loaded"
+    ]
+    # The main pytest report's processes are the process report's: counted once.
+    assert read(process(started=started), pytest_report(started=started))[3] == [
+        "the command started 2 programs, such as os.fork (a copy of the process); Peeky can't "
+        "check what they ran or loaded"
     ]
 
 
@@ -1021,7 +1051,7 @@ def test_a_pass_that_ran_no_test_is_no_verdict(project, capsys):
     result = json.loads(out.out)
     assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
     assert result["no_verdict"] == "pytest ran no test, so its pass shows nothing of the edit"
-    assert result["pytest_report"]["test_files"] == 1
+    assert result["check_report"]["test_files"] == 1
 
 
 # Review rounds 4 and 5: a process the tests start leaves the verdict only if it is of a
@@ -1059,22 +1089,22 @@ CANT = "; Peeky can't check what it ran or loaded"
     [
         # Launchers, shells and other programs that run what they are given.
         ('subprocess.run(["/usr/bin/env", "python3", "-c", "pass"], check=True)', "unknown",
-         "the tests started /usr/bin/env python3 -c pass" + CANT),
+         "the command started /usr/bin/env python3 -c pass" + CANT),
         ('subprocess.run("python3 -c pass", shell=True, check=True)', "unknown",
-         "the tests started /bin/sh -c 'python3 -c pass'" + CANT),
+         "the command started /bin/sh -c 'python3 -c pass'" + CANT),
         ('subprocess.run(["/usr/bin/find", ".", "-maxdepth", "0", "-exec", "/bin/echo", ";"],'
          " check=True)", "unknown",
-         "the tests started /usr/bin/find . -maxdepth 0 -exec /bin/echo" + CANT),
+         "the command started /usr/bin/find . -maxdepth 0 -exec /bin/echo" + CANT),
         (FORK, "unknown",
-         "the tests started os.fork (a copy of the test process, which Peeky doesn't follow)"
+         "the command started os.fork (a copy of the process, which Peeky doesn't follow)"
          + CANT),
         # multiprocessing, once for each process it starts, whatever the method.
         (start_process("spawn"), "unknown",
-         "the tests started multiprocessing spawn (a multiprocessing process)" + CANT),
+         "the command started multiprocessing spawn (a multiprocessing process)" + CANT),
         (start_process("fork"), "unknown",
-         "the tests started multiprocessing fork (a multiprocessing process)" + CANT),
+         "the command started multiprocessing fork (a multiprocessing process)" + CANT),
         (POOL, "unknown",
-         "the tests started multiprocessing spawn (a multiprocessing process)" + CANT),
+         "the command started multiprocessing spawn (a multiprocessing process)" + CANT),
         # Importing what starts a process starts none.
         ("    import multiprocessing.popen_spawn_posix", "passed", None),
         # echo, found on the child's own PATH, or from its own working directory.
@@ -1084,10 +1114,10 @@ CANT = "; Peeky can't check what it ran or loaded"
         ('subprocess.run(["/usr/bin/true"], check=True)', "passed", "(/usr/bin/true)"),
         # A link to Python, by its target's name; a script, whatever its `#!` names.
         ('subprocess.run(["pylink", "-c", "pass"], env={"PATH": TOOLS}, check=True)', "unknown",
-         "the tests started pylink -c pass" + CANT),
+         "the command started pylink -c pass" + CANT),
         ('subprocess.run([TOOLS + "/echoscript"], check=True)', "unknown", "/echoscript" + CANT),
         ('subprocess.run(["no-such-program-x"])', "unknown",
-         "the tests started no-such-program-x (Peeky can't find it)" + CANT),
+         "the command started no-such-program-x (Peeky can't find it)" + CANT),
     ],
 )  # fmt: skip
 def test_only_a_program_that_starts_no_other_leaves_the_verdict(
@@ -1112,7 +1142,7 @@ def test_only_a_program_that_starts_no_other_leaves_the_verdict(
     assert result["exit_code"] == 0 and result["verdict"] == verdict, result
     if verdict == "unknown":
         # One start, counted once: the message names it, not a count.
-        assert result["no_verdict"].startswith("the tests started "), result["no_verdict"]
+        assert result["no_verdict"].startswith("the command started "), result["no_verdict"]
         assert result["no_verdict"].endswith(said), result["no_verdict"]
         assert " programs, such as " not in result["no_verdict"]
     elif said:
@@ -1137,7 +1167,7 @@ def test_multiprocessing_preloaded_at_start_up_still_counts(project, capsys, mon
     result = json.loads(out.out)
     assert result["exit_code"] == 0 and result["verdict"] == "unknown", result
     assert result["no_verdict"] == (
-        "the tests started multiprocessing spawn (a multiprocessing process)" + CANT
+        "the command started multiprocessing spawn (a multiprocessing process)" + CANT
     )
 
 
@@ -1154,9 +1184,9 @@ def test_a_command_past_its_output_bound_is_no_verdict(project, capsys):
 def test_the_cookbook_lists_the_programs_that_start_no_other():
     import ast
 
-    from peeky.cli import _PYTEST_PLUGIN_TEXT
+    from peeky.cli import _WATCH_TEXT
 
-    text = _PYTEST_PLUGIN_TEXT.format(nonce="n", folder="f")
+    text = _WATCH_TEXT.format(nonce="n", folder="f")
     leaves = ast.literal_eval(re.search(r"_LEAVES = frozenset\((\{.*?\})\)", text, re.S)[1])
     cookbook = (Path(__file__).resolve().parents[2] / "docs" / "COOKBOOK.md").read_text()
     listed = cookbook.split("The programs that start no other, by their file's real name:")[1]
@@ -1191,7 +1221,7 @@ def test_a_plugin_that_loads_before_peekys_cant_start_a_process_unseen(
     result = json.loads(out.out)
     assert result["exit_code"] == 0 and result["verdict"] == "unknown", result
     assert result["no_verdict"] == (
-        "the tests started multiprocessing fork (a multiprocessing process)" + CANT
+        "the command started multiprocessing fork (a multiprocessing process)" + CANT
     )
 
 
@@ -1243,3 +1273,88 @@ def test_the_bootstrap_starts_pytest_as_dash_m_does(project, capsys):
     code, out = verify(capsys, project, "--check-command", command, "--baseline", "--json")
     result = json.loads(out.out)
     assert code == 0 and result["verdict"] == "passed", result
+
+
+# Review round 7: every Python command runs through Peeky's bootstrap and reports what it
+# loaded and started; any other command has no verdict.
+
+
+def test_pytest_by_its_main_module_reports_too(project, capsys):
+    # `python -m pytest.__main__` wasn't seen as pytest, so it ran as given: an absolute
+    # `testpaths` ran your tests, and the verdict was `passed`.
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "calc"\nversion = "0"\n\n[tool.pytest.ini_options]\n'
+        f'testpaths = ["{project.resolve()}/tests"]\n'
+    )
+    command = "python -m pytest.__main__ -q -p no:cacheprovider"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["check_command"]["ran"][2:4] == ["module", "pytest.__main__"]
+    problems = result["check_report"]["problems"]
+    assert any(problem.startswith("pytest collected ") for problem in problems), problems
+
+
+def test_a_script_that_imports_your_project_is_no_verdict(project, capsys):
+    (project / "check.py").write_text(
+        f"import sys\nsys.path.insert(0, {str(project.resolve())!r})\nimport calc\n"
+        "assert calc.add(1, 2) == -1\n"
+    )
+    code, out = verify(capsys, project, "--check-command", "python check.py", *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"] == (
+        f"`calc` was loaded from {project.resolve() / 'calc.py'}, in your project, not the copy"
+    )
+
+
+def test_a_command_that_is_no_python_peeky_starts_is_no_verdict(project, capsys):
+    (project / "run_tests.sh").write_text("python -c 'import calc'\n")
+    code, out = verify(capsys, project, "--check-command", "bash run_tests.sh", *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"] == NOT_WATCHED and result["reason"] == f"no verdict: {NOT_WATCHED}"
+    assert result["check_command"]["ran"][1:] == ["run_tests.sh"]
+    code, out = verify(capsys, project, "--check-command", "bash run_tests.sh", *FIX)
+    assert out.out.startswith("verdict: unknown  passed: False"), out.out
+    assert "command exit: 0\n" in out.out
+
+
+CHECK = """\
+import os
+import sys
+
+import calc
+
+assert sys.argv == ["check.py", "x"], sys.argv
+assert sys.path[0] == os.path.dirname(os.path.realpath(__file__)), sys.path
+assert calc.add(1, 2) == 3
+"""
+
+
+def test_a_python_script_that_imports_the_copy_passes(project, capsys):
+    (project / "check.py").write_text(CHECK)
+    code, out = verify(capsys, project, "--check-command", "python check.py x", *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["verdict"] == "passed", result
+    assert result["check_report"] == {"reports": 1, "problems": []}
+    _, bootstrap, how, script, *rest = result["check_command"]["ran"]
+    assert Path(bootstrap).name == "peeky_start.py" and (how, script, rest) == (
+        "script",
+        "check.py",
+        ["x"],
+    )
+    # As -c: `sys.argv` and the working directory first, as ''.
+    source = "import sys, calc; assert sys.argv == ['-c', 'x'], sys.argv; assert sys.path[0] == ''"
+    code, out = verify(capsys, project, *FIX, "--json", "--check-command", "--", "python", "-c",
+                       source, "x")  # fmt: skip
+    result = json.loads(out.out)
+    assert code == 0 and result["verdict"] == "passed", result
+
+
+def test_a_python_that_ends_without_exiting_is_no_verdict(project, capsys):
+    (project / "check.py").write_text("import os\nos._exit(0)\n")
+    code, out = verify(capsys, project, "--check-command", "python check.py", *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"].startswith("the command's Python wrote no report as it exited")

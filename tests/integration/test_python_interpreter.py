@@ -218,14 +218,16 @@ def test_verify_runs_the_projects_tests_on_its_environment(project, capsys):
     )
     result = json.loads(out.out)
     assert code == 1 and "No module named 'greet'" in result["stderr"], result
-    # A name is found on PATH, the environment's scripts first.
+    # A name is found on PATH, the environment's scripts first. A shell script runs, but
+    # Peeky can't watch what it loads: no verdict.
     script = python.parent / "show-environment"
     script.write_text('#!/bin/sh\necho "VIRTUAL_ENV=$VIRTUAL_ENV"\n')
     script.chmod(0o755)
     argv[-1] = "show-environment"
     code, out = run(capsys, *argv, "--baseline", "--json")
     result = json.loads(out.out)
-    assert code == 0 and result["check_command"]["ran"] == [str(script)], result
+    assert code == 1 and result["check_command"]["ran"] == [str(script)], result
+    assert result["verdict"] == "unknown" and result["exit_code"] == 0, result
     assert result["stdout"] == f"VIRTUAL_ENV={root / '.venv'}\n"
 
 

@@ -128,6 +128,9 @@ The last column is the `retryable` field.
   that stop was shown. Start again once the load has passed.
 - A debugger that refuses that read, as it may at a crash, doesn't end the session. The stop then
   has no location.
+- A `--check-command` that isn't a Python Peeky starts, such as `make` or a shell script, isn't
+  an error: it runs, and its `verdict` is `unknown`. Run the test command directly, as
+  `python -m pytest …` ([6.7](COOKBOOK.md#what-the-command-loaded)).
 - `verify ran past its --timeout while the check command was running` means that `--timeout` cut a
   `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
   that runs past its own 20 s isn't an error: the verify's `verdict` is `unknown`, and `reason`
