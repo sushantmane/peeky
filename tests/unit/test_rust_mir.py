@@ -4876,13 +4876,26 @@ def test_a_closure_the_mir_prints_fewer_captures_of_is_an_uncertainty_of_its_own
     tuple_ = "(u32, std::string::String),"
     # Every capture printed (one, `(u32,)`): nothing is left out.
     assert omitted(TWO_CAPTURES.replace(tuple_, "(u32,),")) == []
-    # What is left out moves nothing: a `Copy` value or a reference. It still took something.
-    for kinds in ("(u32, u32),", "(&u32, &std::string::String),", "(u32, &mut [u8; 4]),"):
+    # What is left out moves nothing: a `Copy` value or a shared reference. It still took
+    # something.
+    for kinds in ("(u32, u32),", "(&u32, &std::string::String),", "(u32, &&mut [u8; 4]),"):
         assert omitted(TWO_CAPTURES.replace(tuple_, kinds)) == [
             ((0, 1), frozenset({1}), frozenset(), 6)
         ], kinds
-    # Nor is anything moved out of a variable whose type moves nothing.
+    # A `&mut` left out may be a borrow of a place or a `&mut` field moved out (`Mix { a: u32,
+    # b: &mut u32 }`, `move || { m.a; *m.b += 1 }`): the type doesn't say which.
+    for kinds in (
+        "(u32, &mut u32),",
+        "(u32, &'a mut u32),",
+        "(u32, (u8, &mut u32)),",
+        "(u32, [&mut u32; 2]),",
+    ):
+        assert omitted(TWO_CAPTURES.replace(tuple_, kinds)) == [
+            ((0, 1), frozenset({1}), frozenset({1}), 6)
+        ], kinds
+    # Nor is anything moved out of a variable whose type moves nothing; a `&mut` one may be.
     assert omitted(TWO_CAPTURES.replace("(_1: Named)", "(_1: (u32, u32))"))[0][2] == frozenset()
+    assert omitted(TWO_CAPTURES.replace("(_1: Named)", "(_1: &mut Named)"))[0][2] == frozenset({1})
     # Without the annotation, which rustc writes for every closure and coroutine but an async
     # closure, or one Peeky can't count from, anything may have been moved.
     plain = "\n".join(

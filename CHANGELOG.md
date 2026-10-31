@@ -32,7 +32,7 @@
   variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
   value, from memory the closure had freed after growing its `String`. Now, where the MIR leaves
   captures out and they may move something, the variables it names read as stale, saying so.
-  Where only references or `Copy` values are left out, they read as before. A change of a
+  Where only shared references or `Copy` values are left out, they read as before. A change of a
   named variable is refused either way, since Peeky can't tell what the closure holds.
 
 - **A version 2 Cargo.lock's refusal says what works (#467).** It said to run `cargo update

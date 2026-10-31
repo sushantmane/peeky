@@ -2031,7 +2031,7 @@ def _omitted_text(name, lines, moved):
         else f"the closures or async blocks on lines {_listed(shown)}"
     )
     return f"rustc's MIR omits some of the captures of {where}, so Peeky can't tell what it " + (
-        f"took from `{name}`: part of it may be moved"
+        f"took from `{name}`: all or part of it may be moved"
         if moved
         else f"took from `{name}`: it may hold a copy of part of it, or a pointer into it"
     )
@@ -2133,6 +2133,8 @@ def _gap_reason(name, reasons, line):
         return f"what `{name}` points at may be dropped here, before a new value is stored there"
     if reason[0] == "unassigned":
         return f"`{name}` may not be assigned yet here"
+    if reason[0] == "omitted":
+        return _omitted_text(str(name).partition(" @ ")[0], reason[1], True)
     if reason[0] == "elsewhere":
         return (
             "the build's MIR cannot place this stop: it is in code from another file, on a line "

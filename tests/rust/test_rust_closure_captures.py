@@ -154,6 +154,22 @@ fn shadowed(arg: u32) -> usize {
     k + r + p.a as usize + p.name.len()
 }
 
+/// `p.a`, `p.name` and `q`, a `&mut u32`, are captured; the MIR labels `p.name`'s `q`, so
+/// `q`'s own move isn't printed. Its type, `&mut u32`, is a borrow's too.
+fn lent(arg: u32) -> usize {
+    let p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
+    let mut x = std::hint::black_box(arg);
+    let q = &mut x;
+    let mut f = move || { // LENT_BUILT
+        let n = p.a as usize + p.name.len();
+        *q += 1;
+        n
+    };
+    let r = f();
+    let k = std::hint::black_box(1); // LENT
+    k + r + x as usize
+}
+
 /// One place of each variable: every capture is printed, and `p` reads as it is.
 fn single(arg: u32) -> usize {
     let p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
@@ -173,6 +189,7 @@ fn main() {
     println!("UNAFFECTED {}", unaffected(19));
     println!("SHADOWED {}", shadowed(21));
     println!("SINGLE {}", single(11));
+    println!("LENT {}", lent(23));
 }
 """
 
@@ -213,7 +230,7 @@ def omitted(marker, name, moved=True):
     return (
         "rustc's MIR omits some of the captures of the closure or async block on line "
         f"{line_of(marker + '_BUILT')}, so Peeky can't tell what it took from `{name}`: "
-        + ("part of it may be moved" if moved else "it may hold a copy of part of it")
+        + ("all or part of it may be moved" if moved else "it may hold a copy of part of it")
     )
 
 
@@ -252,6 +269,17 @@ def test_an_async_block_and_an_async_closure_capture_as_a_closure_does(crate, ca
     assert moved(rows["p.name"], "CLOSURED", "p"), rows["p.name"]
     assert rows["r"]["value"] == "49"
     assert "CLOSURED 50" in output
+
+
+@pytest.mark.timeout(400)
+def test_a_mut_reference_left_out_may_have_been_moved(crate, capsys):
+    # `q`, a `&mut u32`, is moved into the closure, and the MIR leaves that capture out. A
+    # left-out `&mut` may be a borrow of a place or a `&mut` moved out: the type doesn't say.
+    rows, output = read(capsys, crate, "LENT", "q,r")
+    note = rows["q"].get("note") or ""
+    assert rows["q"].get("view") == "unproven" and omitted("LENT", "q") in note, rows["q"]
+    assert rows["r"]["value"] == "26"
+    assert "LENT 51" in output
 
 
 @pytest.mark.timeout(400)

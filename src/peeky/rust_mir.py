@@ -8068,9 +8068,12 @@ def _captured_kinds(lines, index):
 
 def _moves_nothing(kind):
     """Whether a capture of the MIR type ``kind`` moves nothing out of the variable it is
-    taken from: a reference (`&T`, `&mut T`), a raw or function pointer, a primitive, `()`,
-    or a tuple or array of these, each `Copy` whatever the crate defines."""
+    taken from: a shared reference, a raw or function pointer, a primitive, `()`, or a tuple
+    or array of these, each `Copy` whatever the crate defines. Not a `&mut T`: the type
+    doesn't say whether the closure borrowed a place or moved a `&mut` field out."""
     text = (kind or "").strip()
+    if _MUTABLE_REFERENCE.match(text):
+        return False
     if text.startswith("&") or _RAW_ONLY.match(text) or _FN_START.match(text):
         return True
     if text in _NUMERIC_PRIMITIVES or text in ("()", "!"):
@@ -8079,6 +8082,9 @@ def _moves_nothing(kind):
         return all(_moves_nothing(each) for each in _top_level_items(text[1:-1]))
     found = re.fullmatch(r"\[(.+); [^;\[\]]+\]", text)
     return bool(found) and _moves_nothing(found[1])
+
+
+_MUTABLE_REFERENCE = re.compile(r"&(?:'\S+\s+)?mut\b")
 
 
 def _captured_locals(body, printed, scope):
@@ -8194,8 +8200,9 @@ def parse_body(text):
                 if taken is None:
                     body.supported = False
                 elif taken:
-                    # What is left out moves nothing where each is a reference or `Copy`;
-                    # nor is anything moved out of a variable of such a type.
+                    # What is left out moves nothing where each is a shared reference or
+                    # `Copy`; nor is anything moved out of a variable of such a type. A
+                    # `&mut` may be a borrow or a field moved out: the MIR doesn't show which.
                     moves = kinds is None or not all(
                         _moves_nothing(each) for each in kinds[len(printed) :]
                     )
@@ -10370,8 +10377,9 @@ class OwnedLocals:
 
     def _judge(self, site, local, line, facts, block=None, why=None):
         """True, False or None for ``local`` (see reference_valid). Where False, ``why``
-        (a list, if given) gets the reason: ("raw",), ("dropped",), ("unassigned",), or
-        ("since", gaps): {(kind, line)} of what may have run since its last use on some
+        (a list, if given) gets the reason: ("raw",), ("dropped",), ("omitted", lines) (a
+        closure or coroutine built on one of ``lines`` may have moved it, rustc's MIR leaving
+        that capture out), ("unassigned",), or ("since", gaps): {(kind, line)} of what may have run since its last use on some
         path to the stop ("call", "drop", "write", "end" of a variable's storage;
         "start" for a path with no use at all), up to ``Body.gaps_before``'s limit per
         place, the line None where the statement is not in the function's own file (a
@@ -10408,6 +10416,8 @@ class OwnedLocals:
         # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.
         if any(body.dropped_through(local, position) for position in positions):
             return _false(why, ("dropped",))
+        if body.omitted and (lines := body.omitted_before(local, positions, moves=True)):
+            return _false(why, ("omitted", tuple(lines)))
         if (
             argument
             and kind.startswith("&")

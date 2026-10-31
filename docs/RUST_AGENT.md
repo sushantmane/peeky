@@ -558,10 +558,12 @@ used again. Such a temporary is:
   gives their types (its last `+ args` item, a tuple), so the ones left out are known by type
   (`Body.omitted`). Each name is the binding in the nearest enclosing scope; one bound twice
   there, or not at all, leaves the body unanalyzed.
-- Where what is left out is only references and `Copy` values, nothing was moved: every value
-  reads as before. Else, or with no annotation (an async closure), a named variable whose type
-  isn't `Copy` may have lost part of it. Past the aggregate, it isn't proven initialized, and
-  its rows say why. A change of any named variable is refused there, saying so.
+- Where what is left out is only shared references and `Copy` values, nothing was moved: every
+  value reads as before. A `&mut` left out may be a borrow, or a `&mut` field moved out: the type
+  doesn't say which. Else, or with no annotation (an async closure), a named variable whose type
+  isn't `Copy` may have lost all or part of it. Past the aggregate, it isn't proven initialized,
+  and its rows say why; a reference shows only its pointer (`OwnedLocals._judge`). A change of
+  any named variable is refused there, saying so.
 - So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`,
   while `Counter { c: Cell<u32> }` does.
 - A field moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of `_6`
