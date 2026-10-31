@@ -18,10 +18,12 @@ Peeky debugs Python with debugpy, Python's debugger.
 - To stop in code that a pytest test runs, `--run` a two-line script that calls `pytest.main`.
   Name the test after `--`: `--run peeky_pytest.py -- -q tests/test_x.py::test_y`
   ([guide](../AGENT_GUIDE.md#your-first-command)).
-- `--at` and `--run` name `.py` files inside the root. Peeky stops only in the project's own
-  code, because debugpy skips library code. So a file in `site-packages` never stops: the probe
-  ends `no-stop`. An installed project must be editable, `pip install -e .`
-  ([guide](../AGENT_GUIDE.md#your-first-command)).
+- `--at` and `--run` name `.py` files inside the root. `--at` may name an installed package's
+  file, such as one in the root's `.venv`: debugpy then stops in library code too, and the stack
+  lists library frames ([Python 0](python-cookbook.md#stop-in-an-installed-package)).
+- A project installed without `-e` runs its `site-packages` copy, so a breakpoint in its source
+  never stops: the probe ends `no-stop`. Install it editable, `pip install -e .`
+  ([Python 0](python-cookbook.md#stop-in-an-installed-package)).
 - Pass program arguments after `--`, or with repeated `--arg`. Write `--arg=-v` for a value that
   starts with a dash ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 

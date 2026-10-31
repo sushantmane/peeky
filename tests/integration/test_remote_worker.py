@@ -485,6 +485,60 @@ def test_a_frame_outside_the_compared_sources_stays_the_worker_hosts(remote, cap
     run(capsys, "session", "close")
 
 
+def test_an_installed_file_is_compared_by_its_hash_and_checked_while_it_runs(
+    remote, tmp_path, capsys
+):
+    # A breakpoint in a package installed in the root's .venv was refused remotely: the
+    # file is in no compared set. Now it is compared by its own hash, as the program.
+    from python_packages import TALLY, install
+
+    host, local, worker, _ = remote
+    app = "from tally.outer import twice\n\nprint('ran', twice([1, 2]))\n"
+    for root in (host, local):
+        (root / "app.py").write_text(app)
+        library = install(root, tmp_path / root.name)
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    at = ["--at", f"{library}:4", "--run", "app.py", "--worker", url]
+    code, out = run(capsys, "probe", local, *at, "--capture", "x", "--hits", "all", "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["status"] == "completed", result
+    assert [row["value"] for row in result["rows"]] == ["2", "4"], result["rows"]
+    assert result["source_sha256"] == hashlib.sha256(TALLY.encode()).hexdigest()
+    # Compared, so shown as your copy, and the note says so.
+    assert result["breakpoint"]["source"]["path"] == str(local / library), result["breakpoint"]
+    assert f"compared with yours, and {library}, which is in a virtual" in result["warnings"][-1]
+    # A session's installed file is hashed again at each operation, as the others are:
+    # the worker host's copy,
+    code, out = run(capsys, "session", "start", local, *at)
+    assert code == 0, out
+    code, out = run(capsys, "session", "inspect", "--json")
+    assert json.loads(out.out)["frames"][0]["source"]["path"] == str(local / library), out.out
+    (host / library).write_text(TALLY.replace("x * 2", "x * 3"))
+    code, out = run(capsys, "session", "continue", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "PROVENANCE_CHANGED", error
+    assert f"{library} changed on the worker host after launch" in error["message"], error
+    run(capsys, "session", "close", "--forget")
+    (host / library).write_text(TALLY)
+    # and yours.
+    code, out = run(capsys, "session", "start", local, *at)
+    assert code == 0, out
+    (local / library).write_text(TALLY.replace("x * 2", "x * 3"))
+    code, out = run(capsys, "session", "continue", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "PROVENANCE_CHANGED", error
+    assert f"changed after the worker compared it ({library})" in error["message"], error
+    run(capsys, "session", "close", "--forget")
+    (local / library).write_text(TALLY)
+    (host / library).write_text(TALLY.replace("x * 2", "x * 3"))
+    # And the host's copy that differs from yours is refused before it runs.
+    code, out = run(capsys, "probe", local, *at, "--capture", "x", "--json")
+    result = json.loads(out.out)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert f"differs for the program {library}" in result["error"]["message"], result
+
+
 def test_a_stale_pyc_in_the_tree_is_never_used(remote, capsys):
     # The worker host's __pycache__ holds a helper.pyc compiled from other code, marked
     # unchecked: Python loads it without looking at helper.py.

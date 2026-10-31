@@ -27,6 +27,11 @@
 
 ### Other changes
 
+- **Python: a breakpoint in an installed package stops there.** debugpy skipped library code, so
+  a probe at a file in the root's `.venv` said its breakpoint was pending, then ended `no-stop`.
+  Now debugpy stops there too, where the program's interpreter says the file is installed, with
+  the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
+  before debugpy starts your script, with why (#446).
 - **Phase 1 of ADR 0008 checked:** clang records every `-D`, `-I` and `-include` exactly, and
   GCC 13 writes no checksums. The study's C projects can be judged by their line tables'
   checksums. Few of its C++ units can: a `#pragma GCC system_header` or an inheriting

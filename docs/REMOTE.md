@@ -222,7 +222,8 @@ and sends the hashes with the request.
   may import any of them. A stray file on one side is refused too:
   `scratch.py (only in your checkout)`. Remove it, or copy it over.
 - **The Python program and its `--run` script** must be among the files compared. One in a
-  virtual environment is refused.
+  virtual environment, such as an installed package's file, is compared by its own hash. The
+  worker hashes it again while the program runs, as it does the others.
 - **Python refuses what it can't hash in full:** more than 4096 `.py` files or 16 MiB in all, a
   file that isn't a readable regular file, or a symlinked directory under the root. The side that
   can't hash refuses. Probe another directory, or start the worker with another `--root`.
@@ -247,7 +248,9 @@ peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session:
   names a file under the root that isn't a compared `.py` file is refused: for example, code
   loaded from a `.pyc` beside the program. A frame whose code names a file outside the root isn't
   caught. A frame in a virtual environment inside the root is installed code: it isn't compared,
-  and the note below says so.
+  and the note below says so. The `--at` file and the `--run` script are the exception: they are
+  compared by their own hashes. Your client hashes its copies again before and after each
+  session command, and shows their locations as yours.
 - **Python bytecode:** a remote Python run reads no `.pyc` from the root, and writes none there.
   Its bytecode cache is a fresh, empty temporary directory, never inside the root or under
   `~/Documents`. It is removed once the program and the debugger have ended.
@@ -260,7 +263,7 @@ peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session:
 **Not compared:**
 
 - installed packages, outside the root or in any directory holding a `pyvenv.cfg`, and the
-  standard library;
+  standard library. The `--at` file and the `--run` script are compared, even there;
 - compiled modules (`.so`), `.pyc` files, and data files the program reads;
 - the interpreter and the toolchain;
 - an attached JVM's class files. The worker checks them against its own sources instead
@@ -272,7 +275,8 @@ stop isn't checked. Every remote Python result says so: probes, `session start`,
 `session` command, in its text and in its JSON `warnings`:
 `Only the .py files under the target's directory are compared with yours. Not compared: installed
 packages, any directory holding a pyvenv.cfg, the standard library, and compiled modules (.so,
-.pyc).`
+.pyc).` Where the `--at` file or the `--run` script is in a virtual environment, the note names it
+as compared, and says the rest of that directory isn't.
 
 **The client checks every answer:**
 
