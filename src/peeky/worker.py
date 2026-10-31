@@ -2400,6 +2400,12 @@ class DebugWorker:
                     worker_sources,
                 )
 
+                if not getattr(self.adapter, "compares_remote_sources", True):
+                    raise ValueError(
+                        "A worker doesn't probe a Rust workspace for a remote client yet: it "
+                        "would compare none of the workspace's files with yours. Run Peeky on the "
+                        "workspace's own host"
+                    )
                 own = worker_sources(self.adapter, self.root)
                 if what := difference(expected_inputs, own):
                     raise ValueError(refusal(what))
@@ -7806,6 +7812,15 @@ def load_rust_target(path):
     config = json.loads(Path(path).read_text())
     if not isinstance(config, dict):
         raise ValueError("Rust configuration must be an object")
+    from peeky.rust_workspace import is_workspace_config
+
+    if is_workspace_config(config):
+        from peeky.rust_build import RustWorkspaceTarget
+
+        # A workspace is built on the worker's host by `peeky build`, never by a request.
+        return RustWorkspaceTarget.from_config(
+            config, f"peeky build <the worker's root> --config {Path(path).resolve()}"
+        )
     fields = {
         "sources",
         "tests",

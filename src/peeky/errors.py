@@ -45,6 +45,9 @@ from peeky.textlines import split_lines
 # 13: a Python `launch` or `probe` takes `module`, which is `pytest`: the worker runs it as
 # `python -m pytest` does (`--run-module pytest`), with `--assert=plain`, and no other
 # module; a protocol 12 worker ignores `module` and runs the --at file itself.
+# 13: a probe or session on a Rust workspace without a current Peeky build (`peeky build`)
+# is refused with BUILD_REQUIRED, which names the build command; an agent builds, then
+# repeats the request. A protocol 12 client would take an unknown code for another failure.
 PROTOCOL_VERSION = 13
 
 # (pattern on the message, code, hint, retryable). First match wins.
@@ -213,6 +216,20 @@ _RULES = (
     ),
     (r"Another probe is running", "BUSY", "Wait for the running probe, then retry.", True),
     (
+        r"^A `peeky build` of this workspace is running",
+        "BUSY",
+        "Wait for the build to end, then retry.",
+        True,
+    ),
+    (
+        # A Rust workspace with no build of its configuration (rust_build).
+        r"^No current Peeky build of ",
+        "BUILD_REQUIRED",
+        "Run the `peeky build` command the message gives, then this command again; or add "
+        "--build to build first.",
+        True,
+    ),
+    (
         r"Only writable|mutation requires|mutation is outside|Only .*locals support|"
         r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
         r"|has no readable value here|refused in an optimized build|did not change "
@@ -370,6 +387,25 @@ _RULES = (
         False,
     ),
     (
+        r"^Peeky doesn't read values in a Rust workspace's build yet",
+        "UNSUPPORTED",
+        "Nothing ran. Peeky builds this workspace but doesn't probe it yet; check it with the "
+        "project's own tests meanwhile.",
+        False,
+    ),
+    (
+        r"^A worker doesn't probe a Rust workspace for a remote client yet",
+        "UNSUPPORTED",
+        "Nothing ran. Run Peeky on the workspace's own host: `peeky build`, then the probe.",
+        False,
+    ),
+    (
+        r"^Peeky doesn't verify or probe candidate edits in a Rust workspace",
+        "UNSUPPORTED",
+        "Edit the source, run `peeky build` again, then probe or run the project's tests.",
+        False,
+    ),
+    (
         r"^Peeky builds registry dependencies only from `cargo vendor`'s copy",
         "INVALID_REQUEST",
         "Run the `cargo vendor` command the message gives (it needs the network or Cargo's "
@@ -418,6 +454,14 @@ _RULES = (
         "UNSUPPORTED",
         "Use a Python whose sqlite3 module has SQLite 3.30 or newer with JSON; "
         "python3 -c 'import sqlite3; print(sqlite3.sqlite_version)' shows it.",
+        False,
+    ),
+    (
+        # A Rust workspace's build whose files changed since `peeky build` (rust_build).
+        r"since `peeky build` ran",
+        "PROVENANCE_CHANGED",
+        "Run the `peeky build` command the message gives, then this command again; or add "
+        "--build to build first.",
         False,
     ),
     (

@@ -1,0 +1,1014 @@
+"""Peeky's own build of a Rust workspace (ADR 0008, phase 2), and the manifest a probe
+checks before it uses the build.
+
+`peeky build` runs Cargo in the workspace itself: offline, from its lockfile, with every
+crates.io dependency from the vendored copies (rust_workspace). Cargo's target directory,
+its CARGO_HOME and what the wrapper writes go in a private directory of Peeky's state
+directory, one per root and configuration. Dependencies compiled once are reused. The
+analysed packages are compiled every time: Peeky first removes their artifacts (`cargo
+clean -p`). The wrapper then dumps their MIR, expands their source (`-Zunpretty=expanded`),
+emits their LLVM IR, and records their rustc commands, so their opt-level is checked
+whatever a profile says.
+
+The manifest records the tools, the files Cargo read (manifests, the lockfile, Cargo's
+configuration in and above the workspace), every local package's sources from rustc's
+dependency files, the vendored copies' checksum files, and the build's outputs. A probe
+uses the build only while all of it holds, and never builds (`--build` asks for one
+first). Trusted code: Cargo runs the project's build scripts and procedural macros, as
+the program runs. Not a sandbox.
+"""
+
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from peeky import rust_workspace
+from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
+from peeky.digest import sha256_file
+from peeky.textlines import split_lines
+
+# The longest a build may take, a cold one included (`peeky build --timeout`).
+BUILD_TIMEOUT_S = 900
+# The most files a build's manifest records (sources, generated files and outputs).
+MAX_RECORDED = 65536
+# What Peeky keeps of Cargo's output: its JSON messages name every artifact.
+CARGO_RETAINED = 64 * 1024 * 1024
+CARGO_OUTPUT_LIMIT = 256 * 1024 * 1024
+# Builds kept, the newest first: a session on the one before the last keeps its files.
+KEEP_RUNS = 2
+# A file changed this close to the build's start may have changed while it ran.
+_SETTLE_NS = 1_000_000_000
+# The most files Peeky notes the state of before a build, to tell a change during it.
+_MAX_SNAPSHOT = 200_000
+SCHEMA = 1
+
+# Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
+# target's own compile, which it knows by crate name and source file (a build script's
+# probes of rustc run it too), it records the command, expands the crate in a second
+# rustc process (`-Zunpretty` compiles nothing; its messages go to a file, not to Cargo),
+# then compiles it with MIR dumped and LLVM IR emitted. RUSTC_BOOTSTRAP is set to the
+# crate's name, which allows nightly flags for that crate alone. Every other compile runs
+# unchanged. Python, not a shell: dash drops variables like CARGO_BIN_EXE_<bin-with-dashes>.
+WRAPPER = r"""import json
+import os
+import subprocess
+import sys
+
+args = sys.argv[1:]
+crate = None
+for previous, arg in zip(args, args[1:]):
+    if previous == "--crate-name":
+        crate = arg
+wanted = json.loads(os.environ.get("PEEKY_ANALYSED") or "{}").get(crate or "", [])
+cwd = os.getcwd()
+source = None
+for arg in args[1:]:
+    if not arg.startswith("-") and os.path.realpath(os.path.join(cwd, arg)) in wanted:
+        source = os.path.realpath(os.path.join(cwd, arg))
+if source is not None:
+    options = [b for a, b in zip(args, args[1:]) if a == "-C"]
+    options += [a[2:] for a in args if a.startswith("-C") and len(a) > 2]
+    extra = ""
+    for option in options:
+        if option.startswith("extra-filename="):
+            extra = option.split("=", 1)[1]
+    unit = os.path.join(os.environ["PEEKY_UNITS"], crate + extra)
+    os.makedirs(unit)
+    names = ("CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_MANIFEST_DIR", "CARGO_CRATE_NAME",
+             "CARGO_PRIMARY_PACKAGE", "OUT_DIR")
+    with open(os.path.join(unit, "command.json"), "w") as out:
+        json.dump({"args": args, "cwd": cwd, "source": source,
+                   "env": {name: os.environ[name] for name in names if name in os.environ}}, out)
+    expand, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg in ("--emit", "--out-dir", "-o"):
+            skip = True
+        elif not arg.startswith(("--emit=", "--out-dir=")):
+            expand.append(arg)
+    env = {k: v for k, v in os.environ.items() if k not in ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS")}
+    env["RUSTC_BOOTSTRAP"] = crate
+    with open(os.path.join(unit, "expand.log"), "wb") as log:
+        done = subprocess.run(
+            [*expand, "-Zunpretty=expanded", "-o", os.path.join(unit, "expanded.rs")],
+            env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+        )
+    with open(os.path.join(unit, "expand.json"), "w") as out:
+        json.dump({"exit_code": done.returncode}, out)
+    os.environ["RUSTC_BOOTSTRAP"] = crate
+    for index, arg in enumerate(args):
+        if arg.startswith("--emit=") and "llvm-ir" not in arg[len("--emit="):].split(","):
+            args[index] = arg + ",llvm-ir"
+    args += [
+        "-Zmir-opt-level=0",
+        "-Zdump-mir=all & PreCodegen",
+        "-Zdump-mir-dir=" + os.path.join(unit, "mir"),
+        "-Zmir-include-spans=yes",
+        "-Zunstable-options",
+        "-Csymbol-mangling-version=legacy",
+    ]
+os.execv(args[0], args)
+"""
+WRAPPER_SHA256 = hashlib.sha256(WRAPPER.encode()).hexdigest()
+
+
+class BuildRequired(RuntimeError):
+    """No build of this workspace and configuration (errors: BUILD_REQUIRED)."""
+
+
+@dataclass(frozen=True)
+class RustWorkspaceTarget:
+    """A Rust workspace with dependencies (rust_workspace.WorkspaceConfig), built by
+    `peeky build` and probed in its analysed packages. ``build_command``: the command that
+    builds it, as a refusal names it."""
+
+    config: rust_workspace.WorkspaceConfig
+    cargo: str
+    rustc: str
+    adapter: str
+    dwarfdump: str
+    linker: str
+    dsymutil: str | None = None
+    sysroot: str | None = None
+    arguments: tuple[str, ...] = ()
+    rust_version: str = "1.96.0"
+    build_command: str = "peeky build <target> --config <config>"
+
+    language = "rust"
+    accepts_arguments = True
+    supports_deadline = True
+    # Candidate edits in a workspace come later (ADR 0008, phase 3).
+    supports_edits = False
+    # A remote client's files aren't compared with a workspace's yet: such a launch is
+    # refused, and the worker declares no sources (never Python's .py files).
+    compares_remote_sources = False
+    verification_inputs = ()
+
+    def __post_init__(self):
+        from peeky.rust import RustTarget, _absolute_tool, _toolchain
+
+        RustTarget.validate_arguments(self.arguments)
+        if not isinstance(self.rust_version, str) or not re.fullmatch(
+            r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", self.rust_version
+        ):
+            raise ValueError("Invalid pinned Rust version")
+        _toolchain(self.cargo, self.rustc)
+        for label in ("adapter", "dwarfdump", "linker"):
+            _absolute_tool(getattr(self, label), label)
+        if sys.platform == "darwin":
+            if self.dsymutil is None or Path(self.dsymutil).name != "dsymutil":
+                raise ValueError("macOS Rust targets require an explicit tool named dsymutil")
+            _absolute_tool(self.dsymutil, "dsymutil")
+        elif sys.platform != "linux":
+            raise ValueError("Rust target supports Linux and macOS hosts only")
+
+    @classmethod
+    def from_config(cls, data, build_command=None):
+        """The target a trusted workspace configuration names (tools included)."""
+        config, rest = rust_workspace.workspace_config(data)
+        rest = {key: tuple(v) if isinstance(v, list) else v for key, v in rest.items()}
+        if build_command is not None:
+            rest["build_command"] = build_command
+        return cls(config, **rest)
+
+    @staticmethod
+    def validate_arguments(arguments):
+        from peeky.rust import RustTarget
+
+        RustTarget.validate_arguments(arguments)
+
+    @staticmethod
+    def validate_breakpoints(points):
+        from peeky.adapters import PythonAdapter
+
+        PythonAdapter().validate_breakpoints(points)
+        if any(set(point) != {"line"} for point in points):
+            raise ValueError("Rust targets support unconditional line breakpoints only")
+
+    @property
+    def target_identity(self):
+        return {
+            "language": "rust",
+            "workspace": self.config.workspace,
+            "analyse": list(self.config.analyse),
+            "run": asdict(self.config.run),
+            "features": list(self.config.features),
+            "arguments": list(self.arguments),
+            "rust_version": self.rust_version,
+            "wrapper_sha256": WRAPPER_SHA256,
+        }
+
+    def identity(self, root):
+        """What a build depends on besides the files it records: the root, the
+        configuration (less the program's arguments) and the tools' paths."""
+        tools = {
+            name: getattr(self, name)
+            for name in ("cargo", "rustc", "linker", "dsymutil", "sysroot", "adapter", "dwarfdump")
+        }
+        identity = {
+            "schema": SCHEMA,
+            "root": str(Path(root).resolve()),
+            "config": asdict(self.config),
+            "tools": tools,
+            "rust_version": self.rust_version,
+            "wrapper_sha256": WRAPPER_SHA256,
+        }
+        # As the manifest's JSON keeps it (lists, not tuples).
+        return json.loads(json.dumps(identity))
+
+    def rustflags(self):
+        from peeky.rust import _absolute_tool
+
+        flags = ["-C", "dwarf-version=4", "-C", f"linker={_absolute_tool(self.linker, 'linker')}"]
+        if sys.platform == "linux":
+            flags += ["-C", "link-arg=-Wl,--build-id=sha1"]
+        return flags
+
+    def build(self, root, *, deadline=None, progress=None):
+        """Build the workspace (`peeky build`): a summary of the build."""
+        return build(self, root, deadline=deadline, progress=progress)
+
+    def current(self, root):
+        """The current build's manifest (current_build)."""
+        return current_build(self, root)
+
+    def prepare(self, program, root, *, edit=None, deadline=None):
+        if edit is not None:
+            raise ValueError(
+                "Peeky doesn't verify or probe candidate edits in a Rust workspace yet; "
+                "change the source and run `peeky build` again"
+            )
+        root = Path(root).resolve(strict=True)
+        manifest = self.current(root)
+        relative = Path(program).resolve().relative_to(root).as_posix()
+        analysed = [unit for unit in manifest["units"] if relative in unit["sources"]]
+        if not analysed:
+            packages = ", ".join(self.config.analyse)
+            raise ValueError(
+                f"Peeky stops only in the analysed packages' files ({packages}), as their "
+                f"build read them: {relative} is none of those. Probe a line there, or add its "
+                'package to "analyse" and build again'
+            )
+        raise ValueError(
+            "Peeky doesn't read values in a Rust workspace's build yet: it will once a call "
+            "into a dependency counts as code it can't read. The build is current; nothing ran"
+        )
+
+
+def build_directory(target, root, *, create=True):
+    """Peeky's private directory for this root's and configuration's builds."""
+    from peeky.cli import _private_dir
+
+    key = hashlib.sha256(
+        json.dumps(target.identity(root), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:24]
+    base = _private_dir("rust-builds") if create else _state_path("rust-builds")
+    directory = base / key
+    if create:
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or directory.lstat().st_uid != os.getuid():
+            raise ValueError(f"Peeky's build directory must be a directory you own: {directory}")
+    return directory
+
+
+def _state_path(name):
+    from peeky import state_home
+
+    return state_home() / name
+
+
+@contextlib.contextmanager
+def _locked(directory, exclusive):
+    """Hold the build directory's lock: a build alone, or any number of readers."""
+    path = Path(directory) / "lock"
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                "A `peeky build` of this workspace is running"
+                + (", or a probe is reading it" if exclusive else "")
+                + ": wait for it to end, then retry"
+            ) from None
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _write_wrapper(directory):
+    """The wrapper at a fixed path (Cargo keeps a member's build while the wrapper's path
+    stays), with its interpreter: this Python, isolated (-I)."""
+    folder = Path(directory) / "wrapper"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    interpreter, wrapper = folder / "python", folder / "rustc-peeky"
+    target = Path(sys.executable).resolve()
+    if interpreter.is_symlink() and Path(os.readlink(interpreter)) != target:
+        interpreter.unlink()
+    if not interpreter.is_symlink():
+        interpreter.symlink_to(target)
+    text = f"#!{interpreter} -I\n{WRAPPER}"
+    if not wrapper.is_file() or wrapper.is_symlink() or wrapper.read_text() != text:
+        wrapper.unlink(missing_ok=True)
+        wrapper.write_text(text)
+    wrapper.chmod(0o700)
+    return wrapper, text
+
+
+def _run(argv, cwd, env, deadline, what):
+    """Run a Cargo command within the build's deadline; BuildCommandError on failure."""
+    from peeky.agent import execute
+
+    remaining = BUILD_TIMEOUT_S if deadline is None else deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(f"The build exceeded its deadline before {what}")
+    result = execute(
+        list(argv),
+        cwd,
+        remaining,
+        env=env,
+        output_limit=CARGO_OUTPUT_LIMIT,
+        retain=CARGO_RETAINED,
+    )
+    if result.get("timed_out"):
+        raise TimeoutError(f"The build exceeded its deadline during {what}") from (
+            BuildCommandError(tuple(argv), result)
+        )
+    if result["exit_code"] != 0:
+        raise BuildCommandError(tuple(argv), result)
+    if len(result["stdout"].encode()) >= CARGO_RETAINED:
+        raise ValueError(f"Cargo wrote more output than Peeky keeps during {what}")
+    return result
+
+
+def _environment(target, home, directory, wrapper, analysed, units, project=()):
+    """rust_workspace.build_environment (the target directory, profile and rustflags,
+    ``project``'s `--cfg` ones included, that Cargo's unit graph was read with), plus the
+    wrapper's and the macOS tools'."""
+    env = rust_workspace.build_environment(
+        target.rustc, home, Path(directory) / "target", (*target.rustflags(), *project)
+    )
+    tools = [str(Path(target.rustc).parent)]
+    if target.dsymutil:
+        # rustc runs `dsymutil` from PATH for packed macOS symbols.
+        tools.insert(0, str(Path(real_tool(target.dsymutil)).parent))
+    env["PATH"] = ":".join((*dict.fromkeys(tools), "/usr/bin", "/bin"))
+    if target.sysroot is not None:
+        env["SDKROOT"] = str(Path(target.sysroot).resolve(strict=True))
+    env.update(
+        {
+            "RUSTC_WORKSPACE_WRAPPER": str(wrapper),
+            "PEEKY_ANALYSED": json.dumps(analysed, sort_keys=True),
+            "PEEKY_UNITS": str(units),
+        }
+    )
+    return env
+
+
+def _hash(path, store=None):
+    return sha256_file(path, store=store)
+
+
+def _digest(store):
+    """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules)."""
+    return lambda path: sha256_file(path, store=store)
+
+
+def _snapshot(shape, vendor):
+    """{path: (mtime, ctime, size)} of the files under the local packages' directories
+    (not a target directory, hidden directories or the vendored copies), to tell a file
+    changed while Cargo ran from one changed before."""
+    skip = {str((shape.workspace / vendor).resolve())} if vendor else set()
+    seen, found = set(), {}
+    for package in shape.local:
+        top = (shape.root / package.directory).resolve()
+        for base, folders, files in os.walk(top):
+            if base in seen:
+                folders[:] = []
+                continue
+            seen.add(base)
+            folders[:] = [
+                name
+                for name in folders
+                if not name.startswith(".")
+                and name != "target"
+                and str(Path(base, name)) not in skip
+            ]
+            for name in files:
+                if len(found) >= _MAX_SNAPSHOT:
+                    return found
+                path = os.path.join(base, name)
+                with contextlib.suppress(OSError):
+                    info = os.stat(path)
+                    found[path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    return found
+
+
+def _messages(stdout):
+    found = []
+    for line in split_lines(stdout):
+        if not line.startswith("{"):
+            continue
+        try:
+            message = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(message, dict):
+            found.append(message)
+    return found
+
+
+def _stem(filename):
+    """A compile's output name as rustc gives it, `<crate><extra-filename>`, from one of its
+    files (`libutil-1a2b….rlib`, `app-1a2b…`)."""
+    name = Path(filename).name
+    for suffix in (".rlib", ".rmeta", ".so", ".dylib", ".a", ".dll", ".dSYM"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            if suffix != ".dSYM" and name.startswith("lib"):
+                name = name[3:]
+            break
+    return name
+
+
+def _codegen(args):
+    """rustc's codegen options of a recorded command (`-C k=v`, `-Ck=v`, `--codegen k=v`,
+    `-O`, `-g`), the last of each winning."""
+    found, index = {}, 0
+    while index < len(args):
+        arg, option = args[index], None
+        if arg in ("-C", "--codegen") and index + 1 < len(args):
+            option, index = args[index + 1], index + 1
+        elif arg.startswith("-C") and len(arg) > 2:
+            option = arg[2:]
+        elif arg.startswith("--codegen="):
+            option = arg[len("--codegen=") :]
+        elif arg == "-O":
+            option = "opt-level=2"
+        elif arg == "-g":
+            option = "debuginfo=2"
+        index += 1
+        if option is not None:
+            key, _, value = option.partition("=")
+            found[key] = value
+    return found
+
+
+def check_codegen(package, crate, args):
+    """Refuse an analysed compile that Peeky's proofs don't hold for: optimized, without
+    full debug information, stripped, or with link-time optimization."""
+    options = _codegen(args)
+    level = options.get("opt-level", "0")
+    problems = []
+    if level != "0":
+        problems.append(f"`-C opt-level={level}`")
+    if options.get("debuginfo", "0") not in ("2", "full"):
+        problems.append(f"`-C debuginfo={options.get('debuginfo', '0')}`")
+    if options.get("strip", "none") != "none":
+        problems.append(f"`-C strip={options['strip']}`")
+    if options.get("lto", "off") not in ("off", "no", "n", "false"):
+        problems.append(f"`-C lto={options['lto']}`")
+    if problems:
+        raise ValueError(
+            f"Peeky analyses only code built at opt-level 0 with full debug information: "
+            f"`{package}`'s compile of {crate} had {', '.join(problems)}, from a profile in "
+            "Cargo.toml or Cargo's configuration. Remove that setting for this package"
+        )
+    return level
+
+
+def _dependency_file(filenames):
+    """(the dependency file of a compile with these output files, its form): rustc's own,
+    beside an output in `deps` or a build script's directory; else the one Cargo writes
+    beside a binary it copies up (`target/debug/app.d`, make's form, which also lists the
+    local packages it uses)."""
+    paths = [Path(filename) for filename in filenames]
+    for path in paths:
+        candidate = path.with_name(_stem(path.name) + ".d")
+        if (path.parent.name == "deps" or path.parent.parent.name == "build") and (
+            candidate.is_file()
+        ):
+            return candidate, "rustc"
+    for path in paths:
+        candidate = path.with_name(_stem(path.name) + ".d")
+        if candidate.is_file():
+            return candidate, "make"
+    return None, None
+
+
+def _changed_during(path, before, started_ns):
+    info = os.stat(path)
+    now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    if str(path) in before:
+        return before[str(path)] != now
+    return max(info.st_mtime_ns, info.st_ctime_ns) >= started_ns - _SETTLE_NS
+
+
+def build(target, root, *, deadline=None, progress=None):
+    """`peeky build`: build ``target``'s workspace under ``root`` and write its manifest."""
+    say = progress or (lambda message: None)
+    root = Path(root).resolve(strict=True)
+    deadline = time.monotonic() + BUILD_TIMEOUT_S if deadline is None else deadline
+    started, started_ns = time.monotonic(), time.time_ns()
+    directory = build_directory(target, root)
+    from peeky.build import _digest_store, require_private
+
+    require_private(directory)
+    with _locked(directory, exclusive=True):
+        home = directory / "cargo-home"
+        home.mkdir(mode=0o700, exist_ok=True)
+        env = rust_workspace.cargo_environment(target.rustc, home)
+        tools, probes = _tools(target, env)
+        store = _digest_store()
+        digest = _digest(store)
+        shape = rust_workspace.read(
+            root,
+            target.config,
+            target.cargo,
+            target.rustc,
+            home,
+            directory / "target",
+            min(60, _left(deadline)),
+            rustflags=target.rustflags(),
+            digest=digest,
+        )
+        # Cargo reads configuration in every directory above the workspace: none another
+        # user could add between Peeky's check and Cargo's read.
+        require_private(shape.workspace)
+        vendor = target.config.vendor if shape.vendored else None
+        wrapper, wrapper_text = _write_wrapper(directory)
+        nonce = secrets.token_hex(8)
+        run = directory / "runs" / nonce
+        units = run / "units"
+        units.mkdir(parents=True, mode=0o700)
+        try:
+            analysed = {}
+            for package in shape.analysed:
+                for each in package.targets:
+                    if {"custom-build", "proc-macro"} & set(each.kinds):
+                        continue
+                    crate = each.name.replace("-", "_")
+                    source = str((root / each.source).resolve())
+                    analysed.setdefault(crate, []).append(source)
+            env = _environment(target, home, directory, wrapper, analysed, units, shape.rustflags)
+            before = _snapshot(shape, vendor)
+            extra = (
+                rust_workspace.vendor_arguments(shape.workspace, target.config.vendor)
+                if vendor
+                else ()
+            )
+            selected = [arg for package in shape.analysed for arg in ("-p", package.name)]
+            say(f"building {shape.workspace} (analysed: {', '.join(target.config.analyse)})")
+            _run(
+                [target.cargo, "clean", "--offline", "--locked", *selected, *extra],
+                shape.workspace,
+                env,
+                deadline,
+                "`cargo clean`",
+            )
+            result = _run(
+                [
+                    target.cargo,
+                    *shape.cargo_arguments(),
+                    "--offline",
+                    "--locked",
+                    "--message-format=json-diagnostic-short",
+                    *extra,
+                ],
+                shape.workspace,
+                env,
+                deadline,
+                "the build",
+            )
+            if wrapper.read_text() != wrapper_text:
+                raise RuntimeError("Provenance: Peeky's rustc wrapper changed during the build")
+            _assert_tools(tools)
+            manifest = _record(
+                target,
+                root,
+                shape,
+                directory,
+                run,
+                _messages(result["stdout"]),
+                before,
+                started_ns,
+                store,
+            )
+            # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
+            rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
+        except BaseException:
+            shutil.rmtree(run, ignore_errors=True)
+            raise
+        files = shape.watch["files"]
+        manifest.update(
+            schema=SCHEMA,
+            identity=target.identity(root),
+            nonce=nonce,
+            tools=tools,
+            probes=probes,
+            inputs={name: files[str(root / name)][-1] for name in shape.inputs},
+            watch=shape.watch,
+            # The project's `--cfg` and `--check-cfg` rustflags the build kept.
+            rustflags=list(shape.rustflags),
+            configs_above=[list(each) for each in shape.configs_above],
+            wrapper=str(wrapper),
+            seconds=round(time.monotonic() - started, 2),
+            built_at=time.time(),
+        )
+        manifest["build_id"] = _build_id(manifest)
+        _write_manifest(directory, manifest)
+        _prune(directory, nonce)
+        say(f"built in {manifest['seconds']} s")
+        return summary(manifest, directory)
+
+
+def _left(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("The build exceeded its deadline")
+    return remaining
+
+
+def _tools(target, env):
+    """[{path, sha256}] of the tools a build runs, and their version probes, which must
+    name the pinned version."""
+    from peeky.agent import execute
+
+    paths = [target.cargo, target.rustc, target.linker]
+    paths += [target.dsymutil] if target.dsymutil else []
+    tools = [
+        {"path": str(real_tool(path)), "sha256": sha256_file(real_tool(path))}
+        for path in dict.fromkeys(p for p in paths if p)
+    ]
+    probes = {}
+    for name, argv in (("rustc", (target.rustc, "-vV")), ("cargo", (target.cargo, "--version"))):
+        done = execute(list(argv), env["CARGO_HOME"], 30, env=env)
+        probes[name] = done["stdout"]
+        if done["exit_code"] != 0 or not done["stdout"].startswith(
+            f"{name} {target.rust_version} "
+        ):
+            raise ValueError(
+                f"Rust toolchain does not match the pinned version {target.rust_version}: "
+                f"{argv[0]} says {split_lines(done['stdout'])[:1]}"
+            )
+    return tools, probes
+
+
+def _assert_tools(tools):
+    for tool in tools:
+        try:
+            unchanged = sha256_file(tool["path"]) == tool["sha256"]
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            raise RuntimeError(f"Provenance: the tool {tool['path']} changed during the build")
+
+
+def _record(target, root, shape, directory, run, messages, before, started_ns, store):
+    """The manifest's record of what the build compiled: the run's executable, the
+    analysed units, every local package's sources, the generated files they read."""
+    target_dir = (directory / "target").resolve()
+    by_manifest = {str((root / package.manifest).resolve()): package for package in shape.local}
+    analysed_names = {package.name for package in shape.analysed}
+    run_package, run_target = shape.run
+    executable = None
+    sources, generated, units = {}, {}, []
+    seen_units = set()
+    # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
+    compiled = {}
+    for unit in sorted((run / "units").iterdir()):
+        command = json.loads((unit / "command.json").read_text())
+        args = command.get("args") or []
+        crate = next((b for a, b in zip(args, args[1:]) if a == "--crate-name"), None)
+        compiled.setdefault((crate, command.get("source"), "--test" in args), []).append(unit)
+    for message in messages:
+        if message.get("reason") != "compiler-artifact":
+            continue
+        package = by_manifest.get(str(Path(str(message.get("manifest_path"))).resolve()))
+        if package is None:
+            continue
+        artifact = message.get("target") or {}
+        profile = message.get("profile") or {}
+        kinds = tuple(artifact.get("kind") or ())
+        filenames = [str(name) for name in message.get("filenames") or ()]
+        if (
+            package.name == run_package.name
+            and artifact.get("name") == run_target.name
+            and kinds == run_target.kinds
+            and message.get("executable")
+        ):
+            executable = message["executable"]
+        depfile, producer = _dependency_file(filenames)
+        if depfile is None:
+            raise ValueError(
+                f"Cargo wrote no dependency file for `{package.name}`'s {artifact.get('name')}"
+            )
+        read = _read_dependencies(
+            depfile, shape.workspace, root, target_dir, package.name, producer
+        )
+        _record_read(read, root, target_dir, before, started_ns, sources, generated)
+        if package.name not in analysed_names or {"custom-build", "proc-macro"} & set(kinds):
+            continue
+        crate = str(artifact.get("name", "")).replace("-", "_")
+        key = (crate, str(Path(str(artifact.get("src_path"))).resolve()), bool(profile.get("test")))
+        found = compiled.get(key, [])
+        if len(found) > 1:
+            stems = {_stem(Path(name).name) for name in filenames}
+            found = [unit for unit in found if unit.name in stems]
+        if message.get("fresh") or len(found) != 1:
+            raise ValueError(
+                f"Peeky's wrapper didn't compile `{package.name}`'s {artifact.get('name')}: "
+                "Cargo wraps only the workspace's members. Add the package to the "
+                "workspace's members, or analyse another"
+            )
+        unit = found[0]
+        seen_units.add(unit.name)
+        entry = _unit(package, artifact, unit, run)
+        read = _read_dependencies(
+            Path(entry.pop("dependency_file")), shape.workspace, root, target_dir, package.name
+        )
+        _record_read(read, root, target_dir, before, started_ns, sources, generated)
+        entry["sources"] = sorted(read["sources"])
+        units.append(entry)
+    if len(sources) + len(generated) > MAX_RECORDED:
+        raise ValueError(f"The build read more than {MAX_RECORDED} files Peeky would record")
+    if executable is None:
+        raise ValueError(
+            f"Cargo named no executable for {run_target.name} (`{run_package.name}`) in its "
+            "messages"
+        )
+    if not units:
+        raise ValueError(
+            f"What runs ({run_target.name}) uses none of the analysed packages "
+            f"({', '.join(sorted(analysed_names))}): analyse a package it uses"
+        )
+    if strays := {path.name for path in (run / "units").iterdir()} - seen_units:
+        raise ValueError(
+            f"Peeky's wrapper compiled {', '.join(sorted(strays))}, which Cargo's messages "
+            "don't name"
+        )
+    copied = _copy_executable(Path(executable), run)
+    for each in (run / "units").rglob("*.PreCodegen.before.mir"):
+        # Only the bodies after rustc's last MIR pass are read.
+        each.unlink()
+    artifacts = _artifacts(directory, run, store)
+    return {
+        "root": str(root),
+        "workspace": str(shape.workspace),
+        "analysed": [package.name for package in shape.analysed],
+        "local": [
+            {"name": package.name, "directory": package.directory} for package in shape.local
+        ],
+        "run": {
+            "package": run_package.name,
+            "target": run_target.name,
+            "kinds": list(run_target.kinds),
+            "source": run_target.source,
+            "executable": copied,
+            "cargo_arguments": list(shape.cargo_arguments()),
+        },
+        "dependencies": len(shape.vendored),
+        "units": units,
+        "sources": dict(sorted(sources.items())),
+        "generated": dict(sorted(generated.items())),
+        "artifacts": artifacts,
+    }
+
+
+def _record_read(read, root, target_dir, before, started_ns, sources, generated):
+    """Hash what a compile read: sources (refused where one changed while Cargo ran) and
+    files a build script generated."""
+    for path in read["sources"]:
+        if path not in sources:
+            if _changed_during(root / path, before, started_ns):
+                raise RuntimeError(
+                    f"Provenance: {path} changed while Peeky built the workspace, so the build "
+                    "may not be of it. Build again"
+                )
+            sources[path] = _hash(root / path)
+    for path in read["generated"]:
+        if path not in generated:
+            generated[path] = _hash(target_dir / path)
+
+
+def _read_dependencies(depfile, workspace, root, target_dir, package, producer="rustc"):
+    try:
+        paths = dependency_paths(depfile.read_text(errors="surrogateescape"), workspace, producer)
+    except UnreadDependencies as exc:
+        raise ValueError(f"{exc} ({depfile.name}, of `{package}`)") from None
+    found = {"sources": [], "generated": []}
+    for path in paths:
+        resolved = path.resolve()
+        if resolved.is_relative_to(target_dir):
+            found["generated"].append(resolved.relative_to(target_dir).as_posix())
+        elif resolved.is_relative_to(root):
+            found["sources"].append(resolved.relative_to(root).as_posix())
+        else:
+            raise ValueError(
+                f"Peeky builds only files inside {root}: `{package}`'s build read {path}. Move it "
+                "into the workspace, or drop the `include!` or `#[path]` that names it"
+            )
+    return found
+
+
+def _unit(package, artifact, unit, run):
+    """An analysed compile, as its manifest entry: the checked flags and the wrapper's
+    files (MIR, expanded text, LLVM IR), relative to the build's run, and its own
+    dependency file (``dependency_file``, for the caller)."""
+    command = json.loads((unit / "command.json").read_text())
+    args = command.get("args") or []
+    crate = artifact.get("name", "").replace("-", "_")
+    level = check_codegen(package.name, crate, args)
+    out_dir = next(
+        (b for a, b in zip(args, args[1:]) if a == "--out-dir"),
+        next((a.split("=", 1)[1] for a in args if a.startswith("--out-dir=")), None),
+    )
+    ir = Path(out_dir or "") / f"{unit.name}.ll"
+    if not out_dir or not ir.is_file():
+        raise ValueError(f"rustc wrote no LLVM IR for `{package.name}`'s {crate}")
+    shutil.copy2(ir, unit / "ir.ll")
+    expanded = json.loads((unit / "expand.json").read_text()).get("exit_code") == 0
+    return {
+        "package": package.name,
+        "crate": crate,
+        "target": artifact.get("name"),
+        "kinds": list(artifact.get("kind") or ()),
+        "test": "--test" in args,
+        "source": command.get("source"),
+        "unit": unit.relative_to(run.parent.parent).as_posix(),
+        "opt_level": level,
+        "expanded": expanded,
+        "dependency_file": str(Path(out_dir) / f"{unit.name}.d"),
+    }
+
+
+def _copy_executable(executable, run):
+    """The run's executable (and its macOS symbols), copied out of Cargo's target
+    directory: a later build replaces Cargo's, never this one."""
+    folder = run / "bin"
+    folder.mkdir(mode=0o700)
+    copy = folder / executable.name
+    shutil.copy2(executable, copy)
+    symbols = executable.with_name(executable.name + ".dSYM")
+    if sys.platform == "darwin":
+        if not symbols.is_dir():
+            raise ValueError(f"Cargo wrote no debug symbols for {executable.name}")
+        shutil.copytree(symbols, folder / symbols.name, symlinks=True)
+    return copy.relative_to(run.parent.parent).as_posix()
+
+
+def _artifacts(directory, run, store):
+    found = {}
+    for path in sorted(run.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Peeky's build holds a link: {path}")
+        if path.is_file():
+            found[path.relative_to(directory).as_posix()] = sha256_file(path, store=store)
+            if len(found) > MAX_RECORDED:
+                raise ValueError(f"The build wrote more than {MAX_RECORDED} files Peeky records")
+    return found
+
+
+def _build_id(manifest):
+    kept = {
+        key: value
+        for key, value in manifest.items()
+        if key not in ("nonce", "seconds", "built_at", "artifacts", "units", "run")
+    }
+    return hashlib.sha256(
+        json.dumps(kept, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _write_manifest(directory, manifest):
+    path = Path(directory) / "manifest.json"
+    temporary = path.with_name(f".manifest-{secrets.token_hex(4)}.json")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as out:
+        json.dump(manifest, out, sort_keys=True)
+    os.replace(temporary, path)
+
+
+def _prune(directory, nonce):
+    """Keep the newest KEEP_RUNS builds' files."""
+    runs = Path(directory) / "runs"
+    kept = sorted(
+        (path for path in runs.iterdir() if path.is_dir()),
+        key=lambda path: (path.name == nonce, path.stat().st_mtime_ns),
+        reverse=True,
+    )
+    for path in kept[KEEP_RUNS:]:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def summary(manifest, directory):
+    """What `peeky build` says of a build."""
+    return {
+        "peeky": "build",
+        "status": "built",
+        "workspace": manifest["workspace"],
+        "analysed": manifest["analysed"],
+        "run": {
+            "package": manifest["run"]["package"],
+            "target": manifest["run"]["target"],
+            "kinds": manifest["run"]["kinds"],
+        },
+        "executable": str(Path(directory) / manifest["run"]["executable"]),
+        "build_id": manifest["build_id"],
+        "seconds": manifest["seconds"],
+        "dependencies": manifest["dependencies"],
+        "sources": len(manifest["sources"]),
+        "units": [
+            {key: unit[key] for key in ("package", "crate", "test", "expanded")}
+            for unit in manifest["units"]
+        ],
+    }
+
+
+def _required(target, why):
+    return BuildRequired(
+        f"No current Peeky build of this workspace: {why}. Run `{target.build_command}` "
+        "first, or add --build"
+    )
+
+
+def _stale(target, what):
+    return RuntimeError(
+        f"Provenance: {what} since `peeky build` ran, so its build may not be of these files. "
+        f"Run `{target.build_command}` again, or add --build"
+    )
+
+
+def current_build(target, root):
+    """The manifest of ``target``'s build under ``root`` while it holds: BuildRequired
+    where there is none, and a provenance error, naming the file, where anything it
+    records changed since."""
+    root = Path(root).resolve(strict=True)
+    directory = build_directory(target, root, create=False)
+    path = directory / "manifest.json"
+    if not path.is_file():
+        raise _required(target, "none has been made for this configuration")
+    with _locked(directory, exclusive=False):
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
+            raise _required(target, "its record can't be read") from None
+        if manifest.get("schema") != SCHEMA or manifest.get("identity") != target.identity(root):
+            raise _required(target, "the one recorded is for another configuration or Peeky")
+        for tool in manifest["tools"]:
+            try:
+                same = sha256_file(tool["path"]) == tool["sha256"]
+            except OSError:
+                same = False
+            if not same:
+                raise _stale(target, f"the tool {tool['path']} changed")
+        from peeky.build import _digest_store
+
+        store = _digest_store()
+        if (what := rust_workspace.recheck(manifest["watch"], _digest(store))) is not None:
+            raise _stale(target, _shown(what, root))
+        for name, digest in manifest["sources"].items():
+            try:
+                same = sha256_file(root / name) == digest
+            except OSError:
+                same = False
+            if not same:
+                raise _stale(target, f"{name} changed")
+        target_dir = directory / "target"
+        for name, digest in manifest["generated"].items():
+            try:
+                same = sha256_file(target_dir / name) == digest
+            except OSError:
+                same = False
+            if not same:
+                raise _stale(target, f"the build's generated file {name} changed")
+        for name, digest in manifest["artifacts"].items():
+            try:
+                same = sha256_file(directory / name, store=store) == digest
+            except OSError:
+                same = False
+            if not same:
+                raise _stale(target, f"the build's output {name} changed")
+    manifest["directory"] = str(directory)
+    return manifest
+
+
+def _shown(text, root):
+    """A refusal's text with paths under the root relative to it."""
+    return str(text).replace(f"{Path(root)}/", "")
+
+
+def build_command(target_argument, config_argument):
+    """`peeky build` as the user would type it again, from the same directory."""
+    return f"peeky build {shlex.quote(str(target_argument))} --config {shlex.quote(str(config_argument))}"

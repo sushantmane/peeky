@@ -302,7 +302,7 @@ reads a key of a GCC build's unordered container past its first 256 entries. Pro
 `hello`: a client sends nothing else, and not the token, before the worker proves it holds the
 token. Protocol 12 runs a Python program on the worker root's virtual environment, or the
 worker's `--python`, and names it. Protocol 13 runs pytest, as `python -m pytest` does
-(`--run-module pytest`). Both hosts need the same protocol. A client and a worker of different protocols refuse
+(`--run-module pytest`). Protocol 13 adds `BUILD_REQUIRED`, for a Rust workspace without a current Peeky build. Both hosts need the same protocol. A client and a worker of different protocols refuse
 each other:
 
 - A client refuses a worker of another protocol before sending anything but a `hello`, which
