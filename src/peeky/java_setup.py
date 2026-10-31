@@ -160,14 +160,20 @@ def acquire(item: dict, deadline: float | None = None) -> bytes:
     return data
 
 
-def run(command: list[str]) -> str:
+def run(command: list[str], env: dict | None = None) -> str:
+    """``command``'s output, stderr too; ``env``, by default this process's environment,
+    loses the credentials either way."""
     # Pinned compiler inputs still deserve bounded diagnostics and a process deadline.
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(
             command,
             stdout=output,
             stderr=subprocess.STDOUT,
-            env={k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV},
+            env={
+                k: v
+                for k, v in (os.environ if env is None else env).items()
+                if k not in CREDENTIAL_ENV
+            },
             start_new_session=True,
         )
         deadline = time.monotonic() + 90
@@ -610,7 +616,7 @@ def current(bundle: Path, wanted: dict, java: str) -> str | None:
     """Why ``bundle`` is not what this Peeky builds now, with the recipe ``wanted`` (recipe,
     with javac's version asked afresh), or None when it is: the same fingerprint, and it
     verifies as the worker verifies it before every use, run by ``java``."""
-    from peeky.java import _tool, _verify_bundle
+    from peeky.java import ADAPTER_JAVA, _tool, _verify_bundle
 
     try:
         resolved = bundle.resolve(strict=True)
@@ -624,6 +630,8 @@ def current(bundle: Path, wanted: dict, java: str) -> str | None:
     except (OSError, ValueError) as exc:
         if "predates Peeky's java-debug fixes" in str(exc):
             return "it predates Peeky's java-debug fixes"
+        if str(exc).startswith(ADAPTER_JAVA):
+            return "it was built with another java"
         return f"it does not verify: {str(exc)[:200] or type(exc).__name__}"
     return None
 
