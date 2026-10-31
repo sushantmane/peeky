@@ -175,10 +175,15 @@ file lists what it reads.
 - A `verify --check-command` that Peeky won't run as given. It may hold shell syntax (`|`, `>`,
   `$`, `[` …), or start by setting a variable (`FOO=1 …`). Its program may not be on `PATH`, or be
   outside the root. Or `--check` came with it. The message says which, and what to pass instead
-  ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
-- A `verify --check-command` edit whose imports in the copy may load your unedited module, as from
-  an editable install Peeky can't redirect: `verify --check-command can't test this edit: …`. Check
-  the edit with a `--check` checker, which is given the edited file.
+  ([6.7](COOKBOOK.md#what-it-runs)).
+- A `verify --check-command` that would read your files or run another Python: an argument that
+  names a path inside the root by its absolute path, another Python, or a script that runs on one.
+  `tox` and `nox` are refused too: give the test command they run ([6.7](COOKBOOK.md#what-it-runs)).
+- A `verify --check-command` edit that a module the project supplies may not import from the copy:
+  `verify --check-command can't test this edit: …`. The message names where `import pkg` finds
+  it: an installed copy in `site-packages`, an outside `PYTHONPATH` entry, or an editable install
+  Peeky can't redirect. Uninstall it, or install the project editable, or check the edit with a
+  `--check` checker ([6.7](COOKBOOK.md#what-it-imports)).
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A client and a remote worker of different protocols: `Worker speaks protocol 8, this client 9`,
   or, from the worker, `Client speaks protocol 8, this worker 9`. Install the same Peeky version

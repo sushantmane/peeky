@@ -66,6 +66,9 @@ _LINKED_DIRS = frozenset(
 # Caches whose tools rebuild them with the same results are left out (a link would let the
 # program write the user's). `.pytest_cache` changes what pytest runs (`--lf`): copied.
 _SKIPPED_DIRS = frozenset({"__pycache__", ".mypy_cache", ".ruff_cache"})
+# Left out of a test command's copy (`verify --check-command`): tox's and nox's environments
+# and setuptools' eggs are no interpreter's own, and a link would let the command write them.
+_COMMAND_SKIPPED_DIRS = frozenset({".tox", ".nox", ".eggs"})
 # Repositories are copied whole, following their links, so whatever the program does with
 # them (`git add`, a rewritten index, new objects, even a touched object's mtime) stays in
 # the copy; one that cannot be is left out, with a note.
@@ -314,6 +317,7 @@ class PythonCandidate:
     def __init__(self, adapter, program, root, edit, deadline=None, *, command=False):
         self.adapter = adapter
         self._deadline = deadline
+        self._command = command
         # What to do instead where the copy cannot serve.
         self._instead = (
             "check the edit with a `--check` checker"
@@ -524,7 +528,7 @@ class PythonCandidate:
             kept = []
             for name in directories:
                 path = Path(here) / name
-                if name in _SKIPPED_DIRS:
+                if name in _SKIPPED_DIRS or (self._command and name in _COMMAND_SKIPPED_DIRS):
                     continue
                 if name in _REPOSITORIES:
                     if self._repository(path, folder / name) and name == ".git":
@@ -851,8 +855,8 @@ class PythonCandidate:
             if moved is None:
                 unmoved.add(name)
                 self.unedited_imports.append(
-                    f"in the copy, `import {name}` loads your unedited module: an editable "
-                    f"install maps it to {module}, and Peeky can't move that to the copy"
+                    f"`import {name}` loads your unedited module: an editable install maps it "
+                    f"to {module}, and Peeky can't move that to the copy"
                 )
                 self._notes.append(
                     f"This Python candidate cannot move an editable install's `{name}` (it "
@@ -883,7 +887,10 @@ class PythonCandidate:
     def _check_imports(self, pythonpath, redirected, unmoved):
         """Find what each top-level name the root offers imports as, the way the program
         will (its script's directory first, its `PYTHONPATH`), and note each one served
-        from the user's tree."""
+        from the user's tree. A test command's: ``_check_command_imports``."""
+        if self._command:
+            self._check_command_imports(pythonpath, redirected)
+            return
         names = (
             _module_names(self._source) | _module_names(self._source / "src") | {self.original.stem}
         )
@@ -927,16 +934,81 @@ class PythonCandidate:
                 None,
             )
             if served is not None:
-                self.unedited_imports.append(
-                    f"in the copy, `import {name}` loads {served} from your tree: an import "
-                    "hook or install serves it ahead of every import path"
-                )
                 self._notes.append(
                     f"This Python candidate's `import {name}` loads {served} from your tree, "
                     f"not the copy, so values from it are not the edit's: {self._instead}. An "
                     "import hook or install, such as meson-python's editable loader, serves it "
                     "ahead of every import path, and may rebuild there"
                 )
+
+    def _check_command_imports(self, pythonpath, redirected):
+        """For a test command: each top-level name the project supplies (in its root, its
+        `src`, a copied `PYTHONPATH` entry, and the edited file's) must import from the
+        copy. Each is looked up (`find_spec`, never imported) as any process the command
+        starts finds it: on ``pythonpath``, with no script directory first (a console
+        script's is its environment's `bin`). Every place found must be inside the copy;
+        one elsewhere (an installed copy in site-packages, an outside `PYTHONPATH` entry,
+        an import hook serving your tree) is named in ``unedited_imports``."""
+        names = set()
+        for base in (self._source, self._source / "src"):
+            names |= _module_names(base)
+            if self.original.is_relative_to(base):
+                first = self.original.relative_to(base).parts[0]
+                # `src` itself is no package where it is an import root.
+                if not (base == self._source and first == "src"):
+                    names.add(first.removesuffix(".py"))
+        for entry in redirected:
+            if entry and Path(entry).is_relative_to(self.root):
+                names |= _module_names(Path(entry))
+        names = sorted(name for name in names if name.isidentifier())
+        script = (
+            "import sys\nif sys.path and sys.path[0] == '':\n    del sys.path[0]\n"
+            "import importlib.util, json\nfound = {}\n"
+            "for name in sys.argv[1:]:\n"
+            "    try:\n        spec = importlib.util.find_spec(name)\n"
+            "    except Exception:\n        found[name] = None\n        continue\n"
+            "    if spec is None:\n        continue\n"
+            "    places = [spec.origin] if isinstance(spec.origin, str) else []\n"
+            "    places += [p for p in (spec.submodule_search_locations or [])"
+            " if isinstance(p, str)]\n"
+            "    found[name] = places\n"
+            "print(json.dumps(found))\n"
+        )
+        found = self._interpreter(script, pythonpath, *names)
+        if not isinstance(found, dict):
+            return
+        copy = Path(os.path.realpath(self.root))
+        for name in names:
+            if name not in found:
+                continue
+            places = found[name]
+            if not isinstance(places, list):
+                outside = "a place Peeky could not find (its lookup failed)"
+            else:
+                outside = next(
+                    (
+                        str(place)
+                        for place in places
+                        if not (
+                            isinstance(place, str)
+                            and os.path.isabs(place)
+                            and Path(os.path.realpath(place)).is_relative_to(copy)
+                        )
+                    ),
+                    None,
+                )
+            if outside is None:
+                continue
+            self.unedited_imports.append(
+                f"`import {name}` finds {outside}, outside the copy, so the command may not "
+                "run the edit: uninstall that, or install the project editable "
+                "(`pip install -e .`)"
+            )
+            self._notes.append(
+                f"The check command's `import {name}` finds {outside}, outside the copy, so "
+                "the command may not run the code in the copy: an installed copy, an outside "
+                "`PYTHONPATH` entry or an import hook serves it"
+            )
 
     def _self_contained(self, text):
         """_self_contained, as the program's interpreter imports the standard modules, with
@@ -1043,6 +1115,11 @@ class PythonCandidate:
     def pythonpath(self):
         """The `PYTHONPATH` that puts the copy first (None: the user's, unchanged)."""
         return self._pythonpath
+
+    def copy_path(self, path):
+        """The copy of ``path`` if it is inside the root, and not in an environment or site
+        directory (links to the user's files either way); else None."""
+        return self._project_copy(path)
 
     def close(self, keep=False):
         """Remove the copy (with ``keep``, leave it, removable); end the readings."""

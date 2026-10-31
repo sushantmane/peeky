@@ -3625,55 +3625,189 @@ def _check_command_words(args):
             f"--check-command's first word, {words[0]}, must be the program to run: Peeky runs "
             "no shell, so set a variable in the environment you run peeky in"
         )
+    tool = Path(words[0]).name if Path(words[0]).name in ("tox", "nox") else _module_run(words)
+    if tool in ("tox", "nox"):
+        raise ValueError(
+            f"--check-command doesn't run {tool}: tox and nox build their own environments, "
+            "outside the copy. Give the test command they run, such as 'python -m pytest "
+            "tests/test_x.py -q'"
+        )
     return words
 
 
-def _command_environment(interpreter):
+# A Python interpreter's name (`python`, `python3.12`), as a command or a script's `#!`.
+_PYTHON_NAME = re.compile(r"python[0-9.]*")
+# Interpreter options that take no value: `python -I -B -m pytest`.
+_PYTHON_FLAGS = frozenset("bBdEhiIOPqsSuvx")
+
+
+def _module_run(words):
+    """The module `python [options] -m MODULE ...` runs, or None: not an interpreter's
+    command line, a script or `-c`, or an option Peeky doesn't know."""
+    if not words or not _PYTHON_NAME.fullmatch(Path(words[0]).name):
+        return None
+    rest = list(words[1:])
+    while rest:
+        word = rest.pop(0)
+        if not word.startswith("-") or word.startswith("--") or word == "-":
+            return None
+        for at, flag in enumerate(word[1:], 1):
+            if flag in _PYTHON_FLAGS:
+                continue
+            if flag in "WX":
+                # Its value is the rest of the word, or the next word.
+                if at == len(word) - 1:
+                    if not rest:
+                        return None
+                    rest.pop(0)
+                break
+            if flag == "m":
+                return word[at + 1 :] or (rest[0] if rest else None)
+            return None
+    return None
+
+
+def _runner(words):
+    """The test runner a check command runs, as its words say: `pytest` (`pytest`,
+    `py.test`, `python ... -m pytest`), `unittest` (`python ... -m unittest`), or None."""
+    if not words:
+        return None
+    if Path(words[0]).name in ("pytest", "py.test"):
+        return "pytest"
+    return {"pytest": "pytest", "unittest": "unittest"}.get(_module_run(words))
+
+
+def _command_environment(interpreter, candidate):
     """The environment a check command runs in: Peeky's, without the worker's token, as
-    a launched program gets it, with the interpreter's directory first on PATH, and its
-    virtual environment, if it is in one, as VIRTUAL_ENV."""
+    a launched program gets it, with the interpreter's directory first on PATH, its other
+    entries inside the root moved to the copy, and the interpreter's virtual environment,
+    if it is in one, as VIRTUAL_ENV."""
     from peeky.python_interpreter import PROGRAM_ENV
 
     environment = {**without_credentials(os.environ), **PROGRAM_ENV}
     executable = interpreter.executable or interpreter.path
-    first = []
+    entries = []
     for path in (executable, interpreter.path):
-        if (folder := os.path.dirname(path)) and folder not in first:
-            first.append(folder)
-    rest = environment.get("PATH", os.defpath)
-    environment["PATH"] = os.pathsep.join([*first, *([rest] if rest else [])])
+        if (folder := os.path.dirname(path)) and folder not in entries:
+            entries.append(folder)
+    for entry in (environment.get("PATH", os.defpath) or "").split(os.pathsep):
+        if entry and os.path.isabs(entry) and (moved := candidate.copy_path(entry)):
+            entry = moved
+        entries.append(entry)
+    environment["PATH"] = os.pathsep.join(entries)
     home = Path(executable).parent.parent
     if (home / "pyvenv.cfg").is_file():
         environment["VIRTUAL_ENV"] = str(home)
     else:
         environment.pop("VIRTUAL_ENV", None)
+    # As a shell sets it there.
+    environment["PWD"] = str(candidate.root)
+    if candidate.pythonpath is not None:
+        environment["PYTHONPATH"] = candidate.pythonpath
     return environment
 
 
-def _command_program(word, root, environment, interpreter):
-    """What a check command's first word runs: `python` and `python3` are the program's
-    interpreter; a path with a `/` is that file (a relative one inside the root, run from
-    its copy); another name is found on the command's PATH."""
+def _check_command_arguments(words, root):
+    """Refuse a check command's argument that names a path inside ``root`` by its absolute
+    path: the command would read your files, not the copy's."""
+    for word in words:
+        for part in (word, *word.split("=", 1)[1:]):
+            if os.path.isabs(part) and any(
+                Path(path).is_relative_to(root)
+                for path in (os.path.normpath(part), os.path.realpath(part))
+            ):
+                raise ValueError(
+                    f"--check-command's argument {word} names a path in your project, not in "
+                    "the copy the command runs in: give it relative to the root"
+                )
+
+
+def _same_python(path, interpreter):
+    """Whether ``path`` is the program's interpreter: the same file, in the same directory
+    (a virtual environment's `python3` is its `python`, also through the copy's link to
+    its `bin`; another environment's is not)."""
+    for chosen in {interpreter.path, interpreter.executable} - {"", None}:
+        try:
+            if os.path.realpath(os.path.dirname(os.path.abspath(path))) == os.path.realpath(
+                os.path.dirname(os.path.abspath(chosen))
+            ) and os.path.samefile(path, chosen):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+# pip's first lines for a script whose interpreter's path is too long for `#!`.
+_SH_EXEC = re.compile(r"'''exec' \"?(.+?)\"? \"\$0\" \"\$@\"")
+
+
+def _script_python(path, environment):
+    """The Python a script's first line runs it on (`#!/p/bin/python`, `#!/usr/bin/env
+    python3`, or pip's `#!/bin/sh` with ``_SH_EXEC`` next), or None: not a Python
+    script."""
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(4096)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    lines = head.decode(errors="replace").split("\n")
+    words = lines[0][2:].split()
+    if not words:
+        return None
+    target = words[0]
+    if Path(target).name == "env":
+        named = next((word for word in words[1:] if not word.startswith("-")), None)
+        target = named and (shutil.which(named, path=environment.get("PATH")) or named)
+    elif Path(target).name == "sh" and len(lines) > 1:
+        found = _SH_EXEC.match(lines[1])
+        target = found and found[1]
+    if not target or not _PYTHON_NAME.fullmatch(Path(target).name):
+        return None
+    return target
+
+
+def _command_program(word, candidate, environment, interpreter):
+    """What a check command's first word runs, in the copy: `python` and `python3` are the
+    program's interpreter; a path with a `/` is that file (a relative one in the copy's
+    root); another name is found on the command's PATH. A file inside the root is the
+    copy's. Another Python, and a Python script that runs on another, are refused."""
+    executable = interpreter.executable or interpreter.path
     if word in ("python", "python3"):
-        return interpreter.executable or interpreter.path
+        return executable
     if "/" in word:
-        path = Path(word) if os.path.isabs(word) else Path(root) / word
-        if not os.path.isabs(word) and not Path(os.path.normpath(path)).is_relative_to(root):
+        path = os.path.normpath(os.path.join(candidate.root, word))
+        if not os.path.isabs(word) and not Path(path).is_relative_to(candidate.root):
             raise ValueError(
                 f"--check-command's program {word} is outside the root, which is all the copy "
                 "holds: give its absolute path"
             )
-        if not (path.is_file() and os.access(path, os.X_OK)):
-            raise ValueError(f"--check-command's program {word} is not an executable file")
-        return word
-    found = shutil.which(word, path=environment.get("PATH"))
-    if found is None:
+    else:
+        path = shutil.which(word, path=environment.get("PATH"))
+        if path is None:
+            raise ValueError(
+                f"--check-command's program {word} is not on PATH, with the interpreter's "
+                f"directory first ({environment['PATH'].split(os.pathsep)[0]}): install it in "
+                "the project's environment, or give its path"
+            )
+    # Your file runs as the copy's, so what it reads and imports beside it is the copy's.
+    path = candidate.copy_path(path) or path
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        raise ValueError(f"--check-command's program {word} is not an executable file")
+    if _PYTHON_NAME.fullmatch(Path(path).name) and not _same_python(path, interpreter):
         raise ValueError(
-            f"--check-command's program {word} is not on PATH, with the interpreter's "
-            f"directory first ({environment['PATH'].split(os.pathsep)[0]}): install it in the "
-            "project's environment, or give its path"
+            f"--check-command's program {word} is {path}, not the program's interpreter "
+            f"({executable}): run `python`, or pass --python"
         )
-    return found
+    python = _script_python(path, environment)
+    if python is not None and not _same_python(python, interpreter):
+        raise ValueError(
+            f"--check-command's program {word} ({path}) runs on {python}, not the program's "
+            f"interpreter ({executable}): install it in the project's environment, or run "
+            "`python -m <module>`"
+        )
+    return path
 
 
 def _verify_command(args, root, source, words, deadline):
@@ -3685,10 +3819,9 @@ def _verify_command(args, root, source, words, deadline):
     from peeky.python_interpreter import find
 
     root = Path(root).resolve()
+    _check_command_arguments(words[1:], root)
     # The command runs on the program's interpreter, as a probe and a checker do.
     interpreter = find(root, args.python)
-    environment = _command_environment(interpreter)
-    program = _command_program(words[0], root, environment, interpreter)
     original = agent.digest(source)
     relative = source.relative_to(root).as_posix()
     edit = None if args.old is None else SourceEdit(relative, args.old, args.new)
@@ -3696,16 +3829,14 @@ def _verify_command(args, root, source, words, deadline):
         PythonAdapter.on(interpreter), source, root, edit, deadline, command=True
     )
     try:
+        environment = _command_environment(interpreter, candidate)
+        ran = [_command_program(words[0], candidate, environment, interpreter), *words[1:]]
         if edit is not None and candidate.unedited_imports:
             raise ValueError(
                 f"verify --check-command can't test this edit: {candidate.unedited_imports[0]}. "
-                "Check the edit with a --check checker, which is given the edited file"
+                "Otherwise, check the edit with a --check checker, which is given the edited "
+                "file"
             )
-        if candidate.pythonpath is not None:
-            environment["PYTHONPATH"] = candidate.pythonpath
-        # As a shell sets it there.
-        environment["PWD"] = str(candidate.root)
-        ran = [program if os.path.isabs(program) else str(candidate.root / program), *words[1:]]
         candidate_sha256 = hashlib.sha256(candidate.staged.read_bytes()).hexdigest()
         timeout, limited = agent.CHECK_S, False
         if deadline is not None:
@@ -3865,19 +3996,7 @@ def _verify_text(result, keep=False):
             "programs the build evidence beside it; build artifacts are not kept)"
         )
     if result.get("baseline") and command:
-        untested = _untested(result)
-        lines.append(
-            "baseline: the unedited program, no edit"
-            + (
-                " (the command fails on it, as it should fail on the bug)"
-                if _rejected(result)
-                else f" ({untested}, so this says nothing about the bug)"
-                if untested
-                else " (the command passes on it, so it can't tell a fix from the bug)"
-                if result.get("passed")
-                else ""
-            )
-        )
+        lines.append("baseline: the unedited program, no edit" + _baseline_note(result))
     elif result.get("baseline"):
         lines.append(
             "baseline: the unedited program, no edit"
@@ -3963,68 +4082,126 @@ def _verify_reason(result):
     return chosen if code == str(result.get("exit_code")) else f"{chosen} ({checker})"
 
 
-# A test runner's exit statuses that are no verdict on the program: it tested nothing
-# that could fail (pytest's 1, and unittest's, are failed tests).
-_NO_VERDICT = {
-    "pytest": {
-        2: "pytest exited 2: it was interrupted, as by a test file it could not import",
-        3: "pytest exited 3: an internal error",
-        4: "pytest exited 4: a usage error, such as a test path that doesn't exist",
-        5: "pytest exited 5: no tests ran",
-    },
-    "unittest": {5: "unittest exited 5: no tests ran"},
+# pytest's exit statuses other than 0 and 1: none says a test failed.
+_PYTEST_EXITS = {
+    2: "pytest exited 2: it was interrupted, as by a test file it could not import",
+    3: "pytest exited 3: an internal error",
+    4: "pytest exited 4: a usage error, such as a test path that doesn't exist",
+    5: "pytest exited 5: no tests ran",
 }
+# pytest's last line: `2 failed, 1 passed in 0.12s`, or `===== 1 failed in 0.1s =====`.
+_PYTEST_FAILED = re.compile(
+    r"^=*\s*(?:[0-9]+ [a-z]+, )*[1-9][0-9]* failed(?:, [0-9]+ [a-z]+)* in [0-9.]+s\b", re.M
+)
+# unittest's last line: `FAILED (failures=1, errors=2)`.
+_UNITTEST_FAILED = re.compile(r"^FAILED \(([^)]*)\)\s*$", re.M)
+# unittest's error for a test module it could not import.
+_UNITTEST_IMPORT = re.compile(r"unittest\.loader\._FailedTest|^ImportError: Failed to import", re.M)
 
 
-def _untested(result):
-    """Why a check command's exit status is no verdict on the program (pytest's 5: no
-    tests ran), or None."""
-    words = (result.get("check_command") or {}).get("argv") or [""]
-    if Path(words[0]).name in ("pytest", "py.test") or words[1:3] == ["-m", "pytest"]:
-        runner = "pytest"
-    elif words[1:3] == ["-m", "unittest"]:
-        runner = "unittest"
-    else:
-        return None
-    return _NO_VERDICT[runner].get(result.get("exit_code"))
+def _verdict(result):
+    """Whether a check command that exited nonzero failed tests, and if not, why that says
+    nothing about the program: (True, None) only where its words name a test runner Peeky
+    reads (``_runner``) and its output shows failed tests (pytest: exit 1 with `N failed`;
+    unittest: exit 1 with `FAILED (failures=N)`, or errors none of which is a test module
+    it could not import). (False, why) for such a runner's other statuses, and (False,
+    None) for any other command."""
+    command = result.get("check_command") or {}
+    code = result.get("exit_code")
+    output = "\n".join(result.get(key) or "" for key in ("stdout", "stderr"))
+    runner = _runner(command.get("argv") or [])
+    if runner == "pytest":
+        if code == 1 and _PYTEST_FAILED.search(output):
+            return True, None
+        if code == 1:
+            return False, "pytest exited 1, and its output shows no failed test"
+        return False, _PYTEST_EXITS.get(code, f"pytest exited {code}")
+    if runner == "unittest":
+        found = _UNITTEST_FAILED.findall(output)
+        counts = dict(re.findall(r"\b(failures|errors)=([0-9]+)", found[-1])) if found else {}
+        failures, errors = (int(counts.get(key, 0)) for key in ("failures", "errors"))
+        imported = _UNITTEST_IMPORT.search(output) is not None
+        if code == 1 and (failures or (errors and not imported)):
+            return True, None
+        if code == 1 and imported:
+            return False, "unittest exited 1: it could not import a test module"
+        if code == 5:
+            return False, "unittest exited 5: no tests ran"
+        return False, f"unittest exited {code}, and its output shows no failed test"
+    return False, None
 
 
 def _command_reason(result):
-    """Why a check command failed, in one line: a timeout, too much output, or its
-    output's line that says what failed (pytest's `FAILED tests/t.py::test_x - ...`
-    summary first, else ``_failure_line``), else its last line; stdout first, then
-    stderr. A test runner's status that is no verdict follows (``_untested``)."""
+    """Why a check command failed, in one line: a timeout, too much output, or the line
+    of its output that says what failed, looked for in both streams: pytest's `FAILED
+    tests/t.py::test_x - ...` summary, then unittest's `FAIL: test_x (...)` header with
+    its exception, then any line ``_failure_line`` finds (stdout's first); only then the
+    last line (stdout's, else stderr's). A test runner's status that says no test failed
+    follows (``_verdict``)."""
     command = result.get("check_command") or {}
     if result.get("timed_out"):
         return f"the check command ran past {command.get('timeout_s')} s and was stopped"
     if result.get("output_limit_exceeded"):
         return "the check command printed over 1 MiB and was stopped"
+    streams = [result.get(key) or "" for key in ("stdout", "stderr")]
     chosen = None
-    for key in ("stdout", "stderr"):
-        lines = [line.strip() for line in split_lines(result.get(key) or "") if line.strip()]
-        if not lines:
-            continue
+    for stream in streams:
         # pytest's `FAILED tests/t.py::test_x - ...`, not unittest's `FAILED (failures=1)`.
-        summary = [line for line in lines if re.match(r"(?:FAILED|ERROR) [^\s(]", line)]
-        chosen = summary[0] if summary else _failure_line(result[key]) or lines[-1]
-        if len(summary) > 1:
-            chosen += f" (and {len(summary) - 1} more)"
-        break
-    parts = [part for part in (chosen and chosen[:500], _untested(result)) if part]
+        summary = [
+            line.strip()
+            for line in split_lines(stream)
+            if re.match(r"(?:FAILED|ERROR) [^\s(]", line)
+        ]
+        if summary:
+            more = f" (and {len(summary) - 1} more)" if len(summary) > 1 else ""
+            chosen = summary[0] + more
+            break
+    for stream in streams if chosen is None else ():
+        if header := re.search(r"^(?:FAIL|ERROR): \S", stream, re.M):
+            chosen = _failure_line(stream[header.start() :])
+            break
+    for stream in streams if chosen is None else ():
+        if chosen := _failure_line(stream):
+            break
+    for stream in streams if chosen is None else ():
+        if lines := [line.strip() for line in split_lines(stream) if line.strip()]:
+            chosen = lines[-1]
+            break
+    why = None if result.get("exit_code") in (0, None) else _verdict(result)[1]
+    parts = [part for part in (chosen and chosen[:500], why) if part]
     return "; ".join(parts) or f"the check command exited {result.get('exit_code')}"
+
+
+def _baseline_note(result):
+    """What a check command's result at --baseline says of it: that tests failed on the
+    unedited program, as they should on the bug, only where ``_verdict`` reads that."""
+    code = result.get("exit_code")
+    if result.get("timed_out") or result.get("output_limit_exceeded"):
+        return ""
+    if result.get("passed"):
+        return " (the command passes on it, so it can't tell a fix from the bug)"
+    caught, why = _verdict(result)
+    if caught:
+        return " (its tests fail on it, as they should fail on the bug)"
+    if why:
+        return f" ({why}, so this says nothing about the bug)"
+    return (
+        f" (the command exited {code}, but Peeky reads failed tests only from pytest and "
+        "unittest: check that its output shows the bug)"
+    )
 
 
 def _rejected(result):
     """Whether the checker ran to its own verdict and rejected the program: an assertion
     failed, or it exited with a nonzero status. Not a crash of the checker (any other
-    exception), a timeout, nor a build that failed before it ran. A check command: it
-    exited nonzero by itself, with a status that is a verdict (``_untested``)."""
+    exception), a timeout, nor a build that failed before it ran. A check command: its
+    tests failed (``_verdict``)."""
     if result.get("check_command"):
         return (
             not result.get("timed_out")
             and not result.get("output_limit_exceeded")
             and result.get("exit_code") not in (0, None)
-            and _untested(result) is None
+            and _verdict(result)[0]
         )
     error = str((result.get("checker") or {}).get("error") or "")
     return (

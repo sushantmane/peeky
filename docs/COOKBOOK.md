@@ -3980,8 +3980,8 @@ program.
 **What it answers:** Do the project's own tests pass with this edit, and fail without it?
 
 For a Python target, `--check-command` runs your test command in place of a checker. Peeky copies
-the target root, applies the edit to the copy, and runs the command there. Your files don't change.
-Run it with `--baseline` first: the tests should fail on the bug.
+the target root, applies the edit to the copy, and runs the command there. Peeky doesn't change
+your files. Run it with `--baseline` first: the tests should fail on the bug.
 
 ```sh
 peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc.py' --baseline
@@ -4001,7 +4001,7 @@ FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3
 FAILED tests/test_calc.py::test_add[2-2-4] - assert 0 == 4
 2 failed in 0.01s
 
-baseline: the unedited program, no edit (the command fails on it, as it should fail on the bug)
+baseline: the unedited program, no edit (its tests fail on it, as they should fail on the bug)
 ```
 
 Then the fix:
@@ -4023,13 +4023,27 @@ diff:
 ...
 ```
 
+**The command is trusted, not sandboxed.** It runs with your permissions, and it can write outside
+the copy. The copy's `.venv` and `venv` are links to yours, since the interpreter lives there, so a
+command that installs or writes there changes your environment.
+
+#### What it runs
+
 - It passes when the command exits 0. Other exit codes fail, and so does a command that runs past
-  its time or prints over 1 MiB.
+  its time or prints over 1 MiB, both streams together.
 - It runs on the program's interpreter, the one the `python:` line names
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)). `python` and `python3`
   are that interpreter. Other names are found on `PATH`, with the interpreter's directory first, so
   `pytest` is its environment's. `VIRTUAL_ENV` names that environment.
-- The working directory is the copy's root. A path such as `./run_tests.sh` names a file in it.
+- The working directory is the copy's root. A path such as `./run_tests.sh` names a file in it. A
+  program that `PATH` finds inside the root runs as the copy's file, and so do `PATH`'s entries
+  there.
+- An argument that names a path inside the root by its absolute path is refused: the command would
+  read your file, not the copy's. Give it relative to the root.
+- Another Python is refused, such as a `python3.11` found on `PATH`. So is a Python script whose
+  first line runs it on another interpreter, such as another environment's `pytest`.
+- `tox` and `nox` are refused: they build their own environments, outside the copy. Give the test
+  command they run. The copy leaves out `.tox`, `.nox` and `.eggs`.
 - No shell runs the command. Quotes group words, and shell syntax is refused: `|`, `>`, `$`, `*`,
   `[`, `;`, `&` and the like. For a pipe or a redirect, run a script. For a word with such
   characters, such as a test id with `[`, put the command's words last, after
@@ -4042,19 +4056,38 @@ diff:
 
 - The command gets 20 seconds, as a checker does. `--timeout` can only shorten that. A command
   that runs longer is stopped: `reason: the check command ran past 20 s and was stopped`.
-- `stdout` and `stderr` keep the last 16,000 bytes of each stream, where pytest's summary is.
-  `reason` is pytest's first `FAILED` line. Otherwise it is the first line that starts like a
-  failure ([Where `reason` comes from](#where-reason-comes-from)), else the last line.
-- Some statuses mean no test failed: pytest's 2 (a test file failed to import), 3, 4 (a usage
-  error) and 5 (no tests ran), and unittest's 5. `reason` and the `baseline:` line say so: the
-  command didn't catch the bug.
 - The command gets no worker token, and Python writes no bytecode (`PYTHONDONTWRITEBYTECODE=1`).
+- `--check-command` runs only in the `peeky` command. No worker request runs it.
+
+#### What it imports
+
 - The copy is the one a candidate probe makes
   ([Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it)). Nothing above the
   root is copied. A warning says so unless the root is a project's. It warns even when the edited
   file imports nothing, because the tests may import anything.
-- An edit is refused when imports in the copy may load your unedited module, as from an editable
-  install Peeky can't redirect. Check it with a `--check` checker instead.
+- Each module the project supplies, in its root or `src`, must import from the copy. Peeky looks
+  each one up on the command's `PYTHONPATH`, as any process it starts would.
+- An edit is refused when one imports from elsewhere. That may be an installed copy in
+  `site-packages`, an outside `PYTHONPATH` entry, or an editable install Peeky can't redirect. The
+  message names where it is found. Uninstall it, or install the project editable
+  (`pip install -e .`), or check the edit with a `--check` checker. At `--baseline`, a warning says
+  so instead.
+- A relative `PYTHONPATH` entry means the root's, so `PYTHONPATH=src` is the copy's `src`.
+
+#### What it reports
+
+- `stdout` and `stderr` keep the last 16,000 bytes of each stream, where pytest's summary is.
+- `reason` is looked for in both streams. pytest's first `FAILED` line comes first, then unittest's
+  `FAIL:` header with its exception. Then comes the first line that starts like a failure
+  ([Where `reason` comes from](#where-reason-comes-from)), and only then the last line.
+- The `baseline:` line says that the tests fail on the bug only when Peeky reads it. The command
+  must be pytest or unittest: `pytest`, or `python -m pytest`, with any interpreter options. Its
+  output must show failed tests: pytest's exit 1 with `N failed`, or unittest's
+  `FAILED (failures=N)`. A unittest error counts too, unless unittest couldn't import a test module.
+- pytest's 2 (a test file failed to import), 3, 4 (a usage error) and 5 (no tests ran), and
+  unittest's 5, say no test failed. `reason` and the `baseline:` line say so.
+- Another command that fails, such as a script that crashes, is no verdict either. The `baseline:`
+  line asks you to check that its output shows the bug.
 - `--keep` keeps the copy, named by `kept` in JSON, with the edited file at `candidate:`.
 - JSON adds `check_command`: `argv` as given, `ran` as run, `copy_of` and `timeout_s`. `exit_code`,
   `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy.

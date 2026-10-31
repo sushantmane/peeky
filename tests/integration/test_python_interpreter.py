@@ -206,6 +206,12 @@ def test_verify_runs_the_projects_tests_on_its_environment(project, capsys):
     code, out = run(capsys, *argv, "--old", '"ada"', "--new", '"ana"', "--json")
     result = json.loads(out.out)
     assert code == 0 and result["passed"] is True, result
+    # The environment's python by its path in the copy, which links to the environment's.
+    argv[-1] = ".venv/bin/python -m unittest tests/test_app.py"
+    code, out = run(capsys, *argv, "--old", '"ada"', "--new", '"ana"', "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["passed"] is True, result
+    argv[-1] = tests
     # Peeky's own interpreter can't import it: the tests fail for that reason.
     code, out = run(
         capsys, *argv, "--old", '"ada"', "--new", '"ana"', "--python", "peeky", "--json"

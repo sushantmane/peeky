@@ -20,7 +20,8 @@ Peeky is not:
   `PEEKY_WORKER_TOKEN`.
 - `peeky-worker`, `peeky` and `peeky-agent` take both names out of their own environment first.
   Each process Peeky starts also gets an environment without them. So no debugger, debuggee,
-  build, tool Peeky asks, checker, candidate, probe process or model process gets the token. Nor
+  build, tool Peeky asks, checker, check command, candidate, probe process or model process gets
+  the token. Nor
   does a Python program's interpreter, or Peeky's helper that reads the program's code in it.
 - Two processes get one on purpose. A session's own local worker gets its own token, as
   `DEBUG_TOKEN`. A `--background` job gets the client's, as `PEEKY_WORKER_TOKEN`, since it is the
@@ -137,6 +138,10 @@ A process running as the same user, or as root, isn't covered.
 
 - It is supplied and trusted, and runs candidate code.
 - Its completion envelope detects an accidental or premature exit, not malicious native tampering.
+- `verify --check-command` runs the project's own test command, also trusted, in a copy of the
+  root. It isn't sandboxed: it runs with your permissions, and can write outside the copy, such as
+  into the `.venv` the copy links to. It runs only in the `peeky` command: no worker request runs
+  it, and none should.
 
 **Provenance hashes** of sources, build outputs, toolchain binaries and adapter bundles
 

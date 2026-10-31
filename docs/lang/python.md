@@ -138,12 +138,22 @@ Peeky debugs Python with debugpy, Python's debugger.
   of a checker. It runs in a fresh copy of the root with the edit, and passes when the command exits
   0. Run it with `--baseline` first: it should fail on the bug
   ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- The command is trusted, not sandboxed. It runs with your permissions, and can write outside the
+  copy, such as into the `.venv` the copy links to
+  ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
 - `python` is the program's interpreter. Other programs are found on `PATH`, with the interpreter's
-  directory first ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+  directory first. Another Python, or a script that runs on one, is refused
+  ([6.7](../COOKBOOK.md#what-it-runs)).
 - No shell runs it, so shell syntax is refused. Put words such as a test id with `[` last, after
-  `--check-command --` ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+  `--check-command --`. `tox` and `nox` are refused: give the command they run
+  ([6.7](../COOKBOOK.md#what-it-runs)).
 - It gets 20 seconds, as a checker does. Its output keeps each stream's end, where pytest's summary
-  is ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+  is ([6.7](../COOKBOOK.md#what-it-reports)).
+- An edit is refused when a module the project supplies imports from outside the copy, as from a
+  stale install in `site-packages`. Uninstall it, or install the project editable
+  ([6.7](../COOKBOOK.md#what-it-imports)).
+- `baseline:` says the tests fail on the bug only for pytest or unittest output that shows failed
+  tests ([6.7](../COOKBOOK.md#what-it-reports)).
 - Nothing above the root is copied, and a warning says so unless the root is a project's. The
   edited file being self-contained doesn't remove it: the tests may import anything
-  ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+  ([6.7](../COOKBOOK.md#what-it-imports)).
