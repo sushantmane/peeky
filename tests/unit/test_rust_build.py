@@ -252,13 +252,6 @@ def test_the_build_refusals_have_their_codes():
         RuntimeError("A `peeky build` of this workspace is running: wait for it to end, then retry")
     )
     assert busy["code"] == "BUSY" and busy["retryable"] is True
-    later = classify(
-        ValueError(
-            "Peeky doesn't read values in a Rust workspace's build yet: it will once a call into "
-            "a dependency counts as code it can't read. The build is current; nothing ran"
-        )
-    )
-    assert later["code"] == "UNSUPPORTED" and later["hint"].startswith("Nothing ran.")
 
 
 def test_the_build_command_is_given_as_typed():

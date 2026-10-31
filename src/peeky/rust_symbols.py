@@ -294,8 +294,10 @@ def parse_dies(text, *, units, tally=None):
     return roots
 
 
-def application_units(text, workspace, *, entrypoint, crate):
-    """Select compile units that are both local to the workspace and named for the crate."""
+def application_units(text, workspace, *, entrypoint, crate, only_named=False):
+    """Select compile units that are both local to the workspace and named for the crate.
+    ``only_named``: another unit local to the workspace (a workspace's other member) is
+    left out, not refused."""
     workspace = Path(workspace).resolve(strict=True)
     if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", crate or ""):
         raise ValueError("Expected a plain Rust crate name")
@@ -313,7 +315,7 @@ def application_units(text, workspace, *, entrypoint, crate):
         # Compare the recorded string exactly; resolving it would accept aliases.
         local = directory == str(workspace)
         named = name is not None and _string(name).startswith(entrypoint + "/@/")
-        if not local and not named:
+        if not named and (not local or only_named):
             continue
         unit = die.unit
         if not (local and named):
@@ -1740,7 +1742,16 @@ def interior_types(root, crate):
 
 
 def application_symbols(
-    dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared, budget=SYMBOL_DEADLINE_S
+    dwarfdump,
+    symbols,
+    workspace,
+    env,
+    *,
+    entrypoint,
+    crate,
+    declared,
+    budget=SYMBOL_DEADLINE_S,
+    only_named=False,
 ):
     """Return declared-source lines, enum layouts, the application units, their functions'
     lexical blocks (``code_blocks``) and what the crate's own types hold
@@ -1783,7 +1794,9 @@ def application_symbols(
         max_bytes=RUST_METADATA,
         timeout=remaining(),
     )
-    units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
+    units = application_units(
+        index, workspace, entrypoint=entrypoint, crate=crate, only_named=only_named
+    )
     tables, layouts, blocks, interior = _LineParser(workspace, declared, rust=True), {}, {}, {}
     for unit in units:
         before = len(tables.headers)

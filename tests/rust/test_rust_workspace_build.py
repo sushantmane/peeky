@@ -107,7 +107,13 @@ def manifest_of(summary):
     return directory, json.loads((directory / "manifest.json").read_text())
 
 
-NOT_YET = "Peeky doesn't read values in a Rust workspace's build yet"
+def read(code, result, printed="2"):
+    """The probe ran on the build and read `x` at `doubled` as 1, which `app` gave `double`;
+    the program printed what the build's `double` returned."""
+    assert code == 0, result
+    (row,) = [r for r in result["rows"] if r["selector"] == "x" and r["phase"] == "observed"]
+    assert row["value"] == "1", row
+    assert printed in result["output"].split(), result["output"]
 
 
 @pytest.mark.timeout(300)
@@ -187,8 +193,7 @@ def test_a_change_since_the_build_is_refused_and_build_makes_it_current(
     config = configure(workspace)
     command = f"`peeky build {workspace} --config {config}`"
     assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
-    code, result = probe(capsys, workspace, config)
-    assert code == 2 and result["error"]["message"].startswith(NOT_YET)
+    read(*probe(capsys, workspace, config))
     # An edit since the build, found before launch, is the normal edit cycle.
     source = workspace / "util/src/lib.rs"
     source.write_text(UTIL.replace("x * 2", "x * 3"))
@@ -201,15 +206,13 @@ def test_a_change_since_the_build_is_refused_and_build_makes_it_current(
     # A manifest too.
     manifest = workspace / "util/Cargo.toml"
     manifest.write_text(manifest.read_text() + "# edited\n")
-    code, result = probe(capsys, workspace, config, "util/src/lib.rs:3", "--build")
-    assert result["error"]["message"].startswith(NOT_YET), result
+    read(*probe(capsys, workspace, config, "util/src/lib.rs:3", "--build"), printed="3")
     manifest.write_text(manifest.read_text() + "# again\n")
     code, result = probe(capsys, workspace, config)
     assert result["error"]["code"] == "BUILD_REQUIRED"
     assert "util/Cargo.toml changed since `peeky build` ran" in result["error"]["message"]
     # --build builds first, then the probe goes on with the build.
-    code, result = probe(capsys, workspace, config, "util/src/lib.rs:3", "--build")
-    assert result["error"]["message"].startswith(NOT_YET), result
+    read(*probe(capsys, workspace, config, "util/src/lib.rs:3", "--build"), printed="3")
     # A vendored file, and Cargo's configuration above the workspace, count too.
     vendored = workspace / "vendor/smallnum/src/lib.rs"
     assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
@@ -222,8 +225,7 @@ def test_a_change_since_the_build_is_refused_and_build_makes_it_current(
         "Provenance: vendored vendor/smallnum/src/lib.rs changed since `peeky build` ran"
     )
     vendored.write_text(FILES["vendor/smallnum/src/lib.rs"])
-    code, result = probe(capsys, workspace, config)
-    assert result["error"]["message"].startswith(NOT_YET), result
+    read(*probe(capsys, workspace, config), printed="3")
     above = tmp_path / ".cargo/config.toml"
     above.parent.mkdir()
     above.write_text("[net]\nretry = 2\n")
@@ -412,15 +414,14 @@ def test_what_a_build_script_reads_is_an_input_of_the_build(workspace, capsys):
     assert code == 0, summary
     _, manifest = manifest_of(summary)
     assert str(workspace / "util/schema.txt") in manifest["build_inputs"]["files"]
-    assert probe(capsys, workspace, config)[1]["error"]["message"].startswith(NOT_YET)
+    read(*probe(capsys, workspace, config))
     (workspace / "util/schema.txt").write_text("two\n")
     code, result = probe(capsys, workspace, config)
     assert result["error"]["code"] == "BUILD_REQUIRED"
     message = result["error"]["message"]
     assert message.startswith("No current Peeky build of this workspace: util/schema.txt")
     assert message.endswith(f"since `peeky build` ran. Run {command} again, or add --build")
-    code, result = probe(capsys, workspace, config, "util/src/lib.rs:3", "--build")
-    assert result["error"]["message"].startswith(NOT_YET), result
+    read(*probe(capsys, workspace, config, "util/src/lib.rs:3", "--build"))
     # With no rerun-if-changed, Cargo reruns a build script for any file of its package: a
     # new one too.
     (workspace / "util/build.rs").write_text(
@@ -611,8 +612,7 @@ def test_cargos_own_variable_a_build_script_reads_leaves_the_build_current(works
     assert [
         (each["name"], each["value"], each["from"]) for each in manifest["build_inputs"]["env"]
     ] == [("CARGO_PKG_NAME", "util", "cargo")]
-    code, result = probe(capsys, workspace, config)
-    assert result["error"]["message"].startswith(NOT_YET), result
+    read(*probe(capsys, workspace, config))
 
 
 GENERATING_SCRIPT = """fn main() {
