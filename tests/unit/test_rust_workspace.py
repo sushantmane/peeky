@@ -861,3 +861,33 @@ def test_a_vendor_command_quotes_the_path():
         "--config",
         f"source.peeky-vendored.directory={json.dumps(str(Path('/w/vendor').resolve()))}",
     )
+
+
+@pytest.mark.parametrize(
+    ("change", "said"),
+    [
+        (lambda g: g.update(version=2), "wrote version 2"),
+        (lambda g: g.pop("version"), "wrote version None"),
+        (lambda g: g.pop("roots"), "one without `units` or `roots`"),
+        (lambda g: g.update(roots=[9]), "roots that name no unit"),
+        (lambda g: g["units"][1].pop("mode"), "a unit without `mode` as Peeky reads it"),
+        (lambda g: g["units"][1]["target"].pop("src_path"), "without `target.src_path`"),
+        (lambda g: g["units"][1]["profile"].update(opt_level=0), "without `profile.opt_level`"),
+        (lambda g: g["units"][1]["profile"].pop("strip"), "a unit without `profile.strip`"),
+        (lambda g: g["units"][1]["target"].update(kind=[1]), "without `target.kind`"),
+    ],
+)
+def test_a_unit_graph_peeky_doesnt_read_is_refused_naming_cargo(workspace, change, said):
+    units = graph(workspace)
+    change(units)
+    chosen = config(vendor="vendor")
+    with pytest.raises(ValueError) as caught:
+        rw.read_workspace(
+            workspace, chosen, checked(workspace), metadata(workspace), units, "cargo 1.99.0 (x)"
+        )
+    message = str(caught.value)
+    assert message.startswith(
+        "Peeky reads only the unit graph Cargo 1.96 writes (version 1), and cargo 1.99.0 (x) wrote "
+    )
+    assert said in message and "so Peeky doesn't read it" in message
+    assert code(caught) == "UNSUPPORTED"

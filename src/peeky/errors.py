@@ -348,7 +348,7 @@ _RULES = (
         r"with `)|builds crates\.io dependencies only|analyses only (?:editions|code the program "
         r"runs|code built at|the workspace's members)|builds only files inside |reads only "
         r"Cargo\.lock versions|builds a Rust workspace only where Cargo reads no manifest|can't "
-        r"tell whether `target)",
+        r"tell whether `target|reads only the unit graph Cargo)",
         "UNSUPPORTED",
         "Nothing was built. Change what the message names in the workspace or its "
         "configuration, or analyse another package.",

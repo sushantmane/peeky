@@ -840,20 +840,63 @@ def _unit_package(unit, by_id):
     return package
 
 
-def read_workspace(root, config, preflight, metadata, graph):
+# A unit of Cargo's unit graph (version 1) as Cargo 1.96 writes it: the fields Peeky reads.
+_UNIT_FIELDS = {"pkg_id": str, "target": dict, "mode": str, "profile": dict}
+_TARGET_FIELDS = {"name": str, "kind": list, "src_path": str, "edition": str}
+_PROFILE_FIELDS = {"opt_level": str, "debuginfo": (int, str), "lto": str, "panic": str}
+
+
+def check_graph(graph, cargo_version):
+    """Refuse a unit graph that isn't version 1 with every field Peeky reads, of the type it
+    reads: Peeky never guesses at another. ``cargo_version``: `cargo --version`, named."""
+
+    def refuse(what):
+        return ValueError(
+            f"Peeky reads only the unit graph Cargo 1.96 writes (version 1), and "
+            f"{cargo_version or 'this Cargo'} wrote {what}, so Peeky doesn't read it. Build "
+            "with Rust 1.96"
+        )
+
+    if not isinstance(graph, dict):
+        raise refuse("something else")
+    if graph.get("version") != 1:
+        raise refuse(f"version {graph.get('version')!r}")
+    units, roots = graph.get("units"), graph.get("roots")
+    if not isinstance(units, list) or not isinstance(roots, list):
+        raise refuse("one without `units` or `roots`")
+    if not all(type(each) is int and 0 <= each < len(units) for each in roots):
+        raise refuse("roots that name no unit")
+    for unit in units:
+        if not isinstance(unit, dict):
+            raise refuse("a unit that isn't an object")
+        for fields, value, where in (
+            (_UNIT_FIELDS, unit, ""),
+            (_TARGET_FIELDS, unit.get("target"), "target."),
+            (_PROFILE_FIELDS, unit.get("profile"), "profile."),
+        ):
+            for name, kind in fields.items():
+                if not isinstance(value, dict) or not isinstance(value.get(name), kind):
+                    raise refuse(f"a unit without `{where}{name}` as Peeky reads it")
+        if not all(isinstance(kind, str) for kind in unit["target"]["kind"]):
+            raise refuse("a unit without `target.kind` as Peeky reads it")
+        if "strip" not in unit["profile"]:
+            raise refuse("a unit without `profile.strip`")
+
+
+def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
     """The WorkspaceShape of ``config``'s workspace from Cargo's ``metadata`` (`cargo
     metadata --format-version 1`, as parsed JSON) and ``graph``: Cargo's unit graph of
     the exact command the build runs (its packages, features, targets and profiles). Every
     path package that command compiles, and every workspace member, must be inside
     ``root``. Each analysed package must be a member of edition 2021 or 2024, compiled by
     that command at opt-level 0 (check_profile), and no procedural macro; the run's
-    target is the command's root."""
+    target is the command's root. ``cargo_version`` names Cargo in a refusal of its graph
+    (check_graph)."""
     root = Path(root).resolve(strict=True)
     workspace = preflight.workspace
     if not isinstance(metadata, dict) or not isinstance(metadata.get("packages"), list):
         raise ValueError("Cargo's metadata is not what Peeky reads")
-    if not isinstance(graph, dict) or graph.get("version") != 1:
-        raise ValueError("Cargo's unit graph is not one Peeky reads (version 1)")
+    check_graph(graph, cargo_version)
     if Path(str(metadata.get("workspace_root"))).resolve() != workspace:
         raise ValueError(
             f"Cargo reads {metadata.get('workspace_root')} as the workspace, not {workspace}"
@@ -870,9 +913,7 @@ def read_workspace(root, config, preflight, metadata, graph):
     if unlocked := registry - locked:
         name, version = sorted(unlocked)[0]
         raise ValueError(f"Cargo's metadata names `{name} {version}`, which Cargo.lock doesn't")
-    units = graph.get("units")
-    if not isinstance(units, list):
-        raise ValueError("Cargo's unit graph is not one Peeky reads")
+    units = graph["units"]
     compiled = {}
     for unit in units:
         entry = _unit_package(unit, by_id)
@@ -988,9 +1029,12 @@ def read_workspace(root, config, preflight, metadata, graph):
 
 def _run_target(run, graph, units, by_id, local):
     """(package, target) of the unit graph's root, which must be what ``run`` names."""
-    roots = graph.get("roots")
-    if not isinstance(roots, list) or len(roots) != 1 or not isinstance(roots[0], int):
-        raise ValueError("Cargo's unit graph has no single root for what runs")
+    roots = graph["roots"]
+    if len(roots) != 1:
+        raise ValueError(
+            f"Cargo's unit graph has {len(roots)} roots for this run, where Peeky selects one "
+            "target"
+        )
     unit = units[roots[0]]
     entry = _unit_package(unit, by_id)
     target = unit.get("target") or {}
@@ -1117,6 +1161,12 @@ def _cargo(argv, workspace, env, timeout):
     return result["stdout"]
 
 
+def cargo_version(cargo, env, timeout=30):
+    """`cargo --version`'s line."""
+    output = _cargo((str(cargo), "--version"), Path(env["CARGO_HOME"]), env, timeout)
+    return next((line.strip() for line in split_lines(output) if line.strip()), "")
+
+
 def host_triple(rustc, env, timeout=30):
     """The host triple of ``rustc`` (`rustc -vV`)."""
     output = _cargo((str(rustc), "-vV"), Path(env["CARGO_HOME"]), env, timeout)
@@ -1223,7 +1273,8 @@ def read(root, config, cargo, rustc, cargo_home, timeout=60, rustflags=(), diges
         config.features,
         config.vendor,
     )
-    shape = read_workspace(root, chosen, checked, metadata, graph)
+    version = cargo_version(cargo, env)
+    shape = read_workspace(root, chosen, checked, metadata, graph, version)
     recheck(
         checked.digests,
         checked.workspace,
