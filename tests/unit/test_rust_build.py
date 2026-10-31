@@ -895,8 +895,9 @@ def test_a_missing_input_is_kept_only_where_its_absence_before_was_recorded(tmp_
         rb._build_inputs(shape, root, messages, {}, cut, LATER, None)
     assert str(caught.value).endswith(
         "missing now, and Peeky's record of the workspace before the build stopped at its "
-        "limit, 200,000 entries. Keep fewer than 200,000 files under the workspace (move data "
-        "the build doesn't use out of it), or take the line out of the build script"
+        "limit, 200,000 entries. Keep fewer than 200,000 entries (files and directories) under "
+        "the workspace (move data the build doesn't use out of it), or take the line out of the "
+        "build script"
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"
     assert "fewer files under the workspace" in classify(caught.value)["hint"]
@@ -950,3 +951,64 @@ def test_the_snapshot_keeps_one_status_per_entry_and_follows_links(tmp_path):
     assert not any("target/debug" in key for key in keys)
     # One status per entry, a link's target besides: files count once against the limit.
     assert all(os.path.islink(key[2:]) for key in keys if key.startswith("f:"))
+
+
+@pytest.mark.parametrize("made", ["gone.txt", "fresh/gone.txt"])
+def test_an_input_made_and_removed_while_cargo_ran_is_refused(tmp_path, made):
+    import time
+
+    # Missing before and after: the build script may have made it, read it and removed it.
+    # The directory whose listing proved it absent changed meanwhile.
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/src/lib.rs": ""})
+    shape = fake_shape(tmp_path, local=("util",))
+    before = rb._snapshot(shape, None)
+    time.sleep(0.01)
+    started = time.time_ns()
+    made_path = root / "util" / made
+    write(root / "util", {made: "transient\n"})
+    made_path.unlink()
+    if made_path.parent != root / "util":
+        made_path.parent.rmdir()
+    messages = [build_script_run(tmp_path, "util", f"cargo::rerun-if-changed={made}\n")]
+    with pytest.raises(RuntimeError) as caught:
+        rb._build_inputs(shape, root, messages, {}, before, started, None)
+    assert str(caught.value).startswith(
+        f"Provenance: util changed while Peeky built the workspace, and `util`'s build script "
+        f"says it reads util/{made}, missing before and after"
+    )
+    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+
+
+def test_a_links_target_that_cant_be_read_is_recorded_so(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    write(root, {"util/src/lib.rs": ""})
+    (root / "util/dangling").symlink_to("nowhere")
+    (root / "util/guarded").symlink_to("src/lib.rs")
+    guarded = root.resolve() / "util/guarded"
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if os.path.normpath(path) == str(guarded):
+            raise PermissionError(13, "Permission denied", str(guarded))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+    before = rb._snapshot(fake_shape(tmp_path, local=("util",)), None)
+    monkeypatch.setattr(os, "stat", real_stat)
+    assert before["f:" + str(root.resolve() / "util/dangling")] is None
+    assert [Path(path) for path, _ in before[":uncovered"]] == [guarded]
+    assert rb._absent_before(guarded, before)[0] == "unread"
+
+
+def test_the_snapshot_counts_each_entry_once(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    write(root, {"util/src/lib.rs": "", "util/src/a/b.rs": "", "util/c.txt": ""})
+    shape = fake_shape(tmp_path, local=("util",))
+    entries = len([key for key in rb._snapshot(shape, None) if key.startswith("l:")])
+    # ws, ws/util, util/src, src/a: four directories; three files.
+    assert entries == 7
+    monkeypatch.setattr(rb, "_MAX_SNAPSHOT", entries)
+    assert rb._snapshot(shape, None)[":limit"] is None
+    monkeypatch.setattr(rb, "_MAX_SNAPSHOT", entries - 1)
+    assert rb._snapshot(shape, None)[":limit"][0] == entries - 1

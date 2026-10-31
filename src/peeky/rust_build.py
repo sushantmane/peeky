@@ -446,20 +446,29 @@ def _snapshot(shape, vendor):
             seen.add(base)
             folders[:] = [name for name in folders if str(Path(base, name)) not in skipped]
             for name in (".", *folders, *files):
+                path = os.path.normpath(os.path.join(base, name))
+                if "l:" + path in found:
+                    # A directory, recorded as its parent's entry.
+                    continue
                 if count >= _MAX_SNAPSHOT:
                     found[":limit"] = [count, base]
                     return found
-                path = os.path.normpath(os.path.join(base, name))
                 try:
                     info = os.lstat(path)
-                    found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-                    count += 1
-                    if stat.S_ISLNK(info.st_mode):
-                        with contextlib.suppress(FileNotFoundError):
-                            info = os.stat(path)
-                            found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
                 except OSError as error:
                     failed(error)
+                    continue
+                found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+                count += 1
+                if stat.S_ISLNK(info.st_mode):
+                    try:
+                        info = os.stat(path)
+                        found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+                    except FileNotFoundError:
+                        # A dangling link, as such.
+                        found["f:" + path] = None
+                    except OSError as error:
+                        failed(error)
             # Listed whole: an entry it doesn't name wasn't there.
             found["d:" + os.path.normpath(base)] = True
     return found
@@ -467,8 +476,9 @@ def _snapshot(shape, vendor):
 
 # What to do where Peeky can't tell whether a missing input was there (_absent_before).
 _ABSENCE_REMEDY = {
-    "limit": f"Keep fewer than {_MAX_SNAPSHOT:,} files under the workspace (move data the "
-    "build doesn't use out of it), or take the line out of the build script",
+    "limit": f"Keep fewer than {_MAX_SNAPSHOT:,} entries (files and directories) under the "
+    "workspace (move data the build doesn't use out of it), or take the line out of the "
+    "build script",
     "outside": "Create it, or take the line out of the build script",
     "unread": "Make that path readable, or take the line out of the build script",
     "there": "Take the line out of the build script, or name the path without a link",
@@ -501,13 +511,37 @@ def _absent_before(path, before):
             return ("unread", f"Peeky couldn't read {failing} before the build ({why})")
     # The deepest directory on the way that was listed whole: the next step down from it
     # wasn't among its entries, so nothing under it was there.
-    for ancestor in path.parents:
-        if before.get("d:" + str(ancestor)):
-            step = ancestor / path.relative_to(ancestor).parts[0]
-            if "l:" + str(step) in before:
-                return ("there", f"{step} was there before the build")
-            return None
+    if (ancestor := _listed_ancestor(path, before)) is not None:
+        step = ancestor / path.relative_to(ancestor).parts[0]
+        if "l:" + str(step) in before:
+            return ("there", f"{step} was there before the build")
+        return None
     return ("outside", "it is outside what Peeky records before a build")
+
+
+def _listed_ancestor(path, before):
+    """The deepest directory on ``path``'s way that _snapshot listed whole, or None."""
+    return next(
+        (ancestor for ancestor in Path(path).parents if before.get("d:" + str(ancestor))), None
+    )
+
+
+def _changed_on_the_way(path, before):
+    """Where ``path`` was proven absent before Cargo ran (_absent_before) and is absent
+    after it: the directory on its way that changed meanwhile, or None. That is the deepest
+    one listed whole, whose entries' changes change its own status, or one under it, which
+    wasn't there: a file made, read and removed while Cargo ran passes through them."""
+    path = Path(os.path.normpath(path))
+    ancestor = _listed_ancestor(path, before)
+    for directory in (ancestor, *(each for each in path.parents if ancestor in each.parents)):
+        try:
+            info = os.lstat(directory)
+            now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+        except OSError:
+            now = None
+        if tuple(before.get("l:" + str(directory)) or ()) != tuple(now or ()):
+            return directory
+    return None
 
 
 def _messages(stdout):
@@ -615,7 +649,7 @@ def _changed_during(path, before, started_ns):
     now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
     key = ("f:" if os.path.islink(path) else "l:") + os.path.normpath(path)
     if key in before:
-        return tuple(before[key]) != now
+        return tuple(before[key] or ()) != now
     return max(info.st_mtime_ns, info.st_ctime_ns) >= started_ns - _SETTLE_NS
 
 
@@ -1264,7 +1298,16 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                 _spend(budget, path)
                 unchanged(path)
                 files[str(path)] = rust_workspace.identity(path)
-                unproven = files[str(path)] == ["missing"] and _absent_before(path, before)
+                missing = files[str(path)] == ["missing"]
+                unproven = missing and _absent_before(path, before)
+                if missing and not unproven and (moved := _changed_on_the_way(path, before)):
+                    # It may have been made, read and removed while Cargo ran.
+                    raise RuntimeError(
+                        f"Provenance: {_shown(moved, root)} changed while Peeky built the "
+                        f"workspace, and `{name}`'s build script says it reads "
+                        f"{_shown(path, root)}, missing before and after: the script may "
+                        "have read it meanwhile. Build again"
+                    )
                 if unproven:
                     # Not there now, and nothing says it wasn't there while the build
                     # script ran (deleted since, where Peeky recorded nothing before).
