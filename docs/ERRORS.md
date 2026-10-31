@@ -31,7 +31,7 @@ The last column is the `retryable` field.
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
-| `BUILD_REQUIRED` | A Rust workspace has no current Peeky build of its configuration, and a probe never builds ([details](#build_required)). Nothing ran. | Run the `peeky build` command the message gives, then the request again; or add `--build`. | yes |
+| `BUILD_REQUIRED` | A Rust workspace has no current Peeky build of its configuration, or a source or manifest changed since it ran. A probe never builds ([details](#build_required)). Nothing ran. | Run the `peeky build` command the message gives, then the request again; or add `--build`. | yes |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
 | `DEBUGGER_ERROR` | The adapter, the debugger or llvm-dwarfdump failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
@@ -242,14 +242,16 @@ file lists what it reads.
 ### BUILD_REQUIRED
 
 - A probe or session on a Rust workspace runs on Peeky's own build of it, and never builds. A
-  workspace's config names `analyse` and `run`. With no build for this configuration and these
-  tools, the request is refused before anything runs.
-- The message gives the command: `No current Peeky build of this workspace: none has been made
-  for this configuration. Run `peeky build . --config rust.json` first, or add --build`.
+  workspace's config names `analyse` and `run`. The request is refused before anything runs where
+  there is no build for this configuration and these tools. It is refused too where a source or
+  a manifest changed since the build, or a new member appeared: the normal edit cycle.
+- The message names the file and gives the command: `No current Peeky build of this workspace:
+  util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again,
+  or add --build`.
 - `--build` on the probe or `session start` builds first, under the build's own deadline
   (900 s). Without it, nothing is built.
-- A build whose files changed since is `PROVENANCE_CHANGED` instead. Its message names the
-  first changed file, and the same command.
+- What identifies the build is `PROVENANCE_CHANGED` instead: Cargo's configuration, the lockfile, a
+  vendored copy, a tool or the build's own output. So is a change during a build or a run.
 
 ### PROVENANCE_CHANGED
 
@@ -264,9 +266,10 @@ file lists what it reads.
   no values come back: `helper.py changed on the worker host after launch`.
 - A remote Python session with a stack frame whose code names a file under the root that wasn't
   compared is closed the same way: `a stack frame is in hook.py`. A probe is discarded.
-- A Rust workspace's build whose files changed since `peeky build` ran: a source, a manifest, the
-  lockfile, Cargo's configuration, a vendored file, a tool, or the build's own output. The message
-  names the first one, and the `peeky build` command to run again.
+- A Rust workspace's build whose identity changed since `peeky build` ran: Cargo's configuration,
+  the lockfile, a vendored file, a tool, or the build's own output. The message names the first
+  one, and the `peeky build` command to run again. An edited source or manifest is
+  `BUILD_REQUIRED` instead.
 - A Rust workspace's vendored copy that isn't what `cargo vendor` wrote: a file's SHA-256, or
   the package's checksum, differs. Run the `cargo vendor` command the message gives.
 - A file Cargo reads in a Rust workspace that changed while Peeky read it and Cargo ran: a

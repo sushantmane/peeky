@@ -63,8 +63,9 @@
   config names the packages to analyse and what runs (`analyse`, `run`, `features`, `vendor`).
   The build is offline, from the lockfile and `cargo vendor`'s copy, into Peeky's own directory;
   the analysed packages are compiled every time, at opt-level 0, checked from rustc's commands.
-  A probe or session without a current build is refused with the new `BUILD_REQUIRED`, naming
-  the command, and never builds; `--build` builds first. A file changed since the build is
+  A probe or session without a current build, or with a source or manifest edited since, is
+  refused with the new `BUILD_REQUIRED`, naming the file and the command, and never builds;
+  `--build` builds first. A changed lockfile, configuration or vendored copy is
   `PROVENANCE_CHANGED`. Probing a workspace's values comes next.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle

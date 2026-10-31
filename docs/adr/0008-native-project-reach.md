@@ -144,7 +144,7 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 **Macros.** The source scans (`unsafe_source`, `without_numbered_structs`, `_crate_traits`, trusted names) read each analysed crate as rustc expands it (`-Zunpretty=expanded`). A glob `use` of a dependency makes bare standard names untrusted, as it shadows the prelude.
 
-**Errors.** `BUILD_FAILED` as today. A new `BUILD_REQUIRED`: no current build, naming `peeky build`. `PROVENANCE_CHANGED`: an analysed source changed since the build, or a vendored checksum differs from Cargo.lock. `UNSUPPORTED`: a git dependency, vendored or not (Cargo.lock records no checksum for a git source), `[patch]`, or an analysed package outside editions 2021 and 2024. Edition 2018 is refused until the last part of phase 2 qualifies it.
+**Errors.** `BUILD_FAILED` as today. A new `BUILD_REQUIRED`, retryable: no current build, or a source or manifest changed since it, found before launch (the normal edit cycle; owner's decision). It names the file and the exact `peeky build` command. `PROVENANCE_CHANGED`: a change during a build or a run, or to what identifies the build: Cargo's configuration, the lockfile, a vendored copy (its checksum or a file), a tool, or the build's own output. `UNSUPPORTED`: a git dependency, vendored or not (Cargo.lock records no checksum for a git source), `[patch]`, or an analysed package outside editions 2021 and 2024. Edition 2018 is refused until the last part of phase 2 qualifies it.
 
 **Trust and the worker.** Build scripts and procedural macros are the project's code, as the program is; `THREAT_MODEL.md` says so. A worker builds only from its `--rust-config`, as a job. It compares every `Cargo.toml`, `Cargo.lock` and the analysed sources with the client's.
 

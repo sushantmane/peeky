@@ -187,19 +187,32 @@ def test_a_change_since_the_build_is_refused_and_build_makes_it_current(
     assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
     code, result = probe(capsys, workspace, config)
     assert code == 2 and result["error"]["message"].startswith(NOT_YET)
+    # An edit since the build, found before launch, is the normal edit cycle.
     source = workspace / "util/src/lib.rs"
     source.write_text(UTIL.replace("x * 2", "x * 3"))
     code, result = probe(capsys, workspace, config)
-    assert result["error"]["code"] == "PROVENANCE_CHANGED"
+    assert result["error"]["code"] == "BUILD_REQUIRED" and result["error"]["retryable"] is True
     assert result["error"]["message"] == (
-        "Provenance: util/src/lib.rs changed since `peeky build` ran, so its build may not be of "
-        f"these files. Run {command} again, or add --build"
+        "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` "
+        f"ran. Run {command} again, or add --build"
     )
+    # A manifest too.
+    manifest = workspace / "util/Cargo.toml"
+    manifest.write_text(manifest.read_text() + "# edited\n")
+    code, result = probe(capsys, workspace, config, "util/src/lib.rs:3", "--build")
+    assert result["error"]["message"].startswith(NOT_YET), result
+    manifest.write_text(manifest.read_text() + "# again\n")
+    code, result = probe(capsys, workspace, config)
+    assert result["error"]["code"] == "BUILD_REQUIRED"
+    assert "util/Cargo.toml changed since `peeky build` ran" in result["error"]["message"]
     # --build builds first, then the probe goes on with the build.
     code, result = probe(capsys, workspace, config, "util/src/lib.rs:3", "--build")
     assert result["error"]["message"].startswith(NOT_YET), result
     # A vendored file, and Cargo's configuration above the workspace, count too.
     vendored = workspace / "vendor/smallnum/src/lib.rs"
+    assert run(capsys, "build", str(workspace), "--config", str(config), "--quiet")[0] == 0
+    # What identifies the build is a provenance change: a vendored file, the lockfile,
+    # Cargo's configuration.
     vendored.write_text(vendored.read_text() + "\n")
     code, result = probe(capsys, workspace, config)
     assert result["error"]["code"] == "PROVENANCE_CHANGED"

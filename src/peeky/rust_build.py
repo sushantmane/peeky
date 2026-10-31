@@ -943,7 +943,17 @@ def _required(target, why):
     )
 
 
+def _edited(target, what):
+    """A source or manifest edited since the build: the normal edit cycle, BUILD_REQUIRED."""
+    return BuildRequired(
+        f"No current Peeky build of this workspace: {what} since `peeky build` ran. Run "
+        f"`{target.build_command}` again, or add --build"
+    )
+
+
 def _stale(target, what):
+    """What identifies the build changed since it ran: Cargo's configuration, the lockfile,
+    a vendored copy, a tool, or the build's own output (PROVENANCE_CHANGED)."""
     return RuntimeError(
         f"Provenance: {what} since `peeky build` ran, so its build may not be of these files. "
         f"Run `{target.build_command}` again, or add --build"
@@ -951,9 +961,11 @@ def _stale(target, what):
 
 
 def current_build(target, root):
-    """The manifest of ``target``'s build under ``root`` while it holds: BuildRequired
-    where there is none, and a provenance error, naming the file, where anything it
-    records changed since."""
+    """The manifest of ``target``'s build under ``root`` while it holds. BuildRequired
+    where there is none, or where a source or manifest changed since it ran (the normal
+    edit cycle); a provenance error where what identifies it changed (Cargo's
+    configuration, the lockfile, a vendored copy, a tool, the build's own output). Each
+    names the file."""
     root = Path(root).resolve(strict=True)
     directory = build_directory(target, root, create=False)
     path = directory / "manifest.json"
@@ -976,15 +988,28 @@ def current_build(target, root):
         from peeky.build import _digest_store
 
         store = _digest_store()
-        if (what := rust_workspace.recheck(manifest["watch"], _digest(store))) is not None:
-            raise _stale(target, _shown(what, root))
-        for name, digest in manifest["sources"].items():
+        digest = _digest(store)
+        # Edits first (sources, manifests, a new member: BUILD_REQUIRED); then what
+        # identifies the build (PROVENANCE_CHANGED).
+        for name, recorded in manifest["sources"].items():
             try:
-                same = sha256_file(root / name) == digest
+                same = sha256_file(root / name) == recorded
             except OSError:
                 same = False
             if not same:
-                raise _stale(target, f"{name} changed")
+                raise _edited(target, f"{name} changed")
+        state = manifest["watch"]
+        for path, recorded in state["files"].items():
+            if Path(path).name == "Cargo.toml" and (
+                rust_workspace.identity(path, digest) != recorded
+            ):
+                raise _edited(target, f"{_shown(path, root)} changed")
+        members = rust_workspace.member_candidates(state["workspace"], state["patterns"])
+        if members != state["candidates"]:
+            added = sorted(set(members) ^ set(state["candidates"]))
+            raise _edited(target, f"the workspace's members changed ({_shown(added[0], root)})")
+        if (what := rust_workspace.recheck(state, digest)) is not None:
+            raise _stale(target, _shown(what, root))
         target_dir = directory / "target"
         for name, digest in manifest["generated"].items():
             try:

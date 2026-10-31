@@ -167,6 +167,13 @@ def test_the_build_refusals_have_their_codes():
         )
     )
     assert stale["code"] == "PROVENANCE_CHANGED" and "peeky build" in stale["hint"]
+    edited = classify(
+        rb.BuildRequired(
+            "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` "
+            "ran. Run `peeky build . --config rust.json` again, or add --build"
+        )
+    )
+    assert edited["code"] == "BUILD_REQUIRED" and edited["retryable"] is True
     busy = classify(
         RuntimeError("A `peeky build` of this workspace is running: wait for it to end, then retry")
     )
