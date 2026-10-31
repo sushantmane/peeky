@@ -684,6 +684,31 @@ _UNIT_HEADER = re.compile(
     r"0x[0-9a-fA-F]+: [A-Za-z ]{1,32} Unit: (.*) \(next unit at 0x[0-9a-fA-F]+\)"
 )
 _UNIT_VERSION = re.compile(r"(?:^|, )version = 0x([0-9a-fA-F]{4})(?:,|$)")
+_UNIT_TYPE = re.compile(r", unit_type = (DW_UT_\w+),")
+# A DWARF 5 row of a range list: `[low, high)`, the last one closed by `)`.
+_RANGE_ROW = re.compile(r"\s*\[0x[0-9a-fA-F]+, 0x[0-9a-fA-F]+\)\)?\s*")
+# Units whose entries aren't all in the text (split DWARF's skeletons, whose own are in
+# a .dwo file), or that hold only what other units refer to by signature or import.
+_FOREIGN_UNITS = {
+    "DW_UT_skeleton": "split DWARF",
+    "DW_UT_split_compile": "split DWARF",
+    "DW_UT_split_type": "split DWARF",
+    "DW_UT_type": "DWARF type units",
+    "DW_UT_partial": "DWARF partial units",
+}
+_FOREIGN_TAGS = {
+    "DW_TAG_skeleton_unit": "DW_UT_skeleton",
+    "DW_TAG_type_unit": "DW_UT_type",
+    "DW_TAG_partial_unit": "DW_UT_partial",
+}
+# What writes each, to rebuild without.
+_FOREIGN_OPTIONS = {
+    "split DWARF": "rebuild without -gsplit-dwarf",
+    "DWARF type units": "rebuild without -fdebug-types-section",
+    "DWARF partial units": "use the binary as linked, before dwz moved entries out of it",
+}
+# An entry of ``indexed``: its tuple, four numbers or names, and its place in the list.
+_INDEXED_BYTES = sys.getsizeof((0, "", 0, 0)) + 4 * 32 + 8
 _FILE_HEADER = re.compile(r"\S.*:\s+file format \S.*")
 # `--debug-addr`: each unit's addresses, in order; a unit's DW_AT_addr_base is the offset
 # of its first, past its table's header.
@@ -757,6 +782,22 @@ def _dies(text):
     return dies
 
 
+class ForeignUnits(RuntimeError):
+    """Debug information whose units Peeky can't read whole: split DWARF (a skeleton unit,
+    whose locals and types are in a .dwo file), type units or partial units. Refused as
+    UNSUPPORTED before any value is read: never read as the part in the binary."""
+
+
+def _foreign(kind, offset, dwo=None):
+    what = next((name for unit, name in _FOREIGN_UNITS.items() if unit == kind), "a DWARF 5 unit")
+    held = f" (its entries are in {dwo})" if dwo else ""
+    advice = _FOREIGN_OPTIONS.get(what, "rebuild with clang's defaults for -g")
+    return ForeignUnits(
+        f"Peeky can't read {what}: the unit at 0x{offset:08x} is {kind}{held}, and Peeky "
+        f"reads every unit's own entries or none; {advice}"
+    )
+
+
 def _closes(expression):
     """Whether a location list's row ``expression`` ends with the list's own `)`:
     one more `)` than `(` outside its strings. None where it is neither that nor
@@ -803,9 +844,17 @@ def _parse_dies(text, into=None):
     def one(item):
         nonlocal size
         if (found := kept.get(item)) is None:
+            need = sys.getsizeof(item) + _VALUE_BYTES
+            room(need)
             kept[item] = found = item
-            size += sys.getsizeof(item) + _VALUE_BYTES
+            size += need
         return found
+
+    def index(item):
+        nonlocal size
+        room(_INDEXED_BYTES)
+        size += _INDEXED_BYTES
+        indexed.append(item)
 
     def strict(why):
         if version == 5:
@@ -821,11 +870,14 @@ def _parse_dies(text, into=None):
             for found in _RANGE.finditer(raw):
                 ranges.append((int(found[1], 16), int(found[2], 16)))
                 size += _RANGE_BYTES
-            if version == 5 and not re.fullmatch(
-                r"\s*(?:\[0x[0-9a-fA-F]+, 0x[0-9a-fA-F]+\))?\)?\s*", raw
-            ):
-                strict("a range list's row")
-            if raw.rstrip().endswith("))") or not _RANGE.search(raw):
+            if version == 5:
+                # Only its closing `)` ends a DWARF 5 list: any other line, a blank one
+                # too, would leave it read in part.
+                if not _RANGE_ROW.fullmatch(raw):
+                    strict("a range list's row")
+                if raw.rstrip().endswith("))"):
+                    ranges = None
+            elif raw.rstrip().endswith("))") or not _RANGE.search(raw):
                 ranges = None
             continue
         if locations is not None:
@@ -850,7 +902,7 @@ def _parse_dies(text, into=None):
                 size += _RANGE_BYTES
                 rows.append((int(row[1], 16), int(row[2], 16), one(expression)))
                 if _INDEXED_OPERAND.search(expression):
-                    indexed.append((entry, attribute, len(rows) - 1, unit))
+                    index((entry, attribute, len(rows) - 1, unit))
                 if closes:
                     locations = None
                 continue
@@ -875,6 +927,8 @@ def _parse_dies(text, into=None):
             del stack[depth:]
             if match[3] == "NULL":
                 continue
+            if (kind := _FOREIGN_TAGS.get(match[3])) is not None:
+                raise _foreign(kind, int(match[1], 16))
             if len(dies) >= MAX_DIES:
                 raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
             room(_ENTRY_BYTES + _held(raw, match.start(3), match.end(3)))
@@ -916,6 +970,11 @@ def _parse_dies(text, into=None):
                 + (raw.count("[", match.start(2)) * _RANGE_BYTES if ranged else 0)
             )
             value = match[2]
+            if depth == 0 and match[1] in ("DW_AT_dwo_name", "DW_AT_GNU_dwo_name"):
+                # A skeleton of either version: its unit's entries are in that file.
+                raise _foreign("DW_UT_skeleton", stack[-1], (_text(value) or value)[:200])
+            if version == 5 and match[1] == "DW_AT_signature":
+                strict("a type named by its signature (-fdebug-types-section)")
             if version == 5:
                 value = _INDEXED_LIST.sub("", value, count=1)
                 if _UNREAD.search(_QUOTED.sub("", value)):
@@ -926,7 +985,7 @@ def _parse_dies(text, into=None):
             if name not in attrs:
                 attrs[name] = value
                 if _INDEXED_OPERAND.search(value):
-                    indexed.append((stack[-1], name, None, unit))
+                    index((stack[-1], name, None, unit))
                 if name == "DW_AT_addr_base" and depth == 0 and version == 5:
                     bases[unit] = int(value, 16) if re.fullmatch(r"0x[0-9a-fA-F]+", value) else None
             if ranged:
@@ -942,6 +1001,14 @@ def _parse_dies(text, into=None):
             bases.append(None)
             if version is None:
                 raise ValueError("A DWARF unit header without its version")
+            if version > 5:
+                raise ValueError(f"A DWARF {version} unit: Peeky reads DWARF 5 and earlier")
+            if version == 5:
+                kind = _UNIT_TYPE.search(header[1])
+                if kind is None:
+                    raise ValueError("A DWARF 5 unit header without its type")
+                if kind[1] != "DW_UT_compile":
+                    raise _foreign(kind[1], int(raw.split(":", 1)[0], 16))
         elif raw == ".debug_addr contents:":
             section, version = "addr", None
         elif raw == ".debug_info contents:" or not raw.strip() or _FILE_HEADER.fullmatch(raw):

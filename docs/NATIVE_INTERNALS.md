@@ -68,7 +68,12 @@ that llvm-dwarfdump can't decode. Either version is read as DWARF 4 is:
   (`DW_OP_addr`). dsymutil writes the addresses itself.
 - In a DWARF 5 unit, a line the parse doesn't know fails it. So do a value or row dwarfdump
   couldn't decode (`<decoding error>`), an index with no address, and a list without its end.
-  Nothing of one is dropped. A DWARF 4 unit is read as before.
+  Only a list's closing `)` ends it: a blank line in one fails too. Nothing of one is dropped.
+  A DWARF 4 unit is read as before.
+- Units whose entries aren't all there are refused as `UNSUPPORTED` before any value is read
+  (`ForeignUnits`). Split DWARF's skeleton units keep their locals and types in a `.dwo` file
+  (`-gsplit-dwarf`, either version). Type units and partial units hold what other units name
+  by signature or import (`-fdebug-types-section`, dwz). Each is refused, never read in part.
 - `PEEKY_NATIVE_DWARF=4` keeps clang at DWARF 4. `tests/native/test_native_dwarf_versions.py`
   builds the same programs both ways, and checks that they read alike.
 

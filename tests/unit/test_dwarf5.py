@@ -5,8 +5,12 @@ builds on Linux."""
 
 import pytest
 
+import peeky.native
+from peeky.errors import classify
 from peeky.native import (
     DieMap,
+    ForeignUnits,
+    SymbolLimit,
     _line_rows,
     _LineParser,
     _parse_dies,
@@ -200,6 +204,131 @@ def test_a_dwarf_5_form_it_doesn_t_know_fails_the_parse(change, why):
     assert change[0] in text
     with pytest.raises(ValueError, match=why):
         _parse_dies(text.replace(*change, 1))
+
+
+# llvm-dwarfdump 18's text of clang 18's `-gdwarf-5 -gsplit-dwarf` build on Linux: the
+# binary holds a skeleton of each unit, whose locals and types are in its .dwo file.
+SKELETON = """0x00000000: Compile Unit: length = 0x00000024, format = DWARF32, version = 0x0005, \
+unit_type = DW_UT_skeleton, abbr_offset = 0x0000, addr_size = 0x08, DWO_id = 0x534db92e4e1baf78 \
+(next unit at 0x00000028)
+
+0x00000014: DW_TAG_skeleton_unit
+              DW_AT_stmt_list\t(0x00000000)
+              DW_AT_str_offsets_base\t(0x00000008)
+              DW_AT_comp_dir\t("/s")
+              DW_AT_GNU_pubnames\t(true)
+              DW_AT_dwo_name\t("a_split-a.dwo")
+              DW_AT_low_pc\t(0x0000000000000718)
+              DW_AT_high_pc\t(0x0000000000000774)
+              DW_AT_addr_base\t(0x00000008)
+"""
+# Its DWARF 4 form (GNU's extension): a compile unit naming its .dwo file.
+GNU_SKELETON = """0x00000000: Compile Unit: length = 0x0000002c, format = DWARF32, version = 0x0004, \
+abbr_offset = 0x0000, addr_size = 0x08 (next unit at 0x00000030)
+
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_stmt_list\t(0x00000000)
+              DW_AT_comp_dir\t("/s")
+              DW_AT_GNU_pubnames\t(true)
+              DW_AT_GNU_dwo_name\t("a_split4-a.dwo")
+              DW_AT_GNU_dwo_id\t(0xe76a0fd662740d12)
+              DW_AT_low_pc\t(0x0000000000000718)
+"""
+# `-gdwarf-5 -fdebug-types-section`: a type unit before the compile unit using it.
+TYPE_UNIT = """0x00000000: Type Unit: length = 0x0000005a, format = DWARF32, version = 0x0005, \
+unit_type = DW_UT_type, abbr_offset = 0x0000, addr_size = 0x08, name = 'S', \
+type_signature = 0x418503b8111e9a7b, type_offset = 0x0023 (next unit at 0x0000005e)
+
+0x00000018: DW_TAG_type_unit
+              DW_AT_language\t(DW_LANG_C_plus_plus_14)
+"""
+
+
+@pytest.mark.parametrize(
+    "text, said",
+    [
+        (SKELETON, "split DWARF: the unit at 0x00000000 is DW_UT_skeleton"),
+        # The entry alone, and the unit naming its .dwo file, are refused too.
+        (
+            SKELETON.replace("DW_UT_skeleton", "DW_UT_compile"),
+            "split DWARF: the unit at 0x00000014",
+        ),
+        (
+            SKELETON.replace("DW_UT_skeleton", "DW_UT_compile").replace(
+                "DW_TAG_skeleton_unit", "DW_TAG_compile_unit"
+            ),
+            r"split DWARF: the unit at 0x00000014 is DW_UT_skeleton \(its entries are in "
+            r"a_split-a\.dwo\)",
+        ),
+        (GNU_SKELETON, "split DWARF: the unit at 0x0000000b is DW_UT_skeleton"),
+        (SKELETON.replace("DW_UT_skeleton", "DW_UT_split_compile"), "split DWARF"),
+        (SKELETON.replace("DW_UT_skeleton", "DW_UT_split_type"), "split DWARF"),
+        (TYPE_UNIT, "DWARF type units: the unit at 0x00000000 is DW_UT_type"),
+        (TYPE_UNIT.replace("DW_UT_type", "DW_UT_compile"), "DWARF type units"),
+        (V5_HEADER.replace("DW_UT_compile", "DW_UT_partial"), "DWARF partial units"),
+        (V5_HEADER.replace("DW_UT_compile", "DW_UT_0x80"), "a DWARF 5 unit: .* DW_UT_0x80"),
+    ],
+)
+def test_units_peeky_can_t_read_whole_are_refused_before_their_entries(text, said):
+    # Read as their part in the binary, a skeleton has no locals or types: refused, never
+    # read in part, as UNSUPPORTED naming the option that wrote it.
+    with pytest.raises(ForeignUnits, match=said) as refused:
+        _parse_dies(PREFIX + text + ADDRESSES)
+    error = classify(refused.value)
+    assert error["code"] == "UNSUPPORTED", error
+    if "split DWARF" in said:
+        assert "rebuild without -gsplit-dwarf" in error["message"]
+
+
+def test_a_dwarf_5_unit_header_without_its_type_or_past_5_is_refused():
+    with pytest.raises(ValueError, match="without its type"):
+        _parse_dies(PREFIX + _unit(V5_HEADER.replace("unit_type = DW_UT_compile, ", ""), ""))
+    with pytest.raises(ValueError, match="DWARF 6 unit"):
+        _parse_dies(PREFIX + _unit(V5_HEADER.replace("0x0005", "0x0006"), ""))
+
+
+def test_a_type_named_by_its_signature_fails_a_dwarf_5_parse():
+    body = V5_FUNCTION.replace('DW_AT_name\t("gone")', "DW_AT_signature\t(0x418503b8111e9a7b)")
+    with pytest.raises(ValueError, match="signature"):
+        _parse_dies(PREFIX + _unit(V5_HEADER, body) + ADDRESSES)
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_only_its_closing_parenthesis_ends_a_dwarf_5_range_list(blank):
+    # A blank line inside the list (here, its text cut after its first row) would end it
+    # with one range of two read.
+    cut = V5_FUNCTION.replace(
+        "[0x00000000000008c0, 0x00000000000008d0)\n",
+        f"[0x00000000000008c0, 0x00000000000008d0)\n{blank}\n",
+    )
+    with pytest.raises(ValueError, match="range list's row"):
+        _parse_dies(PREFIX + _unit(V5_HEADER, cut) + ADDRESSES)
+    # Cut at its end, the list is refused too.
+    whole = PREFIX + _unit(V5_HEADER, V5_FUNCTION)
+    end = whole.index("[0x0000000000000900")
+    with pytest.raises(ValueError, match="range list's row|without its end"):
+        _parse_dies(whole[:end] + f"{blank}\n")
+    # DWARF 4 reads as before.
+    four = V4_FUNCTION.replace(
+        "[0x00000000000008c0, 0x00000000000008d0)\n",
+        f"[0x00000000000008c0, 0x00000000000008d0)\n{blank}\n",
+    )
+    assert _parse_dies(PREFIX + _unit(V4_HEADER, four, base=None))[0x70]["ranges"] == [
+        (0x8C0, 0x8D0)
+    ]
+
+
+def test_address_indexes_count_against_what_a_parse_keeps(monkeypatch):
+    # What a parse keeps is checked as it grows, the addresses an index names included:
+    # one byte under what it keeps refuses it.
+    body = V5_FUNCTION.replace("DW_OP_reg19 W19\n", "DW_OP_addrx 0x2, DW_OP_stack_value\n")
+    text = PREFIX + _unit(V5_HEADER, body) + ADDRESSES
+    kept = _parse_dies(text).kept
+    monkeypatch.setattr(peeky.native, "MAX_KEPT", kept)
+    assert _parse_dies(text).kept == kept
+    monkeypatch.setattr(peeky.native, "MAX_KEPT", kept - 1)
+    with pytest.raises(SymbolLimit):
+        _parse_dies(text)
 
 
 def test_dwarf_4_reading_is_as_lenient_as_before():

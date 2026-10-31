@@ -150,3 +150,43 @@ def test_an_optimized_build_withholds_alike_at_dwarf_4_and_5(tmp_path, monkeypat
     found = _read(tmp_path, monkeypatch, "c", OPTIMIZED, ("a", "b", "t", "r"), "O2")
     assert found["5"] == found["4"]
     assert found["5"]["r"]["unavailable"] == "True", found
+
+
+@pytest.mark.parametrize(
+    "flags, said",
+    [
+        (("-gdwarf-5", "-gsplit-dwarf"), "split DWARF.*rebuild without -gsplit-dwarf"),
+        (("-gdwarf-4", "-gsplit-dwarf"), "split DWARF.*rebuild without -gsplit-dwarf"),
+        (("-gdwarf-5", "-fdebug-types-section"), "type units.*-fdebug-types-section"),
+    ],
+)
+def test_units_held_elsewhere_are_refused_not_read_in_part(tmp_path, flags, said):
+    # A split build's binary holds a skeleton of each unit, whose locals and types are in
+    # its .dwo file; type units hold what units name by signature. Neither is read as the
+    # part the binary holds.
+    import subprocess
+    import sys
+
+    from peeky.native import ForeignUnits, read_debug_info
+
+    if sys.platform != "linux":
+        pytest.skip("split DWARF and type units are ELF's")
+    compiler = default_cxx()
+    if not compiler or is_gcc(compiler) or not os.environ.get("PEEKY_NATIVE_DWARFDUMP"):
+        pytest.skip("needs clang and PEEKY_NATIVE_DWARFDUMP")
+    (tmp_path / "main.cpp").write_text(CPP_SOURCE)
+    subprocess.run(
+        # clang picks C++ by the name it runs as: Peeky's pick of it may be `clang`.
+        [compiler, "--driver-mode=g++", "-g", "-O0", *flags, "main.cpp", "-o", "program"],
+        cwd=tmp_path,
+        check=True,
+    )
+    binary = str(tmp_path / "program")
+    with pytest.raises(ForeignUnits, match=said):
+        read_debug_info(
+            os.environ["PEEKY_NATIVE_DWARFDUMP"],
+            [["--debug-info", binary], ["--debug-addr", binary]],
+            tmp_path,
+            dict(os.environ),
+            timeout=15,
+        )
