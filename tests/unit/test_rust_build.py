@@ -889,6 +889,45 @@ def test_a_stopped_build_leaves_its_run_to_the_trash_and_ends_at_once(tmp_path, 
     assert list((directory / "trash").iterdir()) == []
 
 
+def entries_under(path):
+    """How many entries ``path`` holds, at any depth."""
+    return sum(len(folders) + len(files) for _, folders, files in os.walk(path))
+
+
+@pytest.mark.parametrize(
+    ("shape", "budget"),
+    [
+        # More children than the budget, each empty: unchanged forever, once.
+        ({f"run/c{index}/": None for index in range(3)}, 2),
+        # Wide: 40 runs of 3 files each.
+        ({f"r{run}/f{index}": "" for run in range(40) for index in range(3)}, 7),
+        # Deeper than the budget: a chain of 30 directories, a file at its end.
+        ({"/".join(f"d{level}" for level in range(30)) + "/end": ""}, 2),
+        # Both: wide directories inside a deep one.
+        ({f"a/b/c/w{index}/f": "" for index in range(25)}, 1),
+    ],
+    ids=["children-past-the-budget", "wide", "deep", "deep-and-wide"],
+)
+def test_the_trash_empties_over_calls_each_making_progress(tmp_path, shape, budget):
+    trash = tmp_path / "trash"
+    for name, text in shape.items():
+        path = trash / name
+        if name.endswith("/"):
+            path.mkdir(parents=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+    calls, before = 0, entries_under(trash)
+    while (now := entries_under(trash)) > 0:
+        rb._empty_trash(tmp_path, budget)
+        calls += 1
+        after = entries_under(trash)
+        # Each call removes something, and at most its budget.
+        assert now - budget <= after < now, (calls, now, after)
+        assert calls <= before, "the trash isn't emptying"
+    assert trash.is_dir() and list(trash.iterdir()) == []
+
+
 def rb_stopping(stop):
     from peeky.stopping import stopping
 
