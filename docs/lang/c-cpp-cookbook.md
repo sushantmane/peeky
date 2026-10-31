@@ -36,6 +36,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Quick start: what you can read and change](#quick-start-what-you-can-read-and-change)
   - [Read structs, arrays and standard containers](#read-structs-arrays-and-standard-containers)
   - [Build a program from several files](#build-a-program-from-several-files)
+  - [Debug a binary your project built](#debug-a-binary-your-project-built)
   - [Which C++ builds Peeky supports](#which-c-builds-peeky-supports)
   - [Name the tools in a config](#name-the-tools-in-a-config)
   - [What Peeky checks about a build](#what-peeky-checks-about-a-build)
@@ -1201,6 +1202,46 @@ How Peeky reads these values is in [NATIVE_INTERNALS.md](../NATIVE_INTERNALS.md)
 - When the directory holds several programs, name one in `--at`: `--at ring.cpp:16`.
 - Headers read from outside the directory, SDK headers included, are hashed and rechecked
   ([details](#what-peeky-checks-about-a-build)).
+
+### Debug a binary your project built
+
+Peeky reads a binary that clang built at `-O0`, with DWARF 5 and the command line recorded
+([C and C++](c-cpp.md#a-binary-your-project-built)). Build it so, then name it with `--binary`,
+relative to the target directory:
+
+```sh
+peeky describe . --binary ./prog          # each unit, judged or not, and why
+peeky probe . --binary ./prog --at src/x.c:LINE --capture a,b -- ARGS
+```
+
+The flags, for every compile:
+
+```sh
+FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
+# On Linux, also -fdebug-macro, and link with -Wl,--build-id.
+```
+
+- **Make:** `make CC=clang CXX=clang++ CFLAGS="$FLAGS" CXXFLAGS="$FLAGS"`. A Makefile may put its
+  own `-O2` after yours: `describe` then says `built with -O2 (its recorded flags)`. Override the
+  variable that holds it (`OPTIMIZATION=-O0` in valkey), or edit the Makefile.
+- **autotools:** `./configure --disable-shared CC=clang CXX=clang++ CFLAGS="$FLAGS"
+  CXXFLAGS="$FLAGS"`, then `make`. Without `--disable-shared`, libtool leaves a wrapper script in
+  place of the program: Peeky refuses it, and names the program in `.libs/`.
+- **CMake:** `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=clang
+  -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS_DEBUG="$FLAGS" -DCMAKE_CXX_FLAGS_DEBUG="$FLAGS"`,
+  then `cmake --build build`. Probe with the target directory the sources are under:
+  `peeky probe . --binary build/prog …`.
+- **bison and flex:** generate without `#line`: `bison -l` and `flex -L`. A `#line` naming the
+  grammar leaves the generated file's unit with no MD5s, so it isn't judged. Probe the generated
+  `parser.c`, not `parser.y`.
+- **C++:** build with libc++ and `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`
+  (`-stdlib=libc++` on Linux). libstdc++'s headers, and libc++'s without it, leave every unit
+  that includes them with no MD5s. So does an inheriting constructor (`using Base::Base;`).
+- **GCC** writes no MD5s: its units aren't judged. Rebuild with clang.
+- **Optimized units:** to read units built at another level, put `"optimized": true` in a
+  config naming the binary. Their rows then carry the optimized warning, and nothing changes.
+
+Rebuild after every edit. A source changed since the build refuses the binary, naming the file.
 
 ### Which C++ builds Peeky supports
 

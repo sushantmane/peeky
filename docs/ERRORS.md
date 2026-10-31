@@ -163,6 +163,7 @@ The last column is the `retryable` field.
 | `peeky setup-java` that failed: `Java adapter setup failed, and nothing was installed: …`, such as a download that failed | Fix what the message names, such as network access to GitHub and Maven Central, and run it again. Report a checksum mismatch |
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
+| A binary the project built that Peeky can't read: a libtool script, no debug information or build ID, no unit Peeky judges (GCC, DWARF 4, no recorded command line, `-O2` without `"optimized": true`, no MD5s), or a probe in a file no judged unit has code in. Each message names the unit and why ([C and C++](lang/c-cpp.md#a-binary-your-project-built)) | Rebuild as the message says: clang `-O0 -g -gdwarf-5 -grecord-command-line`. Or probe a unit `peeky describe --binary` lists as judged |
 | Debug information Peeky can't read whole: `Peeky can't read split DWARF: …`, or type units, partial units, or a unit it can't read at all (`Peeky can't read a DWARF unit: …`, such as DWARF 6), refused before anything runs | Rebuild without the option the message names: `-gsplit-dwarf` or `-fdebug-types-section`. Or use the binary as linked, before dwz. Or rebuild with `-gdwarf-5` |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
 | A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information. So is one whose sources, or a procedural macro's, mention `RUSTC_BOOTSTRAP`, which Peeky's build sets | Change what the message names, or analyse another package |
@@ -200,6 +201,9 @@ file lists what it reads.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
   `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
+- A binary target's config with `sources`, or a key it doesn't take; `--binary` with a config
+  naming one; a binary outside the target directory; or a session of one, which Peeky doesn't run
+  yet ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
 - A client and a remote worker of different protocols: `Worker speaks protocol 13, this client 14`,
   or, from the worker, `Client speaks protocol 13, this worker 14`. Install the same Peeky version
   on both hosts.
@@ -261,6 +265,9 @@ file lists what it reads.
 
 - A source, a build output or a tool changed during the session. Start a new session on a fresh
   build.
+- A binary the project built is stale: a file its line tables name differs from the MD5 they
+  record, or is gone. The message names it: `the binary is stale: src/util.c changed`. Rebuild,
+  then probe again ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
 - Through a remote worker, a source differs from yours, or is on one side only. The message names
   the first such file:
   `Worker source provenance differs for helper.py (the copy on the worker host differs from your
