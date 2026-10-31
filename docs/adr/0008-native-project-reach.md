@@ -1,6 +1,6 @@
 # ADR 0008: Native projects with their own builds, and Rust crates with dependencies
 
-Status: accepted, with the owner's decisions below. Motivated by the value study ([#441](https://github.com/sushantmane/peeky/issues/441)). Phase 1 starts by checking the items under "Not yet verified".
+Status: accepted, with the owner's decisions below. Motivated by the value study ([#441](https://github.com/sushantmane/peeky/issues/441)). Phase 1's checks are under "Verified for phase 1": C works as decided, and C++ needs the owner's choice.
 
 ## Context
 
@@ -165,11 +165,48 @@ Each also checks a change refused with a note naming a dependency call, and one 
 - **Shared libraries** the project builds, and reading symbols one unit at a time, if big binaries need it.
 - **Rust:** candidate edits in workspaces, and MIR summaries of chosen dependency functions, if dependency calls block most changes.
 
+## Verified for phase 1
+
+Checked in October 2026 with clang 18.1.3 and 20.1.2 (Ubuntu 24.04, arm64), Apple clang 21.0.0, GCC 13.3.0 and llvm-dwarfdump 18. `native_units` reads these facts. `tests/native/test_native_units.py` keeps the first three checks in the native lanes. `tests/projects/` rebuilds and measures the study's projects.
+
+**The recorded command line is complete and exact.** clang 18, 20 and Apple's record every `-D`, `-U`, `-I`, `-isystem`, `-include` and `-std` as given.
+
+- Each argument is one word. The driver writes `-Iinc` as `-I inc`, and escapes a space or backslash with a backslash. So a define holding a space, quote or tab reads back exactly.
+- Linux clang appends the words to `DW_AT_producer`, after the line `--version` prints. Apple's writes them to `DW_AT_APPLE_flags`, and adds its own `-Xclang -clang-vendor-feature=…` options.
+- Response files, `--config` files and `CCC_OVERRIDE_OPTIONS` are recorded as the arguments they add. `CPATH` and `C_INCLUDE_PATH` are not recorded.
+- `-Wp,-D…`, `-Xpreprocessor` and `-Xclang -D…` are recorded as written, so the allowlist refuses them.
+- GCC 13 records only code generation options: no `-D`, `-I` or `-include`.
+
+**Checksums.**
+
+- GCC 13 writes no MD5s into DWARF 5 line tables, with or without the assembler's line support. Decision 1 stands.
+- clang's table holds an MD5 for every file, or for none: one file without one drops them all. In clang 18, 20 and Apple's, three things leave a file without one:
+  - a `#line` naming a file, as bison and flex write. jq's `src/parser.c` and `src/lexer.c` have them; generated with `bison -l` and `flex -L`, they compile with MD5s.
+  - `#pragma GCC system_header`, in every libstdc++ and libc++ header. libc++ leaves it out under `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`; GCC 13's libstdc++ can't.
+  - a C++ inheriting constructor (`using Base::Base;`), as fmt's `format_error` has. clang then names a file `<stdin>` with no MD5.
+- dsymutil keeps the MD5s and `DW_AT_APPLE_flags`.
+- A table names a header only if code or a type comes from it. A header of macros alone (`config.h`) is named only with `-fdebug-macro`, which clang 18 and 20 support. Apple clang 21 crashes with `-fdebug-macro -gdwarf-5`.
+
+**The study's projects** were rebuilt in their images with clang 18 at `-O0 -g -gdwarf-5 -grecord-command-line -fdebug-macro`, and judged by `tests/projects/measure.py`. The C++ ones use libc++ with the pragma left out; with libstdc++, none of their units has MD5s. Each build took under 25 s on 4 CPUs.
+
+| Binary | Units judged | Not judged | Line tables | Debug information | Entries | Kept |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| jq-2650 `jq` | 34 of 36 | `parser.c`, `lexer.c`: `#line` | 5.7 MB | 5.4 MB | 21,000 | 22 MB |
+| valkey-1842 `valkey-server` | 106 of 173 | hiredis and jemalloc (65): no recorded command; 2 at `-Os` | 20.7 MB | 57.6 MB | 217,000 | 205 MB |
+| micropython-13569 `micropython` | 215 of 218 | `py/vm.c`, `py/gc.c` at `-O3`; `py/nlraarch64.c` at `-Os` | 23.1 MB | 26.5 MB | 121,000 | 110 MB |
+| fmt-3158 `ranges-test` | 1 of 5 (`test-main.cc`) | 4, by `<stdin>` | 8.4 MB | 37.7 MB | 122,000 | 120 MB |
+| fmt-3272 `xchar-test` | 3 of 6 | 3, `xchar-test.cc` among them, by `<stdin>` | 11.3 MB | 45.3 MB | 146,000 | 143 MB |
+| json-4237 `test-udt_cpp11` | 0 of 2 | both, by `<stdin>` | 5.5 MB | 36.8 MB | 93,000 | 93 MB |
+
+All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000 entries, 300 MiB kept. valkey keeps the most, 68% of `MAX_KEPT`. `-fdebug-macro` adds 2 MB to its line tables.
+
+**What this changes.**
+
+- C works as decided, with two additions to the recipes. A generator's `#line` must go (`bison -l`, `flex -L`), so jq's grammar is probed in `src/parser.c`; `src/parser.y` is refused, naming the flag. And on Linux, `-fdebug-macro`, so each header a unit's text reads can be checked. On macOS, a header of macros alone can't be, so the text rules withhold there.
+- C++ doesn't: no unit holding the code each bug is about is judged. The owner chooses among C++ waiting for phase 3, whose builds hash their inputs; `-gembed-source`, which embeds most files' text but not all, and made a test binary six times larger; or a compiler wrapper that records each input's hash.
+
 ## Not yet verified
 
-- clang's recorded command line holds every `-D`, `-I` and `-include`, unambiguously: clang 18 and 20, and Apple clang (`DW_AT_APPLE_flags`).
-- GCC 13 writes no MD5s into DWARF 5 line tables, as reported.
-- The five C and C++ projects build this way, and fit the symbol bounds.
 - `-Zunpretty=expanded` works through the wrapper on rustc 1.96, and a warm workspace build fits an agent's wait.
 
 ## Consequences
