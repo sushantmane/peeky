@@ -12,19 +12,20 @@ real bug, and it cost a little more.**
   is −2 percentage points, with a 95% interval of −8 to +2.
 - **No category stood out:** every category's and every language's interval includes zero.
 - **Agents almost never used Peeky:**
-  - Every Peeky-arm attempt read Peeky's guide, a median of 3 commands, but only 3 of 87 ran
-    `peeky` at all.
+  - Every Peeky-arm attempt read the guide. They ran a median of 3 commands that read Peeky's
+    docs (range 1–7), but only 3 of 87 ran `peeky` at all.
   - Two of those ran `peeky --help`. The third tried `peeky describe` on a Java project and was
     refused with a misleading error.
   - No Peeky command printed a program value in any attempt.
 - **Cost:** the Peeky arm used 1.2 more AI credits per bug (median; 95% interval +0.5 to +1.8),
-  more in 23 of 29 bugs. That is the cost of reading the docs. Wall time and tool calls were the
-  same.
+  more in 23 of 29 bugs. That fits the cost of reading the docs. Wall time and tool calls showed
+  no detectable difference; their intervals include zero.
 - **Wrong root causes:** they were equally rare, 4 of 87 attempts in the control arm and 3 of 87
   in the Peeky arm.
 
-So the study can't name a category where Peeky helps. The reason is not that Peeky's readings
-were wrong or useless. The agent never got that far: it judged reading the code, a short script
+So the study can't name a category where Peeky helps. It measured whether the agent took Peeky up
+under this prompt, not whether Peeky's readings help. No Peeky command printed a program value,
+so it says nothing about their accuracy or use. The agent judged reading the code, a short script
 and the tests enough, and on these bugs it usually was.
 
 ## Setup in brief
@@ -201,10 +202,10 @@ authentication information, causing 407 responses."
 ```
 
 The agent read the guide twice, then never came back to it. The one runtime fact it needed, what
-urllib3's `parse_url` returns, took a three-line print.
+urllib3's `parse_url` returns, took a short one-off Python snippet.
 
-Both arms did this throughout: 160 such one-off scripts in the control arm and 142 in the Peeky
-arm. Debuggers were close to absent:
+Both arms worked this way throughout: short Python snippets run inline, to print a fact or make an
+edit, alongside the project's tests. Debuggers were close to absent:
 
 - **Control arm:** no pdb, gdb, lldb or jdb.
 - **Peeky arm:** four attempts checked for a debugger with `command -v gdb`, `lldb-dap` or `jdb`.
@@ -213,8 +214,8 @@ arm. Debuggers were close to absent:
 
 ### Hurt: the cost of the docs, and one misleading refusal
 
-- **Docs:** every Peeky-arm attempt spent 2 to 7 commands on Peeky's docs. That is the +1.2
-  credits per bug above. It bought nothing in these attempts.
+- **Docs:** every Peeky-arm attempt spent 1 to 7 commands on Peeky's docs (median 3). That fits
+  the +1.2 credits per bug above. It bought nothing in these attempts.
 - **`projectlombok__lombok-3326`, Peeky arm, attempt 3:** solved in 144 s for 34.9 credits,
   against a control median of 138 s and 28.6.
   1. The agent read the Java cookbook's launch and attach sections (command 20).
@@ -224,13 +225,16 @@ arm. Debuggers were close to absent:
   4. Peeky answered `[INVALID_REQUEST] Adapter command does not match the trusted Java bundle
      layout`, with the hint "Fix the request arguments".
 
-  The project builds on JDK 11. Peeky's Java adapter needs JDK 17 and accepts only a `java`
-  named in the config. The message says neither, so the agent gave up on Peeky and went back to
-  `javap` and reading the code. This is a Peeky usability bug; it is filed separately.
+  The project builds on JDK 11, so `java` on PATH was JDK 11. `peeky setup-java` had built the
+  adapter bundle with `/usr/bin/java`, which is JDK 21 in the image, and it records that
+  executable. Peeky runs the adapter only on that exact executable. So the agent's JDK 17 was
+  refused too. Only a config naming `"java": "/usr/bin/java"` would have worked. The message says
+  none of this, so the agent gave up on Peeky and went back to `javap` and reading the code. This
+  is filed as #442.
 
 ### Same outcome in both arms: where the agents failed
 
-Three bugs went unsolved in both arms. Peeky played no part in either arm, but they show what
+Three bugs had failures in both arms. Peeky played no part in either arm, but they show what
 went wrong.
 
 - **`sphinx-doc__sphinx-10614`, 0 of 6:** every attempt changed Graphviz's SVG path rewriting as
@@ -257,7 +261,7 @@ went wrong.
 - **The selection didn't favour Peeky's best case.** The categories meant to favour a debugger
   turned out mild in practice. No bug's build or tests took 3 minutes, so the slow-build case,
   where avoiding an edit-rebuild-print cycle pays most, isn't in the data.
-- **Peeky doesn't reach most of these projects:**
+- **Peeky doesn't reach 13 of these 29 projects:**
   - **C and C++:** Peeky builds the program from a directory of sources itself. It can't build
     any of the 7 C and C++ projects here, which use autotools, Make or CMake, or attach to their
     binaries.
@@ -265,7 +269,8 @@ went wrong.
     crates with dependencies.
   - **Java:** it works through a launch or attach config, but one bug's JDK 11 build met the
     refusal above.
-  - **Python:** only Python was fully in reach, on all 9 bugs.
+  - **Python:** Peeky's documented limits exclude none of the 9 Python bugs. That doesn't show each
+    failing path was convenient to probe.
 
   An agent that read the guide would have seen these limits.
 - **The study measures availability, not use.** It answers "does having Peeky change the
@@ -276,6 +281,12 @@ went wrong.
 
 - **One agent, one model and one prompt.** Another agent, or a prompt that asks the agent to
   debug first, may behave differently.
+- **Selection.** These are 29 eligible bugs from SWE-bench, taken in a seeded order with
+  quotas. They don't represent all of an agent's work, nor the bugs best suited to a debugger.
+- **Intervals.** As pre-registered, the intervals resample bugs, from each bug's observed rate
+  over 3 attempts. They leave out the run-to-run spread within a bug. So an interval of +0 to +0
+  in a subgroup means every bug there had the same observed rate in both arms. It doesn't prove
+  the arms equal.
 - **Shell-only tools.** The agent had no file viewer or editor tools, so edits were made with
   shell scripts, alike in both arms.
 - **Ceiling.** With about 88% solved in both arms, there was little room for a difference.
@@ -289,8 +300,9 @@ went wrong.
 
 ## What to do next
 
-- **Fix the Java refusal.** The message should name the JDK the adapter needs and the config's
-  `java` key, and a JDK 17 found on PATH could be accepted.
+- **Fix the Java refusal (#442).** The message should say the adapter runs only on the `java` its
+  bundle was built with, name that executable, and say to put it in the config's `java` key.
+  Whether to accept another JDK 17 or later is a separate trust question.
 - **Reach real native projects.** Build from `compile_commands.json`, or attach to a binary the
   project's own build made with debug info. Support Rust crates with dependencies. Until then,
   13 of these 29 bugs are out of Peeky's reach.
