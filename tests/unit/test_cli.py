@@ -220,6 +220,8 @@ def test_a_failed_checks_reason_is_its_last_output_line(tmp_path, monkeypatch, c
     fail = "FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'"
     # The status stays where it was: the checker's error and its exit code.
     assert result["checker"]["error"] == f"SystemExit: {status}" and result["exit_code"] == 1
+    # A checker's verdict is its pass or fail.
+    assert result["verdict"] == "failed"
     assert result["reason"] == (fail if status == 1 else f"{fail} (SystemExit: {status})")
     assert main([*command, "--baseline"]) == 1
     text = capsys.readouterr().out
