@@ -2149,6 +2149,12 @@ class DebugWorker:
         if operation == "launch" and args.get("entry") is not None:
             if not isinstance(args["entry"], str):
                 raise ValueError("entry must be a string")
+        if operation == "launch" and args.get("module") is not None:
+            from peeky.adapters import check_module
+
+            check_module(args["module"])
+            if args.get("entry") is not None:
+                raise ValueError("Pass entry (--run) or module (--run-module), not both")
         if operation == "launch" and args.get("expect_sha256") is not None:
             expected = args["expect_sha256"]
             if (
@@ -2349,6 +2355,24 @@ class DebugWorker:
                 entry = self.path(args["entry"])
                 if entry.suffix != ".py":
                     raise ValueError("entry must be a .py file inside the root")
+            module = args.get("module")
+            if module is not None and not isinstance(self.adapter, PythonAdapter):
+                raise ValueError("module (--run-module) is supported only for Python targets")
+            # What the program gets: a module run's own (pytest's --assert=plain) first.
+            run_args, run_notes = (
+                self.adapter.module_arguments(module, args.get("args") or [])
+                if module is not None
+                else (
+                    list(args.get("args") or []),
+                    self.adapter.script_notes(entry or program)
+                    if isinstance(self.adapter, PythonAdapter)
+                    else [],
+                )
+            )
+            if module is not None:
+                # The pytest that would run is the one installed for the program's
+                # interpreter, not another `pytest` first on its path.
+                self.adapter.check_pytest(self.root)
             # A remote client's expected source identity is checked before anything runs,
             # so a mismatched program is never executed or changed.
             for role, path in (("program", program), ("entry", entry)):
@@ -2518,7 +2542,11 @@ class DebugWorker:
                     else {}
                 )
                 launch_args = (
-                    runtime.launch_args(entry or program, self.root, args["args"], **library)
+                    runtime.launch_args(
+                        entry or program, self.root, run_args, module=module, **library
+                    )
+                    if module is not None
+                    else runtime.launch_args(entry or program, self.root, args["args"], **library)
                     if args.get("args")
                     else runtime.launch_args(entry or program, self.root, **library)
                 )
@@ -2591,7 +2619,9 @@ class DebugWorker:
                     self.adapter, PythonAdapter
                 )
                 program_args = list(
-                    args["args"]
+                    run_args
+                    if module is not None
+                    else args["args"]
                     if args.get("args")
                     else getattr(getattr(runtime, "target", None), "arguments", ()) or ()
                 )
@@ -2646,6 +2676,7 @@ class DebugWorker:
                                 *self.loop_warnings(),
                                 *self.place_warnings(),
                                 *(getattr(runtime, "warnings", None) or ()),
+                                *run_notes,
                             ]
                         )
                         else {}
@@ -7208,6 +7239,7 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
             "until",
             "set_hit",
             "entry",
+            "module",
             "args",
             "expect_sha256",
             "expect_inputs",
@@ -7261,6 +7293,7 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
             args.get("until", "exit"),
             args.get("set_hit", 1),
             entry=args.get("entry"),
+            module=args.get("module"),
             args=tuple(args.get("args", [])) if isinstance(args.get("args", []), list) else None,
             expect_sha256=tuple(args["expect_sha256"].items())
             if isinstance(args.get("expect_sha256"), dict)
@@ -7604,6 +7637,8 @@ def _run_probe_process(root, request, adapter, cap, *, secret=None, python=None)
     command += ["--set-hit", str(request.set_hit)]
     if request.entry:
         command += ["--run", request.entry]
+    if request.module:
+        command += ["--run-module", request.module]
     if python is not None and adapter is None:
         command += ["--python", python]
     for argument in request.args:

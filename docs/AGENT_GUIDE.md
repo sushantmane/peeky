@@ -28,16 +28,16 @@ value: a breakpoint stops before its line runs. `--capture a,b.c` names what to 
 language's page has the rest: [Python](lang/python.md), [Java](lang/java.md),
 [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
-**Python, a test or a script in a repository.** The target is the root. `--run` names a `.py`
-script that reaches the line. For a pytest test, write a two-line runner (delete it after):
+**Python, a test or a script in a repository.** The target is the root. `--run-module pytest`
+runs a pytest test, as `python -m pytest` does. Its arguments go after `--`:
 
 ```sh
-printf 'import sys, pytest\nsys.exit(pytest.main(sys.argv[1:]))\n' > peeky_pytest.py
 peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c \
-  --run peeky_pytest.py -- -q tests/test_x.py::test_y
+  --run-module pytest -- -q tests/test_x.py::test_y
 ```
 
-- Without `--run`, the `--at` file runs as the program: `peeky probe . --at scripts/job.py:LINE`.
+- `--run script.py` runs a script that reaches the line. Without either, the `--at` file runs as
+  the program: `peeky probe . --at scripts/job.py:LINE`.
 - `--at` and `--run` must be inside the root; a package's file in its `.venv` works. A project
   installed without `-e` runs its `site-packages` copy, not its source: `pip install -e .`.
 - It runs on the root's `.venv` or `venv`, else the active virtual environment. For the `python`

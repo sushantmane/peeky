@@ -475,6 +475,52 @@ def identify(path, chosen, unused=None, environment=None, cwd=None):
     return found
 
 
+# Where the interpreter finds a module that `python -m` runs: as debugpy's launch runs it,
+# in the root, with the program's environment, the root first on its path (as `-c` puts
+# it). Its record follows a newline and names the call's nonce (argv[1]).
+_FIND = (
+    "import sys, importlib.util\n"
+    "s = importlib.util.find_spec(sys.argv[2])\n"
+    "o = None if s is None else [s.origin, list(s.submodule_search_locations or [])]\n"
+    "sys.stdout.write('\\n<PEEKY-MODULE %s> %r\\n' % (sys.argv[1], o))\n"
+    "sys.stdout.flush()\n"
+)
+
+
+def module_origin(interpreter, name):
+    """``[origin, search locations]`` of the top-level module ``name`` as ``interpreter``
+    (an Interpreter) finds it for `python -m`: run as the program is, in its directory,
+    with the program's environment. None where it finds none. ValueError where it can't
+    be asked. Finding a top-level module imports nothing of it."""
+    nonce = secrets.token_hex(8)
+    try:
+        status, out, _ = _bounded_run(
+            [interpreter.executable, "-c", _FIND, nonce, name],
+            interpreter.cwd,
+            program_environment(),
+            IDENTIFY_S,
+            MAX_IDENTIFY_OUTPUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"Peeky could not ask {interpreter.executable} ({exc})") from None
+    said = record("PEEKY-MODULE", nonce, out.decode(errors="replace")) if status == 0 else None
+    try:
+        found = ast.literal_eval(said) if said is not None else ValueError
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        found = ValueError
+    if found is not None and not (
+        isinstance(found, list)
+        and len(found) == 2
+        and (found[0] is None or isinstance(found[0], str))
+        and isinstance(found[1], list)
+    ):
+        raise ValueError(
+            f"Peeky could not ask {interpreter.executable} where it finds {name} (exit status "
+            f"{status})"
+        )
+    return found
+
+
 def find(root, option=None, environ=None):
     """The Interpreter that runs a program under ``root`` (``choose``, then
     ``identify`` in ``root``, where debugpy starts the program)."""

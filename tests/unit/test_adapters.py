@@ -4,7 +4,14 @@ from unittest.mock import patch
 
 import pytest
 
-from peeky.adapters import PythonAdapter, skipped_lines, under
+from peeky.adapters import (
+    PythonAdapter,
+    check_module,
+    refused_assert,
+    refused_plain,
+    skipped_lines,
+    under,
+)
 from peeky.dap import DAP
 
 
@@ -95,6 +102,83 @@ def test_debugpys_word_that_it_skips_a_file_is_recognized():
     assert skipped_lines({"breakpoints": [{"verified": True, "line": 2}, skipped]}) == [4]
     assert skipped_lines({"breakpoints": [{"verified": False, "line": 3}]}) == []
     assert skipped_lines(None) == []
+
+
+def test_a_module_run_is_launched_as_python_minus_m(tmp_path):
+    adapter = PythonAdapter(identity={"optimize": 0})
+    launch = adapter.launch_args(tmp_path / "x.py", tmp_path, ["-q"], module="pytest")
+    assert launch["module"] == "pytest" and "program" not in launch, launch
+    assert launch["args"] == ["-q"] and launch["cwd"] == str(tmp_path)
+    # Only pytest: a worker ran any installed module a client named (pip, http.server),
+    # and an alias of pytest's ran it with its asserts rewritten.
+    for bad in ("pip", "http.server", "pytest.__main__", "py.test", "_pytest", "", 7):
+        with pytest.raises(ValueError, match="--run-module takes only pytest"):
+            check_module(bad)
+        with pytest.raises(ValueError, match="--run-module takes only pytest"):
+            adapter.launch_args(tmp_path / "x.py", tmp_path, module=bad)
+    assert check_module("pytest") == "pytest"
+
+
+def test_pytest_runs_with_plain_asserts_or_is_refused():
+    # pytest rewrites test files' asserts: their code is then not the source Peeky reads.
+    adapter = PythonAdapter(identity={"optimize": 0})
+    plain = adapter.module_arguments("pytest", ["-q", "tests/test_x.py::test_y"], {})
+    assert plain[0] == ["--assert=plain", "-q", "tests/test_x.py::test_y"]
+    assert plain[1] and "pytest ran with --assert=plain, which Peeky added" in plain[1][0]
+    assert adapter.module_arguments("pytest", ["--assert=plain"], {})[0][-1] == "--assert=plain"
+    # After `--`, an argument is pytest's file name, not an option.
+    assert adapter.module_arguments("pytest", ["--", "--assert=rewrite"], {})[0][0] == (
+        "--assert=plain"
+    )
+    for given in (["--assert=rewrite"], ["--assert", "rewrite"], ["-q", "--assert"]):
+        with pytest.raises(ValueError, match="Leave --assert out"):
+            adapter.module_arguments("pytest", given, {})
+    with pytest.raises(ValueError, match="Unset PYTHONOPTIMIZE"):
+        PythonAdapter(identity={"optimize": 1}).module_arguments("pytest", [], {})
+    with pytest.raises(ValueError, match="--run-module takes only pytest"):
+        adapter.module_arguments("pip", ["install", "x"], {})
+
+
+def test_pytest_without_its_assertion_plugin_gets_nothing_added():
+    # pytest reads its command line's `-p no:assertion` before it loads its plugins and
+    # decides on its rewrite hook: it installs none, rewrites nothing, and refuses --assert
+    # (exit 4).
+    adapter = PythonAdapter(identity={"optimize": 1})
+    for args in (["-p", "no:assertion", "-q"], ["-pno:assertion"], ["-p", " no:assertion "]):
+        given, notes = adapter.module_arguments("pytest", args, {})
+        assert given == args and "kept it from installing its rewrite hook" in notes[0], notes
+    plain = PythonAdapter(identity={"optimize": 0})
+    # A later `-p assertion`, there or in PYTEST_ADDOPTS, loads it again: it stopped at
+    # the first `no:assertion` and said rewriting was off. And `-p no:assertion` only in
+    # PYTEST_ADDOPTS is read after pytest decided to rewrite: it rewrote, unsaid.
+    for args, environ in (
+        (["-p", "no:assertion", "-p", "assertion"], {}),
+        (["-pno:assertion", "-passertion"], {}),
+        (["-p", "assertion"], {"PYTEST_ADDOPTS": "-p no:assertion"}),
+        (["-p", "no:assertion"], {"PYTEST_ADDOPTS": "-p assertion"}),
+        ([], {"PYTEST_ADDOPTS": "-x -p no:assertion"}),
+        (["--", "x.py"], {}),
+    ):
+        given, notes = plain.module_arguments("pytest", args, environ)
+        assert given == ["--assert=plain", *args], (args, environ)
+        assert "pytest ran with --assert=plain" in notes[0], notes
+    with pytest.raises(ValueError, match="Fix or unset PYTEST_ADDOPTS"):
+        plain.module_arguments("pytest", [], {"PYTEST_ADDOPTS": "-k 'unclosed"})
+    assert refused_plain("ERROR: usage: ...\nerror: unrecognized arguments: --assert=plain\n")
+    assert not refused_plain("1 passed") and not refused_plain(None)
+    assert refused_assert("pytest: error: unrecognized arguments: --assert=rewrite\n")
+    assert refused_assert("error: unrecognized arguments: -x --assert rewrite\n")
+    assert not refused_assert("unrecognized arguments: --asserts") and not refused_assert(None)
+
+
+def test_a_script_that_imports_pytest_is_noted(tmp_path):
+    script = tmp_path / "run.py"
+    script.write_text("import sys, pytest\nsys.exit(pytest.main(sys.argv[1:]))\n")
+    assert "Use --run-module pytest instead" in PythonAdapter.script_notes(script)[0]
+    for text in ("import pytest_mock\n", "# import pytest\n", "x = 'import pytest'\n"):
+        script.write_text(text)
+        assert PythonAdapter.script_notes(script) == []
+    assert PythonAdapter.script_notes(tmp_path / "missing.py") == []
 
 
 def test_scope_selection_is_python_specific():

@@ -50,6 +50,11 @@
   checksums. Few of its C++ units can: a `#pragma GCC system_header` or an inheriting
   constructor drops every checksum of a unit. Phase 3 starts with a compiler wrapper for them.
   `native_units` reads these facts, and `tests/projects` measures the projects.
+- **Python: probe a pytest test without a runner script (protocol 13).** `--run-module pytest --
+  tests/test_x.py::test_y` runs pytest as `python -m pytest` does, and no other module; `probe`
+  and `session start` take it. It must be the pytest installed for the program's interpreter.
+  Peeky gives pytest `--assert=plain`, since rewritten asserts are not the code Peeky reads. A
+  `--run` script that imports pytest gets a warning (#447).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
