@@ -62,6 +62,20 @@ pub fn moved(arg: u32) -> u32 {
     k + f()
 }
 
+/// 2018: a `move` closure moves all of `p`, whose `name` it then grows elsewhere (2021
+/// moves `p.name` alone, and the MIR prints only one capture of `p`: #465).
+pub fn grown(arg: u32) -> usize {
+    let mut p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
+    let mut f = move || {
+        let a = p.a as usize;
+        p.name.push_str("defghijklmnopqrstuvwxyz0123456789");
+        a + p.name.len()
+    };
+    let r = f();
+    let k = std::hint::black_box(1); // GROWN
+    k + r
+}
+
 /// 2018: `arr.into_iter()` iterates by reference, `v` a `&u32` (2021: by value).
 pub fn summed(arg: u32) -> u32 {
     let arr = [std::hint::black_box(arg), 2, 3];
@@ -134,6 +148,7 @@ fn main() {
     println!("MUTATED {}", util::mutated(6));
     println!("INSIDE {}", util::inside(9));
     println!("MOVED {}", util::moved(11));
+    println!("GROWN {}", util::grown(5));
     println!("SUMMED {}", util::summed(13));
     println!("BORROWED {}", util::borrowed(17));
     println!("COPIED {}", util21::borrowed(19));
@@ -301,6 +316,15 @@ def test_a_closure_captures_whole_variables_as_edition_2018_does(built, capsys):
         assert "It may be moved, partly moved, dropped or unassigned" in row["note"], row
         assert row["stale"] is True and row["settable"] is False
     assert printed(result, "MOVED") == ["15"]
+    # `p.name` is moved into `f`, which grew it, freeing the buffer `p`'s leftover bytes
+    # point at: never read as a value (in 2021 it was, #465). The program prints `1 + 5 + 36`.
+    code, result = probe(capsys, built, "GROWN", "--capture", "p.name,r")
+    assert code == 0, result
+    row = rows(result)["p.name"]
+    assert "It may be moved, partly moved, dropped or unassigned" in row["note"], row
+    assert row["stale"] is True and row.get("view") != "memory", row
+    assert rows(result)["r"]["value"] == "41"
+    assert printed(result, "GROWN") == ["42"]
     code, result = probe(capsys, built, "MOVED", "--set", "p.a=100")
     error = result["error"]
     assert error["code"] == "MUTATION_REJECTED", error
@@ -428,5 +452,5 @@ def test_edition_2015_is_refused_and_text_2018_lexes_otherwise_is_refused(
         "Peeky can't read `util`'s text as edition 2018 does: util/src/lib.rs has a raw C "
         f'string (`cr"…"`) on line {len(text.splitlines())}. Peeky reads one as Rust 2021 '
         "does, and edition 2018 reads `cr` and an ordinary string. Analyse another package, "
-        "or write the string otherwise"
+        "or put a space after `cr`, as edition 2018 reads it"
     ), error

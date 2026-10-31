@@ -204,7 +204,7 @@ def _check_lexed_as_2018(unit, texts):
                 f"Peeky can't read `{unit['package']}`'s text as edition 2018 does: {name} has "
                 f'a raw C string (`cr"…"`) on line {line}. Peeky reads one as Rust 2021 does, '
                 "and edition 2018 reads `cr` and an ordinary string. Analyse another package, "
-                "or write the string otherwise"
+                "or put a space after `cr`, as edition 2018 reads it"
             )
 
 

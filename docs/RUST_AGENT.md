@@ -381,6 +381,11 @@ it as one more source (`EXPANDED`).
   and the unsafe scan reads each, naming it.
 - A frame outside the analysed compile's files, a dependency's or another member's, is read as a
   library's (`owns_source`), though its file is under the workspace.
+- An analysed package of edition 2018 is lexed as Rust 2021 is. The two differ only on a raw C
+  string, `cr"…"`, which 2018 reads as `cr` and an ordinary string. So a 2018 compile whose
+  sources or expansion hold one is refused, naming the line (`_check_lexed_as_2018`).
+- An `impl` header's bare name that the crate defines as a trait is a 2018 trait object
+  (`impl Keep for Box<Sink>`). It is never placed as a type (`_impl_self_place`).
 
 ## Changing a value
 
@@ -1190,6 +1195,13 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
   messages are split at `\n` alone. So a source's name may hold any character.
 - Edition 2024 was qualified by running the whole Rust suite, every owned-local proof included,
   with its example crate switched to 2024.
+- Edition 2018 is qualified for a workspace's analysed packages, not for a crate alone (ADR 0008,
+  "Editions"). rustc lowers closure captures, arrays' `into_iter` and `panic!` by the edition, and
+  the proofs read that MIR. `tests/rust/test_rust_workspace_edition2018.py` checks each against
+  the program's own print. Edition 2015 is refused.
+- Under Cargo's resolver 1, a workspace whose root is a package gives `--features` to that
+  package. A build where Cargo's unit graph lacks a configured feature is refused, naming
+  `package/feature` (`check_features`).
 - Test processes share OS permissions with the checker, and are trusted code.
 - Not delivered yet: any `Option` payload other than `i32`, a tuple or a crate struct, and any
   other data-carrying enum.

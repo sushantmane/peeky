@@ -784,7 +784,7 @@ def test_an_edition_2018_compiles_text_peeky_lexes_otherwise_is_refused(tmp_path
     assert str(caught.value) == (
         "Peeky can't read `util`'s text as edition 2018 does: util/src/lib.rs has a raw C "
         'string (`cr"…"`) on line 2. Peeky reads one as Rust 2021 does, and edition 2018 '
-        "reads `cr` and an ordinary string. Analyse another package, or write the string "
-        "otherwise"
+        "reads `cr` and an ordinary string. Analyse another package, or put a space after "
+        "`cr`, as edition 2018 reads it"
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"
