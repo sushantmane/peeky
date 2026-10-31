@@ -334,6 +334,7 @@ def test_a_commands_reason_is_the_line_that_names_the_failed_test():
     assert (
         reason(stderr=unittest_output) == "FAIL: test_add (t.T.test_add): AssertionError: -1 != 3"
     )
+    assert reason("checking\nFAIL first case\n    expected 3\n") == "FAIL first case; expected 3"
     assert reason("no failure line here\nlast line\n") == "last line"
     assert reason() == "the check command exited 1"
     assert reason(output_limit_exceeded=True, exit_code=None) == (

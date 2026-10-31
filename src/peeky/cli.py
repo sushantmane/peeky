@@ -3658,7 +3658,7 @@ def _command_program(word, root, environment, interpreter):
         return interpreter.executable or interpreter.path
     if "/" in word:
         path = Path(word) if os.path.isabs(word) else Path(root) / word
-        if not os.path.isabs(word) and not path.resolve().is_relative_to(Path(root).resolve()):
+        if not os.path.isabs(word) and not Path(os.path.normpath(path)).is_relative_to(root):
             raise ValueError(
                 f"--check-command's program {word} is outside the root, which is all the copy "
                 "holds: give its absolute path"
@@ -4006,7 +4006,7 @@ def _command_reason(result):
             continue
         # pytest's `FAILED tests/t.py::test_x - ...`, not unittest's `FAILED (failures=1)`.
         summary = [line for line in lines if re.match(r"(?:FAILED|ERROR) [^\s(]", line)]
-        chosen = summary[0] if summary else _failure_line("\n".join(lines)) or lines[-1]
+        chosen = summary[0] if summary else _failure_line(result[key]) or lines[-1]
         if len(summary) > 1:
             chosen += f" (and {len(summary) - 1} more)"
         break
