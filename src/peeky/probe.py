@@ -6098,11 +6098,21 @@ def run_probe(
         rows, changes = [], []
         result.update(output="", results_discarded=True)
     if probe.module is not None:
-        from peeky.adapters import PLAIN_ASSERTS, REFUSED_PLAIN, refused_plain
+        from peeky.adapters import (
+            NO_ASSERTION,
+            PLAIN_ASSERTS,
+            REFUSED_ASSERT,
+            REFUSED_PLAIN,
+            refused_assert,
+            refused_plain,
+        )
 
         if refused_plain(result.get("output")):
             # Its configuration turned the assertion plugin off: why nothing ran.
             warnings[:] = [REFUSED_PLAIN if note == PLAIN_ASSERTS else note for note in warnings]
+        elif refused_assert(result.get("output")):
+            # With -p no:assertion, its configuration's --assert is unknown: nothing ran.
+            warnings[:] = [REFUSED_ASSERT if note == NO_ASSERTION else note for note in warnings]
     result.update(
         warnings=warnings,
         hits=hits,

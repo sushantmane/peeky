@@ -214,13 +214,17 @@ output:
   asserts as it imports it, so the code that runs isn't the source Peeky reads. For example, a
   line inside an assert that spans lines stopped twice per pass of a loop. With plain asserts,
   the test files run as written. A failing assert then shows less detail.
-- Arguments that set `--assert` to anything but `plain` are refused before debugpy starts pytest. So is
-  a program that runs at `-O` (`PYTHONOPTIMIZE`). pytest runs asserts at `-O` only by rewriting
-  them, and plain ones wouldn't run.
-- With `-p no:assertion` in its arguments after `--`, pytest never loads its assertion plugin, so
-  it rewrites nothing. It would refuse `--assert=plain` then, so Peeky adds nothing, and a note
-  says so. A `-p assertion` there or in `PYTEST_ADDOPTS` loads the plugin again, so Peeky adds
-  `--assert=plain`. pytest decides whether to rewrite by its `--assert`, and Peeky's comes last.
+- Arguments that set `--assert` to anything but `plain` are refused before debugpy starts
+  pytest. So is a program that runs at `-O` (`PYTHONOPTIMIZE`). pytest runs asserts at `-O` only
+  by rewriting them, and plain ones wouldn't run.
+- With `-p no:assertion` in its arguments after `--`, pytest blocks its assertion plugin before it
+  decides on its rewrite hook. So it installs none, and rewrites nothing, even where a config
+  file's `addopts` register the plugin again later. It would refuse `--assert=plain` then, so
+  Peeky adds nothing, and a note says so. A `-p assertion` there or in `PYTEST_ADDOPTS` loads the
+  plugin again, so Peeky adds `--assert=plain`. pytest decides whether to rewrite by its
+  `--assert`, and Peeky's comes last.
+- With `-p no:assertion` there, an `--assert` in a config file's `addopts` or in
+  `PYTEST_ADDOPTS` is an unknown option: pytest stops, and no test runs. The note says so.
 - In `PYTEST_ADDOPTS` or a config file's `addopts`, `-p no:assertion` doesn't stop rewriting:
   pytest reads it after it has decided. So Peeky adds `--assert=plain` then too. If pytest refuses
   it, no test runs, and the note says why: pass only `-p no:assertion` after `--`.

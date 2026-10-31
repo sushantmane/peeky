@@ -217,10 +217,16 @@ PLAIN_ASSERTS = (
     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change "
     "the test files' code from the source Peeky reads. So a failing assert shows less detail"
 )
-# The note on a pytest run whose own arguments keep its assertion plugin from loading.
+# The note on a pytest run whose own command line kept it from installing its rewrite hook.
 NO_ASSERTION = (
-    "pytest ran with -p no:assertion in its arguments, so it never loaded its assertion plugin "
-    "and rewrote no asserts: the test files ran as Peeky reads them. Peeky added nothing"
+    "pytest got -p no:assertion on its command line, which kept it from installing its rewrite "
+    "hook, so it rewrote no asserts: the test files ran as Peeky reads them. Peeky added nothing"
+)
+# The note where pytest, so run, refused an --assert of its own (``refused_assert``).
+REFUSED_ASSERT = (
+    "pytest refused an --assert from its configuration or PYTEST_ADDOPTS (`unrecognized "
+    "arguments`): with -p no:assertion on its command line it has no --assert option. So no "
+    "test ran. Remove that --assert, or the -p no:assertion"
 )
 # The note where pytest refused the --assert=plain Peeky added (``refused_plain``).
 REFUSED_PLAIN = (
@@ -269,13 +275,14 @@ def _plugins(args):
     return found
 
 
-def _plugin_never_loads(added, args):
-    """Whether pytest never loads its assertion plugin, so it rewrites nothing and takes no
-    --assert: its own arguments ``args`` block it (`-p no:assertion`), which pytest reads
-    before it loads any plugin, and nothing loads it again (`-p assertion`), in them or in
-    PYTEST_ADDOPTS (``added``). A config file's `addopts` come before both. Where
-    anything loads it again, it does not say: Peeky adds --assert=plain, which whenever
-    pytest takes it keeps pytest from rewriting (it decides that by its --assert)."""
+def _hook_blocked(added, args):
+    """Whether pytest installs no rewrite hook, so it rewrites nothing and takes no
+    --assert: its command line ``args`` blocks its assertion plugin (`-p no:assertion`),
+    which pytest reads before it loads its plugins and decides on the hook, and nothing
+    there or in PYTEST_ADDOPTS (``added``) loads the plugin again (`-p assertion`). A
+    config file's `addopts` may register it again, after the hook was decided. Where
+    anything else loads it again, this does not say: Peeky adds --assert=plain, which
+    whenever pytest takes it keeps pytest from rewriting (it decides that by --assert)."""
     given, extra = _plugins(args), _plugins(added)
     return "no:assertion" in given and "assertion" not in given + extra
 
@@ -283,6 +290,14 @@ def _plugin_never_loads(added, args):
 def refused_plain(output):
     """Whether pytest's ``output`` says it refused the --assert=plain Peeky added."""
     return isinstance(output, str) and "unrecognized arguments: --assert=plain" in output
+
+
+def refused_assert(output):
+    """Whether pytest's ``output`` says it refused an --assert (one of its configuration's,
+    with no such option)."""
+    return isinstance(output, str) and bool(
+        re.search(r"unrecognized arguments: (?:.* )?--assert\b", output)
+    )
 
 
 def _assert_mode(args):
@@ -1597,11 +1612,11 @@ class PythonAdapter:
         """``(args, notes)``: what `--run-module` ``module`` (pytest) gets, and why it
         differs. pytest rewrites each test file's asserts as it imports it, so the code
         that runs is not what Peeky reads (other lines have code; at -O the asserts still
-        run): it gets `--assert=plain` first, unless its arguments keep its assertion plugin
-        from loading (``_plugin_never_loads``, with `PYTEST_ADDOPTS` from ``environ``, the
-        program's). Refused where
-        that would change the run: an `--assert` of the program's own other than plain,
-        or an optimization level above 0, where pytest's plain asserts would not run."""
+        run): it gets `--assert=plain` first, unless its command line keeps it from
+        installing its rewrite hook (``_hook_blocked``, with `PYTEST_ADDOPTS` from
+        ``environ``, the program's). Refused where that would change the run: an `--assert`
+        of the program's own other than plain, or an optimization level above 0, where
+        pytest's plain asserts would not run."""
         import shlex
 
         check_module(module)
@@ -1614,7 +1629,7 @@ class PythonAdapter:
                 "into arguments (an unclosed quote), so Peeky can't tell whether pytest "
                 "rewrites asserts. Fix or unset PYTEST_ADDOPTS"
             ) from None
-        if _plugin_never_loads(added, list(args)):
+        if _hook_blocked(added, list(args)):
             return list(args), [NO_ASSERTION]
         if (mode := _assert_mode(list(args))) not in (None, "plain"):
             raise ValueError(

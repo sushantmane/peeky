@@ -194,7 +194,7 @@ def test_pytest_without_its_assertion_plugin_runs_as_it_is(project, capsys):
     result = json.loads(out.out)
     assert code == 0 and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
     assert "--assert=plain" not in result["program_args"], result["program_args"]
-    assert any("never loaded its assertion plugin" in note for note in result["warnings"])
+    assert any("kept it from installing its rewrite hook" in note for note in result["warnings"])
 
 
 def _stops_at_9(capsys, project, *args):
@@ -217,7 +217,7 @@ def _plain(result):
     return (
         result["program_args"][0] == "--assert=plain"
         and any("pytest ran with --assert=plain" in note for note in notes)
-        and not any("never loaded its assertion plugin" in note for note in notes)
+        and not any("kept it from installing its rewrite hook" in note for note in notes)
     )
 
 
@@ -258,3 +258,24 @@ def test_assert_rewrite_from_pytest_addopts_or_config_is_overridden(project, cap
         "tests/test_cart.py::test_total",
     )
     assert len(json.loads(out.out)["rows"]) == 4, out.out
+
+
+def test_the_command_lines_no_assertion_blocks_the_hook_whatever_the_config_adds(project, capsys):
+    # A config's `addopts = -p assertion` registers the plugin again, after the command
+    # line's `-p no:assertion` kept pytest from installing its rewrite hook: no rewriting,
+    # one stop per pass, and Peeky adds nothing.
+    config = '[tool.pytest.ini_options]\npythonpath = ["src"]\naddopts = "{}"\n'
+    (project / "pyproject.toml").write_text(config.format("-p assertion"))
+    result = _stops_at_9(capsys, project, "-p", "no:assertion")
+    assert [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
+    assert "--assert=plain" not in result["program_args"], result["program_args"]
+    assert any("kept it from installing its rewrite hook" in note for note in result["warnings"])
+    # A config's `--assert=rewrite` is then an option pytest doesn't know: it stops before
+    # any test, so nothing is rewritten, and the note says why nothing ran.
+    (project / "pyproject.toml").write_text(config.format("--assert=rewrite"))
+    result = _stops_at_9(capsys, project, "-p", "no:assertion")
+    assert result["rows"] == [] and "--assert=plain" not in result["program_args"], result
+    assert "unrecognized arguments: --assert=rewrite" in result["output"], result["output"]
+    notes = result["warnings"]
+    assert any("refused an --assert from its configuration" in note for note in notes), notes
+    assert not any("kept it from installing its rewrite hook" in note for note in notes), notes

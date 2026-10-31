@@ -4,7 +4,14 @@ from unittest.mock import patch
 
 import pytest
 
-from peeky.adapters import PythonAdapter, check_module, refused_plain, skipped_lines, under
+from peeky.adapters import (
+    PythonAdapter,
+    check_module,
+    refused_assert,
+    refused_plain,
+    skipped_lines,
+    under,
+)
 from peeky.dap import DAP
 
 
@@ -133,12 +140,13 @@ def test_pytest_runs_with_plain_asserts_or_is_refused():
 
 
 def test_pytest_without_its_assertion_plugin_gets_nothing_added():
-    # pytest reads its own `-p no:assertion` before it loads any plugin: it never loads
-    # that one, rewrites nothing, and refuses --assert (exit 4).
+    # pytest reads its command line's `-p no:assertion` before it loads its plugins and
+    # decides on its rewrite hook: it installs none, rewrites nothing, and refuses --assert
+    # (exit 4).
     adapter = PythonAdapter(identity={"optimize": 1})
     for args in (["-p", "no:assertion", "-q"], ["-pno:assertion"], ["-p", " no:assertion "]):
         given, notes = adapter.module_arguments("pytest", args, {})
-        assert given == args and "never loaded its assertion plugin" in notes[0], notes
+        assert given == args and "kept it from installing its rewrite hook" in notes[0], notes
     plain = PythonAdapter(identity={"optimize": 0})
     # A later `-p assertion`, there or in PYTEST_ADDOPTS, loads it again: it stopped at
     # the first `no:assertion` and said rewriting was off. And `-p no:assertion` only in
@@ -158,6 +166,9 @@ def test_pytest_without_its_assertion_plugin_gets_nothing_added():
         plain.module_arguments("pytest", [], {"PYTEST_ADDOPTS": "-k 'unclosed"})
     assert refused_plain("ERROR: usage: ...\nerror: unrecognized arguments: --assert=plain\n")
     assert not refused_plain("1 passed") and not refused_plain(None)
+    assert refused_assert("pytest: error: unrecognized arguments: --assert=rewrite\n")
+    assert refused_assert("error: unrecognized arguments: -x --assert rewrite\n")
+    assert not refused_assert("unrecognized arguments: --asserts") and not refused_assert(None)
 
 
 def test_a_script_that_imports_pytest_is_noted(tmp_path):
