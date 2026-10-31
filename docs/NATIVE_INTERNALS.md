@@ -147,8 +147,13 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     config's compiler for its startup objects (`-print-file-name`: `crtbegin.o`,
     `crtbeginS.o`, `crtbeginT.o`, `crti.o`, `crtn.o`; and libgcc's archive member holding
     `init_have_lse_atomics`). A symbol is the toolchain's where the code at it is one of their
-    sections, byte for byte, but the bytes a relocation fills in (`StartupPiece`). A
-    program's own `frame_dummy`, even a local constructor, counts.
+    sections (`native_startup.place`). Every byte must be the object's, but each relocation's
+    immediate field. That field is decoded, and must point where the relocation names: into
+    the matched code, at the binary's symbol of that name, at its GOT slot or PLT stub, or
+    at 0 for a weak symbol nothing defines. x86-64's GOT load may be relaxed to `lea` or
+    `mov $imm`, still pointing there. A relocation kind not seen in the real objects
+    (`_AARCH64`, `_X86_64`) never matches. A program's own `frame_dummy`, even a local
+    constructor, counts.
   - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
     tail, matched byte for byte, are the toolchain's. Anything else there counts.
   - Peeky asks the compiler in its own environment (`replay_environment`), never the one the

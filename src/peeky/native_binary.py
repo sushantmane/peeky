@@ -39,6 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from peeky import native_startup
 from peeky.adapters import PythonAdapter
 from peeky.assembler import _C_KEYWORD
 from peeky.build import (
@@ -952,9 +953,6 @@ _MATCHED_STARTUP = frozenset(
     {"deregister_tm_clones", "register_tm_clones", "frame_dummy", "init_have_lse_atomics"}
     | {"call_weak_fn"}
 )
-_STARTUP_OBJECTS = ("crtbegin.o", "crtbeginS.o", "crtbeginT.o", "crti.o", "crtn.o")
-# libgcc's AArch64 constructor, found in the archive by name.
-_LIBGCC_STARTUP = b"init_have_lse_atomics"
 
 
 @dataclass(frozen=True)
@@ -986,28 +984,6 @@ class CodeMap:
 
     symbols: list | None
     sections: list
-
-
-@dataclass(frozen=True)
-class StartupPiece:
-    """A code section of one of the toolchain's startup objects: where it comes from
-    (``origin``), its name, its bytes, with those the linker fills in zeroed
-    (``cleared``, at ``masked`` offsets), and its symbols {name: offset}."""
-
-    origin: str
-    section: str
-    cleared: bytes
-    masked: tuple
-    symbols: dict
-
-    def matches(self, data):
-        """Whether ``data`` is this piece as linked: its bytes, but those relocated."""
-        if data is None or len(data) != len(self.cleared):
-            return False
-        data = bytearray(data)
-        for at in self.masked:
-            data[at] = 0
-        return bytes(data) == self.cleared
 
 
 # Sections of stubs the linker makes: never the program's code.
@@ -1136,156 +1112,6 @@ def _macho_symbols(stream, header):
     return CodeMap(found, code)
 
 
-def toolchain_startup(compiler, env, timeout=10):
-    """(pieces, why): the StartupPieces of the startup objects the config's ``compiler``
-    links (``_STARTUP_OBJECTS``, as its `-print-file-name` finds them, and libgcc's
-    archive member holding ``_LIBGCC_STARTUP``), and why some can't be read, or None."""
-
-    def find(option):
-        try:
-            done = subprocess.run(
-                [compiler, "--no-default-config", option],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return None, f"{compiler} {option} failed ({exc})"
-        path = done.stdout.strip()
-        if done.returncode or not os.path.isabs(path) or not os.path.isfile(path):
-            wanted = option.split("=", 1)[1] if "=" in option else "libgcc"
-            return None, f"{compiler} finds no {wanted}"
-        return path, None
-
-    pieces, missing = [], []
-    for name in _STARTUP_OBJECTS:
-        path, why = find(f"-print-file-name={name}")
-        if path is None:
-            missing.append(why)
-            continue
-        try:
-            with open(path, "rb") as stream:
-                pieces += _object_pieces(stream.read(1 << 22), name)
-        except (OSError, ValueError, struct.error) as exc:
-            missing.append(f"Peeky can't read {path} ({exc})")
-    path, why = find("-print-libgcc-file-name")
-    if path is None:
-        missing.append(why)
-    else:
-        try:
-            for member, data in _archive_members(path, _LIBGCC_STARTUP):
-                pieces += _object_pieces(data, f"{Path(path).name}({member})")
-        except (OSError, ValueError, struct.error) as exc:
-            missing.append(f"Peeky can't read {path} ({exc})")
-    return pieces, "; ".join(missing) or None
-
-
-def _archive_members(path, wanted):
-    """(name, bytes) of each ELF member of the `ar` archive ``path`` whose bytes hold
-    ``wanted``."""
-    with open(path, "rb") as stream:
-        data = stream.read(1 << 26)
-    if not data.startswith(b"!<arch>\n"):
-        raise ValueError("not an ar archive")
-    at, names = 8, b""
-    while at + 60 <= len(data):
-        header = data[at : at + 60]
-        if header[58:60] != b"`\n":
-            raise ValueError("invalid member header")
-        name, size = header[:16].rstrip(), int(header[48:58])
-        body = data[at + 60 : at + 60 + size]
-        if name == b"//":
-            names = body
-        elif name not in (b"/", b"/SYM64/"):
-            if name.startswith(b"/") and name[1:].isdigit():
-                start = int(name[1:])
-                name = names[start : names.find(b"/\n", start)]
-            if wanted in body and body.startswith(b"\x7fELF"):
-                yield name.rstrip(b"/").decode("latin-1"), body
-        at += 60 + size + (size & 1)
-
-
-def _relocated(machine, kind, offset):
-    """The bytes a relocation of ``kind`` at ``offset`` may change: an AArch64
-    instruction's word (8 bytes for ABS64 and PREL64); x86-64's 4 or 8, and the opcode
-    before a GOTPCRELX, which the linker may rewrite."""
-    if machine == 183:  # EM_AARCH64
-        return range(offset, offset + (8 if kind in (257, 260) else 4))
-    if machine == 62:  # EM_X86_64
-        if kind in (41, 42):  # R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX
-            return range(max(offset - 3, 0), offset + 4)
-        return range(offset, offset + (8 if kind in (1, 24, 25, 26) else 4))
-    raise ValueError(f"Peeky doesn't know machine {machine}'s relocations")
-
-
-def _object_pieces(blob, origin):
-    """The StartupPieces of a 64-bit little-endian ELF object's code sections."""
-    if blob[:4] != b"\x7fELF" or blob[4:6] != b"\x02\x01" or len(blob) < 64:
-        raise ValueError("not a 64-bit little-endian ELF object")
-    machine = struct.unpack_from("<H", blob, 18)[0]
-    offset = struct.unpack_from("<Q", blob, 40)[0]
-    entry, count, names_at = struct.unpack_from("<HHH", blob, 58)
-    if entry != 64 or not 0 < count <= 4096 or names_at >= count or offset + count * 64 > len(blob):
-        raise ValueError("invalid section headers")
-    sections = [
-        struct.unpack_from("<IIQQQQIIQQ", blob, offset + 64 * index) for index in range(count)
-    ]
-
-    def string(table, at):
-        end = table.find(b"\0", at)
-        return table[at:end].decode("latin-1") if 0 <= at and end >= 0 else ""
-
-    def body(index):
-        _, kind, _, _, at, length, *_ = sections[index]
-        if kind == 8:  # SHT_NOBITS
-            return b""
-        if at + length > len(blob):
-            raise ValueError("a section past the object's end")
-        return blob[at : at + length]
-
-    titles = body(names_at)
-    code = {
-        index: string(titles, name)
-        for index, (name, kind, flags, *_) in enumerate(sections)
-        if kind == 1 and flags & 0x4 and sections[index][5]  # PROGBITS, SHF_EXECINSTR
-    }
-    masked = {index: set() for index in code}
-    named = {index: {} for index in code}
-    for index, (_, kind, _, _, _, length, link, info, _, width) in enumerate(sections):
-        if kind == 4 and info in code and width == 24:  # SHT_RELA
-            for place, rinfo, _ in struct.iter_unpack("<QQq", body(index)[: length - length % 24]):
-                masked[info].update(_relocated(machine, rinfo & 0xFFFFFFFF, place))
-        elif kind == 2 and width == 24 and link < count:  # SHT_SYMTAB
-            strings = body(link)
-            for name, sinfo, _, shndx, value, _ in struct.iter_unpack(
-                "<IBBHQQ", body(index)[: length - length % 24]
-            ):
-                text = string(strings, name)
-                if shndx in code and sinfo & 0xF in (0, 2) and text and not text.startswith("$"):
-                    named[shndx][text] = value
-    pieces = []
-    for index, title in code.items():
-        data = bytearray(body(index))
-        spots = tuple(sorted(at for at in masked[index] if at < len(data)))
-        for at in spots:
-            data[at] = 0
-        pieces.append(StartupPiece(origin, title, bytes(data), spots, named[index]))
-    return pieces
-
-
-def _read_at(stream, sections, address, length):
-    """The binary's ``length`` bytes at ``address``, within one of its code sections, or
-    None."""
-    section = next((each for each in sections if each.low <= address < each.high), None)
-    if section is None or address + length > section.high:
-        return None
-    stream.seek(section.offset + address - section.low)
-    return stream.read(length)
-
-
 # What fills the space between functions: zeros, AArch64's `nop`, x86's `nop`s and `int3`.
 _AARCH64_PADDING = re.compile(rb"(?:\x1f\x20\x03\xd5|\0\0\0\0)*")
 _X86_NOPS = (
@@ -1373,32 +1199,37 @@ def uncovered_code(binary, units, startup=None):
         if section.name in _FRAMED_SECTIONS and section.high > section.low
     }
     matched, unframed, pieces, why = set(), {}, [], None
-    with open(binary, "rb") as stream:
-        if framed or any(symbol.name in _MATCHED_STARTUP for symbol in symbols):
-            pieces, why = startup() if startup is not None else ([], "Peeky has no compiler to ask")
-        for symbol in symbols:
-            if symbol.name not in _MATCHED_STARTUP or symbol.address in matched:
+    if framed or any(symbol.name in _MATCHED_STARTUP for symbol in symbols):
+        pieces, why = startup() if startup is not None else ([], "Peeky has no compiler to ask")
+    image = None
+    if pieces:
+        try:
+            image = native_startup.Image(binary)
+        except (OSError, ValueError, struct.error) as exc:
+            pieces, why = [], f"Peeky can't read the binary's sections ({exc})"
+    for symbol in symbols:
+        if symbol.name not in _MATCHED_STARTUP or symbol.address in matched:
+            continue
+        for piece in pieces:
+            if symbol.name not in piece.symbols:
                 continue
-            for piece in pieces:
-                if symbol.name not in piece.symbols:
-                    continue
-                base = symbol.address - piece.symbols[symbol.name]
-                if piece.matches(_read_at(stream, sections, base, len(piece.cleared))):
-                    covered.append((base, base + len(piece.cleared)))
-                    matched |= {base + at for at in piece.symbols.values()}
-                    break
-        for name, section in framed.items():
-            # crti.o begins the section and crtn.o ends it; others add what lies between.
-            head = [piece for piece in pieces if piece.origin == "crti.o" and piece.section == name]
-            tail = [piece for piece in pieces if piece.origin == "crtn.o" and piece.section == name]
-            if not head or not tail:
-                unframed[name] = why or "Peeky found no crti.o or crtn.o"
-                continue
-            start, end = len(head[0].cleared), len(tail[0].cleared)
-            if head[0].matches(_read_at(stream, sections, section.low, start)):
-                covered.append((section.low, section.low + start))
-            if tail[0].matches(_read_at(stream, sections, section.high - end, end)):
-                covered.append((section.high - end, section.high))
+            base = symbol.address - piece.symbols[symbol.name]
+            if native_startup.place(piece, base, image):
+                covered.append((base, base + len(piece.data)))
+                matched |= {base + at for at in piece.symbols.values()}
+                break
+    for name, section in framed.items():
+        # crti.o begins the section and crtn.o ends it; others add what lies between.
+        head = [piece for piece in pieces if piece.origin == "crti.o" and piece.section == name]
+        tail = [piece for piece in pieces if piece.origin == "crtn.o" and piece.section == name]
+        if not head or not tail:
+            unframed[name] = why or "Peeky found no crti.o or crtn.o"
+            continue
+        start, end = len(head[0].data), len(tail[0].data)
+        if native_startup.place(head[0], section.low, image):
+            covered.append((section.low, section.low + start))
+        if native_startup.place(tail[0], section.high - end, image):
+            covered.append((section.high - end, section.high))
 
     def reserved(symbol):
         return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
@@ -1922,7 +1753,9 @@ class BinaryTarget:
             # The toolchain's own environment, never the program's (``env``).
             tools = replay_environment(scratch)
             uncovered = uncovered_code(
-                binary, units, lambda: toolchain_startup(compiler, tools, _remaining(deadline, 10))
+                binary,
+                units,
+                lambda: native_startup.toolchain_startup(compiler, tools, _remaining(deadline, 10)),
             )
             any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()

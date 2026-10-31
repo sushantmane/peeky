@@ -1076,21 +1076,55 @@ def test_a_joined_sysroot_holds_the_sdk_settings_too(root, tmp_path):
     assert isinstance(_replay(root, tmp_path, words=words), UnitText)
 
 
-def _piece(origin, section, data, masked=(), **symbols):
-    from peeky.native_binary import StartupPiece
+def _piece(origin, section, data, *relocations, **symbols):
+    from peeky.native_startup import EM_AARCH64, StartupPiece
 
-    cleared = bytearray(data)
-    for at in masked:
-        cleared[at] = 0
-    return StartupPiece(origin, section, bytes(cleared), tuple(masked), symbols)
+    return StartupPiece(origin, section, data, EM_AARCH64, relocations, symbols)
+
+
+def _call(offset, name, section=None):
+    """A CALL26 relocation to ``name``: one the object doesn't define, or where
+    ``section`` names its section, one it does."""
+    from peeky.native_startup import Relocation
+
+    return Relocation(offset, 283, 0, None, name, 0, section is not None, section)
+
+
+def _linked(monkeypatch, base, **addresses):
+    """native_startup.Image of the binary's bytes, at ``base``, with ``addresses``."""
+    from peeky import native_startup
+    from peeky.native_startup import EM_AARCH64
+
+    class Image:
+        def __init__(self, binary):
+            self.data, self.machine = Path(binary).read_bytes(), EM_AARCH64
+            self.addresses = {name: set(found) for name, found in addresses.items()}
+
+        def read(self, address, length):
+            at = address - base
+            return self.data[at : at + length] if 0 <= at <= len(self.data) - length else None
+
+        def targets(self, name):
+            return self.addresses.get(name) or {0}
+
+        def got(self, name):
+            return set()
+
+        def stub(self, address):
+            return None
+
+    monkeypatch.setattr(native_startup, "Image", Image)
 
 
 RET = b"\xc0\x03\x5f\xd6"  # ret
-BL = b"\x46\x00\x00\x94"  # bl, its target filled in by the linker
 MOV = b"\xe9\x03\x09\xaa"  # mov x9, x9
 
 
-def test_startup_names_count_unless_their_bytes_are_the_toolchain_s(root, monkeypatch):
+def _bl(place, target):
+    return (0x94000000 | ((target - place) >> 2) & 0x3FFFFFF).to_bytes(4, "little")
+
+
+def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypatch):
     # frame_dummy, init_have_lse_atomics and the like aren't reserved names: a program
     # may define its own, even local, and called by .init_array.
     from peeky import native_binary
@@ -1098,14 +1132,15 @@ def test_startup_names_count_unless_their_bytes_are_the_toolchain_s(root, monkey
 
     binary = root / "prog"
     text = bytearray(0x100)
-    text[0x40:0x48] = BL + RET  # crtbeginS.o's block, as linked
+    text[0x40:0x48] = _bl(0x1040, 0x1700) + RET  # crtbeginS.o's block, as linked
     binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1700})
     sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
     crtbegin = _piece(
         "crtbeginS.o",
         ".text",
-        b"\0\0\0\x94" + RET,
-        (0, 1, 2, 3),
+        _bl(0, 0) + RET,
+        _call(0, "__cxa_finalize"),
         register_tm_clones=0,
         frame_dummy=4,
     )
@@ -1117,7 +1152,7 @@ def test_startup_names_count_unless_their_bytes_are_the_toolchain_s(root, monkey
         return uncovered_code(binary, [], lambda: (list(pieces), why))
 
     said = "{} is code no unit's debug information covers"
-    # crtbeginS.o's bytes, its call's target masked: the toolchain's, the block whole.
+    # crtbeginS.o's code, its call relocated to its function: the toolchain's, whole.
     block = (
         CodeSymbol("register_tm_clones", 0x1040, 0, True),
         CodeSymbol("frame_dummy", 0x1044, 0, True),
@@ -1135,15 +1170,12 @@ def test_startup_names_count_unless_their_bytes_are_the_toolchain_s(root, monkey
         said.format("frame_dummy")
         + ", and Peeky found no toolchain startup object holding it (clang finds no crtbeginS.o)"
     ]
+    # The same code calling another function: the program's.
+    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1800})
+    assert found(*block)[0].startswith(said.format("register_tm_clones"))
 
 
-def test_a_startup_piece_masks_what_the_linker_fills_in():
-    piece = _piece("crti.o", ".init", b"\0\0\0\x94" + RET, (0, 1, 2, 3))
-    assert piece.matches(BL + RET) and not piece.matches(BL + MOV) and not piece.matches(BL)
-    assert not piece.matches(None)
-
-
-def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_bytes_are(root, monkeypatch):
+def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkeypatch):
     # .init and .fini hold whatever objects put there, around crti.o's head and crtn.o's
     # tail; their _init and _fini symbols have no size.
     from peeky import native_binary
@@ -1151,8 +1183,11 @@ def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_bytes_are(root, monk
 
     binary = root / "prog"
     symbols = [CodeSymbol("_init", 0x2000, 0, False)]
-    head = _piece("crti.o", ".init", MOV + b"\0\0\0\x94", (4, 5, 6, 7))
+    # crti.o's `bl call_weak_fn`, to its own .text.
+    head = _piece("crti.o", ".init", MOV + _bl(0, 0), _call(4, "call_weak_fn", ".text"))
     tail = _piece("crtn.o", ".init", RET)
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x3000})
+    call = _bl(0x2004, 0x3000)
 
     def found(data, pieces=(head, tail), why=None):
         binary.write_bytes(data)
@@ -1162,16 +1197,17 @@ def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_bytes_are(root, monk
         )
         return uncovered_code(binary, [], lambda: (list(pieces), why))
 
-    assert found(MOV + BL + RET) == []
+    assert found(MOV + call + RET) == []
     # Another object's code between them.
-    assert found(MOV + BL + MOV + RET) == [
+    assert found(MOV + call + MOV + RET) == [
         "the code at 0x2008, in .init, may be the program's: it isn't crti.o's or crtn.o's"
     ]
-    # Not crti.o's head at all.
-    assert found(RET + BL + RET) == [
-        "the code at 0x2000, in .init, may be the program's: it isn't crti.o's or crtn.o's"
-    ]
-    assert found(MOV + BL + RET, pieces=(), why="clang finds no crti.o") == [
+    # Not crti.o's head at all, or its call elsewhere.
+    for other in (RET + call, MOV + _bl(0x2004, 0x3100)):
+        assert found(other + RET) == [
+            "the code at 0x2000, in .init, may be the program's: it isn't crti.o's or crtn.o's"
+        ]
+    assert found(MOV + call + RET, pieces=(), why="clang finds no crti.o") == [
         "the code at 0x2000, in .init, may be the program's: Peeky can't compare it with "
         "crti.o's and crtn.o's (clang finds no crti.o)"
     ]
