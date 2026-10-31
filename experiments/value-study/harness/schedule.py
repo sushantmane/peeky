@@ -48,8 +48,18 @@ def eligible_bugs(bugs_dir):
         if not directory.is_dir() or directory.name.startswith("."):
             continue
         bug = studylib.load_bug(directory.name, bugs_dir)
-        missing = [name for name in ("bug.yaml", "problem.md", "test.patch", "eval.sh", "parse.py",
-                                     "grade.json") if not (directory / name).is_file()]
+        missing = [
+            name
+            for name in (
+                "bug.yaml",
+                "problem.md",
+                "test.patch",
+                "eval.sh",
+                "parse.py",
+                "grade.json",
+            )
+            if not (directory / name).is_file()
+        ]
         if missing:
             excluded[directory.name] = "missing " + ", ".join(missing)
         elif not studylib.validation_ok(directory):
@@ -66,16 +76,24 @@ def eligible_bugs(bugs_dir):
             elif not peeky["peeky_sha"]:
                 excluded[directory.name] = "the peeky image has no Peeky label"
             elif peeky_control_id(bug["peeky_image"]) not in (None, control["id"]):
-                excluded[directory.name] = ("the peeky image was built from an older control image;"
-                                            " rerun build_peeky_images.sh")
+                excluded[directory.name] = (
+                    "the peeky image was built from an older control image;"
+                    " rerun build_peeky_images.sh"
+                )
             else:
                 chosen[directory.name] = bug
     return chosen, excluded
 
 
 def peeky_control_id(image):
-    result = studylib.docker("image", "inspect", "-f",
-                             '{{ index .Config.Labels "peeky-study.control-id" }}', image, check=False)
+    result = studylib.docker(
+        "image",
+        "inspect",
+        "-f",
+        '{{ index .Config.Labels "peeky-study.control-id" }}',
+        image,
+        check=False,
+    )
     value = result.stdout.strip()
     return value if value and value != "<no value>" else None
 
@@ -115,14 +133,33 @@ def preflight_call(agent_root):
     env = run_one.child_environment(directory / "home", bash_env, copilot, docker)
     try:
         completed = subprocess.run(
-            [copilot, "-p", "Reply with the single word: ready", "--available-tools", "bash",
-             "--allow-all-tools", "--no-custom-instructions", "--disable-builtin-mcps",
-             "--no-ask-user", "--no-auto-update", "--output-format", "json",
-             "--max-ai-credits", "30"],
-            cwd=str(directory / "work"), env=env, capture_output=True, text=True, timeout=180,
-            stdin=subprocess.DEVNULL)
-        replied = any('"assistant.message"' in line and "ready" in line.lower()
-                      for line in completed.stdout.splitlines())
+            [
+                copilot,
+                "-p",
+                "Reply with the single word: ready",
+                "--available-tools",
+                "bash",
+                "--allow-all-tools",
+                "--no-custom-instructions",
+                "--disable-builtin-mcps",
+                "--no-ask-user",
+                "--no-auto-update",
+                "--output-format",
+                "json",
+                "--max-ai-credits",
+                "30",
+            ],
+            cwd=str(directory / "work"),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            stdin=subprocess.DEVNULL,
+        )
+        replied = any(
+            '"assistant.message"' in line and "ready" in line.lower()
+            for line in completed.stdout.splitlines()
+        )
         return completed.returncode == 0 and replied, completed.stderr.strip()[-500:]
     finally:
         shutil.rmtree(str(directory), ignore_errors=True)
@@ -133,14 +170,21 @@ def main():
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--only", help="comma-separated bug ids")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--preflight", action="store_true",
-                        help="check the CLI with a tiny prompt (one model call) before starting")
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="check the CLI with a tiny prompt (one model call) before starting",
+    )
     parser.add_argument("--budget-minutes", type=float, default=40)
     parser.add_argument("--budget-credits", type=float, default=250)
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--max-retries", type=int, default=2)
-    parser.add_argument("--stop-after-infra", type=int, default=5,
-                        help="stop when this many attempts in a row fail for infrastructure")
+    parser.add_argument(
+        "--stop-after-infra",
+        type=int,
+        default=5,
+        help="stop when this many attempts in a row fail for infrastructure",
+    )
     parser.add_argument("--results", default=str(studylib.RUNS))
     parser.add_argument("--bugs", default=str(studylib.BUGS))
     parser.add_argument("--progress-log")
@@ -151,15 +195,23 @@ def main():
     if not studylib.docker_up():
         sys.exit("Docker is not running")
     bugs, excluded = eligible_bugs(args.bugs)
-    attempts = [(bug, arm, rep) for bug in sorted(bugs) for arm in studylib.ARMS
-                for rep in range(1, args.reps + 1)]
+    attempts = [
+        (bug, arm, rep)
+        for bug in sorted(bugs)
+        for arm in studylib.ARMS
+        for rep in range(1, args.reps + 1)
+    ]
     random.Random(SEED).shuffle(attempts)
     if args.only:
         wanted = set(args.only.split(","))
         unknown = wanted - set(bugs)
         if unknown:
-            print("not eligible: " + ", ".join(
-                "{} ({})".format(b, excluded.get(b, "no such bug")) for b in sorted(unknown)))
+            print(
+                "not eligible: "
+                + ", ".join(
+                    "{} ({})".format(b, excluded.get(b, "no such bug")) for b in sorted(unknown)
+                )
+            )
         attempts = [a for a in attempts if a[0] in wanted]
 
     states = {a: attempt_state(args.results, *a, args.max_retries) for a in attempts}
@@ -170,19 +222,27 @@ def main():
     print("bugs: {} eligible, {} left out".format(len(bugs), len(excluded)))
     for bug, why in sorted(excluded.items()):
         print("  left out: {}: {}".format(bug, why))
-    print("attempts: {} ({})".format(len(attempts), ", ".join(
-        "{} {}".format(n, s) for s, n in sorted(counts.items()))))
+    print(
+        "attempts: {} ({})".format(
+            len(attempts), ", ".join("{} {}".format(n, s) for s, n in sorted(counts.items()))
+        )
+    )
     if args.dry_run:
         for index, attempt in enumerate(attempts, 1):
-            print("{:4d} {:40s} {:7s} {}  {}".format(index, attempt[0], attempt[1], attempt[2],
-                                                     states[attempt][0]))
+            print(
+                "{:4d} {:40s} {:7s} {}  {}".format(
+                    index, attempt[0], attempt[1], attempt[2], states[attempt][0]
+                )
+            )
         return
 
     if not args.fake_agent:
         studylib.which_or_die("copilot")
         if not any(os.environ.get(n) for n in run_one.AUTH_VARIABLES):
-            print("warning: no COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN; the CLI's stored "
-                  "login in the run's empty COPILOT_HOME won't exist")
+            print(
+                "warning: no COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN; the CLI's stored "
+                "login in the run's empty COPILOT_HOME won't exist"
+            )
         if args.preflight:
             ok, stderr = preflight_call(args.agent_root)
             if not ok:
@@ -192,9 +252,16 @@ def main():
     progress_path = Path(args.progress_log or Path(args.results).parent / "progress.log")
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     handle = progress_path.open("a")
-    log(handle, "schedule: {} to run, concurrency {}, budgets {} min / {} credits{}".format(
-        len(queue), args.concurrency, args.budget_minutes, args.budget_credits,
-        ", fake agent " + args.fake_agent if args.fake_agent else ""))
+    log(
+        handle,
+        "schedule: {} to run, concurrency {}, budgets {} min / {} credits{}".format(
+            len(queue),
+            args.concurrency,
+            args.budget_minutes,
+            args.budget_credits,
+            ", fake agent " + args.fake_agent if args.fake_agent else "",
+        ),
+    )
 
     running = {}
     infra_streak = 0
@@ -202,15 +269,33 @@ def main():
 
     def launch(attempt):
         bug, arm, rep = attempt
-        command = [sys.executable, str(studylib.HARNESS / "run_one.py"), bug, arm, str(rep),
-                   "--results", args.results, "--bugs", args.bugs,
-                   "--budget-minutes", str(args.budget_minutes),
-                   "--budget-credits", str(args.budget_credits), "--agent-root", args.agent_root]
+        command = [
+            sys.executable,
+            str(studylib.HARNESS / "run_one.py"),
+            bug,
+            arm,
+            str(rep),
+            "--results",
+            args.results,
+            "--bugs",
+            args.bugs,
+            "--budget-minutes",
+            str(args.budget_minutes),
+            "--budget-credits",
+            str(args.budget_credits),
+            "--agent-root",
+            args.agent_root,
+        ]
         if args.fake_agent:
             command += ["--fake-agent", args.fake_agent]
         log(handle, "start {} {} {}".format(bug, arm, rep))
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                   stdin=subprocess.DEVNULL, text=True)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+        )
         running[process] = attempt
 
     try:
@@ -222,20 +307,28 @@ def main():
                 attempt = running.pop(process)
                 output = process.stdout.read().strip()
                 summary = output.splitlines()[-1] if output else ""
-                log(handle, "end {} {} {} exit {}: {}".format(*attempt, process.returncode, summary))
+                log(
+                    handle, "end {} {} {} exit {}: {}".format(*attempt, process.returncode, summary)
+                )
                 state, failures = attempt_state(args.results, *attempt, args.max_retries)
                 if state == "done":
                     infra_streak = 0
                     continue
                 infra_streak += 1
                 if state in ("retry", "interrupted", "todo"):
-                    log(handle, "  infrastructure failure {} of {}; queued again".format(
-                        failures, args.max_retries + 1))
+                    log(
+                        handle,
+                        "  infrastructure failure {} of {}; queued again".format(
+                            failures, args.max_retries + 1
+                        ),
+                    )
                     queue.append(attempt)
                 else:
                     log(handle, "  infrastructure failure {}; giving up on it".format(failures))
                 if infra_streak >= args.stop_after_infra and not stopping:
-                    log(handle, "stopping: {} infrastructure failures in a row".format(infra_streak))
+                    log(
+                        handle, "stopping: {} infrastructure failures in a row".format(infra_streak)
+                    )
                     stopping = True
     except KeyboardInterrupt:
         log(handle, "interrupted; waiting for the running attempts to clean up")

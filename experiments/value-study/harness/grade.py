@@ -39,8 +39,13 @@ def main():
         graded = studylib.grade_container(container, bug, args.log, apply_gold=args.gold)
     finally:
         studylib.remove_container(container)
-    record = {"name": name, "f2p": graded["f2p"], "p2p_failed": graded["p2p_failed"],
-              "solved": graded["solved"], "seconds": graded["seconds"]}
+    record = {
+        "name": name,
+        "f2p": graded["f2p"],
+        "p2p_failed": graded["p2p_failed"],
+        "solved": graded["solved"],
+        "seconds": graded["seconds"],
+    }
     print(json.dumps(record, indent=1))
     if not graded["markers_found"]:
         print("warning: no test output markers in the eval log", file=sys.stderr)

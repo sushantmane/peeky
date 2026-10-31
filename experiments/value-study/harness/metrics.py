@@ -25,19 +25,40 @@ BUILD_TEST_PROGRAMS = {
 BUILD_TEST_PROGRAMS["cpp"] = BUILD_TEST_PROGRAMS["c++"] = BUILD_TEST_PROGRAMS["c"]
 CARGO_BUILD_TEST = {"test", "build", "nextest"}
 BIN_TEST = re.compile(r"(?:^|[\s;&|(])(?:\./|/testbed/)?bin/test(?:\s|$)")
-PYTHON_SCRIPT_SUBCOMMANDS = {"manage.py": {"test"}, "setup.py": {"test", "build", "build_ext", "develop"}}
+PYTHON_SCRIPT_SUBCOMMANDS = {
+    "manage.py": {"test"},
+    "setup.py": {"test", "build", "build_ext", "develop"},
+}
 
 # Errors that are the infrastructure's, not the agent's.
 INFRA_ERROR = re.compile(
     r"not authenticated|authenticat\w* (failed|required|error)|unauthori[sz]ed|\b401\b|\b403\b|"
     r"rate.?limit|\b429\b|too many requests|quota|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|"
     r"socket hang up|service unavailable|internal server error|bad gateway|gateway timeout|"
-    r"\b50[0234]\b|network error|fetch failed", re.I)
+    r"\b50[0234]\b|network error|fetch failed",
+    re.I,
+)
 CREDIT_LIMIT = re.compile(r"credit", re.I)
 
 COMMAND_SEPARATORS = re.compile(r"&&|\|\||;|\||\n|\$\(|`|\(|\)|\{|\}")
-COMMAND_PREFIXES = {"sudo", "time", "env", "nohup", "exec", "then", "do", "else", "if", "while",
-                    "until", "!", "xargs", "command", "stdbuf", "nice"}
+COMMAND_PREFIXES = {
+    "sudo",
+    "time",
+    "env",
+    "nohup",
+    "exec",
+    "then",
+    "do",
+    "else",
+    "if",
+    "while",
+    "until",
+    "!",
+    "xargs",
+    "command",
+    "stdbuf",
+    "nice",
+}
 
 
 def read_jsonl(path):
@@ -48,8 +69,9 @@ def read_jsonl(path):
     if path.is_file():
         handle = path.open(encoding="utf-8", errors="replace")
     elif path.with_name(path.name + ".gz").is_file():
-        handle = gzip.open(str(path.with_name(path.name + ".gz")), "rt", encoding="utf-8",
-                           errors="replace")
+        handle = gzip.open(
+            str(path.with_name(path.name + ".gz")), "rt", encoding="utf-8", errors="replace"
+        )
     else:
         return events, bad
     with handle:
@@ -92,7 +114,9 @@ def invoked_programs(command):
                 words = words[1:]
             elif word == "timeout":
                 words = words[1:]
-                while words and (words[0].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", words[0])):
+                while words and (
+                    words[0].startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", words[0])
+                ):
                     words = words[1:]
             else:
                 break
@@ -102,12 +126,12 @@ def invoked_programs(command):
             if re.fullmatch(r"python[\d.]*", program):
                 if "-m" in arguments[:-1]:
                     at = arguments.index("-m")
-                    program, arguments = arguments[at + 1], arguments[at + 2:]
+                    program, arguments = arguments[at + 1], arguments[at + 2 :]
                 else:
                     scripts = [i for i, a in enumerate(arguments) if a.endswith(".py")]
-                    if scripts and all(a.startswith("-") for a in arguments[:scripts[0]]):
+                    if scripts and all(a.startswith("-") for a in arguments[: scripts[0]]):
                         at = scripts[0]
-                        program, arguments = arguments[at].rsplit("/", 1)[-1], arguments[at + 1:]
+                        program, arguments = arguments[at].rsplit("/", 1)[-1], arguments[at + 1 :]
             found.append((program, arguments))
     return found
 
@@ -122,8 +146,17 @@ def peeky_subcommands(command):
             result.append(program)
             continue
         words = [word for word in arguments if not word.startswith("-")]
-        sub = words[0] if words else ("--help" if "--help" in arguments or "-h" in arguments
-                                      else "--version" if "--version" in arguments else "(none)")
+        sub = (
+            words[0]
+            if words
+            else (
+                "--help"
+                if "--help" in arguments or "-h" in arguments
+                else "--version"
+                if "--version" in arguments
+                else "(none)"
+            )
+        )
         if sub in ("session", "queries") and len(words) > 1:
             sub = "{} {}".format(sub, words[1])
         result.append(sub)
@@ -217,8 +250,11 @@ def usage_metrics(run_dir, events, session_events):
                 result = _usage_from_snapshot(snapshot)
                 result["usage_source"] = "session.shutdown"
                 return result
-    records = [((e.get("data") or {}).get("usage") or {}) for e in session_events
-               if e.get("type") == "session.usage_record"]
+    records = [
+        ((e.get("data") or {}).get("usage") or {})
+        for e in session_events
+        if e.get("type") == "session.usage_record"
+    ]
     if records:
         tokens, nano, models = Counter(), 0, []
         for usage in records:
@@ -227,20 +263,36 @@ def usage_metrics(run_dir, events, session_events):
             tokens["cache_read"] += usage.get("cacheReadTokens") or 0
             tokens["cache_write"] += usage.get("cacheWriteTokens") or 0
             tokens["reasoning"] += usage.get("reasoningTokens") or 0
-            nano += ((usage.get("copilotUsage") or {}).get("totalNanoAiu") or 0)
+            nano += (usage.get("copilotUsage") or {}).get("totalNanoAiu") or 0
             if usage.get("model") and usage["model"] not in models:
                 models.append(usage["model"])
-        return {"ai_credits": round(nano / 1e9, 4), "tokens": dict(tokens), "usage_models": models,
-                "premium_requests": None, "ai_credits_status": None,
-                "usage_source": "session.usage_record"}
+        return {
+            "ai_credits": round(nano / 1e9, 4),
+            "tokens": dict(tokens),
+            "usage_models": models,
+            "premium_requests": None,
+            "ai_credits_status": None,
+            "usage_source": "session.usage_record",
+        }
     for event in reversed(events):
         if event.get("type") == "session.usage_checkpoint":
             nano = (event.get("data") or {}).get("totalNanoAiu")
-            return {"ai_credits": round(nano / 1e9, 4) if nano is not None else None,
-                    "tokens": None, "usage_models": [], "premium_requests": None,
-                    "ai_credits_status": None, "usage_source": "session.usage_checkpoint"}
-    return {"ai_credits": None, "tokens": None, "usage_models": [], "premium_requests": None,
-            "ai_credits_status": None, "usage_source": None}
+            return {
+                "ai_credits": round(nano / 1e9, 4) if nano is not None else None,
+                "tokens": None,
+                "usage_models": [],
+                "premium_requests": None,
+                "ai_credits_status": None,
+                "usage_source": "session.usage_checkpoint",
+            }
+    return {
+        "ai_credits": None,
+        "tokens": None,
+        "usage_models": [],
+        "premium_requests": None,
+        "ai_credits_status": None,
+        "usage_source": None,
+    }
 
 
 SHELL_ID = re.compile(r"<shellId: (\S+?)>?\s*(?:completed with exit code (-?\d+))?")
@@ -319,8 +371,11 @@ def collect(run_dir, language="", test_hint="", arm=""):
 
     tool_counts = Counter(start.get("toolName") for start in starts.values())
     unexpected_tools = sorted(set(tool_counts) - set(ALLOWED_TOOLS))
-    suspicious_segments = [s for s in segments if s and re.search(
-        r"custom|skill|memor|repo_instruction|agents_md|mcp", s, re.I)]
+    suspicious_segments = [
+        s
+        for s in segments
+        if s and re.search(r"custom|skill|memor|repo_instruction|agents_md|mcp", s, re.I)
+    ]
     active_mcp = [s.get("name") for s in mcp_servers if s.get("status") not in ("disabled", None)]
     offered_extra = sorted(set(t for t in tools_offered if t) - set(ALLOWED_TOOLS))
 
@@ -329,7 +384,9 @@ def collect(run_dir, language="", test_hint="", arm=""):
         if model not in models:
             models.append(model)
     texts = errors + warnings + [line for line in _read(run_dir / "stderr.txt").splitlines()]
-    peeky_mentions = sum(len(re.findall(r"\bpeeky\b", entry["command"], re.I)) for entry in commands)
+    peeky_mentions = sum(
+        len(re.findall(r"\bpeeky\b", entry["command"], re.I)) for entry in commands
+    )
 
     return {
         "copilot_version": copilot_version,
@@ -342,8 +399,10 @@ def collect(run_dir, language="", test_hint="", arm=""):
         "usage_source": usage["usage_source"],
         "tool_calls": len(starts),
         "tool_calls_by_name": dict(tool_counts),
-        "shell_commands": [{"command": e["command"], "exit_code": e["exit_code"], "mode": e["mode"]}
-                           for e in commands],
+        "shell_commands": [
+            {"command": e["command"], "exit_code": e["exit_code"], "mode": e["mode"]}
+            for e in commands
+        ],
         "build_or_test_runs": len(build_test),
         "build_or_test_commands": build_test,
         "peeky_commands": peeky,
@@ -369,8 +428,10 @@ def collect(run_dir, language="", test_hint="", arm=""):
         "session_warnings": warnings,
         "session_infos": infos,
         "cli_exit_code_reported": (result_event or {}).get("exitCode"),
-        "credit_limit_reached": any(CREDIT_LIMIT.search(t) and re.search(r"limit|max|exceed", t, re.I)
-                                    for t in errors + warnings + infos + texts),
+        "credit_limit_reached": any(
+            CREDIT_LIMIT.search(t) and re.search(r"limit|max|exceed", t, re.I)
+            for t in errors + warnings + infos + texts
+        ),
         "infra_error_text": [t for t in texts if INFRA_ERROR.search(t)][:10],
         "events_unparsable_lines": bad_lines,
     }
@@ -386,9 +447,13 @@ def shell_entries(starts, completes):
         content = ((complete.get("result") or {}).get("content")) or ""
         exit_code = (complete.get("shellExecution") or {}).get("exitCode")
         if name == "bash":
-            entry = {"id": call_id, "command": arguments.get("command") or "",
-                     "mode": arguments.get("mode") or "sync", "exit_code": exit_code,
-                     "output": content}
+            entry = {
+                "id": call_id,
+                "command": arguments.get("command") or "",
+                "mode": arguments.get("mode") or "sync",
+                "exit_code": exit_code,
+                "output": content,
+            }
             match = SHELL_ID.search(content)
             if match:
                 by_shell[match.group(1)] = entry

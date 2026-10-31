@@ -1,0 +1,225 @@
+{
+ "bug": "reactivex__rxjava-7597",
+ "arm": "peeky",
+ "rep": 3,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/reactivex__rxjava-7597:peeky",
+ "image_digest": "sha256:afdb5039d41d4bea43076251b384d2bb7e95446efeedeac0995e7b7ead7df3cd",
+ "peeky_sha": "360b3f17322f05423803ba223c0c9628da3bcee7",
+ "container": "study-reactivex__rxjava-7597-peeky-3-2c8c19",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:29:05+00:00",
+ "ended": "2026-10-31T03:30:24+00:00",
+ "wall_seconds": 79.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest > innerOnSubscribeOuterCancelRace": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 8.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "de2f2c9e11b9443a94df1681f8a5194d18ae6bc5ca50381b78c86dac79114056",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java"
+ ],
+ "patch_bytes": 888,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 57
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 13,
+ "ai_credits": 14.4892,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 265718,
+  "output": 4963,
+  "cache_read": 237089,
+  "cache_write": 28590,
+  "reasoning": 1841
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 18,
+ "tool_calls_by_name": {
+  "bash": 18
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed && git status --short; fi && if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,420p' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java && sed -n '1,150p' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableScanSeed.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg --files src/test | grep -E 'Observable(SwitchMap|ScanSeed|Scan)Test|TestHelper.java' && sed -n '1,260p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java && sed -n '1,200p' build.gradle && head -100 /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,250p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java && grep -nE 'race|Race|cancel|dispose|Subscribe|fusion|Fusion' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java && tail -260 src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,220p' build.gradle && head -100 /opt/peeky/docs/AGENT_GUIDE.md && sed -n '1,170p' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapMaybe.java && grep -n -A100 'class SwitchMapInnerSubscriber' src/main/java/io/reactivex/rxjava3/internal/operators/flowable/FlowableSwitchMap.java && command -v apply_patch",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find src/test -name '*Switch*Test.java' -o -name '*Scan*Test.java' -o -name TestHelper.java && find src/main -name '*SwitchMap*.java' && command -v apply_patch && git status --short && java -version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A125 'class SwitchMapInnerSubscriber' src/main/java/io/reactivex/rxjava3/internal/operators/flowable/FlowableSwitchMap.java && sed -n '1,150p' src/main/java/io/reactivex/rxjava3/internal/disposables/DisposableHelper.java && find src/test/java/io/reactivex/rxjava3/internal/operators/observable -maxdepth 1 -type f | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,200p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && grep -nE 'race|Race|cancel|dispose|Subscribe|fusion|Fusion' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && tail -330 src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && java -version && sed -n '1,100p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableScanTest.java && grep -R -n --include='*.java' 'queue != null' src/main/java/io/reactivex/rxjava3/internal/operators/observable/Observable*Map*.java | head -30 && ls /opt && command -v patch; command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '14,75p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && grep -nE 'race|Race|cancel|dispose|Subscribe|fusion|Fusion' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && tail -180 src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A40 -B12 'void onNext' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableFlatMap.java | tail -120 && grep -n -A55 -B12 'class InnerObserver' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableConcatMapEager.java && grep -n -E 'doOnSubscribe|TestObserverEx|trackPluginErrors' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && sed -n '1,120p' config/checkstyle/checkstyle.xml",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '700,865p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && sed -n '1060,1255p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && sed -n '1,120p' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableDoOnLifecycle.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -n --include='*Test.java' 'for (boolean delayErrors' src/test/java/io/reactivex/rxjava3/internal/operators/observable | head -15 && sed -n '1,150p' config/checkstyle/checkstyle.xml && cat gradle.properties && ls build/test-results/test | head -10",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n+++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n@@ -1400,6 +1400,34 @@\n     }\n \n     @Test\n+    public void disposeBeforeInnerOnSubscribe() {\n+        for (boolean delayErrors : new boolean[] { false, true }) {\n+            PublishSubject<Integer> ps = PublishSubject.create();\n+            PublishSubject<Integer> inner = PublishSubject.create();\n+            TestObserver<Integer> to = new TestObserver<>();\n+\n+            Function<Integer, Observable<Integer>> mapper = v -> inner\n+                    .doOnSubscribe(d -> to.dispose())\n+                    .scan(0, (a, b) -> a + b);\n+\n+            if (delayErrors) {\n+                ps.switchMapDelayError(mapper).subscribe(to);\n+            } else {\n+                ps.switchMap(mapper).subscribe(to);\n+            }\n+\n+            ps.onNext(1);\n+\n+            to.assertEmpty();\n+            assertTrue(to.isDisposed());\n+            assertFalse(ps.hasObservers());\n+            assertFalse(inner.hasObservers());\n+        }\n+    }\n+\n+    @Test\n     public void cancellationShouldTriggerInnerCancellationRace() throws Throwable {\n         AtomicInteger outer = new AtomicInteger();\n         AtomicInteger inner = new AtomicInteger();\nPATCH\n./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.disposeBeforeInnerOnSubscribe",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n+++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n@@ -1400,6 +1400,32 @@\n     }\n \n     @Test\n+    public void disposeBeforeInnerOnSubscribe() {\n+        for (boolean delayErrors : new boolean[] { false, true }) {\n+            PublishSubject<Integer> ps = PublishSubject.create();\n+            PublishSubject<Integer> inner = PublishSubject.create();\n+            TestObserver<Integer> to = new TestObserver<>();\n+\n+            Function<Integer, Observable<Integer>> mapper = v -> inner\n+                    .doOnSubscribe(d -> to.dispose())\n+                    .scan(0, (a, b) -> a + b);\n+\n+            if (delayErrors) {\n+                ps.switchMapDelayError(mapper).subscribe(to);\n+            } else {\n+                ps.switchMap(mapper).subscribe(to);\n+            }\n+\n+            ps.onNext(1);\n+\n+            to.assertEmpty();\n+            assertTrue(to.isDisposed());\n+            assertFalse(ps.hasObservers());\n+            assertFalse(inner.hasObservers());\n+        }\n+    }\n+\n+    @Test\n     public void cancellationShouldTriggerInnerCancellationRace() throws Throwable {\n         AtomicInteger outer = new AtomicInteger();\n         AtomicInteger inner = new AtomicInteger();\nPATCH\nif grep -q 'public void disposeBeforeInnerOnSubscribe' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java; then ./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.disposeBeforeInnerOnSubscribe; else exit 1; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n+++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n@@ -349,9 +349,10 @@\n         @Override\n         public void onNext(R t) {\n-            if (index == parent.unique) {\n+            SimpleQueue<R> q = queue;\n+            if (index == parent.unique && q != null) {\n                 if (t != null) {\n-                    queue.offer(t);\n+                    q.offer(t);\n                 }\n                 parent.drain();\n             }\n         }\nPATCH\nif git diff --check; then ./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest --tests io.reactivex.rxjava3.internal.operators.observable.ObservableScanTest; else exit 1; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && git diff --check && git --no-pager diff --stat && git --no-pager diff -- src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && find src -name '*.orig' -o -name '*.rej' && grep -h '<testsuite ' build/test-results/test/TEST-io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.xml build/test-results/test/TEST-io.reactivex.rxjava3.internal.operators.observable.ObservableScanTest.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java.orig && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 3,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n+++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n@@ -1400,6 +1400,34 @@\n     }\n \n     @Test\n+    public void disposeBeforeInnerOnSubscribe() {\n+        for (boolean delayErrors : new boolean[] { false, true }) {\n+            PublishSubject<Integer> ps = PublishSubject.create();\n+            PublishSubject<Integer> inner = PublishSubject.create();\n+            TestObserver<Integer> to = new TestObserver<>();\n+\n+            Function<Integer, Observable<Integer>> mapper = v -> inner\n+                    .doOnSubscribe(d -> to.dispose())\n+                    .scan(0, (a, b) -> a + b);\n+\n+            if (delayErrors) {\n+                ps.switchMapDelayError(mapper).subscribe(to);\n+            } else {\n+                ps.switchMap(mapper).subscribe(to);\n+            }\n+\n+            ps.onNext(1);\n+\n+            to.assertEmpty();\n+            assertTrue(to.isDisposed());\n+            assertFalse(ps.hasObservers());\n+            assertFalse(inner.hasObservers());\n+        }\n+    }\n+\n+    @Test\n     public void cancellationShouldTriggerInnerCancellationRace() throws Throwable {\n         AtomicInteger outer = new AtomicInteger();\n         AtomicInteger inner = new AtomicInteger();\nPATCH\n./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.disposeBeforeInnerOnSubscribe",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n+++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java\n@@ -1400,6 +1400,32 @@\n     }\n \n     @Test\n+    public void disposeBeforeInnerOnSubscribe() {\n+        for (boolean delayErrors : new boolean[] { false, true }) {\n+            PublishSubject<Integer> ps = PublishSubject.create();\n+            PublishSubject<Integer> inner = PublishSubject.create();\n+            TestObserver<Integer> to = new TestObserver<>();\n+\n+            Function<Integer, Observable<Integer>> mapper = v -> inner\n+                    .doOnSubscribe(d -> to.dispose())\n+                    .scan(0, (a, b) -> a + b);\n+\n+            if (delayErrors) {\n+                ps.switchMapDelayError(mapper).subscribe(to);\n+            } else {\n+                ps.switchMap(mapper).subscribe(to);\n+            }\n+\n+            ps.onNext(1);\n+\n+            to.assertEmpty();\n+            assertTrue(to.isDisposed());\n+            assertFalse(ps.hasObservers());\n+            assertFalse(inner.hasObservers());\n+        }\n+    }\n+\n+    @Test\n     public void cancellationShouldTriggerInnerCancellationRace() throws Throwable {\n         AtomicInteger outer = new AtomicInteger();\n         AtomicInteger inner = new AtomicInteger();\nPATCH\nif grep -q 'public void disposeBeforeInnerOnSubscribe' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java; then ./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.disposeBeforeInnerOnSubscribe; else exit 1; fi",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n+++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n@@ -349,9 +349,10 @@\n         @Override\n         public void onNext(R t) {\n-            if (index == parent.unique) {\n+            SimpleQueue<R> q = queue;\n+            if (index == parent.unique && q != null) {\n                 if (t != null) {\n-                    queue.offer(t);\n+                    q.offer(t);\n                 }\n                 parent.drain();\n             }\n         }\nPATCH\nif git diff --check; then ./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest --tests io.reactivex.rxjava3.internal.operators.observable.ObservableScanTest; else exit 1; fi"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 4,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Disposal before the inner `onSubscribe` skipped queue initialization, but seeded `scan` could still emit, causing the NPE. Fixed `SwitchMapInnerObserver.onNext` to ignore emissions when its queue is absent, with regression coverage for both switchMap error modes.",
+ "assistant_messages": [
+  "I\u2019ll inspect how switchMap handles disposal during inner subscription, then add a regression test and fix the race.\n",
+  "Disposal before the inner `onSubscribe` leaves its queue uninitialized, but seeded `scan` can still emit its initial value. I\u2019ll reproduce that ordering deterministically for both switchMap error modes and guard against the absent queue.\n",
+  "Disposal before the inner `onSubscribe` skipped queue initialization, but seeded `scan` could still emit, causing the NPE. Fixed `SwitchMapInnerObserver.onNext` to ignore emissions when its queue is absent, with regression coverage for both switchMap error modes."
+ ],
+ "assistant_reasoning": [
+  "**Considering command options**\n\nI need to optimize my budget, but I'm running into issues. It seems I might need the `apply_patch` command, but `command -v` returned an error that\u2019s blocking git or java. Since I'll only be using bash, I need to check if `apply_patch` is available or if I can find it in `/opt/...`. Maybe I can use `type`, but it seems `patch` via bash might be my only option since `apply_patch` isn\u2019t available. I should also inspect tests.",
+  "**Considering test file separation**\n\nI\u2019m thinking about creating a new test file called ObservableSwitchMapTest for regression testing. This way, I could avoid touching the existing repo ObservableSwitchTest while still being able to add new tests. I\u2019m also wondering if I need to establish patterns or loops for boolean functions in my testing strategy. It\u2019s a bit chaotic, but I want to make sure everything is organized and functional!",
+  "**Verifying patch artifacts**\n\nI need to check if the clean patch artifacts are properly tracking at the offset for the original files. I'm wondering if the .orig files can actually serve as backups for the original content. It seems like ensuring that everything is lined up correctly is crucial here, since any discrepancy could lead to issues later on. I\u2019ll have to be thorough in verifying the details to avoid any problems. Definitely want to get this right!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 88.2
+}

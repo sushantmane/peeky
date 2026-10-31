@@ -39,13 +39,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics  # noqa: E402
 import studylib  # noqa: E402
 
-LANGUAGE_NAMES = {"python": "Python", "java": "Java", "c": "C", "cpp": "C++", "c++": "C++",
-                  "rust": "Rust"}
+LANGUAGE_NAMES = {
+    "python": "Python",
+    "java": "Java",
+    "c": "C",
+    "cpp": "C++",
+    "c++": "C++",
+    "rust": "Rust",
+}
 DEFAULT_AGENT_ROOT = Path.home() / ".cache" / "value-study-agent"
 AUTH_VARIABLES = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
-PASSED_VARIABLES = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
-                    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "GH_HOST", "COPILOT_GH_HOST",
-                    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+PASSED_VARIABLES = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "GH_HOST",
+    "COPILOT_GH_HOST",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
 
 
 class Interrupted(Exception):
@@ -60,12 +83,16 @@ def build_prompt(bug, arm):
     meta = bug["meta"]
     template = (studylib.HARNESS / "prompt.md").read_text()
     if arm == "peeky":
-        template = template.rstrip("\n") + "\n\n" + (studylib.HARNESS / "prompt-peeky.md").read_text()
+        template = (
+            template.rstrip("\n") + "\n\n" + (studylib.HARNESS / "prompt-peeky.md").read_text()
+        )
     language = str(meta.get("language") or "")
     problem = (bug["dir"] / "problem.md").read_text().strip("\n")
-    values = [("{repo}", str(meta.get("repo") or bug["id"])),
-              ("{language}", LANGUAGE_NAMES.get(language.lower(), language)),
-              ("{test_hint}", str(meta.get("test_hint") or "").strip())]
+    values = [
+        ("{repo}", str(meta.get("repo") or bug["id"])),
+        ("{language}", LANGUAGE_NAMES.get(language.lower(), language)),
+        ("{test_hint}", str(meta.get("test_hint") or "").strip()),
+    ]
     for key, value in values:
         template = template.replace(key, value)
     return template.replace("{problem}", problem)  # last: the report may hold braces
@@ -85,18 +112,28 @@ def child_environment(home, bash_env, copilot, docker):
         if directory not in directories:
             directories.append(directory)
     env["PATH"] = ":".join(directories + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
-    env.update({"SHELL": "/bin/bash", "BASH_ENV": str(bash_env), "COPILOT_HOME": str(home),
-                "COPILOT_AUTO_UPDATE": "false", "NO_COLOR": "1"})
+    env.update(
+        {
+            "SHELL": "/bin/bash",
+            "BASH_ENV": str(bash_env),
+            "COPILOT_HOME": str(home),
+            "COPILOT_AUTO_UPDATE": "false",
+            "NO_COLOR": "1",
+        }
+    )
     return env
 
 
 def copilot_version(copilot, env):
     try:
-        output = subprocess.run([copilot, "--version"], capture_output=True, text=True, env=env,
-                                timeout=60).stdout
+        output = subprocess.run(
+            [copilot, "--version"], capture_output=True, text=True, env=env, timeout=60
+        ).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
-    match = re.search(r"(\d+\.\d+\.\d+\S*?)\.?\s*$", output.strip().splitlines()[0] if output.strip() else "")
+    match = re.search(
+        r"(\d+\.\d+\.\d+\S*?)\.?\s*$", output.strip().splitlines()[0] if output.strip() else ""
+    )
     return match.group(1) if match else output.strip()[:80] or None
 
 
@@ -138,7 +175,8 @@ def run_agent(args, bug, arm, container, run_dir, result, agent_dir):
     bash_env.write_text(
         'if [ -z "$STUDY_INSIDE" ]; then\n'
         '  exec {} exec -i -e STUDY_INSIDE=1 -w /testbed {} bash -c "$BASH_EXECUTION_STRING"\n'
-        "fi\n".format(shlex.quote(docker), shlex.quote(container)))
+        "fi\n".format(shlex.quote(docker), shlex.quote(container))
+    )
     shutil.copy(str(bash_env), str(run_dir / "bash_env.sh"))
     prompt = build_prompt(bug, arm)
     (run_dir / "prompt.txt").write_text(prompt)
@@ -147,24 +185,51 @@ def run_agent(args, bug, arm, container, run_dir, result, agent_dir):
     env["TMPDIR"] = str(agent_dir / "tmp")
     result["auth_variable"] = next((n for n in AUTH_VARIABLES if n in env), None)
     result["copilot_version"] = copilot_version(copilot, env)
-    command = [copilot, "-p", prompt, "--available-tools", *metrics.ALLOWED_TOOLS,
-               "--allow-all-tools", "--allow-all-paths", "--bash-env", "on",
-               "--no-custom-instructions", "--disable-builtin-mcps", "--no-ask-user",
-               "--no-auto-update", "--output-format", "json",
-               "--usage-output-file", str(run_dir / "usage.json"),
-               "--max-ai-credits", str(args.budget_credits),
-               "--share", str(run_dir / "transcript.md")]
-    (run_dir / "command.json").write_text(json.dumps(
-        [part if part != prompt else "<prompt.txt>" for part in command], indent=1) + "\n")
+    command = [
+        copilot,
+        "-p",
+        prompt,
+        "--available-tools",
+        *metrics.ALLOWED_TOOLS,
+        "--allow-all-tools",
+        "--allow-all-paths",
+        "--bash-env",
+        "on",
+        "--no-custom-instructions",
+        "--disable-builtin-mcps",
+        "--no-ask-user",
+        "--no-auto-update",
+        "--output-format",
+        "json",
+        "--usage-output-file",
+        str(run_dir / "usage.json"),
+        "--max-ai-credits",
+        str(args.budget_credits),
+        "--share",
+        str(run_dir / "transcript.md"),
+    ]
+    (run_dir / "command.json").write_text(
+        json.dumps([part if part != prompt else "<prompt.txt>" for part in command], indent=1)
+        + "\n"
+    )
     limit = args.budget_minutes * 60
     result["started"] = now()
     started = time.monotonic()
     process = None
     try:
-        with (run_dir / "events.jsonl").open("wb") as stdout, \
-                (run_dir / "stderr.txt").open("wb") as stderr:
-            process = subprocess.Popen(command, cwd=str(work), env=env, stdin=subprocess.DEVNULL,
-                                       stdout=stdout, stderr=stderr, start_new_session=True)
+        with (
+            (run_dir / "events.jsonl").open("wb") as stdout,
+            (run_dir / "stderr.txt").open("wb") as stderr,
+        ):
+            process = subprocess.Popen(
+                command,
+                cwd=str(work),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
             try:
                 result["exit_code"] = process.wait(timeout=limit)
             except subprocess.TimeoutExpired:
@@ -181,8 +246,11 @@ def run_agent(args, bug, arm, container, run_dir, result, agent_dir):
         if sessions:
             shutil.copy(str(sessions[-1]), str(run_dir / "session-events.jsonl"))
         if (home / "logs").is_dir():
-            shutil.copytree(str(home / "logs"), str(run_dir / "copilot-logs"),
-                            ignore=shutil.ignore_patterns("*.lock"))
+            shutil.copytree(
+                str(home / "logs"),
+                str(run_dir / "copilot-logs"),
+                ignore=shutil.ignore_patterns("*.lock"),
+            )
 
 
 def run_fake_agent(mode, bug, container, result):
@@ -191,7 +259,8 @@ def run_fake_agent(mode, bug, container, result):
     if mode == "gold":
         studylib.docker("cp", str(bug["dir"] / "gold.patch"), container + ":/tmp/study-gold.patch")
         code, output, _ = studylib.exec_in(
-            container, "git apply /tmp/study-gold.patch && rm /tmp/study-gold.patch", timeout=120)
+            container, "git apply /tmp/study-gold.patch && rm /tmp/study-gold.patch", timeout=120
+        )
         if code != 0:
             raise RuntimeError("gold.patch does not apply: " + output[-500:])
     result["exit_code"] = 0
@@ -213,7 +282,7 @@ def save_agent_patch(container, bug, run_dir):
         '  if [ $n -lt 500 ] && [ "$(stat -c %s "$f")" -le 262144 ] && grep -Iq . "$f"; then '
         '    git add -N -- "$f"; n=$((n + 1)); else echo "untracked, not in the patch: $f" >&2; fi; '
         "done; "
-        "git -c core.quotepath=off diff --binary {} -- . {}; status=$?; rm -f \"$idx\"; exit $status"
+        'git -c core.quotepath=off diff --binary {} -- . {}; status=$?; rm -f "$idx"; exit $status'
     ).format(shlex.quote(base), pathspec)
     command = ["docker", "exec", "-w", "/testbed", container, "bash", "-c", script]
     completed = subprocess.run(command, capture_output=True, timeout=300, stdin=subprocess.DEVNULL)
@@ -223,8 +292,11 @@ def save_agent_patch(container, bug, run_dir):
         if "Error response from daemon" in notes:
             raise studylib.DockerError(notes[-1000:])
     files = re.findall(r"^diff --git a/(\S+) ", completed.stdout.decode("utf-8", "replace"), re.M)
-    return {"patch_files": files, "patch_bytes": len(completed.stdout),
-            "patch_notes": notes.strip().splitlines()[-20:]}
+    return {
+        "patch_files": files,
+        "patch_bytes": len(completed.stdout),
+        "patch_notes": notes.strip().splitlines()[-20:],
+    }
 
 
 def compress(path):
@@ -250,7 +322,9 @@ def classify_infra(result):
         result["errors"].append("no model call was made")
         return True
     near_budget = (result.get("ai_credits") or 0) >= 0.9 * float(result.get("budget_credits") or 0)
-    if result.get("exit_code") not in (0, None) and not (result.get("credit_limit_reached") or near_budget):
+    if result.get("exit_code") not in (0, None) and not (
+        result.get("credit_limit_reached") or near_budget
+    ):
         result["errors"].append("the CLI exited with code {}".format(result.get("exit_code")))
         return True
     if result.get("infra_error_text") and not result.get("assistant_messages"):
@@ -268,9 +342,12 @@ def main():
     parser.add_argument("--budget-minutes", type=float, default=40)
     parser.add_argument("--budget-credits", type=float, default=250)
     parser.add_argument("--fake-agent", choices=("gold", "noop"))
-    parser.add_argument("--agent-root", default=str(DEFAULT_AGENT_ROOT),
-                        help="where the agent's working directory and COPILOT_HOME live during "
-                             "the run (default: %(default)s)")
+    parser.add_argument(
+        "--agent-root",
+        default=str(DEFAULT_AGENT_ROOT),
+        help="where the agent's working directory and COPILOT_HOME live during "
+        "the run (default: %(default)s)",
+    )
     parser.add_argument("--image", help="override the arm's image")
     parser.add_argument("--keep-container", action="store_true", help="debugging only")
     args = parser.parse_args()
@@ -289,14 +366,30 @@ def main():
     image = args.image or studylib.image_for(bug, args.arm)
     container = "study-{}-{}-{}-{}".format(args.bug_id, args.arm, args.rep, secrets.token_hex(3))
     result = {
-        "bug": args.bug_id, "arm": args.arm, "rep": args.rep,
-        "language": bug["meta"].get("language"), "category": bug["meta"].get("category"),
-        "image": image, "image_digest": None, "peeky_sha": None, "container": container,
-        "fake_agent": args.fake_agent, "budget_minutes": args.budget_minutes,
-        "budget_credits": args.budget_credits, "copilot_version": None,
-        "started": None, "ended": None, "wall_seconds": None, "timed_out": False,
-        "exit_code": None, "solved": None, "f2p": None, "p2p_failed": None,
-        "grading_seconds": None, "errors": [], "infra_failure": False,
+        "bug": args.bug_id,
+        "arm": args.arm,
+        "rep": args.rep,
+        "language": bug["meta"].get("language"),
+        "category": bug["meta"].get("category"),
+        "image": image,
+        "image_digest": None,
+        "peeky_sha": None,
+        "container": container,
+        "fake_agent": args.fake_agent,
+        "budget_minutes": args.budget_minutes,
+        "budget_credits": args.budget_credits,
+        "copilot_version": None,
+        "started": None,
+        "ended": None,
+        "wall_seconds": None,
+        "timed_out": False,
+        "exit_code": None,
+        "solved": None,
+        "f2p": None,
+        "p2p_failed": None,
+        "grading_seconds": None,
+        "errors": [],
+        "infra_failure": False,
     }
 
     def interrupt(signum, frame):
@@ -325,10 +418,19 @@ def main():
         result["leftover_processes"] = studylib.kill_leftovers(container)
         result.update(save_agent_patch(container, bug, run_dir))
         graded = studylib.grade_container(container, bug, run_dir / "eval.log")
-        result.update({"solved": graded["solved"], "f2p": graded["f2p"],
-                       "p2p_failed": graded["p2p_failed"], "grading_seconds": graded["seconds"],
-                       "grading": {k: v for k, v in graded.items()
-                                   if k not in ("solved", "f2p", "p2p_failed", "seconds")}})
+        result.update(
+            {
+                "solved": graded["solved"],
+                "f2p": graded["f2p"],
+                "p2p_failed": graded["p2p_failed"],
+                "grading_seconds": graded["seconds"],
+                "grading": {
+                    k: v
+                    for k, v in graded.items()
+                    if k not in ("solved", "f2p", "p2p_failed", "seconds")
+                },
+            }
+        )
     except Interrupted as error:
         interrupted = True
         result["errors"].append("interrupted: {}".format(error))
@@ -346,8 +448,9 @@ def main():
             studylib.remove_container(container)
         if agent_dir is not None:
             shutil.rmtree(str(agent_dir), ignore_errors=True)
-        collected = metrics.collect(run_dir, bug["meta"].get("language"),
-                                    bug["meta"].get("test_hint"), args.arm)
+        collected = metrics.collect(
+            run_dir, bug["meta"].get("language"), bug["meta"].get("test_hint"), args.arm
+        )
         if collected.get("copilot_version") is None:
             collected["copilot_version"] = result.get("copilot_version")
         result.update(collected)
@@ -357,9 +460,21 @@ def main():
         studylib.write_json(run_dir / name, result)
         for log in ("events.jsonl", "session-events.jsonl"):
             compress(run_dir / log)
-    summary = {k: result.get(k) for k in ("bug", "arm", "rep", "solved", "wall_seconds",
-                                          "timed_out", "ai_credits", "tool_calls",
-                                          "infra_failure", "contaminated")}
+    summary = {
+        k: result.get(k)
+        for k in (
+            "bug",
+            "arm",
+            "rep",
+            "solved",
+            "wall_seconds",
+            "timed_out",
+            "ai_credits",
+            "tool_calls",
+            "infra_failure",
+            "contaminated",
+        )
+    }
     print(json.dumps(summary))
     if interrupted:
         sys.exit(130)

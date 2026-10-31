@@ -1,0 +1,196 @@
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..e1c16bebe8 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -215,13 +220,24 @@ class Collector:
+                 field = related.field
+                 if field.remote_field.on_delete == DO_NOTHING:
+                     continue
++                related_model = related.related_model
+                 batches = self.get_del_batches(new_objs, field)
+                 for batch in batches:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+                         self.fast_deletes.append(sub_objs)
+-                    elif sub_objs:
+-                        field.remote_field.on_delete(self, field, sub_objs, self.using)
++                    else:
++                        # Defer non-referenced fields unless signal receivers or
++                        # select_related() require the full model instance.
++                        if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
++                            referenced_fields = {
++                                field.attname
++                                for rel in get_candidate_relations_to_delete(related_model._meta)
++                                for field in rel.field.foreign_related_fields
++                            }
++                            sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)
++                        if sub_objs:
++                            field.remote_field.on_delete(self, field, sub_objs, self.using)
+             for field in model._meta.private_fields:
+                 if hasattr(field, 'bulk_related_objects'):
+                     # It's something like generic foreign key.
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 8485d436e1..3d481cb74c 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -2534,6 +2534,9 @@ fast-path and delete objects without fetching into memory. For large
+ deletes this can result in significantly reduced memory usage. The amount of
+ executed queries can be reduced, too.
+ 
++When collecting related objects, Django may defer fields that aren't needed for
++deletion, unless signal listeners or ``select_related()`` require them.
++
+ ForeignKeys which are set to :attr:`~django.db.models.ForeignKey.on_delete`
+ ``DO_NOTHING`` do not prevent taking the fast-path in deletion.
+ 
+diff --git a/tests/delete_regress/models.py b/tests/delete_regress/models.py
+index 90eae1ba1c..b79c02fab1 100644
+--- a/tests/delete_regress/models.py
++++ b/tests/delete_regress/models.py
+@@ -141,3 +141,17 @@ class OrderedPerson(models.Model):
+ 
+     class Meta:
+         ordering = ['name']
++
++
++class DeletionParent(models.Model):
++    pass
++
++
++class DeletionChild(models.Model):
++    parent = models.ForeignKey(DeletionParent, models.CASCADE)
++    name = models.CharField(max_length=25, unique=True)
++    description = models.TextField()
++
++
++class DeletionGrandchild(models.Model):
++    child = models.ForeignKey(DeletionChild, models.CASCADE, to_field='name')
+diff --git a/tests/delete_regress/tests.py b/tests/delete_regress/tests.py
+index a1bead144e..d203194442 100644
+--- a/tests/delete_regress/tests.py
++++ b/tests/delete_regress/tests.py
+@@ -1,16 +1,95 @@
+ import datetime
++from unittest import mock
+ 
+ from django.db import connection, models, transaction
++from django.db.models.deletion import Collector
+ from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
+ 
+ from .models import (
+-    Award, AwardNote, Book, Child, Contact, Eaten, Email, File, Food, FooFile,
+-    FooFileProxy, FooImage, FooPhoto, House, Image, Item, Location, Login,
+-    OrderedPerson, OrgUnit, Person, Photo, PlayedWith, PlayedWithNote, Policy,
+-    Researcher, Toy, Version,
++    Award, AwardNote, Book, Child, Contact, DeletionChild, DeletionGrandchild,
++    DeletionParent, Eaten, Email, File, Food, FooFile, FooFileProxy, FooImage,
++    FooPhoto, House, Image, Item, Location, Login, OrderedPerson, OrgUnit, Person,
++    Photo, PlayedWith, PlayedWithNote, Policy, Researcher, Toy, Version,
+ )
+ 
+ 
++class DeletionOptimizationTests(TestCase):
++    def setUp(self):
++        self.parent = DeletionParent.objects.create()
++        self.child = DeletionChild.objects.create(
++            parent=self.parent, name='child', description='not needed for deletion',
++        )
++        DeletionGrandchild.objects.create(child=self.child)
++
++    def test_only_required_fields(self):
++        with self.assertNumQueries(4) as ctx:
++            self.parent.delete()
++        quote_name = connection.ops.quote_name
++        table = quote_name(DeletionChild._meta.db_table)
++        self.assertTrue(ctx.captured_queries[0]['sql'].startswith(
++            'SELECT %s.%s, %s.%s FROM %s ' % (
++                table, quote_name('id'), table, quote_name('name'), table,
++            )
++        ))
++        self.assertFalse(DeletionParent.objects.exists())
++        self.assertFalse(DeletionChild.objects.exists())
++        self.assertFalse(DeletionGrandchild.objects.exists())
++
++    def test_unused_field_is_not_decoded(self):
++        field = DeletionChild._meta.get_field('description')
++        error = UnicodeDecodeError('utf-8', b'\xed', 0, 1, 'invalid continuation byte')
++        with mock.patch.object(field, 'from_db_value', side_effect=error, create=True) as decoder:
++            self.parent.delete()
++        decoder.assert_not_called()
++
++    def test_pre_delete_signal(self):
++        self._test_delete_signal(models.signals.pre_delete)
++
++    def test_post_delete_signal(self):
++        self._test_delete_signal(models.signals.post_delete)
++
++    def _test_delete_signal(self, signal):
++        received = []
++
++        def receiver(instance, **kwargs):
++            self.assertEqual(instance.get_deferred_fields(), set())
++            self.assertEqual(instance.description, self.child.description)
++            received.append(instance.pk)
++
++        signal.connect(receiver, sender=DeletionChild)
++        self.addCleanup(signal.disconnect, receiver, sender=DeletionChild)
++        with self.assertNumQueries(4):
++            self.parent.delete()
++        self.assertEqual(received, [self.child.pk])
++
++    def test_select_related(self):
++        queryset = DeletionChild.objects.select_related('parent')
++        with mock.patch.object(DeletionChild._base_manager, 'get_queryset', return_value=queryset):
++            with self.assertNumQueries(4) as ctx:
++                self.parent.delete()
++        quote_name = connection.ops.quote_name
++        self.assertIn(
++            '%s.%s' % (quote_name(DeletionChild._meta.db_table), quote_name('description')),
++            ctx.captured_queries[0]['sql'],
++        )
++
++    def test_field_update_only_loads_primary_key(self):
++        contact = Contact.objects.create(label='contact')
++        researcher = Researcher.objects.create(primary_contact=contact)
++        collector = Collector(using='default')
++        with self.assertNumQueries(3) as ctx:
++            collector.collect([contact])
++        quote_name = connection.ops.quote_name
++        table = quote_name(Researcher._meta.db_table)
++        for query in ctx.captured_queries[1:]:
++            self.assertTrue(query['sql'].startswith(
++                'SELECT %s.%s FROM %s ' % (table, quote_name('id'), table)
++            ))
++        collector.delete()
++        researcher.refresh_from_db()
++        self.assertIsNone(researcher.primary_contact)
++
++
+ # Can't run this test under SQLite, because you can't
+ # get two connections to an in-memory database.
+ @skipUnlessDBFeature('test_db_allows_multiple_connections')

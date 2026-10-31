@@ -1,0 +1,7 @@
+{
+ "judge_id": "a053",
+ "wrong_root_cause": true,
+ "evidence": "Message 2: \"Inheritance diagrams add a hard-coded `../`, then Graphviz rewrites the links again using the wrong base directory.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

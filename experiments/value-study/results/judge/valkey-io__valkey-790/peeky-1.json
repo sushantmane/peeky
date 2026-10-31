@@ -1,0 +1,7 @@
+{
+ "judge_id": "a008",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The reply uses the first shard member to find the primary. After failover, the stopped node can still be marked as a primary even though its slots belong to the promoted replica.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

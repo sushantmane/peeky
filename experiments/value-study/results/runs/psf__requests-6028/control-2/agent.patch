@@ -1,0 +1,90 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..c6383953 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,7 +4,8 @@ Release History
+ dev
+ ---
+ 
+-- \[Short description of non-trivial change.\]
++- Fixed proxy authentication by preserving credentials when normalizing proxy
++  URLs.
+ 
+ 2.27.0 (2022-01-03)
+ -------------------
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..fc53ec45 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -974,6 +974,9 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth:
++        netloc = '{}@{}'.format(auth, netloc)
++
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_lowlevel.py b/tests/test_lowlevel.py
+index 7256eda9..1be7605b 100644
+--- a/tests/test_lowlevel.py
++++ b/tests/test_lowlevel.py
+@@ -21,6 +21,29 @@ def echo_response_handler(sock):
+     sock.send(text_200)
+ 
+ 
++def test_authenticated_proxy():
++    def proxy_handler(sock):
++        request = consume_socket_content(sock, timeout=0.5)
++        authorization = b'\r\nProxy-Authorization: Basic dXNlcjpwYXNz\r\n'
++        if authorization in request:
++            status = b'200 OK'
++        else:
++            status = b'407 Proxy Authentication Required'
++        sock.sendall(b'HTTP/1.1 ' + status + b'\r\nContent-Length: 0\r\n\r\n')
++
++    with Server(proxy_handler, requests_to_handle=2) as (host, port):
++        proxy = 'http://{}:{}'.format(host, port)
++        authenticated_proxy = 'http://user:pass@{}:{}'.format(host, port)
++        with requests.Session() as session:
++            session.trust_env = False
++            response = session.get('http://example.org/', proxies={'http': proxy},
++                                   timeout=5)
++            assert response.status_code == 407
++            response = session.get('http://example.org/',
++                                   proxies={'http': authenticated_proxy}, timeout=5)
++            assert response.status_code == 200
++
++
+ def test_chunked_upload():
+     """can safely send generators"""
+     close_server = threading.Event()
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 29b3aca8..ef373822 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1896,6 +1896,23 @@ class TestRequests:
+         headers = adapter.proxy_headers("http://user:@httpbin.org")
+         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}
+ 
++    @pytest.mark.parametrize('scheme', ('http', 'https'))
++    @pytest.mark.parametrize('proxy_scheme', ('http:', 'https:', ''))
++    @pytest.mark.parametrize('auth, expected', (
++        ('user:pass', 'Basic dXNlcjpwYXNz'),
++        ('user:', 'Basic dXNlcjo='),
++        ('user:p%40ss', 'Basic dXNlcjpwQHNz'),
++    ))
++    def test_proxy_auth_preserved_in_connection(self, scheme, proxy_scheme,
++                                               auth, expected):
++        proxy = '{}//{}@proxy.example:8080'.format(proxy_scheme, auth)
++        url = '{}://example.org/'.format(scheme)
++        with contextlib.closing(HTTPAdapter()) as adapter:
++            connection = adapter.get_connection(url, proxies={scheme: proxy})
++            assert connection.proxy_headers == {'Proxy-Authorization': expected}
++            manager = next(iter(adapter.proxy_manager.values()))
++            assert manager.proxy_headers == {'Proxy-Authorization': expected}
++
+     def test_response_json_when_content_is_None(self, httpbin):
+         r = requests.get(httpbin('/status/204'))
+         # Make sure r.content is None

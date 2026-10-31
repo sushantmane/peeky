@@ -1,0 +1,39 @@
+diff --git a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java
+index 5900e7ed..748dcc8c 100644
+--- a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java
++++ b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java
+@@ -154,7 +154,7 @@ public class HandleFieldDefaults extends EclipseASTAdapter {
+ 			break;
+ 		}
+ 		
+-		if (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;
++		if (fd == null && !isClassOrEnum(typeNode)) return;
+ 		
+ 		boolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));
+ 		boolean defaultToFinal = makeFinalIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE));
+diff --git a/src/core/lombok/javac/handlers/HandleFieldDefaults.java b/src/core/lombok/javac/handlers/HandleFieldDefaults.java
+index ebab67e3..e30bd915 100644
+--- a/src/core/lombok/javac/handlers/HandleFieldDefaults.java
++++ b/src/core/lombok/javac/handlers/HandleFieldDefaults.java
+@@ -134,7 +134,7 @@ public class HandleFieldDefaults extends JavacASTAdapter {
+ 			break;
+ 		}
+ 		
+-		if (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;
++		if (fd == null && !isClassOrEnum(typeNode)) return;
+ 		
+ 		boolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));
+ 		boolean defaultToFinal = makeFinalIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE));
+diff --git a/website/templates/features/experimental/FieldDefaults.html b/website/templates/features/experimental/FieldDefaults.html
+index c0d3db96..4c8802cd 100644
+--- a/website/templates/features/experimental/FieldDefaults.html
++++ b/website/templates/features/experimental/FieldDefaults.html
+@@ -50,6 +50,8 @@
+ 
+ 	<@f.smallPrint>
+ 		<p>
++			The <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration keys do not apply to records. Explicitly using <code>@FieldDefaults</code> on a record is an error.
++		</p><p>
+ 			Like other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.
+ 		</p>
+ 	</@f.smallPrint>

@@ -1,0 +1,63 @@
+diff --git a/doc/whats-new.rst b/doc/whats-new.rst
+index 6cba8563..5b2e2fe0 100644
+--- a/doc/whats-new.rst
++++ b/doc/whats-new.rst
+@@ -93,6 +93,8 @@ Deprecations
+ Bug fixes
+ ~~~~~~~~~
+ 
++- Fixed :py:func:`polyval` conversion of ``timedelta64`` inputs to numeric
++  nanosecond values.
+ - Set ``skipna=None`` for all ``quantile`` methods (e.g. :py:meth:`Dataset.quantile`) and
+   ensure it skips missing values for float dtypes (consistent with other methods). This should
+   not change the behavior (:pull:`6303`).
+diff --git a/xarray/core/computation.py b/xarray/core/computation.py
+index 823cbe02..4de426e2 100644
+--- a/xarray/core/computation.py
++++ b/xarray/core/computation.py
+@@ -1876,7 +1876,10 @@ def polyval(
+     Parameters
+     ----------
+     coord : DataArray or Dataset
+-        Values at which to evaluate the polynomial.
++        Values at which to evaluate the polynomial, not the dimension coordinates.
++        Datetime64 values are converted to nanoseconds since 1970-01-01, and
++        timedelta64 values to nanoseconds. To evaluate along a coordinate of
++        another array, pass that coordinate explicitly (e.g. ``array["time"]``).
+     coeffs : DataArray or Dataset
+         Coefficients of the polynomial.
+     degree_dim : Hashable, default: "degree"
+@@ -1918,17 +1921,17 @@ def polyval(
+ 
+ 
+ def _ensure_numeric(data: T_Xarray) -> T_Xarray:
+-    """Converts all datetime64 variables to float64
++    """Converts all datetime64 and timedelta64 variables to float64.
+ 
+     Parameters
+     ----------
+     data : DataArray or Dataset
+-        Variables with possible datetime dtypes.
++        Variables with possible datetime or timedelta dtypes.
+ 
+     Returns
+     -------
+     DataArray or Dataset
+-        Variables with datetime64 dtypes converted to float64.
++        Variables with datetime64 or timedelta64 dtypes converted to float64.
+     """
+     from .dataset import Dataset
+ 
+@@ -1937,7 +1940,11 @@ def _ensure_numeric(data: T_Xarray) -> T_Xarray:
+             return x.copy(
+                 data=datetime_to_numeric(
+                     x.data,
+-                    offset=np.datetime64("1970-01-01"),
++                    offset=(
++                        np.datetime64("1970-01-01")
++                        if x.dtype.kind == "M"
++                        else np.timedelta64(0, "ns")
++                    ),
+                     datetime_unit="ns",
+                 ),
+             )

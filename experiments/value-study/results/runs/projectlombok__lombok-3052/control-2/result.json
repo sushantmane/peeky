@@ -1,0 +1,310 @@
+{
+ "bug": "projectlombok__lombok-3052",
+ "arm": "control",
+ "rep": 2,
+ "language": "java",
+ "category": "B",
+ "image": "peeky-study/projectlombok__lombok-3052:control",
+ "image_digest": "sha256:ea705c2064c6e3381792404e1416510281a87a6f1fa046a5928287fbd6485f91",
+ "peeky_sha": null,
+ "container": "study-projectlombok__lombok-3052-control-2-09f5e4",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T02:04:50+00:00",
+ "ended": "2026-10-31T02:07:25+00:00",
+ "wall_seconds": 154.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "javac-BuilderDefaultsTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED",
+  "javac-SuperBuilderWithDefaultsAndTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 5.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "eac2640a1243957a24b07eee6ccd2d6dbebffe307f2ee6868e81560a42be661e",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "doc/changelog.markdown",
+  "src/core/lombok/javac/handlers/HandleBuilder.java",
+  "src/core/lombok/javac/handlers/HandleSuperBuilder.java",
+  "test/transform/resource/after-delombok/BuilderDefaultsGenericsInferred.java",
+  "test/transform/resource/after-ecj/BuilderDefaultsGenericsInferred.java",
+  "test/transform/resource/before/BuilderDefaultsGenericsInferred.java"
+ ],
+ "patch_bytes": 21252,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 305
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 20,
+ "ai_credits": 30.04,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 632957,
+  "output": 11351,
+  "cache_read": 581447,
+  "cache_write": 51450,
+  "reasoning": 3029
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 33,
+ "tool_calls_by_name": {
+  "bash": 33
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -la; if [ -d /testbed ]; then ls -la /testbed | head -35; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short; rg -n 'generateDefaultProvider|setGeneratedBy|recursiveSetGeneratedBy' src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/javac/handlers/HandleSuperBuilder.java src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '1,200p' build.xml; java -version; command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "rg --files test | grep -E 'BuilderDefault|RunTests|CompilerMessage|TestJavac|AbstractRunTests' | head -65; rg -n 'test.javacCurrent|test.compile|test.javac|test.include|test.filter' buildScripts/*.xml; rg -n 'pos\\(|\\.pos|Position' src/core/lombok/javac/JavacTreeMaker.java | head -60; ls doc; rg --files -g '*AGENTS.md'",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'generateDefaultProvider|setGeneratedBy|recursiveSetGeneratedBy' src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/javac/handlers/HandleSuperBuilder.java src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '750,860p' src/core/lombok/javac/handlers/HandleBuilder.java; grep -nE 'pos\\(|\\.pos|Position' src/core/lombok/javac/JavacTreeMaker.java | head -55; find . -name AGENTS.md -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "find test -type f | grep -E 'BuilderDefault|RunTests|CompilerMessage|TestJavac|AbstractRunTests' | head -70; grep -nE 'test.javacCurrent|test.compile|test.javac|test.include|test.filter' buildScripts/*.xml; sed -n '1,150p' doc/changelog.markdown; ls build; ls dist; ls /usr/local/bin",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '110,205p' src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '245,300p' src/core/lombok/javac/handlers/HandleBuilder.java; sed -n '185,220p' src/core/lombok/javac/handlers/HandleSuperBuilder.java; find src -name '*TreeMaker*'; sed -n '1,100p' test/transform/resource/before/BuilderDefaultsGenerics.java; sed -n '1,170p' test/transform/resource/after-delombok/BuilderDefaultsGenerics.java; sed -n '1,90p' doc/changelog.markdown",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,240p' buildScripts/tests.ant.xml; sed -n '1,200p' test/core/src/lombok/TestJavac.java; sed -n '1,180p' test/core/src/lombok/RunTestsViaDelombok.java; ls -la build; ls -l dist; type apply_patch || true; find test -maxdepth 3 -type d",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '145,195p' src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '270,298p' src/core/lombok/javac/handlers/HandleBuilder.java; sed -n '200,217p' src/core/lombok/javac/handlers/HandleSuperBuilder.java; cat test/transform/resource/before/BuilderDefaultsGenerics.java; head -25 test/transform/resource/after-delombok/BuilderDefaultsGenerics.java; head -40 doc/changelog.markdown; find src -name '*TreeMaker*'; type apply_patch || true",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'test.javacCurrent|target name=\"test.compile|test.javac|test.filter|test\\.format|test\\.params|junit|<test|<batchtest|sysproperty' buildScripts/tests.ant.xml; grep -nE 'System.getProperty|filter|\\.java|resource|test' test/core/src/lombok/AbstractRunTests.java | head -55; sed -n '1,115p' test/core/src/lombok/RunTestsViaDelombok.java; ls -la build; ls -l dist; find test -maxdepth 3 -type d",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '30,68p' buildScripts/tests.ant.xml; sed -n '139,152p' buildScripts/tests.ant.xml; cat test/core/src/lombok/TestJavac.java; grep -nE 'System.getProperty|filter|params' test/transform/src/lombok/*.java test/core/src/lombok/*Runner*.java; grep -nE 'void injectMethod|injectMethod\\(' src/core/lombok/javac/handlers/JavacHandlerUtil.java | head -12; sed -n '1340,1388p' src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '1,100p' test/bytecode/src/lombok/*.java | head -100",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'copy|position|\\.pos|setGeneratedBy' src/core/lombok/javac/handlers/HandleBuilder.java | head -40; sed -n '80,125p' src/utils/lombok/javac/JavacTreeMaker.java; find test/bytecode -maxdepth 6 -type f | head -35; sed -n '1,170p' test/transform/src/lombok/TestWithDelombok.java; grep -n 'System.getProperty' test/core/src/lombok/*.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '625,678p' src/core/lombok/javac/handlers/HandleBuilder.java; sed -n '1221,1268p' src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '30,165p' test/transform/src/lombok/transform/TestWithDelombok.java; sed -n '55,156p' test/core/src/lombok/AbstractRunTests.java; sed -n '115,156p' test/core/src/lombok/DirectoryRunner.java; sed -n '1,130p' test/transform/src/lombok/transform/TestSourceFiles.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,105p' test/transform/resource/before/SuperBuilderWithDefaults.java; head -95 test/transform/resource/after-delombok/SuperBuilderWithDefaults.java; head -65 test/transform/resource/after-ecj/BuilderDefaultsGenerics.java; grep -nE 'packing.basedirs|cp.test|junit' buildScripts/compile.ant.xml buildScripts/setup.ant.xml buildScripts/ivy.xml | head -55; sed -n '30,112p' test/transform/src/lombok/transform/TestLombokFilesIdempotent.java; find . -maxdepth 2 -name '*patch*' -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -R -n 'skip compare content\\|skipCompareContent' test/transform/resource/before test/transform/resource/after-delombok test/core/src/lombok/LombokTestSource.java | head -35; sed -n '1,150p' test/core/src/lombok/LombokTestSource.java; sed -n '160,213p' test/core/src/lombok/AbstractRunTests.java; sed -n '1,160p' buildScripts/compile.ant.xml | tail -65; ls lib/test; ls lib/build | head",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant test.compile > build/builder-default-compile.log 2>&1; result=$?; tail -45 build/builder-default-compile.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '285,340p' test/core/src/lombok/LombokTestSource.java; grep -nE 'static LombokTestSource|FileNotFound|exists' test/core/src/lombok/LombokTestSource.java; sed -n '1,100p' test/transform/src/lombok/transform/TestWithEcj.java; grep -n 'JCStatement\\|JCReturn' src/core/lombok/javac/handlers/HandleBuilder.java | head -20; command -v patch; ls lib/stripe; head -42 buildScripts/compile.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short; ls build/tests/lombok/transform; ls build/lombok-main/META-INF/services; find lib -maxdepth 2 -name '*hamcrest*' -o -name '*eclipse*jdt*'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/test/transform/resource/before/BuilderDefaultsGenericsInferred.java b/test/transform/resource/before/BuilderDefaultsGenericsInferred.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/before/BuilderDefaultsGenericsInferred.java\n@@ -0,0 +1,1 @@\n+import lombok.Builder;\n+import lombok.Value;\n+import lombok.experimental.SuperBuilder;\n+\n+@Builder\n+public class BuilderDefaultsGenericsInferred {\n+\t@Builder.Default\n+\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n+\n+\t@SuperBuilder\n+\tpublic static class SuperBuilderWithGenerics {\n+\t\t@Builder.Default\n+\t\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n+\t}\n+\n+\t@Value\n+\tstatic class MyClass<T> {\n+\t\tT value;\n+\n+\t\tstatic MyClass<Integer> myInt() {\n+\t\t\treturn new MyClass<Integer>(42);\n+\t\t}\n+\n+\t\tstatic MyClass<Character> myChar() {\n+\t\t\treturn new MyClass<Character>('A');\n+\t\t}\n+\t}\n+\n+\tstatic String doSth(MyClass<Integer> i, MyClass<Character> c) {\n+\t\treturn i.value.toString() + c.value.toString();\n+\t}\n+\n+\tpublic static void main(String[] args) {\n+\t\tif (!\"42A\".equals(BuilderDefaultsGenericsInferred.builder().build().foo)) throw new AssertionError();\n+\t\tif (!\"custom\".equals(BuilderDefaultsGenericsInferred.builder().foo(\"custom\").build().foo)) throw new AssertionError();\n+\t\tif (!\"42A\".equals(SuperBuilderWithGenerics.builder().build().foo)) throw new AssertionError();\n+\t\tif (!\"custom\".equals(SuperBuilderWithGenerics.builder().foo(\"custom\").build().foo)) throw new AssertionError();\n+\t}\n+}\nPATCH\nmkdir -p build/builder-default-regression/classes && javac -cp 'build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/stripe/*' -processor lombok.javac.apt.LombokProcessor -d build/builder-default-regression/classes test/transform/resource/before/BuilderDefaultsGenericsInferred.java > build/builder-default-regression/before.log 2>&1; result=$?; cat build/builder-default-regression/before.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -286,8 +286,7 @@\n \t\t\t\t\tbfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);\n \t\t\t\t\tbfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);\n \t\t\t\t\tbfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n \t\t\t\t}\n@@ -807,12 +806,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n+\t\tJCReturn statement = maker.Return(null);\n \t\t\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\t// Preserve initializer positions: javac uses them to cache argument types.\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\n diff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -208,8 +208,7 @@\n \t\t\t\tbfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);\n \t\t\t\tbfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);\n \t\t\t\tbfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\n \t\t\t}\n diff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,2 +4,3 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers with multiple generic method calls no longer cause incorrect type errors on javac 11 and later, for both `@Builder` and `@SuperBuilder`.\n * FEATURE: Turning a field named `uShape` into a getter is tricky: `getUShape` or `getuShape`? The community is split on which style to use. Lombok does `getUShape`, but if you prefer the `getuShape` style, add to `lombok.config`: `lombok.accessors.capitalization = beanspec`. [Issue #2693](https://github.com/projectlombok/lombok/issues/2693) [Pull Request #2996](https://github.com/projectlombok/lombok/pull/2996). Thanks __@YonathanSherwin__!\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -50,1 +50,2 @@\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n@@ -286,8 +286,7 @@\n \t\t\t\t\tbfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);\n \t\t\t\t\tbfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);\n \t\t\t\t\tbfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n \t\t\t\t}\n@@ -807,12 +806,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n+\t\tJCReturn statement = maker.Return(null);\n \t\t\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\t// Preserve initializer positions: javac uses them to cache argument types.\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\ndiff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -208,8 +208,7 @@\n \t\t\t\tbfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);\n \t\t\t\tbfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);\n \t\t\t\tbfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\n \t\t\t}\ndiff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,2 +4,3 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers with multiple generic method calls no longer cause incorrect type errors on javac 11 and later, for both `@Builder` and `@SuperBuilder`.\n * FEATURE: Turning a field named `uShape` into a getter is tricky: `getUShape` or `getuShape`? The community is split on which style to use. Lombok does `getUShape`, but if you prefer the `getuShape` style, add to `lombok.config`: `lombok.accessors.capitalization = beanspec`. [Issue #2693](https://github.com/projectlombok/lombok/issues/2693) [Pull Request #2996](https://github.com/projectlombok/lombok/pull/2996). Thanks __@YonathanSherwin__!\nPATCH\nant test.compile > build/builder-default-compile.log 2>&1 && javac -cp 'build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/stripe/*' -processor lombok.javac.apt.LombokProcessor -d build/builder-default-regression/classes test/transform/resource/before/BuilderDefaultsGenericsInferred.java && java -cp build/builder-default-regression/classes BuilderDefaultsGenericsInferred; result=$?; tail -16 build/builder-default-compile.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '25,48p' test/core/src/lombok/DirectoryRunner.java; tail -65 test/core/src/lombok/DirectoryRunner.java; sed -n '160,180p' buildScripts/tests.ant.xml; sed -n '100,150p' test/core/src/lombok/RunTestsViaEcj.java; git --no-pager diff --stat; git --no-pager diff -- src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/javac/handlers/HandleSuperBuilder.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "java -cp 'build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/stripe/*' lombok.delombok.Delombok --help 2>&1 | head -55; sed -n '175,215p' test/core/src/lombok/LombokTestSource.java; grep -nE 'pos|endPosition|endPos|startPos|getGeneratedBy' test/core/src/lombok/RunTestsViaDelombok.java | head -50",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -l '^// *platform javac' test/transform/resource/before/*.java | head -15; grep -nE 'getVersion\\(|class TestParams|accept\\(' test/core/src/lombok/DirectoryRunner.java; sed -n '55,110p' test/core/src/lombok/DirectoryRunner.java; head -25 test/transform/resource/before/BuilderDefaults.java; sed -n '125,165p' test/core/src/lombok/RunTestsViaDelombok.java; grep -nE 'dumpActual|compareContent' test/core/src/lombok/AbstractRunTests.java | head -15",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n 'target name=\"dist\\|target name=\"pack\\|Premain-Class' buildScripts/compile.ant.xml; find build -maxdepth 2 -type f -name '*.jar'; ls lib/jdk8-rt 2>/dev/null; grep -n 'rt.loc' buildScripts/*.xml | head -20",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/build/builder-default-regression/RunFixtures.java b/build/builder-default-regression/RunFixtures.java\nnew file mode 100644\n--- /dev/null\n+++ b/build/builder-default-regression/RunFixtures.java\n@@ -0,0 +1,1 @@\n+import java.io.File;\n+import lombok.AbstractRunTests;\n+import lombok.DirectoryRunner;\n+import lombok.RunTestsViaDelombok;\n+import lombok.RunTestsViaEcj;\n+import lombok.transform.TestLombokFilesIdempotent;\n+import lombok.transform.TestWithDelombok;\n+import lombok.transform.TestWithEcj;\n+\n+public class RunFixtures {\n+\tpublic static void main(String[] args) throws Throwable {\n+\t\tboolean ecj = args[0].equals(\"ecj\");\n+\t\tDirectoryRunner.TestParams params = ecj ? new TestWithEcj() : args[0].equals(\"idempotent\") ? new TestLombokFilesIdempotent() : new TestWithDelombok();\n+\t\tfor (int i = 1; i < args.length; i++) {\n+\t\t\tAbstractRunTests runner = ecj ? new RunTestsViaEcj() : new RunTestsViaDelombok();\n+\t\t\tDirectoryRunner.FileTester tester = runner.createTester(params, new File(params.getBeforeDirectory(), args[i]), ecj ? \"eclipse\" : \"javac\", params.getVersion());\n+\t\t\tif (tester == null) throw new AssertionError(\"Fixture skipped: \" + args[i]);\n+\t\t\ttester.runTest();\n+\t\t\tSystem.out.println(\"PASS \" + args[0] + \" \" + args[i]);\n+\t\t}\n+\t}\n+}\nPATCH\nCP='build/builder-default-regression/classes:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/test/*:lib/build/*:lib/stripe/*:lib/eclipse-oxygen/*'\njavac -proc:none -cp \"$CP\" -d build/builder-default-regression/classes build/builder-default-regression/RunFixtures.java && java -Dlombok.tests.dump_actual_files=build/builder-default-regression/delombok -cp \"$CP\" RunFixtures javac BuilderDefaultsGenericsInferred.java > build/builder-default-regression/delombok.log 2>&1; result=$?; tail -12 build/builder-default-regression/delombok.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "ant dist > build/builder-default-dist.log 2>&1; result=$?; tail -25 build/builder-default-dist.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cp build/builder-default-regression/delombok/BuilderDefaultsGenericsInferred.java test/transform/resource/after-delombok/BuilderDefaultsGenericsInferred.java && CP='build/builder-default-regression/classes:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/test/*:lib/build/*:lib/stripe/*:lib/eclipse-oxygen/*' && java -cp \"$CP\" RunFixtures javac BuilderDefaultsGenericsInferred.java BuilderDefaults.java BuilderDefaultsGenerics.java BuilderDefaultsWarnings.java ConstructorsWithBuilderDefaults.java SuperBuilderWithDefaults.java && java -cp \"$CP\" RunFixtures idempotent BuilderDefaultsGenericsInferred.java && javac -cp dist/lombok.jar -d build/builder-default-regression/classes test/transform/resource/before/BuilderDefaultsGenericsInferred.java && java -cp build/builder-default-regression/classes BuilderDefaultsGenericsInferred",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "CP='build/builder-default-regression/classes:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/test/*:lib/build/*:lib/stripe/*:lib/eclipse-oxygen/*'\njava -javaagent:dist/lombok.jar -Ddelombok.bootclasspath=lib/openjdk8_rt.jar -Dlombok.tests.dump_actual_files=build/builder-default-regression/ecj -cp \"$CP\" RunFixtures ecj BuilderDefaultsGenericsInferred.java > build/builder-default-regression/ecj.log 2>&1; result=$?; tail -15 build/builder-default-regression/ecj.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -i '/^\\/\\/ Generated by delombok at /d' test/transform/resource/after-delombok/BuilderDefaultsGenericsInferred.java && CP='build/builder-default-regression/classes:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/test/*:lib/build/*:lib/stripe/*:lib/eclipse-oxygen/*' && java -cp \"$CP\" RunFixtures javac BuilderDefaultsGenericsInferred.java BuilderDefaults.java BuilderDefaultsGenerics.java BuilderDefaultsWarnings.java ConstructorsWithBuilderDefaults.java SuperBuilderWithDefaults.java && java -cp \"$CP\" RunFixtures idempotent BuilderDefaultsGenericsInferred.java && javac -cp dist/lombok.jar -d build/builder-default-regression/classes test/transform/resource/before/BuilderDefaultsGenericsInferred.java && java -cp build/builder-default-regression/classes BuilderDefaultsGenericsInferred",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cp build/builder-default-regression/ecj/BuilderDefaultsGenericsInferred.java test/transform/resource/after-ecj/BuilderDefaultsGenericsInferred.java && CP='build/builder-default-regression/classes:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/test/*:lib/build/*:lib/stripe/*:lib/eclipse-oxygen/*' && java -javaagent:dist/lombok.jar -Ddelombok.bootclasspath=lib/openjdk8_rt.jar -cp \"$CP\" RunFixtures ecj BuilderDefaultsGenericsInferred.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant test.javacCurrent > build/builder-default-javac-tests.log 2>&1; result=$?; tail -50 build/builder-default-javac-tests.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -i '1{/^$/d;}' test/transform/resource/after-delombok/BuilderDefaultsGenericsInferred.java; git diff --check; git --no-pager status --short; wc -l test/transform/resource/{before,after-delombok,after-ecj}/BuilderDefaultsGenericsInferred.java; sed -n '1,155p' test/transform/resource/after-delombok/BuilderDefaultsGenericsInferred.java; tail -70 test/transform/resource/after-delombok/BuilderDefaultsGenericsInferred.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep 'PASS.*BuilderDefaultsGenericsInferred' build/builder-default-javac-tests.log && git diff --check && git --no-pager diff --stat && git --no-pager status --short && rm -r build/builder-default-regression && rm build/builder-default-compile.log build/builder-default-dist.log build/builder-default-javac-tests.log",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "ant test.compile > build/builder-default-compile.log 2>&1; result=$?; tail -45 build/builder-default-compile.log; exit \"$result\"",
+  "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -50,1 +50,2 @@\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n@@ -286,8 +286,7 @@\n \t\t\t\t\tbfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);\n \t\t\t\t\tbfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);\n \t\t\t\t\tbfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n \t\t\t\t}\n@@ -807,12 +806,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n+\t\tJCReturn statement = maker.Return(null);\n \t\t\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\t// Preserve initializer positions: javac uses them to cache argument types.\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\ndiff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -208,8 +208,7 @@\n \t\t\t\tbfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);\n \t\t\t\tbfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);\n \t\t\t\tbfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\n \t\t\t}\ndiff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,2 +4,3 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers with multiple generic method calls no longer cause incorrect type errors on javac 11 and later, for both `@Builder` and `@SuperBuilder`.\n * FEATURE: Turning a field named `uShape` into a getter is tricky: `getUShape` or `getuShape`? The community is split on which style to use. Lombok does `getUShape`, but if you prefer the `getuShape` style, add to `lombok.config`: `lombok.accessors.capitalization = beanspec`. [Issue #2693](https://github.com/projectlombok/lombok/issues/2693) [Pull Request #2996](https://github.com/projectlombok/lombok/pull/2996). Thanks __@YonathanSherwin__!\nPATCH\nant test.compile > build/builder-default-compile.log 2>&1 && javac -cp 'build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:lib/stripe/*' -processor lombok.javac.apt.LombokProcessor -d build/builder-default-regression/classes test/transform/resource/before/BuilderDefaultsGenericsInferred.java && java -cp build/builder-default-regression/classes BuilderDefaultsGenericsInferred; result=$?; tail -16 build/builder-default-compile.log; exit \"$result\"",
+  "ant dist > build/builder-default-dist.log 2>&1; result=$?; tail -25 build/builder-default-dist.log; exit \"$result\"",
+  "ant test.javacCurrent > build/builder-default-javac-tests.log 2>&1; result=$?; tail -50 build/builder-default-javac-tests.log; exit \"$result\""
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed: Lombok overwrote initializer source positions, causing javac 11\u2019s type cache to confuse distinct generic calls. Default-provider generation now preserves the initializer\u2019s original positions for both `@Builder` and `@SuperBuilder`. Added regression coverage without changing existing tests.",
+ "assistant_messages": [
+  "I\u2019ll trace how `@Builder.Default` moves the initializer, reproduce the inference failure, and fix it without changing existing tests.\n",
+  "The failure also affects `@SuperBuilder`. Lombok resets every node in the moved initializer to the same source position, causing javac\u2019s position-based type cache to confuse the two generic calls. I\u2019ll preserve the initializer\u2019s original positions and mark only the generated method wrapper.\n",
+  "The fix now compiles both builder variants and preserves default and overridden values. I\u2019ve added regression fixtures for javac and Eclipse; I\u2019m checking the full javac suite for effects on other initializers.\n",
+  "Fixed: Lombok overwrote initializer source positions, causing javac 11\u2019s type cache to confuse distinct generic calls. Default-provider generation now preserves the initializer\u2019s original positions for both `@Builder` and `@SuperBuilder`. Added regression coverage without changing existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Simplifying MyClass Helper**\n\nI'm considering simplifying the MyClass generic helper to better focus on building separate reports manually. The use of @Value might not add necessary value here. I\u2019m looking at the generic method in java.util.Collections, wondering if it could introduce bugs, especially if we\u2019re calling doSth with specific parameters. I also need to ensure that the factory wrappers maintain the shape my user expects. Maybe I should include tests to avoid content issues and compare generated outputs appropriately.",
+  "**Troubleshooting patch failure**\n\nI'm trying to figure out why the patch failed. I see that the context line has a leading space before \"diff --git,\" and that may have affected the previous hunk. I need to ensure that the diff line doesn\u2019t include that leading space. Also, I think I need to import JCReturn to help with this. It seems like small details can cause these failures, and it's important to catch them!",
+  "**Exploring JDK11 issues**\n\nI'm thinking about how to avoid using the bootclasspath in JDK11. Running Ecj with the option -Ddelombok.bootclasspath=lib/openjdk8_rt.jar seems to be a potential solution. It looks like I need to set a minimum version of 5 and focus on Java 5 syntax, especially with explicit generic construction. Also, there's a fixture with an expectation of 220 lines, but I wonder if the annotation @Value might generate any warnings. This is interesting!",
+  "**Processing timestamp output**\n\nI need to strip the timestamp from the generated output as part of my test fixture. I\u2019m thinking of using a command with sed to remove the lines that begin with the comment about being generated by delombok. The specific command would look something like `sed -i '/^\\/\\/ Generated by delombok at /d' file`. This ensures my fixture baseline is accurate and doesn't include those comments that I want to ignore when comparing tests. I'll also need to copy ecj\u2014let's make sure I get those details right!",
+  "**Evaluating testing process**\n\nI need to run the ant test for `test.javacCurrent`, as the user mentions compiling issues. While there's no explicit instruction to \"run,\" validation is necessary, especially for the smallest targeted tests. I'm considering the developer's advice about escalating only when absolutely required. Running the full suite seems prudent to catch any potential missed errors, especially with existing issues related to the code. I\u2019ll ensure to adjust my guidance based on the debate around the initializer.\n\n**Reviewing formatting and changes**\n\nI\u2019m considering whether to remove the leading blank lines after `after-delombok` begins. The existing fixtures start without blank lines, but the generated file preserves them. Automated formatting could clean this up with a simple `sed` command. While reviewing the output files, I notice there are about 250 counts, which might seem excessive, but since 500 lines total are acceptable, it aligns with the request for precise changes. I also need to preserve the API signature without unnecessary parameters and ensure the original behavior remains intact.\n\n**Addressing bug with method positions**\n\nI've identified a tightly coupled bug where the generated method's end position annotation is before the initializer. This places the original initialization positions outside the method's range, which could confuse the debugger. Although existing methods don\u2019t enforce this, it's important to preserve the intended expressions. I need to ensure that any regression tests are valid before and after the fix. Our fixture tests contain main assertions, but these won't automatically execute in Ant; however, type-checking during compilation is enough for now. It's also worth noting that we don\u2019t involve generic types for compatibility with Java 5."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 160.7
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a046",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Lombok clears the nested class\u2019s enclosing type when making it static, but javac\u2019s cached erased type still retains the old enclosing type.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no value: the attempt ran only `peeky --help`."
+}

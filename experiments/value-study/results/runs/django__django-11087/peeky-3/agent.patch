@@ -1,0 +1,189 @@
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..74f31c733d 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,11 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (signals.pre_delete.has_listeners(model) or
++                signals.post_delete.has_listeners(model) or
++                signals.m2m_changed.has_listeners(model))
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +140,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -220,7 +223,18 @@ class Collector:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+                         self.fast_deletes.append(sub_objs)
+-                    elif sub_objs:
++                        continue
++                    related_model = related.related_model
++                    # Defer non-referenced fields unless signal receivers or
++                    # select_related() require the full model instances.
++                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
++                        referenced_fields = {
++                            rf.attname
++                            for rel in get_candidate_relations_to_delete(related_model._meta)
++                            for rf in rel.field.foreign_related_fields
++                        }
++                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)
++                    if sub_objs:
+                         field.remote_field.on_delete(self, field, sub_objs, self.using)
+             for field in model._meta.private_fields:
+                 if hasattr(field, 'bulk_related_objects'):
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 8485d436e1..5e243ee2a0 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -2529,6 +2529,9 @@ methods on your models. It does, however, emit the
+ (including cascaded deletions).
+ 
+ Django needs to fetch objects into memory to send signals and handle cascades.
++When possible, Django fetches only the fields needed to collect related objects
++during cascaded deletions. This optimization isn't applied to models with signal
++listeners.
+ However, if there are no cascades and no signals, then Django may take a
+ fast-path and delete objects without fetching into memory. For large
+ deletes this can result in significantly reduced memory usage. The amount of
+diff --git a/tests/delete_regress/models.py b/tests/delete_regress/models.py
+index 90eae1ba1c..4b1ceada49 100644
+--- a/tests/delete_regress/models.py
++++ b/tests/delete_regress/models.py
+@@ -141,3 +141,17 @@ class OrderedPerson(models.Model):
+ 
+     class Meta:
+         ordering = ['name']
++
++
++class Job(models.Model):
++    pass
++
++
++class JobLog(models.Model):
++    job = models.ForeignKey(Job, models.CASCADE)
++    guid = models.CharField(max_length=32, unique=True)
++    description = models.TextField()
++
++
++class LogEntry(models.Model):
++    log = models.ForeignKey(JobLog, models.CASCADE, to_field='guid')
+diff --git a/tests/delete_regress/tests.py b/tests/delete_regress/tests.py
+index a1bead144e..15fd842e62 100644
+--- a/tests/delete_regress/tests.py
++++ b/tests/delete_regress/tests.py
+@@ -1,13 +1,15 @@
+ import datetime
++from unittest import mock
+ 
+ from django.db import connection, models, transaction
++from django.db.models.deletion import Collector
+ from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
+ 
+ from .models import (
+     Award, AwardNote, Book, Child, Contact, Eaten, Email, File, Food, FooFile,
+-    FooFileProxy, FooImage, FooPhoto, House, Image, Item, Location, Login,
+-    OrderedPerson, OrgUnit, Person, Photo, PlayedWith, PlayedWithNote, Policy,
+-    Researcher, Toy, Version,
++    FooFileProxy, FooImage, FooPhoto, House, Image, Item, Job, JobLog, Location,
++    LogEntry, Login, OrderedPerson, OrgUnit, Person, Photo, PlayedWith,
++    PlayedWithNote, Policy, Researcher, Toy, Version,
+ )
+ 
+ 
+@@ -93,6 +95,82 @@ class DeleteCascadeTests(TestCase):
+         policy.delete()
+ 
+ 
++class DeletionFieldSelectionTests(TestCase):
++    def setUp(self):
++        self.job = Job.objects.create()
++        self.log = JobLog.objects.create(job=self.job, guid='log', description='Some log text')
++        LogEntry.objects.create(log=self.log)
++
++    def test_cascade_only_required_fields(self):
++        expected_sql = str(JobLog.objects.only('id', 'guid').filter(job__in=[self.job]).query)
++        with self.assertNumQueries(4) as queries:
++            self.assertEqual(self.job.delete(), (3, {
++                'delete_regress.Job': 1,
++                'delete_regress.JobLog': 1,
++                'delete_regress.LogEntry': 1,
++            }))
++        self.assertEqual(queries[0]['sql'], expected_sql)
++
++    def test_queryset_cascade_only_required_fields(self):
++        expected_sql = str(JobLog.objects.only('id', 'guid').filter(job__in=[self.job]).query)
++        with self.assertNumQueries(5) as queries:
++            Job.objects.all().delete()
++        self.assertEqual(queries[1]['sql'], expected_sql)
++        self.assertFalse(LogEntry.objects.exists())
++
++    def test_cascade_only_primary_key(self):
++        child = Child.objects.create(name='Juan')
++        toy = Toy.objects.create(name='Paints')
++        played = PlayedWith.objects.create(child=child, toy=toy, date=datetime.date.today())
++        PlayedWithNote.objects.create(played=played, note='A painting')
++        expected_sql = str(PlayedWith.objects.only('id').filter(toy__in=[toy]).query)
++        with self.assertNumQueries(4) as queries:
++            toy.delete()
++        self.assertEqual(queries[0]['sql'], expected_sql)
++        self.assertFalse(PlayedWithNote.objects.exists())
++
++    def test_field_update_only_primary_key(self):
++        contact = Contact.objects.create(label='Contact')
++        Researcher.objects.create(primary_contact=contact, secondary_contact=contact)
++        collector = Collector(using='default')
++        collector.collect([contact])
++        for instances in collector.field_updates[Researcher].values():
++            for instance in instances:
++                self.assertEqual(instance.get_deferred_fields(), {
++                    'primary_contact_id', 'secondary_contact_id',
++                })
++
++    def _test_cascade_signal(self, signal):
++        instances = []
++
++        def receiver(instance, **kwargs):
++            self.assertEqual(instance.get_deferred_fields(), set())
++            self.assertEqual(instance.description, self.log.description)
++            instances.append(instance)
++
++        signal.connect(receiver, sender=JobLog)
++        try:
++            with self.assertNumQueries(4):
++                self.job.delete()
++        finally:
++            signal.disconnect(receiver, sender=JobLog)
++        self.assertEqual(len(instances), 1)
++
++    def test_cascade_pre_delete_loads_all_fields(self):
++        self._test_cascade_signal(models.signals.pre_delete)
++
++    def test_cascade_post_delete_loads_all_fields(self):
++        self._test_cascade_signal(models.signals.post_delete)
++
++    def test_cascade_select_related(self):
++        queryset = JobLog.objects.select_related('job')
++        expected_sql = str(queryset.filter(job__in=[self.job]).query)
++        with mock.patch.object(JobLog._base_manager, 'get_queryset', return_value=queryset):
++            with self.assertNumQueries(4) as queries:
++                self.job.delete()
++        self.assertEqual(queries[0]['sql'], expected_sql)
++
++
+ class DeleteCascadeTransactionTests(TransactionTestCase):
+ 
+     available_apps = ['delete_regress']

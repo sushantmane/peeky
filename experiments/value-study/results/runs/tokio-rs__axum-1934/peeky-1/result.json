@@ -1,0 +1,233 @@
+{
+ "bug": "tokio-rs__axum-1934",
+ "arm": "peeky",
+ "rep": 1,
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__axum-1934:peeky",
+ "image_digest": "sha256:12f66ee8ff439570b8909edb982c28b34083d3730ead6ff3a4935730d22610c0",
+ "peeky_sha": "360b3f17322f05423803ba223c0c9628da3bcee7",
+ "container": "study-tokio-rs__axum-1934-peeky-1-f848be",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:06:10+00:00",
+ "ended": "2026-10-31T03:07:54+00:00",
+ "wall_seconds": 103.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "routing::tests::fallback::doesnt_panic_if_used_with_nested_router": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 3.1,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "02c7f47ab15bbf30a5d3d1a15f8f232f002e9998f64d958740fbfa6a6c2e0d9b",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "axum/CHANGELOG.md",
+  "axum/src/extract/matched_path.rs",
+  "axum/src/routing/mod.rs",
+  "axum/src/routing/path_router.rs"
+ ],
+ "patch_bytes": 6256,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 16
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 14,
+ "ai_credits": 20.3223,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 356047,
+  "output": 8009,
+  "cache_read": 319568,
+  "cache_write": 36437,
+  "reasoning": 2035
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 18,
+ "tool_calls_by_name": {
+  "bash": 18
+ },
+ "shell_commands": [
+  {
+   "command": "cd /testbed && pwd && git --no-pager status --short && sed -n '1,200p' /opt/peeky/docs/AGENT_GUIDE.md && sed -n '1,240p' axum/src/extract/matched_path.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,230p' axum/src/extract/matched_path.rs && rg -n 'MatchedPath|set_matched_path|nest_service|fallback_service' axum/src/routing/{mod.rs,path_router.rs,tests} axum/src/extract/matched_path.rs",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && head -80 /opt/peeky/docs/AGENT_GUIDE.md && ls && sed -n '1,180p' axum/Cargo.toml && find . -name AGENTS.md -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,380p' axum/src/routing/path_router.rs && sed -n '230,560p' axum/src/extract/matched_path.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'fallback|nest_service|set_matched_path' axum/src/routing/mod.rs && ls axum/src/routing/tests && grep -nE 'fallback|ServeDir|nest_service' axum/src/routing/tests/{fallback.rs,nest.rs} && head -80 axum/CHANGELOG.md && sed -n '1,100p' axum/src/test_helpers/mod.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '45,120p' axum/src/routing/mod.rs && sed -n '140,330p' axum/src/routing/mod.rs && cat axum/src/routing/tests/fallback.rs && sed -n '180,230p' axum/src/routing/tests/nest.rs && sed -n '1,95p' axum/src/routing/tests/mod.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat axum/src/docs/routing/fallback.md && grep -R -n --include='*.rs' 'FALLBACK_PARAM\\|MatchedPathMissing\\|PathRouter<' axum/src && sed -n '1,120p' axum/src/test_helpers/test_client.rs && command -v apply_patch && command -v cargo",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v cargo; command -v patch; command -v apply_patch; sed -n '480,515p' axum/src/routing/mod.rs && sed -n '380,470p' axum/src/routing/path_router.rs && sed -n '180,210p' axum/src/extract/rejection.rs && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/axum/src/routing/tests/fallback.rs b/axum/src/routing/tests/fallback.rs\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -227,3 +227,22 @@ async fn nest_fallback_on_inner() {\n     assert_eq!(res.status(), StatusCode::NOT_FOUND);\n     assert_eq!(res.text().await, \"inner fallback\");\n }\n+\n+#[crate::test]\n+async fn nested_static_file_server_as_fallback() {\n+    let routes_static = Router::new().nest_service(\n+        \"/\",\n+        get_service(tower_http::services::ServeDir::new(\".\")),\n+    );\n+    let app = Router::new().fallback_service(routes_static);\n+\n+    let client = TestClient::new(app);\n+\n+    let res = client.get(\"/README.md\").send().await;\n+    assert_eq!(res.status(), StatusCode::OK);\n+    assert_eq!(res.text().await, include_str!(\"../../../README.md\"));\n+\n+    let res = client.get(\"/does-not-exist\").send().await;\n+    assert_eq!(res.status(), StatusCode::NOT_FOUND);\n+}\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -176,6 +176,43 @@ mod tests {\n     };\n     use http::{Request, StatusCode};\n \n+    #[crate::test]\n+    async fn not_set_in_fallback() {\n+        async fn fallback(path: Option<MatchedPath>) {\n+            assert!(path.is_none());\n+        }\n+\n+        let app = Router::new()\n+            .nest(\"/nested\", Router::new().fallback(fallback))\n+            .fallback(fallback);\n+\n+        let client = TestClient::new(app);\n+\n+        for path in [\"/\", \"/not-found\", \"/nested\", \"/nested/not-found\"] {\n+            let res = client.get(path).send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+        }\n+    }\n+\n+    #[crate::test]\n+    async fn extracting_on_handler_in_fallback_router() {\n+        let app = Router::new().fallback_service(Router::new().route(\n+            \"/:id\",\n+            get(|path: MatchedPath| async move { path.as_str().to_owned() }),\n+        ));\n+\n+        let client = TestClient::new(app);\n+\n+        let res = client.get(\"/foo\").send().await;\n+        assert_eq!(res.status(), StatusCode::OK);\n+        assert_eq!(res.text().await, \"/:id\");\n+    }\n+\n     #[crate::test]\n     async fn extracting_on_handler() {\n         let app = Router::new().route(\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested_static_file_server_as_fallback",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/axum/src/routing/tests/fallback.rs b/axum/src/routing/tests/fallback.rs\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -227,3 +227,22 @@ async fn nest_fallback_on_inner() {\n     assert_eq!(res.status(), StatusCode::NOT_FOUND);\n     assert_eq!(res.text().await, \"inner fallback\");\n }\n+\n+#[crate::test]\n+async fn nested_static_file_server_as_fallback() {\n+    let routes_static = Router::new().nest_service(\n+        \"/\",\n+        get_service(tower_http::services::ServeDir::new(\".\")),\n+    );\n+    let app = Router::new().fallback_service(routes_static);\n+\n+    let client = TestClient::new(app);\n+\n+    let res = client.get(\"/README.md\").send().await;\n+    assert_eq!(res.status(), StatusCode::OK);\n+    assert_eq!(res.text().await, include_str!(\"../../../README.md\"));\n+\n+    let res = client.get(\"/does-not-exist\").send().await;\n+    assert_eq!(res.status(), StatusCode::NOT_FOUND);\n+}\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -176,6 +176,43 @@ mod tests {\n     };\n     use http::{Request, StatusCode};\n \n+    #[crate::test]\n+    async fn not_set_in_fallback() {\n+        async fn fallback(path: Option<MatchedPath>) {\n+            assert!(path.is_none());\n+        }\n+\n+        let app = Router::new()\n+            .nest(\"/nested\", Router::new().fallback(fallback))\n+            .fallback(fallback);\n+\n+        let client = TestClient::new(app);\n+\n+        for path in [\"/\", \"/not-found\", \"/nested\", \"/nested/not-found\"] {\n+            let res = client.get(path).send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+        }\n+    }\n+\n+    #[crate::test]\n+    async fn extracting_on_handler_in_fallback_router() {\n+        let app = Router::new().fallback_service(Router::new().route(\n+            \"/:id\",\n+            get(|path: MatchedPath| async move { path.as_str().to_owned() }),\n+        ));\n+\n+        let client = TestClient::new(app);\n+\n+        let res = client.get(\"/foo\").send().await;\n+        assert_eq!(res.status(), StatusCode::OK);\n+        assert_eq!(res.text().await, \"/:id\");\n+    }\n+\n     #[crate::test]\n     async fn extracting_on_handler() {\n         let app = Router::new().route(\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested_static_file_server_as_fallback; fi",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/axum/src/routing/mod.rs b/axum/src/routing/mod.rs\n--- a/axum/src/routing/mod.rs\n+++ b/axum/src/routing/mod.rs\n@@ -58,7 +58,7 @@\n pub struct Router<S = (), B = Body> {\n     path_router: PathRouter<S, B>,\n-    fallback_router: PathRouter<S, B>,\n+    fallback_router: PathRouter<S, B, true>,\n     default_fallback: bool,\n }\n@@ -502,1 +502,1 @@\n-struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B>>);\n+struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B, true>>);\ndiff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs\n--- a/axum/src/routing/path_router.rs\n+++ b/axum/src/routing/path_router.rs\n@@ -14,7 +14,7 @@\n-pub(super) struct PathRouter<S = (), B = Body> {\n+pub(super) struct PathRouter<S = (), B = Body, const IS_FALLBACK: bool = false> {\n     routes: HashMap<RouteId, Endpoint<S, B>>,\n     node: Arc<Node>,\n     prev_route_id: RouteId,\n }\n \n-impl<S, B> PathRouter<S, B>\n+impl<S, B, const IS_FALLBACK: bool> PathRouter<S, B, IS_FALLBACK>\n@@ -110,1 +110,4 @@\n-    pub(super) fn merge(&mut self, other: PathRouter<S, B>) -> Result<(), Cow<'static, str>> {\n+    pub(super) fn merge(\n+        &mut self,\n+        other: PathRouter<S, B, IS_FALLBACK>,\n+    ) -> Result<(), Cow<'static, str>> {\n@@ -134,1 +137,1 @@\n-        router: PathRouter<S, B>,\n+        router: PathRouter<S, B, IS_FALLBACK>,\n@@ -196,1 +199,4 @@\n-    pub(super) fn layer<L, NewReqBody>(self, layer: L) -> PathRouter<S, NewReqBody>\n+    pub(super) fn layer<L, NewReqBody>(\n+        self,\n+        layer: L,\n+    ) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n@@ -253,1 +259,1 @@\n-    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B> {\n+    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B, IS_FALLBACK> {\n@@ -296,6 +302,8 @@\n                 #[cfg(feature = \"matched-path\")]\n-                crate::extract::matched_path::set_matched_path_for_request(\n-                    id,\n-                    &self.node.route_id_to_path,\n-                    req.extensions_mut(),\n-                );\n+                if !IS_FALLBACK {\n+                    crate::extract::matched_path::set_matched_path_for_request(\n+                        id,\n+                        &self.node.route_id_to_path,\n+                        req.extensions_mut(),\n+                    );\n+                }\n@@ -350,1 +358,1 @@\n-impl<B, S> Default for PathRouter<S, B> {\n+impl<B, S, const IS_FALLBACK: bool> Default for PathRouter<S, B, IS_FALLBACK> {\n@@ -360,1 +368,1 @@\n-impl<S, B> fmt::Debug for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> fmt::Debug for PathRouter<S, B, IS_FALLBACK> {\n@@ -369,1 +377,1 @@\n-impl<S, B> Clone for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> Clone for PathRouter<S, B, IS_FALLBACK> {\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -7,3 +7,5 @@\n /// Access the path in the router that matches the request.\n ///\n+/// This extractor is not available in [fallback handlers](crate::Router::fallback).\n+///\n /// ```\ndiff --git a/axum/CHANGELOG.md b/axum/CHANGELOG.md\n--- a/axum/CHANGELOG.md\n+++ b/axum/CHANGELOG.md\n@@ -8,3 +8,4 @@\n # Unreleased\n \n-- None.\n+- **fixed:** Avoid setting `MatchedPath` for fallback routes, fixing a panic when\n+  using a nested service such as `ServeDir` as a fallback.\nPATCH\nif [ $? -eq 0 ]; then cargo fmt --all -- --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount --unidiff-zero <<'PATCH'\ndiff --git a/axum/src/routing/mod.rs b/axum/src/routing/mod.rs\n--- a/axum/src/routing/mod.rs\n+++ b/axum/src/routing/mod.rs\n@@ -58,7 +58,7 @@\n pub struct Router<S = (), B = Body> {\n     path_router: PathRouter<S, B>,\n-    fallback_router: PathRouter<S, B>,\n+    fallback_router: PathRouter<S, B, true>,\n     default_fallback: bool,\n }\n@@ -502,1 +502,1 @@\n-struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B>>);\n+struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B, true>>);\ndiff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs\n--- a/axum/src/routing/path_router.rs\n+++ b/axum/src/routing/path_router.rs\n@@ -14,7 +14,7 @@\n-pub(super) struct PathRouter<S = (), B = Body> {\n+pub(super) struct PathRouter<S = (), B = Body, const IS_FALLBACK: bool = false> {\n     routes: HashMap<RouteId, Endpoint<S, B>>,\n     node: Arc<Node>,\n     prev_route_id: RouteId,\n }\n \n-impl<S, B> PathRouter<S, B>\n+impl<S, B, const IS_FALLBACK: bool> PathRouter<S, B, IS_FALLBACK>\n@@ -110,1 +110,4 @@\n-    pub(super) fn merge(&mut self, other: PathRouter<S, B>) -> Result<(), Cow<'static, str>> {\n+    pub(super) fn merge(\n+        &mut self,\n+        other: PathRouter<S, B, IS_FALLBACK>,\n+    ) -> Result<(), Cow<'static, str>> {\n@@ -134,1 +137,1 @@\n-        router: PathRouter<S, B>,\n+        router: PathRouter<S, B, IS_FALLBACK>,\n@@ -196,1 +199,4 @@\n-    pub(super) fn layer<L, NewReqBody>(self, layer: L) -> PathRouter<S, NewReqBody>\n+    pub(super) fn layer<L, NewReqBody>(\n+        self,\n+        layer: L,\n+    ) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n@@ -253,1 +259,1 @@\n-    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B> {\n+    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B, IS_FALLBACK> {\n@@ -296,6 +302,8 @@\n                 #[cfg(feature = \"matched-path\")]\n-                crate::extract::matched_path::set_matched_path_for_request(\n-                    id,\n-                    &self.node.route_id_to_path,\n-                    req.extensions_mut(),\n-                );\n+                if !IS_FALLBACK {\n+                    crate::extract::matched_path::set_matched_path_for_request(\n+                        id,\n+                        &self.node.route_id_to_path,\n+                        req.extensions_mut(),\n+                    );\n+                }\n@@ -350,1 +358,1 @@\n-impl<B, S> Default for PathRouter<S, B> {\n+impl<B, S, const IS_FALLBACK: bool> Default for PathRouter<S, B, IS_FALLBACK> {\n@@ -360,1 +368,1 @@\n-impl<S, B> fmt::Debug for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> fmt::Debug for PathRouter<S, B, IS_FALLBACK> {\n@@ -369,1 +377,1 @@\n-impl<S, B> Clone for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> Clone for PathRouter<S, B, IS_FALLBACK> {\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -7,3 +7,5 @@\n /// Access the path in the router that matches the request.\n ///\n+/// This extractor is not available in [fallback handlers](crate::Router::fallback).\n+///\n /// ```\ndiff --git a/axum/CHANGELOG.md b/axum/CHANGELOG.md\n--- a/axum/CHANGELOG.md\n+++ b/axum/CHANGELOG.md\n@@ -8,3 +8,4 @@\n # Unreleased\n \n-- None.\n+- **fixed:** Avoid setting `MatchedPath` for fallback routes, fixing a panic when\n+  using a nested service such as `ServeDir` as a fallback.\nPATCH\nif [ $? -eq 0 ]; then cargo fmt --all -- --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback; fi",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- axum/src/routing/path_router.rs axum/src/routing/mod.rs axum/src/extract/matched_path.rs axum/src/routing/tests/fallback.rs axum/CHANGELOG.md && rustup toolchain list",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls -a | grep -E 'rustfmt|cargo' && find . -maxdepth 3 -name '*rustfmt*' -print && sed -n '1,100p' .rustfmt.toml && sed -n '1,110p' .cargo/config.toml",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- extract::matched_path routing::tests::nest",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find . -maxdepth 3 -iname '*rustfmt*' -print && awk 'length($0)>85 {print NR, length($0), $0}' axum/src/routing/path_router.rs | head -15 && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs\n--- a/axum/src/routing/path_router.rs\n+++ b/axum/src/routing/path_router.rs\n@@ -196,8 +196,5 @@\n-    pub(super) fn layer<L, NewReqBody>(\n-        self,\n-        layer: L,\n-    ) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n+    pub(super) fn layer<L, NewReqBody>(self, layer: L) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n     where\n         L: Layer<Route<B>> + Clone + Send + 'static,\n         L::Service: Service<Request<NewReqBody>> + Clone + Send + 'static,\ndiff --git a/axum/src/routing/tests/fallback.rs b/axum/src/routing/tests/fallback.rs\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -1,5 +1,6 @@\n use tower::ServiceExt;\n+use tower_http::services::ServeDir;\n \n use super::*;\n use crate::middleware::{map_request, map_response};\n@@ -230,9 +231,6 @@\n #[crate::test]\n async fn nested_static_file_server_as_fallback() {\n-    let routes_static = Router::new().nest_service(\n-        \"/\",\n-        get_service(tower_http::services::ServeDir::new(\".\")),\n-    );\n+    let routes_static = Router::new().nest_service(\"/\", get_service(ServeDir::new(\".\")));\n     let app = Router::new().fallback_service(routes_static);\n \n     let client = TestClient::new(app);\nPATCH\nif [ $? -eq 0 ]; then git --no-pager diff --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback extract::matched_path routing::tests::nest routing::tests::merge --quiet; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "cd /testbed && git apply <<'PATCH'\ndiff --git a/axum/src/routing/tests/fallback.rs b/axum/src/routing/tests/fallback.rs\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -227,3 +227,22 @@ async fn nest_fallback_on_inner() {\n     assert_eq!(res.status(), StatusCode::NOT_FOUND);\n     assert_eq!(res.text().await, \"inner fallback\");\n }\n+\n+#[crate::test]\n+async fn nested_static_file_server_as_fallback() {\n+    let routes_static = Router::new().nest_service(\n+        \"/\",\n+        get_service(tower_http::services::ServeDir::new(\".\")),\n+    );\n+    let app = Router::new().fallback_service(routes_static);\n+\n+    let client = TestClient::new(app);\n+\n+    let res = client.get(\"/README.md\").send().await;\n+    assert_eq!(res.status(), StatusCode::OK);\n+    assert_eq!(res.text().await, include_str!(\"../../../README.md\"));\n+\n+    let res = client.get(\"/does-not-exist\").send().await;\n+    assert_eq!(res.status(), StatusCode::NOT_FOUND);\n+}\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -176,6 +176,43 @@ mod tests {\n     };\n     use http::{Request, StatusCode};\n \n+    #[crate::test]\n+    async fn not_set_in_fallback() {\n+        async fn fallback(path: Option<MatchedPath>) {\n+            assert!(path.is_none());\n+        }\n+\n+        let app = Router::new()\n+            .nest(\"/nested\", Router::new().fallback(fallback))\n+            .fallback(fallback);\n+\n+        let client = TestClient::new(app);\n+\n+        for path in [\"/\", \"/not-found\", \"/nested\", \"/nested/not-found\"] {\n+            let res = client.get(path).send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+        }\n+    }\n+\n+    #[crate::test]\n+    async fn extracting_on_handler_in_fallback_router() {\n+        let app = Router::new().fallback_service(Router::new().route(\n+            \"/:id\",\n+            get(|path: MatchedPath| async move { path.as_str().to_owned() }),\n+        ));\n+\n+        let client = TestClient::new(app);\n+\n+        let res = client.get(\"/foo\").send().await;\n+        assert_eq!(res.status(), StatusCode::OK);\n+        assert_eq!(res.text().await, \"/:id\");\n+    }\n+\n     #[crate::test]\n     async fn extracting_on_handler() {\n         let app = Router::new().route(\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested_static_file_server_as_fallback",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/axum/src/routing/tests/fallback.rs b/axum/src/routing/tests/fallback.rs\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -227,3 +227,22 @@ async fn nest_fallback_on_inner() {\n     assert_eq!(res.status(), StatusCode::NOT_FOUND);\n     assert_eq!(res.text().await, \"inner fallback\");\n }\n+\n+#[crate::test]\n+async fn nested_static_file_server_as_fallback() {\n+    let routes_static = Router::new().nest_service(\n+        \"/\",\n+        get_service(tower_http::services::ServeDir::new(\".\")),\n+    );\n+    let app = Router::new().fallback_service(routes_static);\n+\n+    let client = TestClient::new(app);\n+\n+    let res = client.get(\"/README.md\").send().await;\n+    assert_eq!(res.status(), StatusCode::OK);\n+    assert_eq!(res.text().await, include_str!(\"../../../README.md\"));\n+\n+    let res = client.get(\"/does-not-exist\").send().await;\n+    assert_eq!(res.status(), StatusCode::NOT_FOUND);\n+}\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -176,6 +176,43 @@ mod tests {\n     };\n     use http::{Request, StatusCode};\n \n+    #[crate::test]\n+    async fn not_set_in_fallback() {\n+        async fn fallback(path: Option<MatchedPath>) {\n+            assert!(path.is_none());\n+        }\n+\n+        let app = Router::new()\n+            .nest(\"/nested\", Router::new().fallback(fallback))\n+            .fallback(fallback);\n+\n+        let client = TestClient::new(app);\n+\n+        for path in [\"/\", \"/not-found\", \"/nested\", \"/nested/not-found\"] {\n+            let res = client.get(path).send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+        }\n+    }\n+\n+    #[crate::test]\n+    async fn extracting_on_handler_in_fallback_router() {\n+        let app = Router::new().fallback_service(Router::new().route(\n+            \"/:id\",\n+            get(|path: MatchedPath| async move { path.as_str().to_owned() }),\n+        ));\n+\n+        let client = TestClient::new(app);\n+\n+        let res = client.get(\"/foo\").send().await;\n+        assert_eq!(res.status(), StatusCode::OK);\n+        assert_eq!(res.text().await, \"/:id\");\n+    }\n+\n     #[crate::test]\n     async fn extracting_on_handler() {\n         let app = Router::new().route(\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested_static_file_server_as_fallback; fi",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/axum/src/routing/mod.rs b/axum/src/routing/mod.rs\n--- a/axum/src/routing/mod.rs\n+++ b/axum/src/routing/mod.rs\n@@ -58,7 +58,7 @@\n pub struct Router<S = (), B = Body> {\n     path_router: PathRouter<S, B>,\n-    fallback_router: PathRouter<S, B>,\n+    fallback_router: PathRouter<S, B, true>,\n     default_fallback: bool,\n }\n@@ -502,1 +502,1 @@\n-struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B>>);\n+struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B, true>>);\ndiff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs\n--- a/axum/src/routing/path_router.rs\n+++ b/axum/src/routing/path_router.rs\n@@ -14,7 +14,7 @@\n-pub(super) struct PathRouter<S = (), B = Body> {\n+pub(super) struct PathRouter<S = (), B = Body, const IS_FALLBACK: bool = false> {\n     routes: HashMap<RouteId, Endpoint<S, B>>,\n     node: Arc<Node>,\n     prev_route_id: RouteId,\n }\n \n-impl<S, B> PathRouter<S, B>\n+impl<S, B, const IS_FALLBACK: bool> PathRouter<S, B, IS_FALLBACK>\n@@ -110,1 +110,4 @@\n-    pub(super) fn merge(&mut self, other: PathRouter<S, B>) -> Result<(), Cow<'static, str>> {\n+    pub(super) fn merge(\n+        &mut self,\n+        other: PathRouter<S, B, IS_FALLBACK>,\n+    ) -> Result<(), Cow<'static, str>> {\n@@ -134,1 +137,1 @@\n-        router: PathRouter<S, B>,\n+        router: PathRouter<S, B, IS_FALLBACK>,\n@@ -196,1 +199,4 @@\n-    pub(super) fn layer<L, NewReqBody>(self, layer: L) -> PathRouter<S, NewReqBody>\n+    pub(super) fn layer<L, NewReqBody>(\n+        self,\n+        layer: L,\n+    ) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n@@ -253,1 +259,1 @@\n-    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B> {\n+    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B, IS_FALLBACK> {\n@@ -296,6 +302,8 @@\n                 #[cfg(feature = \"matched-path\")]\n-                crate::extract::matched_path::set_matched_path_for_request(\n-                    id,\n-                    &self.node.route_id_to_path,\n-                    req.extensions_mut(),\n-                );\n+                if !IS_FALLBACK {\n+                    crate::extract::matched_path::set_matched_path_for_request(\n+                        id,\n+                        &self.node.route_id_to_path,\n+                        req.extensions_mut(),\n+                    );\n+                }\n@@ -350,1 +358,1 @@\n-impl<B, S> Default for PathRouter<S, B> {\n+impl<B, S, const IS_FALLBACK: bool> Default for PathRouter<S, B, IS_FALLBACK> {\n@@ -360,1 +368,1 @@\n-impl<S, B> fmt::Debug for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> fmt::Debug for PathRouter<S, B, IS_FALLBACK> {\n@@ -369,1 +377,1 @@\n-impl<S, B> Clone for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> Clone for PathRouter<S, B, IS_FALLBACK> {\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -7,3 +7,5 @@\n /// Access the path in the router that matches the request.\n ///\n+/// This extractor is not available in [fallback handlers](crate::Router::fallback).\n+///\n /// ```\ndiff --git a/axum/CHANGELOG.md b/axum/CHANGELOG.md\n--- a/axum/CHANGELOG.md\n+++ b/axum/CHANGELOG.md\n@@ -8,3 +8,4 @@\n # Unreleased\n \n-- None.\n+- **fixed:** Avoid setting `MatchedPath` for fallback routes, fixing a panic when\n+  using a nested service such as `ServeDir` as a fallback.\nPATCH\nif [ $? -eq 0 ]; then cargo fmt --all -- --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback; fi",
+  "cd /testbed && git apply --recount --unidiff-zero <<'PATCH'\ndiff --git a/axum/src/routing/mod.rs b/axum/src/routing/mod.rs\n--- a/axum/src/routing/mod.rs\n+++ b/axum/src/routing/mod.rs\n@@ -58,7 +58,7 @@\n pub struct Router<S = (), B = Body> {\n     path_router: PathRouter<S, B>,\n-    fallback_router: PathRouter<S, B>,\n+    fallback_router: PathRouter<S, B, true>,\n     default_fallback: bool,\n }\n@@ -502,1 +502,1 @@\n-struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B>>);\n+struct SuperFallback<S, B>(SyncWrapper<PathRouter<S, B, true>>);\ndiff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs\n--- a/axum/src/routing/path_router.rs\n+++ b/axum/src/routing/path_router.rs\n@@ -14,7 +14,7 @@\n-pub(super) struct PathRouter<S = (), B = Body> {\n+pub(super) struct PathRouter<S = (), B = Body, const IS_FALLBACK: bool = false> {\n     routes: HashMap<RouteId, Endpoint<S, B>>,\n     node: Arc<Node>,\n     prev_route_id: RouteId,\n }\n \n-impl<S, B> PathRouter<S, B>\n+impl<S, B, const IS_FALLBACK: bool> PathRouter<S, B, IS_FALLBACK>\n@@ -110,1 +110,4 @@\n-    pub(super) fn merge(&mut self, other: PathRouter<S, B>) -> Result<(), Cow<'static, str>> {\n+    pub(super) fn merge(\n+        &mut self,\n+        other: PathRouter<S, B, IS_FALLBACK>,\n+    ) -> Result<(), Cow<'static, str>> {\n@@ -134,1 +137,1 @@\n-        router: PathRouter<S, B>,\n+        router: PathRouter<S, B, IS_FALLBACK>,\n@@ -196,1 +199,4 @@\n-    pub(super) fn layer<L, NewReqBody>(self, layer: L) -> PathRouter<S, NewReqBody>\n+    pub(super) fn layer<L, NewReqBody>(\n+        self,\n+        layer: L,\n+    ) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n@@ -253,1 +259,1 @@\n-    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B> {\n+    pub(super) fn with_state<S2>(self, state: S) -> PathRouter<S2, B, IS_FALLBACK> {\n@@ -296,6 +302,8 @@\n                 #[cfg(feature = \"matched-path\")]\n-                crate::extract::matched_path::set_matched_path_for_request(\n-                    id,\n-                    &self.node.route_id_to_path,\n-                    req.extensions_mut(),\n-                );\n+                if !IS_FALLBACK {\n+                    crate::extract::matched_path::set_matched_path_for_request(\n+                        id,\n+                        &self.node.route_id_to_path,\n+                        req.extensions_mut(),\n+                    );\n+                }\n@@ -350,1 +358,1 @@\n-impl<B, S> Default for PathRouter<S, B> {\n+impl<B, S, const IS_FALLBACK: bool> Default for PathRouter<S, B, IS_FALLBACK> {\n@@ -360,1 +368,1 @@\n-impl<S, B> fmt::Debug for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> fmt::Debug for PathRouter<S, B, IS_FALLBACK> {\n@@ -369,1 +377,1 @@\n-impl<S, B> Clone for PathRouter<S, B> {\n+impl<S, B, const IS_FALLBACK: bool> Clone for PathRouter<S, B, IS_FALLBACK> {\ndiff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -7,3 +7,5 @@\n /// Access the path in the router that matches the request.\n ///\n+/// This extractor is not available in [fallback handlers](crate::Router::fallback).\n+///\n /// ```\ndiff --git a/axum/CHANGELOG.md b/axum/CHANGELOG.md\n--- a/axum/CHANGELOG.md\n+++ b/axum/CHANGELOG.md\n@@ -8,3 +8,4 @@\n # Unreleased\n \n-- None.\n+- **fixed:** Avoid setting `MatchedPath` for fallback routes, fixing a panic when\n+  using a nested service such as `ServeDir` as a fallback.\nPATCH\nif [ $? -eq 0 ]; then cargo fmt --all -- --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback; fi",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- extract::matched_path routing::tests::nest",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs\n--- a/axum/src/routing/path_router.rs\n+++ b/axum/src/routing/path_router.rs\n@@ -196,8 +196,5 @@\n-    pub(super) fn layer<L, NewReqBody>(\n-        self,\n-        layer: L,\n-    ) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n+    pub(super) fn layer<L, NewReqBody>(self, layer: L) -> PathRouter<S, NewReqBody, IS_FALLBACK>\n     where\n         L: Layer<Route<B>> + Clone + Send + 'static,\n         L::Service: Service<Request<NewReqBody>> + Clone + Send + 'static,\ndiff --git a/axum/src/routing/tests/fallback.rs b/axum/src/routing/tests/fallback.rs\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -1,5 +1,6 @@\n use tower::ServiceExt;\n+use tower_http::services::ServeDir;\n \n use super::*;\n use crate::middleware::{map_request, map_response};\n@@ -230,9 +231,6 @@\n #[crate::test]\n async fn nested_static_file_server_as_fallback() {\n-    let routes_static = Router::new().nest_service(\n-        \"/\",\n-        get_service(tower_http::services::ServeDir::new(\".\")),\n-    );\n+    let routes_static = Router::new().nest_service(\"/\", get_service(ServeDir::new(\".\")));\n     let app = Router::new().fallback_service(routes_static);\n \n     let client = TestClient::new(app);\nPATCH\nif [ $? -eq 0 ]; then git --no-pager diff --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback extract::matched_path routing::tests::nest routing::tests::merge --quiet; fi"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 2,
+ "peeky_mentions_in_commands": 2,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "The panic came from fallback routing setting an internal catch-all `MatchedPath`, which conflicted with nested service routing. Fallback routers now skip setting `MatchedPath`, restoring `ServeDir` behavior while preserving normal matched paths. Added regression tests; all 111 relevant unit tests pass.",
+ "assistant_messages": [
+  "I\u2019ll inspect how nested fallback routers handle `MatchedPath`, add a regression test, and fix the panic.\n",
+  "The fallback router adds its internal catch-all to `MatchedPath`. When the nested service handles the request, that stale value triggers the assertion. I\u2019ll prevent fallback routers from setting `MatchedPath`, while preserving matched paths for normal routes.\n",
+  "The panic came from fallback routing setting an internal catch-all `MatchedPath`, which conflicted with nested service routing. Fallback routers now skip setting `MatchedPath`, restoring `ServeDir` behavior while preserving normal matched paths. Added regression tests; all 111 relevant unit tests pass."
+ ],
+ "assistant_reasoning": [
+  "**Planning Tests**\n\nI\u2019m thinking about the matched path tests. It seems there's enough in the full suite, but I should add tests first to make sure I can reproduce everything reliably. Once I have those in place, I can move on to implementing the next steps. It\u2019s all about ensuring that the foundation is solid before progressing! Let\u2019s get those tests lined up and ready to go.",
+  "**Recounting fixes**\n\nI'm considering applying the fixes and need to check the counts first. So, if I apply `git apply --recount`, it should help me see what's changed. I think the first file should show a count of +20, but I'm not entirely confident. I need to make sure I properly recount everything to ensure accuracy. Let\u2019s double-check the adjustments before finalizing!",
+  "**Understanding git apply options**\n\nI\u2019m figuring out that when using `git apply`, the `--unidiff-zero` option is necessary for applying single line hunks without any context. The initial hunk path includes context, and the header for it seems to have implementation without context, which creates a mismatch. Since Git usually requires context to know what to change, I\u2019ll definitely use the `--unidiff-zero` option to ensure it works smoothly.",
+  "**Reviewing configurations and line lengths**\n\nI'm considering that I don't need to adjust existing signatures if there's no configuration. There's an unusual length to the existing lines, which seems to be approaching 93 characters, but if it's over 100, that might be an issue. I need to check the max length for this in `awk` and also remember that `rustfmt` has a `max_width` of 90. I could look into the `/testbed` rustfmt configs to find more details."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 107.2
+}

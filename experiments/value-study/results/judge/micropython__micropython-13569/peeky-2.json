@@ -1,0 +1,7 @@
+{
+ "judge_id": "a082",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler reserves one stack slot for the exception value in `finally`, but a pending return needs two: the return value and an unwind marker. That under-allocation lets the operand stack overwrite `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

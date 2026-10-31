@@ -1,0 +1,7 @@
+{
+ "judge_id": "a108",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed integer overflow in `GeoEncodingUtils`: near the north pole, `latBase + maxLatDelta` overflowed, rejecting valid points.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

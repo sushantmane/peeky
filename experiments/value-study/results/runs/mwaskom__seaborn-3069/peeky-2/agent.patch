@@ -1,0 +1,76 @@
+diff --git a/doc/whatsnew/v0.12.1.rst b/doc/whatsnew/v0.12.1.rst
+index 6ba57d5b..9f9fa1e2 100644
+--- a/doc/whatsnew/v0.12.1.rst
++++ b/doc/whatsnew/v0.12.1.rst
+@@ -12,6 +12,8 @@ v0.12.1 (Unreleased)
+ 
+ - |Enhancement| Marks that sort along the orient axis (e.g. :class:`Line`) now use a stable algorithm (:pr:`3064`).
+ 
++- |Enhancement| Coordinate axes with a :class:`objects.Nominal` scale (including inferred scales) now use categorical plot conventions: half-unit padding at the limits, no grid lines, and an inverted y axis.
++
+ - |Fix| Make :class:`objects.PolyFit` robust to missing data (:pr:`3010`).
+ 
+ - |Fix| Fixed a bug that caused an exception when more than two layers with the same mappings were added (:pr:`3055`).
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..c0c85465 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1627,6 +1626,26 @@ class Plotter:
+ 
+     def _finalize_figure(self, p: Plot) -> None:
+ 
++        nominal_coords = set()
++        for key, scale in self._scales.items():
++            if isinstance(scale, Nominal):
++                match = re.match(r"^[xy]\d*", key)
++                if match is not None:
++                    nominal_coords.add(match[0])
++
++        # Set scale defaults before explicit limits, which may affect shared axes.
++        for sub in self._subplots:
++            ax = sub["ax"]
++            for axis in "xy":
++                if sub[axis] in nominal_coords:
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    n = len(axis_obj.get_majorticklocs())
++                    limits = (-.5, n - .5)
++                    if axis == "y":
++                        limits = limits[::-1]
++                    ax.set(**{f"{axis}lim": limits})
++                    axis_obj.grid(False, which="both")
++
+         for sub in self._subplots:
+             ax = sub["ax"]
+             for axis in "xy":
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..81ceacbd 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -138,6 +138,10 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    Coordinate axes use half-unit padding, omit grid lines, and show categories
++    from top to bottom on the y axis. These axis limits can be overridden with
++    :meth:`Plot.limit`.
+     """
+     # Categorical (convert to strings), un-sortable
+ 

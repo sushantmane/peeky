@@ -1,0 +1,7 @@
+{
+ "judge_id": "a171",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: Nested formatters skipped default parsing, losing character quotes, while temporary inner ranges were forwarded as rvalues to formatters requiring lvalues.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

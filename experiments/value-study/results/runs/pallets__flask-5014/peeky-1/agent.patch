@@ -1,0 +1,35 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 498d5e51..6cf4fed3 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -3,6 +3,7 @@ Version 2.3.0
+ 
+ Unreleased
+ 
++-   Blueprint names must not be empty. :issue:`4944`
+ -   Remove previously deprecated code. :pr:`4995`
+ 
+     -   The ``push`` and ``pop`` methods of the deprecated ``_app_ctx_stack`` and
+diff --git a/src/flask/blueprints.py b/src/flask/blueprints.py
+index eb50585d..c119bb81 100644
+--- a/src/flask/blueprints.py
++++ b/src/flask/blueprints.py
+@@ -131,7 +131,7 @@ class Blueprint(Scaffold):
+     See :doc:`/blueprints` for more information.
+ 
+     :param name: The name of the blueprint. Will be prepended to each
+-        endpoint name.
++        endpoint name. Must not be empty or contain a dot (``.``).
+     :param import_name: The name of the blueprint package, usually
+         ``__name__``. This helps locate the ``root_path`` for the
+         blueprint.
+@@ -190,6 +190,9 @@ class Blueprint(Scaffold):
+             root_path=root_path,
+         )
+ 
++        if not name:
++            raise ValueError("'name' may not be empty.")
++
+         if "." in name:
+             raise ValueError("'name' may not contain a dot '.' character.")
+ 

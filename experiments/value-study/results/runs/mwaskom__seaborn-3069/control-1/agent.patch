@@ -1,0 +1,59 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..9d00e637 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1627,6 +1626,21 @@ class Plotter:
+ 
+     def _finalize_figure(self, p: Plot) -> None:
+ 
++        # Apply defaults before explicit limits, which may affect shared axes.
++        for sub in self._subplots:
++            ax = sub["ax"]
++            for axis in "xy":
++                if isinstance(self._scales.get(sub[axis]), Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    if "axes.grid" not in p._theme:
++                        axis_obj.grid(False, which="both")
++                    n = len(axis_obj.get_majorticklocs())
++                    if n:
++                        lo, hi = -.5, n - .5
++                        if axis == "y":
++                            lo, hi = hi, lo
++                        getattr(ax, f"set_{axis}lim")(lo, hi, auto=None)
++
+         for sub in self._subplots:
+             ax = sub["ax"]
+             for axis in "xy":
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..21441176 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -138,6 +138,11 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    When used for coordinate variables, the axis extends half a step beyond the
++    first and last category, and the y axis is inverted. Grid lines are disabled
++    unless explicitly enabled with :meth:`Plot.theme`. These default limits can
++    be overridden with :meth:`Plot.limit`.
+     """
+     # Categorical (convert to strings), un-sortable
+ 

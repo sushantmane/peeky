@@ -1,0 +1,7 @@
+{
+ "judge_id": "a163",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The legends omitted `ScalarFormatter`\u2019s separate exponent or additive offset, showing scaled values instead of actual values.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

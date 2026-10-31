@@ -1,0 +1,7 @@
+{
+ "judge_id": "a087",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fixed stack accounting in `py/compile.c`: pending return/unwind state wasn\u2019t included while compiling `finally`, allowing stack operations to overwrite locals such as `self`.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

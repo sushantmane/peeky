@@ -1,0 +1,7 @@
+{
+ "judge_id": "a034",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Removing the last item drops the timer without waking the task registered by `poll_expired`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

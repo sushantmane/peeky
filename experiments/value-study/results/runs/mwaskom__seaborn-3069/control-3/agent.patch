@@ -1,0 +1,73 @@
+diff --git a/doc/whatsnew/v0.12.1.rst b/doc/whatsnew/v0.12.1.rst
+index 6ba57d5b..8509bfba 100644
+--- a/doc/whatsnew/v0.12.1.rst
++++ b/doc/whatsnew/v0.12.1.rst
+@@ -8,6 +8,8 @@ v0.12.1 (Unreleased)
+ 
+ - |Feature| The :class:`Band` and :class:`Range` marks will now cover the full extent of the data if `min` / `max` variables are not explicitly assigned or added in a transform (:pr:`3056`).
+ 
++- |Enhancement| Axes with a :class:`objects.Nominal` scale now use categorical limits, hide the grid, and invert the y axis so that categories read from top to bottom.
++
+ - |Enhancement| The :class:`Jitter` move now applies a small amount of jitter by default (:pr:`3066`).
+ 
+ - |Enhancement| Marks that sort along the orient axis (e.g. :class:`Line`) now use a stable algorithm (:pr:`3064`).
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..4a52414e 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -1627,6 +1627,12 @@ class Plotter:
+ 
+     def _finalize_figure(self, p: Plot) -> None:
+ 
++        # Apply defaults before explicit limits, which may be shared across axes.
++        for sub in self._subplots:
++            for axis in "xy":
++                if sub[axis] in self._scales:
++                    self._scales[sub[axis]]._finalize(getattr(sub["ax"], f"{axis}axis"))
++
+         for sub in self._subplots:
+             ax = sub["ax"]
+             for axis in "xy":
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..e60bcf1f 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -101,6 +101,9 @@ class Scale:
+     ) -> Scale:
+         raise NotImplementedError()
+ 
++    def _finalize(self, axis: Axis) -> None:
++        """Apply scale-specific adjustments to a coordinate axis after plotting."""
++
+     def __call__(self, data: Series) -> ArrayLike:
+ 
+         trans_data: Series | NDArray | list
+@@ -138,6 +141,10 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    Coordinate axes have limits extending half a step beyond the first and last
++    category, with no grid lines. The y axis is inverted so that categories read
++    from top to bottom.
+     """
+     # Categorical (convert to strings), un-sortable
+ 
+@@ -227,6 +234,17 @@ class Nominal(Scale):
+ 
+         return new
+ 
++    def _finalize(self, axis: Axis) -> None:
++
++        axis.grid(False, which="both")
++        n = len(axis.get_majorticklocs())
++        if n:
++            limits = (-.5, n - .5)
++            if axis.axis_name == "y":
++                limits = limits[::-1]
++            set_lim = getattr(axis.axes, f"set_{axis.axis_name}lim")
++            set_lim(limits, auto=None)
++
+     def tick(self, locator: Locator | None = None):
+         """
+         Configure the selection of ticks for the scale's axis or legend.

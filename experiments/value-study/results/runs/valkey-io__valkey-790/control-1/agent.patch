@@ -1,0 +1,84 @@
+diff --git a/src/cluster_legacy.c b/src/cluster_legacy.c
+index 892c722b0..ee3e5e2c4 100644
+--- a/src/cluster_legacy.c
++++ b/src/cluster_legacy.c
+@@ -5662,28 +5662,36 @@ void addNodeDetailsToShardReply(client *c, clusterNode *node) {
+     setDeferredMapLen(c, node_replylen, reply_count);
+ }
+ 
+-/* Add the shard reply of a single shard based off the given primary node. */
++/* Add the shard reply for the given list of shard members. */
+ void addShardReplyForClusterShards(client *c, list *nodes) {
+     serverAssert(listLength(nodes) > 0);
+-    clusterNode *n = listNodeValue(listFirst(nodes));
++    clusterNode *n = NULL;
+     addReplyMapLen(c, 2);
+     addReplyBulkCString(c, "slots");
+ 
+-    /* Use slot_info_pairs from the primary only */
+-    n = clusterNodeGetPrimary(n);
++    /* After failover, the failed primary may still be marked as a primary.
++     * Find the shard member that actually owns slots instead. */
++    listIter li;
++    listRewind(nodes, &li);
++    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
++        clusterNode *node = listNodeValue(ln);
++        if (node->slot_info_pairs != NULL) {
++            n = node;
++            break;
++        }
++    }
+ 
+-    if (n->slot_info_pairs != NULL) {
++    if (n != NULL) {
+         serverAssert((n->slot_info_pairs_count % 2) == 0);
+         addReplyArrayLen(c, n->slot_info_pairs_count);
+         for (int i = 0; i < n->slot_info_pairs_count; i++) addReplyLongLong(c, (unsigned long)n->slot_info_pairs[i]);
+     } else {
+-        /* If no slot info pair is provided, the node owns no slots */
++        /* No shard member owns slots. */
+         addReplyArrayLen(c, 0);
+     }
+ 
+     addReplyBulkCString(c, "nodes");
+     addReplyArrayLen(c, listLength(nodes));
+-    listIter li;
+     listRewind(nodes, &li);
+     for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
+         clusterNode *n = listNodeValue(ln);
+diff --git a/tests/unit/cluster/failover.tcl b/tests/unit/cluster/failover.tcl
+index f36fd47fe..e9d2f4f6c 100644
+--- a/tests/unit/cluster/failover.tcl
++++ b/tests/unit/cluster/failover.tcl
+@@ -56,6 +56,31 @@ test "Instance #5 is now a master" {
+     assert {[s -5 role] eq {master}}
+ }
+ 
++test "CLUSTER SHARDS reports slot ranges after failover" {
++    set primary_id [R 5 cluster myid]
++    set expected_slots {}
++    foreach slot_range [R 5 cluster slots] {
++        if {[lindex $slot_range 2 2] eq $primary_id} {
++            lappend expected_slots {*}[lrange $slot_range 0 1]
++        }
++    }
++    assert {[llength $expected_slots] > 0}
++
++    for {set j 1} {$j < [llength $::servers]} {incr j} {
++        set found 0
++        foreach shard [R $j cluster shards] {
++            foreach node [dict get $shard nodes] {
++                if {[dict get $node id] eq $primary_id} {
++                    assert_equal $expected_slots [dict get $shard slots]
++                    set found 1
++                    break
++                }
++            }
++        }
++        assert {$found}
++    }
++}
++
+ test "Restarting the previously killed master node" {
+     resume_process $paused_pid
+ }

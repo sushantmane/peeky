@@ -1,0 +1,296 @@
+{
+ "bug": "fmtlib__fmt-3158",
+ "arm": "control",
+ "rep": 1,
+ "language": "cpp",
+ "category": "C",
+ "image": "peeky-study/fmtlib__fmt-3158:control",
+ "image_digest": "sha256:b747688bff01b61e77d64ea5ec3fb0f6fb0339f152b70b988cd026da392efee2",
+ "peeky_sha": null,
+ "container": "study-fmtlib__fmt-3158-control-1-522cfa",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:51:25+00:00",
+ "ended": "2026-10-31T03:54:05+00:00",
+ "wall_seconds": 160.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "ranges_test.format_vector": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 2.2,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "f0c2cd12c85bc15eefce00b1a2af1a71806e721c647000ef4b0c61b914296897",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "ChangeLog.rst",
+  "include/fmt/ranges.h"
+ ],
+ "patch_bytes": 2528,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 25
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 20,
+ "ai_credits": 31.6219,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 707174,
+  "output": 11448,
+  "cache_read": 652569,
+  "cache_write": 54545,
+  "reasoning": 3406
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 31,
+ "tool_calls_by_name": {
+  "bash": 31
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -d /testbed 2>/dev/null; ls -a | head -30",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git status --short && sed -n '1,300p' include/fmt/ranges.h && sed -n '300,650p' include/fmt/ranges.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "rg -n 'std_string_view|constructible|arg_mapper|unformattable_const' include/fmt/core.h && rg -n 'write\\(OutputIt out, const T&|unformattable_const' include/fmt/format.h && sed -n '1,280p' test/ranges-test.cc",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cat test/CMakeLists.txt && rg -n 'CXX_STANDARD|CXX_COMPILER|FMT_' build/CMakeCache.txt | head -70 && c++ --version | head -2 && ls test/*range* test/*std*",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,245p' include/fmt/ranges.h && sed -n '400,650p' include/fmt/ranges.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'std_string_view|constructible|arg_mapper|unformattable_const' include/fmt/core.h && grep -nE 'write\\(OutputIt out, const T&|unformattable_const' include/fmt/format.h && sed -n '1,250p' test/ranges-test.cc",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'CXX_STANDARD|CXX_COMPILER|FMT_' build/CMakeCache.txt | head -65; sed -n '250,570p' test/ranges-test.cc",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '245,425p' include/fmt/ranges.h && sed -n '1350,1565p' include/fmt/core.h && sed -n '3300,3465p' include/fmt/format.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '350,390p' include/fmt/core.h && sed -n '430,485p' include/fmt/core.h && sed -n '1835,1885p' include/fmt/core.h && grep -nE 'string_view|mapper|formattable|non_const' test/core-test.cc | head -90 && grep -nE 'range|C\\+\\+23' ChangeLog.rst | head -45 && sed -n '1,95p' ChangeLog.rst && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '245,425p' include/fmt/ranges.h && sed -n '3410,3475p' include/fmt/format.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1360,1555p' include/fmt/core.h && sed -n '890,950p' test/core-test.cc",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "c++ -std=c++20 -DFMT_HEADER_ONLY -I include -x c++ - -o build/ranges-repro20 <<'CPP'\n#include <ranges>\n#include <string>\n#include \"fmt/ranges.h\"\nstruct X {\n  template <std::ranges::range R>\n  X(R&& r) : sv(&*std::ranges::begin(r), std::ranges::distance(r)) {}\n  auto begin() { return sv.begin(); }\n  auto end() { return sv.end(); }\n  std::string_view sv;\n};\nint main() {\n  std::string line = \"a,b-c,d-e,f\";\n  fmt::print(\"{}\\n\", line | std::views::split(','));\n  auto x = line | std::views::split(',') | std::views::transform([](auto part) { return X(part); });\n  fmt::print(\"{}\\n\", x);\n  auto nested = line | std::views::split(',') | std::views::transform(std::views::split('-'));\n  fmt::print(\"{}\\n\", nested);\n}\nCPP",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "c++ -std=c++23 -DFMT_HEADER_ONLY -I include -x c++ - -o build/ranges-repro23 <<'CPP'\n#include <ranges>\n#include <string>\n#include \"fmt/ranges.h\"\nstruct X {\n  template <std::ranges::range R>\n  X(R&& r) : sv(&*std::ranges::begin(r), std::ranges::distance(r)) {}\n  auto begin() { return sv.begin(); }\n  auto end() { return sv.end(); }\n  std::string_view sv;\n};\nint main() {\n  std::string line = \"a,b-c,d-e,f\";\n  fmt::print(\"{}\\n\", line | std::views::split(','));\n  auto x = line | std::views::split(',') | std::views::transform([](auto part) { return X(part); });\n  fmt::print(\"{}\\n\", x);\n  auto nested = line | std::views::split(',') | std::views::transform(std::views::split('-'));\n  fmt::print(\"{}\\n\", nested);\n}\nCPP",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "c++ -std=c++20 -DFMT_HEADER_ONLY -I include -fmax-errors=2 -x c++ - -o build/ranges-repro20 2>&1 <<'CPP' | grep -E 'error:|note:|ranges.h:[0-9]+:' | tail -15\n#include <ranges>\n#include <string>\n#include \"fmt/ranges.h\"\nstruct X {\n  template <std::ranges::range R>\n  X(R&& r) : sv(&*std::ranges::begin(r), std::ranges::distance(r)) {}\n  auto begin() { return sv.begin(); }\n  auto end() { return sv.end(); }\n  std::string_view sv;\n};\nint main() {\n  std::string line = \"a,b-c,d-e,f\";\n  auto x = line | std::views::split(',') | std::views::transform([](auto part) { return X(part); });\n  fmt::print(\"{}\\n\", x);\n}\nCPP\nc++ -std=c++23 -DFMT_HEADER_ONLY -I include -x c++ - -o build/ranges-repro23 <<'CPP' && build/ranges-repro23\n#include <ranges>\n#include <string>\n#include \"fmt/ranges.h\"\nint main() {\n  std::string line = \"a,b-c,d-e,f\";\n  fmt::print(\"{}\\n\", line | std::views::split(','));\n}\nCPP",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE '__has_include.*ranges|#.*include <ranges>|__cpp_lib_ranges|FMT_CPLUSPLUS' test/*.cc | head -65; grep -nE 'FMT_CPLUSPLUS|FMT_HAS_INCLUDE' include/fmt/core.h | head -30; sed -n '55,145p' CMakeLists.txt; ls /usr/bin/clang-format* /usr/bin/g++* 2>/dev/null; git log -3 --oneline",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '3030,3160p' include/fmt/core.h && grep -nE 'set_debug_format|formatter<.*Char|native_formatter' include/fmt/core.h include/fmt/format.h | tail -65 && sed -n '1,65p' test/compile-test.cc && sed -n '110,155p' test/core-test.cc && sed -n '445,465p' include/fmt/ranges.h && sed -n '1,95p' .clang-format",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "type apply_patch 2>/dev/null || true; ls /usr/local/bin | head -30; sed -n '1,100p' test/ranges-odr-test.cc; grep -n 'custom_specs_' include/fmt/ranges.h; grep -nE 'FMT_USE_NONTYPE_TEMPLATE|range_formatter' test/*.cc | head -45",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '785,840p' include/fmt/core.h && sed -n '1265,1348p' include/fmt/core.h && grep -nE 'range|debug|::\\}' test/xchar-test.cc | tail -35 && ls -ld /tmp /usr/bin/patch",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p1 <<'PATCH'\n--- a/include/fmt/ranges.h\n+++ b/include/fmt/ranges.h\n@@ -432,7 +432,6 @@\n                     detail::has_fallback_formatter<T, Char>>>::value>> {\n  private:\n   detail::range_formatter_type<Char, T> underlying_;\n-  bool custom_specs_ = false;\n   basic_string_view<Char> separator_ = detail::string_literal<Char, ',', ' '>{};\n@@ -473,27 +472,24 @@\n   FMT_CONSTEXPR auto parse(ParseContext& ctx) -> decltype(ctx.begin()) {\n     auto it = ctx.begin();\n     auto end = ctx.end();\n-    if (it == end || *it == '}') {\n-      maybe_set_debug_format();\n-      return it;\n-    }\n-\n-    if (*it == 'n') {\n+    if (it != end && *it == 'n') {\n       set_brackets({}, {});\n       ++it;\n     }\n \n-    if (*it == '}') {\n-      maybe_set_debug_format();\n-      return it;\n+    bool custom_specs = false;\n+    if (it != end && *it != '}') {\n+      if (*it != ':')\n+        FMT_THROW(format_error(\"no other top-level range formatters supported\"));\n+\n+      custom_specs = true;\n+      ++it;\n     }\n \n-    if (*it != ':')\n-      FMT_THROW(format_error(\"no other top-level range formatters supported\"));\n-\n-    custom_specs_ = true;\n-    ++it;\n     ctx.advance_to(it);\n-    return underlying_.parse(ctx);\n+    it = underlying_.parse(ctx);\n+    if (!custom_specs) maybe_set_debug_format();\n+    return it;\n@@ -509,7 +505,8 @@\n       if (i > 0) out = detail::copy_str<Char>(separator_, out);\n       ;\n       ctx.advance_to(out);\n-      out = underlying_.format(mapper.map(*it), ctx);\n+      auto&& item = *it;\n+      out = underlying_.format(mapper.map(item), ctx);\n       ++i;\nPATCH",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/include/fmt/ranges.h b/include/fmt/ranges.h\n--- a/include/fmt/ranges.h\n+++ b/include/fmt/ranges.h\n@@ -432,6 +432,5 @@\n                     detail::has_fallback_formatter<T, Char>>>::value>> {\n  private:\n   detail::range_formatter_type<Char, T> underlying_;\n-  bool custom_specs_ = false;\n   basic_string_view<Char> separator_ = detail::string_literal<Char, ',', ' '>{};\n@@ -473,27 +472,24 @@\n   FMT_CONSTEXPR auto parse(ParseContext& ctx) -> decltype(ctx.begin()) {\n     auto it = ctx.begin();\n     auto end = ctx.end();\n-    if (it == end || *it == '}') {\n-      maybe_set_debug_format();\n-      return it;\n-    }\n-\n-    if (*it == 'n') {\n+    if (it != end && *it == 'n') {\n       set_brackets({}, {});\n       ++it;\n     }\n \n-    if (*it == '}') {\n-      maybe_set_debug_format();\n-      return it;\n+    bool custom_specs = false;\n+    if (it != end && *it != '}') {\n+      if (*it != ':')\n+        FMT_THROW(format_error(\"no other top-level range formatters supported\"));\n+\n+      custom_specs = true;\n+      ++it;\n     }\n \n-    if (*it != ':')\n-      FMT_THROW(format_error(\"no other top-level range formatters supported\"));\n-\n-    custom_specs_ = true;\n-    ++it;\n     ctx.advance_to(it);\n-    return underlying_.parse(ctx);\n+    it = underlying_.parse(ctx);\n+    if (!custom_specs) maybe_set_debug_format();\n+    return it;\n   }\n@@ -509,7 +505,8 @@\n       if (i > 0) out = detail::copy_str<Char>(separator_, out);\n       ;\n       ctx.advance_to(out);\n-      out = underlying_.format(mapper.map(*it), ctx);\n+      auto&& item = *it;\n+      out = underlying_.format(mapper.map(item), ctx);\n       ++i;\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '4000,4065p' include/fmt/format.h && sed -n '4065,4095p' include/fmt/format.h && git diff --stat && git diff --check && find . -maxdepth 2 -name '*.orig' -o -name '*.rej'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/test/ranges-test.cc b/test/ranges-test.cc\n--- a/test/ranges-test.cc\n+++ b/test/ranges-test.cc\n@@ -16,6 +16,10 @@\n #include <vector>\n \n+#if FMT_HAS_INCLUDE(<ranges>) && FMT_CPLUSPLUS >= 202002L\n+#  include <ranges>\n+#endif\n+\n #include \"gtest/gtest.h\"\n@@ -442,3 +446,73 @@\n TEST(ranges_test, vector_char) {\n   EXPECT_EQ(fmt::format(\"{}\", std::vector<char>{'a', 'b'}), \"['a', 'b']\");\n }\n+\n+TEST(ranges_test, nested_char_ranges) {\n+  auto v = std::vector<std::vector<char>>{{'a'}, {'b', '-', 'c'}, {}};\n+  EXPECT_EQ(fmt::format(\"{}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n+  EXPECT_EQ(fmt::format(\"{::}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a], [b, -, c], []]\");\n+  EXPECT_EQ(fmt::format(\"{:n}\", v), \"['a'], ['b', '-', 'c'], []\");\n+}\n+\n+TEST(ranges_test, nested_string_ranges) {\n+  auto v = std::vector<std::vector<std::string>>{{\"a\", \"b\"}, {\"\\n\"}};\n+  EXPECT_EQ(fmt::format(\"{}\", v), \"[[\\\"a\\\", \\\"b\\\"], [\\\"\\\\n\\\"]]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a, b], [\\n]]\");\n+}\n+\n+#ifdef __cpp_lib_ranges\n+TEST(ranges_test, std_views_split) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',');\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n+            \"[[a], [b, -, c], [d, -, e], [f]]\");\n+\n+  line = \"a,,b,\";\n+  EXPECT_EQ(fmt::format(\"{}\", line | std::views::split(',')),\n+            \"[['a'], [], ['b'], []]\");\n+}\n+\n+struct non_const_char_range {\n+  std::string_view str;\n+\n+  template <std::ranges::range R>\n+  explicit non_const_char_range(R&& range)\n+      : str(std::ranges::data(range), std::ranges::size(range)) {}\n+\n+  auto begin() { return str.begin(); }\n+  auto end() { return str.end(); }\n+};\n+\n+TEST(ranges_test, std_views_transform_range) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',') |\n+               std::views::transform(\n+                   [](auto part) { return non_const_char_range(part); });\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n+            \"[[a], [b, -, c], [d, -, e], [f]]\");\n+}\n+\n+TEST(ranges_test, std_views_split_nested) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',') |\n+               std::views::transform(std::views::split('-'));\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[[['a']], [['b'], ['c']], [['d'], ['e']], [['f']]]\");\n+  EXPECT_EQ(fmt::format(\"{::::}\", parts),\n+            \"[[[a]], [[b], [c]], [[d], [e]], [[f]]]\");\n+}\n+#endif  // __cpp_lib_ranges\n\ndiff --git a/ChangeLog.rst b/ChangeLog.rst\n--- a/ChangeLog.rst\n+++ b/ChangeLog.rst\n@@ -60,6 +60,9 @@\n   Thanks `@strega-nil-ms (nicole mazzuca) <https://github.com/strega-nil-ms>`_.\n \n+* Fixed default quoting in nested character and string ranges and formatting\n+  of ranges that yield temporary ranges with non-const ``begin`` / ``end``.\n+\n * Improve handling (exclusion) of recursive ranges\nPATCH\ncmake -B build -S . > build/ranges-configure.log && cmake --build build --parallel 4 --target ranges-test > build/ranges-build.log 2>&1 && ctest --test-dir build -V -R '^ranges-test$'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "tail -14 test/ranges-test.cc && git status --short && wc -l test/ranges-test.cc && sed -n '55,66p' ChangeLog.rst && cat build/test/CMakeFiles/ranges-test.dir/flags.make",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/test/ranges-test.cc b/test/ranges-test.cc\n--- a/test/ranges-test.cc\n+++ b/test/ranges-test.cc\n@@ -16,5 +16,9 @@\n #include <vector>\n \n+#if FMT_HAS_INCLUDE(<ranges>) && FMT_CPLUSPLUS >= 202002L\n+#  include <ranges>\n+#endif\n+\n #include \"gtest/gtest.h\"\n \n@@ -420,5 +424,65 @@\n \n TEST(ranges_test, vector_char) {\n   EXPECT_EQ(fmt::format(\"{}\", std::vector<char>{'a', 'b'}), \"['a', 'b']\");\n }\n+\n+TEST(ranges_test, nested_char_ranges) {\n+  auto v = std::vector<std::vector<char>>{{'a'}, {'b', '-', 'c'}, {}};\n+  EXPECT_EQ(fmt::format(\"{}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n+  EXPECT_EQ(fmt::format(\"{::}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a], [b, -, c], []]\");\n+  EXPECT_EQ(fmt::format(\"{:n}\", v), \"['a'], ['b', '-', 'c'], []\");\n+}\n+\n+TEST(ranges_test, nested_string_ranges) {\n+  auto v = std::vector<std::vector<std::string>>{{\"a\", \"b\"}, {\"\\n\"}};\n+  EXPECT_EQ(fmt::format(\"{}\", v), \"[[\\\"a\\\", \\\"b\\\"], [\\\"\\\\n\\\"]]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a, b], [\\n]]\");\n+}\n+\n+#ifdef __cpp_lib_ranges\n+TEST(ranges_test, std_views_split) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',');\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n+            \"[[a], [b, -, c], [d, -, e], [f]]\");\n+\n+  line = \"a,,b,\";\n+  EXPECT_EQ(fmt::format(\"{}\", line | std::views::split(',')),\n+            \"[['a'], [], ['b'], []]\");\n+}\n+\n+struct non_const_char_range {\n+  std::string_view str;\n+\n+  template <std::ranges::range R>\n+  explicit non_const_char_range(R&& range)\n+      : str(std::ranges::data(range), std::ranges::size(range)) {}\n+\n+  auto begin() { return str.begin(); }\n+  auto end() { return str.end(); }\n+};\n+\n+TEST(ranges_test, std_views_transform_range) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',') |\n+               std::views::transform(\n+                   [](auto part) { return non_const_char_range(part); });\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n+            \"[[a], [b, -, c], [d, -, e], [f]]\");\n+}\n+\n+TEST(ranges_test, std_views_split_nested) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',') |\n+               std::views::transform(std::views::split('-'));\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[[['a']], [['b'], ['c']], [['d'], ['e']], [['f']]]\");\n+  EXPECT_EQ(fmt::format(\"{::::}\", parts),\n+            \"[[[a]], [[b], [c]], [[d], [e]], [[f]]]\");\n+}\n+#endif  // __cpp_lib_ranges\n\ndiff --git a/ChangeLog.rst b/ChangeLog.rst\n--- a/ChangeLog.rst\n+++ b/ChangeLog.rst\n@@ -60,6 +60,9 @@\n   Thanks `@strega-nil-ms (nicole mazzuca) <https://github.com/strega-nil-ms>`_.\n \n+* Fixed default quoting in nested character and string ranges and formatting\n+  of ranges that yield temporary ranges with non-const ``begin`` / ``end``.\n+\n * Improve handling (exclusion) of recursive ranges\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\npath = Path('test/ranges-test.cc')\ntext = path.read_text()\ntext = text.replace('#include <vector>\\n', '#include <vector>\\n\\n#if FMT_HAS_INCLUDE(<ranges>) && FMT_CPLUSPLUS >= 202002L\\n#  include <ranges>\\n#endif\\n', 1)\ntext += r'''\n\nTEST(ranges_test, nested_char_ranges) {\n  auto v = std::vector<std::vector<char>>{{'a'}, {'b', '-', 'c'}, {}};\n  EXPECT_EQ(fmt::format(\"{}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n  EXPECT_EQ(fmt::format(\"{::}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a], [b, -, c], []]\");\n  EXPECT_EQ(fmt::format(\"{:n}\", v), \"['a'], ['b', '-', 'c'], []\");\n}\n\nTEST(ranges_test, nested_string_ranges) {\n  auto v = std::vector<std::vector<std::string>>{{\"a\", \"b\"}, {\"\\n\"}};\n  EXPECT_EQ(fmt::format(\"{}\", v), \"[[\\\"a\\\", \\\"b\\\"], [\\\"\\\\n\\\"]]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a, b], [\\n]]\");\n}\n\n#ifdef __cpp_lib_ranges\nTEST(ranges_test, std_views_split) {\n  std::string line = \"a,b-c,d-e,f\";\n  auto parts = line | std::views::split(',');\n  EXPECT_EQ(fmt::format(\"{}\", parts),\n            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n            \"[[a], [b, -, c], [d, -, e], [f]]\");\n\n  line = \"a,,b,\";\n  EXPECT_EQ(fmt::format(\"{}\", line | std::views::split(',')),\n            \"[['a'], [], ['b'], []]\");\n}\n\nstruct non_const_char_range {\n  std::string_view str;\n\n  template <std::ranges::range R>\n  explicit non_const_char_range(R&& range)\n      : str(std::ranges::data(range), std::ranges::size(range)) {}\n\n  auto begin() { return str.begin(); }\n  auto end() { return str.end(); }\n};\n\nTEST(ranges_test, std_views_transform_range) {\n  std::string line = \"a,b-c,d-e,f\";\n  auto parts = line | std::views::split(',') |\n               std::views::transform(\n                   [](auto part) { return non_const_char_range(part); });\n  EXPECT_EQ(fmt::format(\"{}\", parts),\n            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n            \"[[a], [b, -, c], [d, -, e], [f]]\");\n}\n\nTEST(ranges_test, std_views_split_nested) {\n  std::string line = \"a,b-c,d-e,f\";\n  auto parts = line | std::views::split(',') |\n               std::views::transform(std::views::split('-'));\n  EXPECT_EQ(fmt::format(\"{}\", parts),\n            \"[[['a']], [['b'], ['c']], [['d'], ['e']], [['f']]]\");\n  EXPECT_EQ(fmt::format(\"{::::}\", parts),\n            \"[[[a]], [[b], [c]], [[d], [e]], [[f]]]\");\n}\n#endif  // __cpp_lib_ranges\n'''.lstrip('\\n')\npath.write_text(text)\npath = Path('ChangeLog.rst')\ntext = path.read_text()\nneedle = '* Improve handling (exclusion) of recursive ranges\\n'\nassert text.count(needle) == 1\ntext = text.replace(needle, '* Fixed default quoting in nested character and string ranges and formatting\\n  of ranges that yield temporary ranges with non-const ``begin`` / ``end``.\\n\\n' + needle)\npath.write_text(text)\nPY\ncmake --build build --parallel 4 --target ranges-test > build/ranges-build.log 2>&1 && ctest --test-dir build -V -R '^ranges-test$'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cmake -B build/cxx20 -S . -DCMAKE_CXX_STANDARD=20 > build/ranges-configure20.log && cmake --build build/cxx20 --parallel 4 --target ranges-test > build/ranges-build20.log 2>&1 && ctest --test-dir build/cxx20 -V -R '^ranges-test$' || { status=$?; tail -65 build/ranges-build20.log; exit \"$status\"; }",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cmake -B build/cxx23 -S . -DCMAKE_CXX_STANDARD=23 > build/ranges-configure23.log && cmake --build build/cxx23 --parallel 4 --target ranges-test > build/ranges-build23.log 2>&1 && ctest --test-dir build/cxx23 -V -R '^ranges-test$' || { status=$?; tail -65 build/ranges-build23.log; exit \"$status\"; }",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git diff --check && git diff -- include/fmt/ranges.h test/ranges-test.cc ChangeLog.rst && grep -nE 'ranges|vector|join' test/xchar-test.cc | tail -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/test/ranges-test.cc b/test/ranges-test.cc\n--- a/test/ranges-test.cc\n+++ b/test/ranges-test.cc\n@@ -426,5 +426,6 @@\n TEST(ranges_test, vector_char) {\n   EXPECT_EQ(fmt::format(\"{}\", std::vector<char>{'a', 'b'}), \"['a', 'b']\");\n }\n+\n TEST(ranges_test, nested_char_ranges) {\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cmake --build build --parallel 4 --target xchar-test > build/xchar-build.log 2>&1 && ctest --test-dir build -V -R '^xchar-test$' || { status=$?; tail -65 build/xchar-build.log; exit \"$status\"; }",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git diff --check && git status --short && git diff --stat && rm -f build/ranges-repro20 build/ranges-repro23 build/ranges-configure.log build/ranges-build.log build/ranges-configure20.log build/ranges-build20.log build/ranges-configure23.log build/ranges-build23.log build/xchar-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "git apply --recount <<'PATCH'\ndiff --git a/test/ranges-test.cc b/test/ranges-test.cc\n--- a/test/ranges-test.cc\n+++ b/test/ranges-test.cc\n@@ -16,6 +16,10 @@\n #include <vector>\n \n+#if FMT_HAS_INCLUDE(<ranges>) && FMT_CPLUSPLUS >= 202002L\n+#  include <ranges>\n+#endif\n+\n #include \"gtest/gtest.h\"\n@@ -442,3 +446,73 @@\n TEST(ranges_test, vector_char) {\n   EXPECT_EQ(fmt::format(\"{}\", std::vector<char>{'a', 'b'}), \"['a', 'b']\");\n }\n+\n+TEST(ranges_test, nested_char_ranges) {\n+  auto v = std::vector<std::vector<char>>{{'a'}, {'b', '-', 'c'}, {}};\n+  EXPECT_EQ(fmt::format(\"{}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n+  EXPECT_EQ(fmt::format(\"{::}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a], [b, -, c], []]\");\n+  EXPECT_EQ(fmt::format(\"{:n}\", v), \"['a'], ['b', '-', 'c'], []\");\n+}\n+\n+TEST(ranges_test, nested_string_ranges) {\n+  auto v = std::vector<std::vector<std::string>>{{\"a\", \"b\"}, {\"\\n\"}};\n+  EXPECT_EQ(fmt::format(\"{}\", v), \"[[\\\"a\\\", \\\"b\\\"], [\\\"\\\\n\\\"]]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a, b], [\\n]]\");\n+}\n+\n+#ifdef __cpp_lib_ranges\n+TEST(ranges_test, std_views_split) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',');\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n+            \"[[a], [b, -, c], [d, -, e], [f]]\");\n+\n+  line = \"a,,b,\";\n+  EXPECT_EQ(fmt::format(\"{}\", line | std::views::split(',')),\n+            \"[['a'], [], ['b'], []]\");\n+}\n+\n+struct non_const_char_range {\n+  std::string_view str;\n+\n+  template <std::ranges::range R>\n+  explicit non_const_char_range(R&& range)\n+      : str(std::ranges::data(range), std::ranges::size(range)) {}\n+\n+  auto begin() { return str.begin(); }\n+  auto end() { return str.end(); }\n+};\n+\n+TEST(ranges_test, std_views_transform_range) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',') |\n+               std::views::transform(\n+                   [](auto part) { return non_const_char_range(part); });\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n+  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n+            \"[[a], [b, -, c], [d, -, e], [f]]\");\n+}\n+\n+TEST(ranges_test, std_views_split_nested) {\n+  std::string line = \"a,b-c,d-e,f\";\n+  auto parts = line | std::views::split(',') |\n+               std::views::transform(std::views::split('-'));\n+  EXPECT_EQ(fmt::format(\"{}\", parts),\n+            \"[[['a']], [['b'], ['c']], [['d'], ['e']], [['f']]]\");\n+  EXPECT_EQ(fmt::format(\"{::::}\", parts),\n+            \"[[[a]], [[b], [c]], [[d], [e]], [[f]]]\");\n+}\n+#endif  // __cpp_lib_ranges\n\ndiff --git a/ChangeLog.rst b/ChangeLog.rst\n--- a/ChangeLog.rst\n+++ b/ChangeLog.rst\n@@ -60,6 +60,9 @@\n   Thanks `@strega-nil-ms (nicole mazzuca) <https://github.com/strega-nil-ms>`_.\n \n+* Fixed default quoting in nested character and string ranges and formatting\n+  of ranges that yield temporary ranges with non-const ``begin`` / ``end``.\n+\n * Improve handling (exclusion) of recursive ranges\nPATCH\ncmake -B build -S . > build/ranges-configure.log && cmake --build build --parallel 4 --target ranges-test > build/ranges-build.log 2>&1 && ctest --test-dir build -V -R '^ranges-test$'",
+  "python3 - <<'PY'\nfrom pathlib import Path\npath = Path('test/ranges-test.cc')\ntext = path.read_text()\ntext = text.replace('#include <vector>\\n', '#include <vector>\\n\\n#if FMT_HAS_INCLUDE(<ranges>) && FMT_CPLUSPLUS >= 202002L\\n#  include <ranges>\\n#endif\\n', 1)\ntext += r'''\n\nTEST(ranges_test, nested_char_ranges) {\n  auto v = std::vector<std::vector<char>>{{'a'}, {'b', '-', 'c'}, {}};\n  EXPECT_EQ(fmt::format(\"{}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n  EXPECT_EQ(fmt::format(\"{::}\", v), \"[['a'], ['b', '-', 'c'], []]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a], [b, -, c], []]\");\n  EXPECT_EQ(fmt::format(\"{:n}\", v), \"['a'], ['b', '-', 'c'], []\");\n}\n\nTEST(ranges_test, nested_string_ranges) {\n  auto v = std::vector<std::vector<std::string>>{{\"a\", \"b\"}, {\"\\n\"}};\n  EXPECT_EQ(fmt::format(\"{}\", v), \"[[\\\"a\\\", \\\"b\\\"], [\\\"\\\\n\\\"]]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", v), \"[[a, b], [\\n]]\");\n}\n\n#ifdef __cpp_lib_ranges\nTEST(ranges_test, std_views_split) {\n  std::string line = \"a,b-c,d-e,f\";\n  auto parts = line | std::views::split(',');\n  EXPECT_EQ(fmt::format(\"{}\", parts),\n            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n            \"[[a], [b, -, c], [d, -, e], [f]]\");\n\n  line = \"a,,b,\";\n  EXPECT_EQ(fmt::format(\"{}\", line | std::views::split(',')),\n            \"[['a'], [], ['b'], []]\");\n}\n\nstruct non_const_char_range {\n  std::string_view str;\n\n  template <std::ranges::range R>\n  explicit non_const_char_range(R&& range)\n      : str(std::ranges::data(range), std::ranges::size(range)) {}\n\n  auto begin() { return str.begin(); }\n  auto end() { return str.end(); }\n};\n\nTEST(ranges_test, std_views_transform_range) {\n  std::string line = \"a,b-c,d-e,f\";\n  auto parts = line | std::views::split(',') |\n               std::views::transform(\n                   [](auto part) { return non_const_char_range(part); });\n  EXPECT_EQ(fmt::format(\"{}\", parts),\n            \"[['a'], ['b', '-', 'c'], ['d', '-', 'e'], ['f']]\");\n  EXPECT_EQ(fmt::format(\"{:::}\", parts),\n            \"[[a], [b, -, c], [d, -, e], [f]]\");\n}\n\nTEST(ranges_test, std_views_split_nested) {\n  std::string line = \"a,b-c,d-e,f\";\n  auto parts = line | std::views::split(',') |\n               std::views::transform(std::views::split('-'));\n  EXPECT_EQ(fmt::format(\"{}\", parts),\n            \"[[['a']], [['b'], ['c']], [['d'], ['e']], [['f']]]\");\n  EXPECT_EQ(fmt::format(\"{::::}\", parts),\n            \"[[[a]], [[b], [c]], [[d], [e]], [[f]]]\");\n}\n#endif  // __cpp_lib_ranges\n'''.lstrip('\\n')\npath.write_text(text)\npath = Path('ChangeLog.rst')\ntext = path.read_text()\nneedle = '* Improve handling (exclusion) of recursive ranges\\n'\nassert text.count(needle) == 1\ntext = text.replace(needle, '* Fixed default quoting in nested character and string ranges and formatting\\n  of ranges that yield temporary ranges with non-const ``begin`` / ``end``.\\n\\n' + needle)\npath.write_text(text)\nPY\ncmake --build build --parallel 4 --target ranges-test > build/ranges-build.log 2>&1 && ctest --test-dir build -V -R '^ranges-test$'",
+  "cmake -B build/cxx20 -S . -DCMAKE_CXX_STANDARD=20 > build/ranges-configure20.log && cmake --build build/cxx20 --parallel 4 --target ranges-test > build/ranges-build20.log 2>&1 && ctest --test-dir build/cxx20 -V -R '^ranges-test$' || { status=$?; tail -65 build/ranges-build20.log; exit \"$status\"; }",
+  "cmake -B build/cxx23 -S . -DCMAKE_CXX_STANDARD=23 > build/ranges-configure23.log && cmake --build build/cxx23 --parallel 4 --target ranges-test > build/ranges-build23.log 2>&1 && ctest --test-dir build/cxx23 -V -R '^ranges-test$' || { status=$?; tail -65 build/ranges-build23.log; exit \"$status\"; }",
+  "cmake --build build --parallel 4 --target xchar-test > build/xchar-build.log 2>&1 && ctest --test-dir build -V -R '^xchar-test$' || { status=$?; tail -65 build/xchar-build.log; exit \"$status\"; }"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed nested range formatting: default parsing skipped inner formatters, losing character/string quoting, while temporary inner ranges couldn\u2019t bind to non-const references. The fix recursively parses element formatters and binds temporary elements as lvalues, with regression coverage for split/transform pipelines.",
+ "assistant_messages": [
+  "I\u2019ll inspect range formatting and argument mapping, fix the dispatch, and add regression coverage for the reported cases.\n",
+  "This revision already excludes explicit string-view conversions, but nested formatters still skip default parsing, leaving characters unquoted. It also passes temporary inner ranges to formatters that require lvalues. I\u2019ll fix both paths and cover all three examples.\n",
+  "Fixed nested range formatting: default parsing skipped inner formatters, losing character/string quoting, while temporary inner ranges couldn\u2019t bind to non-const references. The fix recursively parses element formatters and binds temporary elements as lvalues, with regression coverage for split/transform pipelines."
+ ],
+ "assistant_reasoning": [
+  "**Ensuring patch accuracy**\n\nI need to make sure the patch counts are accurate, without wasting time. I could use Python for some replacements as a fallback, since it looks like a patch is not installed right now. I could also manually check what's broken. Another option is to invoke `git apply --recount`, which is supposed to handle counts really well. But remember, if there\u2019s no apply available, I need to look for legitimate instructions!",
+  "**Figuring out git apply offsets**\n\nI'm considering how `git apply` works with offsets. If I'm supposed to start at 442 to 424 but can't find the offset, what happens if I'm at the end? It seems like `git apply` usually manages incorrect offsets, but I need to use the corrected line at 422. I wonder if the first hunk context, which has `#include<vector>`, lacks the needed includes. Last time, it failed because nothing applied. I'll revert to starting at 422.",
+  "**Clarifying output expectations**\n\nI\u2019m trying to understand if the quoted test line shows the output visually matching \u201c['a', 'b']\u201d with the actual user output expecting it to match. It looks like my patch line contains the same visual elements. I need to avoid unproductive edits, especially when applying patches is unavailable. It seems like I should focus on making coherent replacements in Python during this process.",
+  "**Finalizing build configurations**\n\nI've got a huge task to finish soon. I need to set up standard builds with independent parallel configurations, specifically using `cmake -B build -S .` to meet defaults. For the 20 and 23 directories, I want to ensure builds occur in build/cxx20 and build/cxx23, as nested builds are allowed. My focus is on the smallest target ranges-test, then potentially the xchar-test for parsing logic. I'll inspect the tests to figure out why some are yielding no results.",
+  "**Analyzing code formatting**\n\nI need to add a tidy blank line and ensure no leading spaces before the TEST label. I'm thinking about using std::format and whether it could fit in one line under 80 characters. Google seems to preserve line breaks, so aligning existing formats over two lines looks fine. I should ensure correctness in parsing with my custom parser as well. I want to check if we need any changes for regression tests regarding non-copyable objects. I could potentially shorten tests but want to maintain thoroughness.\n\n**Reviewing test report details**\n\nI need to confirm if the test report includes the X constructor for unconstrained copies. It\u2019s important to determine whether the explicit tests differ only in the copy construction and if I should use data instead of &* for guards. I see some risks with the feature `__cpp_lib_ranges` set in GCC11; there might be issues with nested transforms not accommodating rvalue splits. I should execute `xchar-test`, focusing on wide and compile-test ranges. Also, I want to confirm that the original parsing behavior doesn\u2019t impact the compilation.\n\n**Exploring test demonstrations**\n\nI need to show that the test fails without the source for regression confirmation. Maybe I can use compile flags with an old header directory. I could consider using `git show HEAD:include/fmt/ranges.h` to create the relevant files. However, I\u2019ve previously verified that compilation tests for temporary and output quotes aren't required. I want to ensure I have all examples via snippet tests. The user builds ctest from the default, so I need to clean up specific temporary files in `build/ranges-repro23`.",
+  "**Finalizing project checks**\n\nI\u2019m looking to finalize the project checks after ensuring everything is clean. I must verify that user examples are correctly compiled and that the original setup interacts properly without data size issues. I also need to mention there\u2019s no mapper since the fixes are already present. It\u2019s important to summarize everything concisely, ensuring all status updates are clear, and double-check that there are no unexpected files from patches. I'll confirm that all tests passed as expected.\n\n**Addressing formatting concerns**\n\nI\u2019m recognizing an issue with `range_formatter::parse` where it calls the underlying parse without changing specs, which could raise concerns about custom formatter requirements. There are no broad catches here. Another subtlety is that `mapper.map(item)` might yield const-references to unrelated types, and I've clarified that `is_formattable<Element>` may work by value without const constraints. Also, cleanup is necessary since comments are rarely allowed. I'll ensure everything aligns correctly going forward."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 162.8
+}

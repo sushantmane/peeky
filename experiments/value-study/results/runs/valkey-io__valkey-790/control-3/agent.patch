@@ -1,0 +1,48 @@
+diff --git a/src/cluster_legacy.c b/src/cluster_legacy.c
+index 892c722b0..bb50c8f59 100644
+--- a/src/cluster_legacy.c
++++ b/src/cluster_legacy.c
+@@ -5662,28 +5662,36 @@ void addNodeDetailsToShardReply(client *c, clusterNode *node) {
+     setDeferredMapLen(c, node_replylen, reply_count);
+ }
+ 
+-/* Add the shard reply of a single shard based off the given primary node. */
++/* Add the shard reply of a single shard based on its member nodes. */
+ void addShardReplyForClusterShards(client *c, list *nodes) {
+     serverAssert(listLength(nodes) > 0);
+-    clusterNode *n = listNodeValue(listFirst(nodes));
++    clusterNode *n = NULL;
++    listIter li;
+     addReplyMapLen(c, 2);
+     addReplyBulkCString(c, "slots");
+ 
+-    /* Use slot_info_pairs from the primary only */
+-    n = clusterNodeGetPrimary(n);
++    /* A failed primary may still be listed as a primary after a failover.
++     * Find the node that actually owns slots instead of relying on its role. */
++    listRewind(nodes, &li);
++    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
++        clusterNode *node = listNodeValue(ln);
++        if (node->slot_info_pairs != NULL) {
++            n = node;
++            break;
++        }
++    }
+ 
+-    if (n->slot_info_pairs != NULL) {
++    if (n != NULL) {
+         serverAssert((n->slot_info_pairs_count % 2) == 0);
+         addReplyArrayLen(c, n->slot_info_pairs_count);
+         for (int i = 0; i < n->slot_info_pairs_count; i++) addReplyLongLong(c, (unsigned long)n->slot_info_pairs[i]);
+     } else {
+-        /* If no slot info pair is provided, the node owns no slots */
++        /* No node in this shard owns slots. */
+         addReplyArrayLen(c, 0);
+     }
+ 
+     addReplyBulkCString(c, "nodes");
+     addReplyArrayLen(c, listLength(nodes));
+-    listIter li;
+     listRewind(nodes, &li);
+     for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
+         clusterNode *n = listNodeValue(ln);

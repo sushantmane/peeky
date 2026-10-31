@@ -1,0 +1,7 @@
+{
+ "judge_id": "a081",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Implicit field defaults excluded interfaces and annotations but still reached records, triggering the validation error.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a089",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The last removal dropped the timer without waking the task waiting in `poll_expired`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

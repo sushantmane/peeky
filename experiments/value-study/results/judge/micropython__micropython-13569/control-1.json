@@ -1,0 +1,7 @@
+{
+ "judge_id": "a094",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler reserves space for unwind state in the `try` body but not the `finally` body. A pending return adds an extra stack value there, allowing temporary values to overwrite `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

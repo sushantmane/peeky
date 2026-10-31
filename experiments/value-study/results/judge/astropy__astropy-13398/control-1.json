@@ -1,0 +1,7 @@
+{
+ "judge_id": "a061",
+ "wrong_root_cause": false,
+ "evidence": "Message 5: \"The error came from mixing geocentric and topocentric aberration through celestial-frame transforms.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

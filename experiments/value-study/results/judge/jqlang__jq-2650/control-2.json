@@ -1,0 +1,7 @@
+{
+ "judge_id": "a038",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The jq 1.6 parser rejected dots before chained bracket indexes. This checkout already contains the grammar fix, so no parser change was needed.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a044",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The replacement code searches extra text to support look-ahead, then copies that text into the output.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

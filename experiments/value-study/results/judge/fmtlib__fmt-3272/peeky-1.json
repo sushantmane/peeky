@@ -1,0 +1,7 @@
+{
+ "judge_id": "a174",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The width calculation counted fractional digits when estimating thousands separators, causing insufficient padding for nonzero integer parts.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

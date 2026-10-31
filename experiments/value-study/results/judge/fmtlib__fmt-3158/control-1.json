@@ -1,0 +1,7 @@
+{
+ "judge_id": "a153",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fixed nested range formatting: default parsing skipped inner formatters, losing character/string quoting, while temporary inner ranges couldn\u2019t bind to non-const references.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a096",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The reply uses the first shard member to find the primary. After failover, that member can still be the failed former primary, which no longer owns slots.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

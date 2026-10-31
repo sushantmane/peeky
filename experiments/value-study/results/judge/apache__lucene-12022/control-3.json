@@ -1,0 +1,7 @@
+{
+ "judge_id": "a137",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"collapsed triangles retained a boundary flag from an edge that could disappear.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

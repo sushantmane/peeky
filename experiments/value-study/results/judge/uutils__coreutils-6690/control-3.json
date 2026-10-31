@@ -1,0 +1,7 @@
+{
+ "judge_id": "a158",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed `cp`\u2019s positional-argument metadata: it lacked `.num_args(1..)`, so generated Zsh completions offered paths only for the first operand.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

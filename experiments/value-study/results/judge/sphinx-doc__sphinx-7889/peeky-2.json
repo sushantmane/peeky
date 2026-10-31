@@ -1,0 +1,7 @@
+{
+ "judge_id": "a103",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was `_MockObject.__getitem__` passing non-string type parameters, such as `TypeVar`, to a helper requiring a string class name.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

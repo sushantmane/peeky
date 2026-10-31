@@ -1,0 +1,285 @@
+{
+ "bug": "apache__lucene-12022",
+ "arm": "control",
+ "rep": 2,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__lucene-12022:control",
+ "image_digest": "sha256:c770ee4d8f31f218e6fe7ab6519cc5baabe54371813cd13f6b76d758fcc69952",
+ "peeky_sha": null,
+ "container": "study-apache__lucene-12022-control-2-dfb385",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T02:08:50+00:00",
+ "ended": "2026-10-31T02:11:42+00:00",
+ "wall_seconds": 172.8,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": false,
+ "f2p": {
+  "org.apache.lucene.document.TestLatLonShape > testFlatPolygonDoesNotContainIntersectingLine": "FAILED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 10.9,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "038c462093b2b5561f84a8400dab4c186ca7ca8594e46998236df8f29d8c0765",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+  "lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java"
+ ],
+ "patch_bytes": 2595,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 24
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 19,
+ "ai_credits": 29.4481,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 635651,
+  "output": 9708,
+  "cache_read": 579874,
+  "cache_write": 55720,
+  "reasoning": 4606
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 29,
+ "tool_calls_by_name": {
+  "bash": 29
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed && git status --short; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "rg -n 'collapse|degenerate|collinear|simplif' lucene/core/src/java/org/apache/lucene/document/Shape* lucene/core/src/java/org/apache/lucene/geo/*Tess*",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "rg --files lucene | rg '(Test.*(Shape|Polygon|Tessellator)|ShapeField\\.java|Shape.*TestCase\\.java|AGENTS\\.md)$'",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'collapse|degenerate|collinear|simplif' lucene/core/src/java/org/apache/lucene/document/Shape* lucene/core/src/java/org/apache/lucene/geo/*Tess*",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "find . -name AGENTS.md -o -name '*Shape*TestCase.java' -o -name 'Test*Shape*.java' -o -name 'Test*Tessellator*.java' -o -name 'ShapeField.java' -o -name 'Test*Polygon*.java'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,380p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && cat lucene/core/src/test/org/apache/lucene/document/TestXYShapeEncoding.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,280p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShapeEncoding.java && sed -n '1,240p' lucene/core/src/test/org/apache/lucene/document/TestXYShape.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '370,570p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && sed -n '1,240p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'test|ab|bc|ca|LINE|POINT' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && grep -nE 'flat|Flat|Contains|Degenerate' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java lucene/core/src/test/org/apache/lucene/document/TestXYShape.java && grep -R -n --include='*.java' 'resolveTriangleType' lucene/core/src",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '310,475p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && sed -n '510,710p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'case LINE|\\.ab|\\.bc|\\.ca|withinLine' lucene/core/src/java/org/apache/lucene/document/LatLonShapeQuery.java lucene/core/src/java/org/apache/lucene/document/XYShapeQuery.java lucene/core/src/java/org/apache/lucene/document/ShapeDocValues.java lucene/core/src/java/org/apache/lucene/document/ShapeDocValuesField.java && sed -n '1,100p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java && sed -n '150,235p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java && sed -n '80,190p' lucene/core/src/java/org/apache/lucene/geo/Tessellator.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'new Triangle|class Triangle|Triangle\\(' lucene/core/src/java/org/apache/lucene/geo/Tessellator.java && sed -n '1510,1665p' lucene/core/src/java/org/apache/lucene/geo/Tessellator.java && sed -n '420,455p' lucene/core/src/java/org/apache/lucene/document/ShapeDocValues.java && sed -n '520,570p' lucene/core/src/java/org/apache/lucene/document/ShapeDocValues.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,150p' lucene/CHANGES.txt && sed -n '1,100p' gradle.properties && java -version && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nA75 'WithinRelation withinLine' lucene/core/src/java/org/apache/lucene/geo/Polygon2D.java lucene/core/src/java/org/apache/lucene/geo/Rectangle2D.java && sed -n '500,565p' lucene/core/src/java/org/apache/lucene/geo/Tessellator.java && sed -n '1,100p' lucene/core/src/test/org/apache/lucene/document/TestXYShapeEncoding.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "find build -maxdepth 3 -type d | head -35; find lucene/core/build -maxdepth 3 -type d | head -30; command -v patch; ls gradle | head",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "jshell --class-path lucene/core/build/classes/java/main <<'EOF'\nimport org.apache.lucene.geo.*;\nimport org.apache.lucene.document.*;\nvar polygons = new Polygon[] {new Polygon(new double[] {1,0,2,1+1e-10,1,1}, new double[] {0,-1,-1,0,1,0}), new Polygon(new double[] {0,0,2,2,1+1e-10,1,1,0}, new double[] {0,2,2,0,0,1,0,0})};\nfor(var p: polygons) { System.out.println(\"POLYGON\"); for (var t: Tessellator.tessellate(p, true)) { var b = new byte[28]; ShapeField.encodeTriangle(b,t.getEncodedY(0),t.getEncodedX(0),t.isEdgefromPolygon(0),t.getEncodedY(1),t.getEncodedX(1),t.isEdgefromPolygon(1),t.getEncodedY(2),t.getEncodedX(2),t.isEdgefromPolygon(2)); var d = new ShapeField.DecodedTriangle(); ShapeField.decodeTriangle(b,d); System.out.println(t+\" -> \"+d.type+\" \"+d); } }\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '220,310p' lucene/core/src/java/org/apache/lucene/geo/Line2D.java && sed -n '120,200p' lucene/core/src/java/org/apache/lucene/geo/Point2D.java && sed -n '310,345p' lucene/core/src/java/org/apache/lucene/geo/Polygon2D.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "jshell --class-path lucene/core/build/classes/java/main <<'EOF'\nimport org.apache.lucene.geo.*;\nimport org.apache.lucene.document.*;\ndouble[] xs={0,-1,-1,0,1}; double[] ys={1,0,2,1+1e-10,1};\nfor(int rev: new int[] {1,-1}) for(int offset=0;offset<5;offset++){double[] px=new double[6],py=new double[6]; for(int i=0;i<6;i++) {int v=Math.floorMod(offset+rev*i,5);px[i]=xs[v];py[i]=ys[v];} for(var t:Tessellator.tessellate(new Polygon(py,px),true)){var bytes=new byte[28];ShapeField.encodeTriangle(bytes,t.getEncodedY(0),t.getEncodedX(0),t.isEdgefromPolygon(0),t.getEncodedY(1),t.getEncodedX(1),t.isEdgefromPolygon(1),t.getEncodedY(2),t.getEncodedX(2),t.isEdgefromPolygon(2));var d=new ShapeField.DecodedTriangle();ShapeField.decodeTriangle(bytes,d);if(d.type==ShapeField.DecodedTriangle.TYPE.LINE && d.ab==false)System.out.println(\"rev=\"+rev+\" offset=\"+offset+\" \"+t+\" => \"+d);}}\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p1 <<'PATCH'\n--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n@@ -638,6 +638,55 @@\n     };\n   }\n \n+  public void testCollapsedTriangleEdgeFlags() {\n+    int ax = encodeX(0);\n+    int ay = encodeY(0);\n+    byte[] bytes = new byte[7 * ShapeField.BYTES];\n+    ShapeField.DecodedTriangle decoded = new ShapeField.DecodedTriangle();\n+    for (int[] endpoint :\n+        new int[][] {\n+          {encodeX(2), encodeY(0)},\n+          {encodeX(0), encodeY(2)},\n+          {encodeX(2), encodeY(2)}\n+        }) {\n+      for (boolean fromShape : new boolean[] {false, true}) {\n+        for (int i = 0; i < 3; i++) {\n+          int[] x = {ax, ax, ax};\n+          int[] y = {ay, ay, ay};\n+          x[i] = endpoint[0];\n+          y[i] = endpoint[1];\n+          // Give the collapsed edge the opposite flag from the two retained edges.\n+          boolean ab = i == 2 ? !fromShape : fromShape;\n+          boolean bc = i == 0 ? !fromShape : fromShape;\n+          boolean ca = i == 1 ? !fromShape : fromShape;\n+          ShapeField.encodeTriangle(\n+              bytes,\n+              y[0],\n+              x[0],\n+              ab,\n+              y[1],\n+              x[1],\n+              bc,\n+              y[2],\n+              x[2],\n+              ca);\n+          ShapeField.decodeTriangle(bytes, decoded);\n+          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, decoded.type);\n+          assertEquals(ax, decoded.aX);\n+          assertEquals(ay, decoded.aY);\n+          assertEquals(endpoint[0], decoded.bX);\n+          assertEquals(endpoint[1], decoded.bY);\n+          assertEquals(ax, decoded.cX);\n+          assertEquals(ay, decoded.cY);\n+          assertEquals(fromShape, decoded.ab);\n+        }\n+      }\n+    }\n+  }\n+\n   public void testDegeneratedTriangle() {\nPATCH\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\npath = Path('lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java')\nsource = path.read_text()\nold = '  public void testDegeneratedTriangle() {\\n'\nnew = '''  public void testCollapsedTriangleEdgeFlags() {\n    int ax = encodeX(0);\n    int ay = encodeY(0);\n    byte[] bytes = new byte[7 * ShapeField.BYTES];\n    ShapeField.DecodedTriangle decoded = new ShapeField.DecodedTriangle();\n    for (int[] endpoint :\n        new int[][] {\n          {encodeX(2), encodeY(0)}, {encodeX(0), encodeY(2)}, {encodeX(2), encodeY(2)}\n        }) {\n      for (boolean fromShape : new boolean[] {false, true}) {\n        for (int i = 0; i < 3; i++) {\n          int[] x = {ax, ax, ax};\n          int[] y = {ay, ay, ay};\n          x[i] = endpoint[0];\n          y[i] = endpoint[1];\n          // Give the collapsed edge the opposite flag from the two retained edges.\n          boolean ab = i == 2 ? !fromShape : fromShape;\n          boolean bc = i == 0 ? !fromShape : fromShape;\n          boolean ca = i == 1 ? !fromShape : fromShape;\n          ShapeField.encodeTriangle(\n              bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);\n          ShapeField.decodeTriangle(bytes, decoded);\n          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, decoded.type);\n          assertEquals(ax, decoded.aX);\n          assertEquals(ay, decoded.aY);\n          assertEquals(endpoint[0], decoded.bX);\n          assertEquals(endpoint[1], decoded.bY);\n          assertEquals(ax, decoded.cX);\n          assertEquals(ay, decoded.cY);\n          assertEquals(fromShape, decoded.ab);\n        }\n      }\n    }\n  }\n\n'''+old\nassert source.count(old) == 1\npath.write_text(source.replace(old, new))\nPY\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nA16 '<failure' lucene/core/build/test-results/test/TEST-org.apache.lucene.document.Test*ShapeEncoding.xml && git diff --stat && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '145,190p' lucene/core/src/java/org/apache/lucene/geo/Line2D.java && grep -n 'spotless' gradle/validation/spotless.gradle gradle/*.gradle",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p1 <<'PATCH'\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -378,6 +378,7 @@\n       } else {\n         triangle.bX = triangle.cX;\n         triangle.bY = triangle.cY;\n+        triangle.ab = triangle.bc;\n         triangle.cX = triangle.aX;\n         triangle.cY = triangle.aY;\n         triangle.type = DecodedTriangle.TYPE.LINE;\nPATCH\n./gradlew --offline :lucene:core:spotlessJavaCheck :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-validation.log 2>&1; result=$?; tail -70 /testbed/build/shape-fix-validation.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "./gradlew --offline --no-parallel --max-workers=1 :lucene:core:spotlessJavaCheck :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-validation.log 2>&1; result=$?; tail -65 /testbed/build/shape-fix-validation.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-tests.log 2>&1; result=$?; tail -65 /testbed/build/shape-fix-tests.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,115p' /testbed/build/shape-fix-validation.log && sed -n '18,105p' gradle/validation/spotless.gradle && git diff --check && git --no-pager diff",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\npath = Path('lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java')\nsource = path.read_text()\nold = '''    for (int[] endpoint :\n        new int[][] {\n          {encodeX(2), encodeY(0)}, {encodeX(0), encodeY(2)}, {encodeX(2), encodeY(2)}\n        }) {\n'''\nnew = '''    for (int[] endpoint : new int[][] {{2, 0}, {0, 2}, {2, 2}}) {\n      int bx = encodeX(endpoint[0]);\n      int by = encodeY(endpoint[1]);\n'''\nassert source.count(old) == 1\nsource = source.replace(old, new).replace('          x[i] = endpoint[0];\\n          y[i] = endpoint[1];', '          x[i] = bx;\\n          y[i] = by;').replace('''          ShapeField.encodeTriangle(\n              bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);''', '''          ShapeField.encodeTriangle(bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);''').replace('          assertEquals(endpoint[0], decoded.bX);\\n          assertEquals(endpoint[1], decoded.bY);', '          assertEquals(bx, decoded.bX);\\n          assertEquals(by, decoded.bY);')\npath.write_text(source)\nPY\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-tests.log 2>&1; result=$?; tail -12 /testbed/build/shape-fix-tests.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git diff --check && git --no-pager diff --stat && sed -n '374,392p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && sed -n '641,677p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && rm /testbed/build/shape-fix-validation.log /testbed/build/shape-fix-tests.log && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 6,
+ "build_or_test_commands": [
+  "patch -p1 <<'PATCH'\n--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n@@ -638,6 +638,55 @@\n     };\n   }\n \n+  public void testCollapsedTriangleEdgeFlags() {\n+    int ax = encodeX(0);\n+    int ay = encodeY(0);\n+    byte[] bytes = new byte[7 * ShapeField.BYTES];\n+    ShapeField.DecodedTriangle decoded = new ShapeField.DecodedTriangle();\n+    for (int[] endpoint :\n+        new int[][] {\n+          {encodeX(2), encodeY(0)},\n+          {encodeX(0), encodeY(2)},\n+          {encodeX(2), encodeY(2)}\n+        }) {\n+      for (boolean fromShape : new boolean[] {false, true}) {\n+        for (int i = 0; i < 3; i++) {\n+          int[] x = {ax, ax, ax};\n+          int[] y = {ay, ay, ay};\n+          x[i] = endpoint[0];\n+          y[i] = endpoint[1];\n+          // Give the collapsed edge the opposite flag from the two retained edges.\n+          boolean ab = i == 2 ? !fromShape : fromShape;\n+          boolean bc = i == 0 ? !fromShape : fromShape;\n+          boolean ca = i == 1 ? !fromShape : fromShape;\n+          ShapeField.encodeTriangle(\n+              bytes,\n+              y[0],\n+              x[0],\n+              ab,\n+              y[1],\n+              x[1],\n+              bc,\n+              y[2],\n+              x[2],\n+              ca);\n+          ShapeField.decodeTriangle(bytes, decoded);\n+          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, decoded.type);\n+          assertEquals(ax, decoded.aX);\n+          assertEquals(ay, decoded.aY);\n+          assertEquals(endpoint[0], decoded.bX);\n+          assertEquals(endpoint[1], decoded.bY);\n+          assertEquals(ax, decoded.cX);\n+          assertEquals(ay, decoded.cY);\n+          assertEquals(fromShape, decoded.ab);\n+        }\n+      }\n+    }\n+  }\n+\n   public void testDegeneratedTriangle() {\nPATCH\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags",
+  "python3 - <<'PY'\nfrom pathlib import Path\npath = Path('lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java')\nsource = path.read_text()\nold = '  public void testDegeneratedTriangle() {\\n'\nnew = '''  public void testCollapsedTriangleEdgeFlags() {\n    int ax = encodeX(0);\n    int ay = encodeY(0);\n    byte[] bytes = new byte[7 * ShapeField.BYTES];\n    ShapeField.DecodedTriangle decoded = new ShapeField.DecodedTriangle();\n    for (int[] endpoint :\n        new int[][] {\n          {encodeX(2), encodeY(0)}, {encodeX(0), encodeY(2)}, {encodeX(2), encodeY(2)}\n        }) {\n      for (boolean fromShape : new boolean[] {false, true}) {\n        for (int i = 0; i < 3; i++) {\n          int[] x = {ax, ax, ax};\n          int[] y = {ay, ay, ay};\n          x[i] = endpoint[0];\n          y[i] = endpoint[1];\n          // Give the collapsed edge the opposite flag from the two retained edges.\n          boolean ab = i == 2 ? !fromShape : fromShape;\n          boolean bc = i == 0 ? !fromShape : fromShape;\n          boolean ca = i == 1 ? !fromShape : fromShape;\n          ShapeField.encodeTriangle(\n              bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);\n          ShapeField.decodeTriangle(bytes, decoded);\n          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, decoded.type);\n          assertEquals(ax, decoded.aX);\n          assertEquals(ay, decoded.aY);\n          assertEquals(endpoint[0], decoded.bX);\n          assertEquals(endpoint[1], decoded.bY);\n          assertEquals(ax, decoded.cX);\n          assertEquals(ay, decoded.cY);\n          assertEquals(fromShape, decoded.ab);\n        }\n      }\n    }\n  }\n\n'''+old\nassert source.count(old) == 1\npath.write_text(source.replace(old, new))\nPY\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags",
+  "patch -p1 <<'PATCH'\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -378,6 +378,7 @@\n       } else {\n         triangle.bX = triangle.cX;\n         triangle.bY = triangle.cY;\n+        triangle.ab = triangle.bc;\n         triangle.cX = triangle.aX;\n         triangle.cY = triangle.aY;\n         triangle.type = DecodedTriangle.TYPE.LINE;\nPATCH\n./gradlew --offline :lucene:core:spotlessJavaCheck :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-validation.log 2>&1; result=$?; tail -70 /testbed/build/shape-fix-validation.log; exit \"$result\"",
+  "./gradlew --offline --no-parallel --max-workers=1 :lucene:core:spotlessJavaCheck :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-validation.log 2>&1; result=$?; tail -65 /testbed/build/shape-fix-validation.log; exit \"$result\"",
+  "./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-tests.log 2>&1; result=$?; tail -65 /testbed/build/shape-fix-tests.log; exit \"$result\"",
+  "python3 - <<'PY'\nfrom pathlib import Path\npath = Path('lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java')\nsource = path.read_text()\nold = '''    for (int[] endpoint :\n        new int[][] {\n          {encodeX(2), encodeY(0)}, {encodeX(0), encodeY(2)}, {encodeX(2), encodeY(2)}\n        }) {\n'''\nnew = '''    for (int[] endpoint : new int[][] {{2, 0}, {0, 2}, {2, 2}}) {\n      int bx = encodeX(endpoint[0]);\n      int by = encodeY(endpoint[1]);\n'''\nassert source.count(old) == 1\nsource = source.replace(old, new).replace('          x[i] = endpoint[0];\\n          y[i] = endpoint[1];', '          x[i] = bx;\\n          y[i] = by;').replace('''          ShapeField.encodeTriangle(\n              bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);''', '''          ShapeField.encodeTriangle(bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);''').replace('          assertEquals(endpoint[0], decoded.bX);\\n          assertEquals(endpoint[1], decoded.bY);', '          assertEquals(bx, decoded.bX);\\n          assertEquals(by, decoded.bY);')\npath.write_text(source)\nPY\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-fix-tests.log 2>&1; result=$?; tail -12 /testbed/build/shape-fix-tests.log; exit \"$result\""
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed `ShapeField` triangle simplification: when A and B coincide, the retained BC segment now inherits BC\u2019s polygon-boundary flag instead of the collapsed AB edge\u2019s flag. This prevents false-positive `CONTAINS` results for very flat polygons. Added regression coverage for geographic and Cartesian encoding.",
+ "assistant_messages": [
+  "I\u2019ll inspect how degenerate triangles retain edge flags, fix the selection, and add a focused regression test.\n",
+  "The bug is in the shared triangle decoder: when vertices A and B coincide, it retains segment BC but leaves AB\u2019s edge flag unchanged. I\u2019ll copy BC\u2019s flag to the retained segment and add coverage for both geographic and Cartesian shapes.\n",
+  "Fixed `ShapeField` triangle simplification: when A and B coincide, the retained BC segment now inherits BC\u2019s polygon-boundary flag instead of the collapsed AB edge\u2019s flag. This prevents false-positive `CONTAINS` results for very flat polygons. Added regression coverage for geographic and Cartesian encoding."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating flag normalization**\n\nI need to determine if the desired flags for branch a=b are correctly set with ab instead of bc. It seems like I should inspect whether reporting non-collapsed lines will likely lead to a triangle with ab=triangle.bc and triangle.bc=triangle.ab. Also, should I set triangle.ca to true? I want to be thorough as I check downstream to ensure everything aligns correctly with my assumptions!",
+  "**Analyzing test structure**\n\nI\u2019m thinking about how the base test lacks a directory infrastructure, but I can add a new test class, TestShapeField, to address a bug using boolean combinations. It's probably better to keep one line for source and a method with about 40 lines to handle various cases. This directly meets the requirement and inherits from both classes. I should also mention the validate CONTAINS query tests in the existing suite, which helps avoid end-to-end costs. Do I need to make documentation changes?",
+  "**Troubleshooting patch issues**\n\nI'm facing some challenges with a patch that failed, and I can\u2019t apply it manually. It looks like using Python's replace functionality is the way to go since it's permitted. I see the need to simplify the code by keeping it clean and concise. Also, I should insert comments where necessary but try to avoid repetitive routines. It seems I still need to gather documentation on this process. Let's sort it out!",
+  "**Considering Gradle configuration**\n\nI\u2019m thinking about a Gradle issue related to using `--no-parallel`, particularly with `max-workers` set to `1`. It looks like there are known races during the creation of spotless. I need to make two independent calls for tests and formatting, avoiding concurrency here. It seems like using Gradle caches should be safe, but I should be careful with parallel tasks since Gradle manages its own locks. So, I'll proceed with `--no-parallel` and `--max-workers=1`."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 184.3
+}

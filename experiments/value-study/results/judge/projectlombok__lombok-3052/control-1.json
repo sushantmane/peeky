@@ -1,0 +1,7 @@
+{
+ "judge_id": "a091",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Lombok overwrote initializer source positions, causing javac 11\u2019s argument-type cache to confuse different generic arguments.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

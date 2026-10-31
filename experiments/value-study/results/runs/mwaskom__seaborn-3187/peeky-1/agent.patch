@@ -1,0 +1,121 @@
+diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst
+index 8eeb8f19..4c5ee535 100644
+--- a/doc/whatsnew/v0.12.2.rst
++++ b/doc/whatsnew/v0.12.2.rst
+@@ -11,3 +11,5 @@ v0.12.2 (Unreleased)
+ - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).
+ 
+ - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).
++
++- |Fix| Fixed incorrect numeric legend labels for large or small values in relational plots and the objects interface by disabling scientific scaling and additive offsets.
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..9eb37ec1 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -378,7 +378,11 @@ class ContinuousBase(Scale):
+             axis.set_view_interval(vmin, vmax)
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+-            labels = axis.major.formatter.format_ticks(locs)
++            formatter = axis.major.formatter
++            if isinstance(formatter, ScalarFormatter):
++                formatter.set_useOffset(False)
++                formatter.set_scientific(False)
++            labels = formatter.format_ticks(locs)
+             new._legend = list(locs), list(labels)
+ 
+         return new
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..94db60b0 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -698,7 +698,8 @@ def locator_to_legend_entries(locator, limits, dtype):
+     if isinstance(locator, mpl.ticker.LogLocator):
+         formatter = mpl.ticker.LogFormatter()
+     else:
+-        formatter = mpl.ticker.ScalarFormatter()
++        formatter = mpl.ticker.ScalarFormatter(useOffset=False)
++        formatter.set_scientific(False)
+     formatter.axis = dummy_axis()
+ 
+     # TODO: The following two lines should be replaced
+diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py
+index c4b39f5d..3be2077d 100644
+--- a/tests/_core/test_scales.py
++++ b/tests/_core/test_scales.py
+@@ -238,6 +238,45 @@ class TestContinuous:
+         assert np.allclose(np.diff(np.log10(pos_ticks[1:])), 1)
+         assert pos_ticks[0] == 0
+ 
++    @pytest.mark.parametrize("limits", [
++        (1, 5), (1e6, 5e6), (1e6, 1e6 + 5), (1e-6, 5e-6), (-5e6, -1e6),
++    ])
++    @pytest.mark.parametrize("use_offset", [True, False])
++    @pytest.mark.parametrize("prop", [Color, IntervalProperty])
++    def test_legend_scalar_labels(self, limits, use_offset, prop):
++
++        with mpl.rc_context({
++            "axes.formatter.useoffset": use_offset,
++            "axes.formatter.offset_threshold": 2,
++            "axes.formatter.use_mathtext": False,
++            "axes.unicode_minus": False,
++        }):
++            s = Continuous()._setup(pd.Series(limits), prop())
++
++        locs, labels = s._legend
++        assert len(locs) >= 2
++        assert np.allclose(locs, [float(x) for x in labels], rtol=1e-12, atol=0)
++
++    def test_legend_custom_formatter(self, x):
++
++        formatter = mpl.ticker.FormatStrFormatter("%.2e")
++        s = Continuous().label(formatter)._setup(x, Color())
++        locs, labels = s._legend
++        assert labels == ["%.2e" % loc for loc in locs]
++
++    @pytest.mark.parametrize("limits", [(1e6, 5e6), (1e6, 1e6 + 5)])
++    def test_coordinate_scalar_offset(self, limits):
++
++        with mpl.rc_context({"axes.formatter.useoffset": True}):
++            ax = mpl.figure.Figure().subplots()
++            s = Continuous()._setup(pd.Series(limits), Coordinate(), ax.xaxis)
++            ax.set_xlim(limits)
++            formatter = ax.xaxis.get_major_formatter()
++            formatter.format_ticks(limits)
++
++        assert formatter.get_offset()
++        assert s._legend is None
++
+     def test_label_formatter(self, x):
+ 
+         fmt = mpl.ticker.FormatStrFormatter("%.3f")
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 02839a02..1d224260 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -335,6 +335,25 @@ def test_locator_to_legend_entries():
+         assert re.match(f"1e.0{exp}", str_levels[i])
+ 
+ 
++@pytest.mark.parametrize("limits", [
++    (1, 5), (1e6, 5e6), (1e6, 1e6 + 5), (1e-6, 5e-6), (-5e6, -1e6),
++])
++@pytest.mark.parametrize("use_offset", [True, False])
++def test_locator_to_legend_entries_scalar_labels(limits, use_offset):
++
++    locator = mpl.ticker.MaxNLocator(nbins=3)
++    with mpl.rc_context({
++        "axes.formatter.useoffset": use_offset,
++        "axes.formatter.offset_threshold": 2,
++        "axes.formatter.use_mathtext": False,
++        "axes.unicode_minus": False,
++    }):
++        levels, labels = utils.locator_to_legend_entries(locator, limits, float)
++
++    assert len(levels) >= 2
++    assert np.allclose(levels, [float(x) for x in labels], rtol=1e-12, atol=0)
++
++
+ def test_move_legend_matplotlib_objects():
+ 
+     fig, ax = plt.subplots()

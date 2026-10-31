@@ -1,0 +1,7 @@
+{
+ "judge_id": "a014",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The bug is in the shared triangle decoder: when vertices A and B coincide, it retains segment BC but leaves AB\u2019s edge flag unchanged.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a093",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: The panic came from fallback routing setting an internal catch-all `MatchedPath`, which conflicted with nested service routing.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

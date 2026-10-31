@@ -1,0 +1,7 @@
+{
+ "judge_id": "a024",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The conversion subtracts a datetime epoch from both datetimes and timedeltas; timedeltas need a zero-duration offset instead.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

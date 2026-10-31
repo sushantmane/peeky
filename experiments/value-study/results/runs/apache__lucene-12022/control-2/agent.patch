@@ -1,0 +1,56 @@
+diff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+index bd85a5771f..88efecf122 100644
+--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
++++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+@@ -378,6 +378,7 @@ public final class ShapeField {
+       } else {
+         triangle.bX = triangle.cX;
+         triangle.bY = triangle.cY;
++        triangle.ab = triangle.bc;
+         triangle.cX = triangle.aX;
+         triangle.cY = triangle.aY;
+         triangle.type = DecodedTriangle.TYPE.LINE;
+diff --git a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
+index 3beafb44bd..6c05d2ecd8 100644
+--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
++++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
+@@ -638,6 +638,39 @@ public abstract class BaseShapeEncodingTestCase extends LuceneTestCase {
+     };
+   }
+ 
++  public void testCollapsedTriangleEdgeFlags() {
++    int ax = encodeX(0);
++    int ay = encodeY(0);
++    byte[] bytes = new byte[7 * ShapeField.BYTES];
++    ShapeField.DecodedTriangle decoded = new ShapeField.DecodedTriangle();
++    for (int[] endpoint : new int[][] {{2, 0}, {0, 2}, {2, 2}}) {
++      int bx = encodeX(endpoint[0]);
++      int by = encodeY(endpoint[1]);
++      for (boolean fromShape : new boolean[] {false, true}) {
++        for (int i = 0; i < 3; i++) {
++          int[] x = {ax, ax, ax};
++          int[] y = {ay, ay, ay};
++          x[i] = bx;
++          y[i] = by;
++          // Give the collapsed edge the opposite flag from the two retained edges.
++          boolean ab = i == 2 ? !fromShape : fromShape;
++          boolean bc = i == 0 ? !fromShape : fromShape;
++          boolean ca = i == 1 ? !fromShape : fromShape;
++          ShapeField.encodeTriangle(bytes, y[0], x[0], ab, y[1], x[1], bc, y[2], x[2], ca);
++          ShapeField.decodeTriangle(bytes, decoded);
++          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, decoded.type);
++          assertEquals(ax, decoded.aX);
++          assertEquals(ay, decoded.aY);
++          assertEquals(bx, decoded.bX);
++          assertEquals(by, decoded.bY);
++          assertEquals(ax, decoded.cX);
++          assertEquals(ay, decoded.cY);
++          assertEquals(fromShape, decoded.ab);
++        }
++      }
++    }
++  }
++
+   public void testDegeneratedTriangle() {
+     double ay = 1e-26d;
+     double ax = 0.0d;

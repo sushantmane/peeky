@@ -1,0 +1,7 @@
+{
+ "judge_id": "a051",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: `ScalarFormatter` produced labels whose scientific multiplier or additive offset was omitted from legends.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

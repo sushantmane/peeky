@@ -1,0 +1,7 @@
+{
+ "judge_id": "a126",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`ACL LOAD` crashed because it dereferenced the replica\u2019s primary connection\u2019s intentionally NULL ACL user pointer.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

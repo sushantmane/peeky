@@ -1,0 +1,7 @@
+{
+ "judge_id": "a160",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Lombok resets every node in the moved initializer to the annotation\u2019s source position, causing collisions in javac 11\u2019s argument-type cache.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

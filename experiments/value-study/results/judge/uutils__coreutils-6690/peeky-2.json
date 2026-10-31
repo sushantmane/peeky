@@ -1,0 +1,7 @@
+{
+ "judge_id": "a042",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"`cp`\u2019s positional argument lacks the variadic metadata used by the completion generator, so zsh stops offering paths after the first one.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a012",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed an integer overflow in the latitude grid bounds check that rejected valid points near 90\u00b0.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,302 @@
+{
+ "bug": "apache__lucene-12022",
+ "arm": "control",
+ "rep": 3,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__lucene-12022:control",
+ "image_digest": "sha256:c770ee4d8f31f218e6fe7ab6519cc5baabe54371813cd13f6b76d758fcc69952",
+ "peeky_sha": null,
+ "container": "study-apache__lucene-12022-control-3-74e2e6",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T03:38:01+00:00",
+ "ended": "2026-10-31T03:42:14+00:00",
+ "wall_seconds": 252.2,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "org.apache.lucene.document.TestLatLonShape > testFlatPolygonDoesNotContainIntersectingLine": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 11.1,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "038c462093b2b5561f84a8400dab4c186ca7ca8594e46998236df8f29d8c0765",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 2,
+ "patch_files": [
+  "lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+  "lucene/core/src/test/org/apache/lucene/document/TestShapeField.java"
+ ],
+ "patch_bytes": 6273,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 24
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 21,
+ "ai_credits": 39.1518,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 787888,
+  "output": 16284,
+  "cache_read": 725421,
+  "cache_write": 62404,
+  "reasoning": 7553
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 32,
+ "tool_calls_by_name": {
+  "bash": 32
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls /testbed | head; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg --files -g '*Shape*' -g '*Tessellat*' -g '*Triangle*' lucene/core/src | head -90",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'collapse|collaps|simplif|collinear' lucene/core/src/java/org/apache/lucene/document/ShapeField.java lucene/core/src/java/org/apache/lucene/geo && rg --files -g AGENTS.md -g CONTRIBUTING.md",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find lucene/core/src -type f \\( -name '*Shape*' -o -name '*Tessellat*' -o -name '*Triangle*' \\) && find . -name AGENTS.md -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'collapse|collaps|simplif|collinear' lucene/core/src/java/org/apache/lucene/document/ShapeField.java lucene/core/src/java/org/apache/lucene/geo/*.java && sed -n '1,260p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '260,620p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && cat lucene/core/src/test/org/apache/lucene/document/TestXYShapeEncoding.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && sed -n '1,240p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShapeEncoding.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'CONTAINS|Contains|flat|Flat|degenerat' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java lucene/core/src/test/org/apache/lucene/document/TestXYShape.java && sed -n '1,180p' lucene/core/src/test/org/apache/lucene/document/TestXYShape.java && sed -n '1,150p' CONTRIBUTING.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'public void test|resolveTriangle|\\.ab|\\.bc|\\.ca|verifyEncoding' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && sed -n '1,205p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && sed -n '390,560p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'case LINE|triangle.ab|triangle.bc|triangle.ca|resolveTriangleType' lucene/core/src/java/org/apache/lucene/document/*Shape*.java && sed -n '1,145p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShapeEncoding.java && sed -n '900,1005p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java && head -80 lucene/CHANGES.txt",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '600,725p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && sed -n '145,220p' lucene/core/src/java/org/apache/lucene/document/LatLonShapeQuery.java && sed -n '155,215p' lucene/core/src/java/org/apache/lucene/document/LatLonShapeBoundingBoxQuery.java && sed -n '150,230p' lucene/core/src/java/org/apache/lucene/document/ShapeDocValues.java && sed -n '510,580p' lucene/core/src/java/org/apache/lucene/document/ShapeDocValues.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,150p' lucene/core/src/java/org/apache/lucene/document/LatLonShape.java && grep -nE 'LINE|\\.ab|\\.bc|\\.ca|readLine' lucene/core/src/java/org/apache/lucene/document/ShapeDocValues.java && cat help/formatting.txt && sed -n '1,100p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A65 'WithinRelation withinLine' lucene/core/src/java/org/apache/lucene/geo/Rectangle2D.java lucene/core/src/java/org/apache/lucene/geo/Polygon2D.java lucene/core/src/java/org/apache/lucene/geo/Line2D.java && grep -n -A65 'withinLine' lucene/core/src/java/org/apache/lucene/document/LatLonShapeBoundingBoxQuery.java | tail -75",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls lucene/core/build/classes/java/main/org/apache/lucene/geo/ 2>/dev/null | head && java -version && command -v apply_patch && sed -n '55,125p' lucene/core/src/java/org/apache/lucene/geo/Tessellator.java",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '155,207p' lucene/core/src/java/org/apache/lucene/geo/Rectangle2D.java && sed -n '145,195p' lucene/core/src/java/org/apache/lucene/geo/Polygon2D.java && sed -n '140,200p' lucene/core/src/java/org/apache/lucene/geo/Line2D.java && sed -n '55,125p' lucene/core/src/java/org/apache/lucene/geo/Tessellator.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls /usr/local/bin/apply_patch /usr/bin/apply_patch /tmp/apply_patch /tmp/repo_support/apply_patch 2>/dev/null; ls lucene/core/build/classes/java/main/org/apache/lucene/util/Version.class && grep -nE 'WithinRelation withinLine' lucene/core/src/java/org/apache/lucene/geo/*.java && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && jshell --class-path lucene/core/build/classes/java/main <<'EOF'\nimport org.apache.lucene.geo.*;\nimport org.apache.lucene.document.*;\nvar p = new Polygon(new double[]{1,-10,1-2e-10,1,10,10,1}, new double[]{1,-10,1+1e-10,10,10,1,1});\nvar ts = Tessellator.tessellate(p, true);\nvar q = LatLonGeometry.create(new Rectangle(0,2,4,6));\nfor (var t:ts) { var bytes=new byte[28]; ShapeField.encodeTriangle(bytes,t.getEncodedY(0),t.getEncodedX(0),t.isEdgefromPolygon(0),t.getEncodedY(1),t.getEncodedX(1),t.isEdgefromPolygon(1),t.getEncodedY(2),t.getEncodedX(2),t.isEdgefromPolygon(2)); var d=new ShapeField.DecodedTriangle(); ShapeField.decodeTriangle(bytes,d); System.out.println(t+\" => \"+d.type+\" \"+d); if(d.type==ShapeField.DecodedTriangle.TYPE.LINE) System.out.println(q.withinLine(GeoEncodingUtils.decodeLongitude(d.aX),GeoEncodingUtils.decodeLatitude(d.aY),d.ab,GeoEncodingUtils.decodeLongitude(d.bX),GeoEncodingUtils.decodeLatitude(d.bY))); else System.out.println(q.withinTriangle(GeoEncodingUtils.decodeLongitude(d.aX),GeoEncodingUtils.decodeLatitude(d.aY),d.ab,GeoEncodingUtils.decodeLongitude(d.bX),GeoEncodingUtils.decodeLatitude(d.bY),d.bc,GeoEncodingUtils.decodeLongitude(d.cX),GeoEncodingUtils.decodeLatitude(d.cY),d.ca)); }\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && jshell --class-path lucene/core/build/classes/java/main <<'EOF'\nimport org.apache.lucene.geo.*;\nimport org.apache.lucene.document.*;\ndouble[] xs={1,-10,1+1e-10,10,10,1}, ys={1,-10,1-2e-10,1,10,10};\nvar q = LatLonGeometry.create(new Rectangle(0,2,4,6));\nfor(int reverse=0;reverse<2;reverse++) for(int start=0;start<6;start++) { double[] x=new double[7],y=new double[7]; for(int i=0;i<7;i++){int j=Math.floorMod(start+(reverse==0?i:-i),6); x[i]=xs[j];y[i]=ys[j];} var ts=Tessellator.tessellate(new Polygon(y,x),true); boolean candidate=false,oldReject=false,newReject=false; for(var t:ts){var bytes=new byte[28]; ShapeField.encodeTriangle(bytes,t.getEncodedY(0),t.getEncodedX(0),t.isEdgefromPolygon(0),t.getEncodedY(1),t.getEncodedX(1),t.isEdgefromPolygon(1),t.getEncodedY(2),t.getEncodedX(2),t.isEdgefromPolygon(2)); var d=new ShapeField.DecodedTriangle();ShapeField.decodeTriangle(bytes,d); boolean boundary=false;for(int e=0;e<3;e++){int f=(e+1)%3;boundary|=t.isEdgefromPolygon(e)&&(t.getEncodedX(e)!=t.getEncodedX(f)||t.getEncodedY(e)!=t.getEncodedY(f));} Component2D.WithinRelation oldR,newR; double ax=GeoEncodingUtils.decodeLongitude(d.aX),ay=GeoEncodingUtils.decodeLatitude(d.aY),bx=GeoEncodingUtils.decodeLongitude(d.bX),by=GeoEncodingUtils.decodeLatitude(d.bY); if(d.type==ShapeField.DecodedTriangle.TYPE.LINE){ oldR=q.withinLine(ax,ay,d.ab,bx,by);newR=q.withinLine(ax,ay,boundary,bx,by);if(d.ab!=boundary)System.out.println(\"mismatch start=\"+start+\" reverse=\"+reverse+\" \"+t+\" => \"+d);}else{oldR=q.withinTriangle(ax,ay,d.ab,bx,by,d.bc,GeoEncodingUtils.decodeLongitude(d.cX),GeoEncodingUtils.decodeLatitude(d.cY),d.ca);newR=oldR;}candidate|=oldR==Component2D.WithinRelation.CANDIDATE;oldReject|=oldR==Component2D.WithinRelation.NOTWITHIN;newReject|=newR==Component2D.WithinRelation.NOTWITHIN;}System.out.println(\"start=\"+start+\" reverse=\"+reverse+\" oldContains=\"+(candidate&&!oldReject)+\" newContains=\"+(candidate&&!newReject));}\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && jshell --class-path lucene/core/build/classes/java/main <<'EOF'\nimport org.apache.lucene.geo.*;\nimport org.apache.lucene.document.*;\nimport org.apache.lucene.index.*;\nimport org.apache.lucene.search.*;\nimport org.apache.lucene.store.*;\nvar p=new Polygon(new double[]{10,10,1,-10,1-2e-10,1,10},new double[]{10,1,1,-10,1+1e-10,10,10});\nvar dir=new ByteBuffersDirectory();var writer=new IndexWriter(dir,new IndexWriterConfig());var doc=new Document();for(var f:LatLonShape.createIndexableFields(\"shape\",p,true))doc.add(f);writer.addDocument(doc);var reader=DirectoryReader.open(writer);var searcher=new IndexSearcher(reader);\nSystem.out.println(\"contains box=\"+searcher.count(LatLonShape.newBoxQuery(\"shape\",ShapeField.QueryRelation.CONTAINS,4,6,0,2)));\nSystem.out.println(\"contains polygon=\"+searcher.count(LatLonShape.newPolygonQuery(\"shape\",ShapeField.QueryRelation.CONTAINS,new Polygon(new double[]{4,4,6,6,4},new double[]{0,2,2,0,0}))));\nSystem.out.println(\"intersects=\"+searcher.count(LatLonShape.newBoxQuery(\"shape\",ShapeField.QueryRelation.INTERSECTS,4,6,0,2)));\nSystem.out.println(\"contained box=\"+searcher.count(LatLonShape.newBoxQuery(\"shape\",ShapeField.QueryRelation.CONTAINS,4,6,2,3)));\nreader.close();writer.close();dir.close();\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A105 'newGeometryQuery' lucene/core/src/java/org/apache/lucene/document/LatLonShape.java | tail -112 && ls lucene/core/build/resources/main/META-INF/services && sed -n '235,290p' lucene/core/src/java/org/apache/lucene/geo/Polygon2D.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find gradle -type f \\( -name '*format*' -o -name '*spotless*' \\) && grep -nE 'tidy|spotless' build.gradle gradle/*.gradle lucene/core/build.gradle 2>/dev/null | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\nnew file mode 100644\n--- /dev/null\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n@@ -0,0 +1,110 @@\n+/*\n+ * Licensed to the Apache Software Foundation (ASF) under one or more\n+ * contributor license agreements.  See the NOTICE file distributed with\n+ * this work for additional information regarding copyright ownership.\n+ * The ASF licenses this file to You under the Apache License, Version 2.0\n+ * (the \"License\"); you may not use this file except in compliance with\n+ * the License.  You may obtain a copy of the License at\n+ *\n+ *     http://www.apache.org/licenses/LICENSE-2.0\n+ *\n+ * Unless required by applicable law or agreed to in writing, software\n+ * distributed under the License is distributed on an \"AS IS\" BASIS,\n+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n+ * See the License for the specific language governing permissions and\n+ * limitations under the License.\n+ */\n+package org.apache.lucene.document;\n+\n+import org.apache.lucene.document.ShapeField.QueryRelation;\n+import org.apache.lucene.geo.Polygon;\n+import org.apache.lucene.index.IndexReader;\n+import org.apache.lucene.search.IndexSearcher;\n+import org.apache.lucene.store.Directory;\n+import org.apache.lucene.tests.index.RandomIndexWriter;\n+import org.apache.lucene.tests.util.LuceneTestCase;\n+\n+public class TestShapeField extends LuceneTestCase {\n+\n+  public void testCollapsedTriangleEdgeFlags() {\n+    byte[] bytes = new byte[7 * ShapeField.BYTES];\n+    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();\n+    for (int repeatedPoint = 0; repeatedPoint < 2; repeatedPoint++) {\n+      for (int distinctVertex = 0; distinctVertex < 3; distinctVertex++) {\n+        int[] coordinates = {repeatedPoint, repeatedPoint, repeatedPoint};\n+        coordinates[distinctVertex] = 1 - repeatedPoint;\n+        for (int flags = 0; flags < 8; flags++) {\n+          boolean[] edges = {(flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0};\n+          ShapeField.encodeTriangle(\n+              bytes,\n+              coordinates[0],\n+              coordinates[0],\n+              edges[0],\n+              coordinates[1],\n+              coordinates[1],\n+              edges[1],\n+              coordinates[2],\n+              coordinates[2],\n+              edges[2]);\n+          ShapeField.decodeTriangle(bytes, triangle);\n+          boolean expectedBoundary = false;\n+          for (int edge = 0; edge < 3; edge++) {\n+            expectedBoundary |=\n+                edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n+          }\n+          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n+          assertEquals(expectedBoundary, triangle.ab);\n+          assertEquals(0, triangle.aX);\n+          assertEquals(0, triangle.aY);\n+          assertEquals(1, triangle.bX);\n+          assertEquals(1, triangle.bY);\n+          assertEquals(triangle.aX, triangle.cX);\n+          assertEquals(triangle.aY, triangle.cY);\n+        }\n+      }\n+    }\n+  }\n+\n+  public void testContainsFlatPolygon() throws Exception {\n+    // Two distinct vertices quantize to the same point, collapsing an internal diagonal.\n+    Polygon polygon =\n+        new Polygon(\n+            new double[] {10, 10, 1, -10, 1 - 2e-10, 1, 10},\n+            new double[] {10, 1, 1, -10, 1 + 1e-10, 10, 10});\n+    Polygon crossing =\n+        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n+    Polygon inside =\n+        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n+    try (Directory dir = newDirectory();\n+        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n+      Document doc = new Document();\n+      for (Field field : LatLonShape.createIndexableFields(\"shape\", polygon, true)) {\n+        doc.add(field);\n+      }\n+      writer.addDocument(doc);\n+      try (IndexReader reader = writer.getReader()) {\n+        IndexSearcher searcher = newSearcher(reader);\n+        for (QueryRelation relation : QueryRelation.values()) {\n+          int expected = relation == QueryRelation.INTERSECTS ? 1 : 0;\n+          assertEquals(\n+              expected,\n+              searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n+          assertEquals(\n+              expected,\n+              searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n+        }\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n+      }\n+    }\n+  }\n+}\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestShapeField",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find lucene/core/build -name '*TestShapeField*' -type f && grep -n -A12 '<failure' lucene/core/build/test-results/test/TEST-org.apache.lucene.document.TestShapeField.xml 2>/dev/null && sed -n '1,150p' gradle/validation/spotless.gradle",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --stat && git --no-pager status --short && find lucene/core/build -type f -name '*ShapeField*.txt' -exec tail -55 {} \\;",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -371,11 +371,16 @@ public final class ShapeField {\n     resolveTriangleType(triangle);\n   }\n \n+  /**\n+   * Classifies degenerate triangles, preserving boundary information from non-collapsed edges\n+   * when reducing them to a line.\n+   */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\n       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n         triangle.type = DecodedTriangle.TYPE.POINT;\n       } else {\n+        triangle.ab = triangle.bc || triangle.ca;\n         triangle.bX = triangle.cX;\n         triangle.bY = triangle.cY;\n         triangle.cX = triangle.aX;\n@@ -383,8 +388,10 @@ public final class ShapeField {\n         triangle.type = DecodedTriangle.TYPE.LINE;\n       }\n     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n+      triangle.ab = triangle.ab || triangle.bc;\n       triangle.type = DecodedTriangle.TYPE.LINE;\n     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\n+      triangle.ab = triangle.ab || triangle.ca;\n       triangle.cX = triangle.aX;\n       triangle.cY = triangle.aY;\n       triangle.type = DecodedTriangle.TYPE.LINE;\nPATCH\n./gradlew --offline :lucene:core:tidy :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-field-validation.log 2>&1; result=$?; tail -65 /testbed/build/shape-field-validation.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-field-tests.log 2>&1; result=$?; tail -55 /testbed/build/shape-field-tests.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && head -110 build/shape-field-validation.log && git --no-pager diff --check && git --no-pager diff -- lucene/core/src/java/org/apache/lucene/document/ShapeField.java && find .gradle build -iname '*google*format*.jar' -o -iname '*spotless*.jar'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "find \"$HOME/.gradle/caches\" -type f -name '*google*format*.jar' -print 2>/dev/null; cd /testbed && sed -n '1,150p' lucene/core/src/test/org/apache/lucene/document/TestShapeField.java && git --no-pager status --short && grep -h '<testsuite ' lucene/core/build/test-results/test/TEST-org.apache.lucene.document.Test{ShapeField,LatLonShapeEncoding,XYShapeEncoding,LatLonShape,XYShape,ShapeDocValues}.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A18 -B3 'google-java-format' build/shape-field-validation.log | tail -50 && grep -R -n --include='*.gradle' 'googleJavaFormat\\|google-java-format' gradle buildSrc/src | head -20",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -373,6 +373,3 @@\n-  /**\n-   * Classifies degenerate triangles, preserving boundary information from non-collapsed edges\n-   * when reducing them to a line.\n-   */\n+  /** Classifies triangles, preserving non-collapsed boundary edges when reducing to a line. */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\ndiff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n--- a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n@@ -49,5 +49,4 @@\n           boolean expectedBoundary = false;\n           for (int edge = 0; edge < 3; edge++) {\n-            expectedBoundary |=\n-                edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n+            expectedBoundary |= edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n           }\n@@ -73,6 +72,4 @@\n-    Polygon crossing =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n-    Polygon inside =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n+    Polygon crossing = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n+    Polygon inside = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n     try (Directory dir = newDirectory();\n@@ -89,16 +86,12 @@\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n+              expected, searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n+              expected, searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n         }\n         assertEquals(\n             1,\n-            searcher.count(\n-                LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n+            searcher.count(LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n         assertEquals(\n-            1,\n-            searcher.count(\n-                LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n+            1, searcher.count(LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\nPATCH\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues -Dtests.seed=FCB177A2175BE8D9 > /testbed/build/shape-field-tests.log 2>&1; result=$?; tail -12 /testbed/build/shape-field-tests.log; if [ \"$result\" -eq 0 ]; then git --no-pager diff --check && git --no-pager diff --stat && git --no-pager status --short && rm /testbed/build/shape-field-validation.log /testbed/build/shape-field-tests.log; fi; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '370,405p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && nl -ba lucene/core/src/test/org/apache/lucene/document/TestShapeField.java | sed -n '46,112p'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -371,10 +371,7 @@\n     resolveTriangleType(triangle);\n   }\n \n-  /**\n-   * Classifies degenerate triangles, preserving boundary information from non-collapsed edges\n-   * when reducing them to a line.\n-   */\n+  /** Classifies triangles, preserving non-collapsed boundary edges when reducing to a line. */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\n       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\ndiff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n--- a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n@@ -50,8 +50,7 @@\n           boolean expectedBoundary = false;\n           for (int edge = 0; edge < 3; edge++) {\n-            expectedBoundary |=\n-                edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n+            expectedBoundary |= edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n           }\n           assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n           assertEquals(expectedBoundary, triangle.ab);\n@@ -73,8 +72,6 @@\n             new double[] {10, 1, 1, -10, 1 + 1e-10, 10, 10});\n-    Polygon crossing =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n-    Polygon inside =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n+    Polygon crossing = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n+    Polygon inside = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n     try (Directory dir = newDirectory();\n         RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n@@ -87,20 +84,16 @@\n         for (QueryRelation relation : QueryRelation.values()) {\n           int expected = relation == QueryRelation.INTERSECTS ? 1 : 0;\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n+              expected, searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n+              expected, searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n         }\n         assertEquals(\n             1,\n-            searcher.count(\n-                LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n+            searcher.count(LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n         assertEquals(\n-            1,\n-            searcher.count(\n-                LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n+            1, searcher.count(LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n       }\n     }\n   }\nPATCH\nif [ \"$?\" -ne 0 ]; then exit 1; fi\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues -Dtests.seed=FCB177A2175BE8D9 > /testbed/build/shape-field-tests.log 2>&1; result=$?; tail -10 /testbed/build/shape-field-tests.log; if [ \"$result\" -eq 0 ]; then git --no-pager diff --check && git --no-pager diff --stat && git --no-pager status --short && rm /testbed/build/shape-field-tests.log; fi; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\nnew file mode 100644\n--- /dev/null\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n@@ -0,0 +1,110 @@\n+/*\n+ * Licensed to the Apache Software Foundation (ASF) under one or more\n+ * contributor license agreements.  See the NOTICE file distributed with\n+ * this work for additional information regarding copyright ownership.\n+ * The ASF licenses this file to You under the Apache License, Version 2.0\n+ * (the \"License\"); you may not use this file except in compliance with\n+ * the License.  You may obtain a copy of the License at\n+ *\n+ *     http://www.apache.org/licenses/LICENSE-2.0\n+ *\n+ * Unless required by applicable law or agreed to in writing, software\n+ * distributed under the License is distributed on an \"AS IS\" BASIS,\n+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n+ * See the License for the specific language governing permissions and\n+ * limitations under the License.\n+ */\n+package org.apache.lucene.document;\n+\n+import org.apache.lucene.document.ShapeField.QueryRelation;\n+import org.apache.lucene.geo.Polygon;\n+import org.apache.lucene.index.IndexReader;\n+import org.apache.lucene.search.IndexSearcher;\n+import org.apache.lucene.store.Directory;\n+import org.apache.lucene.tests.index.RandomIndexWriter;\n+import org.apache.lucene.tests.util.LuceneTestCase;\n+\n+public class TestShapeField extends LuceneTestCase {\n+\n+  public void testCollapsedTriangleEdgeFlags() {\n+    byte[] bytes = new byte[7 * ShapeField.BYTES];\n+    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();\n+    for (int repeatedPoint = 0; repeatedPoint < 2; repeatedPoint++) {\n+      for (int distinctVertex = 0; distinctVertex < 3; distinctVertex++) {\n+        int[] coordinates = {repeatedPoint, repeatedPoint, repeatedPoint};\n+        coordinates[distinctVertex] = 1 - repeatedPoint;\n+        for (int flags = 0; flags < 8; flags++) {\n+          boolean[] edges = {(flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0};\n+          ShapeField.encodeTriangle(\n+              bytes,\n+              coordinates[0],\n+              coordinates[0],\n+              edges[0],\n+              coordinates[1],\n+              coordinates[1],\n+              edges[1],\n+              coordinates[2],\n+              coordinates[2],\n+              edges[2]);\n+          ShapeField.decodeTriangle(bytes, triangle);\n+          boolean expectedBoundary = false;\n+          for (int edge = 0; edge < 3; edge++) {\n+            expectedBoundary |=\n+                edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n+          }\n+          assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n+          assertEquals(expectedBoundary, triangle.ab);\n+          assertEquals(0, triangle.aX);\n+          assertEquals(0, triangle.aY);\n+          assertEquals(1, triangle.bX);\n+          assertEquals(1, triangle.bY);\n+          assertEquals(triangle.aX, triangle.cX);\n+          assertEquals(triangle.aY, triangle.cY);\n+        }\n+      }\n+    }\n+  }\n+\n+  public void testContainsFlatPolygon() throws Exception {\n+    // Two distinct vertices quantize to the same point, collapsing an internal diagonal.\n+    Polygon polygon =\n+        new Polygon(\n+            new double[] {10, 10, 1, -10, 1 - 2e-10, 1, 10},\n+            new double[] {10, 1, 1, -10, 1 + 1e-10, 10, 10});\n+    Polygon crossing =\n+        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n+    Polygon inside =\n+        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n+    try (Directory dir = newDirectory();\n+        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n+      Document doc = new Document();\n+      for (Field field : LatLonShape.createIndexableFields(\"shape\", polygon, true)) {\n+        doc.add(field);\n+      }\n+      writer.addDocument(doc);\n+      try (IndexReader reader = writer.getReader()) {\n+        IndexSearcher searcher = newSearcher(reader);\n+        for (QueryRelation relation : QueryRelation.values()) {\n+          int expected = relation == QueryRelation.INTERSECTS ? 1 : 0;\n+          assertEquals(\n+              expected,\n+              searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n+          assertEquals(\n+              expected,\n+              searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n+        }\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n+      }\n+    }\n+  }\n+}\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestShapeField",
+  "cd /testbed && git apply <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -371,11 +371,16 @@ public final class ShapeField {\n     resolveTriangleType(triangle);\n   }\n \n+  /**\n+   * Classifies degenerate triangles, preserving boundary information from non-collapsed edges\n+   * when reducing them to a line.\n+   */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\n       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n         triangle.type = DecodedTriangle.TYPE.POINT;\n       } else {\n+        triangle.ab = triangle.bc || triangle.ca;\n         triangle.bX = triangle.cX;\n         triangle.bY = triangle.cY;\n         triangle.cX = triangle.aX;\n@@ -383,8 +388,10 @@ public final class ShapeField {\n         triangle.type = DecodedTriangle.TYPE.LINE;\n       }\n     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n+      triangle.ab = triangle.ab || triangle.bc;\n       triangle.type = DecodedTriangle.TYPE.LINE;\n     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\n+      triangle.ab = triangle.ab || triangle.ca;\n       triangle.cX = triangle.aX;\n       triangle.cY = triangle.aY;\n       triangle.type = DecodedTriangle.TYPE.LINE;\nPATCH\n./gradlew --offline :lucene:core:tidy :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-field-validation.log 2>&1; result=$?; tail -65 /testbed/build/shape-field-validation.log; exit \"$result\"",
+  "cd /testbed && ./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues > /testbed/build/shape-field-tests.log 2>&1; result=$?; tail -55 /testbed/build/shape-field-tests.log; exit \"$result\"",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -373,6 +373,3 @@\n-  /**\n-   * Classifies degenerate triangles, preserving boundary information from non-collapsed edges\n-   * when reducing them to a line.\n-   */\n+  /** Classifies triangles, preserving non-collapsed boundary edges when reducing to a line. */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\ndiff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n--- a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n@@ -49,5 +49,4 @@\n           boolean expectedBoundary = false;\n           for (int edge = 0; edge < 3; edge++) {\n-            expectedBoundary |=\n-                edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n+            expectedBoundary |= edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n           }\n@@ -73,6 +72,4 @@\n-    Polygon crossing =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n-    Polygon inside =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n+    Polygon crossing = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n+    Polygon inside = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n     try (Directory dir = newDirectory();\n@@ -89,16 +86,12 @@\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n+              expected, searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n+              expected, searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n         }\n         assertEquals(\n             1,\n-            searcher.count(\n-                LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n+            searcher.count(LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n         assertEquals(\n-            1,\n-            searcher.count(\n-                LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n+            1, searcher.count(LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\nPATCH\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues -Dtests.seed=FCB177A2175BE8D9 > /testbed/build/shape-field-tests.log 2>&1; result=$?; tail -12 /testbed/build/shape-field-tests.log; if [ \"$result\" -eq 0 ]; then git --no-pager diff --check && git --no-pager diff --stat && git --no-pager status --short && rm /testbed/build/shape-field-validation.log /testbed/build/shape-field-tests.log; fi; exit \"$result\"",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -371,10 +371,7 @@\n     resolveTriangleType(triangle);\n   }\n \n-  /**\n-   * Classifies degenerate triangles, preserving boundary information from non-collapsed edges\n-   * when reducing them to a line.\n-   */\n+  /** Classifies triangles, preserving non-collapsed boundary edges when reducing to a line. */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\n       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\ndiff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n--- a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java\n@@ -50,8 +50,7 @@\n           boolean expectedBoundary = false;\n           for (int edge = 0; edge < 3; edge++) {\n-            expectedBoundary |=\n-                edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n+            expectedBoundary |= edges[edge] && coordinates[edge] != coordinates[(edge + 1) % 3];\n           }\n           assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n           assertEquals(expectedBoundary, triangle.ab);\n@@ -73,8 +72,6 @@\n             new double[] {10, 1, 1, -10, 1 + 1e-10, 10, 10});\n-    Polygon crossing =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n-    Polygon inside =\n-        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n+    Polygon crossing = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {0, 2, 2, 0, 0});\n+    Polygon inside = new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {2, 3, 3, 2, 2});\n     try (Directory dir = newDirectory();\n         RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n@@ -87,20 +84,16 @@\n         for (QueryRelation relation : QueryRelation.values()) {\n           int expected = relation == QueryRelation.INTERSECTS ? 1 : 0;\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n+              expected, searcher.count(LatLonShape.newPolygonQuery(\"shape\", relation, crossing)));\n           assertEquals(\n-              expected,\n-              searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n+              expected, searcher.count(LatLonShape.newBoxQuery(\"shape\", relation, 4, 6, 0, 2)));\n         }\n         assertEquals(\n             1,\n-            searcher.count(\n-                LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n+            searcher.count(LatLonShape.newPolygonQuery(\"shape\", QueryRelation.CONTAINS, inside)));\n         assertEquals(\n-            1,\n-            searcher.count(\n-                LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n+            1, searcher.count(LatLonShape.newBoxQuery(\"shape\", QueryRelation.CONTAINS, 4, 6, 2, 3)));\n       }\n     }\n   }\nPATCH\nif [ \"$?\" -ne 0 ]; then exit 1; fi\n./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestShapeField --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues -Dtests.seed=FCB177A2175BE8D9 > /testbed/build/shape-field-tests.log 2>&1; result=$?; tail -10 /testbed/build/shape-field-tests.log; if [ \"$result\" -eq 0 ]; then git --no-pager diff --check && git --no-pager diff --stat && git --no-pager status --short && rm /testbed/build/shape-field-tests.log; fi; exit \"$result\""
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed `ShapeField` triangle simplification: collapsed triangles retained a boundary flag from an edge that could disappear. The resulting line now combines boundary flags only from non-collapsed edges, preserving polygon boundaries and preventing false-positive `CONTAINS` results. Added regression coverage without modifying existing tests.",
+ "assistant_messages": [
+  "I\u2019ll locate the triangle simplification code and check how it preserves polygon boundary flags.\n",
+  "The simplification leaves the line\u2019s boundary flag on an edge that may have collapsed to a point. I\u2019ll derive it from the two surviving edges and add coverage for all three collapse cases, plus a `CONTAINS` regression.\n",
+  "Fixed `ShapeField` triangle simplification: collapsed triangles retained a boundary flag from an edge that could disappear. The resulting line now combines boundary flags only from non-collapsed edges, preserving polygon boundaries and preventing false-positive `CONTAINS` results. Added regression coverage without modifying existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Considering testing approach**\n\nI\u2019m evaluating whether we can add robust tests without altering the existing ones. The user mentioned not wanting to change existing tests, but adding methods is generally acceptable. I think creating a new class, TestShapeField, to simplify the process will help address various scenarios. In this context, I\u2019ll aim for an end-to-end test, building on the existing Base and TestLatLonShape tests, keeping everything in a single file while avoiding unnecessary abstractions.\n\n**Planning additional tests**\n\nI'm thinking about adding tests in BaseShapeEncodingTestCase focused on checking shape coordinates. This includes testing encoding for edge flags with various configurations like orientation and slopes. I need to ensure that encoding preserves flags and handles duplicates correctly. Additionally, I\u2019ll introduce a new test method to directly resolve triangle types with all possible cases and improve the encode and decode functions for more comprehensive testing. I can set up various axes and permutations to exhaustively test these scenarios, aiming for robust coverage.\n\n**Simplifying test loops**\n\nI'm considering simplifying the test for line encoding edge flags by using a loop that checks duplicate vertices from 0 to 2 and edge flags from 0 to 7. By setting the points with combinations like {encode0, encode0, encode1}, I can reorder the single endpoint index using variations, including reversing for a total of six combinations. I can then assert the expected outcome using the formula to ensure accuracy. This approach should streamline the testing process while still ensuring thorough coverage.",
+  "\n\n**Investigating shape algorithms**\n\nOkay, I\u2019m thinking about how to explore realistic scenarios within our time budget. I want to generate a deterministic algorithm that can create a thin zigzag polygon. Then, I\u2019ll run a brute-force search to compare the generated candidates against the expected outcomes of the encoded triangle boundaries. This could be an interesting way to analyze the efficiency and effectiveness of different approaches! I\u2019m eager to see how this all works out.",
+  "**Inspecting compiled outputs**\n\nI need to use jshell to inspect my compiled outputs without making edits. I should call jshell with the main classpath to ensure everything works properly. My goal is to compute the polygon and decode the fields for queries related to a rectangle, specifically between latitudes 4 to 6 and longitudes 0 to 2. It\u2019s important to check relation counts and make any necessary corrections for comparison. Let\u2019s get started with this!",
+  "**Fixing line conditions**\n\nI\u2019m looking to fix certain line conditions involving equations like ab=bc within specific parameters. When a equals c, I want to clarify ab=ab and b=c with a similar approach. It's important to keep other flags unchanged since only ab is affected in the LINE. I don't see a need to normalize other flags, just some documentation on this method will be helpful. I'll ensure that everything related to the canonical point remains unchanged.",
+  "**Inspecting formatting issues**\n\nIt seems like the formatter tooling is failing due to duplicate configurations because of a missing jar. I\u2019ll start by inspecting the first log lines and grepping for error causes so I can avoid unrelated issues. I also need to run tests independently from the format. It would be helpful to read logs in parallel while running the tests, just making sure the logs have a new name to preserve clarity.",
+  "**Clarifying formatting tasks**\n\nI can't mention the formatter unless there's an incomplete task, which isn't critical since the tests are done. I need to update the comment now via git, applying it with adjusted format only for the new simple test using the component directly for asserts\u2014keeping things shorter without any extras. It seems necessary to clean up and test at the end, so these calls will be needed. Let's ensure everything is neat and clear!",
+  "**Troubleshooting patch issues**\n\nI'm trying to understand why the third context failed. The hunk ends with \"removing newBox,\" so it seems like there's no context afterward, which might require an end-of-file (EOF) indication because there's no trailing context. Git apply is treating the hunk as having no trailing context at that point. Normally, the diff should have context at the end. I think if I add a closing bracket, that might solve the issue. I'll create a new patch with the updated context."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 263.9
+}

@@ -1,0 +1,330 @@
+{
+ "bug": "projectlombok__lombok-3326",
+ "arm": "peeky",
+ "rep": 3,
+ "language": "java",
+ "category": "B",
+ "image": "peeky-study/projectlombok__lombok-3326:peeky",
+ "image_digest": "sha256:e304fc53109f8bd7627806695a25d432b4ca47dbfe49074c57deea2324576535",
+ "peeky_sha": "360b3f17322f05423803ba223c0c9628da3bcee7",
+ "container": "study-projectlombok__lombok-3326-peeky-3-005e3b",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-10-31T02:56:56+00:00",
+ "ended": "2026-10-31T02:59:20+00:00",
+ "wall_seconds": 144.3,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "javac-UtilityClassGeneric.java(lombok.transform.TestWithDelombok)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 6.1,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "58650c560151320578a71bfeb7a391f2536b6ca838a40eec4d325f799a852df2",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "doc/changelog.markdown",
+  "src/core/lombok/javac/handlers/HandleUtilityClass.java",
+  "src/stubs/com/sun/tools/javac/code/Symbol.java"
+ ],
+ "patch_bytes": 1608,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 316
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 24,
+ "ai_credits": 34.8879,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 1005114,
+  "output": 8074,
+  "cache_read": 935254,
+  "cache_write": 69788,
+  "reasoning": 1799
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 37,
+ "tool_calls_by_name": {
+  "bash": 36,
+  "stop_bash": 1
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls /testbed | head; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && sed -n '1,280p' src/core/lombok/javac/handlers/HandleUtilityClass.java && sed -n '1,230p' src/core/lombok/eclipse/handlers/HandleUtilityClass.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg --files test | grep -E 'UtilityClass|RunTests|CompilerMessage|TestJavac' && rg -n 'test.javacCurrent|test.compile|test.filter' build.xml buildScripts && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find test -iname '*UtilityClass*' -o -iname '*RunTests*' -o -iname '*TestJavac*' && grep -nE 'test.javacCurrent|test.compile|test.filter' build.xml buildScripts/*.xml && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -n -E 'setEnclosingType|enclosingType|flags_field.*STATIC' src/core/lombok/javac --include='*.java' && java -version && ls /usr/lib/jvm",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat test/transform/resource/before/UtilityClass.java test/transform/resource/after-delombok/UtilityClass.java test/transform/resource/after-ecj/UtilityClass.java && sed -n '1,250p' buildScripts/tests.ant.xml && sed -n '1,210p' test/core/src/lombok/RunTestsViaDelombok.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,220p' test/core/src/lombok/TestJavac.java && sed -n '1,245p' test/core/src/lombok/AbstractRunTests.java && sed -n '1,185p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat test/transform/resource/after-delombok/UtilityClass.java test/transform/resource/after-ecj/UtilityClass.java && grep -nE 'test.javacCurrent|test.compile|test.filter|junit|<target|test.javac' buildScripts/tests.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'class |@Test|compile|System.getProperty|lombok.tests|filter|delombok' test/core/src/lombok/{TestJavac,AbstractRunTests,RunTestsViaDelombok}.java && sed -n '1,120p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '25,58p' buildScripts/tests.ant.xml && sed -n '124,171p' buildScripts/tests.ant.xml && cat test/core/src/lombok/TestJavac.java && sed -n '45,125p' test/core/src/lombok/AbstractRunTests.java && ls build && find dist -maxdepth 2 -type f",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -nE 'lombok.tests|tests.*filter|System.getProperty' test/core/src/lombok --include='*Runner*.java' --include='*Parameters*.java' && sed -n '1,150p' /opt/peeky/docs/lang/java.md && find /usr/lib/jvm/java-11-openjdk-arm64 -name src.zip",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '25,150p' test/core/src/lombok/DirectoryRunner.java && cat test/transform/src/lombok/transform/TestWithDelombok.java test/transform/src/lombok/transform/TestSourceFiles.java && grep -nE 'packing.basedirs|cp.test|cp.stripe' buildScripts/{compile,dependencies,packing}.ant.xml",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && unzip -p /usr/lib/jvm/java-11-openjdk-arm64/lib/src.zip jdk.compiler/com/sun/tools/javac/code/Types.java | sed -n '1110,1220p;2100,2140p' && sed -n '1,115p' build.xml && sed -n '1,115p' buildScripts/compile.ant.xml && ls -a /root/.peeky 2>/dev/null | head",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: test/transform/resource/before/UtilityClassGeneric.java\n+@lombok.experimental.UtilityClass\n+class UtilityClassGeneric {\n+\t<T> T convertValue(Class<T> toValueType) {\n+\t\treturn null;\n+\t}\n+\t\n+\tDTO convert(Object json) {\n+\t\treturn convertValue(DTO.class);\n+\t}\n+\t\n+\tObject convert(DTO dto) {\n+\t\treturn null;\n+\t}\n+\t\n+\tclass DTO {\n+\t}\n+}\n*** Add File: test/transform/resource/after-delombok/UtilityClassGeneric.java\n+final class UtilityClassGeneric {\n+\tstatic <T> T convertValue(Class<T> toValueType) {\n+\t\treturn null;\n+\t}\n+\tstatic DTO convert(Object json) {\n+\t\treturn convertValue(DTO.class);\n+\t}\n+\tstatic Object convert(DTO dto) {\n+\t\treturn null;\n+\t}\n+\tstatic class DTO {\n+\t}\n+\t@java.lang.SuppressWarnings(\"all\")\n+\tprivate UtilityClassGeneric() {\n+\t\tthrow new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n+\t}\n+}\n*** Add File: test/transform/resource/after-ecj/UtilityClassGeneric.java\n+final @lombok.experimental.UtilityClass class UtilityClassGeneric {\n+  static class DTO {\n+    DTO() {\n+      super();\n+    }\n+  }\n+  static <T>T convertValue(Class<T> toValueType) {\n+    return null;\n+  }\n+  static DTO convert(Object json) {\n+    return convertValue(DTO.class);\n+  }\n+  static Object convert(DTO dto) {\n+    return null;\n+  }\n+  private @java.lang.SuppressWarnings(\"all\") UtilityClassGeneric() {\n+    super();\n+    throw new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n+  }\n+}\n*** End Patch\nPATCH\nant test.javacCurrent > /tmp/lombok-utility-baseline.log 2>&1; result=$?; tail -n 95 /tmp/lombok-utility-baseline.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\nfiles = {\n'before': '''@lombok.experimental.UtilityClass\nclass UtilityClassGeneric {\n\t<T> T convertValue(Class<T> toValueType) {\n\t\treturn null;\n\t}\n\t\n\tDTO convert(Object json) {\n\t\treturn convertValue(DTO.class);\n\t}\n\t\n\tObject convert(DTO dto) {\n\t\treturn null;\n\t}\n\t\n\tclass DTO {\n\t}\n}\n''',\n'after-delombok': '''final class UtilityClassGeneric {\n\tstatic <T> T convertValue(Class<T> toValueType) {\n\t\treturn null;\n\t}\n\tstatic DTO convert(Object json) {\n\t\treturn convertValue(DTO.class);\n\t}\n\tstatic Object convert(DTO dto) {\n\t\treturn null;\n\t}\n\tstatic class DTO {\n\t}\n\t@java.lang.SuppressWarnings(\"all\")\n\tprivate UtilityClassGeneric() {\n\t\tthrow new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n\t}\n}\n''',\n'after-ecj': '''final @lombok.experimental.UtilityClass class UtilityClassGeneric {\n  static class DTO {\n    DTO() {\n      super();\n    }\n  }\n  static <T>T convertValue(Class<T> toValueType) {\n    return null;\n  }\n  static DTO convert(Object json) {\n    return convertValue(DTO.class);\n  }\n  static Object convert(DTO dto) {\n    return null;\n  }\n  private @java.lang.SuppressWarnings(\"all\") UtilityClassGeneric() {\n    super();\n    throw new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n  }\n}\n'''\n}\nfor directory, text in files.items():\n    p = Path('test/transform/resource') / directory / 'UtilityClassGeneric.java'\n    with p.open('x') as out:\n        out.write(text)\nPY\nant test.javacCurrent > /tmp/lombok-utility-baseline.log 2>&1; result=$?; grep -n -A 75 -B 5 -E '\\[FAIL\\]|NullPointerException|UtilityClassGeneric|BUILD FAILED' /tmp/lombok-utility-baseline.log | tail -n 140; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && javap -p -c 'com.sun.tools.javac.code.Types$4' | sed -n '/visitClassType(/,/visitArrayType(/p' && javap -p -c com.sun.tools.javac.code.Types | sed -n '/public com.sun.tools.javac.code.Type asSuper(/,/^  [a-z]/p' && javap -p -c com.sun.tools.javac.code.Type\\$ClassType | sed -n '/isParameterized(/,/^  [a-z]/p; /isRaw(/,/^  [a-z]/p'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'reset|newRound|flags_field|classType|erase|erasure' src/core/lombok/javac/apt/*.java && find lib -maxdepth 3 -type f | head -n 40 && sed -n '145,180p' test/core/src/lombok/DirectoryRunner.java && git diff --stat && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && javap -p -c com.sun.tools.javac.code.Symbol\\$ClassSymbol | sed -n '/erasure(/,/^  [a-z]/p' && javap -p -c com.sun.tools.javac.code.Symbol | sed -n '/public com.sun.tools.javac.code.Type erasure_field/p; /erasure(/,/^  [a-z]/p' && sed -n '220,255p' buildScripts/compile.ant.xml && find ivyCache -iname '*junit*.jar' -o -iname '*hamcrest*.jar' -o -iname '*ecj*.jar' && sed -n '1,95p' /opt/peeky/docs/lang/java-cookbook.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -nE 'erasure_field|\\.erasure\\(' src/core/lombok/javac --include='*.java' && sed -n '300,375p' src/core/lombok/javac/apt/LombokProcessor.java && sed -n '1,95p' test/core/src/lombok/RunTestsViaDelombok.java && grep -nE 'classpaths|classpath|cp.test|cp.stripe' buildScripts/ivy.xml buildScripts/setup.ant.xml | head -n 40",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '/### Set up a launched target/,/### What can be set/p' /opt/peeky/docs/lang/java-cookbook.md | head -n 140 && sed -n '/### Attach to a Gradle test/,/### What attaching changes/p' /opt/peeky/docs/lang/java-cookbook.md | head -n 115 && sed -n '1,75p' buildScripts/ivy.xml && find ivyCache -iname '*.jar' | grep -E 'asm|guava'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && java -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:build/lombok-main8 lombok.delombok.Delombok --print test/transform/resource/before/UtilityClassGeneric.java 2>&1 | head -n 25 && javap -p -c com.sun.tools.javac.comp.Check | grep -n -A 30 -B 4 'erasure' | head -n 95 && sed -n '1,100p' src/stubs/com/sun/tools/javac/code/Symbol.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find ivyCache -iname '*cmdreader*.jar' -o -iname '*patcher*.jar' && javap -p -c com.sun.tools.javac.code.Types | sed -n '/public com.sun.tools.javac.code.Type erasure(com.sun.tools.javac.code.Type);/,/^  [a-z]/p' && grep -n -A 30 -B 4 'Type.noType\\|setEnclosingType' src/stubs/com/sun/tools/javac/code/Type.java",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('build/utility-peeky.json').write_text(json.dumps({'port': 5039, 'sources': ['src/core/lombok/javac/handlers/HandleUtilityClass.java'], 'class_roots': ['build/lombok-main']}))\nPY\njava -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5039 -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:build/lombok-main8:ivyCache/zwitserloot.com/cmdreader/jars/cmdreader-1.2.jar lombok.delombok.Delombok --print test/transform/resource/before/UtilityClassGeneric.java",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky describe /testbed --config build/utility-peeky.json",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ps -eo pid,args | grep '[j]ava -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5039' && find src -path '*/javac/code/Type*' && ls website/templates/features/experimental/*Utility* && head -n 55 doc/changelog.markdown",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\np = Path('src/core/lombok/javac/handlers/HandleUtilityClass.java')\ns = p.read_text()\nold = '\\t\\t\\t\\t\\t((ClassType) innerClassSymbol.type).setEnclosingType(Type.noType);'\nnew = old + '\\n\\t\\t\\t\\t\\t// The cached erasure may still refer to the original enclosing instance.\\n\\t\\t\\t\\t\\tinnerClassSymbol.erasure_field = null;'\nassert s.count(old) == 1\np.write_text(s.replace(old, new))\np = Path('src/stubs/com/sun/tools/javac/code/Symbol.java')\ns = p.read_text()\nold = '\\tpublic Type type;'\nassert s.count(old) == 2\ns = s.replace(old, old + '\\n\\tpublic Type erasure_field;', 1)\np.write_text(s)\np = Path('doc/changelog.markdown')\ns = p.read_text()\nold = '* No new changes since the release of v1.18.24'\nassert s.count(old) == 1\np.write_text(s.replace(old, '* BUGFIX: Using generic methods with inner classes in `@UtilityClass` no longer causes javac to crash.'))\nPY\nant test.compile test.javacCurrent > /tmp/lombok-utility-fixed.log 2>&1; result=$?; grep -n -A 30 -B 4 -E '\\[ERR\\]|\\[FAIL\\]|UtilityClassGeneric|BUILD FAILED|BUILD SUCCESSFUL' /tmp/lombok-utility-fixed.log | tail -n 100; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '171,205p' buildScripts/tests.ant.xml && git --no-pager diff --check && git --no-pager diff -- src/core/lombok/javac/handlers/HandleUtilityClass.java src/stubs/com/sun/tools/javac/code/Symbol.java doc/changelog.markdown && cat test/transform/resource/{before,after-delombok,after-ecj}/UtilityClassGeneric.java && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && mkdir -p build/utility-regression-jdk11 build/utility-regression-jdk17 && javac -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:ivyCache/org.projectlombok/lombok.patcher/jars/lombok.patcher-0.46.jar -d build/utility-regression-jdk11 test/transform/resource/before/UtilityClassGeneric.java && /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:ivyCache/org.projectlombok/lombok.patcher/jars/lombok.patcher-0.46.jar -d build/utility-regression-jdk17 test/transform/resource/before/UtilityClassGeneric.java && javap -p -classpath build/utility-regression-jdk11 'UtilityClassGeneric$DTO' && /usr/lib/jvm/java-17-openjdk-arm64/bin/javap -p -classpath build/utility-regression-jdk17 'UtilityClassGeneric$DTO'",
+   "exit_code": 4,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '25,155p' src/core/lombok/javac/apt/LombokFileObjects.java && sed -n '245,325p' buildScripts/compile.ant.xml && grep -nE 'latest-changes.build|depends=.*deps|cachedunjar' buildScripts/website.ant.xml | head -n 25 && sed -n '1,115p' test/core/src/lombok/RunTestsViaEcj.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find ivyCache -iname '*org.eclipse.jdt.core*.jar' -o -iname '*ecj*.jar' -o -iname '*cmdreader*.jar' && find build/lombok-main -name 'Javac*BaseFileObject*' -o -name 'Javac9*' && ls -l build/lombok-main/lombok/javac/apt/Java9Compiler.class && grep -n -A 25 -B 4 'Java9Compiler\\|Javac9BaseFileObject' buildScripts/compile.ant.xml",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find build -name 'Java9Compiler*' && grep -n -A 30 -B 5 'Java9Compiler\\|src/core9' buildScripts/compile.ant.xml && find src -name Java9Compiler.java && grep -nE 'cp.eclipse-oxygen|deps.eclipse.oxygen|javaagent' buildScripts/{setup,tests}.ant.xml | head -n 25 && sed -n '135,190p' buildScripts/compile.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls src/core8/lombok/javac/apt && sed -n '187,214p' buildScripts/compile.ant.xml && javap -p -classpath build/lombok-main8 lombok.javac.apt.Java9Compiler && grep -n 'java9Compiler' -A 30 src/core/lombok/javac/apt/LombokFileObjects.java && find src -iname '*compiler*' | head -n 25 && ls -l build/lombok-main8/META-INF/ShadowClassLoader 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ant dist > /tmp/lombok-utility-dist.log 2>&1; result=$?; tail -n 55 /tmp/lombok-utility-dist.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && javac -cp dist/lombok.jar -d build/utility-regression-jdk11 test/transform/resource/before/UtilityClassGeneric.java && /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -cp dist/lombok.jar -d build/utility-regression-jdk17 test/transform/resource/before/UtilityClassGeneric.java && javap -p -classpath build/utility-regression-jdk11 'UtilityClassGeneric$DTO' && /usr/lib/jvm/java-17-openjdk-arm64/bin/javap -p -classpath build/utility-regression-jdk17 'UtilityClassGeneric$DTO'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ant test.eclipse-oxygen > /tmp/lombok-utility-ecj.log 2>&1; result=$?; grep -n -A 30 -B 4 -E '\\[ERR\\]|\\[FAIL\\]|UtilityClassGeneric|BUILD FAILED|BUILD SUCCESSFUL' /tmp/lombok-utility-ecj.log | tail -n 120; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\nfor name in ['build/utility-peeky.json', '/tmp/lombok-utility-baseline.log', '/tmp/lombok-utility-fixed.log', '/tmp/lombok-utility-dist.log', '/tmp/lombok-utility-ecj.log']:\n    Path(name).unlink()\nfor directory in ['build/utility-regression-jdk11', 'build/utility-regression-jdk17']:\n    path = Path(directory)\n    for file in path.iterdir():\n        file.unlink()\n    path.rmdir()\nPY\ngit --no-pager diff --check && git status --short && git --no-pager diff --stat && git ls-files --others --exclude-standard",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "cd /testbed && apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: test/transform/resource/before/UtilityClassGeneric.java\n+@lombok.experimental.UtilityClass\n+class UtilityClassGeneric {\n+\t<T> T convertValue(Class<T> toValueType) {\n+\t\treturn null;\n+\t}\n+\t\n+\tDTO convert(Object json) {\n+\t\treturn convertValue(DTO.class);\n+\t}\n+\t\n+\tObject convert(DTO dto) {\n+\t\treturn null;\n+\t}\n+\t\n+\tclass DTO {\n+\t}\n+}\n*** Add File: test/transform/resource/after-delombok/UtilityClassGeneric.java\n+final class UtilityClassGeneric {\n+\tstatic <T> T convertValue(Class<T> toValueType) {\n+\t\treturn null;\n+\t}\n+\tstatic DTO convert(Object json) {\n+\t\treturn convertValue(DTO.class);\n+\t}\n+\tstatic Object convert(DTO dto) {\n+\t\treturn null;\n+\t}\n+\tstatic class DTO {\n+\t}\n+\t@java.lang.SuppressWarnings(\"all\")\n+\tprivate UtilityClassGeneric() {\n+\t\tthrow new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n+\t}\n+}\n*** Add File: test/transform/resource/after-ecj/UtilityClassGeneric.java\n+final @lombok.experimental.UtilityClass class UtilityClassGeneric {\n+  static class DTO {\n+    DTO() {\n+      super();\n+    }\n+  }\n+  static <T>T convertValue(Class<T> toValueType) {\n+    return null;\n+  }\n+  static DTO convert(Object json) {\n+    return convertValue(DTO.class);\n+  }\n+  static Object convert(DTO dto) {\n+    return null;\n+  }\n+  private @java.lang.SuppressWarnings(\"all\") UtilityClassGeneric() {\n+    super();\n+    throw new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n+  }\n+}\n*** End Patch\nPATCH\nant test.javacCurrent > /tmp/lombok-utility-baseline.log 2>&1; result=$?; tail -n 95 /tmp/lombok-utility-baseline.log; exit \"$result\"",
+  "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\nfiles = {\n'before': '''@lombok.experimental.UtilityClass\nclass UtilityClassGeneric {\n\t<T> T convertValue(Class<T> toValueType) {\n\t\treturn null;\n\t}\n\t\n\tDTO convert(Object json) {\n\t\treturn convertValue(DTO.class);\n\t}\n\t\n\tObject convert(DTO dto) {\n\t\treturn null;\n\t}\n\t\n\tclass DTO {\n\t}\n}\n''',\n'after-delombok': '''final class UtilityClassGeneric {\n\tstatic <T> T convertValue(Class<T> toValueType) {\n\t\treturn null;\n\t}\n\tstatic DTO convert(Object json) {\n\t\treturn convertValue(DTO.class);\n\t}\n\tstatic Object convert(DTO dto) {\n\t\treturn null;\n\t}\n\tstatic class DTO {\n\t}\n\t@java.lang.SuppressWarnings(\"all\")\n\tprivate UtilityClassGeneric() {\n\t\tthrow new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n\t}\n}\n''',\n'after-ecj': '''final @lombok.experimental.UtilityClass class UtilityClassGeneric {\n  static class DTO {\n    DTO() {\n      super();\n    }\n  }\n  static <T>T convertValue(Class<T> toValueType) {\n    return null;\n  }\n  static DTO convert(Object json) {\n    return convertValue(DTO.class);\n  }\n  static Object convert(DTO dto) {\n    return null;\n  }\n  private @java.lang.SuppressWarnings(\"all\") UtilityClassGeneric() {\n    super();\n    throw new java.lang.UnsupportedOperationException(\"This is a utility class and cannot be instantiated\");\n  }\n}\n'''\n}\nfor directory, text in files.items():\n    p = Path('test/transform/resource') / directory / 'UtilityClassGeneric.java'\n    with p.open('x') as out:\n        out.write(text)\nPY\nant test.javacCurrent > /tmp/lombok-utility-baseline.log 2>&1; result=$?; grep -n -A 75 -B 5 -E '\\[FAIL\\]|NullPointerException|UtilityClassGeneric|BUILD FAILED' /tmp/lombok-utility-baseline.log | tail -n 140; exit \"$result\"",
+  "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\np = Path('src/core/lombok/javac/handlers/HandleUtilityClass.java')\ns = p.read_text()\nold = '\\t\\t\\t\\t\\t((ClassType) innerClassSymbol.type).setEnclosingType(Type.noType);'\nnew = old + '\\n\\t\\t\\t\\t\\t// The cached erasure may still refer to the original enclosing instance.\\n\\t\\t\\t\\t\\tinnerClassSymbol.erasure_field = null;'\nassert s.count(old) == 1\np.write_text(s.replace(old, new))\np = Path('src/stubs/com/sun/tools/javac/code/Symbol.java')\ns = p.read_text()\nold = '\\tpublic Type type;'\nassert s.count(old) == 2\ns = s.replace(old, old + '\\n\\tpublic Type erasure_field;', 1)\np.write_text(s)\np = Path('doc/changelog.markdown')\ns = p.read_text()\nold = '* No new changes since the release of v1.18.24'\nassert s.count(old) == 1\np.write_text(s.replace(old, '* BUGFIX: Using generic methods with inner classes in `@UtilityClass` no longer causes javac to crash.'))\nPY\nant test.compile test.javacCurrent > /tmp/lombok-utility-fixed.log 2>&1; result=$?; grep -n -A 30 -B 4 -E '\\[ERR\\]|\\[FAIL\\]|UtilityClassGeneric|BUILD FAILED|BUILD SUCCESSFUL' /tmp/lombok-utility-fixed.log | tail -n 100; exit \"$result\"",
+  "cd /testbed && ant dist > /tmp/lombok-utility-dist.log 2>&1; result=$?; tail -n 55 /tmp/lombok-utility-dist.log; exit \"$result\"",
+  "cd /testbed && ant test.eclipse-oxygen > /tmp/lombok-utility-ecj.log 2>&1; result=$?; grep -n -A 30 -B 4 -E '\\[ERR\\]|\\[FAIL\\]|UtilityClassGeneric|BUILD FAILED|BUILD SUCCESSFUL' /tmp/lombok-utility-ecj.log | tail -n 120; exit \"$result\""
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky describe /testbed --config build/utility-peeky.json",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 2
+  }
+ ],
+ "peeky_subcommands": {
+  "describe": 1
+ },
+ "peeky_doc_reads": 7,
+ "peeky_mentions_in_commands": 13,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "contaminated": false,
+ "final_message": "Fixed the crash: `@UtilityClass` made nested classes static but left javac\u2019s cached erased type referencing the original enclosing instance. The handler now invalidates that cache when removing the enclosing type, preventing inconsistent generic type comparisons. Added regression coverage and updated the changelog.",
+ "assistant_messages": [
+  "I\u2019ll inspect how `@UtilityClass` updates nested classes, then add a regression case and fix the javac state causing the crash.\n",
+  "The new regression reproduces the reported NPE. Javac appears to cache the nested class\u2019s erased type before Lombok makes it static, leaving the cached and declared types with different enclosing types. I\u2019ll inspect that cache before changing the handler.\n",
+  "Fixed the crash: `@UtilityClass` made nested classes static but left javac\u2019s cached erased type referencing the original enclosing instance. The handler now invalidates that cache when removing the enclosing type, preventing inconsistent generic type comparisons. Added regression coverage and updated the changelog."
+ ],
+ "assistant_reasoning": [
+  "**Debugging Java Configurations**\n\nI'm trying to figure out the erasure field and setting its enclosing type to avoid any null references. I need to inspect live symbols for clarity, and using a debugger seems essential here. I might consider using peeky with JDK11 and setting the Java home according to the config docs, but I don\u2019t want to overspend. The user suggests peeky, so I want to explore that option while keeping the workflow straightforward and checking the class roots and sources. I\u2019ll also review the relevant guide sections.",
+  "**Investigating Java9Compiler**\n\nI\u2019m trying to find the source for Java9Compiler, which likely means looking into the `Java9Compiler.java` file. It seems odd that nothing is returned; I might need to inspect the file's class version to check for issues. Maybe it\u2019s a dummy fail verify? There could be exports missing in the classpath for jdk9, especially regarding Lombok module openings. I wonder if Java9Compiler compiled extends JavacFileManager, so I\u2019ll look into that as well.",
+  "**Checking compiler status**\n\nI need to check the cleanup status to see if any compiler error files are present, specifically for javac.*.args. I'll use ls and git status to determine if these files are tracked. It seems like the `.args` files might have been generated due to a crashed compiler. However, the output doesn't provide any details about the first failure generated by javac. I should dive into the status to clarify what's happening."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 150.9
+}

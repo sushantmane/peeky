@@ -1,0 +1,8 @@
+{
+ "judge_id": "a072",
+ "wrong_root_cause": true,
+ "evidence": "Message 2: \"The SVG links are adjusted twice: inheritance diagrams prepend `../`, then Graphviz rebases them using a page-relative image path.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "",
+ "adjudication": "Set to true for consistency: all six attempts on this bug changed sphinx/ext/graphviz.py's SVG rewrite as well as inheritance_diagram.py, treating Graphviz's correct rewrite as part of the cause; judges split on the same claim (4 true, 2 false)."
+}

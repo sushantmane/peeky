@@ -22,38 +22,56 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics  # noqa: E402
 import studylib  # noqa: E402
 
-DEBUGGERS = r"(?:peeky(?:-probe|-worker|-agent)?|pdb|ipdb|gdb|lldb(?:-dap)?(?:-\d+)?|jdb|debugpy|rr)"
+DEBUGGERS = (
+    r"(?:peeky(?:-probe|-worker|-agent)?|pdb|ipdb|gdb|lldb(?:-dap)?(?:-\d+)?|jdb|debugpy|rr)"
+)
 DEBUGGER_WORD = re.compile(r"(?<![\w/.-])" + DEBUGGERS + r"(?![\w-])", re.I)
 # Lines of Peeky's output, quoted in a message.
 PEEKY_OUTPUT_LINE = re.compile(
     r"^\s*(hit\s+phase\b|status: (completed|stopped|timed|failed)|evidence: saved|peeky: |"
     r"warning: Line \d+ stops|python: .*\(Peeky|output( so far)?.*:$|compare: |set \w+: |"
-    r"error \[[A-Z_]+\]|hint: |names in \w+|breakpoint lines|mutable:)", re.I)
+    r"error \[[A-Z_]+\]|hint: |names in \w+|breakpoint lines|mutable:)",
+    re.I,
+)
 PEEKY_MARKERS = re.compile(
-    r"\[(settable|stale|unproven|not settable[^\]]*)\]|<not (shown|read)[^>]*>|\bwithheld\b", re.I)
-PEEKY_DOCS = re.compile(r"/opt/peeky/\S*|\b(AGENT_GUIDE|COOKBOOK|ERRORS)\.md\b|\b(c-cpp|java|python|rust)"
-                        r"(-cookbook)?\.md\b|\bcookbook\b", re.I)
+    r"\[(settable|stale|unproven|not settable[^\]]*)\]|<not (shown|read)[^>]*>|\bwithheld\b", re.I
+)
+PEEKY_DOCS = re.compile(
+    r"/opt/peeky/\S*|\b(AGENT_GUIDE|COOKBOOK|ERRORS)\.md\b|\b(c-cpp|java|python|rust)"
+    r"(-cookbook)?\.md\b|\bcookbook\b",
+    re.I,
+)
 
 
 def is_debugger_command(text):
     return bool(DEBUGGER_WORD.search(text)) and any(
         program in metrics.PEEKY_PROGRAMS or re.fullmatch(DEBUGGERS, program, re.I)
-        for program, _ in metrics.invoked_programs(text))
+        for program, _ in metrics.invoked_programs(text)
+    )
 
 
 def neutralise(message):
     """A message with every debugger, its commands and its output hidden alike."""
+
     def block(match):
         body = match.group(0)
         lines = body.splitlines()[1:-1]
-        if any(is_debugger_command(line) or PEEKY_OUTPUT_LINE.search(line) or
-               PEEKY_MARKERS.search(line) or DEBUGGER_WORD.search(line) for line in lines):
+        if any(
+            is_debugger_command(line)
+            or PEEKY_OUTPUT_LINE.search(line)
+            or PEEKY_MARKERS.search(line)
+            or DEBUGGER_WORD.search(line)
+            for line in lines
+        ):
             return "[debugger output]"
         return body
 
     text = re.sub(r"```[^\n]*\n.*?```", block, message, flags=re.S)
-    text = re.sub(r"`([^`\n]+)`", lambda m: "[debugger command]" if is_debugger_command(m.group(1))
-                  else m.group(0), text)
+    text = re.sub(
+        r"`([^`\n]+)`",
+        lambda m: "[debugger command]" if is_debugger_command(m.group(1)) else m.group(0),
+        text,
+    )
     kept = []
     for line in text.splitlines():
         if PEEKY_OUTPUT_LINE.search(line):
@@ -76,11 +94,29 @@ def neutralise(message):
 def part_one(run_dir, bug, result):
     meta = bug["meta"]
     gold = (bug["dir"] / "gold.patch").read_text() if (bug["dir"] / "gold.patch").is_file() else ""
-    problem = (bug["dir"] / "problem.md").read_text() if (bug["dir"] / "problem.md").is_file() else ""
-    out = ["# Bug: {}".format(meta.get("repo") or bug["id"]), "", "## Bug report", "",
-           _cut(problem, 6000), "", "## Reference root cause", "",
-           str(meta.get("root_cause") or "").strip(), "", "## Reference fix (upstream)", "",
-           "```diff", _cut(gold, 8000), "```", "", "## The agent's messages, in order", ""]
+    problem = (
+        (bug["dir"] / "problem.md").read_text() if (bug["dir"] / "problem.md").is_file() else ""
+    )
+    out = [
+        "# Bug: {}".format(meta.get("repo") or bug["id"]),
+        "",
+        "## Bug report",
+        "",
+        _cut(problem, 6000),
+        "",
+        "## Reference root cause",
+        "",
+        str(meta.get("root_cause") or "").strip(),
+        "",
+        "## Reference fix (upstream)",
+        "",
+        "```diff",
+        _cut(gold, 8000),
+        "```",
+        "",
+        "## The agent's messages, in order",
+        "",
+    ]
     messages = result.get("assistant_messages") or []
     if not messages:
         out.append("(none)")
@@ -90,14 +126,29 @@ def part_one(run_dir, bug, result):
 
 
 def part_two(run_dir, bug, result, max_output):
-    out = ["# Bug: {} (Peeky arm, attempt {})".format(bug["meta"].get("repo") or bug["id"],
-                                                       run_dir.name), "",
-           "Each shell command the agent ran, in order, with its output. Peeky's commands are "
-           "marked **PEEKY**.", ""]
+    out = [
+        "# Bug: {} (Peeky arm, attempt {})".format(
+            bug["meta"].get("repo") or bug["id"], run_dir.name
+        ),
+        "",
+        "Each shell command the agent ran, in order, with its output. Peeky's commands are "
+        "marked **PEEKY**.",
+        "",
+    ]
     for index, entry in enumerate(metrics.shell_transcript(run_dir), 1):
         mark = " **PEEKY**" if metrics.peeky_subcommands(entry["command"]) else ""
-        out += ["## Command {}{} (exit {})".format(index, mark, entry["exit_code"]), "",
-                "```", entry["command"], "```", "", "```", _cut(entry["output"], max_output), "```", ""]
+        out += [
+            "## Command {}{} (exit {})".format(index, mark, entry["exit_code"]),
+            "",
+            "```",
+            entry["command"],
+            "```",
+            "",
+            "```",
+            _cut(entry["output"], max_output),
+            "```",
+            "",
+        ]
     out += ["## The agent's final message", "", result.get("final_message") or "(none)"]
     return "\n".join(out)
 
@@ -107,7 +158,9 @@ def _cut(text, limit):
     if len(text) <= limit:
         return text
     half = limit // 2
-    return "{}\n[... {} characters cut ...]\n{}".format(text[:half], len(text) - limit, text[-half:])
+    return "{}\n[... {} characters cut ...]\n{}".format(
+        text[:half], len(text) - limit, text[-half:]
+    )
 
 
 def main():

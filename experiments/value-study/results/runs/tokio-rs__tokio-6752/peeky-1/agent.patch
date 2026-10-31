@@ -1,0 +1,45 @@
+diff --git a/tokio-util/src/time/delay_queue.rs b/tokio-util/src/time/delay_queue.rs
+index 2b33e361..ce6c1d88 100644
+--- a/tokio-util/src/time/delay_queue.rs
++++ b/tokio-util/src/time/delay_queue.rs
+@@ -152,6 +152,7 @@ pub struct DelayQueue<T> {
+     /// Waker that is invoked when we potentially need to reset the timer.
+     /// Because we lazily create the timer when the first entry is created, we
+     /// need to awaken any poller that polled us before that point.
++    /// Also used to awaken any poller when the last entry is removed.
+     waker: Option<Waker>,
+ }
+ 
+@@ -728,6 +729,9 @@ impl<T> DelayQueue<T> {
+     /// removed item as well as the `Instant` at which it will the delay will
+     /// have expired.
+     ///
++    /// If this removes the last item in the queue, the task that last called
++    /// [`Self::poll_expired`] is woken.
++    ///
+     /// # Panics
+     ///
+     /// The function panics if `key` is not contained by the queue.
+@@ -766,6 +770,12 @@ impl<T> DelayQueue<T> {
+             }
+         }
+ 
++        if self.is_empty() {
++            if let Some(waker) = self.waker.take() {
++                waker.wake();
++            }
++        }
++
+         Expired {
+             key: Key::new(key.index),
+             data: data.inner,
+@@ -780,6 +790,9 @@ impl<T> DelayQueue<T> {
+     ///
+     /// Returns `None` if `key` is not in the queue.
+     ///
++    /// If this removes the last item in the queue, the task that last called
++    /// [`Self::poll_expired`] is woken.
++    ///
+     /// # Examples
+     ///
+     /// Basic usage

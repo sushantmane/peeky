@@ -1,0 +1,7 @@
+{
+ "judge_id": "a026",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Disposing the inner observer before `onSubscribe` leaves its queue uninitialized, but `scan` can still emit its seed afterward.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

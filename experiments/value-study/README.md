@@ -143,3 +143,12 @@ All of these were decided before any agent run.
   arm64 or Python 3.11 and 3.12. Examples are pandas 1.5.3 for seaborn, a Cargo.lock for tokio and
   axum, and Ubuntu's `ant-optional` for Lombok. Each change is recorded in that bug's
   `bug.yaml`. None of them changes a hidden test's outcome with or without the fix.
+
+After the runs:
+
+- **Judging.** The blind judges split, 4 to 2, on one claim made in all six of
+  `sphinx-doc__sphinx-10614`'s attempts: that Graphviz's SVG path rewriting is part of the
+  cause. Every one of those attempts changed `sphinx/ext/graphviz.py` too. So all six are counted
+  as stating a wrong root cause, and [REPORT.md](REPORT.md) gives the counts both ways.
+- **Formatting.** The harness was formatted with ruff after the runs. Nothing it does changed:
+  the analysis output is identical.

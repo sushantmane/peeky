@@ -1,0 +1,7 @@
+{
+ "judge_id": "a045",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: Config-driven field defaults incorrectly sent records through the class/enum-only validator.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,120 @@
+diff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md
+index 1755bca2..3d827d14 100644
+--- a/docs/mkdocs/docs/features/enum_conversion.md
++++ b/docs/mkdocs/docs/features/enum_conversion.md
+@@ -1,6 +1,7 @@
+ # Specializing enum conversion
+ 
+-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an
++By default, enum values are serialized to JSON as integers, preserving the signedness of the underlying type.
++In some cases this could result in undesired behavior. If an
+ enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be
+ undefined or a different enum value than was originally intended.
+ 
+diff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp
+index e39b7797..2c011ad1 100644
+--- a/include/nlohmann/detail/conversions/to_json.hpp
++++ b/include/nlohmann/detail/conversions/to_json.hpp
+@@ -12,7 +12,7 @@
+ #include <iterator> // begin, end
+ #include <string> // string
+ #include <tuple> // tuple, get
+-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type
++#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type
+ #include <utility> // move, forward, declval, pair
+ #include <valarray> // valarray
+ #include <vector> // vector
+@@ -320,7 +320,9 @@ template<typename BasicJsonType, typename EnumType,
+ inline void to_json(BasicJsonType& j, EnumType e) noexcept
+ {
+     using underlying_type = typename std::underlying_type<EnumType>::type;
+-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
++    constexpr auto type = std::is_unsigned<underlying_type>::value
++                          ? value_t::number_unsigned : value_t::number_integer;
++    external_constructor<type>::construct(j, static_cast<underlying_type>(e));
+ }
+ #endif  // JSON_DISABLE_ENUM_SERIALIZATION
+ 
+diff --git a/single_include/nlohmann/json.hpp b/single_include/nlohmann/json.hpp
+index 8b72ea65..5c4f4bc8 100644
+--- a/single_include/nlohmann/json.hpp
++++ b/single_include/nlohmann/json.hpp
+@@ -5138,7 +5138,7 @@ NLOHMANN_JSON_NAMESPACE_END
+ #include <iterator> // begin, end
+ #include <string> // string
+ #include <tuple> // tuple, get
+-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type
++#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type
+ #include <utility> // move, forward, declval, pair
+ #include <valarray> // valarray
+ #include <vector> // vector
+@@ -5697,7 +5697,9 @@ template<typename BasicJsonType, typename EnumType,
+ inline void to_json(BasicJsonType& j, EnumType e) noexcept
+ {
+     using underlying_type = typename std::underlying_type<EnumType>::type;
+-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
++    constexpr auto type = std::is_unsigned<underlying_type>::value
++                          ? value_t::number_unsigned : value_t::number_integer;
++    external_constructor<type>::construct(j, static_cast<underlying_type>(e));
+ }
+ #endif  // JSON_DISABLE_ENUM_SERIALIZATION
+ 
+diff --git a/tests/src/unit-conversions.cpp b/tests/src/unit-conversions.cpp
+index d7df0bee..eaa31f4a 100644
+--- a/tests/src/unit-conversions.cpp
++++ b/tests/src/unit-conversions.cpp
+@@ -20,9 +20,11 @@
+ #include <nlohmann/json.hpp>
+ using nlohmann::json;
+ 
++#include <cstdint>
+ #include <deque>
+ #include <forward_list>
+ #include <list>
++#include <limits>
+ #include <set>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -1501,6 +1503,42 @@ TEST_CASE("value conversion")
+     }
+ }
+ 
++TEST_CASE_TEMPLATE("enum serialization preserves the underlying integer type", T,
++                   std::int8_t, std::uint8_t, std::int16_t, std::uint16_t,
++                   std::int32_t, std::uint32_t, std::int64_t, std::uint64_t)
++{
++    enum class scoped_enum : T {};
++    enum unscoped_enum : T {};
++
++    for (const auto value : {T(0), T(1), (std::numeric_limits<T>::min)(), (std::numeric_limits<T>::max)()})
++    {
++        const json expected = value;
++        for (const auto& actual : {json(static_cast<scoped_enum>(value)), json(static_cast<unscoped_enum>(value))})
++        {
++            CHECK(actual.type() == expected.type());
++            CHECK(actual == expected);
++            CHECK(actual.dump() == expected.dump());
++            CHECK(actual.template get<scoped_enum>() == static_cast<scoped_enum>(value));
++            CHECK(actual.template get<unscoped_enum>() == static_cast<unscoped_enum>(value));
++        }
++    }
++}
++
++TEST_CASE("large unsigned enums serialize as positive numbers")
++{
++    enum class book_id : std::uint64_t {};
++    const auto large_id = static_cast<book_id>(std::uint64_t(1) << 63);
++    const json j = large_id;
++
++    CHECK(j > 0u);
++    CHECK(to_string(j) == "9223372036854775808");
++    CHECK(j.is_number_unsigned());
++    CHECK(j.get<book_id>() == large_id);
++
++    const auto special_id = static_cast<book_id>((std::numeric_limits<std::uint64_t>::max)() - 1);
++    CHECK(to_string(json(special_id)) == "18446744073709551614");
++}
++
+ enum class cards {kreuz, pik, herz, karo};
+ 
+ // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,hicpp-avoid-c-arrays,modernize-avoid-c-arrays) - false positive

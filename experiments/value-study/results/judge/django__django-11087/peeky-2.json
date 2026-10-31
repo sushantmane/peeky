@@ -1,0 +1,7 @@
+{
+ "judge_id": "a025",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The deletion collector fetched all related-object fields, triggering decoding errors on unused text.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

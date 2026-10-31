@@ -1,0 +1,109 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 165cf2c2..666215af 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,7 @@
+ 
+ ## Bugfixes
+ 
++- Fix `--plain` overriding `--paging` and vice versa, while preserving argument order precedence for `-pp`.
+ - Fix long file name wrapping in header, see #2835 (@FilipRazek)
+ - Fix `NO_COLOR` support, see #2767 (@acuteenvy)
+ - Fix handling of inputs with OSC ANSI escape sequences, see #2541 and #2544 (@eth-p)
+diff --git a/src/bin/bat/app.rs b/src/bin/bat/app.rs
+index 4d52c73d..63f29e85 100644
+--- a/src/bin/bat/app.rs
++++ b/src/bin/bat/app.rs
+@@ -11,7 +11,7 @@ use crate::{
+ use bat::style::StyleComponentList;
+ use bat::BinaryBehavior;
+ use bat::StripAnsiMode;
+-use clap::ArgMatches;
++use clap::{parser::ValueSource, ArgMatches};
+ 
+ use console::Term;
+ 
+@@ -98,13 +98,17 @@ impl App {
+     pub fn config(&self, inputs: &[Input]) -> Result<Config> {
+         let style_components = self.style_components()?;
+ 
++        // Only repeated plain flags affect paging; a later --paging takes precedence.
++        let extra_plain = self.matches.get_count("plain") > 1
++            && (self.matches.value_source("paging") != Some(ValueSource::CommandLine)
++                || self.matches.index_of("plain") > self.matches.index_of("paging"));
++
+         let paging_mode = match self.matches.get_one::<String>("paging").map(|s| s.as_str()) {
++            _ if extra_plain => PagingMode::Never,
+             Some("always") => PagingMode::Always,
+             Some("never") => PagingMode::Never,
+             Some("auto") | None => {
+-                // If we have -pp as an option when in auto mode, the pager should be disabled.
+-                let extra_plain = self.matches.get_count("plain") > 1;
+-                if extra_plain || self.matches.get_flag("no-paging") {
++                if self.matches.get_flag("no-paging") {
+                     PagingMode::Never
+                 } else if inputs.iter().any(Input::is_stdin) {
+                     // If we are reading from stdin, only enable paging if we write to an
+@@ -431,3 +435,42 @@ impl App {
+         Ok(styled_components)
+     }
+ }
++
++#[test]
++fn plain_and_paging_preserve_style_and_argument_order() {
++    let cases: &[(&[&str], PagingMode)] = &[
++        (&["--plain"], PagingMode::QuitIfOneScreen),
++        (&["-pp"], PagingMode::Never),
++        (&["--paging=never", "--plain"], PagingMode::Never),
++        (&["--plain", "--paging=never"], PagingMode::Never),
++        (&["--paging=always", "--plain"], PagingMode::Always),
++        (&["--plain", "--paging=always"], PagingMode::Always),
++        (&["--paging=auto", "--plain"], PagingMode::QuitIfOneScreen),
++        (&["--plain", "--paging=auto"], PagingMode::QuitIfOneScreen),
++        (&["--paging=always", "-pp"], PagingMode::Never),
++        (&["-pp", "--paging=always"], PagingMode::Always),
++        (&["--paging=never", "-pp"], PagingMode::Never),
++        (&["-pp", "--paging=never"], PagingMode::Never),
++        (&["--paging=auto", "-pp"], PagingMode::Never),
++        (&["-pp", "--paging=auto"], PagingMode::QuitIfOneScreen),
++        (&["--plain", "--plain"], PagingMode::Never),
++        (&["--paging=always", "-p", "-p"], PagingMode::Never),
++        (&["-p", "--paging=always", "-p"], PagingMode::Never),
++        (&["-P", "-pp"], PagingMode::Never),
++        (&["-pp", "-P"], PagingMode::Never),
++        (&["-pp", "--paging=always", "-P"], PagingMode::Never),
++        (&["-pp", "-P", "--paging=always"], PagingMode::Always),
++    ];
++
++    for (args, expected_paging_mode) in cases {
++        let app = App {
++            matches: clap_app::build_app(true)
++                .get_matches_from(std::iter::once("bat").chain(args.iter().copied())),
++            interactive_output: true,
++        };
++        let config = app.config(&[]).unwrap();
++
++        assert_eq!(config.paging_mode, *expected_paging_mode, "{args:?}");
++        assert!(config.style_components.plain(), "{args:?}");
++    }
++}
+diff --git a/src/bin/bat/clap_app.rs b/src/bin/bat/clap_app.rs
+index 4327fa15..ac1f4007 100644
+--- a/src/bin/bat/clap_app.rs
++++ b/src/bin/bat/clap_app.rs
+@@ -97,7 +97,6 @@ pub fn build_app(interactive_output: bool) -> Command {
+             Arg::new("plain")
+                 .overrides_with("plain")
+                 .overrides_with("number")
+-                .overrides_with("paging")
+                 .short('p')
+                 .long("plain")
+                 .action(ArgAction::Count)
+@@ -322,7 +321,6 @@ pub fn build_app(interactive_output: bool) -> Command {
+                 .long("paging")
+                 .overrides_with("paging")
+                 .overrides_with("no-paging")
+-                .overrides_with("plain")
+                 .value_name("when")
+                 .value_parser(["auto", "never", "always"])
+                 .default_value("auto")

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a050",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The latitude bounds check overflows near 90\u00b0: adding the grid base and height wraps past `Integer.MAX_VALUE`, rejecting valid points.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

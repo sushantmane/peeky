@@ -1,0 +1,7 @@
+{
+ "judge_id": "a013",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"generated default-provider methods overwrote initializer source positions, causing javac 11\u2019s argument-type cache to confuse different generic calls.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

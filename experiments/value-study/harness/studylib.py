@@ -26,6 +26,7 @@ PASSING = ("PASSED", "XFAIL")
 # (| >) scalars, flow lists ([a, b]) or block lists whose items are scalars or flat mappings.
 # ---------------------------------------------------------------------------------------------
 
+
 def _scalar(text):
     text = text.strip()
     if not text:
@@ -91,8 +92,11 @@ def _split_flow(text):
 def _block_scalar(indicator, lines):
     if not lines:
         return ""
-    indent = min(len(line) - len(line.lstrip(" ")) for line in lines if line.strip()) if any(
-        line.strip() for line in lines) else 0
+    indent = (
+        min(len(line) - len(line.lstrip(" ")) for line in lines if line.strip())
+        if any(line.strip() for line in lines)
+        else 0
+    )
     body = [line[indent:] if line.strip() else "" for line in lines]
     while body and not body[-1]:
         body.pop()
@@ -192,6 +196,7 @@ def load_yaml(path):
 # Bugs
 # ---------------------------------------------------------------------------------------------
 
+
 def bug_dir(bug_id, bugs=None):
     return Path(bugs or BUGS) / bug_id
 
@@ -205,7 +210,9 @@ def load_bug(bug_id, bugs=None):
     grade_path = directory / "grade.json"
     grade = json.loads(grade_path.read_text()) if grade_path.is_file() else {}
     control = str(meta.get("image") or "peeky-study/{}:control".format(bug_id.lower()))
-    base = control[: -len(":control")] if control.endswith(":control") else control.rsplit(":", 1)[0]
+    base = (
+        control[: -len(":control")] if control.endswith(":control") else control.rsplit(":", 1)[0]
+    )
     return {
         "id": bug_id,
         "dir": directory,
@@ -237,7 +244,8 @@ def validation_ok(directory):
     if not (base and gold1 and gold2):
         return False
     base_ok = base.get("solved") is False and not any(
-        status in PASSING for status in (base.get("f2p") or {}).values())
+        status in PASSING for status in (base.get("f2p") or {}).values()
+    )
     return bool(base_ok and gold1.get("solved") is True and gold2.get("solved") is True)
 
 
@@ -261,6 +269,7 @@ def test_patch_files(patch_text):
 # Docker
 # ---------------------------------------------------------------------------------------------
 
+
 class DockerError(RuntimeError):
     """The Docker daemon or CLI failed (an infrastructure failure, not the agent's)."""
 
@@ -268,26 +277,39 @@ class DockerError(RuntimeError):
 def docker(*args, input=None, timeout=300, check=True, text=True):
     try:
         result = subprocess.run(
-            ["docker", *args], input=input, capture_output=True, text=text, timeout=timeout,
-            stdin=None if input is not None else subprocess.DEVNULL)
+            ["docker", *args],
+            input=input,
+            capture_output=True,
+            text=text,
+            timeout=timeout,
+            stdin=None if input is not None else subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as error:
         raise DockerError("docker {} timed out after {} s".format(args[0], timeout)) from error
     if check and result.returncode != 0:
         stderr = result.stderr if text else result.stderr.decode("utf-8", "replace")
-        raise DockerError("docker {} failed ({}): {}".format(
-            " ".join(args[:2]), result.returncode, stderr.strip()[-2000:]))
+        raise DockerError(
+            "docker {} failed ({}): {}".format(
+                " ".join(args[:2]), result.returncode, stderr.strip()[-2000:]
+            )
+        )
     return result
 
 
 def image_exists(image):
-    return subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
+    return (
+        subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode == 0
+    )
 
 
 def image_info(image):
     data = json.loads(docker("image", "inspect", image).stdout)[0]
     labels = (data.get("Config") or {}).get("Labels") or {}
-    return {"id": data.get("Id"), "digests": data.get("RepoDigests") or [],
-            "peeky_sha": labels.get("peeky-study.peeky-sha")}
+    return {
+        "id": data.get("Id"),
+        "digests": data.get("RepoDigests") or [],
+        "peeky_sha": labels.get("peeky-study.peeky-sha"),
+    }
 
 
 def docker_up():
@@ -304,10 +326,31 @@ def start_container(image, name, memory="6g", cpus="4", read_only_mounts=()):
     mounts = []
     for path in read_only_mounts:
         mounts += ["-v", "{0}:{0}:ro".format(path)]
-    docker("run", "-d", "--name", name, "--network", "none", "--cap-add", "SYS_PTRACE",
-           "--security-opt", "seccomp=unconfined", "--memory", memory, "--cpus", str(cpus),
-           "--label", "peeky-study=1", *mounts, "--entrypoint", "", image, "sleep", "infinity",
-           timeout=120)
+    docker(
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--network",
+        "none",
+        "--cap-add",
+        "SYS_PTRACE",
+        "--security-opt",
+        "seccomp=unconfined",
+        "--memory",
+        memory,
+        "--cpus",
+        str(cpus),
+        "--label",
+        "peeky-study=1",
+        *mounts,
+        "--entrypoint",
+        "",
+        image,
+        "sleep",
+        "infinity",
+        timeout=120,
+    )
     return name
 
 
@@ -320,8 +363,13 @@ def exec_in(container, script, timeout=None, input=None, workdir="/testbed"):
     A timeout kills the docker exec client; kill_leftovers() stops what it started."""
     command = ["docker", "exec", "-i", "-w", workdir, container, "bash", "-c", script]
     try:
-        result = subprocess.run(command, input=input if input is not None else b"",
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        result = subprocess.run(
+            command,
+            input=input if input is not None else b"",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired as error:
         output = error.output or b""
         return None, output.decode("utf-8", "replace"), True
@@ -336,7 +384,10 @@ def kill_leftovers(container):
     code, output, _ = exec_in(
         container,
         'n=0; for p in $(ps -e -o pid=); do [ "$p" = 1 ] || [ "$p" = $$ ] || [ ! -d /proc/$p ] || '
-        'n=$((n + 1)); done; kill -9 -1 2>/dev/null; echo $n', timeout=60, workdir="/")
+        "n=$((n + 1)); done; kill -9 -1 2>/dev/null; echo $n",
+        timeout=60,
+        workdir="/",
+    )
     try:
         return int(output.strip().splitlines()[-1])
     except (ValueError, IndexError):
@@ -347,19 +398,23 @@ def kill_leftovers(container):
 # Grading
 # ---------------------------------------------------------------------------------------------
 
+
 def extract_test_output(log):
     start = log.find(START_MARKER)
     if start < 0:
         return None
     start += len(START_MARKER)
     end = log.find(END_MARKER, start)
-    return log[start:end if end >= 0 else len(log)]
+    return log[start : end if end >= 0 else len(log)]
 
 
 def compare(grade, statuses, completed=True):
     f2p = {test: statuses.get(test, "MISSING") for test in grade.get("fail_to_pass", [])}
-    p2p_failed = [test for test in grade.get("pass_to_pass", [])
-                  if statuses.get(test, "MISSING") not in PASSING]
+    p2p_failed = [
+        test
+        for test in grade.get("pass_to_pass", [])
+        if statuses.get(test, "MISSING") not in PASSING
+    ]
     solved = bool(completed and f2p and all(s in PASSING for s in f2p.values()) and not p2p_failed)
     return {"f2p": f2p, "p2p_failed": p2p_failed, "solved": solved}
 
@@ -370,7 +425,7 @@ def _parsed_statuses(text):
     text = text.strip()
     candidates = [text]
     if "{" in text:
-        candidates.append(text[text.index("{"):])
+        candidates.append(text[text.index("{") :])
     if text:
         candidates.append(text.splitlines()[-1])
     for candidate in candidates:
@@ -406,19 +461,22 @@ def grade_container(container, bug, log_path=None, apply_gold=False):
     body = extract_test_output(log)
     statuses, parse_error = {}, None
     if body is not None:
-        parse_code, parsed, _ = exec_in(container, "python3 /grade/parse.py", timeout=300,
-                                        input=body.encode())
+        parse_code, parsed, _ = exec_in(
+            container, "python3 /grade/parse.py", timeout=300, input=body.encode()
+        )
         statuses = _parsed_statuses(parsed) if parse_code == 0 else None
         if statuses is None:
             statuses, parse_error = {}, parsed[-1000:]
     result = compare(grade, statuses, completed=body is not None and not timed_out)
-    result.update({
-        "seconds": seconds,
-        "eval_exit": code,
-        "eval_timed_out": timed_out,
-        "markers_found": body is not None,
-        "tests_parsed": len(statuses),
-    })
+    result.update(
+        {
+            "seconds": seconds,
+            "eval_exit": code,
+            "eval_timed_out": timed_out,
+            "markers_found": body is not None,
+            "tests_parsed": len(statuses),
+        }
+    )
     if parse_error:
         result["parse_error"] = parse_error
     return result

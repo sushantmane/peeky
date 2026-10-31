@@ -1,0 +1,148 @@
+diff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md
+index 1755bca2..863b5656 100644
+--- a/docs/mkdocs/docs/features/enum_conversion.md
++++ b/docs/mkdocs/docs/features/enum_conversion.md
+@@ -1,8 +1,9 @@
+ # Specializing enum conversion
+ 
+-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an
+-enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be
+-undefined or a different enum value than was originally intended.
++By default, enum values are serialized to JSON as integers, with signedness matching the enum's underlying type.
++In some cases this could result in undesired behavior. If an enum is modified or re-ordered after data has been
++serialized to JSON, the later de-serialized JSON data may be undefined or a different enum value than was originally
++intended.
+ 
+ It is possible to more precisely specify how a given enum is mapped to and from JSON as shown below:
+ 
+diff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp
+index e39b7797..41690656 100644
+--- a/include/nlohmann/detail/conversions/to_json.hpp
++++ b/include/nlohmann/detail/conversions/to_json.hpp
+@@ -12,7 +12,7 @@
+ #include <iterator> // begin, end
+ #include <string> // string
+ #include <tuple> // tuple, get
+-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type
++#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type
+ #include <utility> // move, forward, declval, pair
+ #include <valarray> // valarray
+ #include <vector> // vector
+@@ -320,7 +320,8 @@ template<typename BasicJsonType, typename EnumType,
+ inline void to_json(BasicJsonType& j, EnumType e) noexcept
+ {
+     using underlying_type = typename std::underlying_type<EnumType>::type;
+-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
++    constexpr value_t type = std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;
++    external_constructor<type>::construct(j, static_cast<underlying_type>(e));
+ }
+ #endif  // JSON_DISABLE_ENUM_SERIALIZATION
+ 
+diff --git a/single_include/nlohmann/json.hpp b/single_include/nlohmann/json.hpp
+index 8b72ea65..680d6fcd 100644
+--- a/single_include/nlohmann/json.hpp
++++ b/single_include/nlohmann/json.hpp
+@@ -5138,7 +5138,7 @@ NLOHMANN_JSON_NAMESPACE_END
+ #include <iterator> // begin, end
+ #include <string> // string
+ #include <tuple> // tuple, get
+-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type
++#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type
+ #include <utility> // move, forward, declval, pair
+ #include <valarray> // valarray
+ #include <vector> // vector
+@@ -5697,7 +5697,8 @@ template<typename BasicJsonType, typename EnumType,
+ inline void to_json(BasicJsonType& j, EnumType e) noexcept
+ {
+     using underlying_type = typename std::underlying_type<EnumType>::type;
+-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
++    constexpr value_t type = std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;
++    external_constructor<type>::construct(j, static_cast<underlying_type>(e));
+ }
+ #endif  // JSON_DISABLE_ENUM_SERIALIZATION
+ 
+diff --git a/tests/src/unit-conversions.cpp b/tests/src/unit-conversions.cpp
+index d7df0bee..3045e88a 100644
+--- a/tests/src/unit-conversions.cpp
++++ b/tests/src/unit-conversions.cpp
+@@ -20,10 +20,13 @@
+ #include <nlohmann/json.hpp>
+ using nlohmann::json;
+ 
++#include <cstdint>
+ #include <deque>
+ #include <forward_list>
++#include <limits>
+ #include <list>
+ #include <set>
++#include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+ #include <valarray>
+@@ -1501,6 +1504,66 @@ TEST_CASE("value conversion")
+     }
+ }
+ 
++TEST_CASE("enum serialization preserves underlying signedness")
++{
++    SECTION("unsigned 64-bit enum")
++    {
++        enum class unsigned_enum : std::uint64_t {};
++        for (const auto value : {std::uint64_t(0), std::uint64_t(1),
++                                 (std::uint64_t(1) << 63) - 1,
++                                 std::uint64_t(1) << 63,
++                                 (std::numeric_limits<std::uint64_t>::max)() - 1,
++                                 (std::numeric_limits<std::uint64_t>::max)()})
++        {
++            CAPTURE(value);
++            const auto e = static_cast<unsigned_enum>(value);
++            json j(e);
++            CHECK(j.is_number_unsigned());
++            CHECK(j.get<std::uint64_t>() == value);
++            CHECK(j.dump() == std::to_string(value));
++            CHECK(j.get<unsigned_enum>() == e);
++            if (value != 0)
++            {
++                CHECK(j > 0u);
++            }
++
++            j = "replace an allocated value";
++            nlohmann::to_json(j, e);
++            CHECK(j.is_number_unsigned());
++            CHECK(j.get<std::uint64_t>() == value);
++        }
++    }
++
++    SECTION("signed 64-bit enum")
++    {
++        enum class signed_enum : std::int64_t {};
++        for (const auto value : {(std::numeric_limits<std::int64_t>::min)(),
++                                 std::int64_t(-1), std::int64_t(0), std::int64_t(1),
++                                 (std::numeric_limits<std::int64_t>::max)()})
++        {
++            CAPTURE(value);
++            const auto e = static_cast<signed_enum>(value);
++            const json j(e);
++            CHECK(j.type() == json::value_t::number_integer);
++            CHECK(j.get<std::int64_t>() == value);
++            CHECK(j.dump() == std::to_string(value));
++            CHECK(j.get<signed_enum>() == e);
++        }
++    }
++
++    SECTION("unscoped unsigned enum")
++    {
++        enum unsigned_enum : std::uint32_t
++        {
++            max_value = (std::numeric_limits<std::uint32_t>::max)()
++        };
++        const json j(max_value);
++        CHECK(j.is_number_unsigned());
++        CHECK(j.dump() == "4294967295");
++        CHECK(j.get<unsigned_enum>() == max_value);
++    }
++}
++
+ enum class cards {kreuz, pik, herz, karo};
+ 
+ // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,hicpp-avoid-c-arrays,modernize-avoid-c-arrays) - false positive

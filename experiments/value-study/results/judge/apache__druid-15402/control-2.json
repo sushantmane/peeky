@@ -1,0 +1,7 @@
+{
+ "judge_id": "a040",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The cache reader writes every post-aggregator value to the same column because it never advances the column position.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

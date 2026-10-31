@@ -1,0 +1,7 @@
+{
+ "judge_id": "a039",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fixed the panic: fallback routing incorrectly inserted its internal wildcard into `MatchedPath`, violating nested-service assumptions.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}
