@@ -263,9 +263,10 @@ class RustWorkspaceTarget:
             flags += ["-C", "link-arg=-Wl,--build-id=sha1"]
         return flags
 
-    def build(self, root, *, deadline=None, progress=None):
-        """Build the workspace (`peeky build`): a summary of the build."""
-        return build(self, root, deadline=deadline, progress=progress)
+    def build(self, root, *, deadline=None, progress=None, stop=None):
+        """Build the workspace (`peeky build`): a summary of the build. ``stop``: see
+        ``build``."""
+        return build(self, root, deadline=deadline, progress=progress, stop=stop)
 
     def current(self, root):
         """The current build's manifest (current_build)."""
@@ -290,6 +291,13 @@ class RustWorkspaceTarget:
         (``remote_refusal``), or None."""
         found = recorded_comparison(self, root or ".")
         return None if found is None else found[1]
+
+    def compared_trees(self, root):
+        """({directory: how}, the directories a package's listing leaves out) of the
+        recorded build (``compared_trees``), compared with a client's entry by entry;
+        ({}, ()) where none is recorded."""
+        found = recorded_comparison(self, root or ".")
+        return ({}, ()) if found is None else found[2]
 
     def trusted_config(self):
         """The trusted configuration this target is (``from_config`` reads it back as the
@@ -329,9 +337,10 @@ _RECORDED = {}
 
 
 def recorded_comparison(target, root):
-    """(the names of ``compared_sources``, ``remote_refusal``) of ``target``'s build under
-    ``root`` as recorded, unchecked (a probe checks the build: ``current_build``); None where
-    none is recorded, or it is another configuration's or Peeky's."""
+    """(the names of ``compared_sources``, ``remote_refusal``, ``compared_trees``) of
+    ``target``'s build under ``root`` as recorded, unchecked (a probe checks the build:
+    ``current_build``); None where none is recorded, or it is another configuration's or
+    Peeky's."""
     path = build_directory(target, root, create=False) / "manifest.json"
     try:
         status = path.stat()
@@ -350,7 +359,11 @@ def recorded_comparison(target, root):
         or manifest.get("identity") != target.identity(root)
     ):
         return None
-    found = (tuple(compared_sources(manifest)), remote_refusal(manifest))
+    found = (
+        tuple(compared_sources(manifest)),
+        remote_refusal(manifest),
+        compared_trees(manifest),
+    )
     _RECORDED[path] = (key, found)
     return found
 
@@ -381,6 +394,33 @@ def _checkout_metadata(path):
     sources (a build script watching `.git/HEAD` for its version). Never compared with a
     remote client's."""
     return ".git" in PurePosixPath(Path(path).as_posix()).parts
+
+
+def compared_trees(manifest):
+    """({directory under the root: how}, the directories a package's listing leaves out) of
+    what a client's checkout is compared with entry by entry (`sources.structured`): each
+    directory a local build script's `rerun-if-changed` names ("exact", as Cargo scans it),
+    and each package Cargo's default watches, a local procedural macro's and the analysed
+    ones with one ("package", as Cargo lists its files, less the vendored copies). None
+    under `.git`, or outside the root (``remote_refusal`` refuses that)."""
+    root = Path(manifest["root"]).resolve()
+    inputs = manifest.get("build_inputs") or {}
+    trees = {}
+    for key, how in (("dirs", "exact"), ("trees", "package")):
+        for top in inputs.get(key) or {}:
+            try:
+                name = Path(top).relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if not _checkout_metadata(name):
+                trees.setdefault(name, how)
+    skip = []
+    if (vendor := manifest["watch"].get("vendor_directory")) is not None:
+        try:
+            skip.append(Path(vendor).resolve().relative_to(root).as_posix())
+        except ValueError:
+            pass
+    return dict(sorted(trees.items())), tuple(skip)
 
 
 def remote_refusal(manifest):
@@ -534,6 +574,9 @@ def _run(argv, cwd, env, deadline, what):
         output_limit=CARGO_OUTPUT_LIMIT,
         retain=CARGO_RETAINED,
     )
+    if result.get("stopped"):
+        # ``build``'s ``stop``: Cargo's process group was killed.
+        raise BuildStopped()
     if result.get("timed_out"):
         raise TimeoutError(f"The build exceeded its deadline during {what}") from (
             BuildCommandError(tuple(argv), result)
@@ -835,8 +878,35 @@ def _changed_during(path, before, started_ns):
     return max(info.st_mtime_ns, info.st_ctime_ns) >= started_ns - _SETTLE_NS
 
 
-def build(target, root, *, deadline=None, progress=None):
-    """`peeky build`: build ``target``'s workspace under ``root`` and write its manifest."""
+class BuildStopped(RuntimeError):
+    """A build its ``stop`` ended: no process it ran is left running."""
+
+    def __init__(self):
+        super().__init__(
+            "The worker is shutting down, so it stopped its build, and no process the build ran "
+            "is left running. Start the worker again, then build"
+        )
+
+
+def build(target, root, *, deadline=None, progress=None, stop=None):
+    """`peeky build`: build ``target``'s workspace under ``root`` and write its manifest.
+    ``stop`` (a threading.Event), once set, kills each process the build runs (Cargo, its
+    build scripts and rustc) and starts none: a worker's shutdown. Every process the build
+    runs is an ``execute`` in this thread (``_run``, ``_tools``, ``rust_workspace.read``),
+    which takes it from ``stopping``."""
+    from peeky.agent import stopping
+
+    with stopping(stop):
+        try:
+            return _build(target, root, deadline=deadline, progress=progress)
+        except BaseException:
+            if stop is not None and stop.is_set():
+                raise BuildStopped() from None
+            raise
+
+
+def _build(target, root, *, deadline=None, progress=None):
+    """``build``'s work."""
     say = progress or (lambda message: None)
     root = Path(root).resolve(strict=True)
     deadline = time.monotonic() + BUILD_TIMEOUT_S if deadline is None else deadline
@@ -925,6 +995,7 @@ def build(target, root, *, deadline=None, progress=None):
             manifest["build_inputs"] = _build_inputs(
                 shape, root, messages, env, before, started_ns, vendor, jobs_
             )
+            _watched_directories(manifest.pop("directories_read"), manifest, shape, vendor)
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
         except BaseException:
@@ -1004,7 +1075,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     run_package, run_target = shape.run
     executable = None
     sources, generated, units, macros = {}, {}, [], set()
-    seen_units = set()
+    seen_units, directories = set(), set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
     compiled = {}
     for unit in sorted((run / "units").iterdir()):
@@ -1050,6 +1121,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             depfile, shape.workspace, root, target_dir, package.name, producer
         )
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
+        directories.update(read["directories"])
         if macro:
             _check_bootstrap_mentions(
                 read, root, target_dir, f"the procedural macro `{artifact.get('name')}`"
@@ -1127,6 +1199,8 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         "units": units,
         "sources": dict(sorted(sources.items())),
         "generated": dict(sorted(generated.items())),
+        # Checked against what build scripts watch (``_watched_directories``), not kept.
+        "directories_read": sorted(directories),
         "artifacts": artifacts,
     }
 
@@ -1563,16 +1637,38 @@ def _record_read(read, root, target_dir, before, started_ns, sources, generated)
             generated[path] = _hash(target_dir / path)
 
 
+def _watched_directories(directories, manifest, shape, vendor):
+    """Refuse a directory Cargo says the build read (its own dependency file lists build
+    scripts' `rerun-if-changed` paths) whose entries Peeky didn't record: one no local build
+    script watches (``_build_inputs``), outside the vendored copies, which their checksums
+    cover."""
+    root = Path(manifest["root"])
+    watched = {Path(each).resolve() for each in manifest["build_inputs"]["dirs"]}
+    copies = Path(shape.watch["vendor_directory"]).resolve() if vendor else None
+    for each in directories:
+        if each in watched or (copies is not None and each.is_relative_to(copies)):
+            continue
+        raise ValueError(
+            f"Cargo says the build read the directory {_shown(each, root)}, which no local "
+            "build script's `rerun-if-changed` names: Peeky can't tell what of it was read. "
+            "Name it in the build script that reads it"
+        )
+
+
 def _read_dependencies(depfile, workspace, root, target_dir, package, producer="rustc"):
     try:
         paths = dependency_paths(depfile.read_text(errors="surrogateescape"), workspace, producer)
     except UnreadDependencies as exc:
         raise ValueError(f"{exc} ({depfile.name}, of `{package}`)") from None
-    found = {"sources": [], "generated": []}
+    found = {"sources": [], "generated": [], "directories": []}
     for path in paths:
         resolved = path.resolve()
         if resolved.is_relative_to(target_dir):
             found["generated"].append(resolved.relative_to(target_dir).as_posix())
+        elif producer == "make" and resolved.is_relative_to(root) and resolved.is_dir():
+            # A build script's `rerun-if-changed` directory, which Cargo lists too: what it
+            # holds is recorded entry by entry (``_build_inputs``), not hashed as a file.
+            found["directories"].append(resolved)
         elif resolved.is_relative_to(root):
             found["sources"].append(resolved.relative_to(root).as_posix())
         elif producer == "make":

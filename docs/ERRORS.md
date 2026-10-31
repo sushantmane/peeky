@@ -43,7 +43,7 @@ The last column is the `retryable` field.
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
 | `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
-| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. | Restore the tunnel or the worker, and retry. | yes |
+| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. A worker shutting down stopped its Rust workspace's build, or starts none ([REMOTE.md](REMOTE.md#a-rust-workspace)). | Restore the tunnel or the worker, and retry. | yes |
 | `TRANSPORT_LOST` | The connection broke mid-request. The outcome is unknown. | Reconnect, then `inspect` or `wait`. Never repeat a change blindly. | no |
 | `JOB_LOST` | A `--background` job's process died before it finished. | Rerun the command. | no |
 
@@ -285,6 +285,10 @@ file lists what it reads.
   `Worker source provenance differs for helper.py (the copy on the worker host differs from your
   checkout)`. Copy the file over, or remove it, then run again
   ([REMOTE.md](REMOTE.md#source-identity)).
+- A Rust workspace's file is compared by its links too: `… (the copy on the worker host differs
+  from your checkout, in its contents or in where a link is or points)`. A directory a build
+  script watches is compared entry by entry: `util/proto/ (its entries on the worker host differ
+  from your checkout's: …)` ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - A remote Python session whose sources changed on the worker host after launch is closed, and
   no values come back: `helper.py changed on the worker host after launch`.
 - A remote Python session with a stack frame whose code names a file under the root that wasn't

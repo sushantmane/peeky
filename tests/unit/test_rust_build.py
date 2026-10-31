@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -222,6 +223,35 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
     )
     assert rb._stem("libutil-0123.rlib") == "util-0123"
     assert rb._stem("app-4567.dSYM") == "app-4567"
+
+
+def test_a_watched_directory_cargo_lists_is_recorded_by_its_entries_not_hashed(tmp_path):
+    # Cargo's own dependency file lists a build script's `rerun-if-changed` paths: a
+    # directory too, which isn't a file to hash (a build watching one failed, "Expected a
+    # regular file").
+    root, target = tmp_path / "ws", tmp_path / "target"
+    (root / "util/proto").mkdir(parents=True)
+    (root / "util/src").mkdir()
+    (root / "util/src/lib.rs").write_text("")
+    target.mkdir()
+    depfile = tmp_path / "app.d"
+    depfile.write_text(f"{target}/debug/app: {root}/util/src/lib.rs {root}/util/proto\n")
+    read = rb._read_dependencies(depfile, root, root, target, "app", "make")
+    assert read["sources"] == ["util/src/lib.rs"]
+    assert read["directories"] == [root / "util/proto"]
+    # Recorded entry by entry where a local build script watches it, or a vendored copy's
+    # checksums cover it; else refused, naming it.
+    shape = SimpleNamespace(watch={"vendor_directory": str(root / "vendor")})
+    manifest = {"root": str(root), "build_inputs": {"dirs": {str(root / "util/proto"): {}}}}
+    rb._watched_directories([root / "util/proto"], manifest, shape, "vendor")
+    rb._watched_directories([root / "vendor/x/data"], manifest, shape, "vendor")
+    with pytest.raises(ValueError) as refused:
+        rb._watched_directories([root / "util/other"], manifest, shape, None)
+    assert str(refused.value) == (
+        "Cargo says the build read the directory util/other, which no local build script's "
+        "`rerun-if-changed` names: Peeky can't tell what of it was read. Name it in the build "
+        "script that reads it"
+    )
 
 
 def test_the_build_refusals_have_their_codes():

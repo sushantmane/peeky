@@ -224,6 +224,9 @@ set x: 5 -> 100
 - **The build runs on the worker,** one at a time. The client asks again every 30 s until it
   ends, within the build's deadline of 900 s. A build that outlives the client goes on there:
   run the same command again to wait for it.
+- **A build ends with its worker.** A `shutdown`, SIGTERM or the idle timeout stops it first, and
+  kills Cargo and every process Cargo ran, build scripts too. A running build is activity, so
+  the idle timeout waits for it.
 - **The files compared** are the build's: every `Cargo.toml` of its packages, `Cargo.lock`, the
   workspace's own Cargo configuration, and every file of the workspace it compiled, from rustc's
   dependency files ([Source identity](#source-identity)). That includes the binary's own code,
@@ -231,6 +234,12 @@ set x: 5 -> 100
 - **What a local build script reads** is compared too: each `rerun-if-changed` file, each file
   under such a directory, or, with none, every file of its package. A schema it reads shapes the
   code it generates, which the program runs.
+- **Each file is compared by its links too,** not only its bytes. A link on one side only, the
+  file or a directory on its path, is refused though the bytes are the same. So is a link that
+  points elsewhere.
+- **A watched directory is compared entry by entry,** and so is a package with no
+  `rerun-if-changed`, as Cargo lists its files. An entry only in your checkout is refused, even
+  an empty directory: Cargo would rerun the build script, which may read it.
 - **Not `.git`:** nothing under a `.git` directory is compared. It is the checkout's metadata,
   not the project's source, and differs between two checkouts of the same sources: a build
   script watching `.git/HEAD` for its version would refuse every client.

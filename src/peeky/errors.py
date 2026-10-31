@@ -514,6 +514,13 @@ _RULES = (
         False,
     ),
     (
+        # A worker's shutdown stopped its build, or refused to start one (worker._RemoteBuilds).
+        r"^The worker is shutting down, so ",
+        "UNREACHABLE",
+        "The worker stopped, and its build with it. Start the worker again, then build.",
+        True,
+    ),
+    (
         # A Rust workspace's build on a worker (`peeky build --worker`, `--build`).
         r"^The worker's build is still running",
         "TIMEOUT",

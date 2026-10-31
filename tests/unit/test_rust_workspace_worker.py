@@ -13,6 +13,7 @@ import pytest
 from peeky import sources
 from peeky.cli import _remote_build_required, resolve
 from peeky.rust_build import (
+    BuildStopped,
     RustWorkspaceTarget,
     compared_sources,
     recorded_comparison,
@@ -76,10 +77,12 @@ class Builds:
     def compared_names(self, root):
         return ("Cargo.toml",)
 
-    def build(self, root, *, deadline=None):
+    def build(self, root, *, deadline=None, stop=None):
         self.calls += 1
         assert deadline is not None and deadline > time.monotonic()
-        self.release.wait(10)
+        while not self.release.wait(0.01):
+            if stop is not None and stop.is_set():
+                raise BuildStopped()
         if self.fail:
             raise self.fail
         return {"peeky": "build", "status": "built", "build_id": f"b{self.calls}"}
@@ -331,3 +334,216 @@ def test_a_remote_builds_refusals_say_what_to_do():
     assert found["code"] == "INVALID_REQUEST" and "fewer packages in analyse" in found["hint"]
     found = classify(TimeoutError("The worker's build is still running past the deadline"))
     assert found["code"] == "TIMEOUT" and "goes on on the worker" in found["hint"]
+
+
+def test_a_workers_close_stops_its_build_and_starts_none(tmp_path):
+    from peeky.errors import classify
+
+    builds, target = _RemoteBuilds(), Builds()
+    worker = SimpleNamespace(adapter=target, root=tmp_path, last_used=0.0)
+    answer = builds.request(worker, {"wait": 0})
+    assert answer["status"] == "building" and builds.active()
+    # A request is activity, and so is a running build (`active`).
+    assert worker.last_used > 0
+    asked = worker.last_used
+    builds.close(timeout=5)
+    assert not builds.active()
+    # The build's end is activity too.
+    assert worker.last_used > asked
+    with pytest.raises(BuildStopped) as stopped:
+        builds.request(worker, {"request": answer["request"], "wait": 0})
+    found = classify(stopped.value)
+    assert found["code"] == "UNREACHABLE" and "Start the worker again" in found["hint"], found
+    assert found["message"] == (
+        "The worker is shutting down, so it stopped its build, and no process the build ran is "
+        "left running. Start the worker again, then build"
+    )
+    with pytest.raises(RuntimeError) as refused:
+        builds.request(worker, {"wait": 0})
+    assert classify(refused.value)["message"] == (
+        "The worker is shutting down, so no build starts. Start the worker again, then build"
+    )
+    assert target.calls == 1
+
+
+def test_a_stopped_context_kills_and_starts_no_process(tmp_path):
+    from peeky.agent import execute, stopping
+
+    stop = threading.Event()
+    marker = tmp_path / "ran"
+    with stopping(stop):
+        threading.Timer(0.2, stop.set).start()
+        started = time.monotonic()
+        result = execute(["sleep", "30"], tmp_path, 60)
+        assert result["stopped"] is True and result["exit_code"] is None
+        assert time.monotonic() - started < 10
+        # Once set, nothing starts.
+        again = execute(["touch", str(marker)], tmp_path, 60)
+    assert again["stopped"] is True and not marker.exists()
+    # Outside the context, an execute takes no stop of it.
+    assert execute(["true"], tmp_path, 60)["exit_code"] == 0
+
+
+def test_a_stopped_workspace_build_leaves_no_process_of_cargos(tmp_path, monkeypatch):
+    # Cargo runs in a process group of its own; a build script it runs is in that group.
+    # The build's `stop` kills the group, whatever runs in it, and the build ends.
+    import os
+
+    from peeky import rust_build
+
+    pid_file, stop = tmp_path / "script.pid", threading.Event()
+    script = f"sleep 600 & echo $! > {pid_file}; wait"
+
+    def cargo(target, root, *, deadline=None, progress=None):
+        rust_build._run(["sh", "-c", script], root, dict(os.environ), deadline, "`cargo build`")
+
+    def stop_once_running():
+        while not (pid_file.is_file() and pid_file.read_text().strip()):
+            time.sleep(0.05)
+        stop.set()
+
+    monkeypatch.setattr(rust_build, "_build", cargo)
+    threading.Thread(target=stop_once_running, daemon=True).start()
+    started = time.monotonic()
+    with pytest.raises(BuildStopped):
+        rust_build.build(None, tmp_path, deadline=time.monotonic() + 120, stop=stop)
+    assert time.monotonic() - started < 60
+    assert gone(int(pid_file.read_text()))
+
+
+def gone(pid, timeout=10):
+    """Whether the process ``pid`` ended within ``timeout``: a zombie no one reaped (in a
+    container whose first process isn't an init) has ended too."""
+    import os
+    import subprocess
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+        ).stdout.strip()
+        if not state or state.startswith("Z"):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def checkouts(tmp_path, files, links=()):
+    """A worker host's and a client's checkout of the same ``files``; ``links``: {name:
+    what it says} on both."""
+    found = []
+    for side in ("host", "client"):
+        root = tmp_path / side
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text)
+        for name, says in dict(links).items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).symlink_to(says)
+        found.append(root)
+    return found
+
+
+def compared(host, client, names, trees=None):
+    """How a worker on ``host`` and a client on ``client`` compare a Rust workspace's files:
+    the first that differs, as the worker refuses it, or None."""
+    adapter = SimpleNamespace(
+        compared_names=lambda root: tuple(names),
+        compared_trees=lambda root: (dict(trees or {}), ("vendor",)),
+        remote_refusal=lambda root: None,
+    )
+    ours = sources.worker_sources(adapter, host)
+    theirs = sources.client_sources(client, sources.describe(adapter, host))
+    return sources.difference(theirs, ours, structured=True)
+
+
+WATCHED = {"util/build.rs": "fn main() {}\n", "util/proto/a.txt": "a\n", "util/data.txt": "a\n"}
+
+
+def test_an_entry_only_in_the_clients_watched_directory_is_refused(tmp_path):
+    # `cargo::rerun-if-changed=proto`: Cargo reruns the script for any entry there, and the
+    # script may read each.
+    host, client = checkouts(tmp_path, WATCHED)
+    names = ("util/build.rs", "util/proto/a.txt")
+    assert compared(host, client, names, {"util/proto": "exact"}) is None
+    (client / "util/proto/extra.txt").write_text("x\n")
+    assert compared(host, client, names, {"util/proto": "exact"}) == (
+        "util/proto/ (its entries on the worker host differ from your checkout's: an entry on "
+        "one side only, one of another kind, or a link that points elsewhere)"
+    )
+    # An empty directory too, and one in a package Cargo's default watches.
+    (client / "util/proto/extra.txt").unlink()
+    (client / "util/proto/more").mkdir()
+    assert compared(host, client, names, {"util/proto": "exact"}).startswith("util/proto/ ")
+    (client / "util/proto/more").rmdir()
+    (client / "util/notes.txt").write_text("n\n")
+    assert compared(host, client, names, {"util": "package"}).startswith("util/ ")
+    # What a package's listing leaves out, as Cargo's does: a hidden or `target` directory,
+    # another package's, and the vendored copies (a root package's).
+    (client / "util/notes.txt").unlink()
+    for name in ("util/.cache/x", "util/target/x", "util/inner/Cargo.toml", "vendor/x/y"):
+        (client / name).parent.mkdir(parents=True, exist_ok=True)
+        (client / name).write_text("x\n")
+    assert compared(host, client, names, {".": "package", "util": "package"}) is None
+
+
+@pytest.mark.parametrize(
+    "name", ["util/proto/a.txt", "util/src/lib.rs", "Cargo.toml"], ids=["watched", "src", "top"]
+)
+def test_a_link_where_the_other_side_has_a_file_of_the_same_bytes_is_refused(tmp_path, name):
+    files = {**WATCHED, "util/src/lib.rs": "pub fn f() {}\n", "Cargo.toml": "[workspace]\n"}
+    host, client = checkouts(tmp_path, files)
+    names = ("Cargo.toml", "util/build.rs", "util/proto/a.txt", "util/src/lib.rs")
+    trees = {"util/proto": "exact"}
+    assert compared(host, client, names, trees) is None
+    # The worker's is a link to a file of the same bytes; the client's a file.
+    copy = host / (name + ".real")
+    copy.write_bytes((host / name).read_bytes())
+    (host / name).unlink()
+    (host / name).symlink_to(copy.name)
+    assert compared(host, client, names, trees) == (
+        f"{name} (the copy on the worker host differs from your checkout, in its contents or "
+        "in where a link is or points)"
+    )
+
+
+def test_a_directory_linked_on_one_side_only_is_refused(tmp_path):
+    files = {"util/src/lib.rs": "pub fn f() {}\n"}
+    host, client = checkouts(tmp_path, files)
+    names = ("util/src/lib.rs",)
+    (host / "util/src").rename(host / "util/real")
+    (host / "util/src").symlink_to("real")
+    assert compared(host, client, names) == (
+        "util/src/lib.rs (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    )
+
+
+def test_links_that_point_elsewhere_are_refused_though_the_bytes_are_the_same(tmp_path):
+    files = {**WATCHED, "util/other.txt": "a\n"}
+    del files["util/proto/a.txt"]
+    links = {"util/proto/a.txt": "../data.txt", "util/notes.txt": ".hidden/n.txt"}
+    host, client = checkouts(tmp_path, files, links)
+    for side in (host, client):
+        (side / "util/.hidden").mkdir()
+        (side / "util/.hidden/n.txt").write_text("n\n")
+    names = ("util/build.rs", "util/proto/a.txt")
+    trees = {"util/proto": "exact", "util": "package"}
+    assert compared(host, client, names, trees) is None
+    (client / "util/proto/a.txt").unlink()
+    (client / "util/proto/a.txt").symlink_to("../other.txt")
+    assert compared(host, client, names, trees) == (
+        "util/proto/a.txt (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    )
+    (client / "util/proto/a.txt").unlink()
+    (client / "util/proto/a.txt").symlink_to("../data.txt")
+    assert compared(host, client, names, trees) is None
+    # A link in a package's listing, which isn't among the files compared by name: what it
+    # names differs.
+    (client / "util/.hidden/n.txt").write_text("changed\n")
+    assert compared(host, client, names, trees).startswith("util/ (its entries ")

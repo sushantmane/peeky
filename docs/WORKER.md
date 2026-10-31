@@ -162,11 +162,17 @@ macOS. Its paths are relative to `--root`.
   only `wait`, at most 30 s, and `request`, a running build's id. It answers with the build's
   summary, its error, or `{"status": "building", "request": ID}`. Ask again with that `request`
   until it ends. One build runs at a time; a second request joins it.
+- A running build keeps the worker from its idle exit. Every way the worker ends stops the build
+  first: `shutdown`, SIGTERM, the idle timeout. Cargo and every process it ran are killed, and no
+  build starts after.
 - `version` names the files to compare: the recorded build's manifests, lockfile and Cargo
   configuration, every workspace file it compiled (the binary's too), what local build scripts
   read, and each vendored copy's `.cargo-checksum.json`. Nothing under `.git` is named. Before
   any build, the workspace's `Cargo.toml` and `Cargo.lock`. After `launch`, the build's own
   record is compared again.
+- `version` also sets `structured`: each file is compared by the links on its path too. Its
+  `trees` names the directories compared entry by entry: each a build script watches, and each
+  package Cargo's default watches, less `skip`, the vendored copies.
 - A launch on no current build is refused with `BUILD_REQUIRED`
   ([ERRORS](ERRORS.md#build_required)). The worker's message names the build command on its
   host. `peeky probe --worker` shows the client's own instead: `peeky build . --worker URL`.

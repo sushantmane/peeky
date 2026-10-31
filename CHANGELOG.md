@@ -88,12 +88,15 @@
 - **A Rust workspace through a worker (protocol 15; ADR 0008, phase 2):** a worker started with a
   workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
   from its own configuration only. It compares every workspace file the build compiled, the
-  binary's included, what local build scripts read, its manifests, lockfile, Cargo
-  configuration and vendored checksum files with the client's; never `.git`. Its
-  `BUILD_REQUIRED` names the client's own command. A line of a generic function only another crate uses is refused before
-  launch, naming it, where it was a `DEBUGGER_ERROR`. A stop in another crate's copy of the
-  crate's code reads no value, and says why: it was read as the crate's own, with none of the
-  checks of that copy. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
+  binary's included, what local build scripts read, its manifests, lockfile, Cargo configuration
+  and vendored checksum files with the client's; never `.git`. Each is compared by its links too,
+  and each watched directory entry by entry. A worker's end stops its build, Cargo's processes too.
+  Its `BUILD_REQUIRED` names the client's own command. A line of a generic function only another
+  crate uses is refused before launch, naming it, where it was a `DEBUGGER_ERROR`. A stop in
+  another crate's copy of the crate's code reads no value, and says why: it was read as the crate's
+  own, with none of the checks of that copy. So does one Peeky can't tell is the crate's own. A
+  build script watching a directory no longer fails the build with `Expected a regular file`. The
+  docs cover workspaces: Rust 7.2, REMOTE and WORKER.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

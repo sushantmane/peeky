@@ -3360,7 +3360,9 @@ def _start_remote(args, root, program, line, language, max_pause):
         # A compiled target's launch names each source its build read: name the one that
         # differs.
         if isinstance(manifest := launch.get("source_manifest"), dict) and (
-            what := difference(inputs, manifest)
+            what := difference(
+                inputs, manifest, structured=bool((client.sources or {}).get("structured"))
+            )
         ):
             raise RuntimeError(
                 f"Worker source provenance differs for {what}: the session was closed. Sync "

@@ -6,6 +6,7 @@ executes actions, and verifies a proposed fix in a fresh process.
 
 import argparse
 import contextlib
+import contextvars
 import difflib
 import hashlib
 import json
@@ -97,6 +98,21 @@ def kill_process_group(process):
 BUILD_RETAINED = 1048576
 
 
+# The ``stop`` of every ``execute`` in this context that names none (``stopping``).
+_STOP = contextvars.ContextVar("peeky_execute_stop", default=None)
+
+
+@contextlib.contextmanager
+def stopping(event):
+    """Within it, ``execute`` takes ``event`` for its ``stop`` where given none: a Rust
+    workspace's build, whose Cargo commands a worker's shutdown stops."""
+    token = _STOP.set(event)
+    try:
+        yield
+    finally:
+        _STOP.reset(token)
+
+
 def execute(
     command,
     cwd,
@@ -115,13 +131,24 @@ def execute(
     The first ``retain`` bytes of each stream are kept (with ``tail``, the last ones, from
     the first line that starts in them); more than ``output_limit`` bytes, both streams
     together, kills it.
-    Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code.
+    Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code, and
+    `stopped`. Without one, ``stopping``'s applies. One set already starts nothing.
     ``gate()``, a context manager, is held while the process is started; it may raise
     to keep the process from starting.
 
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
     """
+    stop = _STOP.get() if stop is None else stop
+    if stop is not None and stop.is_set():
+        return {
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "timed_out": False,
+            "output_limit_exceeded": False,
+            "stopped": True,
+        }
     child_env = without_credentials(os.environ if env is None else env)
     with gate() if gate is not None else contextlib.nullcontext():
         process = subprocess.Popen(
@@ -208,6 +235,7 @@ def execute(
         "stderr": buffers[1].decode(errors="replace"),
         "timed_out": timed_out,
         "output_limit_exceeded": overflow.is_set(),
+        "stopped": stopped,
     }
 
 
@@ -721,6 +749,7 @@ def main():
                 sys.exit(1)
     finally:
         if server:
+            server.builds.close()
             server.worker.close()
             server.shutdown()
             server.server_close()

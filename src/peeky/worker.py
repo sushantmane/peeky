@@ -2388,7 +2388,7 @@ class DebugWorker:
                     )
             # And every other source the target reads: what this worker's trusted
             # target names, or every .py file under the root for Python.
-            inputs_checked = inputs_python = None
+            inputs_checked = inputs_python = remote_inputs = None
             self.accepted_sources = self.foreign_frame = self.remote_names = None
             self.installed_sources = {}
             if (expected_inputs := args.get("expect_inputs")) is not None:
@@ -2402,7 +2402,9 @@ class DebugWorker:
                 )
 
                 own = worker_sources(self.adapter, self.root)
-                if what := difference(expected_inputs, own):
+                # A Rust workspace's are compared by their links and entries too.
+                kinds = getattr(self.adapter, "compared_trees", None) is not None
+                if what := difference(expected_inputs, own, structured=kinds):
                     raise ValueError(refusal(what))
                 hashed = {}
                 if declared(self.adapter, self.root) is None:
@@ -2499,8 +2501,12 @@ class DebugWorker:
                         why := uncompared()
                     ):
                         raise ValueError(why)
-
-                    if what := difference(expected_inputs, built):
+                    # A Rust workspace's: each file's contents as the build recorded them,
+                    # in the shape the disk has, and each watched directory's entries.
+                    kinds = (identities := getattr(runtime, "remote_identities", None)) is not None
+                    if kinds:
+                        built = remote_inputs = identities()
+                    if what := difference(expected_inputs, built, structured=kinds):
                         raise RuntimeError(refusal(what))
                 if inputs_python is not None:
                     self.accepted_sources = {**own, **self.installed_sources}
@@ -2658,11 +2664,17 @@ class DebugWorker:
                         if isinstance(build := getattr(runtime, "build_id", None), str)
                         else {}
                     ),
-                    "source_manifest": getattr(runtime, "source_manifest", None),
+                    "source_manifest": remote_inputs
+                    if remote_inputs is not None
+                    else getattr(runtime, "source_manifest", None),
                     **({"inputs_checked": inputs_checked} if inputs_checked else {}),
                     **(
                         {"inputs_sha256": inputs_sha256}
-                        if (inputs_sha256 := inputs_python or self.built_digest(runtime))
+                        if (
+                            inputs_sha256 := inputs_python
+                            or (digest(remote_inputs) if remote_inputs is not None else None)
+                            or self.built_digest(runtime)
+                        )
                         else {}
                     ),
                     "target_identity": identity,
@@ -7243,10 +7255,28 @@ class _RemoteBuilds:
     def __init__(self):
         self.lock = threading.Lock()
         self.current = None  # (id, thread, {"result" or "error": ...})
+        # Set by ``close``: the running build's processes are killed, and none starts.
+        self.stopping = threading.Event()
+
+    def active(self):
+        """Whether a build runs: the worker's activity, as a request is."""
+        current = self.current
+        return current is not None and current[1].is_alive()
+
+    def close(self, timeout=30):
+        """Stop the running build, its processes killed (Cargo's process group, its build
+        scripts and rustc among it), and wait for it; no build starts after. Every way the
+        worker ends calls it: `shutdown`, SIGTERM, an idle exit, `main`'s end."""
+        self.stopping.set()
+        with self.lock:
+            current = self.current
+        if current is not None:
+            current[1].join(timeout)
 
     def request(self, worker, args):
         from peeky.rust_build import BUILD_TIMEOUT_S
 
+        worker.last_used = time.monotonic()
         if getattr(worker.adapter, "compared_names", None) is None:
             raise ValueError(
                 "This worker's target isn't a Rust workspace (a --rust-config naming analyse "
@@ -7264,6 +7294,11 @@ class _RemoteBuilds:
             raise ValueError("request names a build by its 32 hex digits")
         with self.lock:
             current = self.current
+            if named is None and self.stopping.is_set():
+                raise RuntimeError(
+                    "The worker is shutting down, so no build starts. Start the worker again, "
+                    "then build"
+                )
             if named is not None and (current is None or current[0] != named):
                 raise ValueError(
                     "No such build on this worker: it ended and another started, or the "
@@ -7275,16 +7310,22 @@ class _RemoteBuilds:
                 def run():
                     try:
                         outcome["result"] = worker.adapter.build(
-                            worker.root, deadline=time.monotonic() + BUILD_TIMEOUT_S
+                            worker.root,
+                            deadline=time.monotonic() + BUILD_TIMEOUT_S,
+                            stop=self.stopping,
                         )
                     except BaseException as exc:  # noqa: BLE001 - the request reports it
                         outcome["error"] = exc
+                    finally:
+                        # Its end is activity too: the client asks for its outcome next.
+                        worker.last_used = time.monotonic()
 
                 thread = threading.Thread(target=run, name="peeky-build", daemon=True)
                 current = self.current = (uuid.uuid4().hex, thread, outcome)
                 thread.start()
         identifier, thread, outcome = current
         thread.join(wait)
+        worker.last_used = time.monotonic()
         if thread.is_alive():
             return {"status": "building", "request": identifier}
         if "error" in outcome:
@@ -7598,6 +7639,7 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
                     result = builds.request(worker, args)
                 elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
+                    builds.close()
                     with worker.lock:
                         worker.close()
                     threading.Thread(target=server.shutdown, daemon=True).start()
@@ -7634,7 +7676,7 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
             self.wfile.write(encoded)
 
     server = _Server(("127.0.0.1", port), Handler)
-    server.worker = worker
+    server.worker, server.builds = worker, builds
     return server
 
 
@@ -8035,6 +8077,9 @@ def main():
                     # The close counts as activity; a private worker exits right away.
                     if args.exit_when_idle:
                         idle = args.idle_timeout + 1
+                if server.builds.active():
+                    # A build runs: activity, as a request is.
+                    continue
                 if args.exit_when_idle and not server.worker.dap and idle > args.idle_timeout:
                     threading.Thread(target=server.shutdown, daemon=True).start()
                     return
@@ -8061,6 +8106,8 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        # A build's processes go with the worker: none outlives it, or its deadline.
+        server.builds.close()
         server.worker.close()
         server.server_close()
 

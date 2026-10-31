@@ -112,8 +112,11 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   executable's debug information (`application_symbols`), and proves values with its MIR alone.
 - A stop in a file of the crate, in code its units don't define, is another crate's build of
   the crate's generic or inlined function. Its frame's symbol hash isn't one of the units'
-  functions, and its address is in none of them (`_other_crates_code`). Such a stop reads no
-  value, and says why (`macro_stop_note`), and the session goes on.
+  functions, and its address is in none of them (`_ownership`). Such a stop reads no value, and
+  says why (`macro_stop_note`), and the session goes on.
+- Where Peeky can't tell, the stop reads no value either, and says why. The debugger gave no
+  address, even after `validate_debugger`, or a unit's functions couldn't be read
+  (`UNREAD_UNIT`). A caller's address is taken one byte back, inside its call.
 - A breakpoint on a line of a function none of whose lines has a row in the crate's units is
   refused before launch (`unplaceable_line`): only other crates' builds have code of it.
 
@@ -129,13 +132,23 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
 - `remote_refusal` refuses a remote run where a build script's input can't be compared: outside
   the root, or missing, unreadable or not a file on the worker's host.
   The names are read again only once the record changes (`recorded_names`).
-- After the launch's `assert_current`, the session's `source_manifest` (the build's own record
-  of those files) is compared with the client's again.
+- Both sides compare them as `sources.structured` gives them: a file's bytes and the links on
+  its path, with what they say. Each directory a build script watches, and each package Cargo's
+  default watches, is compared entry by entry (`compared_trees`, and `sources._tree`).
+- After the launch's `assert_current`, the build's own record of those files is compared with
+  the client's again, in the shape the disk has (`remote_identities`).
+- A directory Cargo's own dependency file lists is a build script's `rerun-if-changed` one. It
+  is recorded entry by entry, not hashed, and refused where no local build script watches it
+  (`_watched_directories`).
 - A probe's process gets the target as its configuration (`trusted_config`), which
   `RustWorkspaceTarget.from_config` reads back as the same target, so the same build.
 - `build` (`_RemoteBuilds`) runs `RustWorkspaceTarget.build` in a thread, one at a time. A
   request waits at most 30 s, within the client's 45 s timeout. The client (`_remote_build`)
   asks again with the build's `request` id until it ends.
+- `_RemoteBuilds.close` sets the build's `stop` and joins it, before every way the worker
+  ends. Each process the build runs is an `execute` in its thread, which takes that `stop`
+  from `agent.stopping`: once set, it kills Cargo's process group and starts nothing.
+  A running build is the worker's activity (`active`).
 - The client rewrites a worker's `BUILD_REQUIRED` to name its own command (`_remote_build_required`).
   A client resolves the target without a `--config`: a manifest Peeky doesn't build itself is the
   worker's to read (`resolve`, `tools=False`).

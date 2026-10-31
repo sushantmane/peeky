@@ -119,6 +119,18 @@ def _session_class():
             them (rust_build.compared_sources): the run's inputs_sha256."""
             return rust_build.compared_sources(self.build)
 
+        def remote_identities(self):
+            """The build's compared files and watched directories as a remote client's are
+            compared with them (`sources.structured`): each file's contents as the build
+            recorded them, in the shape the disk has (its kind, the links on its way), and
+            each watched directory's entries, read once ``assert_current`` held the disk to
+            the build's record."""
+            from peeky.sources import structured
+
+            trees, skip = rust_build.compared_trees(self.build)
+            recorded = rust_build.compared_sources(self.build)
+            return structured(self.root, recorded, trees, skip, contents=recorded)
+
         def remote_refusal(self):
             """Why a remote client can't compare this build's files with its own, or None
             (rust_build.remote_refusal)."""
@@ -172,60 +184,86 @@ def _session_class():
                 "describe`"
             )
 
-        def _other_crates_code(self, frame):
-            """Whether ``frame`` is stopped on a line of the analysed crate's files in code
-            its build doesn't hold: a function whose symbol none of its units defines, at
-            an address outside each of their functions (another crate's build of a generic
-            or inlined function of the crate's). None where its address isn't known yet."""
+        def _ownership(self, frame, final=True, index=0):
+            """Whose build's code ``frame`` (frame ``index`` of the stop) is stopped in, on a
+            line of the analysed crate's files: ("own", None), the crate's; ("other", None),
+            another crate's build of a generic or inlined function of the crate's (a function
+            whose symbol none of its units defines, at an address outside each of their
+            functions); ("unknown", why) where Peeky can't tell (no address; a unit whose
+            functions weren't read), never taken for the crate's. Before the address is
+            known (not ``final``), ("pending", None) where it is needed."""
             place = self._place(frame)
             if place is None or place[0] not in self.lines:
-                return False
+                return "own", None
             hashed = _frame_hash(frame)
-            if (hashed and hashed[1] in self.code_blocks) or UNREAD_UNIT in self.code_blocks:
-                # The crate's function, or a unit whose functions weren't read: can't tell.
-                return False
+            if hashed and hashed[1] in self.code_blocks:
+                return "own", None
             pc = self._unslid(frame)
             if pc is None:
-                return None
+                if not final:
+                    return "pending", None
+                return "unknown", "The debugger gives no address for the frame"
+            if index:
+                # A caller's address is where its call returns to, which may be just past
+                # its function's end: its call instruction is the one before.
+                pc -= 1
             # An inlined call's frame is named for the function inlined: its address is in
             # the function it was inlined into.
-            return not any(
+            if any(
                 low <= pc < high
                 for blocks in self.code_blocks.values()
                 if blocks
                 for low, high in blocks[0].ranges
-            )
+            ):
+                return "own", None
+            if UNREAD_UNIT in self.code_blocks:
+                return "unknown", (
+                    f"Peeky couldn't read the debug information of one of `{self.crate_name}`'s "
+                    "units, so it doesn't know where all of their code is"
+                )
+            return "other", None
 
-        def _other_crates_note(self, frame, index):
+        def _ownership_note(self, frame, index, state, why):
             source, line = self._place(frame)
             function = display_function(str(frame.get("name") or "")) or "this function"
             crate = self.crate_name
-            return (
+            lead = (
                 f"Peeky reads no value of frame {index} ({function}) here: the debugger shows "
-                f"the stop on line {line} of {source}, in code another crate's build compiled "
-                f"(a generic or inlined function of `{crate}`'s, for that crate's types). Peeky "
-                f"reads only `{crate}`'s own build, which holds none of it. A stop where "
-                f"`{crate}`'s own code runs it is read"
+                f"the stop on line {line} of {source}"
+            )
+            if state == "other":
+                return (
+                    f"{lead}, in code another crate's build compiled (a generic or inlined "
+                    f"function of `{crate}`'s, for that crate's types). Peeky reads only "
+                    f"`{crate}`'s own build, which holds none of it. A stop where `{crate}`'s own "
+                    "code runs it is read"
+                )
+            return (
+                f"{lead}. Peeky can't tell whether that is `{crate}`'s own build of the code, or "
+                f"another crate's copy of a generic or inlined function. {why}. A stop in a "
+                f"function Peeky finds among `{crate}`'s is read: try a line where `{crate}`'s "
+                "own code calls this one"
             )
 
         def macro_stop_state(self, dap, frame):
             """RustSession's, and a stop in another crate's build of the analysed crate's
-            code (``_other_crates_code``): never read."""
-            found = self._other_crates_code(frame)
-            if found is None:
+            code, or one Peeky can't tell is the crate's own (``_ownership``): never read."""
+            state, why = self._ownership(frame, final=False)
+            if state == "pending":
                 try:
                     self.validate_debugger(dap, frame)
                 except Exception:
                     # A stop that doesn't match the build: `inspect` says so, and closes.
                     return None
-                found = self._other_crates_code(frame)
-            if found:
-                return self._other_crates_note(frame, 0)
+                state, why = self._ownership(frame)
+            if state != "own":
+                return self._ownership_note(frame, 0, state, why)
             return super().macro_stop_state(dap, frame)
 
         def macro_stop_note(self, frame, index=0):
-            if self._other_crates_code(frame):
-                return self._other_crates_note(frame, index)
+            state, why = self._ownership(frame, index=index)
+            if state != "own":
+                return self._ownership_note(frame, index, state, why)
             return super().macro_stop_note(frame, index)
 
     return WorkspaceSession

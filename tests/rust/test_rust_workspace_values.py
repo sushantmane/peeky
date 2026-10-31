@@ -846,3 +846,41 @@ def test_a_stop_in_another_crates_build_of_the_crates_code_reads_nothing(built, 
     # The program's own print: 1 + `x` + what `smallnum` kept (35 from `PROJECTED`, then 39
     # from the binary's `impl`).
     assert printed(result, "BOXED") == ["73"] and printed(result, "APP_BOXED") == ["79"]
+
+
+@pytest.mark.timeout(600)
+def test_a_stop_peeky_cant_tell_is_the_crates_own_reads_nothing(built, capsys):
+    from peeky import rust_symbols
+    from peeky.native import NativeSession
+
+    # No address for a frame: `util`'s own copy is still known by its symbol, and read; the
+    # binary's copy, whose symbol `util`'s units don't define, can't be placed.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(NativeSession, "_unslid", lambda self, frame: None)
+        code, result = probe(capsys, built, "BOXED", "--capture", "x", "--hits", "2")
+    assert code == 0, result
+    first, second = [row for row in result["rows"] if row["selector"] == "x"]
+    assert first["value"] == "37", first
+    assert second["unavailable"] is True and "value" not in second, second
+    assert second["error"].endswith(
+        "Peeky can't tell whether that is `util`'s own build of the code, or another crate's "
+        "copy of a generic or inlined function. The debugger gives no address for the frame. A "
+        "stop in a function Peeky finds among `util`'s is read: try a line where `util`'s own "
+        "code calls this one"
+    ), second
+
+    # A unit whose functions Peeky couldn't read: no stop is taken for the crate's own.
+    def unread(root, unit):
+        raise ValueError("unreadable")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rust_symbols, "code_blocks", unread)
+        code, result = probe(capsys, built, "STD", "--capture", "x")
+    assert code == 0, result
+    (row,) = [row for row in result["rows"] if row["selector"] == "x"]
+    assert row["unavailable"] is True and "value" not in row, row
+    assert (
+        "Peeky couldn't read the debug information of one of `util`'s units, so it doesn't know "
+        "where all of their code is." in row["error"]
+    ), row
+    assert printed(result, "STD") == ["6"]

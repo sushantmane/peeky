@@ -2228,7 +2228,8 @@ Cargo's configuration, a vendored copy or a tool is `PROVENANCE_CHANGED` instead
   Where the analysed crate has code of it too, a stop in the other crate's copy reads no value,
   and says why: `withheld: Peeky reads no value of frame 0 (util::boxed) here: the debugger shows
   the stop on line 196 of util/src/lib.rs, in code another crate's build compiled`. The stops in
-  the crate's own copy are read.
+  the crate's own copy are read. A stop Peeky can't tell is the crate's own reads no value
+  either, and the note says why: the debugger gave no address, for example.
 
 #### Calls into dependencies
 
