@@ -291,7 +291,7 @@ as compared, and says the rest of that directory isn't.
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 14.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
+**Protocol 15.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
 Protocol 4 adds restores (`@before`). Protocol 5 withholds what a C or C++ pointer one past an
 array's end points at, which a protocol 4 worker reads as a value. Protocol 6 marks what is read
 through a C or C++ pointer `unproven` where Peeky can't show it points at a live object. A
@@ -302,14 +302,16 @@ reads a key of a GCC build's unordered container past its first 256 entries. Pro
 `hello`: a client sends nothing else, and not the token, before the worker proves it holds the
 token. Protocol 12 runs a Python program on the worker root's virtual environment, or the
 worker's `--python`, and names it. Protocol 13 runs pytest, as `python -m pytest` does
-(`--run-module pytest`). Protocol 14 adds `BUILD_REQUIRED`, for a Rust workspace without a current Peeky build. Both hosts need the same protocol. A client and a worker of different protocols refuse
+(`--run-module pytest`). Protocol 14 adds `BUILD_REQUIRED`, for a Rust workspace without a
+current Peeky build. Protocol 15 probes a [Rust workspace](#a-rust-workspace) from another host.
+Both hosts need the same protocol. A client and a worker of different protocols refuse
 each other:
 
 - A client refuses a worker of another protocol before sending anything but a `hello`, which
-  carries no token: `Worker speaks protocol 13, this client 14: install the same Peeky version on
+  carries no token: `Worker speaks protocol 14, this client 15: install the same Peeky version on
   both hosts`. That holds for a probe and a `session start`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 14: `Client
-  speaks protocol 13, this worker 14: install the same Peeky version on both hosts`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 15: `Client
+  speaks protocol 14, this worker 15: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
   the worker's protocol again. A session started with another protocol is refused: start it again.

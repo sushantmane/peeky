@@ -91,7 +91,9 @@ class _UnitTarget:
 
 
 def _session_class():
-    from peeky.rust import RustSession
+    from peeky.names import display_function
+    from peeky.rust import RustSession, _frame_hash
+    from peeky.rust_symbols import UNREAD_UNIT
 
     class WorkspaceSession(RustSession):
         """rust.RustSession on a workspace's build: its record checked again before
@@ -111,6 +113,12 @@ def _session_class():
                     "that build. Run `peeky build` again, then start a new session"
                 ) from None
 
+        @property
+        def source_manifest(self):
+            """What a remote client's files were compared with, as the build recorded
+            them (rust_build.compared_sources): the run's inputs_sha256."""
+            return rust_build.compared_sources(self.build)
+
         def owns_source(self, path):
             """Whether ``path`` (resolved) is one of the analysed compile's files: the
             program a stop is read in. A dependency's file, or another member's, is read
@@ -124,6 +132,96 @@ def _session_class():
         def launch_args(self, program, root, args=None):
             launch = super().launch_args(program, root, args)
             return {**launch, "cwd": str(self.cwd)}
+
+        def unplaceable_line(self, program, line):
+            """RustSession's, and a line of a function the analysed crate's build has no
+            code of (no line of its body has a row): a generic or inlined one only other
+            crates use, which their builds compile for their own types. The debugger places
+            the breakpoint in that code, of a crate Peeky reads none of."""
+            if why := super().unplaceable_line(program, line):
+                return why
+            try:
+                source = Path(program).resolve().relative_to(self.prepared.source_root)
+            except (AttributeError, OSError, ValueError):
+                return None
+            source = source.as_posix()
+            if source not in self.lines or line in self.lines[source]:
+                return None
+            rows = frozenset(self.lines[source])
+            covering = [
+                body for body in self.owned.bodies if body.file == source and line in body.lines
+            ]
+            # A line with no row of its own in a function the build has code of is one LLDB
+            # moves to the next line that has one, which the stop reports.
+            if not covering or any(rows & body.lines for body in covering):
+                return None
+            functions = sorted({body.path for body in covering if "{closure" not in body.path})
+            if not functions:
+                return None
+            named = " or ".join(f"`{self.crate_name}::{each}`" for each in functions)
+            return (
+                f"Line {line} has no code to stop at in `{self.crate_name}`'s build: it is in "
+                f"{named}, a generic or inlined function whose code only the crates that use "
+                "it compile, for their own types, and Peeky reads none of theirs. Stop where "
+                f"`{self.crate_name}`'s own code calls it, or choose a line from `peeky "
+                "describe`"
+            )
+
+        def _other_crates_code(self, frame):
+            """Whether ``frame`` is stopped on a line of the analysed crate's files in code
+            its build doesn't hold: a function whose symbol none of its units defines, at
+            an address outside each of their functions (another crate's build of a generic
+            or inlined function of the crate's). None where its address isn't known yet."""
+            place = self._place(frame)
+            if place is None or place[0] not in self.lines:
+                return False
+            hashed = _frame_hash(frame)
+            if (hashed and hashed[1] in self.code_blocks) or UNREAD_UNIT in self.code_blocks:
+                # The crate's function, or a unit whose functions weren't read: can't tell.
+                return False
+            pc = self._unslid(frame)
+            if pc is None:
+                return None
+            # An inlined call's frame is named for the function inlined: its address is in
+            # the function it was inlined into.
+            return not any(
+                low <= pc < high
+                for blocks in self.code_blocks.values()
+                if blocks
+                for low, high in blocks[0].ranges
+            )
+
+        def _other_crates_note(self, frame, index):
+            source, line = self._place(frame)
+            function = display_function(str(frame.get("name") or "")) or "this function"
+            crate = self.crate_name
+            return (
+                f"Peeky reads no value of frame {index} ({function}) here: the debugger shows "
+                f"the stop on line {line} of {source}, in code another crate's build compiled "
+                f"(a generic or inlined function of `{crate}`'s, for that crate's types). Peeky "
+                f"reads only `{crate}`'s own build, which holds none of it. A stop where "
+                f"`{crate}`'s own code runs it is read"
+            )
+
+        def macro_stop_state(self, dap, frame):
+            """RustSession's, and a stop in another crate's build of the analysed crate's
+            code (``_other_crates_code``): never read."""
+            found = self._other_crates_code(frame)
+            if found is None:
+                try:
+                    self.validate_debugger(dap, frame)
+                except Exception:
+                    # A stop that doesn't match the build: `inspect` says so, and closes.
+                    return None
+                found = self._other_crates_code(frame)
+            if found:
+                return self._other_crates_note(frame, 0)
+            return super().macro_stop_state(dap, frame)
+
+        def macro_stop_note(self, frame, index=0):
+            if self._other_crates_code(frame):
+                return self._other_crates_note(frame, index)
+            return super().macro_stop_note(frame, index)
 
     return WorkspaceSession
 
@@ -322,6 +420,7 @@ def prepare_session(target, program, root, *, deadline=None):
         )
         session.units = tuple(debug_units)
         session.code_blocks = blocks
+        session.crate_name = crate
         session.declarations_ir = declarations
         # A dependency's macros write its own code, taken as sound as std's are; a local
         # procedural macro writes the project's, which only the expansion shows. What the

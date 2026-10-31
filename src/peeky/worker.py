@@ -61,6 +61,7 @@ MAX_HISTORY_ENTRY_BYTES = 256_000
 
 OPERATIONS = frozenset(
     {
+        "build",
         "launch",
         "wait",
         "inspect",
@@ -2400,17 +2401,11 @@ class DebugWorker:
                     worker_sources,
                 )
 
-                if not getattr(self.adapter, "compares_remote_sources", True):
-                    raise ValueError(
-                        "A worker doesn't probe a Rust workspace for a remote client yet: it "
-                        "would compare none of the workspace's files with yours. Run Peeky on the "
-                        "workspace's own host"
-                    )
                 own = worker_sources(self.adapter, self.root)
                 if what := difference(expected_inputs, own):
                     raise ValueError(refusal(what))
                 hashed = {}
-                if declared(self.adapter) is None:
+                if declared(self.adapter, self.root) is None:
                     from peeky.sources import in_environment
 
                     # Python: what runs first must be among the files compared. One in a
@@ -7227,12 +7222,78 @@ def _inside_program(runtime, frame, *roots):
     return False
 
 
+# How long a remote `build` request waits for the build before it answers that it is still
+# running: within the client's 45 s timeout.
+BUILD_WAIT_S = 30.0
+
+
+class _RemoteBuilds:
+    """A worker's builds of its Rust workspace for remote clients (`build`): from its own
+    `--rust-config` only, one at a time, each in a thread, so a request answers within the
+    client's timeout. A request waits up to ``wait`` seconds (at most ``BUILD_WAIT_S``):
+    then the build's summary, or its error, or `{"status": "building", "request": id}`,
+    which a later request naming that id waits on again. A request naming none starts a
+    build unless one is running, which it joins."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.current = None  # (id, thread, {"result" or "error": ...})
+
+    def request(self, worker, args):
+        from peeky.rust_build import BUILD_TIMEOUT_S
+
+        if getattr(worker.adapter, "compared_names", None) is None:
+            raise ValueError(
+                "This worker's target isn't a Rust workspace (a --rust-config naming analyse "
+                "and run): nothing to build. Its probes build what they run"
+            )
+        if set(args) - {"request", "wait"}:
+            raise ValueError("build takes only `request` (a running build's id) and `wait`")
+        wait = args.get("wait", BUILD_WAIT_S)
+        if type(wait) not in (int, float) or not 0 <= wait <= BUILD_WAIT_S:
+            raise ValueError(f"wait must be a number of seconds within [0, {BUILD_WAIT_S:g}]")
+        named = args.get("request")
+        if named is not None and not (
+            isinstance(named, str) and re.fullmatch(r"[0-9a-f]{32}", named)
+        ):
+            raise ValueError("request names a build by its 32 hex digits")
+        with self.lock:
+            current = self.current
+            if named is not None and (current is None or current[0] != named):
+                raise ValueError(
+                    "No such build on this worker: it ended and another started, or the "
+                    "worker restarted. Request a new build"
+                )
+            if named is None and (current is None or not current[1].is_alive()):
+                outcome = {}
+
+                def run():
+                    try:
+                        outcome["result"] = worker.adapter.build(
+                            worker.root, deadline=time.monotonic() + BUILD_TIMEOUT_S
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - the request reports it
+                        outcome["error"] = exc
+
+                thread = threading.Thread(target=run, name="peeky-build", daemon=True)
+                current = self.current = (uuid.uuid4().hex, thread, outcome)
+                thread.start()
+        identifier, thread, outcome = current
+        thread.join(wait)
+        if thread.is_alive():
+            return {"status": "building", "request": identifier}
+        if "error" in outcome:
+            raise outcome["error"]
+        return dict(outcome["result"])
+
+
 def make_server(root, token, port=8765, *, adapter=None, python=None):
     """``python``: a Python worker's `--python` (python_interpreter), for its sessions
     and its probes."""
     if not isinstance(token, str) or not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
         raise ValueError(f"Token must contain {MIN_TOKEN_CHARS} to {MAX_TOKEN_CHARS} characters")
     worker = DebugWorker(root, adapter=adapter, python=python)
+    builds = _RemoteBuilds()
     probes = threading.Semaphore(1)
 
     def probe(args):
@@ -7520,12 +7581,16 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
                     result = {
                         "protocol": PROTOCOL_VERSION,
                         # Which sources a client hashes for expect_inputs.
-                        "sources": describe(worker.adapter),
+                        "sources": describe(worker.adapter, worker.root),
                         # Where its paths start: a remote client shows them as its own.
                         "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(ERROR_CODES),
                     }
+                elif operation == "build":
+                    # From the worker's own configuration only: a request names no tool,
+                    # path or flag.
+                    result = builds.request(worker, args)
                 elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
                     with worker.lock:
@@ -7679,7 +7744,10 @@ def _run_probe_process(root, request, adapter, cap, *, secret=None, python=None)
             command += ["--expect-inputs-file", str(expected)]
         if adapter is not None:
             config = Path(scratch) / "target.json"
-            config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
+            # A Rust workspace's is its configuration as written, which nests no dataclass.
+            trusted = getattr(adapter, "trusted_config", None)
+            data = trusted() if trusted is not None else dataclasses.asdict(adapter)
+            config.write_text(json.dumps(data, default=str))
             config.chmod(0o600)
             command += ["--config", str(config)]
         # A remote Python run's bytecode cache, removed with the scratch whatever ends the

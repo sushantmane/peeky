@@ -181,9 +181,6 @@ class RustWorkspaceTarget:
     supports_deadline = True
     # Candidate edits in a workspace come later (ADR 0008, phase 3).
     supports_edits = False
-    # A remote client's files aren't compared with a workspace's yet: such a launch is
-    # refused, and the worker declares no sources (never Python's .py files).
-    compares_remote_sources = False
     verification_inputs = ()
 
     def __post_init__(self):
@@ -274,6 +271,41 @@ class RustWorkspaceTarget:
         """The current build's manifest (current_build)."""
         return current_build(self, root)
 
+    def compared_names(self, root):
+        """The files under ``root`` a remote client's are compared with
+        (`sources.declared`): the recorded build's (``compared_sources``). Where none is
+        recorded, the workspace's manifest and lockfile: a probe is refused for that once
+        they compare (BUILD_REQUIRED)."""
+        names = recorded_names(self, root or ".")
+        if names is not None:
+            return names
+        workspace = Path(self.config.workspace)
+        return tuple(
+            (workspace / name).as_posix().removeprefix("./")
+            for name in ("Cargo.toml", "Cargo.lock")
+        )
+
+    def trusted_config(self):
+        """The trusted configuration this target is (``from_config`` reads it back as the
+        same target): what a worker's probe process is given."""
+        config, run = self.config, self.config.run
+        data = {
+            "language": "rust",
+            "workspace": config.workspace,
+            "analyse": list(config.analyse),
+            "run": {run.kind: True if run.kind == "lib" else run.name}
+            | ({} if run.package is None else {"package": run.package}),
+            "features": list(config.features),
+            "arguments": list(self.arguments),
+            "rust_version": self.rust_version,
+        }
+        if config.vendor is not None:
+            data["vendor"] = config.vendor
+        for name in ("cargo", "rustc", "adapter", "dwarfdump", "linker", "dsymutil", "sysroot"):
+            if (value := getattr(self, name)) is not None:
+                data[name] = value
+        return data
+
     def prepare(self, program, root, *, edit=None, deadline=None):
         if edit is not None:
             raise ValueError(
@@ -283,6 +315,50 @@ class RustWorkspaceTarget:
         from peeky.rust_workspace_session import prepare_session
 
         return prepare_session(self, program, root, deadline=deadline)
+
+
+# {a build's manifest's path: (its status when read, ``compared_sources``' names)}: a
+# worker asks at every `version` and launch.
+_RECORDED_NAMES = {}
+
+
+def recorded_names(target, root):
+    """The names of ``compared_sources`` of ``target``'s build under ``root`` as recorded,
+    unchecked (a probe checks the build: ``current_build``); None where none is recorded, or
+    it is another configuration's or Peeky's."""
+    path = build_directory(target, root, create=False) / "manifest.json"
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    key = (status.st_ino, status.st_mtime_ns, status.st_size)
+    if (cached := _RECORDED_NAMES.get(path)) is not None and cached[0] == key:
+        return cached[1]
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema") != SCHEMA
+        or manifest.get("identity") != target.identity(root)
+    ):
+        return None
+    names = tuple(compared_sources(manifest))
+    _RECORDED_NAMES[path] = (key, names)
+    return names
+
+
+def compared_sources(manifest):
+    """{name under the root: SHA-256 the build recorded} of what a remote client's files are
+    compared with: what Cargo read that identifies the build (every manifest, the lockfile,
+    the workspace's own Cargo configuration: ``inputs``), and each analysed compile's
+    sources. Vendored copies are tied to the lockfile, which is compared."""
+    found = dict(manifest["inputs"])
+    for unit in manifest["units"]:
+        for name in unit["sources"]:
+            found[name] = manifest["sources"][name]
+    return dict(sorted(found.items()))
 
 
 def build_directory(target, root, *, create=True):

@@ -477,7 +477,14 @@ def _resolve(path, program, line, config, tools=True):
         from peeky.rust_manifest import cargo_layout
 
         # The targets Cargo builds: a [[bin]] or src/main.rs, a [[test]] or tests/*.rs.
-        binary, tests = cargo_layout(crate)
+        try:
+            binary, tests = cargo_layout(crate)
+        except ValueError:
+            if tools or not program or path.suffix == ".rs":
+                raise
+            # A worker's: its own configuration names what it builds (a workspace's
+            # `--rust-config`), and it compares the files that build reads with these.
+            return crate, program, line, "rust", None
         sources = tuple(
             sorted(p.relative_to(crate).as_posix() for p in (crate / "src").rglob("*.rs"))
         )
@@ -1337,7 +1344,11 @@ def probe(args):
             # answer that is not the worker's) leaves its outcome unknown.
             if isinstance(exc, WorkerUnreachable) or getattr(exc, "from_worker", False):
                 exc.before_launch = True
+            if isinstance(exc, PeekyError):
+                exc.payload = _remote_build_required(exc.payload, args)
             raise
+        if isinstance(result.get("error"), dict):
+            result["error"] = _remote_build_required(result["error"], args)
     else:
         result = run_probe(
             root,
@@ -1410,10 +1421,8 @@ def _build_first(args, root, adapter):
     from peeky.rust_build import BUILD_TIMEOUT_S, RustWorkspaceTarget
 
     if getattr(args, "worker", None) is not None:
-        raise ValueError(
-            "--build builds here, not on a worker: run `peeky build` on the worker's host, "
-            "then probe without --build"
-        )
+        # The worker builds from its own configuration, as `peeky build --worker` does.
+        return _remote_build(args, time.monotonic() + BUILD_TIMEOUT_S)
     if not isinstance(adapter, RustWorkspaceTarget):
         raise ValueError(
             "--build is for a Rust workspace's configuration (analyse and run); other "
@@ -3324,18 +3333,24 @@ def _start_remote(args, root, program, line, language, max_pause):
     expected = _expected(root, program, entry)
     hashed = _hashed(root, client.sources, inputs, expected, program, entry)
     client.names = frozenset(inputs) | frozenset(hashed)
-    launch = client.call(
-        "launch",
-        program=program,
-        breakpoints=[{"line": line}],
-        max_pause=max_pause,
-        **({"entry": entry} if entry else {}),
-        **({"module": module} if (module := _module(args, language)) else {}),
-        **({"args": list(args.arg)} if args.arg else {}),
-        expect_sha256=expected,
-        expect_inputs=inputs,
-        protocol=PROTOCOL_VERSION,
-    )
+    from peeky.errors import PeekyError
+
+    try:
+        launch = client.call(
+            "launch",
+            program=program,
+            breakpoints=[{"line": line}],
+            max_pause=max_pause,
+            **({"entry": entry} if entry else {}),
+            **({"module": module} if (module := _module(args, language)) else {}),
+            **({"args": list(args.arg)} if args.arg else {}),
+            expect_sha256=expected,
+            expect_inputs=inputs,
+            protocol=PROTOCOL_VERSION,
+        )
+    except PeekyError as exc:
+        exc.payload = _remote_build_required(exc.payload, args)
+        raise
     try:
         _source_matches(root, program, launch.get("source_sha256"), "program")
         if entry:
@@ -4835,6 +4850,18 @@ def build_workspace(args):
     """`peeky build`: build a Rust workspace its configuration names (rust_build)."""
     from peeky.rust_build import BUILD_TIMEOUT_S, RustWorkspaceTarget
 
+    if getattr(args, "worker", None) is not None:
+        if args.config:
+            raise ValueError(
+                "peeky build --worker builds from the worker's own --rust-config: leave out "
+                "--config"
+            )
+        timeout = BUILD_TIMEOUT_S if args.timeout is None else args.timeout
+        if not 0 < timeout <= BUILD_TIMEOUT_S:
+            raise ValueError(f"--timeout must be within (0, {BUILD_TIMEOUT_S}] seconds")
+        result = _remote_build(args, time.monotonic() + timeout)
+        _emit(result, args.json, _build_text)
+        return 0
     if not args.config:
         raise ValueError(
             "peeky build needs --config <file.json> naming a Rust workspace's packages to "
@@ -4854,6 +4881,45 @@ def build_workspace(args):
     result = target.build(root, deadline=time.monotonic() + timeout, progress=_progress(args))
     _emit(result, args.json, _build_text)
     return 0
+
+
+def _remote_build(args, deadline):
+    """A worker's build of its Rust workspace (its `build` operation), asked again while
+    it runs until ``deadline``: its summary, its paths the worker host's, marked so."""
+    from peeky.errors import PeekyError
+
+    client, _ = _remote(args.worker)
+    progress, arguments = _progress(args), {}
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError(
+                "The worker's build is still running past the deadline; it goes on there. Run "
+                f"`peeky build {shlex.quote(str(args.target))} --worker {args.worker}` again to "
+                "wait for it"
+            )
+        try:
+            answer = client.call("build", **arguments, wait=min(30.0, left))
+        except PeekyError as exc:
+            exc.payload = _remote_build_required(exc.payload, args)
+            raise
+        if answer.get("status") != "building":
+            for key in ("workspace", "executable"):
+                answer[key] = f"worker:{answer[key]}"
+            return answer
+        if progress is not None:
+            progress("the worker is still building")
+        arguments = {"request": answer["request"]}
+
+
+def _remote_build_required(error, args):
+    """A worker's BUILD_REQUIRED as its client says it: the build command this client runs
+    (`peeky build TARGET --worker URL`), not the one on the worker's host."""
+    if not isinstance(error, dict) or error.get("code") != "BUILD_REQUIRED":
+        return error
+    command = f"peeky build {shlex.quote(str(args.target))} --worker {args.worker}"
+    message = re.sub(r"Run `[^`]*`", f"Run `{command}`", str(error.get("message", "")), count=1)
+    return {**error, "message": message}
 
 
 def _build_text(result):
@@ -6033,6 +6099,11 @@ def _main(argv, _job, _edits):
         help="Fail with TIMEOUT after this many seconds (default and most: 900)",
     )
     sub.add_argument("--quiet", action="store_true", help="No progress messages on stderr")
+    sub.add_argument(
+        "--worker",
+        help="Build on a running worker at this loopback URL, from the worker's own "
+        "--rust-config (no --config here); token from $PEEKY_WORKER_TOKEN",
+    )
     background(sub)
     sub = commands.add_parser("job", help="Results of --background probes and verifies")
     actions = sub.add_subparsers(dest="action", required=True)

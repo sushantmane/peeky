@@ -316,38 +316,159 @@ def test_what_a_workspace_doesnt_do_yet_is_refused(workspace, capsys, tmp_path):
     assert "--build is for a Rust workspace's configuration" in result["error"]["message"]
 
 
-@pytest.mark.timeout(300)
-def test_a_worker_loads_a_workspace_and_refuses_a_remote_clients_probe_of_it(workspace):
-    from peeky.cli import rust_tools
-    from peeky.errors import classify
-    from peeky.rust_build import RustWorkspaceTarget
-    from peeky.worker import DebugWorker, load_rust_target
+TOKEN = "rust-workspace-worker-token-0123456789abcdef"
 
-    config = workspace / "worker.json"
+
+@pytest.fixture
+def worker(workspace, tmp_path, monkeypatch):
+    """A worker on the workspace (its host's copy), started with the workspace's
+    `--rust-config`, and a client's checkout of the same files: (host, local, URL, the
+    worker's target)."""
+    import shutil
+    import threading
+
+    from peeky.cli import WORKER_TOKEN_ENV, rust_tools
+    from peeky.worker import load_rust_target, make_server
+
+    local = tmp_path / "local"
+    shutil.copytree(workspace, local)
+    config = tmp_path / "worker.json"
     data = {"analyse": ["util"], "run": {"bin": "app"}, "vendor": "vendor", **rust_tools()}
     config.write_text(json.dumps(data))
     target = load_rust_target(config, workspace)
-    assert isinstance(target, RustWorkspaceTarget)
-    # `peeky build` of the worker's root and its configuration, as a refusal names it.
-    assert target.build_command == f"peeky build {workspace} --config {config.resolve()}"
-    typed = "peeky build . --config rust.json"
-    assert load_rust_target(config, workspace, typed).build_command == typed
-    program = hashlib.sha256((workspace / "util/src/lib.rs").read_bytes()).hexdigest()
-    worker = DebugWorker(workspace, adapter=target)
-    with pytest.raises(ValueError) as caught:
-        worker.dispatch(
-            "launch",
-            {
-                "program": "util/src/lib.rs",
-                "breakpoints": [{"line": 3}],
-                "expect_sha256": {"program": program},
-                "expect_inputs": {"util/src/lib.rs": program},
-            },
-        )
-    assert str(caught.value).startswith(
-        "A worker doesn't probe a Rust workspace for a remote client yet"
+    monkeypatch.setenv(WORKER_TOKEN_ENV, TOKEN)
+    server = make_server(workspace, TOKEN, 0, adapter=target)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield workspace, local, f"http://127.0.0.1:{server.server_port}", target
+    finally:
+        server.worker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def remote_probe(capsys, local, url, *more):
+    return run(
+        capsys,
+        "probe",
+        str(local),
+        "--at",
+        "util/src/lib.rs:3",
+        "--capture",
+        "x",
+        "--quiet",
+        "--no-save",
+        "--worker",
+        url,
+        *more,
     )
-    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+@pytest.mark.timeout(600)
+def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, target = worker
+    # `peeky build` of the worker's root and its configuration, as a refusal on its host
+    # names it; a remote client is told its own command.
+    assert target.build_command.startswith(f"peeky build {host} --config ")
+    command = f"peeky build {local} --worker {url}"
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"] == (
+        "No current Peeky build of this workspace: none has been made for this configuration. "
+        f"Run `{command}` first, or add --build"
+    )
+    assert result["refused_before_launch"] is True
+    # A build names no tool, path or flag: the worker's own configuration only.
+    code, result = run(capsys, "build", str(local), "--worker", url, "--quiet", "--config", "x")
+    assert code == 2 and "leave out --config" in result["error"]["message"], result
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    assert summary["workspace"] == f"worker:{host}" and summary["analysed"] == ["util"]
+    assert summary["executable"].startswith("worker:")
+    # The worker compares the build's manifests, lockfile and analysed sources with ours.
+    version = Client(url, TOKEN).call("version")
+    assert version["sources"] == {
+        "kind": "declared",
+        "names": [
+            "Cargo.lock",
+            "Cargo.toml",
+            "app/Cargo.toml",
+            "util/Cargo.toml",
+            "util/src/lib.rs",
+        ],
+    }
+    assert "build" in version["operations"]
+    # The value read matches the program's own print.
+    read(*remote_probe(capsys, local, url))
+    # A manifest or source that differs on the client is refused by name, before anything
+    # runs.
+    manifest = local / "util/Cargo.toml"
+    manifest.write_text(manifest.read_text() + "# a comment\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "util/Cargo.toml (the copy on the worker host differs from your checkout)"
+        in (result["error"]["message"])
+    )
+    assert result["refused_before_launch"] is True
+    manifest.write_text((host / "util/Cargo.toml").read_text())
+    (local / "util/src/lib.rs").write_text(UTIL.replace("x * 2", "x * 3"))
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "differs for the program util/src/lib.rs" in result["error"]["message"]
+    # The same change on the worker's host: the build is no longer current.
+    (host / "util/src/lib.rs").write_text(UTIL.replace("x * 2", "x * 3"))
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"] == (
+        "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` "
+        f"ran. Run `{command}` again, or add --build"
+    )
+    # --build: the worker builds first, then the probe reads the new build.
+    read(*remote_probe(capsys, local, url, "--build"), printed="3")
+
+
+@pytest.mark.timeout(600)
+def test_a_remote_session_on_a_workspace_reads_the_workers_build(worker, capsys):
+    host, local, url, _ = worker
+    code, result = run(
+        capsys,
+        "session",
+        "start",
+        str(local),
+        "--at",
+        "util/src/lib.rs:3",
+        "--name",
+        "remote-ws",
+        "--worker",
+        url,
+    )
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert f"Run `peeky build {local} --worker {url}` first" in result["error"]["message"]
+    code, result = run(
+        capsys,
+        "session",
+        "start",
+        str(local),
+        "--at",
+        "util/src/lib.rs:3",
+        "--name",
+        "remote-ws",
+        "--worker",
+        url,
+        "--build",
+    )
+    assert code == 0, result
+    try:
+        code, rows = run(capsys, "session", "get", "x", "--name", "remote-ws")
+        assert code == 0, rows
+        assert [row["value"] for row in rows] == ["1"], rows
+    finally:
+        run(capsys, "session", "close", "--name", "remote-ws")
 
 
 @pytest.mark.timeout(300)

@@ -48,7 +48,10 @@ from peeky.textlines import split_lines
 # 14: a probe or session on a Rust workspace without a current Peeky build (`peeky build`)
 # is refused with BUILD_REQUIRED, which names the build command; an agent builds, then
 # repeats the request. A protocol 13 client would take an unknown code for another failure.
-PROTOCOL_VERSION = 14
+# 15: a worker on a Rust workspace builds it for a remote client (`build`, from its own
+# `--rust-config`), compares the build's manifests, lockfile and analysed sources with the
+# client's, and probes it; a protocol 14 worker refuses a remote client's workspace probe.
+PROTOCOL_VERSION = 15
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -406,12 +409,6 @@ _RULES = (
         "UNSUPPORTED",
         "Nothing was built. Build with Rust 1.96, whose Cargo output Peeky reads, as the "
         "message says.",
-        False,
-    ),
-    (
-        r"^A worker doesn't probe a Rust workspace for a remote client yet",
-        "UNSUPPORTED",
-        "Nothing ran. Run Peeky on the workspace's own host: `peeky build`, then the probe.",
         False,
     ),
     (

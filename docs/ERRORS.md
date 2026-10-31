@@ -1,4 +1,4 @@
-# Error codes (protocol 14)
+# Error codes (protocol 15)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -204,8 +204,8 @@ file lists what it reads.
 - A binary target's config with `sources`, or a key it doesn't take; `--binary` with a config
   naming one; a binary outside the target directory; or a session of one, which Peeky doesn't run
   yet ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
-- A client and a remote worker of different protocols: `Worker speaks protocol 13, this client 14`,
-  or, from the worker, `Client speaks protocol 13, this worker 14`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 14, this client 15`,
+  or, from the worker, `Client speaks protocol 14, this worker 15`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -648,6 +648,10 @@ request a client sends.
 - **Protocol 14** adds `BUILD_REQUIRED`. A probe or session on a Rust workspace without a
   current Peeky build is refused with it, and its message names the `peeky build` command. A
   protocol 13 client would take the code for another failure ([details](#build_required)).
+- **Protocol 15** probes a Rust workspace from another host. A worker started with a workspace's
+  `--rust-config` builds it on request (`build`: `peeky build --worker`, or `--build`). It
+  compares the build's manifests, lockfile and analysed sources with the client's. A protocol 14
+  worker refuses such a probe ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

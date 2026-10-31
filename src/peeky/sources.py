@@ -2,7 +2,8 @@
 worker compare before anything launches.
 
 The worker's trusted target names them: Java's `sources`; C and C++ `sources` and
-`headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`. A Python program may
+`headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`; a Rust workspace's build's
+manifests, lockfile and configuration, and its analysed packages' sources. A Python program may
 import any `.py` file under the root, so for Python they are all of those, except in virtual
 environments (a directory holding `pyvenv.cfg`: installed packages). Both sides must hold the
 same set, file for file.
@@ -119,17 +120,20 @@ def python_manifest_digest(manifest):
     return hashlib.sha256(json.dumps(list(manifest.items())).encode()).hexdigest()
 
 
-def declared(adapter):
-    """The names the worker's trusted target reads, or None for a Python program."""
+def declared(adapter, root=None):
+    """The names the worker's trusted target reads, or None for a Python program. A Rust
+    workspace's are its current build's under ``root`` (``compared_names``)."""
+    if (names_for := getattr(adapter, "compared_names", None)) is not None:
+        return tuple(dict.fromkeys(str(name) for name in names_for(root)))
     names = getattr(adapter, "verification_inputs", None)
     if names is None:
         names = getattr(adapter, "sources", None)  # an attached JVM's declared sources
     return None if names is None else tuple(dict.fromkeys(str(name) for name in names))
 
 
-def describe(adapter):
+def describe(adapter, root=None):
     """The worker's `version` field that tells a client which sources to hash."""
-    names = declared(adapter)
+    names = declared(adapter, root)
     return {"kind": "python"} if names is None else {"kind": "declared", "names": list(names)}
 
 
@@ -195,10 +199,22 @@ def check_expected(expected):
         )
 
 
+def too_many(count):
+    """The refusal of a remote run whose target reads ``count`` files, more than
+    ``MAX_SOURCES``: they can't all be compared with a client's."""
+    return (
+        f"The worker's target reads {count} files, more than the {MAX_SOURCES} Peeky compares "
+        "with a remote client's: refused before launching. Run Peeky on the worker's host, or "
+        "give the worker a smaller target (a Rust workspace: fewer packages in analyse)"
+    )
+
+
 def worker_sources(adapter, root):
     """{name: sha256 or None} of what this worker's target reads under ``root``."""
-    names = declared(adapter)
+    names = declared(adapter, root)
     if names is not None:
+        if len(names) > MAX_SOURCES:
+            raise ValueError(too_many(len(names)))
         return files(root, names)
     try:
         return dict(python_sources(root))
@@ -228,6 +244,8 @@ def client_sources(root, info):
     names = info.get("names")
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
         raise ValueError("The worker's source list is not a list of paths")
+    if len(names) > MAX_SOURCES:
+        raise ValueError(too_many(len(names)))
     for name in names:
         parts = PurePosixPath(name).parts
         if not name or PurePosixPath(name).is_absolute() or ".." in parts or "\x00" in name:
