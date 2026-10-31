@@ -911,13 +911,20 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   a dependency's type counts too (`std::mem::drop::<smallnum::Holder>`), as one that may run that
   type's code ("~"). A drop counts by what its type holds by value (`_foreign_held`): a crate
   type's field (`layouts`), a closure's capture, a standard container's element.
-- Whose code a call runs is read from its head (`Body._foreign_call`). A plain path's first
-  segment. For `<S as T>::m`, the trait: the crate's own trait has only the crate's `impl`s. A
-  dependency's trait's method is the crate's code where the crate's own `impl` of it for `S`
-  defines `m` (`_dependency_method`): the `impl`'s header (`_local_impls`) names the trait in
-  full, or by a name a `use` line binds to it (`_bound_names`). Without that, it is the
-  dependency's (its default method, its blanket `impl`). Where Peeky can't tell, the note says
-  so ("?impl"). A standard trait's method is judged by `S`.
+- Whose code a call runs is read from its head, in one place for every analysis
+  (`_call_runs`: `Body._foreign_edge`, `_escapes`, `_keepers`, `GlobalState.call`). A plain
+  path's first segment. For `<S as T>::m`, the trait. The crate's own trait's method is the
+  crate's code for a type the crate names (only it may implement its trait for one), and "?"
+  for a type parameter or a trait object: another crate, the program's binary, may implement a
+  public trait. A dependency's trait's method is the crate's code where the crate's own `impl`
+  of it for `S` defines `m` and names the trait in full in its header (`_dependency_method`,
+  `_local_impls`: `impl smallnum::Keep for Mine`). Otherwise it is the dependency's (its
+  default method, its blanket `impl`). Peeky resolves no `use` line. An `impl` of the crate's
+  for `S` may define `m` but name its trait by a bare name, an alias or a module's alias. Then
+  the note says Peeky can't tell whether it implements that trait ("?impl"). So it does for a
+  derive's `impl`, and a header it can't read. A standard trait's method is judged by `S`.
+- What the types a call is given may run is asked of the standard library's functions alone. A
+  function of the crate's is read, and its body says what it runs and touches.
 - A call through a function pointer (`move _6(…)`) may run a dependency's code ("?fn"). So may
   a closure or async block whose body the dump doesn't hold ("?closure"); a dependency's own is
   named by its path (`{closure@smallnum::keeper::{closure#0}}`).

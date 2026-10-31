@@ -1057,6 +1057,10 @@ class GlobalState(NamedTuple):
     returns: "GlobalState | None" = None
     # The build's other crates (``_foreign_root``): their code may touch any global state.
     foreign: frozenset = frozenset()
+    # The closures and the like whose bodies the dump holds, and the crate's `impl` blocks
+    # (``_call_runs``).
+    known: frozenset = frozenset()
+    blocks: tuple = ()
 
     def anything(self):
         """What a call that may run any of the crate's code may touch."""
@@ -1072,15 +1076,17 @@ class GlobalState(NamedTuple):
         `<u32 as Into<Wrap>>::into`, and `direct_set` for `for_each::<fn(u32) {direct_set}>`;
         there, a name that is no type of the crate's is taken for the standard library's, as
         the instance's types show where it is called."""
-        if _foreign_root(path, self.foreign) or any(
-            _foreign_root(kind, self.foreign) for kind in kinds if kind
-        ):
+        if _call_runs(path, kinds, self.foreign, (), self.known, self.blocks):
             # A dependency's code, or one a dependency's may be: it may run any code of the
             # crate's ever handed to a dependency.
             return self.every | {_ANY_GLOBAL}
         found = set()
         if not _std_callee(path, self.trusted, self.layouts):
             found |= self.named(name, path)
+        if self.foreign and _crate_function(path, self.foreign):
+            # In a workspace's build, a function of the crate's is read: what it touches is
+            # what its body touches, whatever types it is given (``_call_runs``).
+            return frozenset(found)
         for kind in kinds:
             found |= self.carried(kind)
         for kind in _path_types(path):
@@ -1232,11 +1238,8 @@ class _Forwarding(NamedTuple):
     layouts: object
     known: frozenset
     # The crate's `impl` blocks, as ``_local_impls`` reads their headers: (the type's last
-    # segment or None, ``_impl_trait``'s (trait, derived) or None, the methods it
-    # defines); the traits the crate defines; its `use` trees (``_use_trees``).
+    # segment or None, ``_impl_trait``'s (trait, derived) or None, the methods it defines).
     blocks: tuple = ()
-    traits: frozenset = frozenset()
-    uses: tuple = ()
 
     def first(self):
         """The witness of any code of the crate's that may, or None where none may."""
@@ -1581,31 +1584,116 @@ def _last_segment(text):
     return plain.rsplit("::", 1)[-1]
 
 
-def _use_trees(texts):
-    """Each `use` tree of the crate's sources ``texts``, its whitespace collapsed."""
-    found = []
-    for text in texts.values():
-        for tree in re.findall(r"\buse\s+([^;]+);", text or ""):
-            found.append(" ".join(tree.split()))
-    return tuple(found)
+def _call_runs(path, kinds, foreign, generics=(), known=frozenset(), blocks=()):
+    """The crate whose code the call ``path``, given values of the MIR types ``kinds``, runs
+    that Peeky reads none of, or None for the crate's own or the standard library's alone:
+    every analysis of a call's target takes it from here (``Body._foreign_edge``,
+    ``_escapes``, ``OwnedLocals._keepers``, ``GlobalState.call``). ``foreign``: the build's
+    other crates (none for a crate built alone: then None); ``generics``: the body's type
+    parameters; ``known``: the closures, async blocks and the like whose bodies the dump
+    holds; ``blocks``: the crate's `impl` blocks (``_local_impls``).
+
+    - a dependency's function or inherent method (`smallnum::keep`);
+    - a dependency's trait's method (``_dependency_method``), unless the crate's own `impl`
+      defines it; "?impl…" where Peeky can't tell whether one of the crate's is that one;
+    - a standard trait's or inherent method of a dependency's type (`<smallnum::Holder as
+      std::clone::Clone>::clone`);
+    - "?" for a trait object's or a type parameter's method, the crate's own trait's too:
+      another crate may implement a public one (the program's own binary);
+    - "~" and the crate where the standard library's function is named for, or given, a
+      dependency's type, whose code it may run (`std::mem::drop::<smallnum::Holder>`);
+    - "?closure" where the standard library's is named for, or given, a closure, an async
+      block or the like whose body Peeky read none of.
+
+    What the types it is given may run is asked of the standard library's functions alone: a
+    function of the crate's is read, and its body says what it runs."""
+    if not foreign:
+        return None
+    spans = [each for text in (path, *kinds) for each in _SPANNED.findall(text or "")]
+    stranger = any(each.startswith("{") and each not in known for each in spans)
+    qualified = _qualified_call(path)
+    if qualified is not None:
+        subject, trait, rest = qualified
+        trait_root = _foreign_root(_strip_arguments(trait), foreign, ()) if trait else None
+        if trait_root:
+            return _dependency_method(subject, trait, rest, trait_root, blocks, foreign, generics)
+        subject_root = _foreign_root(_strip_arguments(subject), foreign, generics)
+        first = _strip_arguments(trait).removeprefix("::").split("::")[0] if trait else ""
+        if trait and first not in _STD_CRATES:
+            # The crate's own trait: a type's `impl` of it is the crate's (no other crate
+            # may implement it for a type it can name here), but a type parameter's or a
+            # trait object's may be another crate's.
+            return "?" if subject_root == "?" else None
+        if subject_root:
+            return subject_root
+        head_std = True
+    else:
+        head = _strip_arguments(path)
+        if root := _foreign_root(head, foreign, generics):
+            return root
+        head_std = head.removeprefix("::").split("::")[0] in _STD_CRATES
+    if not head_std:
+        # A function of the crate's, read: what it runs is its body's.
+        return None
+    if stranger:
+        return "?closure"
+    for text in (path, *kinds):
+        if root := _foreign_root(text, foreign, generics):
+            return root if root == "?" else f"~{root}"
+    return None
 
 
-def _bound_names(trees, path):
-    """(the names the crate's `use` trees bind to the trait ``path`` (`smallnum::Trait`):
-    `Trait`, an alias; whether a glob `use` of a module of its crate may bind its name)."""
-    segments = _strip_arguments(path).removeprefix("::").split("::")
-    root, name = segments[0], segments[-1]
-    names, glob = set(), False
-    for tree in trees:
-        tree = tree.removeprefix("::")
-        if not re.match(rf"{re.escape(root)}\s*::", tree):
+def _dependency_method(subject, trait, rest, root, blocks, foreign, generics):
+    """The crate whose code `<subject as trait>::method` runs, the trait a dependency's
+    (``root``). None where the crate's own `impl` of it for ``subject`` defines the method:
+    one whose header names the trait in full (`impl smallnum::Keep for Mine`), whose body is
+    read. The trait's crate where no `impl` of the crate's for ``subject`` defines the
+    method (its default method, its blanket `impl`, a dependency's own). "?" for a trait
+    object or a type parameter. Where an `impl` of the crate's that defines it names its
+    trait otherwise (`impl Keep for Mine`, an alias, a module's alias), or a derive made it,
+    or Peeky can't read its header, Peeky can't tell whether it is that `impl`: "?impl", what
+    it is, and the trait, joined by U+001F."""
+    if _foreign_root(_strip_arguments(subject), foreign, generics) == "?":
+        return "?"
+    method = re.split(r"::|<", rest or "", maxsplit=1)[0]
+    wanted, kind_wanted = _strip_arguments(trait).removeprefix("::"), _last_segment(subject)
+    own, doubts = False, []
+    for kind, found, methods in blocks:
+        if method not in methods:
             continue
-        for alias in re.findall(rf"\b{re.escape(name)}\s+as\s+(\w+)", tree):
-            names.add(alias)
-        if re.search(rf"\b{re.escape(name)}\b(?!\s+as\b)", tree):
-            names.add(name)
-        glob = glob or tree.endswith("*")
-    return frozenset(names), glob
+        if found is None or kind is None:
+            doubts.append(
+                "an `impl` whose header Peeky can't read"
+                if found is None
+                else f"the `impl` `#[derive({found[0]})]` made"
+            )
+            continue
+        if kind != kind_wanted:
+            continue
+        named = _strip_arguments(found[0]).removeprefix("::")
+        if named == wanted:
+            own = True
+        elif named.split("::")[0] not in _STD_CRATES:
+            doubts.append(f"`impl {found[0]} for {kind}`")
+    if own:
+        return None
+    return f"?impl\x1f{doubts[0]}\x1f{wanted}" if doubts else root
+
+
+def _local_impls(bodies, texts):
+    """The crate's `impl` blocks the dump has functions of: (the type's last segment
+    (``_impl_self``), the trait (``_impl_trait``), the names of the functions it defines),
+    each block once."""
+    blocks = {}
+    for body in bodies:
+        segments = _segments(body.path)
+        if len(segments) < 2 or not segments[-2].startswith("<impl at "):
+            continue
+        block = segments[-2]
+        if block not in blocks:
+            blocks[block] = (_impl_self(block, texts), _impl_trait(block, texts), set())
+        blocks[block][2].add(segments[-1])
+    return tuple((kind, trait, frozenset(names)) for kind, trait, names in blocks.values())
 
 
 def _foreign_rows(body, found):
@@ -1717,6 +1805,13 @@ def global_state(
                 name is None or name in _FORMAT_TRAITS or (found[1] and name not in _STD_DERIVES)
             )
 
+    known = frozenset(
+        each
+        for body in bodies
+        for each in _SPANNED.findall(body.types.get(1, "") if body.arguments else "")
+    )
+    impl_blocks = _local_impls(bodies, texts or {}) if foreign else ()
+
     def view(touched, formatting=True):
         names, closures, impls, formats, paths, methods = {}, {}, set(), set(), {}, {}
         for body, found, block, key, short in zip(bodies, touched, blocks, keys, shorts):
@@ -1747,6 +1842,8 @@ def global_state(
             unknown_paths,
             frozenset(unkeyed),
             foreign=frozenset(foreign),
+            known=known,
+            blocks=impl_blocks,
         )
 
     def state_of(touched, returned):
@@ -3420,9 +3517,9 @@ class Body:
             operands = set(_call_operands(text))
             if not operands & aliases:
                 continue
-            _, name, _, path = edge
-            if _keeping_call(path, self.std_paths, self.shadows) or _foreign_root(
-                path, self.foreign, self.generics
+            _, name, kinds, path = edge
+            if _keeping_call(path, self.std_paths, self.shadows) or self._foreign_call(
+                path, kinds, self.forwarding, self.foreign, self.generics or ()
             ):
                 # A dependency's code may keep anything it is given.
                 return True
@@ -3492,95 +3589,11 @@ class Body:
         return (what, via[1], via) if via else None
 
     def _foreign_call(self, path, kinds, state, foreign, generics):
-        """The crate whose code the call ``path``, given values of the MIR types ``kinds``,
-        runs that Peeky reads none of, or None for the crate's own or the standard
-        library's alone (``_foreign_edge``):
-
-        - a dependency's function or inherent method (`smallnum::keep`);
-        - a method of a dependency's trait (``_dependency_method``), unless the crate's own
-          `impl` defines it; "?impl" where Peeky can't tell that `impl` apart;
-        - a standard trait's or inherent method of a dependency's type (`<smallnum::Holder
-          as std::clone::Clone>::clone`), "?" for a trait object's or type parameter's;
-        - "~" and the crate where the standard library's function is named for, or given,
-          a dependency's type, whose code it may run (`std::mem::drop::<smallnum::Holder>`);
-        - "?closure" where it names or is given a closure, an async block or the like whose
-          body Peeky read none of (``_Forwarding.known``): one a dependency made.
-
-        A trait the crate defines is implemented only by the crate (a dependency can't name
-        it), and a function of the crate's is read: what either does with what it is given
-        is the crate's code's (``_Forwarding``)."""
-        known = state.known if state is not None else frozenset()
-        spans = [each for text in (path, *kinds) for each in _SPANNED.findall(text or "")]
-        stranger = any(each.startswith("{") and each not in known for each in spans)
-        qualified = _qualified_call(path)
-        if qualified is not None:
-            subject, trait, rest = qualified
-            trait_root = _foreign_root(_strip_arguments(trait), foreign, ()) if trait else None
-            if trait_root:
-                return self._dependency_method(
-                    subject, trait, rest, trait_root, state, foreign, generics
-                )
-            first = _strip_arguments(trait).removeprefix("::").split("::")[0] if trait else ""
-            if trait and first not in _STD_CRATES:
-                # The crate's own trait: only its `impl`s, which it reads.
-                return None
-            if root := _foreign_root(_strip_arguments(subject), foreign, generics):
-                return root
-            head_std = True
-        else:
-            head = _strip_arguments(path)
-            if root := _foreign_root(head, foreign, generics):
-                return root
-            head_std = head.removeprefix("::").split("::")[0] in _STD_CRATES
-        if not head_std:
-            # A function of the crate's, read: what it runs is its body's.
-            return None
-        if stranger:
-            return "?closure"
-        for text in (path, *kinds):
-            if root := _foreign_root(text, foreign, generics):
-                return root if root == "?" else f"~{root}"
-        return None
-
-    def _dependency_method(self, subject, trait, rest, root, state, foreign, generics):
-        """The crate whose code `<subject as trait>::method` runs, the trait a dependency's
-        (``root``): None where the crate's own `impl` of it for ``subject`` defines the
-        method (its body is read); the trait's crate where the method is its default, or
-        no `impl` of the crate's applies (a dependency's own, or its blanket one); "?" for a
-        trait object or a type parameter; "?impl" where Peeky can't tell whether one of the
-        crate's `impl`s is this one (a bare trait name the `use` lines don't bind to it, a
-        derive's, a header it can't read)."""
-        if _foreign_root(_strip_arguments(subject), foreign, generics) == "?":
-            return "?"
-        method = re.split(r"::|<", rest or "", maxsplit=1)[0]
-        blocks = state.blocks if state is not None else ()
-        traits = state.traits if state is not None else frozenset()
-        bound, glob = _bound_names(state.uses if state is not None else (), trait)
-        wanted, last = _strip_arguments(trait).removeprefix("::"), _last_segment(trait)
-        own, doubt = [], False
-        for kind, found, methods in blocks:
-            if found is None or (found[1] and _last_segment(found[0]) == last):
-                # A header Peeky can't read, or a derive's (whose type it doesn't tell).
-                doubt = doubt or found is None or kind is None
-                if kind is None or found is None:
-                    continue
-            if kind != _last_segment(subject):
-                continue
-            named = _strip_arguments(found[0]).removeprefix("::")
-            if "::" in named:
-                if named == wanted:
-                    own.append(methods)
-                continue
-            if named in bound or (named == last and glob and named not in traits):
-                own.append(methods)
-            elif named == last:
-                doubt = True
-        if any(method in methods for methods in own):
-            return None
-        if own:
-            # The trait's default method: the dependency's code.
-            return root
-        return "?impl" if doubt else root
+        """``_call_runs`` of the call ``path``, given values of the MIR types ``kinds``,
+        with the closures and `impl` blocks ``state`` (a ``_Forwarding``) knows."""
+        if state is None:
+            return _call_runs(path, kinds, foreign, generics)
+        return _call_runs(path, kinds, foreign, generics, state.known, state.blocks)
 
     def _foreign_held(self, kind, foreign=None, generics=None, layouts=None):
         """The crate (as ``_foreign_root`` names it) whose `Drop` a drop of a value of the
@@ -10336,6 +10349,8 @@ class OwnedLocals:
         pointer (no name) for any function."""
         if "_keepers_known" not in self.__dict__:
             found = set()
+            state, layouts = self._forwarding(), self._layouts()
+            generics = {id(body): body.guessed_generics(layouts) for body in self.bodies}
             while True:
                 grown = set(found)
                 for body in self.bodies:
@@ -10344,10 +10359,12 @@ class OwnedLocals:
                     for edge in body._global_edges().values():
                         if edge[0] != "call":
                             continue
-                        _, name, _, path = edge
+                        _, name, kinds, path = edge
                         if (
                             _keeping_call(path, self._std_crates(), self._shadows())
-                            or _foreign_root(path, self.foreign)
+                            or body._foreign_call(
+                                path, kinds, state, self.foreign, generics[id(body)]
+                            )
                             or (
                                 not _std_callee(path, self._std_crates(), self._layouts())
                                 and (name in grown or (not name and grown))
@@ -10364,23 +10381,8 @@ class OwnedLocals:
         return self._keepers_known
 
     def _local_impls(self):
-        """The crate's `impl` blocks its dump has functions of: (the type's last segment
-        (``_impl_self``), the trait (``_impl_trait``), the names of the functions it
-        defines), each block once."""
-        blocks = {}
-        for body in self.bodies:
-            segments = _segments(body.path)
-            if len(segments) < 2 or not segments[-2].startswith("<impl at "):
-                continue
-            block = segments[-2]
-            if block not in blocks:
-                blocks[block] = (
-                    _impl_self(block, self.texts),
-                    _impl_trait(block, self.texts),
-                    set(),
-                )
-            blocks[block][2].add(segments[-1])
-        return tuple((kind, trait, frozenset(names)) for kind, trait, names in blocks.values())
+        """``_local_impls`` of the crate's bodies."""
+        return _local_impls(self.bodies, self.texts)
 
     def _forwarding(self):
         """``_Forwarding`` of the crate: which of its functions, closures and `impl`s may
@@ -10417,8 +10419,6 @@ class OwnedLocals:
                     layouts,
                     known,
                     self._local_impls(),
-                    _crate_traits(self.texts)[0],
-                    _use_trees(self.texts),
                 )
                 for _ in range(_GLOBAL_ROUNDS):
                     names, closures, impls, memo = {}, {}, None, {}

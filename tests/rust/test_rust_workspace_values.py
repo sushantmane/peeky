@@ -177,6 +177,31 @@ pub fn defaulted(arg: u32) -> u32 {
     k + smallnum::kept()
 }
 
+/// A trait the program's binary implements: its `impl` is the binary's code.
+pub trait Sink {
+    fn sink(&self, x: &u32);
+}
+
+pub fn generic<T: Sink + ?Sized>(t: &T, arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    t.sink(&x); // SINK_GENERIC
+    let k = std::hint::black_box(1); // GENERIC
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
+pub fn via_generic(t: &dyn Sink, arg: u32) -> u32 {
+    generic(t, arg)
+}
+
+pub fn dynamic(t: &dyn Sink, arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    t.sink(&x); // SINK_DYN
+    let k = std::hint::black_box(1); // DYNAMIC
+    std::hint::black_box(&x);
+    k + smallnum::kept()
+}
+
 pub fn blanket(arg: u32) -> u32 {
     use smallnum::Stash;
     let x = std::hint::black_box(arg);
@@ -186,7 +211,15 @@ pub fn blanket(arg: u32) -> u32 {
     k + smallnum::kept()
 }
 """
-MAIN = """fn main() {
+MAIN = """struct Keeper;
+
+impl util::Sink for Keeper {
+    fn sink(&self, x: &u32) {
+        smallnum::keep(x);
+    }
+}
+
+fn main() {
     println!("DOUBLE {}", util::double(smallnum::one()));
     println!("KEPT {}", util::kept(5));
     println!("STD {}", util::std_only(5));
@@ -202,6 +235,8 @@ MAIN = """fn main() {
     println!("OWN_IMPL {}", util::own_impl(21));
     println!("DEFAULTED {}", util::defaulted(23));
     println!("BLANKET {}", util::blanket(25));
+    println!("GENERIC {}", util::via_generic(&Keeper, 27));
+    println!("DYNAMIC {}", util::dynamic(&Keeper, 29));
 }
 """
 SMALLNUM = """use std::sync::atomic::{AtomicU32, Ordering};
@@ -423,6 +458,14 @@ def test_a_change_a_dependency_may_keep_a_copy_of_is_refused_naming_the_call(bui
         # The dependency's trait's default method, which the crate's `impl` leaves as it is.
         "DEFAULTED": "a call to `<Mine as smallnum::Keep>::noted` (dependency `smallnum`) on "
         f"line {line_of('NOTED')} is given what may hold a pointer into `x`",
+        # The program's binary implements the crate's trait: through a type parameter and a
+        # trait object, its code.
+        "GENERIC": "a call to `<T as Sink>::sink` (code another crate's type may supply: a "
+        f"trait object or a type parameter) on line {line_of('SINK_GENERIC')} is given a "
+        "pointer into `x`",
+        "DYNAMIC": "a call to `<dyn Sink as Sink>::sink` (code another crate's type may "
+        f"supply: a trait object or a type parameter) on line {line_of('SINK_DYN')} is given "
+        "a pointer into `x`",
         # The dependency's blanket `impl`.
         "BLANKET": "a call to `<u32 as smallnum::Stash>::stash` (dependency `smallnum`) on line "
         f"{line_of('STASH')} is given a pointer into `x`",
@@ -573,3 +616,51 @@ def test_unsafe_code_a_build_script_generates_withholds_memory_reads(tmp_path, m
     assert row["value"].startswith("alloc::vec::Vec<unsigned int, alloc::alloc::Global> @ 0x")
     assert "not its contents: the crate has unsafe code (in " in row["note"], row
     assert "/out/generated.rs, which the build generated)" in row["note"], row
+
+
+# A function of the crate's given a dependency's type, and a static it never touches.
+TYPED = """
+static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn seen() -> u32 {
+    SEEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+#[inline(never)]
+fn weigh(h: &smallnum::Holder, v: u32) -> u32 {
+    h.0 + v
+}
+
+pub fn typed(arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    let h = smallnum::Holder::new(2);
+    let w = weigh(&h, x);
+    let k = std::hint::black_box(w); // TYPED
+    std::hint::black_box(&x);
+    k + x + seen()
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_crate_function_given_a_dependencys_type_is_the_crates_code(
+    tmp_path, monkeypatch, capsys
+):
+    # `weigh` is read: it touches no static, and keeps nothing it is given, whatever type. So
+    # `seen()` after the stop reads no copy of `x`.
+    text = UTIL + TYPED
+    main = MAIN.replace(
+        '    println!("DOUBLE',
+        '    println!("TYPED {} {}", util::typed(31), util::seen());\n    println!("DOUBLE',
+    )
+    root, config = make(
+        tmp_path, monkeypatch, {**FILES, "util/src/lib.rs": text, "app/src/main.rs": main}
+    )
+    assert run(capsys, "build", str(root), "--config", str(config), "--quiet")[0] == 0
+    built = (root, config)
+    code, result = probe(capsys, built, "TYPED", "--capture", "x", "--set", "x=100", text=text)
+    assert code == 0, result.get("error")
+    assert rows(result)["x"]["value"] == "31"
+    assert rows(result, "after-set")["x"]["value"] == "100"
+    # `w` is 2 + 31, then `k + x` with the change.
+    assert printed(result, "TYPED") == ["133"], result["output"]

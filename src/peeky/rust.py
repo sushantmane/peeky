@@ -1187,16 +1187,16 @@ _FOREIGN_GIVEN = {
 def _foreign_crate(root, analysed):
     """How a note names the crate ``root`` of ``rust_mir._foreign_root``."""
     if root == "?":
-        return "code a dependency's type may supply: a trait object or a type parameter"
+        return "code another crate's type may supply: a trait object or a type parameter"
     if root == "?fn":
         return "whose target Peeky can't identify, so it may run a dependency's code"
     if root == "?closure":
         return "a closure or async block whose code Peeky read none of: a dependency's may be"
-    if root == "?impl":
-        return (
-            "a dependency's trait, where Peeky can't tell the crate's own `impl` of it from a "
-            "dependency's"
-        )
+    if root.startswith("?impl"):
+        # rust_mir._dependency_method's: the `impl` of the crate's, and the trait.
+        _, what, trait = (root.split("\x1f") + ["", ""])[:3]
+        what = what or "an `impl` of the crate's"
+        return f"Peeky can't tell whether {what} implements `{trait}`"
     if root == "!":
         return "code of the crate's Peeky can't read"
     if root.startswith("~"):

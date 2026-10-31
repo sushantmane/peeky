@@ -9,12 +9,14 @@ import pytest
 
 from peeky.rust import _foreign_note, _foreign_row
 from peeky.rust_mir import (
+    GlobalState,
     OwnedLocals,
-    _bound_names,
     _call_head,
+    _call_runs,
     _crate_function,
     _foreign_root,
     _Forwarding,
+    _local_impls,
     _qualified_call,
     parse_body,
 )
@@ -353,21 +355,11 @@ def test_a_rows_mark_names_the_first_call_and_where_it_hands_it_on():
     assert _foreign_row(direct, {"smallnum"}).startswith("another crate may hold a copy")
 
 
-def state(blocks=(), traits=frozenset(), uses=(), known=frozenset()):
+def state(blocks=(), known=frozenset()):
     """A ``_Forwarding`` with nothing that hands on what it is given, but the crate's
-    `impl` blocks, traits, `use` trees and the closures whose bodies it read."""
-    return _Forwarding(
-        {},
-        {},
-        None,
-        frozenset(),
-        frozenset({"std", "core", "alloc"}),
-        None,
-        known,
-        blocks,
-        traits,
-        uses,
-    )
+    `impl` blocks and the closures whose bodies it read."""
+    trusted = frozenset({"std", "core", "alloc"})
+    return _Forwarding({}, {}, None, frozenset(), trusted, None, known, blocks)
 
 
 def call(path, kinds=(), forwarding=None):
@@ -423,28 +415,79 @@ def test_a_dependency_traits_method_the_crates_own_impl_defines_is_the_crates_co
     assert not _crate_function("<Mine as std::string::ToString>::to_string", FOREIGN)
 
 
-def test_an_impl_by_a_bare_trait_name_is_the_dependencys_traits_only_where_a_use_binds_it():
-    bare = ("Mine", ("Keep", False), frozenset({"keep_it"}))
+def test_an_impl_is_the_dependency_traits_only_where_its_header_names_it_in_full():
     path = "<Mine as smallnum::Keep>::keep_it"
-    assert call(path, (), state(blocks=(bare,), uses=("smallnum::Keep",))) is None
-    assert call(path, (), state(blocks=(bare,), uses=("smallnum::{Keep, one}",))) is None
-    aliased = ("Mine", ("Kept", False), frozenset({"keep_it"}))
-    assert call(path, (), state(blocks=(aliased,), uses=("smallnum::Keep as Kept",))) is None
-    assert call(path, (), state(blocks=(bare,), uses=("smallnum::*",))) is None
-    # The crate's own trait of that name, or no `use` that says: Peeky can't tell.
-    assert call(path, (), state(blocks=(bare,), traits=frozenset({"Keep"})))[1] == "?impl"
-    assert call(path, (), state(blocks=(bare,), uses=("other::Keep",)))[1] == "?impl"
-    # A header Peeky can't read.
-    assert call(path, (), state(blocks=((None, None, frozenset({"keep_it"})),)))[1] == "?impl"
+    full = ("Mine", ("::smallnum::Keep", False), frozenset({"keep_it"}))
+    assert call(path, (), state(blocks=(full,))) is None
+    # A bare name, an alias, a module's alias: Peeky resolves no `use`, and says so.
+    for named in ("Keep", "Kept", "sn::Keep"):
+        block = ("Mine", (named, False), frozenset({"keep_it"}))
+        root = call(path, (), state(blocks=(block,)))[1]
+        assert root == f"?impl\x1f`impl {named} for Mine`\x1fsmallnum::Keep", root
+    # A header Peeky can't read (a macro's), and a derive's.
+    unread = (None, None, frozenset({"keep_it"}))
+    assert call(path, (), state(blocks=(unread,)))[1].startswith(
+        "?impl\x1fan `impl` whose header Peeky can't read"
+    )
+    derived = (None, ("smallnum::Keep", True), frozenset({"keep_it"}))
+    assert "`#[derive(smallnum::Keep)]` made" in call(path, (), state(blocks=(derived,)))[1]
+    # An `impl` of a standard trait, or one that doesn't define the method, is no doubt.
+    display = ("Mine", ("std::fmt::Display", False), frozenset({"keep_it"}))
+    other = ("Mine", ("Keep", False), frozenset({"value"}))
+    assert call(path, (), state(blocks=(display, other)))[1] == "smallnum"
     # A trait object or a type parameter: any type's `impl`.
     assert call("<dyn smallnum::Keep as smallnum::Keep>::keep_it")[1] == "?"
 
 
-def test_the_names_a_use_binds_to_a_trait():
-    trees = ("smallnum::{Keep, Stash as Stashed}", "other::Keep", "::smallnum::nested::*")
-    assert _bound_names(trees, "smallnum::Keep") == (frozenset({"Keep"}), True)
-    assert _bound_names(trees, "smallnum::Stash") == (frozenset({"Stashed"}), True)
-    assert _bound_names(("tokio::Keep",), "smallnum::Keep") == (frozenset(), False)
+SOURCES = {
+    # `mod inner;` in src/lib.rs, a `#[path]` module, a macro's `impl`, a `use` in a comment
+    # and a string, and a glob one.
+    "src/lib.rs": '// use smallnum::Keep;\nuse smallnum::*;\nconst S: &str = "use smallnum::Keep;";\n'
+    "make!(Mine);\n",
+    "src/inner.rs": "impl smallnum::Keep for Mine {\n",
+    "src/other/path.rs": "impl Keep for Mine {\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("file", "span", "root"),
+    [
+        ("src/inner.rs", "1:1: 1:29", None),
+        ("src/other/path.rs", "1:1: 1:19", "?impl\x1f`impl Keep for Mine`\x1fsmallnum::Keep"),
+        ("src/lib.rs", "4:1: 4:12", "?impl\x1fan `impl` whose header Peeky can't read"),
+    ],
+)
+def test_the_crates_impl_headers_are_read_from_its_files(file, span, root):
+    method = body(
+        f"<impl at {file}:{span}>::keep_it",
+        f"fn <impl at {file}:{span}>::keep_it(_1: &Mine) -> () {{",
+        ["let mut _0: ();"],
+        {0: ["return;"]},
+    )
+    blocks = _local_impls([method], SOURCES)
+    found = call("<Mine as smallnum::Keep>::keep_it", (), state(blocks=blocks))
+    if root is None:
+        assert found is None, found
+    else:
+        assert found[1].startswith(root), found
+
+
+def test_the_crates_own_trait_on_a_type_parameter_or_trait_object_may_be_another_crates():
+    # `fn generic<T: Sink + ?Sized>(t: &T, …) { t.sink(&x) }`: the program's binary may
+    # implement `util::Sink` for a type of its own.
+    assert _call_runs("<T as Sink>::sink", ("&T", "&u32"), FOREIGN, ("T",)) == "?"
+    assert _call_runs("<dyn Sink as Sink>::sink", ("&dyn Sink", "&u32"), FOREIGN) == "?"
+    # A type the crate can name has the crate's `impl`, a dependency's type's too.
+    assert _call_runs("<Mine as Sink>::sink", ("&Mine",), FOREIGN) is None
+    assert _call_runs("<smallnum::Holder as Sink>::sink", ("&smallnum::Holder",), FOREIGN) is None
+
+
+def test_a_crate_functions_target_is_its_own_whatever_types_it_is_given():
+    # `weigh(&h, x)` with `h: smallnum::Holder`: the crate's function, read.
+    assert _call_runs("weigh", ("&smallnum::Holder", "u32"), FOREIGN) is None
+    # The standard library's, given one, may run its code.
+    assert _call_runs("std::mem::drop", ("smallnum::Holder",), FOREIGN) == "~smallnum"
+    assert _call_runs("smallnum::keep", ("&u32",), frozenset()) is None
 
 
 @pytest.mark.parametrize(
@@ -452,7 +495,10 @@ def test_the_names_a_use_binds_to_a_trait():
     [
         ("?fn", "whose target Peeky can't identify, so it may run a dependency's code"),
         ("?closure", "a closure or async block whose code Peeky read none of"),
-        ("?impl", "where Peeky can't tell the crate's own `impl` of it from a dependency's"),
+        (
+            "?impl\x1f`impl Keep for Mine`\x1fsmallnum::Keep",
+            "(Peeky can't tell whether `impl Keep for Mine` implements `smallnum::Keep`)",
+        ),
     ],
 )
 def test_the_note_says_why_peeky_cant_tell_whose_code_runs(root, said):
@@ -460,3 +506,47 @@ def test_the_note_says_why_peeky_cant_tell_whose_code_runs(root, said):
     note = _foreign_note([row], "`x`", "util/src/lib.rs")
     assert said in note, note
     assert note.startswith("a call through a function pointer (") if root == "?fn" else True
+
+
+def test_global_state_takes_a_crate_functions_effects_from_its_body_alone():
+    # `weigh(&h, x)`, `h: smallnum::Holder`, `weigh` touching no static, another function
+    # touching one: the call touches none.
+    state = GlobalState(
+        names={"weigh": frozenset(), "seen": frozenset({"&AtomicU32"})},
+        closures={},
+        impls=frozenset(),
+        every=frozenset({"&AtomicU32"}),
+        unknown=frozenset(),
+        trusted=frozenset({"std", "core", "alloc"}),
+        layouts=None,
+        foreign=FOREIGN,
+    )
+    assert state.call("weigh", ("&smallnum::Holder", "u32"), "weigh") == frozenset()
+    # The standard library's given one, and the dependency's own, may touch any.
+    assert "&AtomicU32" in state.call("drop", ("smallnum::Holder",), "std::mem::drop")
+    assert "&AtomicU32" in state.call("keep", ("&u32",), "smallnum::keep")
+
+
+def test_a_crate_traits_impl_for_a_dependencys_type_keeps_nothing_by_that_type():
+    show = body(
+        "<impl at src/lib.rs:3:1: 3:30>::show",
+        "fn <impl at src/lib.rs:3:1: 3:30>::show(_1: &smallnum::Holder, _2: &u32) -> () {",
+        ["let mut _0: ();"],
+        {0: ["return;"]},
+    )
+    caller = body(
+        "run",
+        "fn run(_1: &smallnum::Holder, _2: &u32) -> () {",
+        ["let mut _0: ();"],
+        {
+            0: [
+                "_0 = <smallnum::Holder as Show>::show(copy _1, copy _2) -> [return: bb1, unwind continue];"
+            ],
+            1: ["return;"],
+        },
+    )
+    owned = matched(show, caller)
+    assert "run" not in owned._keepers()
+    # A dependency's own call keeps what it is given.
+    keeps = run("smallnum::keep")
+    assert "run" in matched(keeps)._keepers()
