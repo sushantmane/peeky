@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks": "FAILED",
+   "tests/_core/test_plot.py::TestScaling::test_nominal_y_axis_tweaks": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 8.6
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks": "PASSED",
+   "tests/_core/test_plot.py::TestScaling::test_nominal_y_axis_tweaks": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks": "PASSED",
+   "tests/_core/test_plot.py::TestScaling::test_nominal_y_axis_tweaks": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.9
+ }
+]

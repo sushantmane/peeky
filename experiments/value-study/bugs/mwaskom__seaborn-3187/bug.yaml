@@ -1,0 +1,34 @@
+id: mwaskom__seaborn-3187
+language: python
+repo: mwaskom/seaborn
+source: SWE-bench Verified
+base_commit: 22cdfb0c93f8ec78492d87edb810f10cb7f57a31
+upstream: https://github.com/mwaskom/seaborn/pull/3187
+category: B
+categories_applicable: [B]
+category_rationale: >-
+  The wrong legend values come from matplotlib's ScalarFormatter, which moves a shared offset or
+  power-of-ten multiplier out of the per-tick labels; seeing why needs the formatter's behaviour
+  (and its rcParams), which lives in matplotlib, not seaborn.
+root_cause: >-
+  seaborn builds legend labels for numeric semantics with matplotlib's ScalarFormatter
+  (formatter.format_ticks in Continuous._setup in seaborn/_core/scales.py, and
+  locator_to_legend_entries in seaborn/utils.py for scatterplot/relplot). For large values the
+  formatter puts a common offset or 1eN multiplier in a separate offset text, which seaborn never
+  shows, so the legend labels lack it. The fix turns off the offset and scientific notation on
+  those formatters (set_useOffset(False), set_scientific(False)) before formatting legend labels.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with seaborn installed in editable mode. Run tests
+  with `cd /testbed && pytest tests/<file>.py` (the whole suite is `pytest tests`).
+python: "3.11"
+image: peeky-study/mwaskom__seaborn-3187:control
+build_minutes: 0.9
+grade_minutes: 0.4
+pass_to_pass_removed: []
+notes: >-
+  Deviation from the SWE-bench spec: pandas 1.5.3 instead of 2.0.0. pandas 2.0 removed the
+  `mode.use_inf_as_null` option this seaborn uses, so under the spec many tests in the hidden
+  tests' modules error at base, with or without the fix; with 1.5.3 both modules run cleanly and the
+  instance's FAIL_TO_PASS/PASS_TO_PASS lists hold unchanged. Python 3.11 rather than 3.12: the
+  spec's pinned numpy 1.25.2 and matplotlib 3.7.2 have no 3.12 builds. Other packages are the
+  spec's pins; unpinned ones resolve as of 2024-08-01 (uv --exclude-newer).

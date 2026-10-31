@@ -1,0 +1,13 @@
+{
+  "parser": "parse_log_ant",
+  "fail_to_pass": [
+    "javac-UtilityClassGeneric.java(lombok.transform.TestWithDelombok)"
+  ],
+  "pass_to_pass": [
+    "javac-UtilityClass.java(lombok.transform.TestWithDelombok)",
+    "javac-UtilityClassErrors.java(lombok.transform.TestWithDelombok)",
+    "javac-UtilityClassInAnonymousClass.java(lombok.transform.TestWithDelombok)",
+    "javac-UtilityClassInner.java(lombok.transform.TestWithDelombok)"
+  ],
+  "timeout_s": 600
+}

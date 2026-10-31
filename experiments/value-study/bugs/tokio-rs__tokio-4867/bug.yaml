@@ -1,0 +1,34 @@
+id: tokio-rs__tokio-4867
+language: rust
+repo: tokio-rs/tokio
+source: SWE-bench Multilingual
+base_commit: 53cf021b813c61cdeace26e863c89f65f6e92abd
+upstream: https://github.com/tokio-rs/tokio/pull/4867
+category: C
+categories_applicable: [C, D]
+category_rationale: >-
+  The fault is in how the broadcast channel's ring buffer encodes "closed": a marker slot with
+  a position, compared against each receiver's cursor and the tail position. It also needs a
+  particular sequence (drop the sender, then resubscribe).
+root_cause: >-
+  In tokio/src/sync/broadcast.rs, dropping the last Sender closes the channel through
+  send2(None), which writes a "closed" marker into the next ring-buffer slot (slot.closed = true)
+  and advances tail.pos; receivers learn of the close only by reading that slot. A Receiver made
+  by resubscribe() starts at the current tail position, after the marker, so it never reads it:
+  recv_ref finds no new slot and returns Empty (so try_recv gives Empty and recv waits forever)
+  instead of Closed. The fix removes the per-slot closed marker: closing just sets tail.closed
+  and wakes the receivers, and recv_ref returns Closed once a receiver has caught up and
+  tail.closed is set.
+test_hint: >-
+  Run an integration test file with `cd /testbed && cargo test --test <file stem>` (integration
+  tests are in tokio/tests/, e.g. `cargo test --test sync_mpsc`); tokio's unit tests with
+  `cargo test -p tokio --lib --features full`.
+image: peeky-study/tokio-rs__tokio-4867:control
+build_minutes: 0.4
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tokio doesn't commit Cargo.lock;
+  the image uses SWE-bench's pinned lock file (swebench/harness/constants/fixtures, copied here
+  as Cargo.lock; git ignores it in /testbed). Test command from the dataset's eval_script, run
+  offline.

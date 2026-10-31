@@ -131,4 +131,15 @@ The study is opt-in. It isn't part of CI, and CI makes no model calls.
 
 ## Deviations
 
-None yet.
+All of these were decided before any agent run.
+
+- **29 bugs, not 30.** The C++ pool (12 bugs, 11 of them fmt) ran out with 3 accepted. The other 9
+  were category E after the C++ control slot had filled. No pool was added after the fact.
+- **Category A as a tag.** The examiners measured A by time only, and no bug took 3 minutes. Per
+  the definition, a large multi-module build also counts. So A is recorded as also applying to
+  the Lucene and Druid bugs, and their primary category stays as examined. The selection is
+  unchanged.
+- **Environment adaptations.** Some bugs' environments differ from the SWE-bench spec, to run on
+  arm64 or Python 3.11 and 3.12. Examples are pandas 1.5.3 for seaborn, a Cargo.lock for tokio and
+  axum, and Ubuntu's `ant-optional` for Lombok. Each change is recorded in that bug's
+  `bug.yaml`. None of them changes a hidden test's outcome with or without the fix.

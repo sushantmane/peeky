@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "locale_test.localized_double": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 8.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "locale_test.localized_double": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.0
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "locale_test.localized_double": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.1
+ }
+]

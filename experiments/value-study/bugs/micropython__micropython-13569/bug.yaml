@@ -1,0 +1,37 @@
+id: micropython__micropython-13569
+language: c
+repo: micropython/micropython
+source: SWE-bench Multilingual
+base_commit: 2d7fb9a715d8c9f1f7ba73a62cfd587fa6ffc24a
+upstream: https://github.com/micropython/micropython/pull/13569
+category: C
+categories_applicable: [C, D]
+category_rationale: >-
+  The faulty value is the compiler's computed value-stack size, which shows up as a local slot in
+  the VM's frame state array being overwritten, in an optimized (-Os) build. It also takes a
+  specific shape of code (return inside try, a stack-hungry finally) to show.
+root_cause: >-
+  The bytecode compiler in py/compile.c under-counts the maximum value-stack depth of a
+  try/finally: when the finally block runs because the try body executed `return`, the return
+  value is still on the stack, but compile_try_finally (and the `except ... as name` cleanup in
+  compile_try_except) doesn't reserve a slot for it. The VM therefore sizes the frame one slot too
+  small, and a finally block that pushes enough values overflows the stack into the slots that
+  hold local variables, clobbering a local such as `self`. The fix wraps those blocks in
+  adjust_stack_size(+1)/(-1).
+test_hint: |-
+  Rebuild with `cd /testbed && source tools/ci.sh && ci_unix_build_helper VARIANT=standard` (binary: ports/unix/build-standard/micropython).
+  Run tests with `cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py <test files>` (or `-i <substring>`).
+image: peeky-study/micropython__micropython-13569:control
+build_minutes: 0.6
+grade_minutes: 0.04
+pass_to_pass_removed:
+  - test: micropython/viper_try.py
+    reason: skipped on arm64 (MicroPython has no native/viper emitter for aarch64), so it can't pass in the image
+  - test: micropython/native_try.py
+    reason: skipped on arm64 (no native emitter for aarch64)
+  - test: micropython/native_try_deep.py
+    reason: skipped on arm64 (no native emitter for aarch64)
+notes: >-
+  Build follows the SWE-bench spec (tools/ci.sh ci_unix_build_helper VARIANT=standard, plus
+  tests/ports/unix/ffi_lib.so) with libffi-dev from apt. CPython 3.12 (system python3) is used
+  for tests that compare against CPython output.

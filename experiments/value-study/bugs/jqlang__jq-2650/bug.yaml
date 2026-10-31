@@ -1,0 +1,29 @@
+id: jqlang__jq-2650
+language: c
+repo: jqlang/jq
+source: SWE-bench Multilingual
+base_commit: d8072564c28d38d29aa0a7c416621f02c19f7f44
+upstream: https://github.com/jqlang/jq/pull/2650
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A syntax error with no runtime state: the grammar in src/parser.y is readable and lacks the
+  dotted form of `[]`. Build and tests take well under a minute.
+root_cause: >-
+  jq's grammar (src/parser.y, compiled into the checked-in src/parser.c) accepts a dot before
+  bracket indexing (`Term '.' '[' Exp ']'`, so `.["a"].["b"]` parses), but has no production for
+  a dot before the empty brackets that iterate, `Term '.' '[' ']'` and its `?` variant. So
+  `.a.[]` and `.a.[]?` are syntax errors while `.a[]` works. The fix adds the two productions,
+  emitting EACH and EACH_OPT exactly like `Term '[' ']'`.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (bison regenerates src/parser.c from src/parser.y; the binary is ./jq).
+  Run the test suite with `cd /testbed && make check`, or run individual test scripts under tests/.
+image: peeky-study/jqlang__jq-2650:control
+build_minutes: 0.5
+grade_minutes: 0.5
+pass_to_pass_removed: []
+notes: >-
+  Build follows the SWE-bench spec (submodules, autoreconf -fi, configure
+  --with-oniguruma=builtin, make). The report's own examples (`.["a"].["b"]`, `.a.["b"]`) already
+  work at the base commit; what still fails is iteration after a dot (`.a.[]`), which is what the
+  hidden test checks. Worth a decision: the agent may find the reported examples working.

@@ -1,0 +1,13 @@
+{
+ "parser": "parse_log_redis",
+ "fail_to_pass": [
+  "CLUSTER SHARDS slot response is non-empty when primary node fails"
+ ],
+ "pass_to_pass": [
+  "Cluster should start ok",
+  "Cluster shards response is ok for shard 0",
+  "Kill a node and tell the replica to immediately takeover",
+  "Verify health as fail for killed node"
+ ],
+ "timeout_s": 900
+}

@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/test_blueprints.py::test_empty_name_not_allowed": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/test_blueprints.py::test_empty_name_not_allowed": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/test_blueprints.py::test_empty_name_not_allowed": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ }
+]

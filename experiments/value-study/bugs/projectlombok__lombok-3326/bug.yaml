@@ -1,0 +1,31 @@
+id: projectlombok__lombok-3326
+language: java
+repo: projectlombok/lombok
+source: SWE-bench Multilingual
+base_commit: 9e6f66c557205bff3c87eefb4c7a7631d0b89ff0
+upstream: https://github.com/projectlombok/lombok/pull/3326
+category: B
+categories_applicable: [B, D]
+category_rationale: >-
+  The crash is an NPE deep inside javac's type inference (Types.asSuper), caused by a type javac
+  had cached before lombok changed the class; understanding it needs javac's symbol and erasure
+  internals. It also needs a particular mix (generic method, overloads, inner class) to show.
+root_cause: >-
+  HandleUtilityClass (javac) makes the inner classes of a @UtilityClass static by setting
+  Flags.STATIC and replacing the enclosing type of the inner class's ClassType with Type.noType.
+  But javac may already have computed and cached the inner class symbol's erasure
+  (Symbol.erasure_field, e.g. while checking the overloaded methods), and that cached erased type
+  still has the outer class as its enclosing type; inference later uses it in Types.isSubtype/
+  asSuper and hits a null symbol. The fix also clears innerClassSymbol.erasure_field so javac
+  recomputes the erasure (and adds the field to lombok's javac stubs).
+test_hint: >-
+  Lombok builds with ant on JDK 11, offline: `cd /testbed && ant test.compile` compiles lombok and
+  its tests, and `ant test.javacCurrent` runs the javac test suites.
+image: peeky-study/projectlombok__lombok-3326:control
+build_minutes: 1.7
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec (the NPE shows on javac 11+, not 8). The image adds Ubuntu's
+  ant-optional (the base's ant lacks the junit task). eval.sh adds SWE-bench's test.instance target
+  to buildScripts/tests.ant.xml at grading time, so the image's working tree is clean.

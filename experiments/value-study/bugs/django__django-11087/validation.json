@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_only_referenced_fields_selected (delete.tests.DeletionTests)": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.8
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_only_referenced_fields_selected (delete.tests.DeletionTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.7
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_only_referenced_fields_selected (delete.tests.DeletionTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.7
+ }
+]

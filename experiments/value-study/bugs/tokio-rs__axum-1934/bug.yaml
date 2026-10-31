@@ -1,0 +1,32 @@
+id: tokio-rs__axum-1934
+language: rust
+repo: tokio-rs/axum
+source: SWE-bench Multilingual
+base_commit: e97462d45251c21ffd1ba4fb5db30f3cf6f6cb6c
+upstream: https://github.com/tokio-rs/axum/pull/1934
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The panic needs a particular router configuration: a Router with a service nested at "/"
+  used as another Router's fallback service, so that the outer fallback and the inner nested
+  route both touch the matched-path request extensions.
+root_cause: >-
+  Router keeps its fallback in a second PathRouter (`fallback_router` in axum/src/routing/mod.rs),
+  and PathRouter::call_with_state (axum/src/routing/path_router.rs) sets the MatchedPath request
+  extension on every match, fallback matches included. When the fallback is itself a Router with a
+  service nested at "/", the inner router records a nest-tail match and the debug_assert in
+  set_matched_path_for_request (axum/src/extract/matched_path.rs) fires, because the outer
+  fallback has already inserted a MatchedPath. The fix makes PathRouter generic over an
+  IS_FALLBACK flag and doesn't set MatchedPath when routing through the fallback router.
+test_hint: >-
+  Run the axum unit tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum
+  --lib -- <filter>` (e.g. `-- extract::path`); the build cache was made with these RUSTFLAGS.
+image: peeky-study/tokio-rs__axum-1934:control
+build_minutes: 0.9
+grade_minutes: 0.10
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. axum doesn't commit Cargo.lock;
+  the image uses SWE-bench's pinned lock file (swebench/harness/constants/fixtures, copied here
+  as Cargo.lock; git ignores it in /testbed). Test command from the dataset's eval_script, run
+  offline; the tests' TestClient uses loopback only.

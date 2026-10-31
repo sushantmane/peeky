@@ -1,0 +1,31 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "xarray/tests/test_computation.py::test_polyval[timedelta-False]": "FAILED"
+  },
+  "p2p_failed": [
+   "xarray/tests/test_computation.py::test_polyval[timedelta-True]"
+  ],
+  "solved": false,
+  "seconds": 3.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "xarray/tests/test_computation.py::test_polyval[timedelta-False]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.5
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "xarray/tests/test_computation.py::test_polyval[timedelta-False]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.6
+ }
+]

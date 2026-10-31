@@ -1,0 +1,29 @@
+[
+  {
+    "name": "base",
+    "f2p": {
+      "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testCacheStrategy": "FAILED"
+    },
+    "p2p_failed": [],
+    "solved": false,
+    "seconds": 58
+  },
+  {
+    "name": "gold-1",
+    "f2p": {
+      "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testCacheStrategy": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 60
+  },
+  {
+    "name": "gold-2",
+    "f2p": {
+      "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testCacheStrategy": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 61
+  }
+]

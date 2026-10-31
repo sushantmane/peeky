@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "regression::r2208": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.9
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "regression::r2208": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.0
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "regression::r2208": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.9
+ }
+]

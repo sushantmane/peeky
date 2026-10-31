@@ -1,0 +1,35 @@
+id: sphinx-doc__sphinx-10614
+language: python
+repo: sphinx-doc/sphinx
+source: SWE-bench Verified
+base_commit: ac2b7599d212af7d04649959ce6926c63c3133fa
+upstream: https://github.com/sphinx-doc/sphinx/pull/10614
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The broken links show only with graphviz_output_format = "svg" and documents whose links are
+  relative paths (the report's sample project isn't available); the wrong URLs come from path
+  adjustments made in two places during the build, which have to be traced through the generated
+  values.
+root_cause: >-
+  html_visit_inheritance_diagram in sphinx/ext/inheritance_diagram.py prefixes SVG link targets with
+  "../" (for refuri and for current_filename#refid), assuming the SVG in _images/ sits one level
+  below the page, while sphinx/ext/graphviz.py already rewrites relative links in generated SVGs to
+  be relative to the image directory (fix_svg_relative_paths); the links end up pointing one
+  directory too high. The fix drops the "../" prefixes and, for external (intersphinx) references,
+  keys the URL by the name taken from the refuri's fragment rather than by reftitle.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with Sphinx installed in editable mode and graphviz
+  (`dot`) installed. Run tests with `cd /testbed && python -m pytest tests/<file>.py` (tox.ini also
+  sets PYTHONWARNINGS=error).
+python: "3.12"
+image: peeky-study/sphinx-doc__sphinx-10614:control
+build_minutes: 0.7
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  The hidden test also checks intersphinx (external) links in the diagram, which the problem
+  statement doesn't mention. SWE-bench runs the tests through tox --current-env; eval.sh runs
+  tox.ini's command directly (`python -X dev -X warn_default_encoding -m pytest -rA --durations 25`
+  with PYTHONWARNINGS=error). Packages are the spec's (Jinja2 3.0.3, the [test] extra), unpinned
+  ones resolving as of 2024-08-01; graphviz comes from Ubuntu's apt.

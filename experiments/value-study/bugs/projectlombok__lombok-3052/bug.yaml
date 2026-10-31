@@ -1,0 +1,32 @@
+id: projectlombok__lombok-3052
+language: java
+repo: projectlombok/lombok
+source: SWE-bench Multilingual
+base_commit: ff7b1fbb438dbb378f9e0f725ed5f80fa7b82f55
+upstream: https://github.com/projectlombok/lombok/pull/3052
+category: B
+categories_applicable: [B]
+category_rationale: >-
+  The wrong type comes from javac, not lombok: javac 9+ caches the speculative types of
+  method-call arguments by source position (ArgumentAttr), so understanding the failure needs that
+  compiler behaviour; nothing in lombok's code mentions types or inference.
+root_cause: >-
+  For a @Builder.Default field, HandleBuilder.generateDefaultProvider moves the field's initializer
+  into a generated static `$default$<field>()` method, and the caller (HandleBuilder and
+  HandleSuperBuilder) then runs recursiveSetGeneratedBy over the whole method, which also gives
+  every node of the moved initializer the annotation's source position. javac's argument-type
+  cache is keyed by tree position, so two different generic calls in the initializer (e.g.
+  `MyClass.myInt()` and `MyClass.myChar()`) now share one cached type and compilation fails with
+  incompatible types. The fix sets the generated-by positions before putting the original
+  initializer back into the return statement, so the expression keeps its own positions.
+test_hint: >-
+  Lombok builds with ant on JDK 11, offline: `cd /testbed && ant test.compile` compiles lombok and
+  its tests, and `ant test.javacCurrent` runs the javac test suites.
+image: peeky-study/projectlombok__lombok-3052:control
+build_minutes: 1.9
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec (the bug shows on javac 9+, not 8). The image adds Ubuntu's
+  ant-optional (the base's ant lacks the junit task). eval.sh adds SWE-bench's test.instance target
+  to buildScripts/tests.ant.xml at grading time, so the image's working tree is clean.

@@ -1,0 +1,29 @@
+[
+  {
+    "name": "base",
+    "f2p": {
+      "io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest > innerOnSubscribeOuterCancelRace": "FAILED"
+    },
+    "p2p_failed": [],
+    "solved": false,
+    "seconds": 13
+  },
+  {
+    "name": "gold-1",
+    "f2p": {
+      "io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest > innerOnSubscribeOuterCancelRace": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 14
+  },
+  {
+    "name": "gold-2",
+    "f2p": {
+      "io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest > innerOnSubscribeOuterCancelRace": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 22
+  }
+]

@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/test_ext_inheritance_diagram.py::test_inheritance_diagram_svg_html": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.9
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/test_ext_inheritance_diagram.py::test_inheritance_diagram_svg_html": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/test_ext_inheritance_diagram.py::test_inheritance_diagram_svg_html": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.5
+ }
+]

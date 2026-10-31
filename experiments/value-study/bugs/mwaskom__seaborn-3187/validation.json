@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset": "FAILED",
+   "tests/test_relational.py::TestRelationalPlotter::test_legend_has_no_offset": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 25.6
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset": "PASSED",
+   "tests/test_relational.py::TestRelationalPlotter::test_legend_has_no_offset": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 22.0
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset": "PASSED",
+   "tests/test_relational.py::TestRelationalPlotter::test_legend_has_no_offset": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 25.6
+ }
+]

@@ -1,0 +1,30 @@
+id: projectlombok__lombok-3009
+language: java
+repo: projectlombok/lombok
+source: SWE-bench Multilingual
+base_commit: 8bbac04478cb088eedceb4c63dcb45e30f0948ed
+upstream: https://github.com/projectlombok/lombok/pull/3009
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the config keys and the error message, which appears once in
+  HandleFieldDefaults; the fix is a one-line guard and the state is a single record declaration.
+root_cause: >-
+  HandleFieldDefaults.visitType (both the javac and the Eclipse handler) applies the config-driven
+  defaults lombok.fieldDefaults.defaultPrivate/defaultFinal to every type that isn't an interface
+  or annotation, so records reach generateFieldDefaultsForType. That method only accepts a class or
+  an enum and reports "@FieldDefaults is only supported on a class or an enum." even though no
+  annotation was written. The fix returns early when there is no @FieldDefaults annotation and the
+  type isn't a class or enum, so the config keys skip records.
+test_hint: >-
+  Lombok builds with ant on JDK 17, offline: `cd /testbed && ant test.compile` compiles lombok and
+  its tests, and `ant test.javacCurrent` runs the javac test suites (some tests already fail at
+  the base commit).
+image: peeky-study/projectlombok__lombok-3009:control
+build_minutes: 2
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  JDK 17 per the SWE-bench spec. The image adds Ubuntu's ant-optional (the base's ant lacks the
+  junit task). eval.sh adds SWE-bench's test.instance target to buildScripts/tests.ant.xml at
+  grading time, so the image's working tree is clean at the base commit.

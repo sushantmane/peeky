@@ -1,0 +1,26 @@
+id: nlohmann__json-4237
+language: cpp
+repo: nlohmann/json
+source: SWE-bench Multilingual
+base_commit: 3780b41dd070436f3f55327b0a88f27a52e2dfa8
+upstream: https://github.com/nlohmann/json/pull/4237
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report pins the symptom (unsigned enums serialize as negative numbers) and the enum
+  overload of to_json is short and readable; the state is a single json value of the wrong kind.
+root_cause: >-
+  The to_json overload for enum types (include/nlohmann/detail/conversions/to_json.hpp, mirrored
+  in single_include/nlohmann/json.hpp) always stores the enum's underlying value with
+  external_constructor<value_t::number_integer>, i.e. as a signed 64-bit number, even when the
+  enum's underlying type is unsigned. Large unsigned values (e.g. 1<<63) therefore become
+  negative numbers. The fix picks value_t::number_unsigned when the underlying type is unsigned.
+test_hint: |-
+  Build tests with `cd /testbed/build && cmake .. && make test-<name>_cpp11` (one target per tests/src/unit-<name>.cpp), then run `./tests/test-<name>_cpp11`.
+image: peeky-study/nlohmann__json-4237:control
+build_minutes: 0.6
+grade_minutes: 0.05
+pass_to_pass_removed: []
+notes: >-
+  Build follows the SWE-bench spec (cmake in build/, make test-udt_cpp11) with the base image's
+  default compiler (GCC 13). The json_test_data download target isn't needed by this test.

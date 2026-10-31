@@ -15,6 +15,7 @@ RUN curl -LsSf https://astral.sh/uv/0.9.5/install.sh | env UV_INSTALL_DIR=/usr/l
     uv python install 3.11 && \
     git config --global user.email study@example.invalid && git config --global user.name study && \
     git config --global --add safe.directory '*'
-# JDK 17 stays the default `java`; projects that need another select it in their own image.
+# `java` on PATH is JDK 21 (the highest alternative) and JAVA_HOME is JDK 17; each Java bug's
+# image selects the JDK its project needs.
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64
 WORKDIR /testbed

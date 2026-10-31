@@ -1,0 +1,35 @@
+id: astropy__astropy-13398
+language: python
+repo: astropy/astropy
+source: SWE-bench Verified
+base_commit: 6500928dc0e57be8f06d1162eacc3ba5e2eff692
+upstream: https://github.com/astropy/astropy/pull/13398
+category: B
+categories_applicable: [B, D]
+category_rationale: >-
+  The new ITRS->observed path must agree to 0.1 mas with the existing CIRS->observed path, whose
+  aberration and refraction come from ERFA (pyerfa's atioq/atoiq/refco), so getting it right needs
+  that library's behaviour; the frame-attribute routing through the transform graph adds deep state.
+root_cause: >-
+  astropy has no direct ITRS<->AltAz/HADec transforms and its ITRS frame has no `location`
+  attribute, so topocentric ITRS positions can't be expressed and ITRS->observed goes through CIRS
+  with geocentric aberration (an object straight overhead doesn't come out at 90 degrees). The fix
+  adds `location` (default: Earth's centre) to ITRS, carries it through the CIRS/TETE<->ITRS
+  transforms in intermediate_rotation_transforms.py, and adds builtin_frames/itrs_observed_transforms.py
+  with direct ITRS<->AltAz/HADec rotation matrices and a refraction step modelled on ERFA's
+  atioq/atoiq.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with astropy installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest astropy/<subpackage>/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/astropy__astropy-13398:control
+build_minutes: 2
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  The problem statement is a feature proposal with a draft implementation (no refraction, no ITRS
+  location); the hidden tests need both. Python 3.11 rather than 3.12: the spec's pinned numpy
+  1.25.2 has no 3.12 build. The spec's setuptools==68.0.0 build pin is applied as a uv build
+  constraint rather than by editing pyproject.toml; other packages are the spec's pins, unpinned
+  ones resolve as of 2024-08-01 (uv --exclude-newer). test_icrs_cirs in the same module fails at
+  base and with the fix (not in PASS_TO_PASS); jplephem tests are skipped.

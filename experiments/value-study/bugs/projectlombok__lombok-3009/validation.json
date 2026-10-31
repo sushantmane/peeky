@@ -1,0 +1,29 @@
+[
+  {
+    "name": "base",
+    "f2p": {
+      "javac-FieldDefaultsViaConfigOnRecord.java(lombok.transform.TestWithDelombok)": "FAILED"
+    },
+    "p2p_failed": [],
+    "solved": false,
+    "seconds": 11
+  },
+  {
+    "name": "gold-1",
+    "f2p": {
+      "javac-FieldDefaultsViaConfigOnRecord.java(lombok.transform.TestWithDelombok)": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 12
+  },
+  {
+    "name": "gold-2",
+    "f2p": {
+      "javac-FieldDefaultsViaConfigOnRecord.java(lombok.transform.TestWithDelombok)": "PASSED"
+    },
+    "p2p_failed": [],
+    "solved": true,
+    "seconds": 11
+  }
+]

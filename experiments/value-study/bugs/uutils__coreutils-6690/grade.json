@@ -1,0 +1,16 @@
+{
+ "parser": "parse_log_cargo",
+ "fail_to_pass": [
+  "test_cp::test_cp_no_file"
+ ],
+ "pass_to_pass": [
+  "test_cp::test_cp_multiple_files_target_is_file",
+  "test_cp::test_cp_same_file",
+  "test_cp::test_cp_multiple_files_with_nonexistent_file",
+  "test_cp::test_cp_cp",
+  "test_cp::test_cp_single_file",
+  "test_cp::test_cp_multiple_files",
+  "test_cp::test_cp_multiple_files_with_empty_file_name"
+ ],
+ "timeout_s": 1200
+}

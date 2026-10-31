@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "resubscribe_to_closed_channel": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "resubscribe_to_closed_channel": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "resubscribe_to_closed_channel": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.2
+ }
+]

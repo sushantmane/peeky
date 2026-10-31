@@ -1,0 +1,12 @@
+{
+ "parser": "parse_log_redis",
+ "fail_to_pass": [
+  "Test ACL LOAD works on replica"
+ ],
+ "pass_to_pass": [
+  "ACL LOAD only disconnects affected clients",
+  "ACL LOAD disconnects clients of deleted users",
+  "Test ACL LOAD works on primary"
+ ],
+ "timeout_s": 900
+}

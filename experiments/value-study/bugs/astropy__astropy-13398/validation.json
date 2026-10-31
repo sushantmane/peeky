@@ -1,0 +1,38 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction": "FAILED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_hadec_with_refraction": "FAILED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_cirs_itrs_topo": "FAILED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_straight_overhead": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.8
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction": "PASSED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_hadec_with_refraction": "PASSED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_cirs_itrs_topo": "PASSED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_straight_overhead": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction": "PASSED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_hadec_with_refraction": "PASSED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_cirs_itrs_topo": "PASSED",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_straight_overhead": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.3
+ }
+]

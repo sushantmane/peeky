@@ -1,0 +1,36 @@
+id: pydata__xarray-6599
+language: python
+repo: pydata/xarray
+source: SWE-bench Verified
+base_commit: 6bb2b855498b5c68d7cca8cceb710365d58e6048
+upstream: https://github.com/pydata/xarray/pull/6599
+category: B
+categories_applicable: [B]
+category_rationale: >-
+  The report shows only wrong numbers; explaining them, and the failure for timedelta input, needs
+  numpy's datetime64/timedelta64 semantics (conversion to nanoseconds since 1970, and numpy refusing
+  timedelta64 minus datetime64 in datetime_to_numeric).
+root_cause: >-
+  In xarray/core/computation.py, _ensure_numeric's to_floatable treats timedelta64 (dtype kind "m")
+  like datetime64 ("M") and passes it to datetime_to_numeric with a datetime64("1970-01-01")
+  offset; subtracting a datetime64 from timedelta64 data is invalid in numpy, so polyval fails on
+  timedelta coordinates (while datetime64 values, as in the report, are evaluated as nanoseconds
+  since 1970 by the new polyval). The fix keeps datetime_to_numeric for datetimes only and converts
+  timedeltas with x.astype(float).
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with xarray installed in editable mode. Run tests
+  with `cd /testbed && pytest xarray/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/pydata__xarray-6599:control
+build_minutes: 2
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  The SWE-bench spec builds a conda env from ci/requirements/environment.yml; without conda the
+  image pip-installs the spec's pins (numpy 1.23.5 instead of 1.23.0, which has no Python 3.11
+  build) plus environment.yml's test dependencies that have Linux arm64 wheels (dask, distributed,
+  bottleneck, cftime, toolz, hypothesis, pytest-env/xdist/cov, matplotlib, netCDF4, zarr, pint,
+  pooch); unpinned ones resolve as of 2024-08-01. PASS_TO_PASS's
+  test_polyval[timedelta-True] (the dask variant) also fails at base in this image and passes with
+  the fix; it stays in pass_to_pass. Python 3.11 rather than 3.12: the pinned numpy 1.23 and scipy
+  1.11.1 have no 3.12 builds.
