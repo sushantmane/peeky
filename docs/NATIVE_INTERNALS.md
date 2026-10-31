@@ -70,10 +70,14 @@ that llvm-dwarfdump can't decode. Either version is read as DWARF 4 is:
   couldn't decode (`<decoding error>`), an index with no address, and a list without its end.
   Only a list's closing `)` ends it: a blank line in one fails too. Nothing of one is dropped.
   A DWARF 4 unit is read as before.
-- Units whose entries aren't all there are refused as `UNSUPPORTED` before any value is read
+- Units whose entries aren't all there are refused as `UNSUPPORTED` before anything runs
   (`ForeignUnits`). Split DWARF's skeleton units keep their locals and types in a `.dwo` file
   (`-gsplit-dwarf`, either version). Type units and partial units hold what other units name
-  by signature or import (`-fdebug-types-section`, dwz). Each is refused, never read in part.
+  by signature or import (`-fdebug-types-section`, dwz). An entry naming its type by signature
+  (`DW_AT_signature`) is refused in either version: DWARF 4 keeps the type in `.debug_types`,
+  which Peeky doesn't read. Each is refused, never read in part.
+- So is a unit Peeky can't read at all: a header without its version, or a DWARF 5 one without
+  its unit type, or a version past 5.
 - `PEEKY_NATIVE_DWARF=4` keeps clang at DWARF 4. `tests/native/test_native_dwarf_versions.py`
   builds the same programs both ways, and checks that they read alike.
 

@@ -784,8 +784,12 @@ def _dies(text):
 
 class ForeignUnits(RuntimeError):
     """Debug information whose units Peeky can't read whole: split DWARF (a skeleton unit,
-    whose locals and types are in a .dwo file), type units or partial units. Refused as
-    UNSUPPORTED before any value is read: never read as the part in the binary."""
+    whose locals and types are in a .dwo file), type units (an entry naming its type by
+    signature, in either version) or partial units; or a unit it can't read at all (a
+    header without its version or type, a version past 5). Refused as UNSUPPORTED before
+    anything runs: never read in part."""
+
+    before_launch = True
 
 
 def _foreign(kind, offset, dwo=None):
@@ -795,6 +799,24 @@ def _foreign(kind, offset, dwo=None):
     return ForeignUnits(
         f"Peeky can't read {what}: the unit at 0x{offset:08x} is {kind}{held}, and Peeky "
         f"reads every unit's own entries or none; {advice}"
+    )
+
+
+def _signed(offset):
+    """The refusal of an entry naming its type by signature: the type is in a type unit
+    (`.debug_types` in DWARF 4, which Peeky doesn't read; `.debug_info` in DWARF 5)."""
+    return ForeignUnits(
+        f"Peeky can't read DWARF type units: the entry at 0x{offset:08x} names its type by "
+        "signature (DW_AT_signature), and the type is in a type unit, but Peeky reads every "
+        f"unit's own entries or none; {_FOREIGN_OPTIONS['DWARF type units']}"
+    )
+
+
+def _unknown_unit(offset, why):
+    return ForeignUnits(
+        f"Peeky can't read a DWARF unit: the unit at 0x{offset:08x} {why}, and Peeky reads "
+        "DWARF 2 to 5 as llvm-dwarfdump 18 to 20 write it; rebuild with -gdwarf-5, or use "
+        "llvm-dwarfdump 18 to 20"
     )
 
 
@@ -973,8 +995,9 @@ def _parse_dies(text, into=None):
             if depth == 0 and match[1] in ("DW_AT_dwo_name", "DW_AT_GNU_dwo_name"):
                 # A skeleton of either version: its unit's entries are in that file.
                 raise _foreign("DW_UT_skeleton", stack[-1], (_text(value) or value)[:200])
-            if version == 5 and match[1] == "DW_AT_signature":
-                strict("a type named by its signature (-fdebug-types-section)")
+            if match[1] == "DW_AT_signature":
+                # Its type is in a type unit, in either version.
+                raise _signed(stack[-1])
             if version == 5:
                 value = _INDEXED_LIST.sub("", value, count=1)
                 if _UNREAD.search(_QUOTED.sub("", value)):
@@ -999,16 +1022,17 @@ def _parse_dies(text, into=None):
             version = int(found[1], 16) if found else None
             unit += 1
             bases.append(None)
+            at = int(raw.split(":", 1)[0], 16)
             if version is None:
-                raise ValueError("A DWARF unit header without its version")
+                raise _unknown_unit(at, "has a header without its version")
             if version > 5:
-                raise ValueError(f"A DWARF {version} unit: Peeky reads DWARF 5 and earlier")
+                raise _unknown_unit(at, f"is DWARF {version}")
             if version == 5:
                 kind = _UNIT_TYPE.search(header[1])
                 if kind is None:
-                    raise ValueError("A DWARF 5 unit header without its type")
+                    raise _unknown_unit(at, "is DWARF 5, with a header without its type")
                 if kind[1] != "DW_UT_compile":
-                    raise _foreign(kind[1], int(raw.split(":", 1)[0], 16))
+                    raise _foreign(kind[1], at)
         elif raw == ".debug_addr contents:":
             section, version = "addr", None
         elif raw == ".debug_info contents:" or not raw.strip() or _FILE_HEADER.fullmatch(raw):

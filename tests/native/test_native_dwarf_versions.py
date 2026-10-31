@@ -158,6 +158,8 @@ def test_an_optimized_build_withholds_alike_at_dwarf_4_and_5(tmp_path, monkeypat
         (("-gdwarf-5", "-gsplit-dwarf"), "split DWARF.*rebuild without -gsplit-dwarf"),
         (("-gdwarf-4", "-gsplit-dwarf"), "split DWARF.*rebuild without -gsplit-dwarf"),
         (("-gdwarf-5", "-fdebug-types-section"), "type units.*-fdebug-types-section"),
+        # The type is in `.debug_types`, which Peeky doesn't read: named by its signature.
+        (("-gdwarf-4", "-fdebug-types-section"), "type units.*-fdebug-types-section"),
     ],
 )
 def test_units_held_elsewhere_are_refused_not_read_in_part(tmp_path, flags, said):
@@ -190,3 +192,55 @@ def test_units_held_elsewhere_are_refused_not_read_in_part(tmp_path, flags, said
             dict(os.environ),
             timeout=15,
         )
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "language, flags, said",
+    [
+        ("c", ("-gdwarf-5", "-gsplit-dwarf"), "split DWARF.*-gsplit-dwarf"),
+        ("cpp", ("-gdwarf-4", "-fdebug-types-section"), "type units.*-fdebug-types-section"),
+    ],
+)
+def test_a_build_whose_units_are_held_elsewhere_is_refused_before_launch(
+    tmp_path, monkeypatch, language, flags, said
+):
+    # A probe whose build reads as a split one, or one with type units (its debug
+    # information read from such a binary), is refused as UNSUPPORTED before the program
+    # runs: never launched with a type missing, or each value shown with a note.
+    import subprocess
+    import sys
+
+    import peeky.native
+
+    if sys.platform != "linux":
+        pytest.skip("split DWARF and type units are ELF's")
+    name, source = ("main.cpp", CPP_SOURCE) if language == "cpp" else ("main.c", C_SOURCE)
+    target = _target(language, name)
+    held = tmp_path / "held"
+    held.mkdir()
+    (held / name).write_text(source)
+    driver = ("--driver-mode=g++",) if language == "cpp" else ()
+    subprocess.run(
+        [target.compiler, *driver, "-g", "-O0", *flags, name, "-o", "program"],
+        cwd=held,
+        check=True,
+    )
+    real = peeky.native.read_debug_info
+
+    def read(tool, commands, *args, **kwargs):
+        return real(
+            tool, [[*each[:-1], str(held / "program")] for each in commands], *args, **kwargs
+        )
+
+    monkeypatch.setattr(peeky.native, "read_debug_info", read)
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / name).write_text(source)
+    line = next(n for n, text in enumerate(source.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(root, Probe(name, line, ("twice",)), adapter=target)
+    error = result.get("error") or {}
+    assert result["status"] == "failed" and error.get("code") == "UNSUPPORTED", result
+    assert re.search(said, error["message"]), error
+    assert result.get("refused_before_launch") is True and "output" not in result, result

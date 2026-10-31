@@ -48,7 +48,7 @@ PROTOCOL_VERSION = 12
 _RULES = (
     (
         # native.ForeignUnits: refused before any value is read.
-        r"^Peeky can't read (split DWARF|DWARF type units|DWARF partial units|a DWARF 5 unit): ",
+        r"^Peeky can't read (split DWARF|DWARF type units|DWARF partial units|a DWARF( 5)? unit): ",
         "UNSUPPORTED",
         "Nothing was read. Rebuild as the message says: Peeky reads a unit's own entries "
         "whole, or none of them.",

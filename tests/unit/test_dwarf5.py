@@ -242,6 +242,49 @@ type_signature = 0x418503b8111e9a7b, type_offset = 0x0023 (next unit at 0x000000
 0x00000018: DW_TAG_type_unit
               DW_AT_language\t(DW_LANG_C_plus_plus_14)
 """
+# `-gdwarf-4 -fdebug-types-section`: the type is in `.debug_types`, which `--debug-info`
+# doesn't write; the compile unit holds a declaration naming it by signature.
+V4_TYPE_UNIT = """0x00000000: Compile Unit: length = 0x000000a8, format = DWARF32, version = 0x0004, \
+abbr_offset = 0x0000, addr_size = 0x08 (next unit at 0x000000ac)
+
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_producer\t("Ubuntu clang version 18.1.3 (1ubuntu1)")
+              DW_AT_language\t(DW_LANG_C_plus_plus_14)
+              DW_AT_name\t("t.cpp")
+              DW_AT_stmt_list\t(0x00000000)
+              DW_AT_comp_dir\t("/s")
+              DW_AT_low_pc\t(0x0000000000000000)
+              DW_AT_ranges\t(0x00000000
+                 [0x0000000000000758, 0x000000000000078c)
+                 [0x000000000000078c, 0x00000000000007a4))
+
+0x0000002a:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000000000758)
+                DW_AT_high_pc\t(0x000000000000078c)
+                DW_AT_frame_base\t(DW_OP_reg29 W29)
+                DW_AT_name\t("main")
+                DW_AT_decl_file\t("/s/t.cpp")
+                DW_AT_decl_line\t(2)
+                DW_AT_type\t(0x00000071 "int")
+                DW_AT_external\t(true)
+
+0x00000043:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_breg31 WSP+0)
+                  DW_AT_name\t("s")
+                  DW_AT_decl_file\t("/s/t.cpp")
+                  DW_AT_decl_line\t(2)
+                  DW_AT_type\t(0x00000052 "S")
+
+0x00000051:     NULL
+
+0x00000052:   DW_TAG_structure_type
+                DW_AT_declaration\t(true)
+                DW_AT_signature\t(0x418503b8111e9a7b)
+
+0x0000005b:     DW_TAG_subprogram
+                  DW_AT_linkage_name\t("_ZNK1S3getEv")
+                  DW_AT_name\t("get")
+"""
 
 
 @pytest.mark.parametrize(
@@ -267,6 +310,27 @@ type_signature = 0x418503b8111e9a7b, type_offset = 0x0023 (next unit at 0x000000
         (TYPE_UNIT.replace("DW_UT_type", "DW_UT_compile"), "DWARF type units"),
         (V5_HEADER.replace("DW_UT_compile", "DW_UT_partial"), "DWARF partial units"),
         (V5_HEADER.replace("DW_UT_compile", "DW_UT_0x80"), "a DWARF 5 unit: .* DW_UT_0x80"),
+        # A type named by signature is in a type unit, in either version.
+        (V4_TYPE_UNIT, "DWARF type units: the entry at 0x00000052 names its type by signature"),
+        (
+            _unit(
+                V5_HEADER,
+                V5_FUNCTION.replace(
+                    'DW_AT_name\t("gone")', "DW_AT_signature\t(0x418503b8111e9a7b)"
+                ),
+            ),
+            "DWARF type units: the entry at 0x00000060",
+        ),
+        # A unit Peeky can't read at all.
+        (
+            _unit(V5_HEADER.replace("unit_type = DW_UT_compile, ", ""), ""),
+            "a DWARF unit: .* is DWARF 5, with a header without its type",
+        ),
+        (_unit(V5_HEADER.replace("0x0005", "0x0006"), ""), "a DWARF unit: .* is DWARF 6"),
+        (
+            _unit(V4_HEADER.replace("version = 0x0004, ", ""), ""),
+            "a DWARF unit: .* header without its version",
+        ),
     ],
 )
 def test_units_peeky_can_t_read_whole_are_refused_before_their_entries(text, said):
@@ -274,23 +338,16 @@ def test_units_peeky_can_t_read_whole_are_refused_before_their_entries(text, sai
     # read in part, as UNSUPPORTED naming the option that wrote it.
     with pytest.raises(ForeignUnits, match=said) as refused:
         _parse_dies(PREFIX + text + ADDRESSES)
+    # Never a ValueError, which a launch reads as debug information it can't judge, with
+    # each value shown; and nothing has run.
+    assert not isinstance(refused.value, ValueError)
+    assert refused.value.before_launch is True
     error = classify(refused.value)
     assert error["code"] == "UNSUPPORTED", error
     if "split DWARF" in said:
         assert "rebuild without -gsplit-dwarf" in error["message"]
-
-
-def test_a_dwarf_5_unit_header_without_its_type_or_past_5_is_refused():
-    with pytest.raises(ValueError, match="without its type"):
-        _parse_dies(PREFIX + _unit(V5_HEADER.replace("unit_type = DW_UT_compile, ", ""), ""))
-    with pytest.raises(ValueError, match="DWARF 6 unit"):
-        _parse_dies(PREFIX + _unit(V5_HEADER.replace("0x0005", "0x0006"), ""))
-
-
-def test_a_type_named_by_its_signature_fails_a_dwarf_5_parse():
-    body = V5_FUNCTION.replace('DW_AT_name\t("gone")', "DW_AT_signature\t(0x418503b8111e9a7b)")
-    with pytest.raises(ValueError, match="signature"):
-        _parse_dies(PREFIX + _unit(V5_HEADER, body) + ADDRESSES)
+    if "type units" in said:
+        assert "rebuild without -fdebug-types-section" in error["message"]
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\t"])
