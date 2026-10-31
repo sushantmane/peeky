@@ -333,12 +333,20 @@ message says `cannot be changed here`.
   scope, before reading it. The copy may be used before or after that:
   ``the program has already copied `x` into `n` ``. Where a call given `&mut x` since may have
   changed `x`: ``the program's own `n` (at line 34) may hold a copy of `x` that it goes on with``.
-  Where a call may have kept it in a `static` or a `thread_local!` that a later call reads:
+  Where a call, or a store through a lock's guard (`*r.lock().unwrap() = x;`,
+  `r.lock().unwrap().push(x)`), may have kept it in a `static` or a `thread_local!` that a
+  later call reads:
   ``a static or thread-local may hold a copy of `x` (from line 72) that the program may go on
   with``.
   Where every path then panics or exits first: ``every path from here panics or exits before
   reading `x` ``. Where a path never leaves a loop: ``on a path from here the program loops
   forever without reading `x` ``.
+- Rust, in a workspace's build: not where a dependency's code was given the value before the stop.
+  That is the value itself, a copy of it, or a pointer into it. Peeky reads no dependency's code,
+  so it may keep a copy that a change would not reach: ``a call to `smallnum::keep` (dependency
+  `smallnum`) on line 17 is given a pointer into `x` ``. The crate's own code counts where it may
+  hand the value on: ``a call to `forward` on line 54 is given a pointer into `x`, and may hand it
+  on to `smallnum::keep` ``. The hint says to change it before the program hands it on.
 - Rust: not where no path reads the value again before it is overwritten or goes out of scope. The
   stop's own line counts, as `total = k + 3;` does for `total`:
   `the program does not read it after this stop, so a change would never be seen: it is overwritten

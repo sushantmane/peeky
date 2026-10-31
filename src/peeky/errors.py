@@ -409,13 +409,6 @@ _RULES = (
         False,
     ),
     (
-        r"^Peeky doesn't read values in a Rust workspace's build yet",
-        "UNSUPPORTED",
-        "Nothing ran. Peeky builds this workspace but doesn't probe it yet; check it with the "
-        "project's own tests meanwhile.",
-        False,
-    ),
-    (
         r"^A worker doesn't probe a Rust workspace for a remote client yet",
         "UNSUPPORTED",
         "Nothing ran. Run Peeky on the workspace's own host: `peeky build`, then the probe.",
@@ -654,6 +647,12 @@ ERROR_CODES = frozenset(code for _, code, _, _ in _RULES) | {
 # The one action each MUTATION_REJECTED rule leaves: the
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
+    (
+        # A Rust workspace's dependency, or code that hands it on, was given the value.
+        r"Peeky reads no dependency's code|Peeky proves each crate apart",
+        "Change it before the program hands it to that code: a stop on an earlier line "
+        "(`--at`, `session continue --to LINE`), or `--set-at` there.",
+    ),
     (
         # A `@before` restore Peeky cannot vouch for.
         r"@before",
