@@ -219,6 +219,12 @@ def test_a_recorded_option_s_value_is_never_read_as_an_option(tmp_path):
             "-flto=thin",
             "-fno-lto after -fdepscan-prefix-map",
         ),
+        # It takes `--` too: the options don't end there.
+        (
+            ["-O0", "-fdepscan-prefix-map", "/old", "--", "-O2", "-nostdinc"],
+            "-O2",
+            "-O2 after -fdepscan-prefix-map",
+        ),
     ):
         words = [compiler, *asked, "-c", "main.c", "-o", "other.o"]
         with pytest.raises(NotRecorded, match=why):

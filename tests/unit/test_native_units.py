@@ -373,6 +373,14 @@ def test_optimization_is_the_last_option_s(arguments, found):
         ("-O0 -flto=thin -fdepscan-prefix-map /old -fno-lto", "-fno-lto after -fdepscan"),
         ("-O2 -frobnicate a b c -O0", "-O0 after -frobnicate"),
         ("-O2 -frobnicate -c main.c -Xclang -O0", "-O0 after -frobnicate"),
+        # `--` ends the options only where no such option may take it.
+        ("-O0 -fdepscan-prefix-map /old -- -O2 -nostdinc", "-O2 after -fdepscan-prefix-map"),
+        # Forwarded options joined to their forwarder, and an option without its value.
+        ("-O0 -Xclang=-O2", "-Xclang=-O2"),
+        ("-O0 -mllvm=-x", "-mllvm=-x"),
+        ("-O0 -Xarch_arm64=-O2", "-Xarch_arm64=-O2"),
+        ("-O0 -include", "-include without its value"),
+        ("-O0 -Xclang", "-Xclang "),
         # What the recorded words should hold expanded can't be read from them.
         ("-O0 @args.rsp", "@args.rsp"),
         ("--config=x.cfg -O0", "--config=x.cfg"),

@@ -220,8 +220,10 @@ def _forwarded(words):
         word = words[at]
         at += 1
         if word in _SEPARATE:
+            if at >= len(words):
+                raise NotRecorded(f"records {word} without its value, which Peeky can't judge")
             at += 1
-        elif word.startswith("-Xarch_"):
+        elif word.startswith(("-Xarch_", "-Xclang=", "-mllvm=")):
             raise NotRecorded(f"records {word}, which Peeky can't judge")
         elif word in ("-Xclang", "-mllvm"):
             forwarded = words[at] if at < len(words) else ""
@@ -256,8 +258,8 @@ def optimization(words):
     while at < len(words):
         word = words[at]
         at += 1
-        if word == "--":
-            break  # Inputs only, after it.
+        if word == "--" and not unknown:
+            break  # Inputs only, after it. Not after an option that may take it.
         if word.startswith("@") or word.startswith("--config"):
             raise NotRecorded(f"records {word}, which Peeky can't judge")
         if word in ("-Xclang", "-mllvm"):
