@@ -59,7 +59,7 @@
   and `session start` take it. It must be the pytest installed for the program's interpreter.
   Peeky gives pytest `--assert=plain`, since rewritten asserts are not the code Peeky reads. A
   `--run` script that imports pytest gets a warning (#447).
-- **`peeky build` builds a Rust workspace with dependencies (protocol 13; ADR 0008, phase 2):** a
+- **`peeky build` builds a Rust workspace with dependencies (protocol 14; ADR 0008, phase 2):** a
   config names the packages to analyse and what runs (`analyse`, `run`, `features`, `vendor`).
   The build is offline, from the lockfile and `cargo vendor`'s copy, into Peeky's own directory;
   the analysed packages are compiled every time, at opt-level 0, checked from rustc's commands.

@@ -1,4 +1,4 @@
-# Error codes (protocol 13)
+# Error codes (protocol 14)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -200,8 +200,8 @@ file lists what it reads.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
   `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
-- A client and a remote worker of different protocols: `Worker speaks protocol 12, this client 13`,
-  or, from the worker, `Client speaks protocol 12, this worker 13`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 13, this client 14`,
+  or, from the worker, `Client speaks protocol 13, this worker 14`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -587,7 +587,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 13`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 14`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
@@ -630,9 +630,9 @@ request a client sends.
   which must be `pytest` (`--run-module pytest`), and pytest gets `--assert=plain`. A protocol 12 worker
   ignores `module` and runs the `--at` file itself
   ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
-- **Protocol 13** adds `BUILD_REQUIRED`. A probe or session on a Rust workspace without a
+- **Protocol 14** adds `BUILD_REQUIRED`. A probe or session on a Rust workspace without a
   current Peeky build is refused with it, and its message names the `peeky build` command. A
-  protocol 12 client would take the code for another failure ([details](#build_required)).
+  protocol 13 client would take the code for another failure ([details](#build_required)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

@@ -45,10 +45,10 @@ from peeky.textlines import split_lines
 # 13: a Python `launch` or `probe` takes `module`, which is `pytest`: the worker runs it as
 # `python -m pytest` does (`--run-module pytest`), with `--assert=plain`, and no other
 # module; a protocol 12 worker ignores `module` and runs the --at file itself.
-# 13: a probe or session on a Rust workspace without a current Peeky build (`peeky build`)
+# 14: a probe or session on a Rust workspace without a current Peeky build (`peeky build`)
 # is refused with BUILD_REQUIRED, which names the build command; an agent builds, then
-# repeats the request. A protocol 12 client would take an unknown code for another failure.
-PROTOCOL_VERSION = 13
+# repeats the request. A protocol 13 client would take an unknown code for another failure.
+PROTOCOL_VERSION = 14
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (

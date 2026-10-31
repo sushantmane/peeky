@@ -273,7 +273,7 @@ def test_the_version_says_which_sources_a_client_hashes(served, tmp_path):
     from peeky.java import JavaTarget
 
     version = served.call("version")
-    assert version["protocol"] == PROTOCOL_VERSION == 13
+    assert version["protocol"] == PROTOCOL_VERSION == 14
     assert version["sources"] == {"kind": "python"}
     target = JavaTarget(bundle=tmp_path, sources=("demo/A.java", "demo/B.java"), main_class="A")
     server = make_server(tmp_path, TOKEN, 0, adapter=target)
@@ -368,7 +368,7 @@ def old_worker(protocol):
     return server
 
 
-@pytest.mark.parametrize("protocol", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+@pytest.mark.parametrize("protocol", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
 def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, capsys, protocol):
     # Protocol 1 compared only the program; protocol 2 named paths as this client can't
     # tell from its own; protocol 3 took a restore's `@before` for a value;
@@ -384,7 +384,7 @@ def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, caps
         server.server_close()
     result = json.loads(capsys.readouterr().out)
     assert code == 2 and result["refused_before_launch"] is True, result
-    assert f"protocol {protocol}, this client 13" in result["error"]["message"]
+    assert f"protocol {protocol}, this client 14" in result["error"]["message"]
     assert "install the same Peeky version" in result["error"]["message"]
 
 
@@ -401,7 +401,7 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
         result = json.loads(capsys.readouterr().out)
         assert code == 2 and result["refused_before_launch"] is True, result
         assert (
-            "Worker speaks protocol 13, this client 2: install the same Peeky version"
+            "Worker speaks protocol 14, this client 2: install the same Peeky version"
             in (result["error"]["message"])
         )
         # And the worker refuses what a protocol 2 client sends after its handshake: every
@@ -412,7 +412,7 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
             "probe": {"at": "main.py:2", "capture": ["x"]},
         }
         for (operation, arguments), (declared, spoken) in zip(
-            [*requests.items(), *requests.items()], [({}, 2), ({}, 2), (12, 12), (14, 14)]
+            [*requests.items(), *requests.items()], [({}, 2), ({}, 2), (13, 13), (15, 15)]
         ):
             if declared:
                 arguments = {**arguments, "protocol": declared}
@@ -422,7 +422,7 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
                 )
             assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
             assert (
-                f"Client speaks protocol {spoken}, this worker 13: install the same Peeky version"
+                f"Client speaks protocol {spoken}, this worker 14: install the same Peeky version"
                 in refused.value.payload["message"]
             )
         assert server.worker.dap is None  # nothing was launched
@@ -463,7 +463,7 @@ def test_a_restore_reaches_no_worker_of_another_protocol(app, capsys, monkeypatc
         old.server_close()
     result = json.loads(capsys.readouterr().out)
     assert code == 2 and result["refused_before_launch"] is True, result
-    assert "Worker speaks protocol 3, this client 13" in result["error"]["message"]
+    assert "Worker speaks protocol 3, this client 14" in result["error"]["message"]
     assert asked == ["/hello"]  # the probe was never sent
     # A protocol 3 client, against this worker: refused at `version`, and the probe it
     # would send next (no `protocol` 6) is refused without launching.
@@ -477,7 +477,7 @@ def test_a_restore_reaches_no_worker_of_another_protocol(app, capsys, monkeypatc
         code = main(argv)
         result = json.loads(capsys.readouterr().out)
         assert code == 2 and result["refused_before_launch"] is True, result
-        assert "Worker speaks protocol 13, this client 3" in result["error"]["message"]
+        assert "Worker speaks protocol 14, this client 3" in result["error"]["message"]
         with pytest.raises(PeekyError) as refused:
             Client(url, TOKEN).call(
                 "probe",
@@ -488,7 +488,7 @@ def test_a_restore_reaches_no_worker_of_another_protocol(app, capsys, monkeypatc
                 protocol=3,
             )
         assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
-        assert "Client speaks protocol 3, this worker 13" in refused.value.payload["message"]
+        assert "Client speaks protocol 3, this worker 14" in refused.value.payload["message"]
         assert server.worker.dap is None  # nothing was launched
     finally:
         server.worker.close()
@@ -675,11 +675,11 @@ def test_a_remote_session_from_another_protocol_is_refused(app, capsys):
     write_record("previous", protocol=2, inputs_checked="0" * 64)
     assert main(["session", "get", "x", "--name", "previous", "--json"]) == 2
     message = json.loads(capsys.readouterr().out)["error"]["message"]
-    assert "was started with protocol 2, this client 13: start the session again" in message
+    assert "was started with protocol 2, this client 14: start the session again" in message
     assert "peeky session close --forget --name previous" in message
 
 
-@pytest.mark.parametrize("protocol", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+@pytest.mark.parametrize("protocol", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
 def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, capsys, protocol):
     server = old_worker(protocol)
     try:
@@ -694,7 +694,7 @@ def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, caps
         server.shutdown()
         server.server_close()
     message = json.loads(capsys.readouterr().out)["error"]["message"]
-    assert f"Worker speaks protocol {protocol}, this session 13" in message
+    assert f"Worker speaks protocol {protocol}, this session 14" in message
 
 
 def test_the_program_must_be_among_the_compared_sources(app):
@@ -865,7 +865,7 @@ def test_a_worker_that_reads_through_c_pointers_unmarked_is_refused(
         old.server_close()
     for code, result in outputs:
         assert code == 2, result
-        assert f"Worker speaks protocol {protocol}, this client 13" in result["error"]["message"]
+        assert f"Worker speaks protocol {protocol}, this client 14" in result["error"]["message"]
     assert outputs[0][1]["refused_before_launch"] is True
     assert asked == ["/hello", "/hello"]  # nothing was launched
 
@@ -964,7 +964,7 @@ def test_a_lost_connection_forgets_the_workers_protocol():
     second = fake_worker(9)
     try:
         client.url = f"http://127.0.0.1:{second.server_port}"
-        with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 13"):
+        with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 14"):
             client.call("continue")
         assert second.asked == ["/hello"]
     finally:
@@ -1001,7 +1001,7 @@ def test_this_worker_refuses_a_request_of_another_protocol_before_it_runs_it(app
             assert status == 400 and body["error"]["code"] == "INVALID_REQUEST", body
             assert body["error"]["message"].startswith(
                 f"Client speaks protocol {shown} (its X-Peeky-Protocol header), "
-                "this worker 13: install the same Peeky version on both hosts"
+                "this worker 14: install the same Peeky version on both hosts"
             ), body
         # `version` is answered whatever the client speaks; this client's requests run.
         assert post("version", header)[1]["protocol"] == PROTOCOL_VERSION
