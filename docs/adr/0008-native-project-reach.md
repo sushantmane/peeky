@@ -1,6 +1,6 @@
 # ADR 0008: Native projects with their own builds, and Rust crates with dependencies
 
-Status: accepted, with the owner's decisions below. Motivated by the value study ([#441](https://github.com/sushantmane/peeky/issues/441)). Phase 1 starts by checking the items under "Not yet verified".
+Status: accepted, with the owner's decisions below. Motivated by the value study ([#441](https://github.com/sushantmane/peeky/issues/441)). Phase 1's checks, and the owner's decisions on them, are under "Verified for phase 1".
 
 ## Context
 
@@ -52,7 +52,7 @@ Phase 1 debugs a binary the project built with clang at `-O0`, verified from its
 
 ### Phase 1: a binary the project built (C and C++)
 
-**The build** uses clang with `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux a build ID. The cookbook gives a recipe per build system: `./configure --disable-shared CC=clang CFLAGS='…'`, or CMake's `Debug` type with the flags added.
+**The build** uses clang with `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux `-fdebug-macro` and a build ID. Generated sources come without `#line` (`bison -l`, `flex -L`). C++ uses libc++ with `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`. The cookbook gives a recipe per build system: `./configure --disable-shared CC=clang CFLAGS='…'`, or CMake's `Debug` type with the flags added.
 
 **Shape.** A config names `binary` instead of `sources`; with both, it is refused:
 
@@ -70,12 +70,14 @@ Phase 1 debugs a binary the project built with clang at `-O0`, verified from its
 ```
 
 - `binary` is relative to the target directory, the root for source paths.
-- `compiler` runs only `-E` and `-M`. Its `--version` must match the unit's `DW_AT_producer`.
+- `compiler` runs only `--version`, and the replay of a unit's `-E` and `-M`. Its `--version` must match the unit's `DW_AT_producer`. The replay passes only allowlisted flags (below), with `--no-default-config`. Its environment drops `CCC_*`, `CL`, `_CL_`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` and `SDKROOT`, unless the unit's recorded words hold them. It is never run on a unit's recorded words as they are, not even with `-###`: those can make it run another program or read other files.
 - `compile_commands` is optional. Its entries must agree with the recorded commands.
 - Without a config: `peeky probe . --binary ./jq --at src/execute.c:<line> --capture <name> -- '.a.[]' input.json`.
 - `peeky describe . --binary ./jq` lists each unit as judged, or not and why: `modules/oniguruma/src/regcomp.c: built with -O2 (its recorded flags)`.
 
-**Checks.** The binary must be an ELF or Mach-O executable with a build ID or UUID. On macOS, Peeky runs dsymutil into its own directory. A unit whose main file is under the root is judged when its producer is clang, its recorded flags give `-O0` and no `-flto`, and its DWARF 5 line table has an MD5 for every file. Each of those files must match its MD5 now. A function is judged by the unit whose code the binary keeps.
+**Checks.** The binary must be an ELF or Mach-O executable with a build ID or UUID. On macOS, Peeky runs dsymutil into its own directory. A unit whose main file is under the root is judged when its producer is clang, its recorded flags give `-O0` and no `-flto`, and its DWARF 5 line table names the unit as file 0 and has an MD5 for every file. Each of those files must match its MD5 now. A unit whose table has no MD5s is refused with what the table shows: "its line table records no MD5s", and where it names `<stdin>`, "… and names `<stdin>`, which clang adds for an inheriting constructor". The likely remedies follow, as likely, not proven: `bison -l` and `flex -L` for a generator's `#line`, and `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER` for libc++'s headers. The table can't tell these causes apart; the phase 3 wrapper can. A function is judged by the unit whose code the binary keeps.
+
+The `-O` level and LTO are read from the recorded words alone (`native_units.optimization`). Each option's number of values must be known: none, or one. After an option whose number isn't known, any `-O` or LTO word may be its value, however many words come between, so the unit isn't judged. Apple's clang builds `-O2 -fdepscan-prefix-map /old -O0` at -O2, as clang builds `-O2 -resource-dir -O0`. So is one passing options with `-mllvm`, an unknown `-Xclang` or `-Xarch_…`, or naming a response or configuration file. That reading alone doesn't judge a unit: options that change what code computes (`-ffast-math`, `-ffinite-math-only`, `-fno-honor-nans`, `-fno-honor-infinities`, `-funsafe-math-optimizations`, `-fassociative-math`, `-freciprocal-math`, `-ffp-contract=fast`) are refused too, unless Peeky's proofs are shown to hold under them. Whether `-fwrapv` and `-fno-strict-overflow` may stay is decided with binary targets.
 
 **Read and withheld.**
 
@@ -100,11 +102,11 @@ Phase 1 debugs a binary the project built with clang at `-O0`, verified from its
 
 **Acceptance.** First, every C and C++ test runs with Peeky's own builds at `-gdwarf-5`, as GCC's C++ was qualified. Then a Linux lane rebuilds the study's images (`experiments/value-study/bugs/*/Dockerfile`) with clang:
 
-- **jq-2650:** `jq '.a.[]'`. Lines of `src/parser.y`, reached through bison's `#line`, are placed, and their values read or withheld with reasons.
+- **jq-2650:** `jq '.a.[]'`, with the grammar generated by `bison -l`: its actions are probed in `src/parser.c`, their values read or withheld with reasons. A breakpoint in `src/parser.y` is refused, as no judged unit's code is there. Built with bison's `#line` instead, `src/parser.c`'s table records no MD5s: its breakpoints are refused saying so, with `bison -l` named as the likely remedy.
 - **valkey-1842:** the replica probe above reads the primary's client's `user` as a null pointer.
 - **micropython-13569:** `py/compile.c`'s `compile_try_finally` shows the stack sizes it computes, with the `nlr_push` note below the stop.
-- **fmt-3158, fmt-3272:** `ranges-test` and `xchar-test`, filtered, in template code in `include/fmt/`.
-- **json-4237:** `test-udt_cpp11`, filtered, in `to_json.hpp`'s overload for enums.
+- **fmt-3158, fmt-3272:** `ranges-test` and `xchar-test`, filtered. Their test units' line tables record no MD5s and name `<stdin>`, so a probe in them, or in `include/fmt/`'s template code they instantiate, is refused saying so. Units with MD5s (`test-main.cc`) are judged and read.
+- **json-4237:** `test-udt_cpp11`, filtered: both units' tables record no MD5s and name `<stdin>`, so a probe in `to_json.hpp`'s overload for enums is refused, saying so.
 
 Each also checks refusals: an edit without a rebuild, by name; the default optimized build, unless opted in; GCC and `-gdwarf-4` builds. Every value read must match the program's own print of it. Probe times and symbol sizes are recorded against `MAX_DIES`, `MAX_DEBUG_INFO` and `MAX_LINE_TEXT`.
 
@@ -160,16 +162,58 @@ Each also checks a change refused with a note naming a dependency call, and one 
 
 ### Phase 3, and later
 
+- **A Peeky compiler wrapper,** first: `CC="peeky cc"` and `CXX="peeky c++"`, as ccache is used. At build time it records each input's path and hash, and the exact arguments, in a file kept by unit and build ID. It brings into reach what phase 1 refuses: C++ units without MD5s (fmt, nlohmann/json), GCC's binaries, bison's and flex's `#line` output, and headers of macros alone.
 - **C and C++ builds Peeky runs** (option (b)), from a trusted `build` command, as a job. They bring candidate edits and `verify` to project binaries. Built from clean in a fresh copy, they also bring GCC, whose binaries hold no checksums.
 - **Native attach,** checked by build ID, for a server a test harness starts: valkey-790's cluster.
 - **Shared libraries** the project builds, and reading symbols one unit at a time, if big binaries need it.
 - **Rust:** candidate edits in workspaces, and MIR summaries of chosen dependency functions, if dependency calls block most changes.
 
+## Verified for phase 1
+
+Checked in October 2026. Each claim says how. **Tested**: `tests/native/test_native_units.py` checks it in the native lanes, with clang 18, GCC 13 and llvm-dwarfdump 18 on Linux, and Apple clang 21 on macOS. The same tests passed by hand with llvm-dwarfdump 20. **By hand**: seen once on the toolchains named, with no test kept. `native_units` reads these facts, and `tests/projects/` rebuilds and measures the study's projects.
+
+**The recorded command line is complete and exact.**
+
+- clang records every `-D`, `-U`, `-I`, `-isystem`, `-include` and `-std` as given (tested; clang 20.1.2 by hand).
+- Each argument is one word. The driver writes `-Iinc` as `-I inc`, and escapes a space or backslash with a backslash. So a define holding a space, quote or tab reads back exactly (tested).
+- Linux clang appends the words to `DW_AT_producer`, after the line `--version` prints. Apple's writes them to `DW_AT_APPLE_flags` (tested), and adds its own `-Xclang -clang-vendor-feature=…` options. Each of Apple clang 21's is known by name (tested).
+- Response files, `--config` files and `CCC_OVERRIDE_OPTIONS` are recorded as the arguments they add. `CPATH` and `C_INCLUDE_PATH` are not recorded (tested).
+- `-Wp,-D…`, `-Xpreprocessor` and `-Xclang -D…` are recorded as written, so the allowlist refuses them (tested).
+- The driver records an alias as what it means: `--optimize=2` as `-O2`, `-O` as `-O1` (by hand, Apple clang 21). `native_units.optimization` takes the last `-O` and LTO option from the words alone. Each option it knows takes no value or one, and those taking none are each checked against the driver. Any `-O` or LTO word after another option is refused: clang reads `-O2 -fmodules-user-build-path -O0` and `-O2 -resource-dir -O0` as `-O2`, and Apple's `-O2 -fdepscan-prefix-map /old -O0` too (tested). The study's projects record no such option before an `-O`. It refuses any `-mllvm` option, and any `-Xclang` one but warnings, `-O`, LTO and the exact options Apple clang 21 adds.
+- GCC 13 records only code generation options: no `-D`, `-I` or `-include` (tested).
+
+**Checksums.**
+
+- GCC 13 writes no MD5s into DWARF 5 line tables, with or without the assembler's line support (tested). Decision 1 stands.
+- clang's table holds an MD5 for every file, or for none: one file without one drops them all. In clang 18, 20 and Apple's, three things leave a file without one:
+  - a `#line` naming a file, as bison and flex write (tested). jq's `src/parser.c` and `src/lexer.c` have them. Generated with `bison -l` and `flex -L`, they compile with MD5s (by hand, bison 3.8.2 and flex 2.6.4 in jq's image).
+  - `#pragma GCC system_header` (tested), in every libstdc++ and libc++ header. libc++ leaves it out under `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`; GCC 13's libstdc++ can't (by hand, libc++ 18 on Ubuntu and Apple's SDK).
+  - a C++ inheriting constructor (`using Base::Base;`), as fmt's `format_error` has (tested). clang then names a file `<stdin>` with no MD5.
+- dsymutil keeps the MD5s and `DW_AT_APPLE_flags` (tested).
+- A DWARF 5 table's directory 0 is the compilation directory, and its file 0 the unit's own file. With `-fdebug-compilation-dir=rel`, both are relative, so no file has a path on this machine (tested). A table not naming its unit as file 0 isn't judged.
+- A table names a header only if code or a type comes from it. A header of macros alone (`config.h`) is named only with `-fdebug-macro` (tested on clang 18; clang 20 by hand). Apple clang 21 crashes with `-fdebug-macro -gdwarf-5` (by hand).
+
+**The study's projects** were rebuilt in their images with clang 18 at `-O0 -g -gdwarf-5 -grecord-command-line -fdebug-macro`, and judged by `tests/projects/measure.py`. The C++ ones use libc++ with the pragma left out; with libstdc++, none of their units has MD5s. Each build took under 25 s on 4 CPUs. Units are counted one by one, by offset: valkey-server's 173 have 172 names, as hiredis and valkey each have a `sds.c`. (The image's own GCC build, with LTO, has 209, 36 of them `<artificial>`.)
+
+| Binary | Units judged | Not judged | Line tables | Debug information | Entries | Kept |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| jq-2650 `jq` | 34 of 36 | `parser.c`, `lexer.c`: no MD5s (bison's and flex's `#line`, by hand) | 5.7 MB | 5.4 MB | 21,000 | 22 MB |
+| valkey-1842 `valkey-server` | 106 of 173 | 65 of hiredis and jemalloc: no recorded command; 2 at `-Os` | 20.7 MB | 57.6 MB | 217,000 | 205 MB |
+| micropython-13569 `micropython` | 215 of 218 | `py/vm.c`, `py/gc.c` at `-O3`; `py/nlraarch64.c` at `-Os` | 23.1 MB | 26.5 MB | 121,000 | 110 MB |
+| fmt-3158 `ranges-test` | 1 of 5 (`test-main.cc`) | 4: no MD5s, `<stdin>` named | 8.4 MB | 37.7 MB | 122,000 | 120 MB |
+| fmt-3272 `xchar-test` | 3 of 6 | 3, `xchar-test.cc` among them: no MD5s, `<stdin>` named | 11.3 MB | 45.3 MB | 146,000 | 143 MB |
+| json-4237 `test-udt_cpp11` | 0 of 2 | both: no MD5s, `<stdin>` named | 5.5 MB | 36.8 MB | 93,000 | 93 MB |
+
+All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000 entries, 300 MiB kept. valkey keeps the most, 68% of `MAX_KEPT`. `-fdebug-macro` adds 2 MB to its line tables.
+
+**The owner's decisions on these findings.**
+
+- C: the recipes add `bison -l` and `flex -L`, and on Linux `-fdebug-macro`. jq's grammar is probed in `src/parser.c`, and a breakpoint in `src/parser.y` is refused. On macOS, a header of macros alone can't be checked, so the text rules withhold there.
+- C++: a unit with an MD5 for every file is judged, as libc++ with `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER` and no inheriting constructor gives. Any other is refused with what its table shows, and the likely remedies as likely. `-gembed-source` isn't used: it embeds most files' text but not all, and made a test binary six times larger.
+- Phase 3 starts with a compiler wrapper that records each input's hash, which brings fmt, nlohmann/json, GCC, bison's output and headers of macros alone into reach.
+
 ## Not yet verified
 
-- clang's recorded command line holds every `-D`, `-I` and `-include`, unambiguously: clang 18 and 20, and Apple clang (`DW_AT_APPLE_flags`).
-- GCC 13 writes no MD5s into DWARF 5 line tables, as reported.
-- The five C and C++ projects build this way, and fit the symbol bounds.
 - `-Zunpretty=expanded` works through the wrapper on rustc 1.96, and a warm workspace build fits an agent's wait.
 
 ## Consequences
