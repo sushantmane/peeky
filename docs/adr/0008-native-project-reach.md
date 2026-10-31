@@ -82,7 +82,7 @@ The `-O` level and LTO are read from the recorded words alone (`native_units.opt
 **Read and withheld.**
 
 - **Judged units** follow today's rules. The session's `optimization` is the highest of any unit read, so every `-O0` rule stays exact.
-- **A unit's text** comes from its recorded command line, run with the config's `compiler`, and `-M` lists the headers whose macros count. Only allowlisted flags pass: `-I`, `-D`, `-U`, `-include`, `-isystem`, `-std`, and `-f` and `-m` options that change predefined macros. Each file both the text and the line table name must match its MD5.
+- **A unit's text** comes from its recorded command line, run with the config's `compiler`, and `-M` lists the headers whose macros count. Only allowlisted flags pass: those choosing what the preprocessor reads or defines (`-I`, `-D`, `-U`, `-include`, `-isystem`, `-isysroot`, `-std`, `-O`, `-x`, `--target`, and `-f` and `-m` options that change predefined macros). Options that define nothing are left out, each checked against clang's own `-dM -E`. Any other leaves the unit's text unread, naming it. Each file both the text and the line table name must match its MD5: every file the replay reads must be one the line table names.
 - **Where a unit's text can't be read,** its text rules withhold, saying why: "Peeky can't read src/acl.c as compiled: its command uses -fplugin=…". `NativeSession._resume` then proves nothing, as it needs every unit's `optimizes`.
 - **Frames in units not judged** are `not shown`: "this frame runs src/lvm.c, built with -O2 (its recorded flags)". Breakpoints there are refused. With `"optimized": true`, they read as Peeky's optimized builds do: with `optimized` and its warning, and no change.
 - **The program's own assembly** can return twice, as MicroPython's `nlr_push` (`py/nlraarch64.c`) does, but Peeky finds such calls by name (`_NONLOCAL_JUMPS`). So where a unit is assembly, or its text holds `asm` or can't be read, any call may return twice. Locals at or below the stop then carry today's setjmp note.
@@ -188,6 +188,7 @@ Checked in October 2026. Each claim says how. **Tested**: `tests/native/test_nat
 - clang++ records `--driver-mode=g++` before the options it was given. It is an option of one word, as the driver reads it (tested). Only the modes `gcc`, `g++` and `cpp` are read: `cl`'s builds `/clang:-O2` at -O2 (tested).
 - The driver records an alias as what it means: `--optimize=2` as `-O2`, `-O` as `-O1` (by hand, Apple clang 21). `native_units.optimization` takes the last `-O` and LTO option from the words alone. Each option it knows takes no value or one, and those taking none are each checked against the driver. Any `-O` or LTO word after another option is refused: clang reads `-O2 -fmodules-user-build-path -O0` and `-O2 -resource-dir -O0` as `-O2`, and Apple's `-O2 -fdepscan-prefix-map /old -O0` too (tested). The study's projects record no such option before an `-O`. It refuses any `-mllvm` option, and any `-Xclang` one but warnings, `-O`, LTO and the exact options Apple clang 21 adds.
 - GCC 13 records only code generation options: no `-D`, `-I` or `-include` (tested).
+- The options a unit's replay leaves out each predefine what clang predefines without them, in C and C++ (tested). `-fno-unwind-tables` doesn't: it drops `__GCC_HAVE_DWARF2_CFI_ASM`, so it is passed. Apple's driver reads its SDK's `SDKSettings.json`, which no line table names, and nothing else outside the headers (tested).
 
 **Checksums.**
 
@@ -215,7 +216,7 @@ All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000
 
 **The owner's decisions on these findings.**
 
-- C: the recipes add `bison -l` and `flex -L`, and on Linux `-fdebug-macro`. jq's grammar is probed in `src/parser.c`, and a breakpoint in `src/parser.y` is refused. On macOS, a header of macros alone can't be checked, so the text rules withhold there.
+- C: the recipes add `bison -l` and `flex -L`, and on Linux `-fdebug-macro`. jq's grammar is probed in `src/parser.c`, and a breakpoint in `src/parser.y` is refused. On macOS, a header of macros alone can't be checked, so the text rules withhold there. Nor can a header of declarations alone, which no unit's line table names without `-fdebug-macro` (found implementing it): on macOS, most units' text isn't read.
 - C++: a unit with an MD5 for every file is judged, as libc++ with `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER` and no inheriting constructor gives. Any other is refused with what its table shows, and the likely remedies as likely. `-gembed-source` isn't used: it embeds most files' text but not all, and made a test binary six times larger.
 - Phase 3 starts with a compiler wrapper that records each input's hash, which brings fmt, nlohmann/json, GCC, bison's output and headers of macros alone into reach.
 

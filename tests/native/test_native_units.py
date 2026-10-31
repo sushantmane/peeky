@@ -248,6 +248,56 @@ def test_the_options_known_to_take_no_value_take_none(tmp_path):
         assert optimization(words) == ("3", word == "-flto"), word
 
 
+def _predefined(compiler, words, directory, language):
+    """The macros ``compiler`` predefines with ``words``, or None where it refuses them."""
+    output = directory / "macros.h"
+    output.unlink(missing_ok=True)
+    said = subprocess.run(
+        [compiler, "--no-default-config", *words, "-dM", "-E", "-x", language, "-"]
+        + ["-o", str(output)],
+        input="",
+        cwd=directory,
+        env={key: value for key, value in os.environ.items() if not key.startswith("CCC_")},
+        capture_output=True,
+        text=True,
+    )
+    return output.read_text() if said.returncode == 0 else None
+
+
+def test_the_options_a_replay_leaves_out_define_nothing(tmp_path):
+    # A unit's text is replayed without the options that only choose what code is made,
+    # how it is checked, or where its outputs go: each predefines what clang predefines
+    # without it, in C and C++. One the driver refuses on this platform built nothing.
+    from peeky.native_units import _APPLE, _INERT_SEPARATE, _INERT_WORDS
+
+    _tools()
+    compiler = _clang()
+    sysroot = os.environ.get("PEEKY_NATIVE_SYSROOT")
+    base = ["-isysroot", sysroot] if sysroot and sys.platform == "darwin" else []
+    forms = ["-Wall", "-Werror", "-Wno-unused", "-Wl,-O1", "-Wa,--noexecstack", "-Lout", "-lm"]
+    forms += ["-fvisibility=hidden", "-fdiagnostics-color=always", "-fmessage-length=0"]
+    forms += ["-fdiagnostics-format=clang", "-ferror-limit=5", "-ftemplate-backtrace-limit=0"]
+    forms += ["-fmacro-backtrace-limit=0", "-flto=thin", "-flto=full", "-flto-jobs=2"]
+    forms += ["-ftrivial-auto-var-init=zero", "-fdebug-prefix-map=/a=/b", "-ffp-contract=on"]
+    forms += ["-fdebug-compilation-dir=/x"]
+    cases = [[word] for word in sorted(_INERT_WORDS)] + [[form] for form in forms]
+    cases += [[word, "value"] for word in sorted(_INERT_SEPARATE)]
+    # Those the driver takes only with another.
+    cases += [["-gdwarf-5", "-gembed-source"], ["-MD", "-MG"]]
+    if sys.platform == "darwin":
+        cases += [["-Xclang", option] for option in sorted(_APPLE)]
+    checked = 0
+    for language in ("c", "c++"):
+        expected = _predefined(compiler, base, tmp_path, language)
+        assert expected and "__clang__" in expected
+        for words in cases:
+            found = _predefined(compiler, [*base, *words], tmp_path, language)
+            if found is not None:
+                assert found == expected, (language, words)
+                checked += 1
+    assert checked > len(cases)
+
+
 def _pairs(words):
     return list(zip(words, words[1:]))
 

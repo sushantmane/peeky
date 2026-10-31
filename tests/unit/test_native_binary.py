@@ -681,3 +681,137 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
     binary.write_bytes(_macho([])[:40])
     with pytest.raises(ValueError):
         debug_map(binary)
+
+
+FAKE_CC = """#!/bin/sh
+# Writes what a preprocessor would: the text (-o) and its dependencies (-MF).
+echo "$@" > argv
+out= deps= input=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -MF) deps="$2"; shift ;;
+    -*) ;;
+    *) input="$1" ;;
+  esac
+  shift
+done
+if [ -f fail ]; then echo "src/main.c:1:10: fatal error: 'gone.h' file not found" >&2; exit 1; fi
+printf '# 1 "%s"\\nint main(void) { return 0; }\\n' "$input" > "$out"
+printf 'x.o: %s %s\\n' "$input" "$(cat reads 2>/dev/null)" > "$deps"
+"""
+
+
+def _replay(root, tmp_path, judged=None, words=None):
+    from peeky.native_binary import replay, replay_environment
+
+    compiler = tmp_path / "fake-cc"
+    compiler.write_text(FAKE_CC)
+    compiler.chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(exist_ok=True)
+    judged = judged or judge(_unit(root), _tables(root), CLANG, root)
+    if words is not None:
+        judged = Judged(**{**judged.__dict__, "words": tuple(words)})
+    return replay(judged, str(compiler), replay_environment(scratch), scratch, root, 10)
+
+
+def test_a_unit_s_text_is_its_replayed_preprocessing(root, tmp_path):
+    from peeky.native_binary import UnitText
+
+    (root / "reads").write_text("src/a.h")
+    text = _replay(root, tmp_path)
+    assert isinstance(text, UnitText), text
+    assert text.reads == ("src/a.h", "src/main.c") and not text.asm and not text.optimizes
+    assert text.preprocessed.text.startswith("int main(void)")
+    # Only the passed options, `--no-default-config` first, its own -E, its own input last.
+    argv = (root / "argv").read_text().split()
+    assert argv[0] == "--no-default-config" and argv[1] == "-O0"
+    assert argv[2:5] == ["-E", "-MD", "-MF"] and argv[-3:] == ["src/main.c", "-o", argv[-1]]
+
+
+def test_what_a_replay_reads_must_be_what_the_line_table_names(root, tmp_path):
+    (root / "src" / "config.h").write_text("#define C 1\n")
+    (root / "reads").write_text("src/config.h")
+    assert _replay(root, tmp_path) == (
+        "Peeky can't read src/main.c as compiled: its preprocessing reads src/config.h, which "
+        "its line table doesn't name (-fdebug-macro names each header, on Linux)"
+    )
+    # Apple's SDK settings, under the recorded sysroot, are no header.
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text("{}")
+    (root / "reads").write_text(str(sdk / "SDKSettings.json"))
+    words = ["/usr/bin/clang", "-isysroot", str(sdk), "-O0", "-c", "src/main.c"]
+    from peeky.native_binary import UnitText
+
+    assert isinstance(_replay(root, tmp_path, words=words), UnitText)
+
+
+def test_a_replay_that_cant_run_says_why(root, tmp_path):
+    (root / "fail").write_text("")
+    assert _replay(root, tmp_path) == (
+        "Peeky can't read src/main.c as compiled: its preprocessing failed: src/main.c:1:10: "
+        "fatal error: 'gone.h' file not found"
+    )
+    (root / "fail").unlink()
+    words = ["/usr/bin/clang", "-fplugin=x.so", "-c", "src/main.c"]
+    assert _replay(root, tmp_path, words=words) == (
+        "Peeky can't read src/main.c as compiled: its command uses -fplugin=x.so, which Peeky "
+        "doesn't pass to its compiler"
+    )
+    gone = judge(_unit(root), _tables(root), CLANG, root)
+    gone = Judged(**{**gone.__dict__, "unit": _unit(root, comp_dir=str(root / "nowhere"))})
+    assert "its compilation directory" in _replay(root, tmp_path, judged=gone)
+
+
+def test_the_replay_environment_is_peeky_s_own(tmp_path, monkeypatch):
+    from peeky.native_binary import replay_environment
+
+    for name in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "OBJC_INCLUDE_PATH", "SDKROOT"):
+        monkeypatch.setenv(name, "/evil")
+    monkeypatch.setenv("CCC_OVERRIDE_OPTIONS", "+-O2")
+    monkeypatch.setenv("CL", "/O2")
+    monkeypatch.setenv("_CL_", "/O2")
+    env = replay_environment(tmp_path)
+    assert set(env) <= {"PATH", "LANG", "HOME", "TMPDIR", "LC_ALL"}, env
+    assert env["HOME"] == env["TMPDIR"] == str(tmp_path)
+
+
+def test_any_call_may_return_twice_where_a_unit_isnt_read_or_holds_asm(root):
+    from peeky.native_binary import UnitText, any_call_returns_twice
+
+    def text(asm=False):
+        return UnitText(None, None, False, asm, (), False)
+
+    read = Judged(_unit(root), "src/main.c", JUDGED)
+    other = Judged(_unit(root), "src/b.c", JUDGED)
+    unread = Judged(_unit(root), "py/nlraarch64.c", NOT_JUDGED, "built with -Os")
+    assert any_call_returns_twice([read, other], {"src/main.c": text(), "src/b.c": text()}) is None
+    assert any_call_returns_twice([read, unread], {"src/main.c": text()}) == (
+        "py/nlraarch64.c is a unit Peeky doesn't read"
+    )
+    assert any_call_returns_twice([read, other], {"src/main.c": text(True), "src/b.c": "why"}) == (
+        "src/main.c's text holds asm, and 1 more"
+    )
+
+
+def test_a_config_s_returns_twice_is_a_list_of_names():
+    assert BinaryTarget(binary="mp", returns_twice=("nlr_push",)).target_identity[
+        "returns_twice"
+    ] == ["nlr_push"]
+    for bad in (("nlr push",), ["nlr_push"], tuple(f"f{n}" for n in range(101))):
+        with pytest.raises(ValueError, match="returns_twice"):
+            BinaryTarget(binary="mp", returns_twice=bad)
+
+
+def test_the_setjmp_note_says_any_call_may_return_twice_and_why(root):
+    session = _session(())
+    session.any_call = "py/nlraarch64.c is a unit Peeky doesn't read"
+    assert session._setjmp_above({}, 9) == 0
+    note = session._setjmp_note(9, 0, "declared at line {}, below this stop")
+    assert note.refuses and note.startswith(
+        "declared at line 9, below this stop, and any call above the stop may return twice "
+        "(py/nlraarch64.c is a unit Peeky doesn't read; a config's \"returns_twice\" can name "
+        "the functions that do)"
+    )

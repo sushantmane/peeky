@@ -483,3 +483,204 @@ def test_a_binary_config_with_sources_or_a_session_is_refused(project, capsys):
     )
     said = capsys.readouterr()
     assert "INVALID_REQUEST" in said.out + said.err and "sessions come with" in said.out + said.err
+
+
+# A program whose units include nothing: Apple's clang can't name a header of declarations
+# alone in a DWARF 5 line table (-fdebug-macro crashes it), so a unit including one has no
+# text Peeky reads there. On Linux, clang includes stdc-predef.h in every unit: there,
+# -fdebug-macro names it.
+SELF_MAIN = """int scale(int x);
+int fast(int x);
+int printf(const char *, ...);
+
+int main(int argc, char **argv) {
+    int base = argc + 1;
+    int scaled = scale(base);
+    int quick = fast(scaled);
+    printf("%d %d %d\\n", base, scaled, quick);
+    return 0;
+}
+"""
+SELF_UTIL = """int scale(int x) {
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+SELF_FAST = """int scale(int x);
+
+int fast(int x) {
+    int tripled = x * 3;
+    return scale(tripled) - 1;
+}
+"""
+TEXT_FLAGS = (*FLAGS, *(("-fdebug-macro",) if sys.platform == "linux" else ()))
+SELF_STOP = next(n for n, text in enumerate(SELF_UTIL.splitlines(), 1) if "// STOP" in text)
+
+
+def _build_text(root, compiler, levels, extra=None, util=SELF_UTIL):
+    """As _build, of units that include nothing, with -fdebug-macro on Linux;
+    ``extra``: {unit: flags} added to its compile."""
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    texts = {"main": SELF_MAIN, "util": util, "fast": SELF_FAST}
+    for name, text in texts.items():
+        (root / "src" / f"{name}.c").write_text(text)
+        flags = (*TEXT_FLAGS, levels.get(name, "-O0"), *(extra or {}).get(name, ()))
+        subprocess.run(
+            [compiler, *flags, *_sysroot(), "-c", f"src/{name}.c", "-o", f"{name}.o"],
+            cwd=root,
+            check=True,
+        )
+    objects = [f"{name}.o" for name in texts]
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=root, check=True)
+
+
+@pytest.mark.timeout(300)
+def test_a_judged_unit_s_values_are_read_by_its_replayed_text(project):
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    result = run_probe(
+        project,
+        Probe("src/util.c", SELF_STOP, ("doubled", "x", "1:base", "1:scaled")),
+        adapter=_target(compiler, returns_twice=()),
+    )
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    # As the program prints them: base 2, and scale(2) is doubled + 1, 5.
+    assert rows["doubled"].get("value") == "4", rows
+    assert rows["x"].get("value") == "2" and rows["1:base"].get("value") == "2", rows
+    assert rows["1:scaled"]["error"].startswith("no value yet"), rows
+    assert result["output"].strip() == "2 5 30"
+
+
+@pytest.mark.timeout(300)
+def test_a_unit_whose_text_cant_be_replayed_withholds_its_text_rules_saying_why(project):
+    compiler = _clang()
+    _build_text(project, compiler, {}, extra={"util": ("-Wp,-DUNUSED=1",)})
+    result = run_probe(
+        project, Probe("src/util.c", SELF_STOP, ("doubled",)), adapter=_target(compiler)
+    )
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert "Peeky can't read src/util.c as compiled: its command uses -Wp,-DUNUSED=1, which " in (
+        row.get("error") or ""
+    ), row
+
+
+@pytest.mark.timeout(300)
+def test_a_header_its_line_table_doesnt_name_leaves_a_unit_s_text_unread(project, capsys):
+    # A header of declarations alone, without -fdebug-macro: no code or type of the unit
+    # comes from it. `describe` says why each unit's text isn't read.
+    compiler = _clang()
+    _build(project, compiler, {})
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+    assert units["src/util.c"]["text"] == (
+        "Peeky can't read src/util.c as compiled: its preprocessing reads src/util.h, which its "
+        "line table doesn't name (-fdebug-macro names each header, on Linux)"
+    ), units
+    result = run_probe(project, Probe("src/util.c", STOP, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert "Peeky can't read src/util.c as compiled: its preprocessing reads " in row["error"]
+
+
+ON_ITS_LINE = next(n for n, text in enumerate(SELF_UTIL.splitlines(), 1) if "doubled =" in text)
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "levels, util, said",
+    [
+        ({"fast": "-O2"}, SELF_UTIL, "src/fast.c is a unit Peeky doesn't read"),
+        (
+            {},
+            SELF_UTIL.replace("    int doubled", '    __asm__ volatile("");\n    int doubled'),
+            "src/util.c's text holds asm",
+        ),
+    ],
+)
+def test_any_call_may_return_twice_unless_the_config_names_those_that_do(
+    project, levels, util, said
+):
+    # The program's own assembly can return twice (MicroPython's nlr_push): where a unit
+    # isn't read, or its text holds asm, a local declared at the stop says so.
+    compiler = _clang()
+    _build_text(project, compiler, levels, util=util)
+    line = next(n for n, text in enumerate(util.splitlines(), 1) if "doubled =" in text)
+    found = {}
+    for claim in (None, ()):
+        result = run_probe(
+            project,
+            Probe("src/util.c", line, ("doubled",)),
+            adapter=_target(compiler, returns_twice=claim),
+        )
+        assert result["status"] == "completed", result.get("error")
+        (row,) = result["rows"]
+        found[claim] = row
+    # Shown, as today's setjmp note shows a local: maybe leftovers, or its value from
+    # before a `longjmp`; and never changed.
+    noted = found[None].get("note") or ""
+    assert f"any call above the stop may return twice ({said}" in noted, found
+    assert '"returns_twice" can name the functions that do' in noted
+    # Named by the config (none, here, but setjmp's), no call returns twice.
+    error = found[()].get("error") or ""
+    assert "return twice" not in str(found[()]) and error.startswith("no value yet"), found
+
+
+SYSTEM_MAIN = """#include <stdio.h>
+#include <string.h>
+#include "util.h"
+
+int main(int argc, char **argv) {
+    int base = argc + 1;
+    int scaled = scale(base);
+    printf("%d %d %zu\\n", base, scaled, strlen("abc")); // PRINT
+    return 0;
+}
+"""
+MACRO_HEADER = "#define TWICE(x) ((x) * 2)\nint scale(int x);\n"
+MACRO_UTIL = """#include "util.h"
+
+int scale(int x) {
+    int doubled = TWICE(x);
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("macros", [True, False], ids=["debug-macro", "no-debug-macro"])
+def test_system_headers_and_a_header_of_macros_alone_are_read_on_linux(project, macros):
+    # With -fdebug-macro, a unit's line table names every header it reads, with its MD5:
+    # stdio.h's, and a header of macros and declarations alone. Without it, no unit
+    # naming one is read.
+    compiler = _clang()
+    if sys.platform != "linux":
+        pytest.skip("Apple's clang crashes with -fdebug-macro and DWARF 5")
+    (project / "src").mkdir()
+    (project / "src" / "main.c").write_text(SYSTEM_MAIN)
+    (project / "src" / "util.c").write_text(MACRO_UTIL)
+    (project / "src" / "util.h").write_text(MACRO_HEADER)
+    flags = (*FLAGS, "-O0", *(("-fdebug-macro",) if macros else ()))
+    for name in ("main", "util"):
+        subprocess.run(
+            [compiler, *flags, "-c", f"src/{name}.c", "-o", f"{name}.o"], cwd=project, check=True
+        )
+    subprocess.run([compiler, "main.o", "util.o", "-o", "prog"], cwd=project, check=True)
+    stop = next(n for n, text in enumerate(MACRO_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(
+        project,
+        Probe("src/util.c", stop, ("doubled", "x", "1:base")),
+        adapter=_target(compiler, returns_twice=()),
+    )
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if macros:
+        # As the program prints them: base 2, and scaled = doubled + 1 = 5.
+        assert result["output"].split()[:2] == ["2", "5"]
+        assert [rows[name].get("value") for name in ("doubled", "x", "1:base")] == ["4", "2", "2"]
+    else:
+        # A row's reason is cut at 300 characters; `describe` gives it whole.
+        assert "Peeky can't read src/util.c as compiled: its preprocessing reads src/util.h" in (
+            rows["doubled"].get("error") or ""
+        ), rows

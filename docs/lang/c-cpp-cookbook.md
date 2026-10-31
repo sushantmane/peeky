@@ -1241,6 +1241,15 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
 - **Optimized units:** to read units built at another level, put `"optimized": true` in a
   config naming the binary. Their rows then carry the optimized warning, and nothing changes.
 
+- **What Peeky reads of each unit's text:** it replays the unit's preprocessing, with the
+  recorded `-I`, `-D` and the like, where every header read has an MD5 in the unit's line table.
+  `describe` lists each unit whose text it can't read, and why: `text not read: Peeky can't read
+  src/util.c as compiled: …`. The rules that need the text withhold there, saying so.
+- **Calls that return twice:** where a unit isn't read, or holds `asm`, any call may. Locals at
+  or below a stop then carry the setjmp note. If you know which functions do, name them, as
+  MicroPython's `nlr_push`: `"returns_twice": ["nlr_push"]`. Peeky trusts that claim: a function
+  left out of it can show a local's old value as its own.
+
 Rebuild after every edit. A source changed since the build refuses the binary, naming the file.
 
 ### Which C++ builds Peeky supports

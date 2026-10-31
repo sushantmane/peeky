@@ -10,9 +10,17 @@ and it is checked again before every operation, as a build's inputs are. With
 Peeky's optimized builds are: every frame then carries the optimized warning.
 
 Frames in any other unit show nothing (``not shown``, with why), and a breakpoint in a
-file no unit Peeky reads has code in is refused (UNSUPPORTED, with the flag to add). A
-unit's text is not read: the rules that need it withhold, and any call may return twice
-(the program's own assembly can, as MicroPython's `nlr_push` does).
+file no unit Peeky reads has code in is refused (UNSUPPORTED, with the flag to add).
+
+A unit's text is its preprocessing replayed by the config's compiler, with only the
+recorded options that choose what the preprocessor reads or defines
+(native_units.replay_arguments), `--no-default-config` and an environment of Peeky's
+own. Every file the replay reads must be one the unit's line table names, with its MD5:
+on Linux, `-fdebug-macro` names a header of macros alone. Where a unit's text can't be
+read, the rules that need it withhold, saying why. Any call may return twice where a
+unit isn't read, is assembly, or its text holds `asm` or can't be read, as the program's
+own assembly can (MicroPython's `nlr_push`), unless the config names the functions that
+do (``returns_twice``, a trusted claim).
 """
 
 import contextlib
@@ -27,26 +35,42 @@ import struct
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
-from peeky.build import INHERITED_ENV, FileIdentity, ToolIdentity, private_base
+from peeky.assembler import _C_KEYWORD
+from peeky.build import (
+    INHERITED_ENV,
+    FileIdentity,
+    ToolIdentity,
+    UnreadDependencies,
+    dependency_paths,
+    jobs,
+    private_base,
+)
+from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
 from peeky.digest import sha256_file
 from peeky.errors import Refused
 from peeky.native import (
     _FOREIGN_TAGS,
     MAX_LINE_TEXT,
+    MAX_STATEMENT_SOURCE,
+    MAX_UNIT,
     VERSION_TIMEOUT,
     CodeIndex,
     NativeSession,
     NativeTarget,
+    ValueNote,
     Withholding,
     _foreign,
     _metadata,
     _remaining,
     _symbol_text,
     _tool,
+    has_nonlocal_jumps,
+    mentions_nonlocal_jumps,
     module_identity,
     parse_lines,
     read_line_table,
@@ -59,6 +83,7 @@ from peeky.native_units import (
     optimization,
     read_units,
     recorded_command,
+    replay_arguments,
 )
 from peeky.processes import without_credentials
 
@@ -137,10 +162,16 @@ LISTED_REASONS = 3
 # The `-O` levels, least first: a session reads as its highest.
 _LEVELS = ("0", "g", "1", "s", "z", "2", "3")
 # What the text rules say where they can't read a unit's text.
-TEXT_UNREAD = (
-    "Peeky can't read {unit} as compiled: it reads no unit's text of a binary it didn't build"
-)
+TEXT_UNREAD = "Peeky can't read {unit} as compiled: {why}"
 JUDGED, OPTIMIZED, NOT_JUDGED = "judged", "optimized", "not judged"
+# How many replays run at once, at most (each may hold a unit's text, up to MAX_UNIT).
+MAX_REPLAYS = 4
+# The least time left of the launch's deadline for another replay to start.
+REPLAY_MARGIN = 2.0
+# The most diagnostics a replay may write before it is ended.
+MAX_REPLAY_ERRORS = 16000
+# How many names a config's `returns_twice` may give.
+MAX_RETURNS_TWICE = 100
 
 
 class BinaryChanged(RuntimeError):
@@ -182,6 +213,8 @@ class Judged:
     lto: bool = False
     files: tuple = ()
     language: str | None = None
+    # Its recorded words (recorded_command), where read: its text's replay takes some.
+    words: tuple = ()
 
     @property
     def read(self):
@@ -296,7 +329,7 @@ def judge(unit, tables, version, root, optimized=False):
             )
         # As the line tables' rows are read (_LineParser): links resolved.
         files.append((os.path.realpath(path), entry.checksum))
-    return Judged(unit, name, status, why, level, lto, tuple(files), language)
+    return Judged(unit, name, status, why, level, lto, tuple(files), language, tuple(words))
 
 
 def _hashes(path):
@@ -352,6 +385,180 @@ def check_files(units, root):
             "tables record each file's MD5). Rebuild it (make), then probe again"
         )
     return found
+
+
+@dataclass(frozen=True)
+class UnitText:
+    """A read unit's text, as the config's compiler preprocesses it again: its
+    c_source.Preprocessed and Statements, whether it may optimize a function beyond its
+    level (c_source.optimizes), whether the program's text in it holds `asm`, and
+    ``reads``, the files under the root its preprocessing reads (relative)."""
+
+    preprocessed: object
+    statements: object
+    optimizes: bool
+    asm: bool
+    reads: tuple
+    cpp: bool
+
+
+def replay_environment(scratch):
+    """The environment of a unit's replay: Peeky's own. None of what may add options or
+    header paths (CCC_*, CL, _CL_, CPATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH,
+    OBJC_INCLUDE_PATH, SDKROOT), which no unit records; its home and temporary
+    directory Peeky's."""
+    env = {key: os.environ[key] for key in ("PATH", "LANG") if key in os.environ}
+    env.update(HOME=str(scratch), TMPDIR=str(scratch), LC_ALL="C")
+    return without_credentials(env)
+
+
+def replay(judged, compiler, env, scratch, root, timeout):
+    """The UnitText of ``judged`` (a read unit), or why it can't be read: its
+    preprocessing replayed (`-E`, with its dependencies) by ``compiler``, in its
+    compilation directory, with the options replay_arguments passes and
+    `--no-default-config`. Every file it reads must be one the unit's line table names
+    (and so checked against its MD5): a header of macros alone is named only with
+    `-fdebug-macro`."""
+    unit, name = judged.unit, judged.name
+
+    def unread(why):
+        return TEXT_UNREAD.format(unit=name, why=why)
+
+    comp_dir = unit.comp_dir
+    main = posixpath.join(comp_dir, unit.name)
+    try:
+        arguments = replay_arguments(list(judged.words), comp_dir, main)
+    except NotRecorded as exc:
+        return unread(str(exc))
+    if unit.sysroot and not any(
+        word in ("-isysroot", "--sysroot") or word.startswith("--sysroot=") for word in arguments
+    ):
+        # Apple's clang records the SDK it compiled against apart from its options.
+        arguments = ["-isysroot", unit.sysroot, *arguments]
+    if not os.path.isdir(comp_dir):
+        return unread(f"its compilation directory, {comp_dir}, is gone")
+    work = Path(tempfile.mkdtemp(prefix="unit-", dir=scratch))
+    try:
+        output, depends, errors = work / "unit.i", work / "unit.d", work / "errors.txt"
+        argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-MD", "-MF"]
+        argv += [str(depends), arguments[-1], "-o", str(output)]
+        with errors.open("wb") as stderr:
+            process = subprocess.Popen(
+                argv,
+                cwd=comp_dir,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=stderr,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5)
+                return unread(f"its preprocessing took over {timeout:.0f} s")
+        if process.returncode:
+            with errors.open("rb") as diagnostics:
+                said = diagnostics.read(MAX_REPLAY_ERRORS).decode("utf-8", "replace")
+            first = next((line for line in said.split("\n") if "error" in line), said)
+            return unread(f"its preprocessing failed: {' '.join(first.split())[:200]}")
+        if not output.is_file() or output.stat().st_size > MAX_UNIT:
+            return unread(f"its preprocessed text is over {MAX_UNIT >> 20} MiB")
+        try:
+            read = dependency_paths(depends.read_text(errors="replace"), comp_dir, "make")
+        except (OSError, UnreadDependencies) as exc:
+            return unread(f"its dependencies can't be read ({exc})")
+        named = {path for path, _ in judged.files}
+        # Apple's driver reads the SDK's own settings, no header: its version, which the
+        # recorded -mmacos-version-min holds, for the macros.
+        settings = {
+            os.path.realpath(posixpath.join(comp_dir, value, "SDKSettings.json"))
+            for option, value in zip(arguments, arguments[1:])
+            if option in ("-isysroot", "--sysroot")
+        }
+        reads = []
+        for path in read:
+            real = os.path.realpath(path)
+            if real in settings:
+                continue
+            if real not in named:
+                return unread(
+                    f"its preprocessing reads {_shown(real, root)}, which its line table "
+                    "doesn't name (-fdebug-macro names each header, on Linux)"
+                )
+            if Path(real).is_relative_to(root):
+                reads.append(Path(real).relative_to(root).as_posix())
+        own = set(reads)
+
+        def program(path):
+            if path.startswith("<"):
+                return None
+            real = Path(os.path.realpath(posixpath.join(comp_dir, path)))
+            if not real.is_relative_to(root):
+                return None
+            shown = real.relative_to(root).as_posix()
+            return shown if shown in own else None
+
+        cpp = judged.language == "cpp"
+        text = output.read_bytes()
+        with output.open("rb") as lines:
+            preprocessed = Preprocessed(lines, program)
+        statements = Statements(preprocessed.text, cpp, trigraphs=False)
+        return UnitText(
+            preprocessed,
+            statements,
+            optimizes(text, cpp),
+            bool(_C_KEYWORD.search(statements.blanked)),
+            tuple(sorted(own)),
+            cpp,
+        )
+    except OSError as exc:
+        return unread(f"its preprocessing couldn't run ({exc.strerror or exc})")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def replay_units(read, compiler, scratch, root, deadline):
+    """{unit name: UnitText, or why its text can't be read} of each unit read, replayed
+    at most MAX_REPLAYS at once, while the launch's deadline leaves REPLAY_MARGIN
+    seconds."""
+    import time
+
+    env = replay_environment(scratch)
+
+    def one(judged):
+        left = 15 if deadline is None else deadline - time.monotonic() - REPLAY_MARGIN
+        if left <= 0:
+            return TEXT_UNREAD.format(
+                unit=judged.name, why="there was no time left for it before the launch"
+            )
+        return replay(judged, compiler, env, scratch, root, min(15, left))
+
+    workers = max(1, min(MAX_REPLAYS, jobs(), len(read)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(zip((each.name for each in read), pool.map(one, read)))
+
+
+def any_call_returns_twice(judged, texts):
+    """Why any call may return twice, or None: a unit Peeky doesn't read, which may be
+    assembly or hold `asm` (MicroPython's `nlr_push`), or one whose text can't be read
+    or holds `asm`. Peeky finds such calls only by name otherwise (setjmp's)."""
+    found = []
+    for each in judged:
+        text = texts.get(each.name) if each.read else None
+        if not each.read:
+            found.append(f"{each.name} is a unit Peeky doesn't read")
+        elif not isinstance(text, UnitText):
+            found.append(f"Peeky can't read {each.name}'s text")
+        elif text.asm:
+            found.append(f"{each.name}'s text holds asm")
+    if not found:
+        return None
+    more = f", and {len(found) - 1} more" if len(found) > 1 else ""
+    return f"{found[0]}{more}"
 
 
 def _shown(path, root):
@@ -507,7 +714,8 @@ class Program:
         self.target.validate_breakpoints(points)
 
     def preprocess_argv(self, source):
-        raise ValueError(TEXT_UNREAD.format(unit=source))
+        # A unit's text is its replay's (BinarySession._preprocessed), never a build's.
+        raise ValueError(TEXT_UNREAD.format(unit=source, why="Peeky built no unit of it"))
 
 
 @dataclass(frozen=True)
@@ -525,6 +733,9 @@ class BinaryTarget:
     dsymutil: str | None = None
     arguments: tuple[str, ...] = ()
     optimized: bool = False
+    # A trusted claim: the functions of the program that return twice, besides setjmp's
+    # (MicroPython's `nlr_push`). None: any call may, where Peeky can't rule it out.
+    returns_twice: tuple[str, ...] | None = None
 
     accepts_arguments = True
     supports_deadline = True
@@ -542,6 +753,18 @@ class BinaryTarget:
         if self.compiler is None:
             object.__setattr__(self, "compiler", "clang++" if self.language == "cpp" else "clang")
         self.validate_arguments(self.arguments)
+        if self.returns_twice is not None and (
+            not isinstance(self.returns_twice, tuple)
+            or len(self.returns_twice) > MAX_RETURNS_TWICE
+            or not all(
+                isinstance(name, str) and re.fullmatch(r"[A-Za-z_]\w{0,200}", name)
+                for name in self.returns_twice
+            )
+        ):
+            raise ValueError(
+                'A binary target\'s "returns_twice" must be a list of at most '
+                f"{MAX_RETURNS_TWICE} function names"
+            )
 
     @property
     def target_identity(self):
@@ -550,6 +773,11 @@ class BinaryTarget:
             "binary": self.binary,
             "arguments": list(self.arguments),
             "optimized": self.optimized,
+            **(
+                {"returns_twice": sorted(self.returns_twice)}
+                if self.returns_twice is not None
+                else {}
+            ),
         }
 
     def validate_breakpoints(self, points):
@@ -751,6 +979,29 @@ class BinaryTarget:
                 "UNSUPPORTED",
                 f"{shown} has no build ID Peeky can read ({exc}): link it with {flag}",
             ) from None
+        texts = replay_units(read, compiler, scratch, root, deadline)
+        any_call = None
+        if self.returns_twice is None:
+            any_call = any_call_returns_twice(judged, texts)
+        returns_twice = ()
+        if any_call is None:
+            # Calls that return twice are found by name: setjmp's, a macro of a header
+            # outside the program that may expand to one, and those the config names.
+            outside = sorted(path for path in files if not Path(path).is_relative_to(root))
+            jumps = (
+                has_nonlocal_jumps(binary)
+                or mentions_nonlocal_jumps(root / name for name in declared)
+                or mentions_nonlocal_jumps(outside, (b"__builtin_setjmp",))
+            )
+            macros = frozenset()
+            if jumps:
+                macros = returning_twice(
+                    Path(path).read_bytes().decode("utf-8", errors="replace") for path in outside
+                )
+            if self.returns_twice is not None:
+                returns_twice = tuple(sorted(set(self.returns_twice) | macros))
+            else:
+                returns_twice = tuple(sorted(macros)) if jumps else None
         found = read_program_symbols(
             dwarfdump,
             symbols,
@@ -759,9 +1010,7 @@ class BinaryTarget:
             text,
             declared,
             language,
-            # Its units' text isn't read, and its own assembly can return twice: any call
-            # may (c_source.returning_twice's names alone are none of them).
-            lambda info: (),
+            lambda info: returns_twice,
             deadline=deadline,
             cwd=scratch,
         )
@@ -816,6 +1065,15 @@ class BinaryTarget:
             judged=judged,
             files=files,
             line_tables=offsets,
+            texts=texts,
+            any_call=any_call,
+            # Whether a unit may optimize a function beyond its level: unknown where any
+            # read unit's text isn't.
+            optimized=(
+                any(text.optimizes for text in texts.values())
+                if all(isinstance(text, UnitText) for text in texts.values())
+                else None
+            ),
             **found,
         )
         session.assert_current()
@@ -1029,9 +1287,13 @@ class BinarySession(NativeSession):
     # folding is a link option no debug information records.
     placed_languages = frozenset({"c", "cpp"})
 
-    def __init__(self, *args, judged, files, line_tables, **kwargs):
-        super().__init__(*args, optimized=None, **kwargs)
+    def __init__(self, *args, judged, files, line_tables, texts=None, any_call=None, **kwargs):
+        super().__init__(*args, **kwargs)
         self.judged, self.files, self.line_tables = judged, dict(files), line_tables
+        # {unit name: UnitText, or why its text can't be read}.
+        self.texts = dict(texts or {})
+        # Why any call may return twice (any_call_returns_twice), or None.
+        self.any_call = any_call
         # {file under the root: the units read that name it}.
         root = self.prepared.source_root
         self.naming = {}
@@ -1043,9 +1305,25 @@ class BinarySession(NativeSession):
 
     @property
     def described_units(self):
-        """Each unit as `describe` lists it: judged, or not and why. (Not `units`: a
-        RustSession's are its application units.)"""
-        return [each.describe() for each in self.judged]
+        """Each unit as `describe` lists it: judged, or not and why; and, of one read
+        whose text can't be, why (``text``). (Not `units`: a RustSession's are its
+        application units.)"""
+        listed = []
+        for each in self.judged:
+            entry = each.describe()
+            if each.read and isinstance(text := self.texts.get(each.name), str):
+                entry["text"] = text
+            listed.append(entry)
+        return listed
+
+    @property
+    def returning_twice(self):
+        """Which calls may return twice, for `describe`: any, and why; those named; or
+        setjmp's alone (None where the program can't call one)."""
+        if self.any_call is not None:
+            return {"any": True, "why": self.any_call}
+        named = getattr(self, "returns_twice", None)
+        return None if named is None else {"any": False, "named": sorted(named)}
 
     def _holding(self, address):
         return [
@@ -1153,11 +1431,91 @@ class BinarySession(NativeSession):
                     "needed, and start a new session"
                 )
 
+    def _text_reason(self, source):
+        """Why the units holding ``source`` can't give its text, or None."""
+        units = self.naming.get(str(source), ())
+        if not units:
+            return TEXT_UNREAD.format(unit=source, why="no unit Peeky reads names it")
+        return next((text for unit in units if isinstance(text := self.texts.get(unit), str)), None)
+
     def _source_text(self, source):
-        return None
+        """``source``'s text as it is, where every unit holding it reads it so (its MD5
+        checked before launch, and its SHA-256 before every operation)."""
+        if self._text_reason(source) is not None:
+            return None
+        try:
+            path = self.prepared.source_root / source
+            if path.stat().st_size > MAX_STATEMENT_SOURCE:
+                return None
+            return path.read_bytes().decode("utf-8", "replace")
+        except OSError:
+            return None
+
+    def _statements(self, source):
+        """``source``'s Statements, with the macros of each file under the root the
+        units holding it read: what `-M` lists, never a guess at the program's headers."""
+        cache = self.__dict__.setdefault("statements", {})
+        key = str(source)
+        if key not in cache:
+            cache[key] = None
+            texts = [self.texts.get(unit) for unit in self.naming.get(key, ())]
+            if texts and all(isinstance(text, UnitText) for text in texts):
+                cpp = any(text.cpp for text in texts)
+                reads = tuple(sorted({name for text in texts for name in text.reads}))
+                hazards = self._hazards(reads, cpp)
+                own = self._source_text(key)
+                if hazards is not None and own is not None:
+                    statements = Statements(own, cpp, hazards=hazards)
+                    statements.included = lambda line, at=key: self._included_text(at, line)
+                    cache[key] = statements
+        return cache[key]
+
+    def _hazards(self, reads, cpp):
+        cache = self.__dict__.setdefault("hazards", {})
+        if (reads, cpp) not in cache:
+            inputs = []
+            for name in reads:
+                try:
+                    path = self.prepared.source_root / name
+                    if path.stat().st_size > MAX_STATEMENT_SOURCE:
+                        inputs = None
+                        break
+                    inputs.append(path.read_bytes().decode("utf-8", "replace"))
+                except OSError:
+                    inputs = None
+                    break
+            cache[(reads, cpp)] = None if inputs is None else macro_hazards(inputs, cpp)
+        return cache[(reads, cpp)]
 
     def _preprocessed(self, unit):
-        return TEXT_UNREAD.format(unit=unit)
+        found = self.texts.get(str(unit))
+        if isinstance(found, UnitText):
+            return found.preprocessed, found.statements
+        if isinstance(found, str):
+            return found
+        return TEXT_UNREAD.format(unit=unit, why="it is no unit Peeky reads")
+
+    def _setjmp_above(self, frame, line):
+        if self.any_call is not None:
+            # Any call above the stop may be one that returns twice: where, Peeky can't tell.
+            return 0
+        return super()._setjmp_above(frame, line)
+
+    def _setjmp_note(self, at, jump, declared):
+        if self.any_call is None:
+            return super()._setjmp_note(at, jump, declared)
+        reason = declared.format(at)
+        why = (
+            f"any call above the stop may return twice ({self.any_call}; a config's "
+            '"returns_twice" can name the functions that do)'
+        )
+        return ValueNote(
+            f"{reason}, and {why}, so a `longjmp` can bring control here past its declaration",
+            f"may be leftovers, or its value from before a `longjmp`: {reason}, and {why}, "
+            "so Peeky cannot tell whether its declaration has run on this pass; read it "
+            "after its declaration",
+            refuses=True,
+        )
 
     def _read_units(self, source):
         return list(dict.fromkeys(self.naming.get(str(source), self.target.sources)))

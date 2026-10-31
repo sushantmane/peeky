@@ -85,9 +85,33 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   functions that may run them too (`placed_languages`).
 - `validate_stop` accepts a frame on a line of a unit not read: it shows nothing.
   `unplaceable_line` refuses a breakpoint on a line no unit read has code on, before the launch.
-- A unit's text isn't read yet. `_source_text` is None and `_preprocessed` says why, so the rules
-  that need the text withhold. Any call may return twice (`returns_twice` empty): the program's
-  own assembly can, as MicroPython's `nlr_push` does.
+- A unit's text is its preprocessing replayed (`replay`), at most four at once, before the
+  launch's deadline. The config's `compiler` runs `-E -MD`, in the unit's compilation directory,
+  with `--no-default-config`. `native_units.replay_arguments` passes only the recorded options
+  that choose what the preprocessor reads or defines (`_REPLAY_*`), in order, and the unit's
+  own input last.
+- It leaves out options that define no macro (`_INERT_*`): each is checked against clang's own
+  `-dM -E`, in C and C++, on Linux and macOS. Any other option leaves the text unread, naming it:
+  `-fplugin=`, `-Xclang -load`, `-Wp,`, `-Xpreprocessor`, `-ivfsoverlay`, `-B`, `@file`.
+- Its environment is Peeky's own (`replay_environment`): `PATH`, `LANG`, and its home and
+  temporary directory in the run's scratch. Never `CCC_*`, `CL`, `_CL_`, `CPATH`,
+  `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` or `SDKROOT`. Apple's units
+  record their SDK as `DW_AT_LLVM_sysroot`: passed as `-isysroot` where the words have none.
+- Every file the replay's dependencies list must be one the unit's line table names, and so
+  checked against its MD5. Only Apple's `SDKSettings.json`, under the recorded SDK, is no header.
+  On Linux, `-fdebug-macro` names each header. Apple's clang can't use it with DWARF 5: a header
+  of declarations alone leaves the unit's text unread.
+- `UnitText` keeps the replay's `Preprocessed` and `Statements` (`_preprocessed`), whether it may
+  optimize a function (`optimizes`: the session's `optimized` where every text is read), whether
+  the program's own text holds `asm`, and the files under the root it read. `_statements` of a
+  source reads its raw text with those files' macros (`macro_hazards`), where every unit holding
+  it has its text read.
+- Any call may return twice (`any_call_returns_twice`) where a unit isn't read, or its text isn't,
+  or holds `asm`: the program's own assembly can, as MicroPython's `nlr_push` does. Then every
+  local at or below a stop carries the setjmp note, saying why. A config's `returns_twice` is a
+  trusted claim instead: those functions, and setjmp's, are found by name, as today. Only the
+  units the debug information holds count: an assembly file assembled without `-g` leaves none,
+  and Peeky can't see it.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 

@@ -253,8 +253,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   wrapper scripts are refused, with what to do.
 - A `#line` naming another file leaves a unit with no MD5s (use `bison -l`, `flex -L`), as do
   libc++'s headers without `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`, and inheriting constructors.
-- For now, Peeky doesn't read a unit's text: the rules that need it withhold, saying so. Probes
-  and `describe` work; sessions, `verify` and candidate edits don't.
+- A unit's text is its preprocessing replayed, where each header it reads has an MD5 in its line
+  table (on Linux, `-fdebug-macro`; rarely on macOS). Elsewhere text rules withhold, saying why.
+- Any call may return twice where a unit isn't read or holds `asm`, unless a config names those
+  that do (`"returns_twice": ["nlr_push"]`). Sessions and edits don't work on a binary yet.
 
 ## Builds
 
