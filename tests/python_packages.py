@@ -51,16 +51,21 @@ def wheel(where):
     return path
 
 
-def install(root, where):
-    """A `.venv` in ``root`` with `tally` installed by pip, not editable: its files are
-    in the environment's site-packages, compiled to bytecode there as pip does."""
+def make_env(where):
+    """A virtual environment at ``where``, with no pip: its interpreter."""
     subprocess.run(
-        [sys.executable, "-m", "venv", "--without-pip", str(root / ".venv")],
+        [sys.executable, "-m", "venv", "--without-pip", str(where)],
         check=True,
         capture_output=True,
         timeout=120,
     )
-    python = root / ".venv" / "bin" / "python"
+    return where / "bin" / "python"
+
+
+def install(root, where):
+    """A `.venv` in ``root`` with `tally` installed by pip, not editable: its files are
+    in the environment's site-packages, compiled to bytecode there as pip does."""
+    python = make_env(root / ".venv")
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "--version"], check=True, capture_output=True, timeout=60

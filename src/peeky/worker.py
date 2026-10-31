@@ -22,9 +22,9 @@ from pathlib import Path, PurePosixPath
 
 from peeky import add_version
 from peeky.adapters import (
+    STARTUP_RAN,
     PythonAdapter,
     ViewBudgetExhausted,
-    installed,
     skipped_lines,
     skipped_message,
 )
@@ -2510,10 +2510,11 @@ class DebugWorker:
                     "initialize", runtime.initialize_args(), timeout=left()
                 )
                 self.capabilities = runtime.normalize_capabilities(capabilities)
-                # debugpy skips installed code: a breakpoint there needs it not to.
+                # debugpy skips installed code: a breakpoint there needs it not to. What
+                # is installed, the program's interpreter says.
                 library = (
                     {"library": True}
-                    if isinstance(self.adapter, PythonAdapter) and installed(program)
+                    if isinstance(self.adapter, PythonAdapter) and self.adapter.installed(program)
                     else {}
                 )
                 launch_args = (
@@ -2560,10 +2561,11 @@ class DebugWorker:
                     timeout=left(),
                 )
                 if isinstance(self.adapter, PythonAdapter) and skipped_lines(points):
-                    # Before configurationDone: the program's own code has not run.
+                    # Before configurationDone: the script or module has not started, but
+                    # the interpreter debugpy started has run its startup.
                     raise ValueError(
-                        skipped_message(program.relative_to(self.root).as_posix())
-                        + ". Refused before the program's code ran"
+                        f"{skipped_message(program.relative_to(self.root).as_posix())}. "
+                        f"{STARTUP_RAN}"
                     )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)

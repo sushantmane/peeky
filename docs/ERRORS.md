@@ -189,8 +189,8 @@ file lists what it reads.
 - A Java target without an adapter bundle: `No Java adapter bundle at …`. Run the
   `peeky setup-java` command that the message gives.
 - `--at` or `--run` outside the target: `--at and --run must name a file inside the target, …`.
-  For installed code outside it, the message says to install your project editable
-  ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)).
+  For a file the program's interpreter installed, the message says to install your project
+  editable ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)).
 - A Python candidate edit of an installed file, such as one in the root's `.venv`: `A Python
   candidate cannot edit …`. Its copy links the environment to yours. Edit a checkout of the
   package, installed editable, instead.

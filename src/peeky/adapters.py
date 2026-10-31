@@ -151,17 +151,40 @@ _IMPURE_NAMES = frozenset(
 )
 # The opening of the note on a candidate's copy, which `probe` shows once.
 COPY_NOTE = "This Python candidate ran from a copy of "
-# Where installed packages live: debugpy counts code there as library code, not the
-# program's own, and skips it unless told not to (`justMyCode`).
-INSTALLED_DIRS = frozenset({"site-packages", "dist-packages"})
 # debugpy's reply to a breakpoint in a file it skips as library code.
 _SKIPPED_FILE = "excluded by filters"
+# What a refusal of such a breakpoint at launch says ran, and what didn't.
+STARTUP_RAN = (
+    "Refused before your script or module started; the interpreter's startup (.pth files, "
+    "sitecustomize) had already run"
+)
 
 
-def installed(path):
-    """Whether ``path`` is installed code: a file under a `site-packages` or
-    `dist-packages` directory, where debugpy finds library code."""
-    return bool(INSTALLED_DIRS & set(Path(path).parts[:-1]))
+def under(path, directories):
+    """Whether ``path`` is a file inside one of ``directories``: by device and inode, so a
+    path through a link (`lib64` to `lib`), or spelled in another case on a volume that
+    ignores case, is found where it is. A directory that does not exist holds nothing."""
+    held = set()
+    for directory in directories:
+        try:
+            status = os.stat(directory)
+        except (OSError, TypeError, ValueError):
+            continue
+        held.add((status.st_dev, status.st_ino))
+    if not held:
+        return False
+    try:
+        parents = Path(path).resolve(strict=True).parents
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for parent in parents:
+        try:
+            status = os.stat(parent)
+        except OSError:
+            continue
+        if (status.st_dev, status.st_ino) in held:
+            return True
+    return False
 
 
 def skipped_lines(reply):
@@ -181,8 +204,8 @@ def skipped_message(name):
     return (
         f"A breakpoint in {name} would never stop: debugpy counts that file as library code, "
         "and skips it. Peeky has debugpy stop in library code only where the session's --at "
-        "file is under site-packages or dist-packages. Probe the code that calls it, or a copy "
-        "of it in your project"
+        "file is in a site-packages directory of the program's interpreter. Probe the code "
+        "that calls it, or a copy of it in your project"
     )
 
 
@@ -1462,6 +1485,19 @@ class PythonAdapter:
             "linesStartAt1": True,
             "columnsStartAt1": True,
         }
+
+    def installed(self, path):
+        """Whether ``path`` is installed code for the program's interpreter: a file in one
+        of its site-packages directories (``site.getsitepackages()``, its user site,
+        sysconfig's purelib and platlib), as that interpreter reports them. False where
+        it can't say: nothing is assumed then."""
+        from peeky.python_interpreter import Unavailable
+
+        try:
+            directories = self.readings("installed_dirs")
+        except (Unavailable, ValueError):
+            return False
+        return isinstance(directories, list) and under(path, directories)
 
     def launch_args(self, program, root, args=(), *, library=False):
         """debugpy's launch of ``program``. ``library``: the breakpoints are in installed

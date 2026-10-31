@@ -141,9 +141,11 @@ helper too.
 
 ### Stop in an installed package
 
-A file under a `site-packages` or `dist-packages` directory is installed code, such as a package
-in the root's `.venv`. debugpy skips installed code unless told not to. So when `--at` names such
-a file, Peeky has debugpy stop in library code too (`justMyCode: false`):
+A file in a site-packages directory of the program's interpreter is installed code, such as a
+package in the root's `.venv`. That interpreter says which directories those are: its
+`site.getsitepackages()`, its user site, and sysconfig's `purelib` and `platlib`. A directory that
+is only named `site-packages` isn't one. debugpy skips installed code unless told not to. So when
+`--at` names such a file, Peeky has debugpy stop in library code too (`justMyCode: false`):
 
 ```sh
 peeky probe . --at .venv/lib/python3.12/site-packages/tally/core.py:14 --capture step \
@@ -156,16 +158,18 @@ peeky probe . --at .venv/lib/python3.12/site-packages/tally/core.py:14 --capture
 - The stack then lists library frames too, so `1:` is the true caller, even inside the package.
   `session step --in` enters library code. A step that stops outside the root reads no locals.
 - A remote worker compares the file by its own hash, as it does the program. It hashes it again
-  at every operation, as it does the root's `.py` files
-  ([REMOTE.md](../REMOTE.md#source-identity)).
+  at every operation, as it does the root's `.py` files. Your client hashes your copy again too,
+  and shows its locations as yours ([REMOTE.md](../REMOTE.md#source-identity)).
 - A candidate edit of an installed file is refused. Its copy links the environment to yours, so
   the edit would change your installed file. Install the package editable from a checkout in the
   root, and edit the checkout's file.
-- A file outside the root is refused, installed or not. The message says what to do: name your
-  project's own file, and install the project editable.
-- debugpy may skip a file outside `site-packages` too, such as the standard library's, or one
-  under its `LIBRARY_ROOTS`. A breakpoint there is refused with `INVALID_BREAKPOINT`, before
-  the program's code runs. Probe the code that calls it.
+- A file outside the root is refused, installed or not. Where the program's interpreter installed
+  it, the message says what to do: name your project's own file, and install the project
+  editable.
+- debugpy may skip other files too: the standard library's, a directory named `site-packages` on
+  the program's path, or one under its `LIBRARY_ROOTS`. A breakpoint there is refused with
+  `INVALID_BREAKPOINT` before your script or module starts. The interpreter's startup has run by
+  then: its `.pth` files and `sitecustomize`. Probe the code that calls it.
 
 A project installed without `-e` runs its copy in `site-packages`, not its source. So a breakpoint
 in `src/pkg/mod.py` never stops, and the probe ends `no-stop`. Install it editable,

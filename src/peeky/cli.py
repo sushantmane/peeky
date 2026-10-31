@@ -112,6 +112,18 @@ def _private_write(path, text):
     os.replace(temporary, path)
 
 
+class OutsideTarget(ValueError):
+    """`--at` or `--run` names a file outside the target: ``path``, resolved, and
+    ``root``."""
+
+    def __init__(self, root, path):
+        super().__init__(
+            f"--at and --run must name a file inside the target, {root}, and {path} is not "
+            "inside it. Give a target directory that holds it"
+        )
+        self.root, self.path = root, path
+
+
 def _confined(root, program):
     """A program path relative to and inside the target root."""
     if program is None:
@@ -120,19 +132,31 @@ def _confined(root, program):
     try:
         return path.relative_to(root.resolve()).as_posix()
     except ValueError:
-        from peeky.adapters import installed
+        raise OutsideTarget(root, path) from None
 
-        if installed(path):
-            raise ValueError(
-                f"--at and --run must name a file inside the target, {root}, and {path} is "
-                "installed code outside it. Name your project's own file, and install the "
-                "project editable (`pip install -e .`), or install the package in the root's "
-                ".venv and name its file there"
-            ) from None
-        raise ValueError(
-            f"--at and --run must name a file inside the target, {root}, and {path} is not "
-            "inside it. Give a target directory that holds it"
-        ) from None
+
+def _outside(exc, args):
+    """The refusal of a file outside the target: where the program's interpreter (the
+    one `--python` or the root chooses) proves it installed code, what to do instead."""
+    if getattr(args, "worker", None) is not None or exc.path.suffix != ".py":
+        return exc
+    adapter = None
+    try:
+        adapter = python_adapter(exc.root, getattr(args, "python", None))
+        if not adapter.installed(exc.path):
+            return exc
+    except Exception:
+        return exc
+    finally:
+        if adapter is not None:
+            adapter.close()
+    return ValueError(
+        f"--at and --run must name a file inside the target, {exc.root}, and {exc.path} is "
+        "installed code outside it, in a site-packages directory of the program's "
+        f"interpreter ({adapter.interpreter}). Name your project's own file, and install the "
+        "project editable (`pip install -e .`), or install the package in the root's .venv "
+        "and name its file there"
+    )
 
 
 def _which(*names):
@@ -1876,7 +1900,7 @@ class _RemoteSession(_RemoteClient):
                 _checkout_unchanged(
                     Path(self.record["root"]), self.sources, self.record, saved=True
                 )
-            )
+            ) | frozenset(self.record.get("hashed") or {})
         except RuntimeError:
             try:
                 Client.call(self, "close", session_id=self.record["session_id"])
@@ -1900,6 +1924,15 @@ def _checkout_unchanged(root, sources, expected, *, saved=False):
         current, why = None, f" ({exc})"
     else:
         why = ""
+    # The --at file and --run script in a virtual environment, compared by their own hashes
+    # (``_hashed``): a session's are rehashed too.
+    for name, sha in ((expected.get("hashed") or {}) if saved else {}).items():
+        try:
+            now = _sha256(root / name)
+        except OSError:
+            now = None
+        if now != sha and current == accepted:
+            current, why = None, f" ({name})"
     if current != accepted:
         raise RuntimeError(
             "Worker source provenance: a source in your checkout changed after the worker "
@@ -1911,6 +1944,33 @@ def _checkout_unchanged(root, sources, expected, *, saved=False):
             )
         )
     return hashed
+
+
+def _hashed(root, sources, inputs, expected, program, entry):
+    """{name: sha256} of the --at file and the --run script that are in a virtual
+    environment: not among a Python target's compared sources (``inputs``), the worker
+    compares them by their own hashes (``expected``, as sent)."""
+    if (sources or {}).get("kind") != "python":
+        return {}
+    from peeky.sources import in_environment
+
+    return {
+        name: expected[role]
+        for role, name in (("program", program), ("entry", entry))
+        if name and role in expected and name not in inputs and in_environment(root, name)
+    }
+
+
+def _python_note(hashed):
+    """What a remote Python result says was compared, and wasn't."""
+    if not hashed:
+        return REMOTE_PYTHON_NOTE
+    return (
+        "Only the .py files under the target's directory are compared with yours, and "
+        f"{', '.join(sorted(hashed))}, which is in a virtual environment. Not compared: the "
+        "rest of any directory holding a pyvenv.cfg, other installed packages, the standard "
+        "library, and compiled modules (.so, .pyc)."
+    )
 
 
 class _LocalClient(Client):
@@ -2947,9 +3007,11 @@ def _remote_probe(args, root, request):
     client, _ = _remote(args.worker)
     client.client_root = root
     inputs = client_sources(root, client.sources)
-    client.names = frozenset(inputs)
+    expected = _expected(root, request.program, request.entry)
+    client.hashed = _hashed(root, client.sources, inputs, expected, request.program, request.entry)
+    client.names = frozenset(inputs) | frozenset(client.hashed)
     request = replace(request, expect_inputs=tuple(sorted(inputs.items())))
-    return client, request, _expected(root, request.program, request.entry)
+    return client, request, expected
 
 
 def _inputs_match(root, client, expected, reported):
@@ -3064,7 +3126,7 @@ def _probe_remote(args, root, request, client, expected):
         # Your own checkout must still be what was compared.
         _checkout_unchanged(root, client.sources, dict(request.expect_inputs))
         if (getattr(client, "sources", None) or {}).get("kind") == "python":
-            result["warnings"].append(REMOTE_PYTHON_NOTE)
+            result["warnings"].append(_python_note(getattr(client, "hashed", None)))
     except RuntimeError as exc:
         from peeky.errors import classify
 
@@ -3087,15 +3149,18 @@ def _start_remote(args, root, program, line, language, max_pause):
     client, token = _remote(args.worker)
     client.client_root = root
     inputs = client_sources(root, client.sources)
-    client.names = frozenset(inputs)
+    entry = _entry(root, args.run, language)
+    expected = _expected(root, program, entry)
+    hashed = _hashed(root, client.sources, inputs, expected, program, entry)
+    client.names = frozenset(inputs) | frozenset(hashed)
     launch = client.call(
         "launch",
         program=program,
         breakpoints=[{"line": line}],
         max_pause=max_pause,
-        **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
+        **({"entry": entry} if entry else {}),
         **({"args": list(args.arg)} if args.arg else {}),
-        expect_sha256=_expected(root, program, _entry(root, args.run, language)),
+        expect_sha256=expected,
         expect_inputs=inputs,
         protocol=PROTOCOL_VERSION,
     )
@@ -3121,8 +3186,10 @@ def _start_remote(args, root, program, line, language, max_pause):
     record.update(root=str(root), program=program, language=language, cwd=os.getcwd(), line=line)
     # What a later command checks again before it uses this session.
     record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
+    if hashed:
+        record["hashed"] = hashed
     if (client.sources or {}).get("kind") == "python":
-        record["note"] = REMOTE_PYTHON_NOTE
+        record["note"] = _python_note(hashed)
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
@@ -3141,7 +3208,7 @@ def _start_remote(args, root, program, line, language, max_pause):
     if misplaced := _misplaced_options(args):
         state["warnings"] = [*state.get("warnings", []), misplaced]
     if (client.sources or {}).get("kind") == "python":
-        state["warnings"] = [*state.get("warnings", []), REMOTE_PYTHON_NOTE]
+        state["warnings"] = [*state.get("warnings", []), _python_note(hashed)]
     _emit(
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,
@@ -4574,6 +4641,9 @@ def _main(argv, _job, _edits):
         except Exception as exc:
             # Every failure, including unexpected ones, is a structured error, never a traceback.
             from peeky.errors import classify
+
+            if isinstance(exc, OutsideTarget):
+                exc = _outside(exc, args)
 
             payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
             if getattr(args, "json", False):

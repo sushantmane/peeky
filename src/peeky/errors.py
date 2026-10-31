@@ -239,7 +239,7 @@ _RULES = (
         r"debugpy counts that file as library code",
         "INVALID_BREAKPOINT",
         "Probe the code that calls it, or a copy in your project: Peeky stops in library code "
-        "only when --at names a file under site-packages.",
+        "only in the program's interpreter's site-packages.",
         False,
     ),
     (
