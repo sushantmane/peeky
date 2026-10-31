@@ -1104,10 +1104,7 @@ def _linked(monkeypatch, base, **addresses):
             at = address - base
             return self.data[at : at + length] if 0 <= at <= len(self.data) - length else None
 
-        def targets(self, name):
-            return self.addresses.get(name) or {0}
-
-        def got(self, name):
+        def got(self, name, weak=False):
             return set()
 
         def stub(self, address):

@@ -45,10 +45,7 @@ class Image:
         at = address - self.base
         return self.data[at : at + length] if 0 <= at and at + length <= len(self.data) else None
 
-    def targets(self, name):
-        return self.addresses.get(name) or {0}
-
-    def got(self, name):
+    def got(self, name, weak=False):
         return self.slots.get(name, set())
 
     def stub(self, address):
@@ -59,8 +56,8 @@ def _piece(data, *relocations, machine=EM_AARCH64, unread=None, **symbols):
     return StartupPiece("crtbeginS.o", ".text", data, machine, relocations, symbols, unread)
 
 
-def _external(offset, kind, name, addend=0):
-    return Relocation(offset, kind, addend, None, name, 0, False, None)
+def _external(offset, kind, name, addend=0, weak=False):
+    return Relocation(offset, kind, addend, None, name, 0, False, None, weak)
 
 
 BASE = 0x1000
@@ -124,7 +121,7 @@ def test_an_address_and_a_got_slot_are_checked_by_page_and_low_bits():
 def test_x86_64_s_got_load_may_be_relaxed_but_must_still_reach_its_symbol():
     # crti.o's `mov __gmon_start__@GOTPCREL(%rip), %rax`, a REX_GOTPCRELX.
     code = b"\x48\x8b\x05\0\0\0\0\x48\x85\xc0"
-    piece = _piece(code, _external(3, 42, "__gmon_start__", -4), machine=EM_X86_64)
+    piece = _piece(code, _external(3, 42, "__gmon_start__", -4, weak=True), machine=EM_X86_64)
     slot = 0x3FD0
 
     def linked(head, field):
@@ -167,3 +164,53 @@ def test_an_archive_past_the_read_limit_says_so(tmp_path):
     archive.write_bytes(b"!<arch>\n" + b"\0" * 100)
     with pytest.raises(ValueError, match="exceeds Peeky's read limit"):
         list(archive_members(archive, b"init_have_lse_atomics", limit=64))
+
+
+def test_an_address_split_over_adrp_and_its_low_bits_is_checked_whole():
+    # Two GOT slots, 0x1000 and 0x2008: an ADRP to the first's page and a load of the
+    # second's low bits address 0x1008, neither.
+    code = _adrp(0, 0) + _low(0xF9400000, 0, 8)
+    piece = _piece(code, _external(0, 311, "__gmon_start__"), _external(4, 312, "__gmon_start__"))
+
+    def linked(page, low):
+        return Image(EM_AARCH64, BASE, _adrp(BASE, page) + _low(0xF9400000, low, 8), slots=slots)
+
+    slots = {"__gmon_start__": {0x1000, 0x2008}}
+    assert place(piece, BASE, linked(0x2000, 0x2008))
+    assert place(piece, BASE, linked(0x1000, 0x1000))
+    assert not place(piece, BASE, linked(0x1000, 0x2008))
+    # The same for an address: __TMC_END__ at 0x20030, a symbol at 0x31008.
+    code = _adrp(0, 0) + _low(0x91000000, 0)
+    tmc = Relocation(0, 275, 0, None, "__TMC_END__", 0, True, ".data")
+    piece = _piece(code, tmc, Relocation(4, 277, 0, None, "__TMC_END__", 0, True, ".data"))
+    defined = {"__TMC_END__": {0x20030, 0x31008}}
+
+    def addressing(page, low):
+        data = _adrp(BASE, page) + _low(0x91000000, low)
+        return Image(EM_AARCH64, BASE, data, addresses=defined)
+
+    assert place(piece, BASE, addressing(0x20000, 0x30))
+    assert not place(piece, BASE, addressing(0x20000, 0x008))
+    # A low part read through another register than the ADRP wrote: no pair.
+    other = _piece(
+        _adrp(0, 0, 1) + _low(0x91000000, 0),
+        tmc,
+        Relocation(4, 277, 0, None, "__TMC_END__", 0, True, ".data"),
+    )
+    data = _adrp(BASE, 0x20000, 1) + _low(0x91000000, 0x30)
+    assert not place(other, BASE, Image(EM_AARCH64, BASE, data, addresses=defined))
+
+
+def test_only_a_weak_symbol_nothing_defines_is_0():
+    # `mov $0x0, %rax` where crti.o loads __gmon_start__: a static link of a weak symbol.
+    code = b"\x48\x8b\x05\0\0\0\0"
+    linked = Image(EM_X86_64, BASE, b"\x48\xc7\xc0" + struct.pack("<i", 0))
+    weak = _piece(code, _external(3, 42, "__gmon_start__", -4, weak=True), machine=EM_X86_64)
+    assert place(weak, BASE, linked)
+    strong = _piece(code, _external(3, 42, "__gmon_start__", -4), machine=EM_X86_64)
+    assert not place(strong, BASE, linked)
+    # A call to a strong symbol nothing defines: nowhere.
+    call = _piece(_bl(0, 0) + RET, _external(0, 283, "exit"))
+    assert not place(call, BASE, Image(EM_AARCH64, BASE, _bl(BASE, 0) + RET))
+    weak_call = _piece(_bl(0, 0) + RET, _external(0, 283, "exit", weak=True))
+    assert place(weak_call, BASE, Image(EM_AARCH64, BASE, _bl(BASE, 0) + RET))

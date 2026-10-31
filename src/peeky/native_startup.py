@@ -49,7 +49,8 @@ _ANCHORS = {".tm_clone_table": ("__TMC_LIST__", "__TMC_END__")}
 class Relocation:
     """One relocation in a StartupPiece: at ``offset``, of ``kind``, with ``addend``, to
     a target: in this piece (``own``: its offset there), or ``delta`` past a symbol
-    ``name``, which the object defines (``defined``; ``section`` holds it) or doesn't."""
+    ``name``, which the object defines (``defined``; ``section`` holds it) or doesn't;
+    ``weak``: a weak symbol, which may be left undefined (0)."""
 
     offset: int
     kind: int
@@ -59,6 +60,7 @@ class Relocation:
     delta: int
     defined: bool
     section: str | None
+    weak: bool = False
 
 
 @dataclass(frozen=True)
@@ -229,8 +231,9 @@ def object_pieces(blob, origin):
                         Relocation(place, kind_of, addend, value, None, 0, True, None)
                     )
                 elif shndx == 0:
+                    weak = sinfo >> 4 == 2  # STB_WEAK
                     relocations.append(
-                        Relocation(place, kind_of, addend, None, name, 0, False, None)
+                        Relocation(place, kind_of, addend, None, name, 0, False, None, weak)
                     )
                 elif sinfo & 0xF == 3 or not name:
                     # A section's own symbol: by the section's named symbol nearest its start.
@@ -319,18 +322,14 @@ class Image:
                 return self.blob[at + address - low : at + address - low + length]
         return None
 
-    def targets(self, name):
-        """Where a reference to ``name`` may land: its definitions, or 0 where nothing
-        defines it (a weak symbol)."""
-        return self.addresses.get(name) or {0}
-
-    def got(self, name):
+    def got(self, name, weak=False):
         """The GOT slots holding ``name``'s address: those a dynamic relocation names it
-        in, or, of those none names, whose contents are its address. A slot filled at
-        load (a dynamic link) holds 0 in the file: there only a relocation names a weak
-        symbol's."""
-        if name not in self.cache:
-            found, wanted = set(self.slots.get(name, ())), self.targets(name)
+        in, or, of those none names, whose contents are its address: 0 for a ``weak``
+        symbol nothing defines. A slot filled at load (a dynamic link) holds 0 in the
+        file: there only a relocation names a weak symbol's."""
+        if (name, weak) not in self.cache:
+            found = set(self.slots.get(name, ()))
+            wanted = set(self.addresses.get(name) or ({0} if weak else ()))
             if self.relocated:
                 wanted = wanted - {0}
             for section, low, size, at, kind in self.mapped:
@@ -341,8 +340,8 @@ class Image:
                             and struct.unpack_from("<Q", self.blob, at + slot - low)[0] in wanted
                         ):
                             found.add(slot)
-            self.cache[name] = found
-        return self.cache[name]
+            self.cache[(name, weak)] = found
+        return self.cache[(name, weak)]
 
     def stub(self, address):
         """The GOT slot the PLT stub at ``address`` jumps through, or None."""
@@ -396,13 +395,73 @@ def place(piece, base, image):
             return False
         for at in spots:
             linked[at] = original[at] = 0
+    if image.machine == EM_AARCH64 and not _split(piece, base, image, data):
+        return False
     return linked == original
+
+
+# AArch64's split addresses: the ADRP whose page each LO12 completes.
+_PAGES = {277: 275, 278: 275, 286: 275, 312: 311}
+
+
+def _split(piece, base, image, data):
+    """Whether each address the piece splits over an ADRP and an LO12 (an ADD, a load
+    or a store) is, whole, one the relocations name. Each LO12 completes the nearest
+    ADRP before it to the same target, into the register it reads; one with none can't
+    be checked. An ADRP no LO12 completes is checked by its page."""
+
+    def word(blob, at):
+        return struct.unpack_from("<I", blob, at)[0]
+
+    def allowed(relocation):
+        if _AARCH64[relocation.kind][1].startswith("got"):
+            return image.got(relocation.name, relocation.weak) if relocation.name else set()
+        return {target + relocation.addend for target in _expected(relocation, base, image)}
+
+    def target(relocation):
+        return (
+            relocation.own,
+            relocation.name,
+            relocation.delta,
+            relocation.section,
+            relocation.addend,
+        )
+
+    pages = [each for each in piece.relocations if each.kind in (275, 311)]
+    completed = set()
+    for low in piece.relocations:
+        if low.kind not in _PAGES:
+            continue
+        register = (word(piece.data, low.offset) >> 5) & 0x1F
+        paired = [
+            page
+            for page in pages
+            if page.kind == _PAGES[low.kind]
+            and page.offset < low.offset
+            and target(page) == target(low)
+            and word(piece.data, page.offset) & 0x1F == register
+        ]
+        if not paired:
+            return False
+        page = max(paired, key=lambda each: each.offset)
+        completed.add(page.offset)
+        address = _page(base + page.offset, word(data, page.offset))
+        address += ((word(data, low.offset) >> 10) & 0xFFF) * _AARCH64[low.kind][2]
+        if address not in allowed(low):
+            return False
+    for page in pages:
+        if page.offset not in completed and _page(
+            base + page.offset, word(data, page.offset)
+        ) not in {each & ~0xFFF for each in allowed(page)}:
+            return False
+    return True
 
 
 def _expected(relocation, base, image):
     """Where the relocation's target S may be: in the piece, at the binary's symbol of
     its name (by the section's anchor where the binary keeps no symbol of an empty
-    section), or 0 for a weak symbol nothing defines."""
+    section), or 0 for a weak symbol nothing defines. A strong symbol nothing defines
+    is nowhere: the piece doesn't match."""
     if relocation.own is not None:
         return {base + relocation.own}
     names = (relocation.name,) if relocation.name else ()
@@ -412,7 +471,7 @@ def _expected(relocation, base, image):
     for name in names:
         if name in image.addresses:
             found |= {address + relocation.delta for address in image.addresses[name]}
-    if not found and not relocation.defined and relocation.name:
+    if not found and not relocation.defined and relocation.weak:
         found = {0}
     return found
 
@@ -438,18 +497,13 @@ def _check(piece, relocation, base, image, data):
             lands = place_ + _signed(word & mask, 26) * 4
             stub = image.stub(lands)
             good = lands in wanted or (
-                not relocation.defined and stub is not None and stub in image.got(relocation.name)
+                not relocation.defined
+                and stub is not None
+                and stub in image.got(relocation.name, relocation.weak)
             )
-        elif how == "page":
-            good = _page(place_, word) in {target & ~0xFFF for target in wanted}
-        elif how == "low":
-            good = ((word >> 10) & 0xFFF) * scale in {target & 0xFFF for target in wanted}
         else:
-            slots = image.got(relocation.name) if relocation.name else set()
-            if how == "got page":
-                good = _page(place_, word) in {slot & ~0xFFF for slot in slots}
-            else:
-                good = ((word >> 10) & 0xFFF) * scale in {slot & 0xFFF for slot in slots}
+            # An address split over ADRP and its LO12: checked whole, by _split.
+            good = True
         return range(at, at + 4) if good else None
     how = _X86_64[relocation.kind]
     if at + 4 > len(data):
@@ -465,10 +519,10 @@ def _check(piece, relocation, base, image, data):
             relocation.kind == 4
             and not relocation.defined
             and stub is not None
-            and stub in image.got(relocation.name)
+            and stub in image.got(relocation.name, relocation.weak)
         )
         return range(at, at + 4) if good else None
-    slots = image.got(relocation.name) if relocation.name else set()
+    slots = image.got(relocation.name, relocation.weak) if relocation.name else set()
     if how == "got":
         return range(at, at + 4) if field + place_ - relocation.addend in slots else None
     # REX_GOTPCRELX: `mov sym@GOTPCREL(%rip), %reg`, or what the linker relaxes it to.
