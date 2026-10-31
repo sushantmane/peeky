@@ -202,7 +202,7 @@ breakpoint lines in pagination_bug.py: 1, 4-9, 12-13
 names in <module>: get_page
 names in get_page (lines 4-9): end, items, page, page_size, start
 mutable: Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them
-probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--run <script.py>] [--arg A ...] --capture <a,b.c> ...
+probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--run <script.py> | --run-module pytest] [--arg A ...] --capture <a,b.c> ...
 ...
 ```
 
@@ -976,6 +976,8 @@ output:
 - `--arg` passes one program argument, and can be repeated. For a value that starts with a dash,
   write `--arg=-v`.
 - Or put all of the program's arguments after `--`: `peeky probe app.py --at 5 -- A 5 5 0`.
+- In Python, `--run-module pytest` runs pytest instead of a script, as `python -m pytest` does:
+  `--run-module pytest -- -q tests/test_x.py::test_y` ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
 
 C, C++, Rust and launched Java programs take arguments too:
 

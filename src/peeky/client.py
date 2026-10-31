@@ -266,6 +266,7 @@ class Client:
         edit=None,
         set_at=(),
         expect_inputs=None,
+        module=None,
     ):
         """One stateless request: stop at `path:line`, capture, optionally set, report.
 
@@ -282,6 +283,9 @@ class Client:
         from peeky.probe import edit_pairs
 
         options = {"entry": entry} if entry else {}
+        if module:
+            # Run as `python -m` runs it (protocol 13).
+            options["module"] = module
         if edit:
             pairs = [{"old": old, "new": new} for old, new in edit_pairs(edit)]
             options["edit"] = pairs[0] if len(pairs) == 1 else pairs

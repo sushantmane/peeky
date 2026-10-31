@@ -209,6 +209,110 @@ def skipped_message(name):
     )
 
 
+# `--run-module`'s one module: pytest, which Peeky runs as `python -m pytest` does. A
+# worker runs no other: a client could run any installed module there (pip, http.server).
+RUN_MODULE = "pytest"
+# The note on a pytest run Peeky turned rewriting off for (``module_arguments``).
+PLAIN_ASSERTS = (
+    "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change "
+    "the test files' code from the source Peeky reads. So a failing assert shows less detail"
+)
+# The note on a pytest run whose own command line kept it from installing its rewrite hook.
+NO_ASSERTION = (
+    "pytest got -p no:assertion on its command line, which kept it from installing its rewrite "
+    "hook, so it rewrote no asserts: the test files ran as Peeky reads them. Peeky added nothing"
+)
+# The note where pytest, so run, refused an --assert of its own (``refused_assert``).
+REFUSED_ASSERT = (
+    "pytest refused an --assert from its configuration or PYTEST_ADDOPTS (`unrecognized "
+    "arguments`): with -p no:assertion on its command line it has no --assert option. So no "
+    "test ran. Remove that --assert, or the -p no:assertion"
+)
+# The note where pytest refused the --assert=plain Peeky added (``refused_plain``).
+REFUSED_PLAIN = (
+    "pytest refused the --assert=plain that Peeky added (`unrecognized arguments`): its "
+    "assertion plugin was off when it read its arguments, through its configuration, "
+    "PYTEST_ADDOPTS or -p. So no test ran. Pass only -p no:assertion after `--`, and Peeky "
+    "adds nothing"
+)
+
+
+# The note on a script that may run pytest, which then rewrites asserts (``script_notes``).
+PYTEST_SCRIPT = (
+    "The script that runs imports pytest. If it runs pytest, pytest rewrites the test files' "
+    "asserts, so their code differs from the source Peeky reads, and a line there may stop "
+    "more than once per pass. Use --run-module pytest instead, which turns rewriting off"
+)
+_IMPORTS_PYTEST = re.compile(
+    rb"^[ \t]*(?:from[ \t]+_?pytest\b|import[ \t][^\n#;]*(?<![\w.])_?pytest\b)", re.M
+)
+
+
+def check_module(name):
+    """Refuse a `--run-module` other than pytest."""
+    if name != RUN_MODULE:
+        raise ValueError(
+            f"--run-module takes only pytest (`--run-module pytest`), not {str(name)[:80]!r}: "
+            "Peeky runs pytest as `python -m pytest` does, and no other module. For another "
+            "program, use --run with a script"
+        )
+    return name
+
+
+def _plugins(args):
+    """The `-p` values in pytest's arguments ``args``, in order, as pytest reads them
+    before anything else: `-p NAME` and `-pNAME`, anywhere (`--` too), stripped."""
+    found, at = [], 0
+    while at < len(args):
+        arg, at = args[at], at + 1
+        if arg == "-p":
+            if at >= len(args):
+                break
+            found.append(args[at].strip())
+            at += 1
+        elif arg.startswith("-p"):
+            found.append(arg[2:].strip())
+    return found
+
+
+def _hook_blocked(added, args):
+    """Whether pytest installs no rewrite hook, so it rewrites nothing and takes no
+    --assert: its command line ``args`` blocks its assertion plugin (`-p no:assertion`),
+    which pytest reads before it loads its plugins and decides on the hook, and nothing
+    there or in PYTEST_ADDOPTS (``added``) loads the plugin again (`-p assertion`). A
+    config file's `addopts` may register it again, after the hook was decided. Where
+    anything else loads it again, this does not say: Peeky adds --assert=plain, which
+    whenever pytest takes it keeps pytest from rewriting (it decides that by --assert)."""
+    given, extra = _plugins(args), _plugins(added)
+    return "no:assertion" in given and "assertion" not in given + extra
+
+
+def refused_plain(output):
+    """Whether pytest's ``output`` says it refused the --assert=plain Peeky added."""
+    return isinstance(output, str) and "unrecognized arguments: --assert=plain" in output
+
+
+def refused_assert(output):
+    """Whether pytest's ``output`` says it refused an --assert (one of its configuration's,
+    with no such option)."""
+    return isinstance(output, str) and bool(
+        re.search(r"unrecognized arguments: (?:.* )?--assert\b", output)
+    )
+
+
+def _assert_mode(args):
+    """The `--assert` mode pytest's arguments ``args`` set last, or None."""
+    mode = None
+    for at, arg in enumerate(args):
+        if arg == "--":
+            break
+        if arg.startswith("--assert="):
+            mode = arg.split("=", 1)[1]
+        elif arg == "--assert":
+            mode = args[at + 1] if at + 1 < len(args) else ""
+    return mode
+
+
 def _shadowed(names, places):
     """Whether a module of one of ``names`` may not be the standard library's where the
     program imports it: a module or package of that name (any case: a volume may ignore
@@ -1045,13 +1149,18 @@ class PythonCandidate:
     def source_path(self, original):
         return self.staged if Path(original).resolve() == self.original else original
 
-    def launch_args(self, program, root, args=(), **options):
-        if Path(program).resolve() != self.original:
-            # `--run` would be the user's entry script, outside the copy.
+    def launch_args(self, program, root, args=(), *, module=None, **options):
+        if module is not None or Path(program).resolve() != self.original:
+            # `--run` would be the user's entry script, outside the copy; `--run-module`
+            # would import the user's files too.
             raise ValueError(
-                "A Python candidate runs the edited --at file itself; with --run, the entry "
-                "script would import the original module. Probe the edited file directly, "
-                "or check the edit with `peeky verify`"
+                "A Python candidate runs the edited --at file itself; with "
+                + (
+                    "--run-module, the module would import your original --at file, not the edit"
+                    if module is not None
+                    else "--run, the entry script would import the original module"
+                )
+                + ". Probe the edited file directly, or check the edit with `peeky verify`"
             )
         launch = self.adapter.launch_args(self.staged, self.root, args, **options)
         if self._pythonpath is not None:
@@ -1499,11 +1608,112 @@ class PythonAdapter:
             return False
         return isinstance(directories, list) and under(path, directories)
 
-    def launch_args(self, program, root, args=(), *, library=False):
-        """debugpy's launch of ``program``. ``library``: the breakpoints are in installed
-        code (``installed``), which debugpy then stops in too, and lists in the stack."""
+    def module_arguments(self, module, args, environ=None):
+        """``(args, notes)``: what `--run-module` ``module`` (pytest) gets, and why it
+        differs. pytest rewrites each test file's asserts as it imports it, so the code
+        that runs is not what Peeky reads (other lines have code; at -O the asserts still
+        run): it gets `--assert=plain` first, unless its command line keeps it from
+        installing its rewrite hook (``_hook_blocked``, with `PYTEST_ADDOPTS` from
+        ``environ``, the program's). Refused where that would change the run: an `--assert`
+        of the program's own other than plain, or an optimization level above 0, where
+        pytest's plain asserts would not run."""
+        import shlex
+
+        check_module(module)
+        environ = os.environ if environ is None else environ
+        try:
+            added = shlex.split(environ.get("PYTEST_ADDOPTS") or "")
+        except ValueError:
+            raise ValueError(
+                "--run-module pytest reads PYTEST_ADDOPTS as pytest does, and it can't be split "
+                "into arguments (an unclosed quote), so Peeky can't tell whether pytest "
+                "rewrites asserts. Fix or unset PYTEST_ADDOPTS"
+            ) from None
+        if _hook_blocked(added, list(args)):
+            return list(args), [NO_ASSERTION]
+        if (mode := _assert_mode(list(args))) not in (None, "plain"):
+            raise ValueError(
+                f"--run-module {module} runs pytest with --assert=plain, and its arguments set "
+                f"--assert={mode}: pytest's rewritten asserts are not the code Peeky reads. "
+                "Leave --assert out"
+            )
+        if self.program_optimize():
+            raise ValueError(
+                f"--run-module {module} runs pytest with --assert=plain, and the program runs "
+                "at -O (PYTHONOPTIMIZE), where plain asserts don't run: pytest runs them at -O "
+                "only by rewriting them, which changes the code from what Peeky reads. Unset "
+                "PYTHONOPTIMIZE"
+            )
+        return ["--assert=plain", *args], [PLAIN_ASSERTS]
+
+    def check_pytest(self, root):
+        """Refuse a `--run-module pytest` that would not run the pytest package installed
+        for the program's interpreter: where `python -m pytest` there, in the root, finds
+        another `pytest` first (a `pytest.py` in the root, a package outside that
+        interpreter's site-packages), or none. Asked of that interpreter, as the program
+        runs."""
+        from peeky.python_interpreter import Unavailable, identify, module_origin
+
+        interpreter = getattr(self.readings, "given", None) or identify(
+            self.interpreter, "--python", cwd=root
+        )
+        found = module_origin(interpreter, RUN_MODULE)
+        if found is None:
+            raise ValueError(
+                f"--run-module pytest needs pytest installed for the program's interpreter, "
+                f"{interpreter.executable}, and `python -m pytest` there finds none. Install it "
+                "there (in the root's .venv), or pass --python with one that has it"
+            )
+        origin, locations = found
+        try:
+            directories = self.readings("installed_dirs")
+        except Unavailable:
+            directories = []
+        package = bool(locations) and isinstance(origin, str) and origin.endswith("__init__.py")
+        if not (package and under(origin, directories)):
+            why = (
+                "it is not the pytest package"
+                if not package
+                else "it is not in a site-packages directory of that interpreter"
+            )
+            raise ValueError(
+                f"--run-module pytest runs the pytest package installed for the program's "
+                f"interpreter, and there `python -m pytest` would run {origin}: {why}. Rename "
+                "it, or use --run with a script"
+            )
+
+    @staticmethod
+    def script_notes(path):
+        """Notes on the script that runs: one that imports pytest may run it, rewriting
+        asserts (``module_arguments``) as Peeky can't turn off for a script."""
+        try:
+            with open(path, "rb") as stream:
+                text = stream.read(1 << 20)
+        except OSError:
+            return []
+        return [PYTEST_SCRIPT] if _IMPORTS_PYTEST.search(text) else []
+
+    def program_optimize(self):
+        """The program's optimization level (`sys.flags.optimize`), as its interpreter
+        reports it with the program's environment."""
+        level = (self.identity or {}).get("optimize")
+        if type(level) is int:
+            return level
+        from peeky.python_interpreter import identify
+
+        return identify(self.interpreter, "--python").optimize
+
+    def launch_args(self, program, root, args=(), *, library=False, module=None):
+        """debugpy's launch of ``program``; with ``module`` (`--run-module`), of that
+        module, as `python -m` runs it, in ``root``. ``library``: the breakpoints are in
+        installed code (``installed``), which debugpy then stops in too, and lists in the
+        stack."""
         return {
-            "program": str(program),
+            **(
+                {"module": check_module(module)}
+                if module is not None
+                else {"program": str(program)}
+            ),
             "args": list(args),
             "cwd": str(root),
             "console": "internalConsole",

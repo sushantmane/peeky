@@ -14,6 +14,7 @@ Peeky debugs Python with debugpy, Python's debugger.
 - [Setup](#0-setup)
   - [Which interpreter runs the program](#which-interpreter-runs-the-program)
   - [Stop in an installed package](#stop-in-an-installed-package)
+  - [Run a pytest test](#run-a-pytest-test)
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See which module globals a function reads](#see-which-module-globals-a-function-reads)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
@@ -175,6 +176,71 @@ peeky probe . --at .venv/lib/python3.12/site-packages/tally/core.py:14 --capture
 A project installed without `-e` runs its copy in `site-packages`, not its source. So a breakpoint
 in `src/pkg/mod.py` never stops, and the probe ends `no-stop`. Install it editable,
 `pip install -e .`, or name the installed copy.
+
+### Run a pytest test
+
+`--run-module pytest` runs pytest in the root, as `python -m pytest` does. Its arguments go after
+`--`. To stop in your code while a pytest test runs:
+
+```sh
+peeky probe . --at src/shop/cart.py:4 --capture cut,1:d --hits all \
+  --run-module pytest -- -q tests/test_cart.py::test_total
+```
+
+```
+hit  phase     line  function    selector  type   value
+1    observed  4     total       cut       float  3.0
+1    observed  6     test_total  1:d       float  0.1
+2    observed  4     total       cut       float  6.0
+2    observed  6     test_total  1:d       float  0.2
+status: completed  hits: 2 (all)  seconds: 1.054  max pause: 12.6 ms
+python: /home/me/shop/.venv/bin/python, Python 3.12.4 (the root's .venv)
+warning: pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail
+output:
+  .                                                                        [100%]
+  1 passed in 0.02s
+```
+
+- It takes no other module: a worker would run any module a client names, such as `pip`. For
+  another program, use `--run` with a script.
+- pytest runs on the interpreter Peeky chooses, so that one needs pytest
+  ([Which interpreter runs the program](#which-interpreter-runs-the-program)). Peeky asks that
+  interpreter, as the program runs, where `python -m pytest` finds pytest. It must be a package
+  in one of that interpreter's site-packages directories. Another found first, such as a
+  `pytest.py` in the root, is refused before debugpy starts pytest, and so is none. The message
+  names the file. The interpreter's startup has run by then, to find pytest: its `.pth` files and
+  `sitecustomize`, which may run project code.
+- Peeky gives pytest `--assert=plain`, before your arguments. pytest rewrites each test file's
+  asserts as it imports it, so the code that runs isn't the source Peeky reads. For example, a
+  line inside an assert that spans lines stopped twice per pass of a loop. With plain asserts,
+  the test files run as written. A failing assert then shows less detail.
+- Arguments that set `--assert` to anything but `plain` are refused before debugpy starts
+  pytest. So is a program that runs at `-O` (`PYTHONOPTIMIZE`). pytest runs asserts at `-O` only
+  by rewriting them, and plain ones wouldn't run.
+- With `-p no:assertion` in its arguments after `--`, pytest blocks its assertion plugin before it
+  decides on its rewrite hook. So it installs none, and rewrites nothing, even where a config
+  file's `addopts` register the plugin again later. It would refuse `--assert=plain` then, so
+  Peeky adds nothing, and a note says so. A `-p assertion` there or in `PYTEST_ADDOPTS` loads the
+  plugin again, so Peeky adds `--assert=plain`. pytest decides whether to rewrite by its
+  `--assert`, and Peeky's comes last.
+- With `-p no:assertion` there, an `--assert` in a config file's `addopts` or in
+  `PYTEST_ADDOPTS` is an unknown option: pytest stops, and no test runs. The note says so.
+- In `PYTEST_ADDOPTS` or a config file's `addopts`, `-p no:assertion` doesn't stop rewriting:
+  pytest reads it after it has decided. So Peeky adds `--assert=plain` then too. If pytest refuses
+  it, no test runs, and the note says why: pass only `-p no:assertion` after `--`.
+- `--json`'s `program_args` lists what pytest got, `--assert=plain` first. The probe's `module`
+  names the module. In the evidence store, the run's `entry` is `-m pytest`.
+- Plugins run as they do under pytest. One that changes code as it imports it, as assert
+  rewriting does, makes Peeky's readings of that code wrong.
+- Peeky stops only in the process it starts. A test that a plugin runs in another process, as
+  pytest-xdist's `-n` does, never stops there.
+- A `--run` script that imports pytest gets a warning. If it runs pytest, pytest rewrites asserts,
+  and Peeky can't change a script's arguments. Use `--run-module pytest` instead.
+- `session start` takes `--run-module` too. A candidate with `--run-module` is refused, as one
+  with `--run` is.
+- A remote worker runs the module from its own environment, which isn't compared with yours. The
+  test files under its root are compared, as every `.py` file there is
+  ([REMOTE.md](../REMOTE.md#source-identity)).
 
 ## 1.1 What Can I Ask?
 
