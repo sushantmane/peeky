@@ -329,29 +329,65 @@ def write(root, files):
         path.write_text(text)
 
 
-def test_a_packages_files_are_listed_as_cargo_lists_them(tmp_path):
+def test_a_package_is_walked_whole_by_lstat_and_links_are_never_followed(tmp_path):
     write(
         tmp_path,
         {
             "build.rs": "fn main() {}\n",
             "src/lib.rs": "",
-            "data/schema.txt": "a\n",
-            ".git/HEAD": "x",
-            "target/debug/out": "x",
-            "nested/Cargo.toml": "[package]\n",
-            "nested/src/lib.rs": "",
+            ".hidden/x": "x\n",
+            "target/manual": "m\n",
+            "fixture/Cargo.toml": "[package]\n",
+            "fixture/src/lib.rs": "",
+            "member/Cargo.toml": "[package]\n",
+            "member/src/lib.rs": "",
             "vendor/smallnum/src/lib.rs": "",
+            ".git/HEAD": "x",
+            ".DS_Store": "junk",
+            "src/Thumbs.db": "junk",
+            "src/desktop.ini": "junk",
+            "shared/data.txt": "d\n",
         },
     )
-    found = rb._tree(tmp_path, {str(tmp_path / "vendor")}, budget=[100])
-    assert sorted(found) == ["build.rs", "data/schema.txt", "src/lib.rs"]
+    (tmp_path / "to-file").symlink_to("shared/data.txt")
+    (tmp_path / "to-dir").symlink_to("shared")
+    (tmp_path / "dangling").symlink_to("gone")
+    (tmp_path / "out").symlink_to("/etc")
+    skip = {str(tmp_path / "member"), str(tmp_path / "vendor")}
+    found = rb._tree(tmp_path, skip, budget=[100])
+    digest = hashlib.sha256
+    assert found == {
+        # Hidden and `target` directories too, and a crate that isn't a workspace package.
+        ".hidden/x": digest(b"x\n").hexdigest(),
+        "build.rs": digest(b"fn main() {}\n").hexdigest(),
+        "dangling": ["link", "gone"],
+        "fixture/Cargo.toml": digest(b"[package]\n").hexdigest(),
+        "fixture/src/lib.rs": digest(b"").hexdigest(),
+        # A link by its text: never followed, into a directory or out of the root.
+        "out": ["link", "/etc"],
+        "shared/data.txt": digest(b"d\n").hexdigest(),
+        "src/lib.rs": digest(b"").hexdigest(),
+        "target/manual": digest(b"m\n").hexdigest(),
+        "to-dir": ["link", "shared"],
+        "to-file": ["link", "shared/data.txt"],
+    }
+    # Where every entry is what a build may read, a link out of the root is refused.
     with pytest.raises(ValueError) as caught:
-        rb._tree(tmp_path, budget=[2])
+        rb._reachable(tmp_path / "out", tmp_path)
+    assert str(caught.value) == (
+        f"Peeky builds only files inside {tmp_path}: out leads out of it through out, a link to "
+        "/etc, and a build script or procedural macro may read every file of its package. "
+        "Point the link inside the workspace, or make it a file there"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    rb._reachable(tmp_path / "to-dir", tmp_path)
+    # Past the budget, refused: never filtered.
+    with pytest.raises(ValueError) as caught:
+        rb._tree(tmp_path, skip, budget=[2])
     assert str(caught.value).startswith(
         f"Peeky records at most {rb.MAX_RECORDED} files a build script or procedural macro may "
         f"read, and {tmp_path} holds more"
     )
-    assert classify(caught.value)["code"] == "UNSUPPORTED"
 
 
 # A build that started after the test wrote its files: none changed while Cargo ran.
@@ -485,6 +521,7 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
             "app/ignored.log": "i\n",
             "app/.DS_Store": "junk\n",
             "app/Thumbs.db": "junk\n",
+            "shared/data.txt": "d\n",
             "util/src/lib.rs": "",
             "derive/src/lib.rs": "",
             "derive/.DS_Store": "junk\n",
@@ -492,52 +529,117 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
     )
     (tmp_path / "outside.txt").write_text("o\n")
     (root / "app/escape.txt").symlink_to(tmp_path / "outside.txt")
+    (root / "app/dangling.txt").symlink_to("gone.txt")
+    (root / "app/assets").symlink_to("../shared")
     messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
     asked = []
+    listed = [
+        ".tracked",
+        "Cargo.lock",
+        "Cargo.toml.orig",
+        ".cargo_vcs_info.json",
+        "assets/data.txt",
+        "build.rs",
+        "dangling.txt",
+        "deleted.txt",
+        "escape.txt",
+        "src/main.rs",
+    ]
 
     def lister(package):
         # `cargo package --list`, with git: tracked and untracked files git doesn't ignore,
-        # hidden ones too, and the files Cargo writes into a package.
+        # hidden ones too, through a linked directory, and the files Cargo writes into a
+        # package.
         asked.append(package)
-        return [
-            ".tracked",
-            "Cargo.lock",
-            "Cargo.toml",
-            "Cargo.toml.orig",
-            "build.rs",
-            "escape.txt",
-            "src/main.rs",
-        ], None
+        return listed, None
 
     shape = fake_shape(tmp_path)
     found = rb._build_inputs(shape, root, messages, {"CC": None}, {}, LATER, None, 1, lister)
     assert asked == ["app@0.1.0"]
-    listed = found["lists"][str(root / "app")]
-    assert listed["cargo"] is True and listed["note"] is None
-    # A link out of the root is recorded unread; Cargo's own files that aren't there aren't.
-    assert listed["files"] == {
-        ".tracked": hashlib.sha256(b"t\n").hexdigest(),
-        "build.rs": hashlib.sha256(b"").hexdigest(),
-        "escape.txt": None,
-        "src/main.rs": hashlib.sha256(b"").hexdigest(),
+    record = found["lists"][str(root / "app")]
+    assert record["cargo"] is True and record["note"] is None
+    digest = hashlib.sha256
+    # Each looked at by lstat first. Cargo's own files that aren't there are left out; a
+    # listed file that isn't there, a link to nothing or out of the root, is refused by type.
+    assert record["files"] == {
+        ".tracked": digest(b"t\n").hexdigest(),
+        "assets/data.txt": digest(b"d\n").hexdigest(),
+        "build.rs": digest(b"").hexdigest(),
+        "dangling.txt": {"refused": "dangling"},
+        "deleted.txt": {"refused": "missing"},
+        "escape.txt": {"refused": "outside"},
+        "src/main.rs": digest(b"").hexdigest(),
     }
-    # The walk, for the build's freshness, has what Cargo ignores too.
-    assert "ignored.log" in found["trees"][str(root / "app")]
-    record = {"root": str(root), "build_inputs": found, "watch": {}}
-    assert rb._watched_inputs(record)[1] == (
-        "A remote client can't compare what this build read with its own files: app/escape.txt "
-        "is a link that leads out of the root on the worker's host, among the files of a "
-        "package Cargo watches whole. Run Peeky on the worker's host, or point the link inside "
-        "the root"
-    )
-    # Cargo can't list it: every file Peeky walks, but OS junk, and the record says why.
+    # The walk, for the build's freshness, has what Cargo ignores too, and links by text.
+    walked = found["trees"][str(root / "app")]
+    assert "ignored.log" in walked and walked["escape.txt"] == [
+        "link",
+        str(tmp_path / "outside.txt"),
+    ]
+    manifest, files = {"root": str(root), "build_inputs": found, "watch": {}}, dict(record["files"])
+    for name, what in (
+        ("dangling.txt", "a link to nothing"),
+        ("deleted.txt", "missing, though Cargo lists it"),
+        ("escape.txt", "a link that leads out of the root"),
+    ):
+        found["lists"][str(root / "app")]["files"] = {name: files[name]}
+        assert rb._watched_inputs(manifest)[1] == (
+            "A remote client can't compare what this build read with its own files: "
+            f"app/{name} is {what} on the worker's host, among the files of a package a build "
+            "may read whole. Run Peeky on the worker's host, or "
+            + rb._UNLISTABLE[files[name]["refused"]][1]
+        )
+    # A member's Cargo.lock that is there is its own.
+    (root / "app/Cargo.lock").write_text("lock\n")
+    found = rb._build_inputs(shape, root, messages, {"CC": None}, {}, LATER, None, 1, lister)
+    assert "Cargo.lock" in found["lists"][str(root / "app")]["files"]
+    (root / "app/Cargo.lock").unlink()
+    # Cargo can't list it: every entry Peeky walks, and the record says why. A link out of
+    # the root is then refused, as a build may read it.
+    with pytest.raises(ValueError, match="app/escape.txt leads out of it through app/escape.txt"):
+        rb._build_inputs(
+            shape, root, messages, {"CC": None}, {}, LATER, None, 1, lambda p: (None, "it failed")
+        )
+    (root / "app/escape.txt").unlink()
     found = rb._build_inputs(
         shape, root, messages, {"CC": None}, {}, LATER, None, 1, lambda p: (None, "it failed")
     )
-    listed = found["lists"][str(root / "app")]
-    assert listed["cargo"] is False and listed["note"] == "it failed"
-    assert sorted(listed["files"]) == [".tracked", "build.rs", "ignored.log", "src/main.rs"]
-    # A procedural macro's package, and the analysed ones: every file but OS junk.
+    record = found["lists"][str(root / "app")]
+    assert record["cargo"] is False
+    assert record["note"] == (
+        "it failed: Peeky compares every file of app with a remote client's instead, but "
+        ".DS_Store, Thumbs.db and desktop.ini"
+    )
+    assert sorted(record["files"]) == [
+        ".tracked",
+        "assets",
+        "build.rs",
+        "dangling.txt",
+        "ignored.log",
+        "src/main.rs",
+    ]
+    assert record["files"]["assets"] == "dir"
+    assert record["files"]["dangling.txt"] == {"refused": "dangling"}
+    # The build's summary says so, once.
+    summary = rb.summary(
+        {
+            "workspace": str(root),
+            "analysed": ["util"],
+            "run": {"package": "app", "target": "app", "kinds": ["bin"], "executable": "app"},
+            "build_id": "b",
+            "seconds": 1.0,
+            "dependencies": 0,
+            "sources": {},
+            "units": [],
+            "build_inputs": {"lists": {"a": record, "b": dict(record), "c": {"note": None}}},
+        },
+        tmp_path,
+    )
+    assert summary["notes"] == [record["note"]]
+    from peeky.cli import _build_text
+
+    assert _build_text(summary).splitlines()[-1] == f"note: {record['note']}"
+    # A procedural macro's package, and the analysed ones: every entry Peeky walks.
     macro = {
         "reason": "compiler-artifact",
         "manifest_path": str(root / "derive/Cargo.toml"),
@@ -546,7 +648,7 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
     shape = fake_shape(tmp_path, local=("util", "app", "derive"))
     found = rb._build_inputs(shape, root, [macro], {}, {}, LATER, None, 1, lister)
     assert sorted(found["lists"][str(root / "derive")]["files"]) == ["src/lib.rs"]
-    assert asked == ["app@0.1.0"]
+    assert asked == ["app@0.1.0", "app@0.1.0"]
 
 
 def test_a_listed_file_the_walk_leaves_out_keeps_the_build_current_until_it_changes(

@@ -160,10 +160,30 @@ class OutsideRoot(ValueError):
     link read."""
 
     def __init__(self, name, link, target, side):
+        self.link, self.target = link, target
         super().__init__(
             f"Peeky compares only files inside the root: on {side}, {name} leads out of it "
             f"through {link}, a link to {target}. Nothing there was read. Point the link inside "
             "the root, or make it a file or directory there"
+        )
+
+
+class LinkLoop(ValueError):
+    """A compared path whose links loop, or are more than ``_MAX_HOPS`` in a row: refused,
+    and nothing through them read."""
+
+    def __init__(self, name, link, side, loop):
+        self.loop = loop
+        self.what = what = (
+            f"leads into a link loop at {link}"
+            if loop
+            else f"passes through more than {_MAX_HOPS} links, the last {link}"
+        )
+        super().__init__(
+            f"Peeky compares only files it can reach: on {side}, {name} {what}. Nothing through "
+            "it was read. "
+            + ("Break the loop" if loop else "Shorten the chain of links")
+            + ", or make it a file or directory there"
         )
 
 
@@ -173,22 +193,42 @@ _MAX_HOPS = 40
 
 def _inside(root, name, side):
     """Follow ``name`` under the resolved ``root`` one component, and one link, at a time,
-    each link's target held inside ``root`` before it is followed: OutsideRoot names the
-    first that leaves it, out and back in too. Only links' texts are read (``readlink``),
-    never a file."""
-    current, pending, hops = root, list(PurePosixPath(name).parts), 0
+    as the kernel does: a link's text from where the link is, its `..` from where that is.
+    Every step is held inside ``root``: OutsideRoot names the link that would leave it, out
+    and back in too. A loop, or more than ``_MAX_HOPS`` links, is LinkLoop. Only links'
+    texts are read (``readlink``), never a file. (the links followed, in order, each [its
+    path under ``root``, its text]; the path reached, which no link is on.)"""
+    current, chain, states = root, [], set()
+    # Each part to follow, with the link whose text gave it (None: ``name``'s own).
+    pending = [(part, None) for part in PurePosixPath(name).parts]
     while pending:
-        part = pending.pop(0)
+        part, via = pending.pop(0)
+        if part in ("", "."):
+            continue
         candidate = current.parent if part == ".." else current / part
-        if not os.path.islink(candidate):
+        if not candidate.is_relative_to(root):
+            raise OutsideRoot(name, via[0] if via else name, via[1] if via else part, side)
+        if part == ".." or not os.path.islink(candidate):
             current = candidate
             continue
-        hops += 1
-        target = Path(os.path.normpath(current / os.readlink(candidate)))
-        if hops > _MAX_HOPS or not target.is_relative_to(root):
-            link = candidate.relative_to(root).as_posix()
-            raise OutsideRoot(name, link, target, side)
-        current, pending = root, [*target.relative_to(root).parts, *pending]
+        link, text = candidate.relative_to(root).as_posix(), os.readlink(candidate)
+        state = (link, tuple(pending))
+        if state in states:
+            raise LinkLoop(name, link, side, loop=True)
+        if len(chain) >= _MAX_HOPS:
+            raise LinkLoop(name, link, side, loop=False)
+        states.add(state)
+        chain.append([link, text])
+        parts = PurePosixPath(text).parts
+        if PurePosixPath(text).is_absolute():
+            # Only a text that names the root itself, as written, stays inside it.
+            if parts[: len(root.parts)] != root.parts:
+                raise OutsideRoot(name, link, text, side)
+            current, parts = root, parts[len(root.parts) :]
+        else:
+            current = candidate.parent
+        pending = [(each, (link, text)) for each in parts] + pending
+    return chain, current
 
 
 def _kind(path):
@@ -215,39 +255,40 @@ def _checkout_metadata(name):
 
 def _identity(root, name, content=None, side="the worker host"):
     """``name``'s identity: its content's SHA-256 for a regular file reached through no
-    link (as every target's sources are compared); else the SHA-256 of what it is (the links
-    on its way, and what each says; a link's text and its target's SHA-256). None where it is
-    missing or not a file. ``content``: the content's SHA-256 as a build recorded it, taken
-    instead of the disk's. One a link leads out of ``root`` (resolved) is refused, unread."""
-    root, parts, links = Path(root), PurePosixPath(name).parts, []
-    _inside(root, name, side)
-    for depth in range(1, len(parts)):
-        found = _kind(root.joinpath(*parts[:depth]))
-        if found is not None and found[0] == "link":
-            links.append(["/".join(parts[:depth]), found[1]])
-    path = root / name
-    found = _kind(path)
-    if found is None or found[0] in ("dir", "other"):
-        return None
+    link (as every target's sources are compared); else the SHA-256 of every link followed
+    on its way, and what each says (``_inside``), with its file's SHA-256, or "dir" for a
+    link to a directory. None where it is missing or not a file. ``content``: the content's
+    SHA-256 as a build recorded it, taken instead of the disk's. One a link leads out of
+    ``root`` (resolved), or whose links loop, is refused, unread."""
+    chain, real = _inside(Path(root), name, side)
     try:
-        content = _hash(path) if content is None else content
+        info = os.lstat(real)
     except OSError:
         return None
-    if found[0] == "file" and not links:
-        return content
-    entry = {"links": links, "kind": found[0], "says": found[1], "sha256": content}
+    if stat.S_ISDIR(info.st_mode) and chain:
+        what = "dir"
+    elif stat.S_ISREG(info.st_mode):
+        try:
+            what = _hash(real) if content is None else content
+        except OSError:
+            return None
+    else:
+        return None
+    if not chain:
+        return what
+    entry = {"links": chain, "sha256": what}
     return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
 
 
 def _tree(root, top, side="the worker host"):
     """The SHA-256 of what the directory ``top`` holds, as Cargo scans a `rerun-if-changed`
-    directory: its own kind (and a link's text), and every entry under it, hidden and
-    `target` ones too, through links to directories, by its path, kind, and a link's text and
-    its file's SHA-256 (files' contents are compared by name). Never a `.git` entry. ``root``
-    is resolved; a link on the way, or under it, that leads out of it is refused, unread
-    (OutsideRoot)."""
+    directory: the links on its way, and every entry under it, hidden and `target` ones too,
+    through links to directories, by its path and kind; a link by every link followed from
+    it and what each says (``_inside``), and its file's SHA-256 (files' contents are compared
+    by name). Never a `.git` entry. ``root`` is resolved; a link on the way, or under it,
+    that leads out of it, or loops, is refused, unread."""
+    chain, _ = _inside(root, top, side)
     start = root / top
-    _inside(root, top, side)
     entries, seen = [], set()
     pending = [(start, "")]
     while pending:
@@ -270,12 +311,14 @@ def _tree(root, top, side="the worker host"):
                 continue
             kind, says = _kind(path) or ("missing", None)
             if kind == "link":
-                _inside(root, (PurePosixPath(top) / relative).as_posix(), side)
-            if kind == "link" and path.is_file():
+                links, reached = _inside(root, (PurePosixPath(top) / relative).as_posix(), side)
                 try:
-                    says = [says, _hash(path)]
+                    what = "dir" if reached.is_dir() else _hash(reached)
                 except OSError:
-                    says = [says, None]
+                    what = None
+                says = [links, what]
+            elif kind != "missing":
+                says = None
             entries.append([relative, kind, says])
             if len(entries) > MAX_TREE_ENTRIES:
                 raise ValueError(
@@ -284,7 +327,7 @@ def _tree(root, top, side="the worker host"):
                 )
             if kind == "dir" or (kind == "link" and path.is_dir()):
                 pending.append((path, relative + "/"))
-    found = {"root": list(_kind(start) or ("missing", None)), "entries": sorted(entries)}
+    found = {"links": chain, "root": (_kind(start) or ("missing",))[0], "entries": sorted(entries)}
     return hashlib.sha256(json.dumps(found, sort_keys=True).encode()).hexdigest()
 
 

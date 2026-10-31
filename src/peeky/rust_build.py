@@ -486,14 +486,15 @@ def _watched_inputs(manifest):
                 add(path, None, "not a file")
     for top, listed in (inputs.get("lists") or {}).items():
         for relative, digest in listed["files"].items():
-            if digest is not None:
+            if isinstance(digest, str):
                 add(Path(top) / relative, digest)
             elif not _checkout_metadata(relative):
+                what, remedy = _UNLISTABLE[digest["refused"]]
                 refusals.append(
                     "A remote client can't compare what this build read with its own files: "
-                    f"{_shown(Path(top) / relative, root)} is a link that leads out of the root "
-                    "on the worker's host, among the files of a package Cargo watches whole. Run "
-                    "Peeky on the worker's host, or point the link inside the root"
+                    f"{_shown(Path(top) / relative, root)} is {what} on the worker's host, "
+                    "among the files of a package a build may read whole. Run Peeky on the "
+                    f"worker's host, or {remedy}"
                 )
     return found, (sorted(refusals)[0] if refusals else None)
 
@@ -1012,15 +1013,11 @@ def _build(target, root, *, deadline=None, progress=None):
                     why = f"`cargo package --list -p {package}` failed" + (
                         f" ({error.strip()})" if error else ""
                     )
-                    say(
-                        f"{why}: Peeky compares every file of the package with a remote "
-                        "client's, but .DS_Store, Thumbs.db and desktop.ini"
-                    )
                     return None, why
                 return split_lines(listed["stdout"]), None
 
             manifest["build_inputs"] = _build_inputs(
-                shape, root, messages, env, before, started_ns, vendor, jobs_, lister
+                shape, root, messages, env, before, started_ns, vendor, jobs_, lister, directory
             )
             _watched_directories(manifest.pop("directories_read"), manifest, shape, vendor)
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
@@ -1286,29 +1283,67 @@ def _spend(budget, where):
         )
 
 
+def _reachable(path, root):
+    """Refuse ``path`` (under the resolved ``root``) where a link on it leads out of
+    ``root``, or its links loop: a build script or procedural macro may read every file of
+    its package, and Peeky builds only files inside the root."""
+    from peeky.sources import LinkLoop, OutsideRoot, _inside
+
+    root = Path(os.path.realpath(root))
+    try:
+        _inside(root, Path(path).relative_to(root).as_posix(), "the worker host")
+    except OutsideRoot as exc:
+        raise ValueError(
+            f"Peeky builds only files inside {root}: {_shown(path, root)} leads out of it "
+            f"through {exc.link}, a link to {exc.target}, and a build script or procedural "
+            "macro may read every file of its package. Point the link inside the workspace, or "
+            "make it a file there"
+        ) from None
+    except LinkLoop as exc:
+        raise ValueError(
+            f"Peeky builds only files it can reach: {_shown(path, root)} {exc.what}, and a "
+            "build script or procedural macro may read every file of its package. Fix the "
+            "link, or make it a file there"
+        ) from None
+
+
 def _tree(top, skip=(), *, budget):
-    """{path relative to ``top``: SHA-256} of every file under ``top``, as Cargo lists a
-    package's files: no hidden directory, no `target` directory, no other package's
-    directory (one with a Cargo.toml) and none of ``skip``. ``budget``: a list holding the
-    files left to record, spent here."""
-    top = Path(top)
-    found = {}
-    for base, folders, files in os.walk(top):
-        folders[:] = sorted(
-            name
-            for name in folders
-            if not name.startswith(".")
-            and name != "target"
-            and str(Path(base, name)) not in skip
-            and not (Path(base, name) / "Cargo.toml").exists()
-        )
-        for name in sorted(files):
-            path = Path(base, name)
-            if path.is_symlink() or not path.is_file():
+    """{path relative to ``top``: what is there} of every entry of the package directory
+    ``top``, by lstat, never through a link: a file's SHA-256; ["link", its text] for a link;
+    ["other"] for what is neither. Hidden directories and `target` ones too. Left out:
+    `.git` (the checkout's metadata), OS junk (``OS_JUNK``), and ``skip``: each other
+    workspace package's directory (compared as its own), the vendored copies (compared by
+    their checksums) and Peeky's own build directory. ``budget``: a list holding the entries
+    left to record, spent here; past it, refused. Where every entry is what a build may read,
+    a link whose target leaves ``root``, or whose links loop, is refused (``_reachable``)."""
+    top, found = Path(top), {}
+    pending = [top]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda each: each.name)
+        except OSError as exc:
+            raise ValueError(
+                f"Peeky builds only files it can reach: it can't read {directory} "
+                f"({exc.strerror or exc}), and a build script or procedural macro may read every "
+                "file of its package. Make it readable"
+            ) from None
+        for entry in entries:
+            path = Path(entry.path)
+            if entry.name == ".git" or entry.name in OS_JUNK or str(path) in skip:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                pending.append(path)
                 continue
             _spend(budget, top)
-            found[path.relative_to(top).as_posix()] = _hash(path)
-    return found
+            relative = path.relative_to(top).as_posix()
+            if entry.is_symlink():
+                found[relative] = ["link", os.readlink(path)]
+            elif entry.is_file(follow_symlinks=False):
+                found[relative] = _hash(path)
+            else:
+                found[relative] = ["other"]
+    return dict(sorted(found.items()))
 
 
 def _root_identity(path):
@@ -1501,24 +1536,71 @@ def _script_value(name, package_id, shape, env, jobs_):
     return found, how
 
 
-def _package_files(directory, names, walked, root):
-    """{path relative to ``directory``: SHA-256, or None for a link that leads out of
-    ``root``, whose target isn't read} of a package's files as Cargo lists them (``names``,
-    `cargo package --list`'s lines): each that is a file there (not the `Cargo.toml.orig`,
-    `.cargo_vcs_info.json` or a member's `Cargo.lock` that Cargo writes into a package), none
-    under `.git`. ``walked``: the hashes the package's walk already took."""
+# Why a package's file can't be compared with a remote client's (`lists`' {"refused": key}):
+# (what it is on the worker's host, what to do).
+_UNLISTABLE = {
+    "outside": ("a link that leads out of the root", "point the link inside the root"),
+    "loop": ("a link in a loop", "break the loop"),
+    "hops": ("behind more than 40 links", "shorten the chain of links"),
+    "dangling": ("a link to nothing", "point the link at a file, or remove it"),
+    "other": ("not a file", "make it a file, or remove it"),
+    "missing": ("missing, though Cargo lists it", "restore it, or stop git tracking it"),
+}
+# What `cargo package --list` names that it writes into a package, not the package's own.
+_SYNTHESIZED = frozenset({"Cargo.toml.orig", ".cargo_vcs_info.json"})
+
+
+def _compared_file(directory, name, root, walked):
+    """What a client's ``name`` (a package's, in ``directory``) is compared with: its file's
+    SHA-256 (``walked``'s where the walk took it), "dir" for a link to a directory, or
+    {"refused": a key of ``_UNLISTABLE``}. Looked at by lstat first; a link is followed only
+    hop by hop inside ``root`` (sources._inside), never out of it."""
+    from peeky.sources import LinkLoop, OutsideRoot, _inside
+
+    root = Path(os.path.realpath(root))
+    path = Path(directory) / name
+    if not os.path.lexists(path):
+        return {"refused": "missing"}
+    try:
+        chain, reached = _inside(root, path.relative_to(root).as_posix(), "the worker host")
+    except OutsideRoot:
+        return {"refused": "outside"}
+    except LinkLoop as exc:
+        return {"refused": "loop" if exc.loop else "hops"}
+    try:
+        target = os.lstat(reached)
+    except FileNotFoundError:
+        return {"refused": "dangling" if chain else "missing"}
+    if stat.S_ISREG(target.st_mode):
+        if not chain and isinstance(walked.get(name), str):
+            return walked[name]
+        return _hash(reached)
+    if stat.S_ISDIR(target.st_mode) and chain:
+        return "dir"
+    return {"refused": "other"}
+
+
+def _package_files(directory, names, walked, root, workspace):
+    """{path relative to ``directory``: ``_compared_file``} of a package's files as Cargo
+    lists them (``names``, `cargo package --list`'s lines), none under `.git`. One absent
+    is left out only where Cargo writes it into a package: `Cargo.toml.orig`,
+    `.cargo_vcs_info.json`, and `Cargo.lock` but in the ``workspace``'s own directory.
+    ``walked``: the hashes the package's walk already took."""
     found = {}
     for line in names:
         name = line.strip()
-        if not name or PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts:
+        if not name:
             continue
-        path = Path(directory) / name
-        if _checkout_metadata(name) or not path.is_file():
+        if PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts:
+            raise ValueError(f"`cargo package --list` named {name}, a path Peeky doesn't read")
+        if _checkout_metadata(name):
             continue
-        if not Path(os.path.realpath(path)).is_relative_to(root):
-            found[name] = None
+        synthesized = name in _SYNTHESIZED or (
+            name == "Cargo.lock" and Path(directory).resolve() != Path(workspace).resolve()
+        )
+        if synthesized and not os.path.lexists(Path(directory) / name):
             continue
-        found[name] = walked[name] if name in walked else _hash(path)
+        found[name] = _compared_file(directory, name, root, walked)
     return found
 
 
@@ -1527,7 +1609,9 @@ def _package_files(directory, names, walked, root):
 OS_JUNK = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
 
-def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1, lister=None):
+def _build_inputs(
+    shape, root, messages, env, before, started_ns, vendor, jobs_=1, lister=None, private=None
+):
     """What build scripts and procedural macros may read, beyond what rustc's dependency
     files list, as the manifest keeps it: {"files": {path: identity}, "dirs": {directory:
     _exact_tree}, "trees": {directory: _tree}, "env": {variable: value or None}}. That
@@ -1541,16 +1625,22 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
     A package compared whole is walked (``trees``: every file, for the build's freshness), and
     its files a client's are compared with are listed (``lists``, ``_package_files``): as
     Cargo lists them (``lister(package)``: its `cargo package --list`) for a build script's
-    package, every walked file but OS junk for a procedural macro's and the analysed ones."""
-    skip = {shape.watch["vendor_directory"]} if vendor else set()
+    package, every walked entry for a procedural macro's and the analysed ones, and where
+    Cargo can't list it (``_tree``, which ``walk_skip`` records what it leaves out of).
+    ``private``: Peeky's build directory, never walked."""
+    by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
+    skip = {*by_directory, *([shape.watch["vendor_directory"]] if vendor else [])}
+    skip |= {str(Path(private).resolve())} if private is not None else set()
     files, dirs, trees, variables, budget = {}, {}, {}, {}, [MAX_RECORDED]
     lists = {}
-    by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
 
     def unchanged(path):
-        # The entry itself (a directory, a link, a file), and a file's contents.
+        # The entry itself (a directory, a link, a file), and a file's contents; never
+        # through a link.
         if _entry_changed_during(path, before, started_ns) or (
-            Path(path).is_file() and _changed_during(path, before, started_ns)
+            Path(path).is_file()
+            and not Path(path).is_symlink()
+            and _changed_during(path, before, started_ns)
         ):
             raise RuntimeError(
                 f"Provenance: {_shown(path, root)} changed while Peeky built the "
@@ -1563,7 +1653,7 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         file but OS junk."""
         key = str(directory)
         if key not in trees:
-            trees[key] = _tree(directory, skip, budget=budget)
+            trees[key] = _tree(directory, skip - {key}, budget=budget)
             for name in trees[key]:
                 unchanged(directory / name)
         entry = lists.setdefault(key, {"files": {}, "cargo": False, "note": None})
@@ -1571,14 +1661,21 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         if package is not None:
             names, why = lister(package) if lister else (None, "Peeky didn't ask Cargo")
         if names is None:
-            entry["note"] = entry["note"] if package is None else why
-            for name, digest in trees[key].items():
-                if PurePosixPath(name).name not in OS_JUNK:
-                    entry["files"][name] = digest
+            if package is not None:
+                # Said in the build's summary (``summary``'s `notes`).
+                entry["note"] = (
+                    f"{why}: Peeky compares every file of {_shown(directory, root)} with a remote "
+                    "client's instead, but .DS_Store, Thumbs.db and desktop.ini"
+                )
+            for name, what in trees[key].items():
+                if isinstance(what, list) and what[0] == "link":
+                    _reachable(directory / name, root)
+                entry["files"][name] = _compared_file(directory, name, root, trees[key])
             return
         entry["cargo"] = True
-        for name, digest in _package_files(directory, names, trees[key], root).items():
-            if digest is not None and name not in trees[key]:
+        listed = _package_files(directory, names, trees[key], root, shape.workspace)
+        for name, digest in listed.items():
+            if isinstance(digest, str) and digest != "dir" and name not in trees[key]:
                 _spend(budget, directory)
                 unchanged(directory / name)
             entry["files"][name] = digest
@@ -1693,6 +1790,8 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         "files": dict(sorted(files.items())),
         "dirs": dict(sorted(dirs.items())),
         "trees": dict(sorted(trees.items())),
+        # What each package's walk leaves out (``_tree``'s ``skip``), as `verify` walks again.
+        "walk_skip": sorted(skip),
         "lists": {
             key: {**entry, "files": dict(sorted(entry["files"].items()))}
             for key, entry in sorted(lists.items())
@@ -1971,6 +2070,14 @@ def summary(manifest, directory):
             {key: unit[key] for key in ("package", "crate", "test", "expanded")}
             for unit in manifest["units"]
         ],
+        # Why a package isn't compared with a remote client's as Cargo lists it.
+        "notes": list(
+            dict.fromkeys(
+                listed["note"]
+                for listed in ((manifest.get("build_inputs") or {}).get("lists") or {}).values()
+                if listed.get("note")
+            )
+        ),
     }
 
 
@@ -2113,20 +2220,21 @@ def _check_build_inputs(target, root, directory, manifest):
                     keys = set(entries) ^ set(old) or {k for k in entries if entries[k] != old[k]}
                     path = path / sorted(keys)[0]
             raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
-    vendor = manifest["watch"].get("vendor_directory")
+    skip = set(inputs["walk_skip"])
     for top, recorded in inputs["trees"].items():
         try:
-            now = _tree(Path(top), {vendor} if vendor else set(), budget=[MAX_RECORDED])
+            now = _tree(Path(top), skip - {top}, budget=[MAX_RECORDED])
         except (OSError, ValueError):
             now = {}
         if now != recorded:
-            name = sorted(set(now.items()) ^ set(recorded.items()))[0][0]
+            name = sorted(key for key in {*now, *recorded} if now.get(key) != recorded.get(key))[0]
             raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
-    # The files of a package Cargo listed that its walk leaves out (a hidden one git tracks).
+    # What a client's are compared with, looked at again as the build did: one under a
+    # linked directory, or a link's target, isn't in the walk.
     for top, listed in (inputs.get("lists") or {}).items():
         for name, recorded in listed["files"].items():
             try:
-                same = recorded is None or sha256_file(Path(top) / name) == recorded
+                same = _compared_file(Path(top), name, root, {}) == recorded
             except (OSError, ValueError):
                 same = False
             if not same:

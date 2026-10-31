@@ -135,13 +135,23 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
 - Both sides compare them as `sources.structured` gives them: a file's bytes and the links on
   its path, with what they say. Each directory a build script watches is compared entry by entry
   (`compared_trees`, and `sources._tree`).
-- Each path is followed one link at a time, every link's target held inside the resolved root
-  before it is followed (`sources._inside`). A link out, even out and back in, is
-  `OutsideRoot`, and nothing through it is read.
+- Each path is followed one link at a time, as the kernel does, every step held inside the
+  resolved root (`sources._inside`). A link out, even out and back in, is `OutsideRoot`; a loop,
+  or more than 40 links, is `LinkLoop`. Nothing through either is read. Every link followed,
+  and its text, is part of the path's identity, a watched directory's entries' too.
 - A package Cargo watches whole is compared by the files `cargo package --list` gave at the build
-  (`lists` in the record, `_package_files`). If Cargo can't list it, every walked file but
-  `OS_JUNK`, saying why. A procedural macro's package and the analysed ones: every walked file
-  but `OS_JUNK`. The walk (`trees`) still decides the build's freshness on the worker's host.
+  (`lists` in the record, `_package_files`). Each is looked at by lstat first
+  (`_compared_file`): a link to nothing, not a file, out of the root, or missing is a typed
+  refusal (`_UNLISTABLE`). Only `Cargo.toml.orig`, `.cargo_vcs_info.json` and a member's
+  `Cargo.lock` may be missing.
+- One walker (`_tree`) reads a package whole, by lstat: hidden and `target` directories too,
+  links by their text, never followed. It leaves out `.git`, `OS_JUNK`, and `walk_skip`: other
+  workspace packages, the vendored copies and Peeky's build directory. Its entries are what a
+  client's are compared with where Cargo can't list a package, and for a procedural macro's
+  package and the analysed ones; there a link out of the root refuses the build
+  (`_reachable`). The walk also decides the build's freshness on the worker's host.
+- Where Cargo can't list a package, the record's `note` says why; `peeky build` shows each, once
+  (`summary`'s `notes`), and so does `--build` beside a probe's output.
 - After the launch's `assert_current`, the build's own record of those files is compared with
   the client's again, in the shape the disk has (`remote_identities`).
 - A directory Cargo's own dependency file lists is a build script's `rerun-if-changed` one. It
@@ -158,8 +168,10 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   A running build is the worker's activity (`active`).
 - Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
   reaped, or that started nothing. A kill or reap that fails raises its own error, with the
-  group in its `process_group`, and is never hidden. `close` returns why the stopped build didn't end as stopped,
-  if it didn't: `shutdown` then refuses (still running) or warns, and `main` exits 1.
+  group in its `process_group`, and is never hidden. A build's error that carries one, on it or
+  one it came from, is recorded as the build ends, whoever stopped it (`_left_running`).
+  `close` returns each, with `kill -KILL -- -GROUP`, and why the build it stopped didn't end as
+  stopped: `shutdown` then refuses (still running) or warns, and `main` exits 1.
 - The client rewrites a worker's `BUILD_REQUIRED` to name its own command (`_remote_build_required`).
   A client resolves the target without a `--config`: a manifest Peeky doesn't build itself is the
   worker's to read (`resolve`, `tools=False`).

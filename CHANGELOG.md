@@ -99,13 +99,14 @@
   and vendored checksum files with the client's; never `.git`. Each is compared by its links too,
   never through one out of the root, and each watched directory entry by entry. A package Cargo
   watches whole is compared by the files `cargo package --list` gives, so a client's git-ignored
-  files and `.DS_Store` are no difference. A worker's end stops its build, Cargo's processes too,
-  and a build that doesn't end is never called stopped. Its `BUILD_REQUIRED` names the client's own
-  command. A line of a generic function only another crate uses is refused before launch, naming
-  it, where it was a `DEBUGGER_ERROR`. A stop in another crate's copy of the crate's code reads no
-  value, and says why: it was read as the crate's own, with none of the checks of that copy. So
-  does one Peeky can't tell is the crate's own. A build script watching a directory no longer fails
-  the build with `Expected a regular file`. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
+  files and `.DS_Store` are no difference; where Cargo can't list it, every entry, links by their
+  text, and the build says why. A worker's end stops its build, Cargo's processes too, and a build
+  that doesn't end is never called stopped. Its `BUILD_REQUIRED` names the client's own command. A
+  line of a generic function only another crate uses is refused before launch, naming it, where it
+  was a `DEBUGGER_ERROR`. A stop in another crate's copy of the crate's code reads no value, and
+  says why: it was read as the crate's own, with none of the checks of that copy. So does one Peeky
+  can't tell is the crate's own. A build script watching a directory no longer fails the build with
+  `Expected a regular file`. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

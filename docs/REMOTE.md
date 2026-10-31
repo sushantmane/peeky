@@ -228,8 +228,9 @@ set x: 5 -> 100
   kills Cargo and every process Cargo ran, build scripts too. A running build is activity, so
   the idle timeout waits for it.
 - **A build that doesn't end is never called stopped.** If the build still runs 30 s after the
-  worker stopped it, `shutdown` is refused with `BUSY`, and the worker keeps running. If the kill
-  failed, the worker says so, naming the process group to end, and exits with status 1.
+  worker stopped it, `shutdown` is refused with `BUSY`, and the worker keeps running. If any
+  build's kill failed, stopped or not, the worker says so when it ends, naming the process group
+  to end, and exits with status 1.
 - **The files compared** are the build's: every `Cargo.toml` of its packages, `Cargo.lock`, the
   workspace's own Cargo configuration, and every file of the workspace it compiled, from rustc's
   dependency files ([Source identity](#source-identity)). That includes the binary's own code,
@@ -240,23 +241,32 @@ set x: 5 -> 100
 - **A package with no `rerun-if-changed`** is compared by the files `cargo package --list` gave
   on the worker's host. That honours `include`, `exclude` and, with git, what git ignores. Your
   own ignored files and a `.DS_Store` aren't compared; a listed file you lack is named.
+- **What Cargo lists is looked at first.** A listed path that is a link to nothing, not a file, a
+  link out of the root, or missing refuses a remote run, saying which. Only what Cargo writes into
+  a package itself may be missing: `Cargo.toml.orig`, `.cargo_vcs_info.json`, a member's
+  `Cargo.lock`.
 - **With git, Cargo lists untracked files git doesn't ignore,** on the worker's host too. So a
   `.DS_Store` there that `.gitignore` doesn't name must be in your checkout as well. Ignore it,
   or delete it on the worker's host.
-- **If Cargo can't list a package,** the worker compares every file of it instead, but
-  `.DS_Store`, `Thumbs.db` and `desktop.ini`, and `peeky build` says why. Without git, Cargo
-  lists every file but hidden ones and `target`.
+- **If Cargo can't list a package,** the worker compares every file of it instead, and `peeky
+  build` says why, in its own output and through a worker. Without git, Cargo lists every file
+  but hidden ones and `target`.
 - **With a local procedural macro,** its package and the analysed ones are compared file by
-  file too: every file but `.DS_Store`, `Thumbs.db` and `desktop.ini`. Cargo doesn't track what
-  a macro reads, so Peeky doesn't narrow it to Cargo's list.
+  file too. Cargo doesn't track what a macro reads, so Peeky doesn't narrow it to Cargo's list.
+- **Every file, there, is every entry:** hidden directories and `target` ones too, and links by
+  their text, never followed into. Left out: `.git`, `.DS_Store`, `Thumbs.db`, `desktop.ini`,
+  another workspace package's directory and the vendored copies, each compared as its own. A link
+  out of the root refuses the build. So do more entries than the 65,536 Peeky records for a
+  build.
 - **Each file is compared by its links too,** not only its bytes. A link on one side only, the
   file or a directory on its path, is refused though the bytes are the same. So is a link that
-  points elsewhere.
+  points elsewhere, anywhere on the chain of links it leads through.
 - **A watched directory is compared entry by entry.** An entry only in your checkout is refused,
   even an empty directory: Cargo would rerun the build script, which may read it.
 - **A link that leads out of the root is refused,** on either side: the file itself, a directory
   on its way, or an entry of a watched directory. A link out and back in is refused too. Nothing
-  through it is read, and the message names the link.
+  through it is read, and the message names the link. So are links in a loop, or more than 40 in
+  a row, each with its own reason.
 - **Not `.git`:** nothing under a `.git` directory is compared. It is the checkout's metadata,
   not the project's source, and differs between two checkouts of the same sources: a build
   script watching `.git/HEAD` for its version would refuse every client.

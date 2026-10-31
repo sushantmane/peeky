@@ -281,8 +281,12 @@ def test_a_client_compares_what_local_build_scripts_read_but_their_checkouts_met
         ),
         # A package's file Cargo lists, through a link out of the root: never read.
         (
-            {"lists": {"/srv/ws/rust/gen": {"files": {"data.txt": None}}}},
+            {"lists": {"/srv/ws/rust/gen": {"files": {"data.txt": {"refused": "outside"}}}}},
             "rust/gen/data.txt is a link that leads out of the root on the worker's host",
+        ),
+        (
+            {"lists": {"/srv/ws/rust/gen": {"files": {"data.txt": {"refused": "dangling"}}}}},
+            "rust/gen/data.txt is a link to nothing on the worker's host",
         ),
     ],
 )
@@ -410,11 +414,61 @@ def test_a_build_that_doesnt_end_when_stopped_is_never_reported_ended(tmp_path):
     target.release.set()
     for _ in range(2):
         assert builds.close(timeout=5) == (
-            "its build, stopped, ended with an error instead (PermissionError: [Errno 1] "
-            "Operation not permitted), so its processes may still run. End them yourself: "
-            "kill -KILL -- -4242"
+            "a build ended with PermissionError: [Errno 1] Operation not permitted, so the "
+            "processes it ran may still run. End them yourself: kill -KILL -- -4242"
         )
     assert not builds.active()
+
+
+def test_a_build_whose_kill_failed_before_any_shutdown_is_reported_when_the_worker_ends(
+    tmp_path,
+):
+    # A build that ended on its own (its deadline, say) with a kill that failed: no one
+    # stopped it, and its processes may still run.
+    builds, target = _RemoteBuilds(), Builds()
+    failed = PermissionError(1, "Operation not permitted")
+    failed.process_group = 4242
+    target.fail = RuntimeError("The build exceeded its deadline")
+    target.fail.__context__ = failed
+    worker = SimpleNamespace(adapter=target, root=tmp_path, last_used=0.0)
+    answer = builds.request(worker, {"wait": 0})
+    target.release.set()
+    with pytest.raises(RuntimeError, match="deadline"):
+        builds.request(worker, {"request": answer["request"], "wait": 5})
+    assert not builds.active()
+    assert builds.close(timeout=5) == (
+        "a build ended with RuntimeError: The build exceeded its deadline, so the processes it "
+        "ran may still run. End them yourself: kill -KILL -- -4242"
+    )
+
+
+def test_a_worker_whose_kill_failed_exits_with_status_1_saying_so(tmp_path, monkeypatch, capsys):
+    from peeky import worker as worker_module
+
+    failed = PermissionError(1, "Operation not permitted")
+    failed.process_group = 4242
+    server = SimpleNamespace(
+        builds=_RemoteBuilds(),
+        worker=SimpleNamespace(close=lambda: None),
+        serve_forever=lambda: None,
+        server_close=lambda: None,
+        server_port=1,
+    )
+    server.builds.risks.append((failed, 4242))
+    monkeypatch.setattr(worker_module, "make_server", lambda *args, **kwargs: server)
+    monkeypatch.setattr(
+        worker_module.threading, "Thread", lambda **kwargs: SimpleNamespace(start=lambda: None)
+    )
+    monkeypatch.setattr(worker_module.signal, "signal", lambda *args: None)
+    monkeypatch.setenv("DEBUG_TOKEN", "t" * 40)
+    monkeypatch.setattr("sys.argv", ["peeky-worker", "--root", str(tmp_path)])
+    with pytest.raises(SystemExit) as ended:
+        worker_module.main()
+    assert ended.value.code == 1
+    assert capsys.readouterr().err.strip() == (
+        "peeky-worker: exiting, but a build ended with PermissionError: [Errno 1] Operation not "
+        "permitted, so the processes it ran may still run. End them yourself: kill -KILL -- -4242"
+    )
 
 
 def test_a_worker_whose_build_doesnt_end_refuses_to_shut_down_and_says_why(tmp_path):
@@ -451,6 +505,11 @@ def test_a_worker_whose_build_doesnt_end_refuses_to_shut_down_and_says_why(tmp_p
             "warning": "its build, stopped, ended with an error instead (OSError: its group "
             "survived), so its processes may still run",
         }
+        # The worker still answers for it at its end.
+        assert server.builds.close(timeout=0) == (
+            "its build, stopped, ended with an error instead (OSError: its group survived), so "
+            "its processes may still run"
+        )
     finally:
         target.release.set()
         server.shutdown()
@@ -542,9 +601,8 @@ def test_a_kill_that_fails_is_never_called_a_stopped_build(tmp_path, monkeypatch
         builds.request(worker, {"wait": 0})
         threading.Timer(0.2, target.release.set).start()
         assert builds.close(timeout=5) == (
-            "its build, stopped, ended with an error instead (PermissionError: [Errno 1] "
-            "Operation not permitted), so its processes may still run. End them yourself: "
-            f"kill -KILL -- -{group}"
+            "a build ended with PermissionError: [Errno 1] Operation not permitted, so the "
+            f"processes it ran may still run. End them yourself: kill -KILL -- -{group}"
         )
     finally:
         if group is not None:
@@ -739,3 +797,78 @@ def test_a_link_out_of_the_root_is_refused_and_nothing_through_it_read(
     through = os.path.realpath(checkout / link.split("/x.txt")[0])
     assert not [path for path in read if path.startswith((str(checkout / link), through))]
     assert not [path for path in read if os.path.realpath(path).startswith(str(outside))]
+
+
+@pytest.mark.parametrize("watched", [False, True], ids=["file", "watched-entry"])
+def test_every_link_on_a_chain_is_compared(tmp_path, watched):
+    # util/proto/a -> ../b -> x on the worker, -> y in the client's checkout: a says the
+    # same on both sides, x and y hold the same bytes, and b is compared on neither. Only
+    # a's chain tells them apart.
+    files = {**WATCHED, "util/x.txt": "same\n", "util/y.txt": "same\n"}
+    host, client = checkouts(tmp_path, files)
+    for side, end in ((host, "x.txt"), (client, "y.txt")):
+        (side / "util/b").symlink_to(end)
+        (side / "util/proto/a").symlink_to("../b")
+    if watched:
+        found = compared(host, client, ("util/build.rs",), {"util/proto": "exact"})
+        assert found.startswith("util/proto/ (its entries on the worker host differ"), found
+    else:
+        assert compared(host, client, ("util/build.rs", "util/proto/a")) == (
+            "util/proto/a (the copy on the worker host differs from your checkout, in its "
+            "contents or in where a link is or points)"
+        )
+
+
+@pytest.mark.parametrize("side", ["host", "client"])
+def test_a_link_loop_or_too_many_links_is_its_own_refusal(tmp_path, side):
+    from peeky.errors import classify
+
+    host, client = checkouts(tmp_path, WATCHED)
+    checkout = host if side == "host" else client
+    where = "the worker host" if side == "host" else "your checkout"
+    (checkout / "util/proto/a.txt").unlink()
+    (checkout / "util/proto/a.txt").symlink_to("b.txt")
+    (checkout / "util/proto/b.txt").symlink_to("a.txt")
+    names = ("util/build.rs", "util/proto/a.txt")
+    with pytest.raises(ValueError) as refused:
+        compared(host, client, names)
+    assert str(refused.value) == (
+        f"Peeky compares only files it can reach: on {where}, util/proto/a.txt leads into a link "
+        "loop at util/proto/a.txt. Nothing through it was read. Break the loop, or make it a "
+        "file or directory there"
+    )
+    assert classify(refused.value)["code"] == "UNSUPPORTED"
+    # 41 links in a row, no loop.
+    (checkout / "util/proto/a.txt").unlink()
+    (checkout / "util/proto/b.txt").unlink()
+    (checkout / "util/proto/a.txt").symlink_to("l0")
+    for index in range(41):
+        (checkout / f"util/proto/l{index}").symlink_to(f"l{index + 1}")
+    (checkout / "util/proto/l41").write_text("a\n")
+    with pytest.raises(ValueError) as refused:
+        compared(host, client, names)
+    assert str(refused.value) == (
+        f"Peeky compares only files it can reach: on {where}, util/proto/a.txt passes through more "
+        "than 40 links, the last util/proto/l39. Nothing through it was read. Shorten the chain "
+        "of links, or make it a file or directory there"
+    )
+    assert classify(refused.value)["code"] == "UNSUPPORTED"
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["local", "worker"])
+def test_a_builds_notes_are_said_beside_a_probes_own_output(tmp_path, monkeypatch, capsys, remote):
+    from peeky import cli
+
+    note = (
+        "`cargo package --list -p util@0.1.0` failed (error: x): Peeky compares every file of "
+        "util with a remote client's instead, but .DS_Store, Thumbs.db and desktop.ini"
+    )
+    built = {"status": "built", "notes": [note]}
+    target = RustWorkspaceTarget.from_config(
+        {"analyse": ["util"], "run": {"bin": "app"}, **toolchain(tmp_path)}
+    )
+    monkeypatch.setattr(RustWorkspaceTarget, "build", lambda self, root, **kwargs: built)
+    monkeypatch.setattr(cli, "_remote_build", lambda args, deadline: built)
+    args = SimpleNamespace(build=True, worker="http://127.0.0.1:1" if remote else None, quiet=True)
+    assert cli._build_first(args, tmp_path, target) == built
+    assert capsys.readouterr().err == f"peeky: note: {note}\n"

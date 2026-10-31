@@ -1442,15 +1442,20 @@ def _build_first(args, root, adapter):
 
     if getattr(args, "worker", None) is not None:
         # The worker builds from its own configuration, as `peeky build --worker` does.
-        return _remote_build(args, time.monotonic() + BUILD_TIMEOUT_S)
-    if not isinstance(adapter, RustWorkspaceTarget):
+        result = _remote_build(args, time.monotonic() + BUILD_TIMEOUT_S)
+    elif not isinstance(adapter, RustWorkspaceTarget):
         raise ValueError(
             "--build is for a Rust workspace's configuration (analyse and run); other "
             "targets are built by every probe"
         )
-    return adapter.build(
-        root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
-    )
+    else:
+        result = adapter.build(
+            root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
+        )
+    # The probe's or session's own output is its result: the build's notes go beside it.
+    for note in result.get("notes") or ():
+        print(f"peeky: note: {note}", file=sys.stderr, flush=True)
+    return result
 
 
 def _expect_inputs(args):
@@ -4956,6 +4961,7 @@ def _build_text(result):
     ]
     if unread := [unit["crate"] for unit in result["units"] if not unit["expanded"]]:
         lines.append(f"rustc could not expand {', '.join(unread)}: their source scans withhold")
+    lines += [f"note: {note}" for note in result.get("notes") or ()]
     return "\n".join(lines)
 
 

@@ -7244,6 +7244,19 @@ def _inside_program(runtime, frame, *roots):
 BUILD_WAIT_S = 30.0
 
 
+def _left_running(error):
+    """The process group a build's ``error`` may have left running, or None: a kill or reap
+    that failed carries it (agent.execute's ``process_group``), on the error or one it
+    came from."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if (group := getattr(error, "process_group", None)) is not None:
+            return group
+        error = error.__cause__ or error.__context__
+    return None
+
+
 class _RemoteBuilds:
     """A worker's builds of its Rust workspace for remote clients (`build`): from its own
     `--rust-config` only, one at a time, each in a thread, so a request answers within the
@@ -7258,6 +7271,8 @@ class _RemoteBuilds:
         # Set by ``close``: the running build's processes are killed, and none starts.
         self.stopping = threading.Event()
         self.stopped = None  # the build ``close`` stopped, as ``current``
+        # Each build's error that may have left processes running (``_left_running``).
+        self.risks = []
 
     def active(self):
         """Whether a build runs: the worker's activity, as a request is."""
@@ -7268,10 +7283,12 @@ class _RemoteBuilds:
         """Stop the running build, its processes killed (Cargo's process group, its build
         scripts and rustc among it), and wait for it; no build starts after. Every way the
         worker ends calls it: `shutdown`, SIGTERM, an idle exit, `main`'s end. None once no
-        build runs and none was stopped but as rust_build.BuildStopped says (its processes
-        killed, or none started); else why not: the build still runs, or it ended otherwise
-        (a kill that failed among it), so its processes may too."""
+        build runs, none was stopped but as rust_build.BuildStopped says (its processes
+        killed, or none started), and no build's processes may have been left running; else
+        why not: the build still runs, or it ended otherwise, or any build's kill failed."""
         from peeky.rust_build import BuildStopped
+
+        problems = []
 
         with self.lock:
             current = self.current
@@ -7280,24 +7297,29 @@ class _RemoteBuilds:
                 self.stopped = current
             self.stopping.set()
             stopped = self.stopped
-        if stopped is None:
-            return None
-        identifier, thread, outcome = stopped
-        thread.join(timeout)
-        if thread.is_alive():
-            return (
-                f"its build is still running {timeout:g} s after the worker stopped it, and so "
-                "may the processes it runs"
+        if stopped is not None:
+            identifier, thread, outcome = stopped
+            thread.join(timeout)
+            error = outcome.get("error")
+            if thread.is_alive():
+                problems.append(
+                    f"its build is still running {timeout:g} s after the worker stopped it, and "
+                    "so may the processes it runs"
+                )
+            elif error is not None and not isinstance(error, BuildStopped):
+                if _left_running(error) is None:
+                    problems.append(
+                        "its build, stopped, ended with an error instead "
+                        f"({type(error).__name__}: {error}), so its processes may still run"
+                    )
+        with self.lock:
+            risks = list(self.risks)
+        for error, group in risks:
+            problems.append(
+                f"a build ended with {type(error).__name__}: {error}, so the processes it ran "
+                f"may still run. End them yourself: kill -KILL -- -{group}"
             )
-        error = outcome.get("error")
-        if error is None or isinstance(error, BuildStopped):
-            return None
-        group = getattr(error, "process_group", None)
-        return (
-            f"its build, stopped, ended with an error instead ({type(error).__name__}: {error}), "
-            "so its processes may still run"
-            + (f". End them yourself: kill -KILL -- -{group}" if group else "")
-        )
+        return "; ".join(problems) or None
 
     def request(self, worker, args):
         from peeky.rust_build import BUILD_TIMEOUT_S
@@ -7342,6 +7364,10 @@ class _RemoteBuilds:
                         )
                     except BaseException as exc:  # noqa: BLE001 - the request reports it
                         outcome["error"] = exc
+                        if (group := _left_running(exc)) is not None:
+                            # Whoever stopped it, or none: its processes may still run.
+                            with self.lock:
+                                self.risks.append((exc, group))
                     finally:
                         # Its end is activity too: the client asks for its outcome next.
                         worker.last_used = time.monotonic()
