@@ -900,7 +900,7 @@ def test_a_missing_input_is_kept_only_where_its_absence_before_was_recorded(tmp_
         "build script"
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"
-    assert "fewer files under the workspace" in classify(caught.value)["hint"]
+    assert "fewer entries under the workspace" in classify(caught.value)["hint"]
 
 
 def test_the_snapshot_proves_no_absence_where_it_couldnt_read(tmp_path, monkeypatch):
@@ -1012,3 +1012,50 @@ def test_the_snapshot_counts_each_entry_once(tmp_path, monkeypatch):
     assert rb._snapshot(shape, None)[":limit"] is None
     monkeypatch.setattr(rb, "_MAX_SNAPSHOT", entries - 1)
     assert rb._snapshot(shape, None)[":limit"][0] == entries - 1
+
+
+def test_an_input_through_a_link_to_nothing_is_refused(tmp_path):
+    import time
+
+    write(tmp_path / "ws", {"util/build.rs": "", "util/src/lib.rs": "", "util/data/a.txt": ""})
+    root = (tmp_path / "ws").resolve()
+    util = root / "util"
+    (util / "link").symlink_to("target.txt")
+    (util / "dlink").symlink_to("nowhere")
+    (util / "data/stale").symlink_to("../gone.txt")
+    shape = fake_shape(tmp_path, local=("util",))
+    before = rb._snapshot(shape, None)
+    started = time.time_ns()
+    # While Cargo ran, what the link names was made, read and removed.
+    (util / "target.txt").write_text("read\n")
+    (util / "target.txt").unlink()
+
+    seen = []
+
+    def refused(line):
+        message = build_script_run(tmp_path, f"util{len(seen)}", line + "\n")
+        seen.append(line)
+        message["package_id"] = f"path+file://{util}#0.1.0"
+        with pytest.raises(ValueError) as caught:
+            rb._build_inputs(shape, root, [message], {}, before, started, None)
+        assert classify(caught.value)["code"] == "UNSUPPORTED"
+        return str(caught.value)
+
+    assert refused("cargo::rerun-if-changed=link").startswith(
+        "`util`'s build script watches util/link, a link to util/target.txt that doesn't exist; "
+        "Peeky can't tell what it read through it"
+    )
+    assert refused("cargo::rerun-if-changed=dlink/x.txt").startswith(
+        "`util`'s build script watches util/dlink/x.txt, by way of util/dlink, a link to "
+        "util/nowhere that doesn't exist"
+    )
+    assert refused("cargo::rerun-if-changed=data").startswith(
+        "`util`'s build script watches util/data, which holds util/data/stale, a link to "
+        "util/gone.txt that doesn't exist"
+    )
+    # A link to nothing before the build, to a file after it.
+    (util / "target.txt").write_text("now\n")
+    assert refused("cargo::rerun-if-changed=link").startswith(
+        "`util`'s build script watches util/link, a link to util/target.txt that didn't exist "
+        "before the build"
+    )

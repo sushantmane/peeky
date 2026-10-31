@@ -476,8 +476,15 @@ _RULES = (
     (
         r"^Peeky can't tell whether .+ was there while `",
         "UNSUPPORTED",
-        "Nothing was recorded. Do what the message says (fewer files under the workspace, a "
+        "Nothing was recorded. Do what the message says (fewer entries under the workspace, a "
         "readable path, or no such line in the build script), then build again.",
+        False,
+    ),
+    (
+        r"^`[^`]+`'s build script watches .+, a link to .+ that (?:doesn't|didn't) exist",
+        "UNSUPPORTED",
+        "Nothing was recorded. Point the link at what exists, or take the line out of the build "
+        "script, then build again.",
         False,
     ),
     (

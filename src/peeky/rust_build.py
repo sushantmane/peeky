@@ -519,6 +519,24 @@ def _absent_before(path, before):
     return ("outside", "it is outside what Peeky records before a build")
 
 
+def _dangling_on_the_way(path, before):
+    """(the link, what it names, "doesn't exist" or "didn't exist before the build") where
+    ``path``, as written, is or passes through a link to nothing, now or in _snapshot's
+    record from before Cargo ran; else None. What a build script read through one, Peeky
+    can't tell: what it names may have been there while the script ran."""
+    path = Path(path)
+    for prefix in (*reversed(path.parents), path):
+        if not os.path.islink(prefix):
+            continue
+        target = Path(os.path.normpath(Path(prefix).parent / os.readlink(prefix)))
+        if not os.path.exists(prefix):
+            return prefix, target, "doesn't exist"
+        key = "f:" + os.path.normpath(prefix)
+        if key in before and before[key] is None:
+            return prefix, target, "didn't exist before the build"
+    return None
+
+
 def _listed_ancestor(path, before):
     """The deepest directory on ``path``'s way that _snapshot listed whole, or None."""
     return next(
@@ -1281,6 +1299,15 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                 path = Path(os.path.realpath(joined))
             else:
                 path = Path(os.path.realpath(joined.parent)) / joined.name
+            if (dangling := _dangling_on_the_way(joined, before)) is not None:
+                link, target, when = dangling
+                raise ValueError(
+                    f"`{name}`'s build script watches {_shown(joined, root)}"
+                    + ("" if link == joined else f", by way of {_shown(link, root)}")
+                    + f", a link to {_shown(target, root)} that {when}; Peeky can't tell what it "
+                    "read through it. Point the link at what exists, or take the line out of "
+                    "the build script"
+                )
             if path.is_dir():
                 if str(path) not in dirs:
                     if path.is_symlink() and not path.resolve().is_relative_to(root):
@@ -1294,6 +1321,15 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                     entries = dirs[str(path)]["entries"]
                     for entry in entries if isinstance(entries, dict) else ():
                         unchanged(path / entry)
+                        if (dangling := _dangling_on_the_way(path / entry, before)) is not None:
+                            link, target, when = dangling
+                            raise ValueError(
+                                f"`{name}`'s build script watches {_shown(path, root)}, which "
+                                f"holds {_shown(link, root)}, a link to {_shown(target, root)} "
+                                f"that {when}; Peeky can't tell what it read through it. Point "
+                                "the link at what exists, or take the line out of the build "
+                                "script"
+                            )
             elif str(path) not in files:
                 _spend(budget, path)
                 unchanged(path)
