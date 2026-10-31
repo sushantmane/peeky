@@ -65,12 +65,15 @@ def test_the_projects_tests_fail_at_baseline_and_pass_with_the_fix(project, caps
         "FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3 (and 1 more)"
     )
     command = result["check_command"]
-    # pytest runs with Peeky's report plugin, which saw one test file, from the copy.
+    # pytest runs through Peeky's bootstrap, which starts its watch first, and with its
+    # report plugin, which saw one test file, from the copy.
     words = PYTEST.split()
     assert command["argv"] == words
-    assert command["ran"][1:4] == [*words[1:3], "-p"] and command["ran"][5:] == words[3:]
+    bootstrap = Path(command["ran"][1])
+    assert bootstrap.name == "peeky_start.py" and not bootstrap.is_relative_to(project)
+    assert command["ran"][2:5] == ["module", "pytest", "-p"] and command["ran"][6:] == words[3:]
     # Its name is the run's own: no module of the project's stands in for it.
-    assert re.fullmatch(r"peeky_check_[0-9a-f]{16}", command["ran"][4]), command["ran"]
+    assert re.fullmatch(r"peeky_check_[0-9a-f]{16}", command["ran"][5]), command["ran"]
     assert result["pytest_report"] == {"reports": 1, "test_files": 1, "problems": []}
     assert result["verdict"] == "failed"
     # `python` is the program's interpreter, the one `python:` names.
@@ -555,14 +558,16 @@ def test_python_options_before_m_still_name_the_runner(project, capsys):
 
 
 def test_pytests_console_script_is_its_runner(project, capsys):
-    # Found on PATH in the interpreter's directory, and run on that interpreter. Its
-    # script directory is that `bin`, so `import calc` fails: a collection error.
+    # Found on PATH in the interpreter's directory, and run through Peeky's bootstrap on
+    # the Python its `#!` names, the interpreter. Its script directory is that `bin`, so
+    # `import calc` fails: a collection error.
     command = "pytest -q -p no:cacheprovider tests/test_calc.py"
     code, out = verify(capsys, project, "--baseline", "--json", "--check-command", command)
     result = json.loads(out.out)
-    ran = Path(result["check_command"]["ran"][0])
-    assert code == 1 and ran.name == "pytest" and result["exit_code"] == 2, result
-    assert os.path.samefile(ran.parent, Path(sys.executable).parent)
+    python, _, how, script = result["check_command"]["ran"][:4]
+    assert code == 1 and how == "script" and result["exit_code"] == 2, result
+    assert Path(script).name == "pytest" and os.path.samefile(python, sys.executable)
+    assert "warning" not in result["stdout"]
     code, out = verify(capsys, project, "--baseline", "--check-command", command)
     assert (
         "(pytest exited 2: it was interrupted, as by a test file it could not import, so this "
@@ -806,14 +811,13 @@ def test_a_pytest_run_without_peekys_report_is_no_verdict(project, capsys):
         "your project's files instead of the copy's\n"
     ) in out.out
     (project / "tests" / "conftest.py").unlink()
-    # Under -I, which ignores PYTHONPATH, pytest runs without it.
+    # Under -I, which ignores PYTHONPATH, Peeky's bootstrap puts its plugin on the path.
     (project / "conftest.py").write_text("")
     isolated = "python -I -m pytest -q -p no:cacheprovider tests/test_calc.py"
     code, out = verify(capsys, project, "--check-command", isolated, *FIX, "--json")
     result = json.loads(out.out)
-    assert code == 1 and result["exit_code"] == 0, result
-    assert "peeky_check_report" not in result["check_command"]["ran"]
-    assert "(-I ignores PYTHONPATH, where the plugin is)" in result["no_verdict"]
+    assert code == 0 and result["verdict"] == "passed", result
+    assert result["check_command"]["ran"][1] == "-I"
 
 
 def test_relative_path_entries_are_the_copys_root(project, capsys, monkeypatch, tmp_path):
@@ -957,6 +961,7 @@ def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_p
         return {"nonce": "n1", "plugin": str(plugin), "role": "main", "worker": None,
                 "workers": [], "tests": [str(copy / "tests/test_x.py")], "conftests": [],
                 "modules": {}, "started": {"count": 0, "unknown": 0, "examples": []},
+                "instrumented": "bootstrap",
                 **extra}  # fmt: skip
 
     def read(*reports):
@@ -974,6 +979,12 @@ def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_p
     gw0 = report(role="worker", worker="gw0")
     assert read(main_report, gw0)[3] == ["pytest-xdist's worker gw1 wrote no report"]
     assert read(main_report, gw0, report(role="worker", worker="gw1"))[3] == []
+    # A worker's watch starts as the plugin loads, after what loaded before it: late.
+    late = report(role="worker", worker="gw0", instrumented="plugin")
+    assert read(main_report, late, report(role="worker", worker="gw1"))[3] == [
+        "pytest-xdist's worker gw0 started before Peeky could watch the processes its tests "
+        "start (run without -n for a verdict)"
+    ]
     assert read(gw0)[3] == ["pytest's main process wrote no report from Peeky's plugin"]
     # Files from your tree, and the project's modules from outside the copy.
     loaded = report(
@@ -1150,3 +1161,85 @@ def test_the_cookbook_lists_the_programs_that_start_no_other():
     cookbook = (Path(__file__).resolve().parents[2] / "docs" / "COOKBOOK.md").read_text()
     listed = cookbook.split("The programs that start no other, by their file's real name:")[1]
     assert set(listed.split("```")[1].split()) == leaves
+
+
+# Review round 6: the watch starts before pytest, through Peeky's bootstrap; a
+# multiprocessing start counts once it returns.
+
+EARLY = """\
+import multiprocessing
+import os
+
+process = multiprocessing.get_context("fork").Process(target=os.getpid)
+process.start()
+process.join()
+"""
+
+
+def test_a_plugin_that_loads_before_peekys_cant_start_a_process_unseen(
+    project, capsys, monkeypatch, tmp_path
+):
+    # `PYTEST_ADDOPTS=-p earlyplugin` loads it before Peeky's -p plugin, which watched only
+    # from then on: its fork went unseen, and the run passed.
+    early = tmp_path / "early"
+    early.mkdir()
+    (early / "earlyplugin.py").write_text(EARLY)
+    given = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(early), given])))
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p earlyplugin")
+    code, out = verify(capsys, project, "--check-command", PYTEST, *FIX, "--json")
+    result = json.loads(out.out)
+    assert result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"] == (
+        "the tests started multiprocessing fork (a multiprocessing process)" + CANT
+    )
+
+
+FAILING_START = """\
+import multiprocessing
+import os
+
+import pytest
+
+
+class Failing(multiprocessing.get_context("spawn").Process):
+    @staticmethod
+    def _Popen(process_obj):
+        raise OSError("no process")
+
+
+def test_start():
+    with pytest.raises(OSError):
+        Failing(target=os.getpid).start()
+"""
+
+
+def test_a_multiprocessing_start_that_raises_starts_nothing(project, capsys):
+    (project / "tests" / "test_start.py").write_text(FAILING_START)
+    command = "python -m pytest -q -p no:cacheprovider tests"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["verdict"] == "passed", result
+    assert not any("started" in warning for warning in result.get("warnings", ()))
+
+
+START_AS_M = """\
+import os
+import sys
+
+
+def test_started_as_dash_m():
+    main = sys.modules["__main__"]
+    assert main.__spec__.name == "pytest.__main__", main.__spec__
+    assert sys.argv[0] == main.__spec__.origin, sys.argv
+    assert os.getcwd() in sys.path, sys.path
+    assert not any(entry.endswith("start") for entry in sys.path), sys.path
+"""
+
+
+def test_the_bootstrap_starts_pytest_as_dash_m_does(project, capsys):
+    (project / "tests" / "test_start.py").write_text(START_AS_M)
+    command = "python -m pytest -q -p no:cacheprovider tests/test_start.py"
+    code, out = verify(capsys, project, "--check-command", command, "--baseline", "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["verdict"] == "passed", result

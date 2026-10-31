@@ -4090,12 +4090,22 @@ command that installs or writes there changes your environment.
 - For pytest, Peeky reads what the run itself loaded. It adds its own plugin after pytest's word,
   as `-p peeky_check_<16 hex digits>`, a name new for each run. The plugin is in a directory of
   Peeky's own at the end of `PYTHONPATH`.
+- pytest runs through Peeky's bootstrap, which starts the watch on the processes the tests start
+  before pytest starts. `python -I -m pytest ARGS` runs as `python -I <bootstrap> module pytest -p
+  <plugin> ARGS`. A console script runs on the Python its `#!` names, as `<bootstrap> script
+  <script>`. `ran` shows it.
+- The bootstrap gives pytest the import path and `sys.argv` that `-m`, or the script, would. It
+  also puts the plugin's directory on the path, so `-I` and `-E` don't stop it.
+- Code that runs as Python starts, from a `.pth` file or `sitecustomize`, comes before the
+  bootstrap. Peeky doesn't see a process it starts.
 - At the session's end, the plugin writes a report. It holds the run's nonce and the plugin's own
   file, each test file collected, each conftest loaded, each module's file, and the tests run. It
   lists the processes the tests started, too.
 - Peeky reads only reports with this run's nonce and plugin file. With pytest-xdist, each worker
   writes its own report, and the main process names its workers: a worker without a report counts
   as missing.
+- pytest-xdist starts its workers itself, so their watch starts only as the plugin loads, after
+  plugins loaded before it. A run with `-n` is no verdict: run without it for one.
 - The run is no verdict if it shows any of these:
   - no report from the main process, or a worker's missing;
   - a test file, conftest or module loaded from your project instead of the copy;
@@ -4106,7 +4116,8 @@ command that installs or writes there changes your environment.
   about the edit, or the bug.
 - Peeky sees the processes started through `subprocess`, `os.exec*`, `os.spawn*`,
   `os.posix_spawn`, `os.system` and `os.fork`. It sees each process multiprocessing starts,
-  `concurrent.futures.ProcessPoolExecutor`'s too, whatever its start method.
+  `concurrent.futures.ProcessPoolExecutor`'s too, whatever its start method. A start that fails
+  before it makes a process counts for nothing.
 - **Tests that start other programs get `verdict: unknown`.** Peeky can't check what those
   programs ran or loaded. The message names the first one: `the tests started /usr/bin/find .
   -exec …; Peeky can't check what it ran or loaded`.
@@ -4125,7 +4136,6 @@ md5 md5sum mkdir mv od paste printenv printf pwd readlink realpath rm rmdir seq 
 sha256sum sleep stat tail tee touch tr true uname uniq wc whoami yes
 ```
 
-- `-I` and `-E` ignore `PYTHONPATH`, so pytest runs without the plugin, and there is no report.
 - `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
 - The text has a `pytest report:` line, and JSON a `pytest_report`: `reports`, `test_files` and
   `problems`.

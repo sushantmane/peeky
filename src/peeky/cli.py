@@ -3870,7 +3870,10 @@ def _invocation(ran, candidate, environment, interpreter):
 # session's end: the nonce, the plugin's own file, its role, the test files it collected,
 # the conftests and modules it loaded, and the processes its tests started (an audit
 # hook). It detects accidental mistakes, not hostile tests, which run as you.
-_PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`)."""
+_PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`).
+
+PYTEST_DONT_REWRITE: Peeky's bootstrap imports it before pytest could rewrite it.
+"""
 
 import json
 import multiprocessing.process as _process
@@ -3992,24 +3995,39 @@ def _audit(event, args):
             pass
 
 
-sys.addaudithook(_audit)
 # multiprocessing (and concurrent.futures.ProcessPoolExecutor, through it) starts its
-# processes in BaseProcess.start: each call is one, whatever its start method, some of
-# which (spawn, forkserver) raise no audit event.
+# processes in BaseProcess.start: each call that returns is one, whatever its start
+# method, some of which (spawn, forkserver) raise no audit event.
 _starting = _process.BaseProcess.start
 
 
 def _start(self, *args, **kwargs):
     method = getattr(self, "_start_method", None) or "default"
-    _started(["multiprocessing", str(method)], "unknown", "a multiprocessing process")
     _SPAWNING.multiprocessing = True
     try:
-        return _starting(self, *args, **kwargs)
+        started = _starting(self, *args, **kwargs)
     finally:
         _SPAWNING.multiprocessing = False
+    _started(["multiprocessing", str(method)], "unknown", "a multiprocessing process")
+    return started
 
 
-_process.BaseProcess.start = _start
+# Who installed the watch: "bootstrap", Peeky's start of pytest, before any plugin or
+# conftest; "plugin", this module's import, after whatever loaded first (a pytest-xdist
+# worker, which execnet starts).
+INSTALLED = [None]
+
+
+def install(by):
+    if INSTALLED[0] is None:
+        INSTALLED[0] = by
+        sys.addaudithook(_audit)
+        _process.BaseProcess.start = _start
+
+
+def pytest_addoption(parser):
+    # As this plugin is registered: where Peeky's bootstrap didn't install the watch.
+    install("plugin")
 
 
 def pytest_runtest_logreport(report):
@@ -4053,6 +4071,7 @@ def pytest_sessionfinish(session):
         "modules": modules,
         "started": STARTED,
         "ran": RAN[0],
+        "instrumented": INSTALLED[0],
     }}
     path = os.path.join(FOLDER, str(os.getpid()) + ".json")
     with open(path + ".part", "w") as stream:
@@ -4061,21 +4080,74 @@ def pytest_sessionfinish(session):
 '''
 
 
+# Peeky's start of a pytest check command: its watch on the processes the tests start
+# goes in first (the plugin's install), then pytest runs as `python -m pytest` or its
+# console script would, with the same import path and `sys.argv`.
+_PYTEST_BOOTSTRAP_TEXT = '''"""Peeky's start of pytest (`peeky verify --check-command`)."""
+
+import os
+import runpy
+import sys
+
+how, target = sys.argv[1:3]
+del sys.argv[1:3]
+if not sys.flags.safe_path:
+    # This script's directory is first: as -m, the working directory; as a console
+    # script, that script's own directory.
+    sys.path[0] = os.getcwd() if how == "module" else os.path.dirname(os.path.realpath(target))
+if {plugins!r} not in sys.path:
+    sys.path.append({plugins!r})
+__import__({name!r}).install("bootstrap")
+if how == "module":
+    runpy.run_module(target, run_name="__main__", alter_sys=True)
+else:
+    runpy.run_path(target, run_name="__main__")
+'''
+
+
+def _module_split(words):
+    """(interpreter options, module, its arguments) of `python [options] -m MODULE ...`,
+    the options word for word (`-IBmpytest` gives `-IB`), or None."""
+    found = _module_at(words)
+    if found is None:
+        return None
+    module, at = found
+    if words[at].startswith("-"):
+        prefix = words[at][: words[at].index("m")]
+        return [*words[1:at], *([prefix] if prefix != "-" else [])], module, words[at + 1 :]
+    prefix = words[at - 1][:-1]
+    return [*words[1 : at - 1], *([prefix] if prefix != "-" else [])], module, words[at + 1 :]
+
+
 def _with_pytest_plugin(ran, words, candidate, environment):
-    """``ran`` with `-p <plugin>` after pytest's own word: Peeky's plugin under a name of
-    this run's, written with its nonce and report folder to a directory of Peeky's at the
-    end of the command's PYTHONPATH. Returns (ran, how to read its reports: the folder,
-    the nonce and the plugin's file)."""
+    """pytest's command run through Peeky's bootstrap, which installs the plugin's watch
+    on the processes the tests start before pytest starts: `python [its options]
+    <bootstrap> module pytest -p <plugin> ARGS` for `python [options] -m pytest ARGS`, and
+    `<its #! Python> [its options] <bootstrap> script <console script> -p <plugin> ARGS`
+    for a console script (one that isn't a Python script runs as given, with the plugin:
+    its watch starts late, so no verdict). The plugin has a name of this run's, and its
+    nonce and report folder, in a directory of Peeky's at the end of the command's
+    PYTHONPATH (pytest-xdist's workers import it from there). Returns (ran, how to read
+    its reports: the folder, the nonce and the plugin's file)."""
     folder = Path(tempfile.mkdtemp(prefix="peeky-pytest-", dir=candidate.scratch))
     name, nonce = f"peeky_check_{secrets.token_hex(8)}", secrets.token_hex(16)
-    (folder / "plugin").mkdir()
-    (folder / "reports").mkdir()
+    for each in ("plugin", "start", "reports"):
+        (folder / each).mkdir()
     plugin = folder / "plugin" / f"{name}.py"
     plugin.write_text(_PYTEST_PLUGIN_TEXT.format(nonce=nonce, folder=str(folder / "reports")))
+    # Not on any import path: it is run, never imported.
+    bootstrap = folder / "start" / "peeky_start.py"
+    bootstrap.write_text(_PYTEST_BOOTSTRAP_TEXT.format(plugins=str(folder / "plugin"), name=name))
     given = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, [given, str(folder / "plugin")]))
-    at = 1 if (found := _module_at(words)) is None else found[1] + 1
-    return [*ran[:at], "-p", name, *ran[at:]], (folder / "reports", nonce, plugin)
+    reading = (folder / "reports", nonce, plugin)
+    if (split := _module_split(words)) is not None:
+        options, module, rest = split
+        return [ran[0], *options, str(bootstrap), "module", module, "-p", name, *rest], reading
+    if (script := _script_python(ran[0], environment)) is not None:
+        python, options = script
+        return [python, *options, str(bootstrap), "script", ran[0], "-p", name, *ran[1:]], reading
+    return [ran[0], "-p", name, *ran[1:]], reading
 
 
 def _example(started, kind):
@@ -4118,6 +4190,18 @@ def _pytest_reports(reading, candidate, names):
             problems.append(f"{path.name} in pytest's reports isn't from Peeky's plugin")
             continue
         reports.append(report)
+        if report.get("instrumented") != "bootstrap":
+            who = (
+                f"pytest-xdist's worker {report.get('worker')}"
+                if report.get("role") == "worker"
+                else "pytest's main process"
+            )
+            problems.append(
+                f"{who} started before Peeky could watch the processes its tests start (run "
+                "without -n for a verdict)"
+                if report.get("role") == "worker"
+                else f"{who} started before Peeky could watch the processes its tests start"
+            )
         for kind, file in files:
             if candidate.copy_path(file) is not None:
                 problems.append(f"pytest {kind} {file} from your project, not the copy")
@@ -4186,16 +4270,12 @@ def _verify_command(args, root, source, words, deadline):
     try:
         environment = _command_environment(interpreter, candidate)
         ran = [_command_program(words[0], candidate, environment, interpreter), *words[1:]]
-        static, reading, plugin_off = [], None, None
+        static, reading = [], None
         pytest = _runner(words) == "pytest"
         if pytest:
-            # What pytest loads is read from the run itself, by Peeky's plugin, which -I
-            # and -E can't load: pytest would fail on it, so it runs without.
-            _, flags, _ = _invocation(ran, candidate, environment, interpreter)
-            if isolated := [flag for flag in flags if flag in ("-I", "-E")]:
-                plugin_off = f"{isolated[0]} ignores PYTHONPATH, where the plugin is"
-            else:
-                ran, reading = _with_pytest_plugin(ran, words, candidate, environment)
+            # What pytest loads, and the processes its tests start, are read from the run
+            # itself: it starts through Peeky's bootstrap, with Peeky's plugin.
+            ran, reading = _with_pytest_plugin(ran, words, candidate, environment)
         else:
             static = candidate.command_imports(
                 *_invocation(ran, candidate, environment, interpreter), environment
@@ -4245,7 +4325,7 @@ def _verify_command(args, root, source, words, deadline):
             )
             stopped = result["timed_out"] or result["output_limit_exceeded"]
             if not count and not stopped:
-                why = plugin_off or "-p no:<its name> turned it off, or pytest stopped first"
+                why = "-p no:<its name> turned it off, or pytest stopped first"
                 problems.insert(
                     0,
                     f"pytest wrote no report from Peeky's plugin ({why}), so Peeky can't tell "
