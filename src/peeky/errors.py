@@ -343,6 +343,23 @@ _RULES = (
         False,
     ),
     (
+        # A Rust workspace Peeky doesn't build (rust_workspace), refused before Cargo runs.
+        r"^Peeky (?:doesn't build (?:git dependencies|a workspace with|a path dependency outside|"
+        r"with `)|builds crates\.io dependencies only|analyses only (?:editions|code the program "
+        r"runs)|builds only files inside )",
+        "UNSUPPORTED",
+        "Nothing was built. Change what the message names in the workspace or its "
+        "configuration, or analyse another package.",
+        False,
+    ),
+    (
+        r"^Peeky builds registry dependencies only from `cargo vendor`'s copy",
+        "INVALID_REQUEST",
+        "Run the `cargo vendor` command the message gives (it needs the network or Cargo's "
+        "cache once), then build again.",
+        False,
+    ),
+    (
         r"C\+\+ targets need clang\+\+ or g\+\+",
         "UNSUPPORTED",
         "Point PEEKY_NATIVE_CXX (or the target's `compiler`) at clang++ or g++.",
@@ -378,6 +395,13 @@ _RULES = (
         "UNSUPPORTED",
         "Use a Python whose sqlite3 module has SQLite 3.30 or newer with JSON; "
         "python3 -c 'import sqlite3; print(sqlite3.sqlite_version)' shows it.",
+        False,
+    ),
+    (
+        r"^Provenance: vendored `",
+        "PROVENANCE_CHANGED",
+        "Run the `cargo vendor` command the message gives, so the vendored copies are the ones "
+        "Cargo.lock names, then build again.",
         False,
     ),
     (

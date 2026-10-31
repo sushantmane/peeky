@@ -214,7 +214,32 @@ All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000
 
 ## Not yet verified
 
-- `-Zunpretty=expanded` works through the wrapper on rustc 1.96, and a warm workspace build fits an agent's wait.
+Nothing for phases 1 and 2: phase 1's items are verified above, and phase 2's below.
+
+### Verified for phase 2
+
+Measured with Rust 1.96.0 on macOS and in the study's images (aarch64 Linux, 4 CPUs), with a prototype of the wrapper. `tests/rust/test_rust_workspace_shape.py` keeps the first and fourth points checked.
+
+- **Expansion works, through `RUSTC_BOOTSTRAP` for one crate.** `-Zunpretty=expanded` is a nightly flag. `RUSTC_BOOTSTRAP` set to the crate's name allows it for that crate's compile alone, as it allows the MIR dump's flags today. Another crate's name is refused. No stable flag expands a crate.
+- **The wrapper runs it as a second rustc process,** before the compile, with `-o` and without `--emit` or `--out-dir`. Its messages stay out of Cargo's: they go to a file. It took 0.01 to 0.21 s per crate, for 4 KB to 3.4 MB of text (tokio). The text starts with `#![feature(prelude_import)]` and the prelude's `use`, which the scans must skip.
+- **Build scripts run rustc through the wrapper too:** tokio's `autocfg` probes did, with `CARGO_PKG_NAME` set to tokio. So the wrapper acts only on an analysed target's own compile, by its crate name and source file from Cargo's metadata.
+- **Cargo checks each file of a vendored copy as it compiles the package,** and refuses a changed file by name. It doesn't check again while it reuses the compiled package. So Peeky checks each copy's checksum against Cargo.lock at every build, and the copy's checksum file at every probe.
+- **A warm build fits an agent's wait.** "Warm" removes the analysed packages' artifacts (`cargo clean -p`) and builds again, as every `peeky build` will; dependencies are reused.
+
+| Project | Analysed (what runs) | Cold | Warm | No change | MIR files, MB (`after`) |
+| --- | --- | --- | --- | --- | --- |
+| tokio-6752 | tokio-util (test `time_delay_queue`) | 2.7 s | 0.2 s | 0.03 s | 224, 4 (1) |
+| tokio-4867 | tokio (test `sync_broadcast`) | 5.0 s | 1.1 s | 0.04 s | 3134, 34 (13) |
+| axum-1934 | axum (its unit tests) | 19.6 s | 7.0 s | 0.06 s | 4246, 131 (63) |
+| bat-3108 | bat (bin `bat`) | 14.8 s | 2.3 s | 0.04 s | 1376, 44 (20) |
+| ripgrep-2209 | grep-printer (bin `rg`) | 3.5 s | 0.9 s | 0.02 s | 672, 10 (4) |
+| coreutils-6690 | uu_cp (bin `coreutils`) | 9.7 s | 1.8 s | 0.06 s | 286, 9 (3) |
+
+- **MIR size:** axum's `PreCodegen.after` bodies are 63 MB (2,123 bodies), just under `MAX_MIR_BYTES` (64 MiB). Peeky's reader parses them in 1.5 s. Larger crates will need the bound per crate, or bodies read as a stop needs them.
+- **Editions:** tokio at tokio-4867, and ripgrep and grep-printer at ripgrep-2209, are edition 2018. Phase 2 refuses to analyse them, as its errors say, so their acceptance checks that refusal until edition 2018 is qualified.
+- **Cargo configuration:** ripgrep's and coreutils' `.cargo/config.toml` set only other targets' flags and linkers, and clippy's lints. tokio-4867's `.cargo/config` is all comments. Peeky accepts these, and refuses what would change its build (`rust_workspace.check_cargo_config`).
+- **Git dependencies:** Cargo.lock records no checksum for one, so nothing ties a vendored copy to the commit it names. Phase 2 refuses every git dependency, vendored or not.
+- **Configuration above the workspace** stays refused, as decided. So is a workspace under the home directory where `~/.cargo/config.toml` exists, as Cargo reads it there; the refusal names the file.
 
 ## Consequences
 
