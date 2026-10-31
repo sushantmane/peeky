@@ -737,6 +737,22 @@ def test_a_git_dependency_is_refused_by_name(workspace):
     assert code(caught) == "UNSUPPORTED"
 
 
+def test_a_version_2_lockfile_is_refused_saying_how_to_make_it_version_3(workspace):
+    # `cargo update --workspace` keeps a lockfile's version, as the study's tokio-4867 and
+    # ripgrep-2209 showed (#467): the hint said to run it.
+    (workspace / "Cargo.lock").write_text(LOCK.replace("version = 4\n", "", 1))
+    with pytest.raises(ValueError) as caught:
+        shape(workspace)
+    assert str(caught.value).endswith(
+        "Cargo.lock is version 2. `cargo update` keeps a lockfile's version. Without git "
+        "sources, version 2 is version 3 but for its first line: add `version = 3` there"
+    )
+    assert code(caught) == "UNSUPPORTED"
+    # As the message says.
+    (workspace / "Cargo.lock").write_text("version = 3\n" + LOCK.replace("version = 4\n", "", 1))
+    assert [package.name for package in shape(workspace).analysed] == ["util"]
+
+
 @pytest.mark.parametrize(
     ("lock", "said", "expected"),
     [
@@ -753,6 +769,13 @@ def test_a_git_dependency_is_refused_by_name(workspace):
         (
             LOCK.replace("version = 4", "version = 2", 1),
             "Peeky reads only Cargo.lock versions 3 and 4, and .* is version 2",
+            "UNSUPPORTED",
+        ),
+        (
+            # Version 1: its checksums in `[metadata]`.
+            LOCK.replace("version = 4\n", "", 1).replace(f'checksum = "{CHECKSUM}"\n', "")
+            + f'\n[metadata]\n"checksum smallnum 1.0.0" = "{CHECKSUM}"\n',
+            r"\.lock is version 1\. Delete it and run `cargo generate-lockfile` with this Cargo",
             "UNSUPPORTED",
         ),
         (

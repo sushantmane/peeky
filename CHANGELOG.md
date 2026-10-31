@@ -35,6 +35,12 @@
   Where only references or `Copy` values are left out, they read as before. A change of a
   named variable is refused either way, since Peeky can't tell what the closure holds.
 
+- **A version 2 Cargo.lock's refusal says what works (#467).** It said to run `cargo update
+  --workspace`, which keeps a lockfile's version, so tokio-4867's and ripgrep-2209's stayed
+  version 2. It now says to add `version = 3` as the first line: without git sources, the two
+  versions differ only by it. A version 1 lockfile is told to be written again with `cargo
+  generate-lockfile`.
+
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
   into the static, yet `x` was marked `[settable]`: a change didn't reach the static's copy,
