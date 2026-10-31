@@ -4794,3 +4794,92 @@ def test_files_of_one_name_in_two_directories_are_not_one_file(tmp_path):
     other = ir.replace('directory: "/w/src/a")', 'directory: "/elsewhere")')
     path.write_text(other)
     assert "h4853d4a0533b6443" not in ir_functions(path, ["src/a/mod.rs"])
+
+
+# `move || p.a as usize + p.name.len()` at edition 2021, as rustc 1.96 dumps it: two captures
+# of `p` (the annotation's last item), one printed.
+TWO_CAPTURES = """// MIR for `two` after PreCodegen
+
+fn two(_1: Named) -> usize {
+    debug p => _1;                       // in scope 0 at src/lib.rs:5:12: 5:13
+    let mut _0: usize;                   // return place in scope 0 at src/lib.rs:5:25: 5:30
+    let _2: {closure@src/lib.rs:6:13: 6:20};  // in scope 0 at src/lib.rs:6:9: 6:10
+    let mut _3: &{closure@src/lib.rs:6:13: 6:20}; // in scope 0 at src/lib.rs:7:5: 7:6
+    let mut _4: ();                      // in scope 0 at src/lib.rs:7:5: 7:8
+    scope 1 {
+        debug f => _2;                   // in scope 1 at src/lib.rs:6:9: 6:10
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/lib.rs:6:9: 6:10
+        _2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32) }; // scope 0 at src/lib.rs:6:13: 6:48
+                                         // closure
+                                         // + def_id: DefId(0:10 ~ lib[4cf1]::two::{closure#0})
+                                         // + args: [
+                                         //     i8,
+                                         //     Binder { value: extern "RustCall" fn(()) -> usize, bound_vars: [] },
+                                         //     (u32, std::string::String),
+                                         // ]
+        StorageLive(_3);                 // scope 1 at src/lib.rs:7:5: 7:6
+        _3 = &_2;                        // scope 1 at src/lib.rs:7:5: 7:6
+        StorageLive(_4);                 // scope 1 at src/lib.rs:7:5: 7:8
+        _4 = ();                         // scope 1 at src/lib.rs:7:5: 7:8
+        _0 = <{closure@src/lib.rs:6:13: 6:20} as Fn<()>>::call(move _3, move _4) -> [return: bb1, unwind: bb3]; // scope 1 at src/lib.rs:7:5: 7:8
+                                         // mir::ConstOperand
+                                         // + span: src/lib.rs:7:5: 7:6
+                                         // + const_: Const { ty: for<'a> extern "rust-call" fn(&'a {closure@src/lib.rs:6:13: 6:20}, ()) -> <{closure@src/lib.rs:6:13: 6:20} as FnOnce<()>>::Output {<{closure@src/lib.rs:6:13: 6:20} as Fn<()>>::call}, val: Value(<{closure@src/lib.rs:6:13: 6:20} as Fn<()>>::call) }
+    }
+
+    bb1: {
+        StorageDead(_4);                 // scope 1 at src/lib.rs:7:7: 7:8
+        StorageDead(_3);                 // scope 1 at src/lib.rs:7:7: 7:8
+        drop(_2) -> [return: bb2, unwind: bb4]; // scope 0 at src/lib.rs:8:1: 8:2
+    }
+
+    bb2: {
+        StorageDead(_2);                 // scope 0 at src/lib.rs:8:1: 8:2
+        return;                          // scope 0 at src/lib.rs:8:2: 8:2
+    }
+
+    bb3 (cleanup): {
+        drop(_2) -> [return: bb4, unwind terminate(cleanup)]; // scope 0 at src/lib.rs:8:1: 8:2
+    }
+
+    bb4 (cleanup): {
+        resume;                          // scope 0 at src/lib.rs:5:1: 8:2
+    }
+}
+"""
+
+
+def _built(text):
+    from peeky.rust_mir import parse_body
+
+    body = parse_body(text)
+    return body, [code for code, _, _ in body.blocks[0].statements if " = {closure@" in code]
+
+
+def test_a_closure_the_mir_prints_fewer_captures_of_moves_each_variable_it_names():
+    # rustc prints one capture per variable it mentions, so `p.name`'s move was missing, and
+    # `p.name` read as `p`'s own value from memory the closure had freed (#465).
+    body, built = _built(TWO_CAPTURES)
+    assert body.supported
+    assert built == ["_2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32), p: move _1 };"]
+    assert body.closure_captures() == {"{closure@src/lib.rs:6:13: 6:20}": ["u32", "Named"]}
+    # Every capture printed (one, `(u32,)`): as rustc wrote it.
+    _, built = _built(TWO_CAPTURES.replace("(u32, std::string::String),", "(u32,),"))
+    assert built == ["_2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32) };"]
+    # Without the annotation, which rustc writes for every closure and coroutine but an async
+    # closure, Peeky can't count them: every variable it names is moved.
+    plain = "\n".join(
+        line
+        for line in TWO_CAPTURES.splitlines()
+        if not line.strip().startswith("// ") or "MIR" in line
+    )
+    assert _built(plain)[1][0].endswith("{ p: copy (_1.0: u32), p: move _1 };")
+    # An annotation Peeky can't count from moves them too.
+    _, built = _built(TWO_CAPTURES.replace("(u32, std::string::String),", "Unknown,"))
+    assert built[0].endswith("{ p: copy (_1.0: u32), p: move _1 };")
+    # A name that binds nothing: what it captures is unknown, so the body isn't analyzed.
+    body, _ = _built(TWO_CAPTURES.replace("{ p: copy", "{ r: copy"))
+    assert not body.supported

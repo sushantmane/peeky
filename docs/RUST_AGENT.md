@@ -552,6 +552,12 @@ used again. Such a temporary is:
 - A closure counts by what it captures, from the aggregate that builds it
   (`Body.closure_captures`). Where the debug information wasn't read, every type of the crate's may
   hold anything. These make `TypeLayouts`, set as `Body.layouts` when the body is matched.
+- rustc prints a closure's or coroutine's aggregate with one capture per variable it mentions.
+  Since Rust 2021 a closure captures the places it uses, so two of one variable's leave one out,
+  and another variable's may go by the next name (#465). The annotation after the aggregate
+  counts them (its last `+ args` item, a tuple). Where it counts more than are printed, or is
+  missing, as for an async closure, every variable the aggregate names is moved into it whole
+  (`_whole_captures`). Its leftovers then read as moved, never as a value.
 - So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`,
   while `Counter { c: Cell<u32> }` does.
 - A field moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of `_6`

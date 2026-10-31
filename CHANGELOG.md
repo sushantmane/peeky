@@ -27,6 +27,13 @@
 
 ### Other changes
 
+- **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
+  closure or async block captures the places it uses. rustc's MIR prints one capture per
+  variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
+  value, from memory the closure had freed after growing its `String`. Where the MIR prints
+  fewer captures than the closure has, every variable it names now counts as moved into it.
+  So does an async closure's, whose captures rustc doesn't count.
+
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
   into the static, yet `x` was marked `[settable]`: a change didn't reach the static's copy,

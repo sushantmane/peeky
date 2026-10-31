@@ -8017,6 +8017,58 @@ def _top_level(text):
     return [part for part in parts if part]
 
 
+# A closure or coroutine built (`_6 = {closure@src/lib.rs:5:13: 5:20} { p: copy (_2.0: u32) };`,
+# `{coroutine@src/lib.rs:3:5: 3:15 (#0)}`, `{coroutine-closure@…}`): its kind, and the
+# operands printed.
+_CAPTURING = re.compile(
+    r"^(_[0-9]+ = \{(closure|coroutine|coroutine-closure)@[^{}]*\})(?: \{ (.*) \})?;$"
+)
+
+
+def _captured_count(lines, index):
+    """How many places the closure or coroutine built on ``lines[index]`` captures, from
+    the annotation `-Zmir-include-spans` writes after it (`// closure`, then `// + args:
+    […]`, whose last item is the tuple of their types; a coroutine's too). None where
+    Peeky can't count them: no annotation (rustc writes none for an async closure's), or
+    one whose last item isn't that tuple (a `coroutine-closure`'s)."""
+    following = []
+    for line in lines[index + 1 :]:
+        stripped = line.strip()
+        if not stripped.startswith("//"):
+            break
+        following.append(stripped[2:].strip())
+    if not following or following[0] not in ("closure", "coroutine") or "]" not in following:
+        return None
+    last = following[following.index("]") - 1].removesuffix(",")
+    if "{coroutine-closure@" in lines[index] or not (last.startswith("(") and last.endswith(")")):
+        return None
+    return len(_top_level_items(last[1:-1]))
+
+
+def _whole_captures(text, body):
+    """The closure or coroutine built by the statement ``text``, rustc's MIR printing fewer
+    of its captures than it has, with each variable it names moved in whole besides
+    (`{ p: copy (_2.0: u32), p: move _2 }`). rustc prints one capture per variable it
+    mentions (`FIXME(project-rfc-2229#48)`), but since Rust 2021 a closure captures the
+    places it uses, so two of one variable's leave one out, and may label another's with
+    the next name. Every variable it names is then taken as moved into it. None where a name
+    binds nothing in ``body``: what it captures is unknown."""
+    built = _CAPTURING.match(text)
+    added = []
+    for item in _top_level_items(built[3] or ""):
+        name = item.partition(": ")[0]
+        bindings = body.bindings.get(name)
+        if not bindings:
+            return None
+        for local, file, line, _, scope in bindings:
+            place = f"_{local}" if local is not None else body.places.get((name, file, line, scope))
+            if place is None:
+                return None
+            added.append(f"{name}: move {place}")
+    operands = ", ".join([*_top_level_items(built[3] or ""), *dict.fromkeys(added)])
+    return f"{built[1]} {{ {operands} }};" if operands else text
+
+
 def parse_body(text):
     """One `-Zdump-mir` body, or None when the file holds no function body."""
     lines = split_lines(text)
@@ -8031,7 +8083,7 @@ def parse_body(text):
         if found := re.fullmatch(r"_([0-9]+): (.+)", argument):
             body.types[int(found[1])] = found[2]
     block, spans, opened_scopes = None, [], [0]
-    for line in lines[start + 1 :]:
+    for index, line in enumerate(lines[start + 1 :], start + 1):
         if line == "}":
             break
         if line.lstrip().startswith("//") or not line.strip():
@@ -8091,9 +8143,14 @@ def parse_body(text):
             body.supported = False
             continue
         span = _SPAN.match(statement[3])
-        block.statements.append(
-            (statement[1], span[1] if span else None, int(span[2]) if span else None)
-        )
+        code = statement[1]
+        if built := _CAPTURING.match(code):
+            count = _captured_count(lines, index)
+            if count is None or count > len(_top_level_items(built[3] or "")):
+                code = _whole_captures(code, body)
+                if code is None:
+                    code, body.supported = statement[1], False
+        block.statements.append((code, span[1] if span else None, int(span[2]) if span else None))
         block.scopes.append(int(statement[2]))
         full = _FULL_SPAN.match(statement[3])
         block.spans.append((int(full[3]), int(full[4]), int(full[5])) if full else None)
