@@ -27,6 +27,11 @@
 
 ### Other changes
 
+- **A version 2 Cargo.lock's refusal says what works (#467).** It said to run `cargo update
+  --workspace`, which keeps a lockfile's version, so tokio-4867's and ripgrep-2209's stayed
+  version 2. It now says to add `version = 3` as the first line: without git sources, the two
+  versions differ only by it. A version 1 lockfile is told to be written again with `cargo
+  generate-lockfile`.
 - **Rust: a function whose signature spans several lines is read (#466).** rustc puts no MIR
   span on such a function's `fn` line, so Peeky matched no MIR to it. Every change in it was
   refused, saying Peeky couldn't tell, and its rows lost their MIR types. rustfmt writes a long
