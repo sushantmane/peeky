@@ -896,7 +896,7 @@ def build(target, root, *, deadline=None, progress=None, stop=None):
     build scripts and rustc) and starts none: a worker's shutdown. Every process the build
     runs is an ``execute`` in this thread (``_run``, ``_tools``, ``rust_workspace.read``),
     which takes it from ``stopping``. Only such an end is BuildStopped: any other error,
-    a failed kill among them (agent.GroupNotEnded), is raised as it is."""
+    a failed kill among them (with its ``process_group``), is raised as it is."""
     from peeky.agent import Stopped, stopping
 
     with stopping(stop):

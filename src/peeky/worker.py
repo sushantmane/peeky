@@ -7292,9 +7292,11 @@ class _RemoteBuilds:
         error = outcome.get("error")
         if error is None or isinstance(error, BuildStopped):
             return None
+        group = getattr(error, "process_group", None)
         return (
-            f"its build, stopped, ended with an error instead, so its processes may still run: "
-            f"{error}"
+            f"its build, stopped, ended with an error instead ({type(error).__name__}: {error}), "
+            "so its processes may still run"
+            + (f". End them yourself: kill -KILL -- -{group}" if group else "")
         )
 
     def request(self, worker, args):

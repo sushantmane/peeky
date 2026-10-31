@@ -405,12 +405,14 @@ def test_a_build_that_doesnt_end_when_stopped_is_never_reported_ended(tmp_path):
     )
     assert builds.active()
     # It ends, but not as stopped: a kill that failed, say. Every later answer says so.
-    target.fail_on_stop = OSError("Peeky couldn't make sure the processes cargo started ended")
+    target.fail_on_stop = PermissionError(1, "Operation not permitted")
+    target.fail_on_stop.process_group = 4242
     target.release.set()
     for _ in range(2):
         assert builds.close(timeout=5) == (
-            "its build, stopped, ended with an error instead, so its processes may still run: "
-            "Peeky couldn't make sure the processes cargo started ended"
+            "its build, stopped, ended with an error instead (PermissionError: [Errno 1] "
+            "Operation not permitted), so its processes may still run. End them yourself: "
+            "kill -KILL -- -4242"
         )
     assert not builds.active()
 
@@ -446,8 +448,8 @@ def test_a_worker_whose_build_doesnt_end_refuses_to_shut_down_and_says_why(tmp_p
         target.release.set()
         assert client.call("shutdown") == {
             "state": "shutdown",
-            "warning": "its build, stopped, ended with an error instead, so its processes may "
-            "still run: its group survived",
+            "warning": "its build, stopped, ended with an error instead (OSError: its group "
+            "survived), so its processes may still run",
         }
     finally:
         target.release.set()
@@ -518,7 +520,6 @@ def test_a_kill_that_fails_is_never_called_a_stopped_build(tmp_path, monkeypatch
     import signal
 
     from peeky import agent, rust_build
-    from peeky.agent import GroupNotEnded
 
     def refused(process):
         raise PermissionError(1, "Operation not permitted")
@@ -527,13 +528,11 @@ def test_a_kill_that_fails_is_never_called_a_stopped_build(tmp_path, monkeypatch
     monkeypatch.setattr(agent, "kill_process_group", refused)
     group = None
     try:
-        with pytest.raises(GroupNotEnded) as failed:
+        # The kill's own error, never BuildStopped, with the group whose processes may run.
+        with pytest.raises(PermissionError) as failed:
             rust_build.build(None, tmp_path, deadline=time.monotonic() + 120, stop=stop)
-        group = failed.value.group
-        assert str(failed.value) == (
-            f"Peeky couldn't make sure the processes sh started ended (process group {group}): "
-            f"[Errno 1] Operation not permitted. End them yourself: kill -KILL -- -{group}"
-        )
+        group = failed.value.process_group
+        assert group == os.getpgid(int(pid_file.read_text()))
         # It is so: the build script still runs.
         assert not gone(int(pid_file.read_text()), timeout=0.5)
         # And a worker's close says so.
@@ -543,8 +542,9 @@ def test_a_kill_that_fails_is_never_called_a_stopped_build(tmp_path, monkeypatch
         builds.request(worker, {"wait": 0})
         threading.Timer(0.2, target.release.set).start()
         assert builds.close(timeout=5) == (
-            "its build, stopped, ended with an error instead, so its processes may still run: "
-            + str(failed.value)
+            "its build, stopped, ended with an error instead (PermissionError: [Errno 1] "
+            "Operation not permitted), so its processes may still run. End them yourself: "
+            f"kill -KILL -- -{group}"
         )
     finally:
         if group is not None:

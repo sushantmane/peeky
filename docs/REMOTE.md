@@ -240,9 +240,15 @@ set x: 5 -> 100
 - **A package with no `rerun-if-changed`** is compared by the files `cargo package --list` gave
   on the worker's host. That honours `include`, `exclude` and, with git, what git ignores. Your
   own ignored files and a `.DS_Store` aren't compared; a listed file you lack is named.
+- **With git, Cargo lists untracked files git doesn't ignore,** on the worker's host too. So a
+  `.DS_Store` there that `.gitignore` doesn't name must be in your checkout as well. Ignore it,
+  or delete it on the worker's host.
 - **If Cargo can't list a package,** the worker compares every file of it instead, but
   `.DS_Store`, `Thumbs.db` and `desktop.ini`, and `peeky build` says why. Without git, Cargo
   lists every file but hidden ones and `target`.
+- **With a local procedural macro,** its package and the analysed ones are compared file by
+  file too: every file but `.DS_Store`, `Thumbs.db` and `desktop.ini`. Cargo doesn't track what
+  a macro reads, so Peeky doesn't narrow it to Cargo's list.
 - **Each file is compared by its links too,** not only its bytes. A link on one side only, the
   file or a directory on its path, is refused though the bytes are the same. So is a link that
   points elsewhere.

@@ -157,8 +157,8 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   from `agent.stopping`: once set, it kills Cargo's process group and starts nothing.
   A running build is the worker's activity (`active`).
 - Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
-  reaped, or that started nothing. A kill or reap that fails is `agent.GroupNotEnded`, naming
-  the group, and is never hidden. `close` returns why the stopped build didn't end as stopped,
+  reaped, or that started nothing. A kill or reap that fails raises its own error, with the
+  group in its `process_group`, and is never hidden. `close` returns why the stopped build didn't end as stopped,
   if it didn't: `shutdown` then refuses (still running) or warns, and `main` exits 1.
 - The client rewrites a worker's `BUILD_REQUIRED` to name its own command (`_remote_build_required`).
   A client resolves the target without a `--config`: a manifest Peeky doesn't build itself is the

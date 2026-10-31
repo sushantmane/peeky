@@ -125,18 +125,6 @@ class Stopped(RuntimeError):
         )
 
 
-class GroupNotEnded(OSError):
-    """``execute`` couldn't kill its process group, or reap its leader: processes of it may
-    still run."""
-
-    def __init__(self, command, group, cause):
-        self.group = group
-        super().__init__(
-            f"Peeky couldn't make sure the processes {Path(str(command[0])).name} started "
-            f"ended (process group {group}): {cause}. End them yourself: kill -KILL -- -{group}"
-        )
-
-
 def execute(
     command,
     cwd,
@@ -158,7 +146,8 @@ def execute(
     Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code, and
     `stopped`. One set already starts nothing. Without one, ``stopping``'s applies, and its
     end raises Stopped instead, once the group was killed and its leader reaped. Where the
-    group can't be killed, or its leader reaped, GroupNotEnded is raised, never hidden.
+    group can't be killed, or its leader reaped, that error is raised, never hidden, with the
+    group in its ``process_group``.
     ``gate()``, a context manager, is held while the process is started; it may raise
     to keep the process from starting.
 
@@ -250,7 +239,9 @@ def execute(
                 process.kill()
             process.wait(timeout=5)
         except (OSError, subprocess.SubprocessError) as exc:
-            raise GroupNotEnded(command, process.pid, exc) from exc
+            # Processes of the group may still run: whoever reports it can name the group.
+            exc.process_group = process.pid
+            raise
         for reader in readers:
             reader.join(timeout=5)
         if writer:
