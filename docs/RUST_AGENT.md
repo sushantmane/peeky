@@ -131,6 +131,9 @@ Around it:
 - The stop must be in the function's own file.
 - The MIR body must be identified positively. Exactly one body of that name has a span on the
   function's `fn` line, and it owns every line of its code that any body has a span on.
+- rustc puts no MIR span on the `fn` line where rustfmt has put the parameters on lines of their
+  own. There, the source from the `fn` line to the body's first parameter or return place must be
+  `fn` and the function's name, then nothing that ends a signature (`_signature_continues`).
 
 A second dataflow follows, for every local, only whether it was assigned since its storage began.
 

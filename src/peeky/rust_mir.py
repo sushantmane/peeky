@@ -2766,6 +2766,9 @@ class Body:
     # Lines of every span in the body's own file (its own code, and the definitions of
     # same-file macros it expands).
     lines: frozenset = frozenset()
+    # Lines of its parameters' and return place's spans in its own file: its signature's,
+    # which are past its `fn` line where rustfmt has put the parameters on lines of their own.
+    head: frozenset = frozenset()
     types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
     # {(name, file, line, scope): place} for bindings through a projection (a closure's
     # capture `(*((*_1).0: &mut T))`, an async local).
@@ -8126,7 +8129,7 @@ def parse_body(text):
     for argument in _top_level(header[2]):
         if found := re.fullmatch(r"_([0-9]+): (.+)", argument):
             body.types[int(found[1])] = found[2]
-    block, spans, opened_scopes = None, [], [0]
+    block, spans, opened_scopes, head = None, [], [0], []
     for index, line in enumerate(lines[start + 1 :], start + 1):
         if line == "}":
             break
@@ -8135,11 +8138,14 @@ def parse_body(text):
         if local := _LOCAL.match(line):
             if local[1] == "0":
                 body.file = local[3]
+                head.append((local[3], int(local[4])))
             body.types[int(local[1])] = local[2]
             spans.append((local[3], int(local[4])))
             continue
         if debug := _DEBUG.match(line):
             whole = _WHOLE_LOCAL.match(debug[2])
+            if whole and int(whole[1]) in arguments:
+                head.append((debug[4], int(debug[5])))
             # A binding through a projection (a closure's capture, an async local) has no
             # whole local, but names its type: `(_1.0: std::boxed::Box<Pt>)`.
             typed = None if whole else _projected_type(debug[2])
@@ -8234,6 +8240,7 @@ def parse_body(text):
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
     body.lines = frozenset(number for file, number in spans if file == body.file)
+    body.head = frozenset(number for file, number in head if file == body.file)
     if body.coroutine is not None and body.coroutine >= 0:
         body.types.update(saved)
         body.saved = frozenset(saved)
@@ -8351,6 +8358,21 @@ def _finish(block):
         returned = _RETURN_EDGE.search(edges)
         block.returns = int(returned[1]) if returned else None
     return True
+
+
+def _signature_continues(body, function, text):
+    """Whether the `fn` line the DISubprogram of ``function`` names (rustc puts no MIR span on
+    it) opens a signature whose next lines hold ``body``'s parameters and return place
+    (``Body.head``), as rustfmt writes a long one: the source ``text`` from that line to the
+    first of them is `fn` and the function's name, then nothing that ends a signature."""
+    if not text or not body.head or function.line is None or min(body.head) <= function.line:
+        return False
+    lines = text.split("\n")
+    if min(body.head) > len(lines):
+        return False
+    opening = "\n".join(lines[function.line - 1 : min(body.head) - 1])
+    name = re.escape(_mir_name(function.name))
+    return bool(re.match(rf"\s*(?:[\w\s()\"]*\s)?fn\s+{name}\b[^{{}};]*$", opening))
 
 
 def load_bodies(directory, crate, defined=None):
@@ -9069,7 +9091,10 @@ class OwnedLocals:
                 if body.file == function.file
                 and body.name == name
                 and _same_path(body, function)
-                and function.line in body.lines
+                and (
+                    function.line in body.lines
+                    or _signature_continues(body, function, self.texts.get(function.file))
+                )
             ]
             if len(candidates) == 1:
                 chosen = next(i for i, b in enumerate(self.bodies) if b is candidates[0])
