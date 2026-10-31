@@ -290,11 +290,19 @@ _RULES = (
         False,
     ),
     (
-        r"^Peeky launches a Java program on another java than the adapter's only from a JDK's "
-        r"bin directory",
+        r"^Peeky runs a Java program on another JDK than the adapter's only from that JDK's "
+        r"own bin/java",
         "UNSUPPORTED",
-        "Nothing was launched. Put a JDK's bin directory first on PATH, or set the config's "
-        "java to the one the message names.",
+        "Nothing was launched. Put the JDK's own bin directory first on PATH, or set the "
+        "config's java to the one the message names.",
+        False,
+    ),
+    (
+        # A backstop for what JDK checks miss: java-debug's own launch failure.
+        r"VM initialization failed for: .*includevirtualthreads=",
+        "UNSUPPORTED",
+        "The adapter's JDK, 19 or later, can't start a JVM before 19. Rebuild the bundle with "
+        "JDK 17 first on PATH, or run the program on the adapter's JDK.",
         False,
     ),
     (

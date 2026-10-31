@@ -167,6 +167,20 @@ A process running as the same user, or as root, isn't covered.
   text, the launcher, the lock, the notices and the compiler flags. It doesn't ask the JDK that
   runs it. The classes are compiled with `--release 17`, and a JVM that can't run them refuses
   them.
+- The adapter runs only on the `java` its bundle was built with. The recipe records that file:
+  its real path, with links followed, and its SHA-256. Before every operation, Peeky checks that
+  the bundle's `java` still leads to that path and has those bytes. Then it runs it.
+- A config's `java` must be that one. Without one, the program runs on the `java` on `PATH`,
+  and the adapter on the bundle's. Where `PATH` names the bundle's `java`, nothing more is
+  checked, as for every tool on `PATH`.
+- Where `PATH`'s `java` is another, Peeky picks the bundle's itself. So it also requires the
+  bundle's `java` to be a JDK's own `bin/java`, beside a `release` file. Neither it nor a
+  directory above it may be writable by a user other than you or root. A JDK under
+  `/usr/lib/jvm`, owned by root and writable by no one else, passes.
+- Peeky never decides which JDK a `java` is by running it. A wrapper or a launcher, such as
+  macOS's `/usr/bin/java`, can print one JDK and run another, by `JAVA_HOME`. Where the two
+  `java`s differ, both must be a JDK's own `bin/java`, and their `release` files give their
+  versions. A refusal may name the JDK a wrapper says it runs, as a suggestion only.
 
 ## Failure handling
 

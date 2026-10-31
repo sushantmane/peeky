@@ -32,7 +32,12 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   relative to the config.
 - The adapter runs on the `java` that `peeky setup-java` built its bundle with. The program builds
   and runs on `javac` and `java` from `PATH`, the project's JDK
-  ([Java 7.3](java-cookbook.md#which-jdk-runs-what)).
+  ([Java 7.3](java-cookbook.md#which-jdk-runs-what)). A `java:` line, and `java` in `--json`,
+  say which ran what.
+- Peeky checks that the bundle's `java` is still the file setup recorded, by real path and bytes.
+  After a JDK update, run `peeky setup-java` again.
+- Where the two differ, each must be a JDK's own `bin/java`, beside its `release` file. A wrapper,
+  a shim or macOS's `/usr/bin/java` is refused. The message names the JDK to put on `PATH`.
 - An adapter on JDK 19 or later launches programs only on JDK 19 or later. For a project on an
   older JDK, build the bundle with JDK 17.
 - A config's `java` runs both, so it must be the bundle's own. Another is refused before anything

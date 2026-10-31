@@ -8,9 +8,10 @@ place in one step, with its provenance in adapter.json and the upstream licence 
 in notices/. A failure removes only its own staging. Setup never publishes anything.
 
 Each bundle records its recipe: the text of Peeky's patches, the launcher, the lock, the
-notices, the compiler flags (`--release 17`, so any JDK 17 or later runs it) and javac's
-version, with the recipe's fingerprint. The worker runs a bundle only if its recipe, but for
-javac, is this Peeky's (recipe_mismatch); setup keeps one only if javac's version is the
+notices, the compiler flags (`--release 17`, so any JDK 17 or later runs it), javac's
+version, and the file `java` is (its real path and SHA-256), with the recipe's fingerprint.
+The worker runs a bundle only if its recipe, but for the JDK, is this Peeky's
+(recipe_mismatch), and only on that `java` file; setup keeps one only if the JDK is the
 same too (current).
 
 Without an output directory, setup installs Peeky's own bundle (install). Each build is an
@@ -63,8 +64,10 @@ VERSION = re.compile(r"[0-9a-f]{20}-[0-9a-f]{8}\Z")
 # What a build does beyond its inputs; bump it when the steps change.
 RECIPE_SCHEMA = 1
 JAVAC_FLAGS = ("--release", "17")
-# The recipe's part the JDK gives: setup rebuilds when it differs, the worker doesn't ask.
-JDK_KEYS = ("javac_version",)
+# The recipe's part the JDK gives: setup rebuilds when it differs. The worker never runs the
+# JDK to ask it, but checks that the bundle's `java` is still the file it recorded: its real
+# path (links followed) and its bytes (peeky.java._verify_bundle).
+JDK_KEYS = ("javac_version", "java_path", "java_sha256")
 UNUSABLE = "Peeky's own Java adapter can't be used: "
 
 # Source patches to the pinned java-debug, applied before compiling and recorded in
@@ -204,15 +207,29 @@ def run(command: list[str], env: dict | None = None) -> str:
             process.wait(timeout=3)
 
 
+def java_identity(java: str) -> dict:
+    """The file ``java`` names: its real path, links followed, and its SHA-256."""
+    real = os.path.realpath(java)
+    return {"java_path": real, "java_sha256": digest(Path(real))}
+
+
 def toolchain(java: str, javac: str) -> dict:
     """The JDK setup builds with: java's and javac's paths and the version texts they print
-    now (asked afresh each time)."""
-    return {
+    now (asked afresh each time), and the file java is (java_identity). Where that file is
+    not a JDK's own bin/java (peeky.java.jdk_release), such as macOS's /usr/bin/java, also
+    the JDK home it says it runs, which only refusals name."""
+    from peeky.java import jdk_release, reported_home
+
+    tools = {
         "java": java,
         "java_version": run([java, "-version"]),
         "javac": javac,
         "javac_version": run([javac, "-version"]),
+        **java_identity(java),
     }
+    if jdk_release(tools["java_path"]) is None:
+        tools["java_home"] = reported_home(java)
+    return tools
 
 
 def recipe(tools: dict) -> dict:
@@ -246,18 +263,21 @@ def _difference(recorded, wanted: dict) -> str | None:
         recorded[key] != wanted[key] for key in wanted if key not in JDK_KEYS
     ):
         return "it was built by another version of Peeky"
-    if any(recorded[key] != wanted[key] for key in JDK_KEYS):
+    if recorded["javac_version"] != wanted["javac_version"]:
         return "it was built with another javac"
+    if any(recorded[key] != wanted[key] for key in JDK_KEYS):
+        return "it was built with another java"
     return None
 
 
 def recipe_mismatch(manifest: dict) -> str | None:
     """Why a bundle's manifest doesn't record what this Peeky builds, or None. Only the
     bundle's own content counts: the recipe must match its fingerprint and, but for the
-    javac it was built with, be this Peeky's (flags, patch texts, launcher, lock, notices).
-    The JDK that runs it is not asked: setup compiles for `--release 17`, and a JVM that
-    can't run such classes refuses them itself. The worker checks this before it runs a
-    bundle; setup also compares javac's version (current)."""
+    JDK it was built with (JDK_KEYS), be this Peeky's (flags, patch texts, launcher, lock,
+    notices). The JDK that runs it is not asked: setup compiles for `--release 17`, and a
+    JVM that can't run such classes refuses them itself. The worker checks this before it
+    runs a bundle, and that its `java` is still the file the recipe records
+    (peeky.java._verify_bundle); setup also compares javac's version (current)."""
     recorded = manifest.get("recipe")
     if not isinstance(recorded, dict):
         return _difference(None, {})
@@ -392,6 +412,7 @@ def _build(output: Path, tools: dict, private: bool) -> dict:
             "launcher_sha256": wanted["launcher_sha256"],
             "java_version": tools["java_version"],
             "javac_version": tools["javac_version"],
+            **({"java_home": tools["java_home"]} if tools.get("java_home") else {}),
             "recipe": wanted,
             "fingerprint": fingerprint(wanted),
             "files": {

@@ -2583,6 +2583,12 @@ class DebugWorker:
                         else {}
                     ),
                     "target_identity": identity,
+                    # Java: the program's `java` and the adapter's (peeky.java._runtimes).
+                    **(
+                        {"java": runtimes}
+                        if (runtimes := getattr(runtime, "java_runtimes", None))
+                        else {}
+                    ),
                     **({"program_args": program_args} if launched else {}),
                     **({"optimized": level} if (level := self.optimized()) else {}),
                     **(

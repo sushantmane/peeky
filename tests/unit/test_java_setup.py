@@ -157,12 +157,18 @@ JAVA, JAVAC = "/opt/jdk/bin/java", "/opt/jdk/bin/javac"
 @pytest.fixture
 def offline(monkeypatch):
     """Setup with its downloads and JDK faked: javac "compiles" the patched EventHub and the
-    launcher. ``versions`` is what each tool prints for -version; ``builds`` counts builds."""
+    launcher. ``versions`` is what each tool prints for -version; ``builds`` counts builds.
+    The files: ``sha`` is each `java`'s SHA-256 (gone where absent), ``releases`` the JDK
+    each is the own bin/java of (peeky.java.jdk_release), ``shared`` the directory above
+    one that others can write (peeky.build.writable_by_others)."""
     jdk = SimpleNamespace(
         versions={JAVA: 'openjdk version "17.0.1"', JAVAC: "javac 17.0.1"},
         builds=0,
         fail=False,
         commands=[],
+        sha={JAVA: "1" * 64},
+        releases={JAVA: ("/opt/jdk", "17.0.1")},
+        shared={},
     )
 
     def acquire(item, deadline=None):
@@ -189,6 +195,20 @@ def offline(monkeypatch):
     monkeypatch.setattr(java_setup.shutil, "which", lambda name: f"/opt/jdk/bin/{name}")
     # The fake JDK's paths stand for themselves where the worker resolves `java`.
     monkeypatch.setattr(peeky.java, "_tool", lambda value: value)
+
+    def sha(path):
+        if path not in jdk.sha:
+            raise FileNotFoundError(path)
+        return jdk.sha[path]
+
+    identity = lambda java: {"java_path": java, "java_sha256": sha(java)}  # noqa: E731
+    for module, name, fake in (
+        (java_setup, "java_identity", identity),
+        (peeky.java, "_java_sha256", sha),
+        (peeky.java, "jdk_release", lambda java: jdk.releases.get(java)),
+        (peeky.java, "writable_by_others", lambda path: jdk.shared.get(path)),
+    ):
+        monkeypatch.setattr(module, name, fake, raising=False)
     return jdk
 
 
@@ -205,8 +225,12 @@ def test_setup_builds_a_bundle_with_its_provenance_recipe_and_notices(tmp_path, 
     assert json.loads((output / "adapter.json").read_text()) == manifest
     recipe = manifest["recipe"]
     assert manifest["fingerprint"] == java_setup.fingerprint(recipe)
-    assert recipe == java_setup.recipe({"javac_version": offline.versions[JAVAC]})
+    assert recipe == java_setup.recipe(
+        {"javac_version": offline.versions[JAVAC], "java_path": JAVA, "java_sha256": "1" * 64}
+    )
     assert "java" not in recipe and recipe["javac_version"] == offline.versions[JAVAC]
+    # The file java is: its real path and bytes, which the worker checks before it runs it.
+    assert (recipe["java_path"], recipe["java_sha256"]) == (JAVA, offline.sha[JAVA])
     assert manifest["java_version"] == offline.versions[JAVA]
     assert (
         recipe["launcher_sha256"]
@@ -599,7 +623,8 @@ def test_the_fingerprint_changes_with_every_input(tmp_path, offline, monkeypatch
     changed = []
     for key in java_setup.JDK_KEYS:
         changed.append(java_setup.fingerprint(java_setup.recipe({**tools, key: tools[key] + "x"})))
-    # java itself, and javac's path, are not part of it: the worker never asks them.
+    # java's name on PATH, its version text and javac's path are not part of it: the file
+    # java is (its real path and bytes) is.
     other = {**tools, "java": "/elsewhere/java", "java_version": "x", "javac": "/elsewhere/javac"}
     assert java_setup.fingerprint(java_setup.recipe(other)) == base
 
@@ -621,7 +646,7 @@ def test_the_fingerprint_changes_with_every_input(tmp_path, offline, monkeypatch
         with monkeypatch.context() as patched:
             patched.setattr(java_setup, name, value)
             changed.append(java_setup.fingerprint(java_setup.recipe(tools)))
-    assert base not in changed and len(set(changed)) == len(changed) == 8
+    assert base not in changed and len(set(changed)) == len(changed) == 10
 
 
 def program(root):
@@ -742,21 +767,23 @@ OLD_JAVA, OLD_JAVAC = "/opt/jdk11/bin/java", "/opt/jdk11/bin/javac"
 
 @pytest.fixture
 def jdk11_on_path(state, offline, monkeypatch):
-    """`java` and `javac` on PATH are JDK 11's; setup built the bundle with JAVA (JDK 17)."""
+    """`java` and `javac` on PATH are JDK 11's own; setup built the bundle with JAVA (JDK 17).
+    ``gone`` holds paths that no longer exist, ``moved`` where a link now leads."""
     offline.versions[OLD_JAVA] = 'openjdk version "11.0.2" 2019-01-15'
+    offline.releases[OLD_JAVA] = ("/opt/jdk11", "11.0.2")
     on_path = {"java": OLD_JAVA, "javac": OLD_JAVAC}
-    gone = set()
+    offline.gone, offline.moved = set(), {}
 
     def tool(value):
-        if value in gone:
+        if value in offline.gone:
             raise ValueError(f"Missing Java toolchain executable: {value}")
-        return on_path.get(value, value)
+        return offline.moved.get(value, on_path.get(value, value))
 
     monkeypatch.setattr(peeky.java, "_tool", tool)
     java_setup.install()  # With JAVA: setup's own `which` finds /opt/jdk.
     monkeypatch.setattr(peeky.java.shutil, "which", lambda name: on_path.get(name))
     offline.commands.clear()
-    return SimpleNamespace(gone=gone, versions=offline.versions, commands=offline.commands)
+    return offline
 
 
 def fake_build(monkeypatch, tmp_path, source, versions):
@@ -765,7 +792,7 @@ def fake_build(monkeypatch, tmp_path, source, versions):
     import peeky.java_metadata
 
     workspace = tmp_path / "workspace"
-    (workspace / "demo").mkdir(parents=True)
+    (workspace / "demo").mkdir(parents=True, exist_ok=True)
     (workspace / "demo" / "Main.java").write_text(source.read_text())
     build = SimpleNamespace(recipes=[], cleaned=0)
 
@@ -793,6 +820,10 @@ def fake_build(monkeypatch, tmp_path, source, versions):
     return build
 
 
+def launched_target(state, **config):
+    return peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main", **config)
+
+
 def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
     state, jdk11_on_path, monkeypatch, tmp_path
 ):
@@ -801,8 +832,7 @@ def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
     build = fake_build(
         monkeypatch, tmp_path, source, {**jdk11_on_path.versions, OLD_JAVAC: "javac 11.0.2"}
     )
-    target = peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main")
-    session = target.prepare(source, tmp_path / "app")
+    session = launched_target(state).prepare(source, tmp_path / "app")
     assert session.command[0] == JAVA and session.adapter_java == JAVA
     assert session.java == OLD_JAVA
     assert session.launch_args(source, tmp_path / "app")["javaExec"] == OLD_JAVA
@@ -815,28 +845,56 @@ def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
         (OLD_JAVAC, "-version"),
         (JAVA, "-version"),
     ]
-    # Peeky picked the bundle's java itself, so it asked that java its version first.
-    assert jdk11_on_path.commands == [[JAVA, "-version"]]
+    # Peeky picked the bundle's java by its file, not by running it: nothing ran before the
+    # build, whose probes run each JDK.
+    assert jdk11_on_path.commands == []
     session.assert_current()
+    # A run shows both, with the versions their release files give.
+    assert session.java_runtimes == {
+        "program": {"path": OLD_JAVA, "version": "11.0.2", "version_from": "release"},
+        "adapter": {"path": JAVA, "version": "17.0.1", "version_from": "release"},
+    }
+    assert peeky.java.java_text(session.java_runtimes) == (
+        f"the program on {OLD_JAVA} (11.0.2), the adapter on {JAVA} (17.0.1)"
+    )
 
 
-def test_an_adapter_on_jdk_19_or_later_launches_no_program_on_an_older_jdk(
+def test_a_run_shows_the_one_java_where_both_are_it(state, offline, monkeypatch, tmp_path):
+    # Without a release file (macOS's /usr/bin/java, say), what the build's probe printed.
+    java_setup.install()
+    offline.releases.clear()
+    on_path = {"java": JAVA, "javac": JAVAC}
+    monkeypatch.setattr(peeky.java, "_tool", lambda value: on_path.get(value, value))
+    source = program(tmp_path / "app")
+    fake_build(monkeypatch, tmp_path, source, offline.versions)
+    session = launched_target(state).prepare(source, tmp_path / "app")
+    shown = {"path": JAVA, "version": "17.0.1", "version_from": "-version"}
+    assert session.java_runtimes == {"program": shown, "adapter": shown}
+    assert peeky.java.java_text(session.java_runtimes) == (
+        f"{JAVA} (says 17.0.1), the program's and the adapter's"
+    )
+    assert peeky.java.java_text({"adapter": {"path": JAVA, "version": None}}) == (
+        f"the adapter on {JAVA}; an attached JVM runs on the JDK that started it"
+    )
+
+
+def test_the_jdk_decision_reads_release_files_not_what_a_jvm_prints(
     state, offline, monkeypatch, tmp_path
 ):
     # JDK 19's debugger starts the JVM with includevirtualthreads, which JDK 11's refuses.
     offline.versions[JAVA] = 'openjdk version "21.0.4" 2024-07-16'
+    offline.releases[JAVA] = ("/opt/jdk", "21.0.4")
     java_setup.install()
+    offline.commands.clear()
     on_path = {"java": OLD_JAVA, "javac": OLD_JAVAC}
     monkeypatch.setattr(peeky.java, "_tool", lambda value: on_path.get(value, value))
     monkeypatch.setattr(peeky.java.shutil, "which", lambda name: on_path.get(name))
-    versions = {
-        JAVA: offline.versions[JAVA],
-        OLD_JAVA: 'openjdk version "11.0.2" 2019-01-15',
-        OLD_JAVAC: "javac 11.0.2",
-    }
+    # What PATH's java prints says 21; its release file says 11, and decides.
+    offline.releases[OLD_JAVA] = ("/opt/jdk11", "11.0.2")
+    versions = {**offline.versions, OLD_JAVA: 'openjdk version "21"', OLD_JAVAC: "javac 11.0.2"}
     source = program(tmp_path / "app")
     build = fake_build(monkeypatch, tmp_path, source, versions)
-    target = peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main")
+    target = launched_target(state)
     with pytest.raises(ValueError) as refused:
         target.prepare(source, tmp_path / "app")
     assert str(refused.value) == (
@@ -849,18 +907,27 @@ def test_an_adapter_on_jdk_19_or_later_launches_no_program_on_an_older_jdk(
     )
     error = classify(refused.value)
     assert error["code"] == "UNSUPPORTED" and len(error["hint"]) <= 150
-    assert build.cleaned == 1
+    # Refused before the build.
+    assert build.recipes == [] and offline.commands == []
     # JDK 19 or later, or 8 ("1.8.0_402"), as the program's: launched, or refused.
-    for printed, launched in (
-        ('openjdk version "19.0.2"', True),
-        ('java version "1.8.0_402"', False),
-    ):
-        versions[OLD_JAVA] = printed
-        if launched:
-            assert target.prepare(source, tmp_path / "app").java == OLD_JAVA
-        else:
-            with pytest.raises(ValueError, match="is JDK 8. Rebuild"):
-                target.prepare(source, tmp_path / "app")
+    offline.releases[OLD_JAVA] = ("/opt/jdk11", "19.0.2")
+    assert target.prepare(source, tmp_path / "app").java == OLD_JAVA
+    offline.releases[OLD_JAVA] = ("/opt/jdk11", "1.8.0_402")
+    with pytest.raises(ValueError, match="is JDK 8. Rebuild"):
+        target.prepare(source, tmp_path / "app")
+
+
+def test_a_launch_that_older_jvms_refuse_is_unsupported_not_a_debugger_error():
+    # A backstop for what the release files miss: java-debug's own launch failure.
+    failed = RuntimeError(
+        "Failed to launch debuggee VM. Reason: com.sun.jdi.connect.VMStartException: VM "
+        "initialization failed for: /usr/lib/jvm/java-11-openjdk-arm64/bin/java -cp /w/classes "
+        "-Xrunjdwp:transport=dt_socket,address=localhost:39825,suspend=y,"
+        "includevirtualthreads=n shop.Main"
+    )
+    error = classify(failed)
+    assert error["code"] == "UNSUPPORTED" and len(error["hint"]) <= 150
+    assert "can't start a JVM before 19" in error["hint"]
 
 
 def test_an_attached_jvm_without_java_uses_the_bundles_java_too(state, jdk11_on_path):
@@ -871,7 +938,6 @@ def test_an_attached_jvm_without_java_uses_the_bundles_java_too(state, jdk11_on_
     assert target.java is None
     assert peeky.java.adapter_java(bundle, target.java, launched=False) == JAVA
     # Where the java on PATH is the bundle's, nothing more is asked, as before.
-    jdk11_on_path.commands.clear()
     assert peeky.java.adapter_java(bundle, None, JAVA) == JAVA
     assert jdk11_on_path.commands == []
 
@@ -884,7 +950,7 @@ def test_a_config_naming_another_java_is_refused_saying_what_to_do(
 
     source = program(tmp_path / "app")
     target = (
-        peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main", OLD_JAVA)
+        launched_target(state, java=OLD_JAVA)
         if launched
         else JavaAttachTarget(
             state / "java-adapter", 5005, ("demo/Main.java",), ("demo",), java=OLD_JAVA
@@ -911,56 +977,118 @@ def test_a_config_naming_another_java_is_refused_saying_what_to_do(
     assert jdk11_on_path.commands == []
 
 
-def test_a_bundles_java_that_is_gone_or_changed_is_refused(state, jdk11_on_path, tmp_path):
-    source = program(tmp_path / "app")
-    target = peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main")
-    rule = (
-        "The Java adapter runs only on the java that its bundle was built with: "
-        f'{JAVA} (openjdk version "17.0.1")'
-    )
-    rebuild = "put its bin directory first on PATH, then run `peeky setup-java`"
-    # A JDK switched behind the same path (an alternatives link, say).
-    jdk11_on_path.versions[JAVA] = 'openjdk version "11.0.2" 2019-01-15'
-    with pytest.raises(ValueError) as changed:
-        target.prepare(source, tmp_path / "app")
-    assert str(changed.value).startswith(rule) and str(changed.value).endswith(rebuild)
-    assert (
-        "Peeky runs it in place of the java on PATH only while it is the JDK that setup "
-        'recorded, and its `-version` now prints `openjdk version "11.0.2" 2019-01-15`, not '
-        '`openjdk version "17.0.1"`. Rebuild the bundle'
-    ) in str(changed.value)
-    assert classify(changed.value)["code"] == "UNSUPPORTED"
-    # What a JVM says of options it picked up from the environment doesn't count.
-    jdk11_on_path.versions[JAVA] = 'Picked up JAVA_TOOL_OPTIONS: -Xss2m\nopenjdk version "17.0.1"'
+RULE = (
+    "The Java adapter runs only on the java that its bundle was built with: "
+    f'{JAVA} (openjdk version "17.0.1")'
+)
+REBUILD = "put its bin directory first on PATH, then run `peeky setup-java`"
+
+
+def test_a_bundles_java_whose_bytes_changed_is_refused_before_it_runs(
+    state, jdk11_on_path, monkeypatch
+):
+    # A replaced file that prints the same version: its bytes are checked before it runs,
+    # whoever picks it (PATH, the config, or Peeky), at the start and before every step.
     bundle = bundle_directory(state / "java-adapter")
-    assert peeky.java.adapter_java(bundle, None, OLD_JAVA) == JAVA
+    command, _ = peeky.java._bundle(bundle, JAVA)
+    jdk11_on_path.sha[JAVA] = "2" * 64
+    for named, program in ((None, OLD_JAVA), (None, JAVA), (JAVA, OLD_JAVA)):
+        with pytest.raises(ValueError) as changed:
+            peeky.java.adapter_java(bundle, named, program)
+        assert str(changed.value) == (
+            f"{RULE}, for the bundle at {bundle}. That java, {JAVA}, has changed since the "
+            f"bundle was built (a JDK update?). Rebuild the bundle with the JDK 17 or later you "
+            f"want: {REBUILD}"
+        )
+        assert classify(changed.value)["code"] == "UNSUPPORTED"
+    with pytest.raises(ValueError, match="has changed since the bundle was built"):
+        peeky.java._bundle(bundle, JAVA)
+    assert jdk11_on_path.commands == []
+    # Setup, with that JDK on PATH, builds anew for it.
+    monkeypatch.setattr(peeky.java.shutil, "which", lambda name: f"/opt/jdk/bin/{name}")
+    messages = []
+    assert java_setup.install(progress=messages.append)["built"]
+    assert "(it was built with another java)" in messages[0]
+
+
+def test_a_bundles_java_that_is_gone_or_leads_elsewhere_is_refused(state, jdk11_on_path):
+    bundle = bundle_directory(state / "java-adapter")
+    # A link turned to another file: the real path the recipe records differs.
+    jdk11_on_path.moved[JAVA] = "/opt/other/bin/java"
+    with pytest.raises(ValueError) as moved:
+        peeky.java.adapter_java(bundle, None, OLD_JAVA)
+    assert str(moved.value) == (
+        f"{RULE}, for the bundle at {bundle}. It is /opt/other/bin/java now, not {JAVA} as when "
+        f"the bundle was built. Rebuild the bundle with the JDK 17 or later you want: {REBUILD}"
+    )
+    jdk11_on_path.moved.clear()
     jdk11_on_path.gone.add(JAVA)
     for named in (None, OLD_JAVA):
         with pytest.raises(ValueError) as gone:
             peeky.java.adapter_java(bundle, named, OLD_JAVA)
         assert str(gone.value) == (
-            f"{rule}, for the bundle at {bundle}. That java is gone. Rebuild the bundle with "
-            f"the JDK 17 or later you want: {rebuild}"
+            f"{RULE}, for the bundle at {bundle}. That java is gone. Rebuild the bundle with "
+            f"the JDK 17 or later you want: {REBUILD}"
         )
+    assert jdk11_on_path.commands == []
 
 
-def test_a_java_on_path_outside_a_bin_directory_is_refused(
-    state, jdk11_on_path, monkeypatch, tmp_path
+def test_peeky_picks_the_bundles_java_only_where_no_one_else_can_change_it(state, jdk11_on_path):
+    bundle = bundle_directory(state / "java-adapter")
+    jdk11_on_path.shared[JAVA] = "/opt/jdk/bin"
+    with pytest.raises(ValueError) as shared:
+        peeky.java.adapter_java(bundle, None, OLD_JAVA)
+    assert str(shared.value) == (
+        f"{RULE}, for the bundle at {bundle}. Peeky runs it in place of the java on PATH only "
+        "where no other user can change it, and /opt/jdk/bin is writable by others. Set the "
+        f"config's java to {JAVA} to run the program on it too, if you trust it. Or, if "
+        "/opt/jdk/bin is yours, run `chmod go-w /opt/jdk/bin`. Or rebuild the bundle with the "
+        f"JDK 17 or later you want: {REBUILD}"
+    )
+    assert classify(shared.value)["code"] == "UNSUPPORTED"
+    # PATH or the config names it: as before, as for every tool on PATH.
+    assert peeky.java.adapter_java(bundle, None, JAVA) == JAVA
+    assert peeky.java.adapter_java(bundle, JAVA, OLD_JAVA) == JAVA
+
+
+def test_peeky_picks_only_a_jdks_own_java(state, offline, monkeypatch):
+    # macOS's /usr/bin/java runs the JDK that JAVA_HOME, or the newest, names: its bytes
+    # don't say which JDK runs. Setup records what it said it ran, for the message.
+    offline.releases.clear()
+    offline.versions[JAVA] = 'java.home = /opt/jdk17\nopenjdk version "17.0.1"'
+    java_setup.install()
+    bundle = bundle_directory(state / "java-adapter")
+    assert json.loads((bundle / "adapter.json").read_text())["java_home"] == "/opt/jdk17"
+    with pytest.raises(ValueError) as launcher:
+        peeky.java.adapter_java(bundle, None, OLD_JAVA)
+    assert str(launcher.value) == (
+        "The Java adapter runs only on the java that its bundle was built with: "
+        f'{JAVA} (openjdk version "17.0.1"), for the bundle at {bundle}. Peeky runs it in place '
+        "of the java on PATH only where it is a JDK's own bin/java, whose release file says "
+        "which JDK it is. It is not one (a launcher, a wrapper or a shim, whose JDK can change): "
+        f"setup saw it run /opt/jdk17. Set the config's java to {JAVA} to run the program on it "
+        "too. Or rebuild the bundle with the JDK 17 or later you want: put its bin directory "
+        "(/opt/jdk17/bin, say) first on PATH, then run `peeky setup-java`"
+    )
+    assert peeky.java.adapter_java(bundle, None, JAVA) == JAVA
+
+
+@pytest.mark.parametrize("shim", ["/home/me/.jenv/shims/java", "/opt/wrap/bin/java"])
+def test_a_java_on_path_that_is_not_a_jdks_own_is_refused(
+    state, jdk11_on_path, monkeypatch, tmp_path, shim
 ):
-    # java-debug launches javaExec only from a directory named bin; else the adapter's JDK.
-    shim = "/home/me/.jenv/shims/java"
-    jdk11_on_path.versions[shim] = jdk11_on_path.versions[JAVA]
+    # A wrapper or shim may run another JDK than it says, in a bin directory too; and
+    # java-debug runs a `java` outside one on the adapter's JDK instead.
+    jdk11_on_path.versions[shim] = '    java.home = /opt/jdk11\nopenjdk version "11.0.2"'
     monkeypatch.setattr(peeky.java, "_tool", lambda value: shim if value == "java" else value)
     source = program(tmp_path / "app")
-    target = peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main")
     with pytest.raises(ValueError) as refused:
-        target.prepare(source, tmp_path / "app")
+        launched_target(state).prepare(source, tmp_path / "app")
     assert str(refused.value) == (
-        "Peeky launches a Java program on another java than the adapter's only from a JDK's "
-        f"bin directory, where java-debug runs it. The java on PATH, {shim}, is not in one (a "
-        f"wrapper or a shim?), so the program would run on the adapter's JDK, {JAVA}, instead. "
-        "Put a JDK's bin directory first on PATH, or set the config's java to "
-        f"{JAVA} to run the program on that JDK too"
+        "Peeky runs a Java program on another JDK than the adapter's only from that JDK's own "
+        f"bin/java, whose release file says which JDK it is. The java on PATH, {shim}, is not "
+        "one (a wrapper or a shim?), and says it runs /opt/jdk11. Put /opt/jdk11/bin first on "
+        f"PATH, or set the config's java to {JAVA} to run the program on the adapter's JDK too"
     )
     error = classify(refused.value)
     assert error["code"] == "UNSUPPORTED" and len(error["hint"]) <= 150
@@ -973,11 +1101,28 @@ def test_a_java_on_path_outside_a_bin_directory_is_refused(
         raise Built
 
     monkeypatch.setattr(peeky.java, "prepare", build)
-    named = peeky.java.JavaTarget(
-        state / "java-adapter", ("demo/Main.java",), "demo.Main", java=JAVA
-    )
     with pytest.raises(Built):
-        named.prepare(source, tmp_path / "app")
+        launched_target(state, java=JAVA).prepare(source, tmp_path / "app")
+
+
+def test_a_jdks_own_java_is_known_by_its_release_file(tmp_path):
+    from peeky.java import _feature, jdk_release
+
+    home = tmp_path / "jdk-11"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "java").write_text("#!/bin/sh\n")
+    assert jdk_release(str(home / "bin" / "java")) is None
+    (home / "release").write_text('IMPLEMENTOR="x"\nJAVA_VERSION="11.0.2"\nOS_ARCH="aarch64"\n')
+    assert jdk_release(str(home / "bin" / "java")) == (str(home), "11.0.2")
+    assert jdk_release(str(home / "bin" / "javaw")) is None
+    assert jdk_release(str(home / "java")) is None
+    assert [_feature(v) for v in ("1.8.0_402", "11.0.2", "17", "22-ea", "x")] == [
+        8,
+        11,
+        17,
+        22,
+        None,
+    ]
 
 
 def test_a_bundle_a_config_names_is_rebuilt_with_output(tmp_path, jdk11_on_path):

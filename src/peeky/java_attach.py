@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
-from peeky.java import JavaSession, _bundle, _hash, adapter_java, bundle_directory
+from peeky.java import JavaSession, _bundle, _hash, _shown_java, adapter_java, bundle_directory
 from peeky.java_metadata import MAX_CLASS_BYTES, _class_metadata
 from peeky.textlines import source_lines
 
@@ -186,7 +186,7 @@ class JavaAttachTarget:
         sources = [_inside(root, name, "source") for name in self.sources]
         class_roots = [_inside(root, name, "class root") for name in self.class_roots]
         bundle = bundle_directory(self.bundle)
-        # The JVM runs already: java runs only the adapter, in this process's environment.
+        # The JVM runs already: java runs only the adapter.
         java = adapter_java(bundle, self.java, launched=False)
         command, bundle_hash = _bundle(bundle, java)
         parsed = {}
@@ -225,6 +225,8 @@ class JavaAttachSession(JavaSession):
     ):
         self.target, self.root, self.java, self.bundle = target, root, java, bundle
         self.adapter_java = java
+        # The JVM runs on whatever JDK started it: a run shows only the adapter's `java`.
+        self.java_runtimes = {"adapter": _shown_java(java)}
         self.workspace = workspace
         self._command = (*command, str(mapping_path))
         self.bundle_hash = bundle_hash

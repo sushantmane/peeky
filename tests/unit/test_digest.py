@@ -208,7 +208,14 @@ def test_verified_trees_are_reused_only_while_unchanged(tmp_path, monkeypatch):
     (bundle / "adapter.json").write_text("{}")
     (bundle / "lib" / "a.jar").write_bytes(b"jar")
     verified = []
-    monkeypatch.setattr(java, "_verify_bundle", lambda b, j: verified.append(1) or ("cmd", "h"))
+    monkeypatch.setattr(
+        java,
+        "_verified",
+        lambda b, j: verified.append(1) or java._Verified(("cmd",), "h", "/java", None, "0" * 64),
+    )
+    # The bundle's java is outside the tree: its bytes are checked every time.
+    same = []
+    monkeypatch.setattr(java, "_same_java", lambda bundle, result: same.append(1))
 
     def check():
         java._bundle(bundle, "/java")
@@ -230,6 +237,7 @@ def test_verified_trees_are_reused_only_while_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(digest, "SETTLE_SECONDS", -1.0)
     monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
     assert check() == 10 and check() == 11
+    assert len(same) == 13
 
 
 def test_tool_resolution_without_xcrun_is_a_no_op(tmp_path, monkeypatch):
