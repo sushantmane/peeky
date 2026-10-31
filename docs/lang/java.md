@@ -65,6 +65,9 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([REMOTE](../REMOTE.md#source-identity)).
 - To debug a JVM already running with `--debug-jvm`, attach to it. Peeky never kills an attached
   JVM ([Java 7.4](java-cookbook.md#74-java-tests-already-running-gradle---debug-jvm-eg-venice)).
+  A Maven test waits the same way, on port 5005, with
+  `mvn test -Dtest='FooTest#bar' -Dmaven.surefire.debug`. Its classes are in `target/classes`
+  ([guide](../AGENT_GUIDE.md#your-first-command)).
   With an attached JVM:
   - The config gives `port` and `class_roots` instead of `main_class`.
   - `--arg` is refused.

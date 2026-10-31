@@ -1,41 +1,91 @@
 # Peeky agent guide
 
-You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the
-debugger safely and returns evidence. Every claim you make must cite a peeky command and its
-output. This guide is the common path. [COOKBOOK.md](COOKBOOK.md) and your language's cookbook
-have every rule, cited here by section (7.1: the same number in both). [ERRORS.md](ERRORS.md) has
-the error codes.
+Peeky stops a program at a line, reads its values, can change one, and runs it to its end. Cite
+a peeky command and its output for every claim. [COOKBOOK.md](COOKBOOK.md) and your language's
+cookbook have every rule, cited here by section (7.1: the same number in both).
+[ERRORS.md](ERRORS.md) has the error codes.
 
-## First 5 minutes
+## When Peeky beats a print
 
-Start with your language's page: [Python](lang/python.md), [Java](lang/java.md),
+Reading the code, a print in a short script and the project's tests fix most bugs. Start there.
+Peeky pays off when a print costs more:
+
+- **The value is deep in the project's code:** a print means editing there, and maybe a rebuild.
+  A probe needs no edit.
+- **You need it at several hits, or across runs:** `--hits all`, then `peeky queries diff`.
+- **You want to test a hypothesis:** `--set` changes a value mid-run, with no edit.
+- **Builds or test runs are slow:** one probe reads many values in one run.
+- **You want to try a fix:** `peeky verify` runs your checker on a fresh copy with the edit.
+
+Each question costs a run, and Peeky can't run every project (below).
+
+## Your first command
+
+Run it from the project's root. Stop at `FILE:LINE`, the line after the one that computes the
+value: a breakpoint stops before its line runs. `--capture a,b.c` names what to read.
+`peeky describe`, with the probe's target and `--at FILE`, lists the lines and names. Your
+language's page has the rest: [Python](lang/python.md), [Java](lang/java.md),
 [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
-1. **Learn the target:** `peeky describe examples/pagination_bug.py`. Look for `breakpoint lines`,
-   each function's lines and names (`names in get_page (lines 4-9): …`), and `mutable:`: what
-   `--set` can change. Pick a line where the suspicious value has just been computed.
-2. **Watch it:** `peeky probe examples/pagination_bug.py --at 8 --capture start,page --hits all`.
-   You get one row per stop (`hit`, `value`), `status: completed`, the program's `output`, and
-   every `warning:`.
-3. **Ask follow-ups, with no rerun** (rule 12): `peeky queries diff` after probing two inputs
-   (`--label` each), `queries wide` (a row per hit, a column per selector), or
-   `peeky sql "SELECT hit, num FROM last_run WHERE selector = 'start'"`.
-4. **Test a hypothesis:** add `--set start=0` to the probe. Look for `set start: 3 -> 0`, the
-   `after-set` rows, and whether the output changed as predicted. It is an experiment, not a fix.
-5. **Try a fix:** add `--old 'start = page * page_size' --new 'start = (page - 1) * page_size'` to
-   the probe. Values come from a fresh build with the edit; your files are unchanged. Its
-   `compare:` line names the `queries diff` against the unedited run, or says how to make one.
-   Write the general fix, not a special case for the observed input.
-6. **Check the checker:** `peeky verify examples/pagination_bug.py --check
-   examples/verify_pagination.py --baseline` must say `passed: False`. A checker that passes the
-   bug can't tell a fix from it.
-7. **Verify:** run the same with `--old '…' --new '…'` instead of `--baseline`. Look for
-   `passed: True  stage: verification`, or the failing `stage` and `reason`.
-8. **Several looks at one stop:** `peeky session start <target> --at <file>:<line>`, then
-   `session inspect`, `get`, `step` and `continue`. Always end with `session close`.
+**Python, a test or a script in a repository.** The target is the root. `--run` names a `.py`
+script that reaches the line. For a pytest test, write a two-line runner (delete it after):
 
-Report the observation, the intervention and its effect, the edit and the verify result. Quote
-the commands.
+```sh
+printf 'import sys, pytest\nsys.exit(pytest.main(sys.argv[1:]))\n' > peeky_pytest.py
+peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c \
+  --run peeky_pytest.py -- -q tests/test_x.py::test_y
+```
+
+- Without `--run`, the `--at` file runs as the program: `peeky probe . --at scripts/job.py:LINE`.
+- `--at` and `--run` must be inside the root. Peeky stops only in the project's own code: a file
+  in `site-packages` never stops (`no-stop`). An installed project must be editable:
+  `pip install -e .`.
+- It runs on the root's `.venv` or `venv`, else the active virtual environment. For the `python`
+  on `PATH`, such as conda's, add `--python python`. The `python:` line says which ran.
+
+**Java, a Maven or Gradle test.** Run `peeky setup-java` once, with JDK 17 on `PATH`, so that it
+debugs older JDKs too (7.3). Start the test waiting for a debugger, then attach:
+
+```sh
+mvn test -Dtest='FooTest#bar' -Dmaven.surefire.debug > test.log 2>&1 &
+# Gradle: ./gradlew test --tests 'pkg.FooTest' --debug-jvm > test.log 2>&1 &
+peeky probe . --config attach.json --at src/main/java/pkg/Foo.java:LINE --capture a,b.c
+```
+
+Probe once `test.log` says `Listening for transport dt_socket`. `attach.json` names the files
+you stop in and their classes (Gradle: `build/classes/java/main`):
+`{"port": 5005, "sources": ["src/main/java/pkg/Foo.java"], "class_roots": ["target/classes"]}`.
+
+**Java, a class with `main`:** `run.json` lists every `.java` file it needs, and no Maven or
+Gradle dependencies: `{"sources": ["pkg/Main.java"], "main_class": "pkg.Main"}`. Then:
+`peeky probe . --config run.json --at pkg/Main.java:LINE --capture a,b.c`.
+
+**C or C++:** `peeky probe DIR --at file.c:LINE --capture a,b.c -- ARGS`. Peeky builds the `.c` or
+`.cpp` files of one directory itself, as C11 or C++17, with the headers beside them. It takes no
+flags, include paths or libraries. A project with its own build (Make, CMake, autotools) isn't
+supported yet: Peeky can't build it, or attach to its binary.
+
+**Rust:** `peeky probe CRATE --at src/main.rs:LINE --capture a,b.c`. Only a binary crate with no
+dependencies works, as from `cargo new`, with its `Cargo.lock`. A crate with dependencies, a
+`src/lib.rs`, `src/bin` or `build.rs` isn't supported yet.
+
+## The loop
+
+1. **Watch:** the probe above; `--hits all` captures every stop. Read each row, `status`, `output`
+   and every `warning:` (1.2, 2.2).
+2. **Ask follow-ups with no rerun** (rule 12): `peeky queries diff` after two probes,
+   `queries wide`, or `peeky sql "SELECT hit, value FROM last_run"` (3, 4).
+3. **Test a hypothesis:** add `--set name=value`. Read `set name: old -> new` and the output. It is
+   an experiment, not a fix (2.3).
+4. **Try a fix:** add `--old '<exact text>' --new '<new text>'` to the probe: a fresh copy with the
+   edit. Run its `compare:` line. Write the general fix, not a special case (6.6).
+5. **Verify:** `peeky verify <target> --check <checker.py> --baseline` must say `passed: False`,
+   or the checker can't tell a fix from the bug. Then, with `--old`/`--new`, report `passed: True`
+   only from `verify` (6.1, 6.5).
+6. **Several looks at one stop:** `peeky session start <target> --at FILE:LINE`, then `inspect`,
+   `get`, `step`, `continue`, and always `close` (5).
+
+Report what you observed, changed and verified, quoting the commands.
 
 ## Rules you will hit
 
@@ -91,21 +141,11 @@ the commands.
 15. **Respect opaque values.** `<unqualified Rust enum layout>`, `<unverified ...>` or
     `budget-exhausted` mean peeky refused to guess. Don't invent their contents.
 
-## Principles
-
-1. **Observe before changing.** Stop at a line and read real values before you form a hypothesis.
-2. **Interventions are experiments, not fixes.** `--set` or `session set` changes one live value in
-   one run. It tells you whether a hypothesis explains the behavior; it never proves a source fix.
-3. **Only `peeky verify` verifies a fix.** It rebuilds your candidate edit from scratch and runs
-   the independent checker. For Rust it also runs the crate's integration test, if any. Report
-   `passed: True` only from `verify`.
-4. **Never guess lines or names.** Use `describe`'s breakpoint lines and the names you inspected.
-
 ## Commands
 
 | Command | Cost | Use |
 | --- | --- | --- |
-| `peeky describe <target> [--json]` | one build | Language, valid breakpoint lines, qualified views and mutation rules. Always first. |
+| `peeky describe <target> [--json]` | one build | Valid breakpoint lines, each function's names, and what `--set` can change. |
 | `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N\|all] [--json] [-- ARGS]` | one run | Answer one question in one call: values at a line, after any interventions, and the output. |
 | `peeky probe ... --old '<exact text>' --new '<replacement>'` | one build | See what a candidate fix does, on a fresh build. |
 | `peeky sql "SELECT ... FROM last_run"` / `peeky queries [name]` | instant | Follow-ups on saved evidence. No rerun. |
@@ -124,25 +164,22 @@ the commands.
 - **`--json`** works on every command. stdout is then one JSON value; progress goes to stderr, and
   `--quiet` silences it.
 - **Sessions:** each command waits up to `--timeout S` (default 30) for a stop, leaving the
-  program running (`session wait`). A session's worker ends on `close`, when its start fails or is
-  interrupted, or after 5 idle minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`):
-  set it per task to keep sessions apart.
+  program running (`session wait`). A session's worker ends on `close`, or after 5 idle minutes.
+  Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`): set it per task to keep sessions apart.
 - **In a session:** `get` also lists a value's children, each with the selector that reads it. It
   exits 1 if any selector failed. `--frame N` reads caller frame N.
 - **Stepping:** `step` runs to the next line; `--into` enters a call; `--out` leaves the function
   and shows its return, as `get return` does (not in Python). Java's steps skip JDK classes.
   `outside_program: true` means a step left your sources (only `get return` reads there): use
   `step --out` or `continue`.
-- **Continuing:** `continue` runs to the next stop; `--count N` to the Nth breakpoint stop.
-  `session start --hit N` starts at the Nth stop. States show `hit N` at the session's breakpoint.
-  `--count` and `--hit` stop at anything else (a crash, a step, the exit) with a note. `--to LINE`
-  also stops once at LINE of the session's file (rule 9). `--to-exit` clears breakpoints and runs
-  to the end.
-- **Candidates** (`--old`/`--new`) work on any target but an attached JVM. `--at` keeps the
-  original's line numbers; a line inside an edit that adds or removes lines is refused. An edit
-  that doesn't compile is `BUILD_FAILED`: exit 2, not saved (`verify`: exit 1; Python: `NO_STOP`
-  with its `SyntaxError`). Compare with an unedited run (`peeky queries diff`). A candidate is
-  evidence, not verification.
+- **Continuing:** `continue` runs to the next stop; `--count N` to the Nth breakpoint stop, where
+  `session start --hit N` starts. States show `hit N` there. Both stop at anything else first (a
+  crash, the exit), with a note. `--to LINE` also stops at LINE of the session's file (rule 9).
+  `--to-exit` clears breakpoints and runs to the end.
+- **Candidates** (`--old`/`--new`) work on any target but an attached JVM, and not with `--run`:
+  use `verify` there. `--at` keeps the original's line numbers; a line inside an edit that adds or
+  removes lines is refused. An edit that doesn't compile is `BUILD_FAILED`: exit 2, not saved
+  (`verify`: exit 1; Python: `NO_STOP` with its `SyntaxError`).
 
 ### Interventions (`--set name=value`)
 
@@ -161,12 +198,10 @@ the commands.
 - **Refused before the run:** what the build rules out, such as a Rust local kept in a register
   (`[not settable: register]`, listed by `describe`), or a field through a pointer. So is a Java
   local whose declared type isn't supported, a value that doesn't fit, or a local never read after
-  the stop. One refusal fails the probe. Rust's ends with what is settable there
-  (`settable here: total, i`, or `none`).
-- **Checks:** `session inspect` says why when nothing is `[settable]`; a Java row says why it isn't.
-  Every change is read back. One the debugger refuses or can't store is `MUTATION_REJECTED`, and
-  the session is kept. A value stored differently closes the session. Expressions, names and calls
-  are rejected, never evaluated (2.3).
+  the stop. One refusal fails the probe, and Rust's lists what is settable there.
+- **Checks:** every change is read back. One the debugger refuses or can't store is
+  `MUTATION_REJECTED`, and the session is kept; a value stored differently closes it. Expressions, names and calls are
+  rejected, never evaluated (2.3).
 
 ### Reading probe results
 
@@ -176,17 +211,14 @@ the commands.
   - runs that ended before all requested hits;
   - a Java exit Peeky inferred when the debugger dropped its exit event (the result stands).
 - `unavailable: true`, `no value yet:` and `note`: rule 6. Opaque values: rule 15.
-- Each row's `function` tells a function from a generator or lambda on the same line. Session
-  states and `inspect` name the stopped function. A line shared by a function and a closure or
-  lambda can stop in each (Java: in one; 7.3).
-- `output_complete: false`: `output` isn't proven whole (2.6). `program_ended: true`: the program
-  ended. `--until hits` adds `output_after_last_hit: true`: it ran past its last hit.
-- `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`.
-  `rows` has one per hit, phase (`observed`, `after-set`, `returned`) and selector. `line` is the
-  stop's actual line.
-- A missing selector's error lists the visible names, or the children of the value read.
-  `describe` lists each function's lines and the names it can see (`scopes`; types except in
-  Python). `scopes_unavailable` says why its debug information could not be read.
+- Each row's `function` names the stopped function. A line shared with a closure or lambda can
+  stop in each (Java: in one; 7.3).
+- `output_complete: false`: `output` isn't proven whole (2.6). `--until hits` adds
+  `output_after_last_hit: true`: it ran past its last hit.
+- `--json`: `by_hit` has `{hit, line, observed: {selector: value}, after-set: {...}}` per hit;
+  `rows`, one per hit, phase and selector. `line` is the stop's actual line.
+- A missing selector's error lists the visible names, or the value's children. `describe` lists
+  each function's names (`scopes`), or says why it can't (`scopes_unavailable`).
 - Python reads a global only where the function provably uses it, not for an unassigned local.
   Reading one, or a misspelled name, lists all globals, running all reprs. Dunders read too
   (`f.__defaults__`): 5.1; `[id 7]`: 4.6.
@@ -204,26 +236,20 @@ probe, read its JSON.
 - `peeky sql --schema` lists the tables and views. `--schema NAME ...` (or `all`) prints them
   in full (4.1). Read it before writing SQL.
 - `peeky queries` needs no SQL: `runs`, `run`, `wide`, `hits`, `compare`, `join` (hits paired by
-  values: `key=v` or `key=a,b`; its table drops selectors that agree at every paired hit), `diff`
-  (what differs, real differences first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
-  `failures`. `compare`, `diff`, `outputs` and `join` take `--param a=1 --param b=5` (default: the
-  last two); `run`, `wide`, `hits`, `set_effect` and `unreadable` take `run=3`. `queries --help`
-  lists their parameters. `diff`, `compare` and `set_effect` tables show long values from
-  where they differ (`--json`: whole).
+  values: `key=v` or `key=a,b`), `diff` (what differs, real differences first: §3), `outputs`,
+  `set_effect`, `values`, `unreadable`, `failures`. Pairs of runs: `--param a=1 --param b=5`
+  (default: the last two); one run: `run=3`. `queries --help` lists their parameters.
 - Compare numbers with `num`; non-Python strings and lists: `text()`, `elements()` (4.9). Mask
   addresses with `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to
-  4.8). `--label` tags a run with free text, stored as given; it never changes which runs `diff`
-  or `compare:` pair.
-- Queries are read-only and bounded; a failing one returns `INVALID_QUERY`. A new question about
-  the program needs a new probe.
+  4.8). `--label` tags a run; it never changes which runs `diff` or `compare:` pair.
+- Queries are read-only and bounded; a failing one returns `INVALID_QUERY`. A new question needs
+  a new probe.
 
 ### Verifying an edit
 
-- With several `--old`/`--new` pairs, each `--old` must match exactly once, quoting the original
-  file, and the edits must not overlap (rule 13). An error names the edit by number (`(edit 2)`)
-  and the failed condition: the match count and lines, or `--new equals --old`. Multi-line text:
-  `--old-file`/`--new-file`, or real newlines (6.3). `--at` names the file to edit when the target
-  is a directory (a Cargo crate, a Python project).
+- With several `--old`/`--new` pairs, each `--old` matches the original file exactly once, and
+  the edits must not overlap (rule 13). An error names the edit (`(edit 2)`) and why. Multi-line
+  text: 6.3. `--at` names the file to edit when the target is a directory.
 - The result has `stage` (`build` or `verification`), `seconds`, and the unified `diff` applied. On
   failure it has a `reason`: the checker's failure line if it only exited nonzero, else its
   exception or the build diagnostic. `--timeout S` bounds the whole verify, build included
@@ -233,16 +259,9 @@ probe, read its JSON.
 
 ### Targets and selectors
 
-- **Targets:**
-  - a `.py` file;
-  - a `.c`/`.cpp` file, or a directory holding one C/C++ program;
-  - a Cargo crate directory with its `Cargo.lock` (a plain `cargo new` binary crate works; shape:
-    7.2);
-  - any target with `--config <trusted.json>`, which Java requires (`describe`'s commands repeat
-    it). A Java attach config attaches to a running `--debug-jvm` JVM (7.4).
-- **Python projects:** pass the project directory and `--at <module.py>:<line>`. For a module that
-  is imported, not run, add `--run <script.py>` ([Python](lang/python.md)). `session start` takes
-  `--run` too, and `verify` edits the `--at` file.
+- **Targets:** each kind is in [Your first command](#your-first-command). A lone `.py`, `.c` or
+  `.cpp` file works too. `describe`'s commands repeat a `--config`. `session start` takes `--run`
+  too, and `verify` edits the `--at` file.
 - **Remote targets:** for a worker on another host behind an SSH tunnel, add
   `--worker http://127.0.0.1:<port>` to `probe` or `session start`, with the token in
   `$PEEKY_WORKER_TOKEN`. Your local source must match the worker's, or the results are discarded.
@@ -254,19 +273,14 @@ probe, read its JSON.
 
 ## Time: your tool timeout and the program's clocks
 
-- **Use `--background` for long calls.** If a call may outlast your tool timeout (JVM startup,
-  compiled builds, slow programs), add `--background` to `probe` or `verify`. It returns
-  `{"job": "<id>"}` at once. Then repeat `peeky job wait <id> [--timeout 20]` until the exit code
-  is not **3**. The final stdout, stderr and exit code are those of the foreground command;
-  `job wait --json` prints JSON however the job was started.
-- **Prefer probes for programs with clocks.** Timeouts, heartbeats and RPC deadlines keep running
-  while the program is paused. A probe pauses for milliseconds per hit (`pauses_ms`), with no
-  model turn in between.
-- **Sessions can't wait for you on timed programs.** Pass `session start --max-pause S`; attached
-  JVMs default to 10 s. A breakpoint stop older than S is auto-resumed, and your next call on it
-  fails with `STALE_STOP`. Crash and exception stops (`reason` other than `breakpoint`) are never
-  auto-resumed. `inspect` shows `paused_s` and `resume_in_s`.
-- **`peeky describe` reports this target's timing contract** in its `timing` field.
+- **Use `--background` for long calls** (JVM startup, builds, slow programs). `probe` or `verify`
+  then returns `{"job": "<id>"}` at once. Repeat `peeky job wait <id> [--timeout 20]` until the
+  exit code is not **3**. Its output and exit code are the foreground command's (8).
+- **Prefer probes for programs with clocks.** Timeouts and deadlines keep running while the
+  program is paused. A probe pauses for milliseconds per hit (`pauses_ms`).
+- **Sessions on timed programs:** pass `session start --max-pause S` (attached JVMs: 10 s). A
+  breakpoint stop older than S is resumed, and your next call on it fails with `STALE_STOP`.
+  Crash and exception stops never are. `inspect` shows `paused_s` and `resume_in_s` (5.4).
 
 ## When something fails
 

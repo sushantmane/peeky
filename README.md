@@ -77,6 +77,27 @@ tar -xzf peeky_debug-VERSION.tar.gz && cd peeky_debug-VERSION
 
 ## A first probe
 
+Reading the code, a print and the project's tests fix most bugs, so start there. Peeky pays off
+when a print costs more ([when][when]):
+
+- the value is deep in the project's code, and a print means an edit and maybe a rebuild;
+- you need it at many hits, or across runs;
+- you want to change a value mid-run to test a hypothesis, with no edit;
+- builds or test runs are slow, and one probe reads many values in one run;
+- you want to check a fix on a fresh copy, with your files unchanged.
+
+On your own project, the first command depends on its kind ([first command][first-command]):
+
+- **Python:** from the repository's root,
+  `peeky probe . --at src/pkg/mod.py:LINE --capture a,b --run script.py`. The script reaches the
+  line; for a pytest test, a two-line one calls `pytest.main`. Peeky stops only in the project's
+  own code, not in `site-packages`.
+- **Java:** attach to a Maven or Gradle test started waiting for a debugger, or launch a class
+  with no Maven or Gradle dependencies.
+- **C and C++:** a directory of sources, which Peeky builds itself. A project with its own build,
+  such as Make or CMake, isn't supported yet.
+- **Rust:** a binary crate with no dependencies. A crate with dependencies isn't supported yet.
+
 `examples/pagination_bug.py` has a bug: page 1 starts at the second page. Stop at line 8, read two
 values, and set `start` to 0:
 
@@ -245,6 +266,8 @@ Apache License 2.0: see [LICENSE][license] and [NOTICE][notice]. The Java adapte
 [remote]: https://github.com/sushantmane/peeky/blob/main/docs/REMOTE.md
 [adr-0005]: https://github.com/sushantmane/peeky/blob/main/docs/adr/0005-tool-not-agent.md
 [agent-guide]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_GUIDE.md
+[when]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_GUIDE.md#when-peeky-beats-a-print
+[first-command]: https://github.com/sushantmane/peeky/blob/main/docs/AGENT_GUIDE.md#your-first-command
 [skill]: https://github.com/sushantmane/peeky/blob/main/skills/peeky-debug/SKILL.md
 [python]: https://github.com/sushantmane/peeky/blob/main/docs/lang/python.md
 [java]: https://github.com/sushantmane/peeky/blob/main/docs/lang/java.md

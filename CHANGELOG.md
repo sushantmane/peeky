@@ -27,6 +27,11 @@
 
 ### Other changes
 
+- **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
+  print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
+  test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
+  yet. The README says the same in short. In the value study, agents read the guide but rarely
+  ran Peeky (#441).
 - **Java on the project's JDK:** the adapter runs on the `java` its bundle was built with,
   whatever `java` is on `PATH`, and the program builds and runs on the project's JDK. A config's
   `java` must still be the bundle's. Another is refused with `UNSUPPORTED`, naming the bundle's
