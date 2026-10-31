@@ -483,3 +483,474 @@ def test_a_binary_config_with_sources_or_a_session_is_refused(project, capsys):
     )
     said = capsys.readouterr()
     assert "INVALID_REQUEST" in said.out + said.err and "sessions come with" in said.out + said.err
+
+
+# A program whose units include nothing: Apple's clang can't name a header of declarations
+# alone in a DWARF 5 line table (-fdebug-macro crashes it), so a unit including one has no
+# text Peeky reads there. On Linux, clang includes stdc-predef.h in every unit: there,
+# -fdebug-macro names it.
+SELF_MAIN = """int scale(int x);
+int fast(int x);
+int printf(const char *, ...);
+
+int main(int argc, char **argv) {
+    int base = argc + 1;
+    int scaled = scale(base);
+    int quick = fast(scaled);
+    printf("%d %d %d\\n", base, scaled, quick);
+    return 0;
+}
+"""
+SELF_UTIL = """int scale(int x) {
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+SELF_FAST = """int scale(int x);
+
+int fast(int x) {
+    int tripled = x * 3;
+    return scale(tripled) - 1;
+}
+"""
+TEXT_FLAGS = (*FLAGS, *(("-fdebug-macro",) if sys.platform == "linux" else ()))
+SELF_STOP = next(n for n, text in enumerate(SELF_UTIL.splitlines(), 1) if "// STOP" in text)
+
+
+def _build_text(root, compiler, levels, extra=None, util=SELF_UTIL):
+    """As _build, of units that include nothing, with -fdebug-macro on Linux;
+    ``extra``: {unit: flags} added to its compile."""
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    texts = {"main": SELF_MAIN, "util": util, "fast": SELF_FAST}
+    for name, text in texts.items():
+        (root / "src" / f"{name}.c").write_text(text)
+        flags = (*TEXT_FLAGS, levels.get(name, "-O0"), *(extra or {}).get(name, ()))
+        subprocess.run(
+            [compiler, *flags, *_sysroot(), "-c", f"src/{name}.c", "-o", f"{name}.o"],
+            cwd=root,
+            check=True,
+        )
+    objects = [f"{name}.o" for name in texts]
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=root, check=True)
+
+
+@pytest.mark.timeout(300)
+def test_a_judged_unit_s_values_are_read_by_its_replayed_text(project):
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    result = run_probe(
+        project,
+        Probe("src/util.c", SELF_STOP, ("doubled", "x", "1:base", "1:scaled")),
+        adapter=_target(compiler, returns_twice=()),
+    )
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    # As the program prints them: base 2, and scale(2) is doubled + 1, 5.
+    assert rows["doubled"].get("value") == "4", rows
+    assert rows["x"].get("value") == "2" and rows["1:base"].get("value") == "2", rows
+    assert rows["1:scaled"]["error"].startswith("no value yet"), rows
+    assert result["output"].strip() == "2 5 30"
+
+
+@pytest.mark.timeout(300)
+def test_a_unit_whose_text_cant_be_replayed_withholds_its_text_rules_saying_why(project):
+    compiler = _clang()
+    _build_text(project, compiler, {}, extra={"util": ("-Wp,-DUNUSED=1",)})
+    result = run_probe(
+        project, Probe("src/util.c", SELF_STOP, ("doubled",)), adapter=_target(compiler)
+    )
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert "Peeky can't read src/util.c as compiled: its command uses -Wp,-DUNUSED=1, which " in (
+        row.get("error") or ""
+    ), row
+
+
+@pytest.mark.timeout(300)
+def test_a_header_its_line_table_doesnt_name_leaves_a_unit_s_text_unread(project, capsys):
+    # A header of declarations alone, without -fdebug-macro: no code or type of the unit
+    # comes from it. `describe` says why each unit's text isn't read.
+    compiler = _clang()
+    _build(project, compiler, {})
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+    assert units["src/util.c"]["text"] == (
+        "Peeky can't read src/util.c as compiled: its preprocessing reads src/util.h, which its "
+        "line table doesn't name (-fdebug-macro names each header, on Linux)"
+    ), units
+    result = run_probe(project, Probe("src/util.c", STOP, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert "Peeky can't read src/util.c as compiled: its preprocessing reads " in row["error"]
+
+
+ON_ITS_LINE = next(n for n, text in enumerate(SELF_UTIL.splitlines(), 1) if "doubled =" in text)
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "levels, util, said",
+    [
+        ({"fast": "-O2"}, SELF_UTIL, "src/fast.c is a unit Peeky doesn't read"),
+        (
+            {},
+            SELF_UTIL.replace("    int doubled", '    __asm__ volatile("");\n    int doubled'),
+            "src/util.c's text holds asm",
+        ),
+    ],
+)
+def test_any_call_may_return_twice_unless_the_config_names_those_that_do(
+    project, levels, util, said
+):
+    # The program's own assembly can return twice (MicroPython's nlr_push): where a unit
+    # isn't read, or its text holds asm, a local declared at the stop says so.
+    compiler = _clang()
+    _build_text(project, compiler, levels, util=util)
+    line = next(n for n, text in enumerate(util.splitlines(), 1) if "doubled =" in text)
+    found = {}
+    for claim in (None, ()):
+        result = run_probe(
+            project,
+            Probe("src/util.c", line, ("doubled",)),
+            adapter=_target(compiler, returns_twice=claim),
+        )
+        assert result["status"] == "completed", result.get("error")
+        (row,) = result["rows"]
+        found[claim] = row
+    # Shown, as today's setjmp note shows a local: maybe leftovers, or its value from
+    # before a `longjmp`; and never changed.
+    noted = found[None].get("note") or ""
+    assert f"any call above the stop may return twice ({said}" in noted, found
+    assert '"returns_twice" can name the functions that do' in noted
+    # Named by the config (none, here, but setjmp's), no call returns twice.
+    error = found[()].get("error") or ""
+    assert "return twice" not in str(found[()]) and error.startswith("no value yet"), found
+
+
+SYSTEM_MAIN = """#include <stdio.h>
+#include <string.h>
+#include "util.h"
+
+int main(int argc, char **argv) {
+    int base = argc + 1;
+    int scaled = scale(base);
+    printf("%d %d %zu\\n", base, scaled, strlen("abc")); // PRINT
+    return 0;
+}
+"""
+MACRO_HEADER = "#define TWICE(x) ((x) * 2)\nint scale(int x);\n"
+MACRO_UTIL = """#include "util.h"
+
+int scale(int x) {
+    int doubled = TWICE(x);
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("macros", [True, False], ids=["debug-macro", "no-debug-macro"])
+def test_system_headers_and_a_header_of_macros_alone_are_read_on_linux(project, macros):
+    # With -fdebug-macro, a unit's line table names every header it reads, with its MD5:
+    # stdio.h's, and a header of macros and declarations alone. Without it, no unit
+    # naming one is read.
+    compiler = _clang()
+    if sys.platform != "linux":
+        pytest.skip("Apple's clang crashes with -fdebug-macro and DWARF 5")
+    (project / "src").mkdir()
+    (project / "src" / "main.c").write_text(SYSTEM_MAIN)
+    (project / "src" / "util.c").write_text(MACRO_UTIL)
+    (project / "src" / "util.h").write_text(MACRO_HEADER)
+    flags = (*FLAGS, "-O0", *(("-fdebug-macro",) if macros else ()))
+    for name in ("main", "util"):
+        subprocess.run(
+            [compiler, *flags, "-c", f"src/{name}.c", "-o", f"{name}.o"], cwd=project, check=True
+        )
+    subprocess.run([compiler, "main.o", "util.o", "-o", "prog"], cwd=project, check=True)
+    stop = next(n for n, text in enumerate(MACRO_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(
+        project,
+        Probe("src/util.c", stop, ("doubled", "x", "1:base")),
+        adapter=_target(compiler, returns_twice=()),
+    )
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if macros:
+        # As the program prints them: base 2, and scaled = doubled + 1 = 5.
+        assert result["output"].split()[:2] == ["2", "5"]
+        assert [rows[name].get("value") for name in ("doubled", "x", "1:base")] == ["4", "2", "2"]
+    else:
+        # A row's reason is cut at 300 characters; `describe` gives it whole.
+        assert "Peeky can't read src/util.c as compiled: its preprocessing reads src/util.h" in (
+            rows["doubled"].get("error") or ""
+        ), rows
+
+
+ASM_CALLER = """int nlr_push(void);
+
+int main(void) {
+    int got = nlr_push();
+    int later = got + 1; // STOP
+    return later;
+}
+"""
+
+
+def _assembly(private=False, function="nlr_push"):
+    """A function in hand-written assembly, returning 0, for this host; ``private``: one
+    the linker keeps out of the program's symbols (macOS's `.private_extern` and `-x`)."""
+    import platform
+
+    name = f"_{function}" if sys.platform == "darwin" else function
+    body = "xor %eax, %eax" if platform.machine() in ("x86_64", "AMD64") else "mov w0, #0"
+    hidden = f"    .private_extern {name}\n" if private else ""
+    return f"    .text\n    .globl {name}\n{hidden}{name}:\n    {body}\n    ret\n"
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("stripped", [False, True], ids=["named", "symbol stripped"])
+def test_code_no_unit_covers_may_return_twice(project, capsys, stripped):
+    # Hand-written assembly built without -g has no unit: Peeky can't read it, and it may
+    # return twice (MicroPython's nlr_push, a setjmp of the project's own). Found by its
+    # symbol, or, where the symbol table lacks one, as code no symbol names.
+    compiler = _clang()
+    (project / "main.c").write_text(ASM_CALLER)
+    macos = sys.platform == "darwin"
+    (project / "nlr.s").write_text(_assembly(private=stripped and macos))
+    flags = (*TEXT_FLAGS, "-O0", *_sysroot())
+    subprocess.run([compiler, *flags, "-c", "main.c", "-o", "main.o"], cwd=project, check=True)
+    subprocess.run([compiler, *_sysroot(), "-c", "nlr.s", "-o", "nlr.o"], cwd=project, check=True)
+    # macOS's strip drops the debug map too: its linker's -x drops the private symbol alone.
+    link = ("-Wl,-x",) if stripped and macos else ()
+    subprocess.run(
+        [compiler, *_sysroot(), *link, "main.o", "nlr.o", "-o", "prog"], cwd=project, check=True
+    )
+    said = "nlr_push is code no unit's debug information covers (assembly built without -g?)"
+    if stripped:
+        if not macos:
+            subprocess.run(["objcopy", "--strip-symbol=nlr_push", "prog"], cwd=project, check=True)
+        said = "has no symbol, and no unit's debug information covers it"
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    twice = json.loads(capsys.readouterr().out)["returns_twice"]
+    assert twice["any"] is True and said in twice["why"], twice
+    line = next(n for n, text in enumerate(ASM_CALLER.splitlines(), 1) if "// STOP" in text)
+    notes = {}
+    for claim in (None, ("nlr_push",), ()):
+        result = run_probe(
+            project,
+            Probe("main.c", line, ("later",)),
+            adapter=_target(compiler, returns_twice=claim),
+        )
+        assert result["status"] == "completed", result.get("error")
+        (row,) = result["rows"]
+        notes[claim] = row.get("note") or row.get("error") or ""
+    assert "any call above the stop may return twice (" in notes[None] and said in notes[None]
+    # The config's claim: nlr_push, called on the line above, returns twice.
+    assert (
+        'returns twice, or one the config\'s "returns_twice" names (line 4)' in notes[("nlr_push",)]
+    ), notes
+    assert "return twice" not in notes[()] and notes[()].startswith("no value yet"), notes
+
+
+VFORK_UTIL = """int vfork(void);
+void _exit(int);
+
+int scale(int x) {
+    if (x > 100 && vfork() == 0)
+        _exit(0);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_vfork_above_the_stop_notes_a_local_declared_below_it(project):
+    # vfork returns twice, as setjmp does: Peeky's names left it out, so a program
+    # calling only it had no note.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=VFORK_UTIL)
+    line = next(n for n, text in enumerate(VFORK_UTIL.splitlines(), 1) if "doubled =" in text)
+    result = run_probe(project, Probe("src/util.c", line, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert "calls setjmp, or another function that returns twice (line 5)" in (
+        row.get("note") or ""
+    ), row
+
+
+SPIN = """static inline int spin(int x) {
+    __asm__ volatile("" ::: "memory");
+    return x;
+}
+"""
+SPIN_UTIL = """#include "spin.h"
+
+int scale(int x) {
+    int doubled = spin(x) * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_asm_in_a_header_outside_the_program_may_return_twice(project, capsys):
+    # Peeky looked for asm only in the program's own files: a header outside them, its
+    # MD5 checked, hid it.
+    ext = project.parent / f"{project.name}-ext"
+    ext.mkdir()
+    (ext / "spin.h").write_text(SPIN)
+    compiler = _clang()
+    _build_text(project, compiler, {}, extra={"util": ("-I", str(ext))}, util=SPIN_UTIL)
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    twice = json.loads(capsys.readouterr().out)["returns_twice"]
+    assert twice["any"] and twice["why"].startswith("src/util.c's text holds asm ("), twice
+    assert twice["why"].endswith("spin.h:2)"), twice
+
+
+PROBED_UTIL = """#if __has_include("count.h")
+#include "count.h"
+#else
+typedef int count_t;
+#endif
+
+int scale(int x) {
+    count_t doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("present", [True, False], ids=["found", "not found"])
+def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, present):
+    # `__has_include` may have found a file when the program was built (a header path
+    # from its environment, a file since gone) that the replay doesn't.
+    (project / "src").mkdir()
+    if present:
+        (project / "src" / "count.h").write_text("typedef int count_t;\n")
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=PROBED_UTIL)
+    stop = next(n for n, text in enumerate(PROBED_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    if present:
+        assert row.get("value") == "4", row
+    else:
+        assert (
+            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+            '"count.h" exists'
+        ) in (row.get("error") or ""), row
+        assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+        units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+        assert units["src/util.c"]["text"] == (
+            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+            '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
+            "have found one (its environment can add header paths, and a file may since be gone)"
+        ), units
+
+
+ATOMIC_UTIL = """int scale(int x) {
+    static int calls;
+    __atomic_fetch_add(&calls, 1, __ATOMIC_SEQ_CST);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+def _describe_twice(project, capsys):
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    return json.loads(capsys.readouterr().out)["returns_twice"]
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("link", [(), ("-no-pie",)], ids=["default", "no-pie"])
+def test_a_normal_build_has_no_code_no_unit_covers(project, capsys, link):
+    # The toolchain's startup code (crt1.o, crti.o, crtn.o, crtbegin.o, libgcc's atomics)
+    # is proven its own, by name where the name is reserved and by its place elsewhere.
+    if link and sys.platform != "linux":
+        pytest.skip("-no-pie is a Linux link")
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ATOMIC_UTIL)
+    objects = ["main.o", "util.o", "fast.o"]
+    subprocess.run([compiler, *_sysroot(), *link, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] is False, twice
+
+
+@pytest.mark.timeout(300)
+def test_a_program_s_own_frame_dummy_without_debug_information_counts(project, capsys):
+    # frame_dummy isn't reserved: crtbegin.o's is local and called by .init_array; one
+    # the program defines is neither.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    (project / "dummy.s").write_text(_assembly(function="frame_dummy"))
+    subprocess.run(
+        [compiler, *_sysroot(), "-c", "dummy.s", "-o", "dummy.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "dummy.o"]
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] and twice["why"].startswith(
+        "frame_dummy is code no unit's debug information covers"
+    ), twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="Mach-O has no .init")
+def test_code_an_object_adds_to_init_counts(project, capsys):
+    # .init runs what every object puts there, between crti.o's head and crtn.o's tail.
+    import platform
+
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    x86 = platform.machine() in ("x86_64", "AMD64")
+    word = "mov %rax, %rax" if x86 else "mov x9, x9"
+    kind = "@progbits" if x86 else "%progbits"
+    (project / "hook.s").write_text(f'    .section .init,"ax",{kind}\n    {word}\n')
+    subprocess.run([compiler, "-c", "hook.s", "-o", "hook.o"], cwd=project, check=True)
+    objects = ["main.o", "util.o", "fast.o", "hook.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and "in .init, may be the program's: it isn't crti.o's or crtn.o's" in (twice["why"])
+    ), twice
+
+
+@pytest.mark.timeout(300)
+def test_a_program_s_local_frame_dummy_called_at_start_still_counts(project, capsys):
+    # A static constructor named frame_dummy is local and called by .init_array, as
+    # crtbegin.o's is; only its bytes tell them apart.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    (project / "dummy.c").write_text(
+        "static int ran;\n__attribute__((constructor)) static void frame_dummy(void) { ran = 1; }\n"
+    )
+    subprocess.run(
+        [compiler, *_sysroot(), "-O0", "-c", "dummy.c", "-o", "dummy.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "dummy.o"]
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"] and "frame_dummy is code no unit's debug information covers" in (twice["why"])
+    ), twice
+
+
+@pytest.mark.timeout(300)
+def test_the_program_s_environment_is_the_same_with_or_without_returns_twice(project):
+    # Without the key, Peeky asks the compiler for its startup objects: in its own
+    # environment, never the one the program launches with.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    launched = {}
+    for claim in (None, ()):
+        session = _target(compiler, returns_twice=claim).prepare(project / "prog", project)
+        try:
+            launched[claim] = dict(session.prepared.manifest.effective_environment)
+        finally:
+            session.prepared.cleanup()
+    assert launched[None] == launched[()], launched

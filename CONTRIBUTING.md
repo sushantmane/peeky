@@ -43,6 +43,15 @@ PEEKY_E2E_DOCKER=1 pytest tests/remote   # the remote SSH lane, on the host
 
 It runs against the committed tree (`git archive HEAD`). It prints one `PASS`/`FAIL` line per lane, with what each failing test said. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
 
+`scripts/ci_linux/run_tests.sh` runs chosen tests with one lane's environment. On Apple Silicon, an image built for x86_64 runs under emulation (OrbStack's Rosetta). There the debugger can't stop a program, so only cases that don't run one mean anything, such as what a binary's startup code is:
+
+```sh
+docker build --platform linux/amd64 -t peeky-ci-linux-amd64 scripts/ci_linux
+git archive HEAD | docker run --platform linux/amd64 --rm -i peeky-ci-linux-amd64 bash -c \
+  'mkdir /w && tar -x -C /w && cd /w && scripts/ci_linux/run_tests.sh c \
+   tests/native/test_native_binary.py -k "normal_build or frame_dummy or adds_to_init or describe"'
+```
+
 ## Delivery
 
 The manual `Build artifact` workflow checks out the selected revision, reruns checks, builds distributions, smoke-tests the installed wheel, and keeps them as a workflow artifact for seven days. It does not publish to a registry or deploy a worker. Run the normal CI workflow on the revision before sharing an artifact. Production deployment and release automation are later milestones and require their own environment and rollback design.

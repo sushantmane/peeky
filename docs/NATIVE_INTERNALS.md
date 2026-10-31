@@ -85,9 +85,81 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   functions that may run them too (`placed_languages`).
 - `validate_stop` accepts a frame on a line of a unit not read: it shows nothing.
   `unplaceable_line` refuses a breakpoint on a line no unit read has code on, before the launch.
-- A unit's text isn't read yet. `_source_text` is None and `_preprocessed` says why, so the rules
-  that need the text withhold. Any call may return twice (`returns_twice` empty): the program's
-  own assembly can, as MicroPython's `nlr_push` does.
+- A unit's text is its preprocessing replayed (`replay`), at most four at once, before the
+  launch's deadline. The config's `compiler` runs `-E -MD`, in the unit's compilation directory,
+  with `--no-default-config`. `native_units.replay_arguments` passes only the recorded options
+  that choose what the preprocessor reads or defines (`_REPLAY_*`), in order, and the unit's
+  own input last. `-march=native`, `-mcpu=native` and `-mtune=native` leave the text unread:
+  they name the CPU of the host that built the unit.
+- It leaves out options that define no macro (`_INERT_*`): each is checked against clang's own
+  `-dM -E`, in C and C++, on Linux and macOS. Any other option leaves the text unread, naming it:
+  `-fplugin=`, `-Xclang -load`, `-Wp,`, `-Xpreprocessor`, `-ivfsoverlay`, `-B`, `@file`.
+- Its environment is Peeky's own (`replay_environment`): `PATH`, `LANG`, and its home and
+  temporary directory in the run's scratch. Never `CCC_*`, `CL`, `_CL_`, `CPATH`,
+  `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` or `SDKROOT`. Apple's units
+  record their SDK as `DW_AT_LLVM_sysroot`: passed as `-isysroot` where the words have none.
+- Every file the replay's dependencies list must be one the unit's line table names, and so
+  checked against its MD5. Only Apple's `SDKSettings.json`, under the recorded SDK, is no header.
+  On Linux, `-fdebug-macro` names each header. Apple's clang can't use it with DWARF 5: a header
+  of declarations alone leaves the unit's text unread.
+- A probe (`__has_include`, `__has_include_next`) in any file the replay read may have been
+  answered otherwise at the build (`_unproven_probe`). `probes` finds each, outside comments and
+  literals. `_found` looks its file up on the search list clang's `-v` gives, never further than
+  clang would. A probe that finds a file is proven, or never ran: clang lists what a probe finds
+  among the dependencies, which the line table must name, so the build found it too. One that
+  finds none leaves the text unread: the build's environment may have added a directory, or the
+  file may be gone. So does `#embed`, `__has_embed`, an operand Peeky can't read, and a quoted
+  or `_next` probe in a macro. A probe in a macro no input names never runs.
+- So does a recorded `-D` (`_defined_probe`) whose value names a probe, holds `#` or `##`,
+  which may paste one together, or holds any three characters of a probe's name. String
+  literals don't count. A probe the source itself pastes together from pieces is outside what
+  Peeky checks: it needs a deliberate construction, and a file whose presence changed since
+  the build.
+- Units built from one file with different commands leave its text unread (`replay_units`):
+  Peeky reads a unit's text by its file's name. Alike, they share one replay.
+- `UnitText` keeps the replay's `Preprocessed` and `Statements` (`_preprocessed`), whether it may
+  optimize a function (`optimizes`: the session's `optimized` where every text is read), where
+  its text may return twice by assembly (`asm`), and the files under the root it read.
+- `asm_uses` reads the whole preprocessed text, headers outside the program too. An `asm`
+  statement, or one at file scope, counts. An asm label counts only where it gives a symbol of
+  the returns-twice family: glibc's and Apple's headers label hundreds of declarations. Where
+  Peeky can't tell a label from a statement (`_declares`), it counts it. `_statements` of a
+  source reads its raw text with those files' macros (`macro_hazards`), where every unit holding
+  it has its text read.
+- Any call may return twice (`any_call_returns_twice`) where a unit isn't read, or its text isn't,
+  or holds `asm`: the program's own assembly can, as MicroPython's `nlr_push` does. Then every
+  local at or below a stop carries the setjmp note, saying why. A config's `returns_twice` is a
+  trusted claim instead: those functions, and setjmp's family, are found by name, as today.
+- The family is one set, used everywhere (`c_source.RETURNS_TWICE_NAMES`): setjmp's (any
+  name holding `setjmp`), `savectx`, `vfork`, `getcontext` and `swapcontext`, with any `_`
+  before them. A binary target always looks for them by name, where any call can't.
+- An assembly file built without `-g` leaves no unit, so `uncovered_code` reads the binary's
+  symbol table (`code_symbols`: ELF's `.symtab`, Mach-O's nlist). A function symbol outside
+  every unit's ranges counts, and so does code with no symbol, outside those ranges, that isn't
+  padding (`_padding`). Then any call may return twice, the note naming each. A binary with no
+  symbol table counts as well. The linker's stubs (`_TOOLCHAIN_SECTIONS`) are left out, and so
+  is the toolchain's startup code, each seen in clang 18's and Apple's clang 21's builds:
+  - By name, only where C and C++ reserve it for the implementation, as it begins with `_`
+    (`_RESERVED_STARTUP`, `_ATOMICS`): `_start`, `_init`, `__libc_csu_init`, `__aarch64_*`. A
+    program defining such a name is outside what Peeky checks.
+  - Other startup names (`_MATCHED_STARTUP`: `frame_dummy`, the `tm_clones` pair,
+    `init_have_lse_atomics`, `call_weak_fn`) by their bytes. `toolchain_startup` asks the
+    config's compiler for its startup objects (`-print-file-name`: `crtbegin.o`,
+    `crtbeginS.o`, `crtbeginT.o`, `crti.o`, `crtn.o`; and libgcc's archive member holding
+    `init_have_lse_atomics`). A symbol is the toolchain's where the code at it is one of their
+    sections (`native_startup.place`). Every byte must be the object's, but each relocation's
+    immediate field. That field is decoded, and must point where the relocation names: into
+    the matched code, at the binary's symbol of that name, at its GOT slot or PLT stub, or
+    at 0 for a weak symbol nothing defines (a strong one nowhere). An address AArch64 splits
+    over an ADRP and an ADD or load is checked whole: each low part completes the nearest
+    ADRP before it to the same target, into the register it reads. x86-64's GOT load may be
+    relaxed to `lea` or `mov $imm`, still pointing there. A relocation kind not seen in the real objects
+    (`_AARCH64`, `_X86_64`) never matches. A program's own `frame_dummy`, even a local
+    constructor, counts.
+  - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
+    tail, matched byte for byte, are the toolchain's. Anything else there counts.
+  - Peeky asks the compiler in its own environment (`replay_environment`), never the one the
+    program launches with.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 

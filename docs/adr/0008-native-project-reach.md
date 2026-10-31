@@ -64,14 +64,13 @@ Phase 1 debugs a binary the project built with clang at `-O0`, verified from its
   "compiler": "/usr/bin/clang-18",
   "adapter": "/usr/bin/lldb-dap-18",
   "dwarfdump": "/usr/bin/llvm-dwarfdump-18",
-  "compile_commands": "compile_commands.json",
   "optimized": false
 }
 ```
 
 - `binary` is relative to the target directory, the root for source paths.
 - `compiler` runs only `--version`, and the replay of a unit's `-E` and `-M`. Its `--version` must match the unit's `DW_AT_producer`. The replay passes only allowlisted flags (below), with `--no-default-config`. Its environment drops `CCC_*`, `CL`, `_CL_`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` and `SDKROOT`, unless the unit's recorded words hold them. It is never run on a unit's recorded words as they are, not even with `-###`: those can make it run another program or read other files.
-- `compile_commands` is optional. Its entries must agree with the recorded commands.
+- `compile_commands.json` is not read. The words each unit records are the truth of how it was built, and a second account could only disagree with them. A config naming `compile_commands` is refused, as any unknown key is.
 - Without a config: `peeky probe . --binary ./jq --at src/execute.c:<line> --capture <name> -- '.a.[]' input.json`.
 - `peeky describe . --binary ./jq` lists each unit as judged, or not and why: `modules/oniguruma/src/regcomp.c: built with -O2 (its recorded flags)`.
 
@@ -82,10 +81,11 @@ The `-O` level and LTO are read from the recorded words alone (`native_units.opt
 **Read and withheld.**
 
 - **Judged units** follow today's rules. The session's `optimization` is the highest of any unit read, so every `-O0` rule stays exact.
-- **A unit's text** comes from its recorded command line, run with the config's `compiler`, and `-M` lists the headers whose macros count. Only allowlisted flags pass: `-I`, `-D`, `-U`, `-include`, `-isystem`, `-std`, and `-f` and `-m` options that change predefined macros. Each file both the text and the line table name must match its MD5.
+- **A unit's text** comes from its recorded command line, run with the config's `compiler`, and `-M` lists the headers whose macros count. Only allowlisted flags pass: those choosing what the preprocessor reads or defines (`-I`, `-D`, `-U`, `-include`, `-isystem`, `-isysroot`, `-std`, `-O`, `-x`, `--target`, and `-f` and `-m` options that change predefined macros). Options that define nothing are left out, each checked against clang's own `-dM -E`. Any other leaves the unit's text unread, naming it. Each file both the text and the line table name must match its MD5: every file the replay reads must be one the line table names. `-march=native` and its kin leave the text unread: they name the build host's CPU. So do units built from one file with different commands, as Peeky reads a unit's text by its file's name.
+- **A probe** (`__has_include`, `__has_include_next`) may have been answered otherwise at the build: its environment may have added a header path, or a file may since be gone. One that finds a file now is proven: clang lists the file among the replay's dependencies, which the line table must name, so the build found it too. One that finds none leaves the unit's text unread, naming it: "its preprocessing asks whether <stdatomic.h> exists (__has_include_next, in /usr/lib/llvm-18/lib/clang/18/include/stdatomic.h:22), and finds none": clang's own header asks for the system's, which glibc lacks. Apple's headers ask for private ones. So `#embed` leaves the text unread, too, and a recorded `-D` that names a probe or may paste one together (`#`, `##`, or any three characters of a probe's name). A probe the source itself pastes together from pieces is outside what Peeky checks, as reserved names are: it needs a deliberate construction, and a file whose presence changed since the build.
 - **Where a unit's text can't be read,** its text rules withhold, saying why: "Peeky can't read src/acl.c as compiled: its command uses -fplugin=…". `NativeSession._resume` then proves nothing, as it needs every unit's `optimizes`.
 - **Frames in units not judged** are `not shown`: "this frame runs src/lvm.c, built with -O2 (its recorded flags)". Breakpoints there are refused. With `"optimized": true`, they read as Peeky's optimized builds do: with `optimized` and its warning, and no change.
-- **The program's own assembly** can return twice, as MicroPython's `nlr_push` (`py/nlraarch64.c`) does, but Peeky finds such calls by name (`_NONLOCAL_JUMPS`). So where a unit is assembly, or its text holds `asm` or can't be read, any call may return twice. Locals at or below the stop then carry today's setjmp note.
+- **The program's own assembly** can return twice, as MicroPython's `nlr_push` (`py/nlraarch64.c`) does, but Peeky finds such calls by name (`_NONLOCAL_JUMPS`). So where a unit is assembly, or its text holds `asm` or can't be read, any call may return twice. The whole text counts, headers outside the program too. An asm label counts where it gives a symbol of the returns-twice family; glibc's and Apple's headers label hundreds of declarations with others. The family is one set everywhere: setjmp's, `savectx`, `vfork`, `getcontext` and `swapcontext`. So it may where the binary's own code holds what no unit covers: an assembly file built without `-g` leaves no unit. Peeky reads the binary's symbol table (`native_binary.code_symbols`). A function symbol outside every unit's ranges, or code with no symbol between them, counts, named in the note: "nlr_push is code no unit's debug information covers (assembly built without -g?)". Only the toolchain's startup code and the linker's stubs are left out, each checked on clang 18 and Apple's clang 21 builds. By name only where C and C++ reserve the name for the implementation: `_start`, `_init`, `_fini`, `__libc_csu_*`, AArch64's `__aarch64_*` atomics. A program defining such a name is outside what Peeky checks. Other startup names count unless their bytes are the toolchain's: `frame_dummy` must be crtbegin.o's, byte for byte, but each relocation's immediate field, which must point where the object says: at the binary's symbol of that name, its GOT slot or PLT stub, or into the matched code. So must `.init`'s and `.fini`'s head and tail be crti.o's and crtn.o's; anything else there counts. The compiler finds those objects (`-print-file-name`). A binary with no symbol table counts too. Locals at or below the stop then carry today's setjmp note. A config's `returns_twice` replaces all of this with its trusted claim.
 - **C frames at an address several functions share** are withheld, as C++'s are. Identical code folding is a link option, which no debug information records.
 
 **Errors.**
@@ -99,6 +99,8 @@ The `-O` level and LTO are read from the recorded words alone (`native_units.opt
 **Servers.** A probe takes `--until hits` and `--background` ([ADR 0006](0006-agent-speed.md)). So for valkey-1842, Peeky launches the replica, the agent starts a primary and sends `ACL LOAD`, and `peeky job wait` returns the hit.
 
 **Docs:** `lang/c-cpp.md` and its cookbook, `NATIVE_INTERNALS.md`, `ERRORS.md`, `WORKER.md`, `REMOTE.md`, and one command per project type in `AGENT_GUIDE.md`.
+
+**Follow-ups, after the acceptance PR.** A probe that finds no file withholds its unit's text: the build may have found one. With `-fdebug-macro`, the build's own record can prove it found none. Every file the line table names must be one the replay read, and the macros the build recorded must be the replay's. That brings clang's `stdatomic.h`, which asks for the system's, back into reach. A probe that changes only code, with no include or macro, stays unproven (owner's decision on #460).
 
 **Acceptance.** First, every C and C++ test runs with Peeky's own builds at `-gdwarf-5`, as GCC's C++ was qualified. Then a Linux lane rebuilds the study's images (`experiments/value-study/bugs/*/Dockerfile`) with clang:
 
@@ -197,6 +199,7 @@ Checked in October 2026. Each claim says how. **Tested**: `tests/native/test_nat
 - clang++ records `--driver-mode=g++` before the options it was given. It is an option of one word, as the driver reads it (tested). Only the modes `gcc`, `g++` and `cpp` are read: `cl`'s builds `/clang:-O2` at -O2 (tested).
 - The driver records an alias as what it means: `--optimize=2` as `-O2`, `-O` as `-O1` (by hand, Apple clang 21). `native_units.optimization` takes the last `-O` and LTO option from the words alone. Each option it knows takes no value or one, and those taking none are each checked against the driver. Any `-O` or LTO word after another option is refused: clang reads `-O2 -fmodules-user-build-path -O0` and `-O2 -resource-dir -O0` as `-O2`, and Apple's `-O2 -fdepscan-prefix-map /old -O0` too (tested). The study's projects record no such option before an `-O`. It refuses any `-mllvm` option, and any `-Xclang` one but warnings, `-O`, LTO and the exact options Apple clang 21 adds.
 - GCC 13 records only code generation options: no `-D`, `-I` or `-include` (tested).
+- The options a unit's replay leaves out each predefine what clang predefines without them, in C and C++ (tested). `-fno-unwind-tables` doesn't: it drops `__GCC_HAVE_DWARF2_CFI_ASM`, so it is passed. Apple's driver reads its SDK's `SDKSettings.json`, which no line table names, and nothing else outside the headers (tested).
 
 **Checksums.**
 
@@ -224,7 +227,7 @@ All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000
 
 **The owner's decisions on these findings.**
 
-- C: the recipes add `bison -l` and `flex -L`, and on Linux `-fdebug-macro`. jq's grammar is probed in `src/parser.c`, and a breakpoint in `src/parser.y` is refused. On macOS, a header of macros alone can't be checked, so the text rules withhold there.
+- C: the recipes add `bison -l` and `flex -L`, and on Linux `-fdebug-macro`. jq's grammar is probed in `src/parser.c`, and a breakpoint in `src/parser.y` is refused. On macOS, a header of macros alone can't be checked, so the text rules withhold there. Nor can a header of declarations alone, which no unit's line table names without `-fdebug-macro` (found implementing it): on macOS, most units' text isn't read.
 - C++: a unit with an MD5 for every file is judged, as libc++ with `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER` and no inheriting constructor gives. Any other is refused with what its table shows, and the likely remedies as likely. `-gembed-source` isn't used: it embeds most files' text but not all, and made a test binary six times larger.
 - Phase 3 starts with a compiler wrapper that records each input's hash, which brings fmt, nlohmann/json, GCC, bison's output and headers of macros alone into reach.
 
