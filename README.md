@@ -90,8 +90,8 @@ On your own project, the first command depends on its kind ([first command][firs
 
 - **Python:** from the repository's root,
   `peeky probe . --at src/pkg/mod.py:LINE --capture a,b --run script.py`. The script reaches the
-  line; for a pytest test, a two-line one calls `pytest.main`. Peeky stops only in the project's
-  own code, not in `site-packages`.
+  line; for a pytest test, a two-line one calls `pytest.main`. A project installed without `-e`
+  runs its `site-packages` copy, not its source.
 - **Java:** attach to a Maven or Gradle test started waiting for a debugger, or launch a class
   with no Maven or Gradle dependencies.
 - **C and C++:** a directory of sources, which Peeky builds itself. A project with its own build,

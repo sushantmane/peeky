@@ -108,7 +108,7 @@ _SERVE = (
 )
 # Readings that depend on the environment (what a module import finds): never made in
 # this process, whose environment is Peeky's, even where its interpreter is the program's.
-ENVIRONMENTAL = frozenset({"self_contained"})
+ENVIRONMENTAL = frozenset({"self_contained", "installed_dirs"})
 
 
 def record(marker, nonce, text):
@@ -535,6 +535,26 @@ def _self_contained(optimize, text, places=()):
     return _self_contained(text, places)
 
 
+def _installed_dirs(optimize):
+    """Where this interpreter installs packages: its site-packages directories, its user
+    site, and sysconfig's purelib and platlib (debugpy counts code there as library code).
+    Absolute, from the directory the helper runs in, the program's: a relative
+    PYTHONUSERBASE gives a relative user site."""
+    import site
+    import sysconfig
+
+    found = []
+    for name in ("getsitepackages", "getusersitepackages"):
+        try:
+            each = getattr(site, name)()
+        except (AttributeError, OSError):
+            continue
+        found += [each] if isinstance(each, str) else list(each)
+    paths = sysconfig.get_paths()
+    found += [paths.get("purelib"), paths.get("platlib")]
+    return sorted({os.path.abspath(each) for each in found if isinstance(each, str) and each})
+
+
 def _anonymous(optimize, text, lines):
     from peeky.python_scopes import anonymous_code
 
@@ -549,6 +569,7 @@ _READINGS = {
     "scopes": _scopes,
     "self_contained": _self_contained,
     "anonymous": _anonymous,
+    "installed_dirs": _installed_dirs,
 }
 
 

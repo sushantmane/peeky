@@ -972,6 +972,8 @@ output:
 ```
 
 - `--run` names the script to run when the breakpoint is in a module that the script imports.
+  In Python, that module may be an installed package's, in the root's `.venv`
+  ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)).
 - `--arg` passes one program argument, and can be repeated. For a value that starts with a dash,
   write `--arg=-v`.
 - Or put all of the program's arguments after `--`: `peeky probe app.py --at 5 -- A 5 5 0`.

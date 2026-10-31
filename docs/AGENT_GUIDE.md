@@ -38,9 +38,8 @@ peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c \
 ```
 
 - Without `--run`, the `--at` file runs as the program: `peeky probe . --at scripts/job.py:LINE`.
-- `--at` and `--run` must be inside the root. Peeky stops only in the project's own code: a file
-  in `site-packages` never stops (`no-stop`). An installed project must be editable:
-  `pip install -e .`.
+- `--at` and `--run` must be inside the root; a package's file in its `.venv` works. A project
+  installed without `-e` runs its `site-packages` copy, not its source: `pip install -e .`.
 - It runs on the root's `.venv` or `venv`, else the active virtual environment. For the `python`
   on `PATH`, such as conda's, add `--python python`. The `python:` line says which ran.
 

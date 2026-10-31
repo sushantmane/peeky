@@ -30,16 +30,20 @@
 - **`verify --check-command` checks a Python edit with the project's own tests:** it runs the
   command in a fresh copy of the project with the edit, on the program's interpreter, with its
   directory first on `PATH` and no worker token. It runs no shell, and gets a checker's 20 s. The
-  result leads with `verdict: passed`, `failed` or `unknown`, and names the command, its exit
-  code and the end of its output. `--baseline` says the tests fail on the bug only when pytest's
-  or unittest's output shows failed tests. An edit is refused when a module the project supplies
-  would import from outside the copy, such as a stale install. A Python command runs through a
-  bootstrap of Peeky's, whose watch reports what it loaded and started (for pytest, a plugin adds
-  the test files). A run that may not be the copy's, that started a program other than one that
-  starts none (`echo`, `cp`), that Peeky stopped at its bound, or that isn't a Python Peeky
-  starts, is `unknown`. The command is trusted, not sandboxed. Other languages are refused for now. A
-  build's output limit now counts both streams together, and a Cargo build past it is
-  `BUILD_FAILED` (#448).
+  result leads with `verdict: passed`, `failed` or `unknown`, and names the command, its exit code
+  and the end of its output. `--baseline` says the tests fail on the bug only when pytest's or
+  unittest's output shows failed tests. An edit is refused when a module the project supplies would
+  import from outside the copy, such as a stale install. A Python command runs through a bootstrap
+  of Peeky's, whose watch reports what it loaded and started (for pytest, a plugin adds the test
+  files). A run that may not be the copy's, that started a program other than one that starts none
+  (`echo`, `cp`), that Peeky stopped at its bound, or that isn't a Python Peeky starts, is
+  `unknown`. The command is trusted, not sandboxed. Other languages are refused for now. A build's
+  output limit now counts both streams together, and a Cargo build past it is `BUILD_FAILED` (#448).
+- **Python: a breakpoint in an installed package stops there.** debugpy skipped library code, so
+  a probe at a file in the root's `.venv` said its breakpoint was pending, then ended `no-stop`.
+  Now debugpy stops there too, where the program's interpreter says the file is installed, with
+  the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
+  before debugpy starts your script, with why (#446).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
