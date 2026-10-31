@@ -6,7 +6,6 @@ executes actions, and verifies a proposed fix in a fresh process.
 
 import argparse
 import contextlib
-import contextvars
 import difflib
 import hashlib
 import json
@@ -26,6 +25,7 @@ from peeky import add_version
 from peeky.client import LOOPBACK_URL, Client, client_token
 from peeky.errors import PeekyError
 from peeky.processes import without_credentials
+from peeky.stopping import _STOP, Stopped, check_stop, stopping  # noqa: F401 - the build's
 from peeky.textlines import read_source, source_lines, split_lines
 from peeky.verification import __file__ as verification_script
 from peeky.worker import load_java_target, load_native_target, load_rust_target, make_server
@@ -96,42 +96,6 @@ def kill_process_group(process):
 
 # A build keeps all of its output up to the kill limit: compiler diagnostics can be long.
 BUILD_RETAINED = 1048576
-
-
-# The ``stop`` of every ``execute`` in this context that names none (``stopping``).
-_STOP = contextvars.ContextVar("peeky_execute_stop", default=None)
-
-
-@contextlib.contextmanager
-def stopping(event):
-    """Within it, ``execute`` takes ``event`` for its ``stop`` where given none: a Rust
-    workspace's build, whose Cargo commands a worker's shutdown stops. Such an ``execute``
-    that the event ends raises Stopped."""
-    token = _STOP.set(event)
-    try:
-        yield
-    finally:
-        _STOP.reset(token)
-
-
-def check_stop():
-    """Raise Stopped (started False) where ``stopping``'s event is set: a loop of Peeky's
-    own work in a stopped build (walking, hashing, listing) ends at its next entry, as its
-    next process would never start."""
-    event = _STOP.get()
-    if event is not None and event.is_set():
-        raise Stopped(("peeky",), started=False)
-
-
-class Stopped(RuntimeError):
-    """An ``execute`` that ``stopping``'s event ended: its process group was sent SIGKILL
-    and its leader reaped, or, with ``started`` False, it started none."""
-
-    def __init__(self, command, started):
-        self.started = started
-        super().__init__(
-            f"{Path(str(command[0])).name} was stopped" + ("" if started else " before it started")
-        )
 
 
 def execute(

@@ -767,6 +767,66 @@ def test_a_stopped_builds_own_work_ends_at_its_next_entry(tmp_path, monkeypatch)
     assert "its next process never started" in str(caught.value)
 
 
+# Every directory any code opens to list (the interpreter's audit events: os.scandir,
+# os.listdir), whatever reads it, while ``_OPENED`` is a list.
+_OPENED = None
+
+
+def _audit(event, args):
+    if _OPENED is not None and event in ("os.scandir", "os.listdir"):
+        _OPENED.append(str(args[0]))
+
+
+sys.addaudithook(_audit)
+
+
+def opened(work):
+    """The directories ``work()`` opens to list, and what it raised (or None)."""
+    global _OPENED
+    _OPENED, raised = [], None
+    try:
+        work()
+    except Exception as exc:  # noqa: BLE001 - the caller checks it
+        raised = exc
+    finally:
+        found, _OPENED = _OPENED, None
+    return found, raised
+
+
+def test_a_large_artifact_tree_is_read_lazily_and_stops_promptly(tmp_path, monkeypatch):
+    import threading
+
+    from peeky.stopping import Stopped, stopping
+
+    run = tmp_path / "runs/0123"
+    for unit in range(20):
+        (run / f"units/u{unit}").mkdir(parents=True)
+        for index in range(500):
+            (run / f"units/u{unit}/f{index}.mir").write_text("")
+    stop = threading.Event()
+    stop.set()
+    # A set stop ends it at the first entry read, never once the whole tree is listed.
+    with stopping(stop):
+        listed, raised = opened(lambda: rb._artifacts(tmp_path, run, None))
+    assert isinstance(raised, Stopped) and len(listed) <= 1, (raised, len(listed))
+    # Past the bound, refused as read: the 22 directories aren't all listed first.
+    monkeypatch.setattr(rb, "MAX_RECORDED", 100)
+    listed, raised = opened(lambda: rb._artifacts(tmp_path, run, None))
+    assert isinstance(raised, ValueError) and len(listed) <= 3, (raised, len(listed))
+    assert str(raised).startswith("The build wrote more than")
+    # Unstopped and within the bound, every file, sorted.
+    monkeypatch.setattr(rb, "MAX_RECORDED", 20000)
+    found = rb._artifacts(tmp_path, run, None)
+    assert len(found) == 10000 and list(found) == sorted(found)
+    # The snapshot before Cargo runs, and the MIR left behind, too.
+    shape = SimpleNamespace(workspace=run, local=(), root=run)
+    with stopping(stop):
+        listed, raised = opened(lambda: rb._snapshot(shape, None))
+        assert isinstance(raised, Stopped) and listed == [], (raised, listed)
+        listed, raised = opened(lambda: list(rb._walked(run / "units", [10**6], "too many")))
+        assert isinstance(raised, Stopped) and len(listed) <= 1, (raised, len(listed))
+
+
 def test_a_record_of_an_earlier_schema_is_build_required_before_it_is_read(tmp_path, monkeypatch):
     from tests.unit.test_rust_workspace_worker import toolchain
 

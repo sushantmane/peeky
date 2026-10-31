@@ -20,6 +20,7 @@ the program runs. Not a sandbox.
 
 import contextlib
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
@@ -34,9 +35,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
 from peeky import rust_workspace
-from peeky.agent import check_stop
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
 from peeky.digest import sha256_file
+from peeky.stopping import check_stop
+from peeky.stopping import listed as _listed
+from peeky.stopping import walked as _walked
 from peeky.textlines import split_lines
 
 # The longest a build may take, a cold one included (`peeky build --timeout`).
@@ -647,40 +650,57 @@ def _snapshot(shape, vendor):
     def failed(error):
         uncovered.append([str(error.filename or "?"), error.strerror or str(error)])
 
+    def record(path):
+        """Record ``path`` (lstat, and a link's target); False once the limit is reached."""
+        nonlocal count
+        check_stop()
+        if "l:" + path in found:
+            # A directory, recorded as its parent's entry.
+            return True
+        if count >= _MAX_SNAPSHOT:
+            found[":limit"] = [count, os.path.dirname(path)]
+            return False
+        try:
+            info = os.lstat(path)
+        except OSError as error:
+            failed(error)
+            return True
+        found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+        count += 1
+        if stat.S_ISLNK(info.st_mode):
+            try:
+                info = os.stat(path)
+                found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+            except FileNotFoundError:
+                # A dangling link, as such.
+                found["f:" + path] = None
+            except OSError as error:
+                failed(error)
+        return True
+
     for top in tops:
-        for base, folders, files in os.walk(top, onerror=failed):
+        pending = [os.path.normpath(top)]
+        while pending:
+            base = pending.pop()
             if base in seen:
-                folders[:] = []
                 continue
             seen.add(base)
-            folders[:] = [name for name in folders if str(Path(base, name)) not in skipped]
-            for name in (".", *folders, *files):
-                check_stop()
-                path = os.path.normpath(os.path.join(base, name))
-                if "l:" + path in found:
-                    # A directory, recorded as its parent's entry.
-                    continue
-                if count >= _MAX_SNAPSHOT:
-                    found[":limit"] = [count, base]
-                    return found
-                try:
-                    info = os.lstat(path)
-                except OSError as error:
-                    failed(error)
-                    continue
-                found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-                count += 1
-                if stat.S_ISLNK(info.st_mode):
-                    try:
-                        info = os.stat(path)
-                        found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-                    except FileNotFoundError:
-                        # A dangling link, as such.
-                        found["f:" + path] = None
-                    except OSError as error:
-                        failed(error)
+            if not record(base):
+                return found
+            # Read lazily, each entry recorded (and the limit checked) as scandir yields it.
+            try:
+                with os.scandir(base) as listing:
+                    for entry in listing:
+                        path = os.path.normpath(entry.path)
+                        if not record(path):
+                            return found
+                        if entry.is_dir(follow_symlinks=False) and path not in skipped:
+                            pending.append(path)
+            except OSError as error:
+                failed(error)
+                continue
             # Listed whole: an entry it doesn't name wasn't there.
-            found["d:" + os.path.normpath(base)] = True
+            found["d:" + base] = True
     return found
 
 
@@ -884,7 +904,13 @@ def _dependency_file(filenames):
         if path.parent.parent.name == "build" and path.name == "build-script-build":
             # A build script, which Cargo names `build-script-build` beside rustc's own
             # `build_script_build-<hash>` and its dependency file.
-            found = sorted(path.parent.glob("build_script_build-*.d"))
+            found = [
+                Path(entry.path)
+                for entry in _listed(
+                    path.parent, [4096], f"Cargo's {path.parent} holds more than 4096 entries"
+                )
+                if fnmatch.fnmatchcase(entry.name, "build_script_build-*.d")
+            ]
             if len(found) == 1:
                 return found[0], "rustc"
     for path in paths:
@@ -928,7 +954,7 @@ def build(target, root, *, deadline=None, progress=None, stop=None):
     runs is an ``execute`` in this thread (``_run``, ``_tools``, ``rust_workspace.read``),
     which takes it from ``stopping``. Only such an end is BuildStopped: any other error,
     a failed kill among them (with its ``process_group``), is raised as it is."""
-    from peeky.agent import Stopped, stopping
+    from peeky.stopping import Stopped, stopping
 
     with stopping(stop):
         try:
@@ -1133,7 +1159,8 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     seen_units, directories = set(), set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
     compiled = {}
-    for unit in sorted((run / "units").iterdir()):
+    units_read = _listed(run / "units", [MAX_RECORDED], _TOO_MANY_UNITS)
+    for unit in (Path(entry.path) for entry in units_read):
         command = json.loads((unit / "command.json").read_text())
         args = command.get("args") or []
         crate = next((b for a, b in zip(args, args[1:]) if a == "--crate-name"), None)
@@ -1221,15 +1248,17 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             f"What runs ({run_target.name}) uses none of the analysed packages "
             f"({', '.join(sorted(analysed_names))}): analyse a package it uses"
         )
-    if strays := {path.name for path in (run / "units").iterdir()} - seen_units:
+    if strays := {entry.name for entry in units_read} - seen_units:
         raise ValueError(
             f"Peeky's wrapper compiled {', '.join(sorted(strays))}, which Cargo's messages "
             "don't name"
         )
     copied = _copy_executable(Path(executable), run)
-    for each in (run / "units").rglob("*.PreCodegen.before.mir"):
-        # Only the bodies after rustc's last MIR pass are read.
-        each.unlink()
+    # Only the bodies after rustc's last MIR pass are read; a body's before and after, and
+    # each unit's few other files, within twice what is recorded.
+    for entry in _walked(run / "units", [2 * MAX_RECORDED + 4096], _TOO_MANY_FILES):
+        if entry.name.endswith(".PreCodegen.before.mir") and entry.is_file(follow_symlinks=False):
+            os.unlink(entry.path)
     artifacts = _artifacts(directory, run, store)
     return {
         "root": str(root),
@@ -1315,11 +1344,7 @@ def _spend(budget, where):
 def _spend_one(budget, where):
     budget[0] -= 1
     if budget[0] < 0:
-        raise ValueError(
-            f"Peeky records at most {MAX_RECORDED} files a build script or procedural "
-            f"macro may read, and {where} holds more. Build fewer packages' files, or "
-            "give the build script `cargo::rerun-if-changed` lines"
-        )
+        raise ValueError(_too_many(where))
 
 
 def _reachable(path, root):
@@ -1449,9 +1474,8 @@ def _exact_tree(top, root, *, budget):
         if real in seen:
             continue
         seen.add(real)
-        for entry in sorted(os.scandir(directory), key=lambda each: each.name):
+        for entry in _listed(directory, budget, _too_many(top)):
             relative, path = prefix + entry.name, Path(entry.path)
-            _spend(budget, top)
             if entry.is_symlink():
                 target = path.resolve()
                 if not target.is_relative_to(root):
@@ -1650,6 +1674,20 @@ def _package_files(directory, names, walked, root, workspace):
             continue
         found[name] = _compared_file(directory, name, root, walked)
     return found
+
+
+# The refusals of a build that wrote more than Peeky records.
+_TOO_MANY_FILES = f"The build wrote more than {MAX_RECORDED} files Peeky records"
+_TOO_MANY_UNITS = f"Peeky's wrapper recorded more than {MAX_RECORDED} compiles"
+
+
+def _too_many(where):
+    """``_spend``'s refusal, for what ``where`` holds."""
+    return (
+        f"Peeky records at most {MAX_RECORDED} files a build script or procedural macro may "
+        f"read, and {where} holds more. Build fewer packages' files, or give the build script "
+        "`cargo::rerun-if-changed` lines"
+    )
 
 
 # Files an operating system's file manager leaves in any directory, which no build reads:
@@ -2003,16 +2041,16 @@ def _copy_executable(executable, run):
 
 
 def _artifacts(directory, run, store):
+    """{path relative to ``directory``: SHA-256} of every file of the build's ``run``, read
+    lazily (``_walked``): at most MAX_RECORDED entries, the build's stop checked at each."""
     found = {}
-    for path in sorted(run.rglob("*")):
-        check_stop()
-        if path.is_symlink():
+    for entry in _walked(run, [MAX_RECORDED], _TOO_MANY_FILES):
+        path = Path(entry.path)
+        if entry.is_symlink():
             raise ValueError(f"Peeky's build holds a link: {path}")
-        if path.is_file():
-            found[path.relative_to(directory).as_posix()] = sha256_file(path, store=store)
-            if len(found) > MAX_RECORDED:
-                raise ValueError(f"The build wrote more than {MAX_RECORDED} files Peeky records")
-    return found
+        if entry.is_file(follow_symlinks=False):
+            found[path.relative_to(directory).as_posix()] = _hash(path, store=store)
+    return dict(sorted(found.items()))
 
 
 def _build_id(manifest):
@@ -2090,8 +2128,13 @@ def _prune(directory, nonce):
     """Keep the newest KEEP_RUNS builds' files, and any a probe or session holds (Lease).
     Called with the build directory's lock held alone."""
     runs, leases = Path(directory) / "runs", Path(directory) / "leases"
+    # Peeky's own directories, read lazily within a bound: its runs and leases. The build
+    # is recorded by now, so it is never stopped here.
+    listing = _listed(
+        runs, [MAX_RECORDED], f"{runs} holds more than {MAX_RECORDED} runs", stoppable=False
+    )
     kept = sorted(
-        (path for path in runs.iterdir() if path.is_dir()),
+        (Path(entry.path) for entry in listing if entry.is_dir(follow_symlinks=False)),
         key=lambda path: (path.name == nonce, path.stat().st_mtime_ns),
         reverse=True,
     )
@@ -2099,7 +2142,9 @@ def _prune(directory, nonce):
         if not _held(leases / path.name):
             shutil.rmtree(path, ignore_errors=True)
     if leases.is_dir():
-        for lease in leases.iterdir():
+        refusal = f"{leases} holds more than {MAX_RECORDED} leases"
+        listing = _listed(leases, [MAX_RECORDED], refusal, stoppable=False)
+        for lease in (Path(entry.path) for entry in listing):
             if not (runs / lease.name).is_dir():
                 _held(lease)
 

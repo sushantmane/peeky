@@ -169,8 +169,11 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   ends. Each process the build runs is an `execute` in its thread, which takes that `stop`
   from `agent.stopping`: once set, it kills Cargo's process group and starts nothing.
   Peeky's own work in the build checks it at every entry it walks, hashes or lists
-  (`agent.check_stop`, in `_spend`, `_hash` and `_compared_file`), and each such loop is
-  linear. A running build is the worker's activity (`active`).
+  (`stopping.check_stop`, in `_spend`, `_hash` and `_compared_file`), and each such loop is
+  linear. Every directory the build reads (the snapshot, its artifacts, the MIR left
+  behind, Cargo's build directories, the vendored copies, member patterns) is read lazily
+  by `stopping.listed` and `stopping.walked`: each entry checks the stop and spends a bound
+  as it is read, before any is sorted. A running build is the worker's activity (`active`).
 - Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
   reaped, or that started nothing. A kill or reap that fails raises its own error, with the
   group in its `process_group`, and is never hidden. A build's error that carries one, on it or
