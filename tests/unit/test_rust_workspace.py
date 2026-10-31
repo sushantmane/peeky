@@ -240,18 +240,65 @@ def test_cargo_configuration_that_changes_the_build_is_refused(tmp_path, text, n
     assert code(caught) == "UNSUPPORTED"
 
 
-def test_cargo_configuration_or_a_manifest_above_the_workspace_is_refused(workspace):
+def ours(configs, root):
+    """The configuration files above the workspace under the test's directory (the
+    machine's own, above it, are none of the test's)."""
+    return [(path, digest) for path, digest in configs if Path(path).is_relative_to(root)]
+
+
+def test_cargo_configuration_above_the_workspace_is_accepted_under_the_same_rules(workspace):
     chosen = config(vendor="vendor")
-    write(workspace.parent, {".cargo/config.toml": "[net]\noffline = true\n"})
-    with pytest.raises(ValueError, match="no configuration or manifest above it") as caught:
-        rw.preflight(workspace, chosen, HOST)
-    assert str(workspace.parent / ".cargo/config.toml") in str(caught.value)
+    text = '[net]\noffline = true\n[build]\nrustflags = ["-C", "x"]\n'
+    write(workspace.parent, {".cargo/config.toml": text})
+    found = rw.read_workspace(
+        workspace, chosen, rw.preflight(workspace, chosen, HOST), metadata(workspace)
+    )
+    path = str(workspace.parent / ".cargo/config.toml")
+    assert ours(found.configs_above, workspace.parent) == [
+        (path, hashlib.sha256(text.encode()).hexdigest())
+    ]
+    # Not one of the inputs compared with a client's: it is outside the root.
+    assert path not in found.inputs
+    rw.check_configs_above(found.configs_above)
+    # A change since the build read it is refused by name.
+    write(workspace.parent, {".cargo/config.toml": text + "[term]\nverbose = true\n"})
+    with pytest.raises(ValueError) as caught:
+        rw.check_configs_above(found.configs_above)
+    assert str(caught.value).startswith(f"Provenance: Cargo's configuration {path} changed")
+    assert code(caught) == "PROVENANCE_CHANGED"
     (workspace.parent / ".cargo/config.toml").unlink()
-    # A `.cargo` directory without configuration (rustup's) is none.
-    rw.preflight(workspace, chosen, HOST)
-    write(workspace.parent, {"Cargo.toml": "[workspace]\n"})
-    with pytest.raises(ValueError, match="Cargo.toml is above"):
+    with pytest.raises(ValueError, match="changed since the build"):
+        rw.check_configs_above(found.configs_above)
+
+
+def test_cargo_configuration_above_the_workspace_off_the_rules_is_refused_by_file_and_key(
+    workspace,
+):
+    chosen = config(vendor="vendor")
+    write(workspace.parent, {".cargo/config": '[env]\nRUSTC_BOOTSTRAP = "1"\n'})
+    with pytest.raises(ValueError) as caught:
         rw.preflight(workspace, chosen, HOST)
+    path = workspace.parent / ".cargo/config"
+    assert f"Peeky doesn't build with `env` in {path}:" in str(caught.value)
+    assert code(caught) == "UNSUPPORTED"
+
+
+def test_a_linked_configuration_above_the_workspace_is_read_as_cargo_reads_it(tmp_path, workspace):
+    # As a dotfile manager links `~/.cargo/config.toml`.
+    text = "[net]\nretry = 3\n"
+    write(tmp_path, {"dotfiles/cargo.toml": text})
+    (workspace.parent / ".cargo").mkdir()
+    (workspace.parent / ".cargo/config.toml").symlink_to(tmp_path / "dotfiles/cargo.toml")
+    checked = rw.preflight(workspace, config(vendor="vendor"), HOST)
+    assert ours(checked.configs_above, workspace.parent) == [
+        (str(workspace.parent / ".cargo/config.toml"), hashlib.sha256(text.encode()).hexdigest())
+    ]
+
+
+def test_a_manifest_above_the_workspace_is_refused(workspace):
+    write(workspace.parent, {"Cargo.toml": "[workspace]\n"})
+    with pytest.raises(ValueError, match="no manifest above it, and .*Cargo.toml is above"):
+        rw.preflight(workspace, config(vendor="vendor"), HOST)
 
 
 def test_the_workspaces_own_cargo_configuration_is_an_input(workspace):
@@ -291,8 +338,11 @@ def test_a_git_dependency_is_refused_by_name(workspace):
     with pytest.raises(ValueError) as caught:
         shape(workspace)
     message = str(caught.value)
-    assert message.startswith("Peeky doesn't build git dependencies: Cargo.lock's `gitty 0.2.0`")
+    assert message.startswith(
+        "Peeky doesn't build git dependencies, vendored or not: Cargo.lock's `gitty 0.2.0`"
+    )
     assert "https://example.com/gitty?rev=abc," in message and "#0123" not in message
+    assert "Cargo.lock records no checksum for a git source" in message
     assert code(caught) == "UNSUPPORTED"
 
 

@@ -11,6 +11,7 @@ configuration; not a sandbox: Cargo runs the project's build scripts and procedu
 macros, as it runs the program.
 """
 
+import hashlib
 import json
 import re
 import shlex
@@ -209,11 +210,13 @@ _CONFIG_BUILD = frozenset({"jobs", "rustflags", "rustdocflags", "incremental", "
 _CONFIG_HOST_TARGET = frozenset({"rustflags", "rustdocflags", "runner"})
 
 
-def check_cargo_config(path, host):
-    """Refuse a workspace's `.cargo/config.toml` (or legacy `.cargo/config`) that sets
-    what Peeky doesn't account for (_CONFIG_ANY, _CONFIG_BUILD, _CONFIG_HOST_TARGET);
-    ``host``: this toolchain's host triple, whose target table applies."""
-    data = _read_toml(path, MAX_MANIFEST_BYTES)
+def check_cargo_config(path, host, *, follow=False):
+    """The SHA-256 of a `.cargo/config.toml` (or legacy `.cargo/config`) Cargo reads, the
+    workspace's own or one above it, refused where it sets what Peeky doesn't account for
+    (_CONFIG_ANY, _CONFIG_BUILD, _CONFIG_HOST_TARGET); ``host``: this toolchain's host
+    triple, whose target table applies. ``follow``: a link is read as Cargo reads it (a
+    file above the root, such as a dotfile manager's `~/.cargo/config.toml`)."""
+    data, digest = _read_toml(path, MAX_MANIFEST_BYTES, follow=follow, digest=True)
     refused = []
     for key, value in data.items():
         if key in _CONFIG_ANY:
@@ -238,16 +241,22 @@ def check_cargo_config(path, host):
             f"{path}: it changes how Cargo builds, and Peeky would not account for it. Take it "
             "out of the file, or build without it"
         )
+    return digest
 
 
-def _read_toml(path, limit):
+def _read_toml(path, limit, *, follow=False, digest=False):
+    """A TOML file's table (and the SHA-256 of the bytes parsed, with ``digest``)."""
     path = Path(path)
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+    if (path.is_symlink() and not follow) or not path.is_file() or path.stat().st_size > limit:
+        raise ValueError(f"{path} must be a regular file of at most {limit // 1024 // 1024} MiB")
+    data = path.read_bytes()
+    if len(data) > limit:
         raise ValueError(f"{path} must be a regular file of at most {limit // 1024 // 1024} MiB")
     try:
-        return tomllib.loads(path.read_text(encoding="utf-8"))
+        table = tomllib.loads(data.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"{path} is not valid TOML: {exc}") from None
+    return (table, hashlib.sha256(data).hexdigest()) if digest else table
 
 
 @dataclass(frozen=True)
@@ -292,10 +301,10 @@ def read_lock(path):
         what = f"`{name} {version}`"
         if isinstance(source, str) and source.startswith("git+"):
             raise ValueError(
-                f"Peeky doesn't build git dependencies: Cargo.lock's {what} comes from "
-                f"{source.split('#', 1)[0]}, and nothing ties a vendored copy of it to "
-                "Cargo.lock (it has no checksum). Depend on a crates.io release of it, or a copy "
-                "inside the workspace"
+                f"Peeky doesn't build git dependencies, vendored or not: Cargo.lock's {what} "
+                f"comes from {source.split('#', 1)[0]}, and Cargo.lock records no checksum for "
+                "a git source, so nothing ties a vendored copy to the commit it names. Depend "
+                "on a crates.io release of it, or a copy inside the workspace"
             )
         if source is not None and source != CRATES_IO:
             raise ValueError(
@@ -408,33 +417,56 @@ def vendor_arguments(workspace, vendor):
 @dataclass(frozen=True)
 class Preflight:
     """What `preflight` read: the workspace (resolved), Cargo.lock's packages, the vendored
-    copies' checksum files and the configuration files Cargo reads, relative to the root."""
+    copies' checksum files, the workspace's own configuration files (relative to the root),
+    and those above it: ((absolute path, SHA-256), ...)."""
 
     workspace: Path
     locked: tuple[Locked, ...]
     vendored: dict
     cargo_config: tuple[str, ...]
+    configs_above: tuple[tuple[str, str], ...] = ()
 
 
-def ancestry_clear(workspace):
-    """Refuse Cargo configuration or a manifest above the workspace: Cargo would read it
-    (a `.cargo` directory of its own without configuration, as rustup's, is no
-    configuration)."""
+def configs_above(workspace, host):
+    """((path, SHA-256), ...) of the Cargo configuration above the workspace, which Cargo
+    reads too (`~/.cargo/config.toml` above a workspace in the home directory), each
+    accepted under check_cargo_config's rules. A manifest above it is refused: Cargo could
+    take the workspace for a member of another. Peeky's own CARGO_HOME holds no
+    configuration (cargo_environment), so Cargo reads no other."""
+    found = []
     for parent in Path(workspace).parents:
-        cargo = parent / ".cargo"
-        for path in (cargo / "config", cargo / "config.toml", parent / "Cargo.toml"):
-            if path.exists() or path.is_symlink() or cargo.is_symlink():
-                raise ValueError(
-                    f"Peeky builds a Rust workspace only where Cargo reads no configuration or "
-                    f"manifest above it, and {cargo if cargo.is_symlink() else path} is above "
-                    f"{workspace}. Move it, or the workspace"
-                )
+        manifest = parent / "Cargo.toml"
+        if manifest.exists() or manifest.is_symlink():
+            raise ValueError(
+                f"Peeky builds a Rust workspace only where Cargo reads no manifest above it, and "
+                f"{manifest} is above {workspace}. Move it, or the workspace"
+            )
+        for name in ("config", "config.toml"):
+            path = parent / ".cargo" / name
+            if path.exists() or path.is_symlink():
+                found.append((str(path), check_cargo_config(path, host, follow=True)))
+    return tuple(found)
+
+
+def check_configs_above(configs):
+    """Refuse a build whose Cargo configuration above the workspace changed since it was
+    read (``configs``: configs_above's), by path."""
+    for path, digest in configs:
+        try:
+            now = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError:
+            now = None
+        if now != digest:
+            raise ValueError(
+                f"Provenance: Cargo's configuration {path} changed since the build read it. "
+                "Build again"
+            )
 
 
 def preflight(root, config, host):
-    """Check what Cargo will read before it runs (Preflight): no configuration above the
-    workspace, its own `.cargo/config.toml` (check_cargo_config), its manifest (no
-    `[patch]` or `[replace]`), its lockfile (read_lock) and the vendored copies (vendored)."""
+    """Check what Cargo will read before it runs (Preflight): the configuration above the
+    workspace (configs_above) and its own (check_cargo_config), its manifest (no `[patch]`
+    or `[replace]`), its lockfile (read_lock) and the vendored copies (vendored)."""
     root = Path(root).resolve(strict=True)
     try:
         workspace = _inside(root, config.workspace, directory=True)
@@ -445,7 +477,7 @@ def preflight(root, config, host):
     if not (workspace / "Cargo.toml").is_file():
         raise ValueError(f"{workspace} has no Cargo.toml: name the workspace's directory")
     workspace = workspace.resolve(strict=True)
-    ancestry_clear(workspace)
+    above = configs_above(workspace, host)
     relative = workspace.relative_to(root)
     cargo = workspace / ".cargo"
     if cargo.is_symlink():
@@ -471,7 +503,7 @@ def preflight(root, config, host):
         )
     locked = read_lock(lock)
     copies = vendored(workspace, config.vendor, locked)
-    return Preflight(workspace, locked, copies, tuple(files))
+    return Preflight(workspace, locked, copies, tuple(files), above)
 
 
 @dataclass(frozen=True)
@@ -504,8 +536,9 @@ class Package:
 class WorkspaceShape:
     """A workspace as Peeky builds it: its path packages (``local``), those it analyses,
     what runs (``run``: its package and target), the files Cargo reads that a build's
-    provenance covers (``inputs``, relative to the root), and the vendored copies'
-    checksum files ({(name, version): path relative to the root})."""
+    provenance covers (``inputs``, relative to the root), the vendored copies' checksum
+    files ({(name, version): path relative to the root}), and the Cargo configuration
+    above the workspace ((absolute path, SHA-256), ...: check_configs_above)."""
 
     root: Path
     workspace: Path
@@ -515,6 +548,7 @@ class WorkspaceShape:
     inputs: tuple[str, ...]
     vendored: dict
     features: tuple[str, ...] = ()
+    configs_above: tuple[tuple[str, str], ...] = ()
 
     def cargo_arguments(self):
         """Cargo's subcommand and target selection for this run (after `cargo`)."""
@@ -633,6 +667,7 @@ def read_workspace(root, config, preflight, metadata):
         tuple(inputs),
         copies,
         config.features,
+        preflight.configs_above,
     )
 
 

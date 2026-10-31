@@ -132,3 +132,16 @@ def test_rustc_expands_a_crate_for_its_name_alone_on_a_stable_toolchain(workspac
     env["RUSTC_BOOTSTRAP"] = "other"
     done = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
     assert done.returncode != 0 and "only accepted on the nightly compiler" in done.stderr
+
+
+def test_cargo_configuration_above_the_workspace_is_read_and_recorded(workspace):
+    root, home, cargo, rustc = workspace
+    # Peeky's environment overrides these flags; Cargo reads the file, and Peeky records it.
+    above = root.parent / ".cargo/config.toml"
+    above.parent.mkdir()
+    above.write_text('[build]\nrustflags = ["--cfg", "peeky_test"]\n[net]\nretry = 2\n')
+    shape = rw.read(root, config(), cargo, rustc, home)
+    assert (str(above), hashlib.sha256(above.read_bytes()).hexdigest()) in shape.configs_above
+    above.write_text("[target.'cfg(unix)']\nlinker = \"/bin/false\"\n")
+    with pytest.raises(ValueError, match=r"`target\.cfg\(unix\)\.linker` in .*config\.toml"):
+        rw.read(root, config(), cargo, rustc, home)

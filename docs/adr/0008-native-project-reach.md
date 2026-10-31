@@ -127,7 +127,7 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 - `analyse`: the packages Peeky builds with its MIR wrapper and proves values in. Breakpoints go only in their files.
 - `run`: `{"bin": "rg"}`, `{"package": "axum", "lib": true}` for unit tests, or a `test`. A test's filter follows `--`: `-- --exact <name> --test-threads=1`.
-- `vendor`: from `cargo vendor`, passed as `--config` source replacement. The workspace's `.cargo/config.toml` is a hashed input; any above it stays refused.
+- `vendor`: from `cargo vendor`, passed as `--config` source replacement. The workspace's `.cargo/config.toml` is a hashed input. Configuration above it, `~/.cargo/config.toml` included, is accepted under the same allowlist; each file's path and SHA-256 are recorded, so a change is `PROVENANCE_CHANGED`. A manifest above the workspace stays refused.
 
 **Build.** `peeky build . --config rust.json [--background]` runs `cargo build` or `cargo test --no-run`, `--offline --locked`, into a private target directory in Peeky's state directory.
 
@@ -144,7 +144,7 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 **Macros.** The source scans (`unsafe_source`, `without_numbered_structs`, `_crate_traits`, trusted names) read each analysed crate as rustc expands it (`-Zunpretty=expanded`). A glob `use` of a dependency makes bare standard names untrusted, as it shadows the prelude.
 
-**Errors.** `BUILD_FAILED` as today. A new `BUILD_REQUIRED`: no current build, naming `peeky build`. `PROVENANCE_CHANGED`: an analysed source changed since the build, or a vendored checksum differs from Cargo.lock. `UNSUPPORTED`: a git dependency without vendored source, `[patch]`, or an analysed package outside editions 2021 and 2024.
+**Errors.** `BUILD_FAILED` as today. A new `BUILD_REQUIRED`: no current build, naming `peeky build`. `PROVENANCE_CHANGED`: an analysed source changed since the build, or a vendored checksum differs from Cargo.lock. `UNSUPPORTED`: a git dependency, vendored or not (Cargo.lock records no checksum for a git source), `[patch]`, or an analysed package outside editions 2021 and 2024. Edition 2018 is refused until the last part of phase 2 qualifies it.
 
 **Trust and the worker.** Build scripts and procedural macros are the project's code, as the program is; `THREAT_MODEL.md` says so. A worker builds only from its `--rust-config`, as a job. It compares every `Cargo.toml`, `Cargo.lock` and the analysed sources with the client's.
 
@@ -152,10 +152,10 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 **Acceptance,** on the six images:
 
-- **tokio-4867, tokio-6752:** a library's integration tests. tokio has unsafe code, so memory reads stay withheld with today's note; scalars read.
+- **tokio-4867, tokio-6752:** a library's integration tests. tokio has unsafe code, so memory reads stay withheld with today's note; scalars read. tokio-4867's tokio is edition 2018: refused until 2018 is qualified.
 - **axum-1934:** unit tests of a crate that forbids unsafe code, so memory reads are exercised.
 - **bat-3108:** a binary with `build.rs`; clap's types stay raw.
-- **ripgrep-2209:** `rg -U --replace`, with the path dependency `grep-printer` analysed.
+- **ripgrep-2209:** `rg -U --replace`, with the path dependency `grep-printer` analysed. Both are edition 2018: refused until 2018 is qualified.
 - **coreutils-6690:** the multicall binary, with `uu_cp` analysed.
 
 Each also checks a change refused with a note naming a dependency call, and one allowed where only std is called. No value may contradict the program. Build times with a cold and a warm dependency cache, and analysed entries against `MAX_DIES`, are recorded.
@@ -236,10 +236,10 @@ Measured with Rust 1.96.0 on macOS and in the study's images (aarch64 Linux, 4 C
 | coreutils-6690 | uu_cp (bin `coreutils`) | 9.7 s | 1.8 s | 0.06 s | 286, 9 (3) |
 
 - **MIR size:** axum's `PreCodegen.after` bodies are 63 MB (2,123 bodies), just under `MAX_MIR_BYTES` (64 MiB). Peeky's reader parses them in 1.5 s. Larger crates will need the bound per crate, or bodies read as a stop needs them.
-- **Editions:** tokio at tokio-4867, and ripgrep and grep-printer at ripgrep-2209, are edition 2018. Phase 2 refuses to analyse them, as its errors say, so their acceptance checks that refusal until edition 2018 is qualified.
+- **Editions:** tokio at tokio-4867, and ripgrep and grep-printer at ripgrep-2209, are edition 2018. Phase 2 refuses to analyse edition 2018 until its last part qualifies it. That part checks which differences change Peeky's readings or proofs: disjoint closure captures, arrays' `IntoIterator`, `panic!`'s forms and the prelude. It tests them on tokio-4867 and ripgrep-2209. Until then, their acceptance checks the refusal.
 - **Cargo configuration:** ripgrep's and coreutils' `.cargo/config.toml` set only other targets' flags and linkers, and clippy's lints. tokio-4867's `.cargo/config` is all comments. Peeky accepts these, and refuses what would change its build (`rust_workspace.check_cargo_config`).
-- **Git dependencies:** Cargo.lock records no checksum for one, so nothing ties a vendored copy to the commit it names. Phase 2 refuses every git dependency, vendored or not.
-- **Configuration above the workspace** stays refused, as decided. So is a workspace under the home directory where `~/.cargo/config.toml` exists, as Cargo reads it there; the refusal names the file.
+- **Git dependencies:** Cargo.lock records no checksum for one, so nothing ties a vendored copy to the commit it names. Phase 2 refuses every git dependency, vendored or not, and says so (owner's decision).
+- **Configuration above the workspace** is accepted under the workspace's allowlist (owner's decision), as Cargo reads `~/.cargo/config.toml` above a workspace in the home directory. A key off the allowlist is refused, naming the file and the key. Each file's path and SHA-256 are recorded, so a change is `PROVENANCE_CHANGED`. Peeky's own CARGO_HOME holds no configuration, so Cargo reads no other.
 
 ## Consequences
 
