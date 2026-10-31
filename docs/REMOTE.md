@@ -225,9 +225,11 @@ set x: 5 -> 100
   ends, within the build's deadline of 900 s. A build that outlives the client goes on there:
   run the same command again to wait for it.
 - **The files compared** are the build's: every `Cargo.toml` of its packages, `Cargo.lock`, the
-  workspace's own Cargo configuration, and every file the analysed packages' compiles read
-  ([Source identity](#source-identity)). The binary's other members, and vendored copies, are
-  not compared: `Cargo.lock` ties each copy to its checksum. Before any build, only the
+  workspace's own Cargo configuration, and every file of the workspace it compiled, from rustc's
+  dependency files ([Source identity](#source-identity)). That includes the binary's own code,
+  which decides what reaches the analysed packages: `app/src/main.rs` that differs is refused.
+- **Of a vendored copy,** only its `.cargo-checksum.json` is compared. The build checked each of
+  its files against that list, and the list against `Cargo.lock`. Before any build, only the
   workspace's `Cargo.toml` and `Cargo.lock` are compared.
 - **More than 4096 such files** can't all be compared, and a remote run is refused. Analyse fewer
   packages, or run Peeky on the worker's host.
@@ -253,7 +255,7 @@ and sends the hashes with the request.
 | Java, launched or attached | the config's `sources` |
 | C and C++ | the config's `sources` and `headers` |
 | Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
-| A Rust workspace | the build's manifests, `Cargo.lock` and Cargo configuration, and the analysed compiles' files ([A Rust workspace](#a-rust-workspace)) |
+| A Rust workspace | the build's manifests, `Cargo.lock` and Cargo configuration, every workspace file it compiled, and each vendored copy's `.cargo-checksum.json` ([A Rust workspace](#a-rust-workspace)) |
 
 - **Python counts every `.py` file,** in hidden directories and `.git` too, because the program
   may import any of them. A stray file on one side is refused too:

@@ -163,8 +163,9 @@ macOS. Its paths are relative to `--root`.
   summary, its error, or `{"status": "building", "request": ID}`. Ask again with that `request`
   until it ends. One build runs at a time; a second request joins it.
 - `version` names the files to compare: the recorded build's manifests, lockfile and Cargo
-  configuration, and the analysed compiles' files. Before any build, the workspace's `Cargo.toml`
-  and `Cargo.lock`. After `launch`, the build's own record is compared again.
+  configuration, every workspace file it compiled (the binary's too), and each vendored copy's
+  `.cargo-checksum.json`. Before any build, the workspace's `Cargo.toml` and `Cargo.lock`. After
+  `launch`, the build's own record is compared again.
 - A launch on no current build is refused with `BUILD_REQUIRED`
   ([ERRORS](ERRORS.md#build_required)). The worker's message names the build command on its
   host. `peeky probe --worker` shows the client's own instead: `peeky build . --worker URL`.

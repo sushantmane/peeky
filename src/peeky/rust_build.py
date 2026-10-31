@@ -31,7 +31,7 @@ import stat
 import sys
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from peeky import rust_workspace
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
@@ -352,12 +352,16 @@ def recorded_names(target, root):
 def compared_sources(manifest):
     """{name under the root: SHA-256 the build recorded} of what a remote client's files are
     compared with: what Cargo read that identifies the build (every manifest, the lockfile,
-    the workspace's own Cargo configuration: ``inputs``), and each analysed compile's
-    sources. Vendored copies are tied to the lockfile, which is compared."""
-    found = dict(manifest["inputs"])
-    for unit in manifest["units"]:
-        for name in unit["sources"]:
-            found[name] = manifest["sources"][name]
+    the workspace's own Cargo configuration: ``inputs``), every file of the workspace the
+    build compiled (each local package's compiles, the program's own included, from rustc's
+    dependency files: ``sources``), and each vendored copy's `.cargo-checksum.json`, which
+    lists its files' hashes (not every vendored file)."""
+    found = {**manifest["inputs"], **manifest["sources"]}
+    state = manifest["watch"]
+    prefix = Path(state["workspace"]).resolve().relative_to(Path(manifest["root"]).resolve())
+    for name, digest in state["vendored"].items():
+        if PurePosixPath(name).name == ".cargo-checksum.json":
+            found[(prefix / name).as_posix()] = digest
     return dict(sorted(found.items()))
 
 

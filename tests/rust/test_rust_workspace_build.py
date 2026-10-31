@@ -389,7 +389,8 @@ def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, caps
     assert code == 0, summary
     assert summary["workspace"] == f"worker:{host}" and summary["analysed"] == ["util"]
     assert summary["executable"].startswith("worker:")
-    # The worker compares the build's manifests, lockfile and analysed sources with ours.
+    # The worker compares the build's manifests, lockfile, every file of the workspace it
+    # compiled (the binary's too) and the vendored copy's checksum file with ours.
     version = Client(url, TOKEN).call("version")
     assert version["sources"] == {
         "kind": "declared",
@@ -397,8 +398,10 @@ def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, caps
             "Cargo.lock",
             "Cargo.toml",
             "app/Cargo.toml",
+            "app/src/main.rs",
             "util/Cargo.toml",
             "util/src/lib.rs",
+            "vendor/smallnum/.cargo-checksum.json",
         ],
     }
     assert "build" in version["operations"]
@@ -416,6 +419,17 @@ def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, caps
     )
     assert result["refused_before_launch"] is True
     manifest.write_text((host / "util/Cargo.toml").read_text())
+    # The binary decides what reaches `util`: a run of the worker's isn't of the client's code.
+    main_rs = local / "app/src/main.rs"
+    main_rs.write_text(main_rs.read_text().replace("util::double(", "util::double(1 + "))
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "app/src/main.rs (the copy on the worker host differs from your checkout)"
+        in (result["error"]["message"])
+    )
+    assert result["refused_before_launch"] is True
+    main_rs.write_text((host / "app/src/main.rs").read_text())
     (local / "util/src/lib.rs").write_text(UTIL.replace("x * 2", "x * 3"))
     code, result = remote_probe(capsys, local, url)
     assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result

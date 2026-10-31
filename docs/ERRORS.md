@@ -660,8 +660,8 @@ request a client sends.
   protocol 13 client would take the code for another failure ([details](#build_required)).
 - **Protocol 15** probes a Rust workspace from another host. A worker started with a workspace's
   `--rust-config` builds it on request (`build`: `peeky build --worker`, or `--build`). It
-  compares the build's manifests, lockfile and analysed sources with the client's. A protocol 14
-  worker refuses such a probe ([REMOTE.md](REMOTE.md#a-rust-workspace)).
+  compares every workspace file the build compiled, and its manifests, with the client's. A
+  protocol 14 worker refuses such a probe ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

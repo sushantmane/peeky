@@ -147,23 +147,44 @@ def test_a_workers_build_required_names_the_clients_own_command():
     assert _remote_build_required(other, args) is other
 
 
-def manifest(**more):
+def manifest(root="/srv/ws", workspace="/srv/ws/rust", **more):
     return {
-        "inputs": {"Cargo.toml": "a" * 64, "Cargo.lock": "b" * 64, "util/Cargo.toml": "c" * 64},
-        "units": [{"sources": ["util/src/lib.rs", "util/src/m.rs"]}],
-        "sources": {"util/src/lib.rs": "d" * 64, "util/src/m.rs": "e" * 64, "app/src/main.rs": "f"},
+        "root": root,
+        "inputs": {"rust/Cargo.toml": "a", "rust/Cargo.lock": "b", "rust/util/Cargo.toml": "c"},
+        "units": [{"sources": ["rust/util/src/lib.rs"]}],
+        "sources": {
+            "rust/util/src/lib.rs": "d",
+            "rust/util/src/m.rs": "e",
+            "rust/app/src/main.rs": "f",
+            "rust/util/build.rs": "g",
+        },
+        "generated": {"debug/build/util-1/out/gen.rs": "h"},
+        "watch": {
+            "workspace": workspace,
+            "vendored": {
+                "vendor/smallnum/.cargo-checksum.json": "i",
+                "vendor/smallnum/src/lib.rs": "j",
+                "vendor/smallnum/Cargo.toml": "k",
+            },
+        },
         **more,
     }
 
 
-def test_a_client_compares_the_builds_manifests_lockfile_and_analysed_sources():
-    # Not the binary's own sources (`app`, not analysed): Peeky reads no value there.
+def test_a_client_compares_every_file_of_the_workspace_the_build_compiled():
+    # The program run is the build's, which the binary's own code decides too (`app`, not
+    # analysed): every local compile's files, its build script's too, are compared. Of a
+    # vendored copy, its checksum file only, which lists its files' hashes. Not what the
+    # build generated, which no client has.
     assert compared_sources(manifest()) == {
-        "Cargo.lock": "b" * 64,
-        "Cargo.toml": "a" * 64,
-        "util/Cargo.toml": "c" * 64,
-        "util/src/lib.rs": "d" * 64,
-        "util/src/m.rs": "e" * 64,
+        "rust/Cargo.lock": "b",
+        "rust/Cargo.toml": "a",
+        "rust/app/src/main.rs": "f",
+        "rust/util/Cargo.toml": "c",
+        "rust/util/build.rs": "g",
+        "rust/util/src/lib.rs": "d",
+        "rust/util/src/m.rs": "e",
+        "rust/vendor/smallnum/.cargo-checksum.json": "i",
     }
 
 
@@ -182,7 +203,9 @@ def test_the_recorded_builds_names_are_read_again_only_once_its_record_changed(
     assert recorded_names(target, root) is None
     assert target.compared_names(root) == ("Cargo.toml", "Cargo.lock")
     directory = rust_build.build_directory(target, root)
-    record = manifest(schema=rust_build.SCHEMA, identity=target.identity(root))
+    record = manifest(
+        str(root), str(root / "rust"), schema=rust_build.SCHEMA, identity=target.identity(root)
+    )
     (directory / "manifest.json").write_text(json.dumps(record))
     names = target.compared_names(root)
     assert names == tuple(sorted(compared_sources(record)))

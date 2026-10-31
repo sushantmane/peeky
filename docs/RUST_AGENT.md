@@ -103,8 +103,8 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   private target directory in the state directory. Peeky's rustc wrapper compiles the analysed
   crates with `RUSTC_BOOTSTRAP=<crate>`, `-Zmir-opt-level=0`, legacy mangling and
   `-Ztrim-diagnostic-paths=false`. It dumps their MIR, LLVM IR and expansion.
-- The build's manifest records what it read and made, hashed: the inputs, the analysed sources,
-  each build script's inputs and variables, the artifacts. `current_build` checks it again
+- The build's manifest records what it read and made, hashed: the inputs, every local
+  package's compiled files, each build script's inputs and variables, the artifacts. `current_build` checks it again
   before every probe: a source changed is `BUILD_REQUIRED`, and what identifies the build
   changed is `PROVENANCE_CHANGED`. A probe holds a lease on its build while it runs.
 - `rust_workspace_session.prepare_session` makes a `RustSession` of one analysed crate's
@@ -120,8 +120,11 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
 **On a worker.** The worker's target is the workspace's `--rust-config`.
 
 - `compared_names` gives the files a client's are compared with: `compared_sources` of the
-  recorded build, every manifest, the lockfile, the workspace's Cargo configuration, and each
-  analysed compile's sources. Before any build, the workspace's `Cargo.toml` and `Cargo.lock`.
+  recorded build. That is every manifest, the lockfile and the workspace's Cargo configuration;
+  every workspace file the build compiled, from each local package's dependency files, the
+  binary's too; and each vendored copy's `.cargo-checksum.json`. The binary decides what reaches
+  the analysed code, so a run on other code isn't the client's. Before any build, the
+  workspace's `Cargo.toml` and `Cargo.lock`.
   The names are read again only once the record changes (`recorded_names`).
 - After the launch's `assert_current`, the session's `source_manifest` (the build's own record
   of those files) is compared with the client's again.
