@@ -35,9 +35,11 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from peeky import native_startup
 from peeky.adapters import PythonAdapter
@@ -80,6 +82,7 @@ from peeky.native import (
     _remaining,
     _symbol_text,
     _tool,
+    elf_executable_ranges,
     has_nonlocal_jumps,
     mentions_nonlocal_jumps,
     module_identity,
@@ -183,6 +186,10 @@ REPLAY_MARGIN = 2.0
 MAX_REPLAY_ERRORS = 16000
 # How many names a config's `returns_twice` may give.
 MAX_RETURNS_TWICE = 100
+# How long a worker takes, at most, to list a binary's inputs for a remote client.
+REMOTE_INPUTS_SECONDS = 40
+# The last binary listed so: {(binary, root, size, time, inode, target): its inputs}.
+_REMOTE_INPUTS = {}
 
 
 class BinaryChanged(RuntimeError):
@@ -205,6 +212,38 @@ def _refused(code, message):
     refused = Refused(code, message)
     refused.before_launch = True
     return refused
+
+
+# The keys a binary target's config may hold (BinaryTarget's fields).
+BINARY_KEYS = frozenset(
+    {
+        "binary",
+        "language",
+        "compiler",
+        "adapter",
+        "dwarfdump",
+        "dsymutil",
+        "arguments",
+        "optimized",
+        "returns_twice",
+    }
+)
+
+
+def binary_name(root, binary):
+    """``binary``, a config's or `--binary`'s, by its name relative to ``root``, as it is
+    written: no link is followed, and the file needn't exist on this host (a remote
+    client's). INVALID_REQUEST where the name is outside ``root``."""
+    root = Path(root).resolve(strict=True)
+    given = Path(binary)
+    path = Path(os.path.normpath(given if given.is_absolute() else root / given))
+    if not path.is_relative_to(root) or path == root:
+        raise _refused(
+            "INVALID_REQUEST",
+            f"The binary {binary} is outside the target directory, {root}: give the "
+            "directory its sources are under as the target",
+        )
+    return path.relative_to(root).as_posix()
 
 
 @dataclass(frozen=True)
@@ -1568,66 +1607,10 @@ class BinaryTarget:
             raise _refused("INVALID_REQUEST", f"No binary {self.binary} in {root}")
         return path
 
-    def prepare(self, program, root, *, edit=None, deadline=None):
-        if edit is not None:
-            raise _refused(
-                "UNSUPPORTED",
-                "A binary target can't take a candidate edit: the binary is the project's own "
-                "build. Edit the source, rebuild it, then probe",
-            )
-        root = Path(root).resolve(strict=True)
-        binary = self.located(root)
-        shown = binary.relative_to(root).as_posix()
-        wanted = Path(program).resolve() if program is not None else binary
-        if not wanted.is_relative_to(root):
-            raise _refused("INVALID_REQUEST", f"{program} is outside the target directory")
-        wanted = None if wanted == binary else wanted.relative_to(root).as_posix()
-        _executable(binary, shown)
-        compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
-        tools = [compiler, adapter, dwarfdump]
-        if sys.platform == "darwin":
-            dsymutil = _tool(self.dsymutil or "dsymutil")
-            tools.append(dsymutil)
-        elif sys.platform != "linux":
-            raise ValueError("Native targets support Linux and macOS hosts only")
-        env = without_credentials(
-            {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
-        )
-        scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
-        try:
-            return self._prepare(
-                root,
-                binary,
-                shown,
-                wanted,
-                compiler,
-                adapter,
-                dwarfdump,
-                tools,
-                env,
-                scratch,
-                deadline,
-            )
-        except BaseException:
-            shutil.rmtree(scratch, ignore_errors=True)
-            raise
-
-    def _prepare(
-        self,
-        root,
-        binary,
-        shown,
-        wanted,
-        compiler,
-        adapter,
-        dwarfdump,
-        tools,
-        env,
-        scratch,
-        deadline,
-    ):
-        identity_before = sha256_file(binary)
-        tool_ids = tuple(ToolIdentity(tool, sha256_file(tool)) for tool in sorted(set(tools)))
+    def _judge(self, root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline):
+        """The binary's units, each judged, and the files those Peeky reads name, each
+        checked against its MD5 ({absolute path: SHA-256}); on macOS, through the dSYM
+        Peeky makes in ``scratch``."""
         version = _version_line(compiler)
         symbols, dsym = binary, ()
         if sys.platform == "darwin":
@@ -1716,6 +1699,133 @@ class BinaryTarget:
                 + '): set "language": "cpp"',
             )
         files = check_files(read, root)
+        return SimpleNamespace(
+            version=version,
+            symbols=symbols,
+            dsym=dsym,
+            units=units,
+            judged=judged,
+            read=read,
+            language=language,
+            files=files,
+        )
+
+    def remote_inputs(self, root):
+        """The files under ``root`` a remote client's copies are compared with: those the
+        units Peeky reads name, by their relative names, as the binary is now (cached by
+        its size, time and inode). Past Python's bounds (sources.MAX_PYTHON_INPUTS files,
+        MAX_PYTHON_BYTES in all): UNSUPPORTED, as is a binary Peeky doesn't read."""
+        from peeky.sources import MAX_PYTHON_BYTES, MAX_PYTHON_INPUTS
+
+        root = Path(root).resolve(strict=True)
+        binary = self.located(root)
+        shown = binary.relative_to(root).as_posix()
+        _executable(binary, shown)
+        info = binary.stat()
+        key = (str(binary), str(root), info.st_size, info.st_mtime_ns, info.st_ino, self)
+        if key not in _REMOTE_INPUTS:
+            compiler, dwarfdump = _tool(self.compiler), _tool(self.dwarfdump)
+            tools = [compiler, dwarfdump]
+            if sys.platform == "darwin":
+                tools.append(_tool(self.dsymutil or "dsymutil"))
+            elif sys.platform != "linux":
+                raise ValueError("Native targets support Linux and macOS hosts only")
+            env = without_credentials(
+                {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+            )
+            scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
+            try:
+                deadline = time.monotonic() + REMOTE_INPUTS_SECONDS
+                found = self._judge(
+                    root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline
+                )
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
+            names = sorted(
+                Path(path).relative_to(root).as_posix()
+                for path in found.files
+                if Path(path).is_relative_to(root)
+            )
+            size = sum((root / name).stat().st_size for name in names)
+            if len(names) > MAX_PYTHON_INPUTS or size > MAX_PYTHON_BYTES:
+                refused = Refused(
+                    "UNSUPPORTED",
+                    f"{shown}'s units name {len(names):,} files under the target directory "
+                    f"({size / (1 << 20):.1f} MiB). A worker compares at most "
+                    f"{MAX_PYTHON_INPUTS:,} files, {MAX_PYTHON_BYTES >> 20} MiB in all, with "
+                    "a remote client's copies: run Peeky on the binary's own host",
+                    "Nothing ran. Run Peeky on the binary's own host, where no file is "
+                    "compared with a client's.",
+                )
+                refused.before_launch = True
+                raise refused
+            _REMOTE_INPUTS.clear()
+            _REMOTE_INPUTS[key] = tuple(names)
+        return _REMOTE_INPUTS[key]
+
+    def prepare(self, program, root, *, edit=None, deadline=None):
+        if edit is not None:
+            raise _refused(
+                "UNSUPPORTED",
+                "A binary target can't take a candidate edit: the binary is the project's own "
+                "build. Edit the source, rebuild it, then probe",
+            )
+        root = Path(root).resolve(strict=True)
+        binary = self.located(root)
+        shown = binary.relative_to(root).as_posix()
+        wanted = Path(program).resolve() if program is not None else binary
+        if not wanted.is_relative_to(root):
+            raise _refused("INVALID_REQUEST", f"{program} is outside the target directory")
+        wanted = None if wanted == binary else wanted.relative_to(root).as_posix()
+        _executable(binary, shown)
+        compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
+        tools = [compiler, adapter, dwarfdump]
+        if sys.platform == "darwin":
+            dsymutil = _tool(self.dsymutil or "dsymutil")
+            tools.append(dsymutil)
+        elif sys.platform != "linux":
+            raise ValueError("Native targets support Linux and macOS hosts only")
+        env = without_credentials(
+            {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+        )
+        scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
+        try:
+            return self._prepare(
+                root,
+                binary,
+                shown,
+                wanted,
+                compiler,
+                adapter,
+                dwarfdump,
+                tools,
+                env,
+                scratch,
+                deadline,
+            )
+        except BaseException:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise
+
+    def _prepare(
+        self,
+        root,
+        binary,
+        shown,
+        wanted,
+        compiler,
+        adapter,
+        dwarfdump,
+        tools,
+        env,
+        scratch,
+        deadline,
+    ):
+        identity_before = sha256_file(binary)
+        tool_ids = tuple(ToolIdentity(tool, sha256_file(tool)) for tool in sorted(set(tools)))
+        found = self._judge(root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline)
+        symbols, dsym, units = found.symbols, found.dsym, found.units
+        judged, read, language, files = found.judged, found.read, found.language, found.files
         declared = tuple(
             sorted(
                 {
@@ -1852,6 +1962,31 @@ class BinaryTarget:
         )
         session.assert_current()
         return session
+
+
+# How many of the debugger's modules a frame's library is looked for among.
+MAX_MODULES = 1024
+
+
+def _segments_hold(module, address):
+    """Whether the debugger's ``module``, an ELF file loaded where its `addressRange`
+    says (its header's address: decimal from LLVM 18's lldb-dap, hex from later ones),
+    holds ``address`` in an executable segment of its file as it is now."""
+    path, loaded = module.get("path"), module.get("addressRange")
+    if not isinstance(path, str) or not isinstance(loaded, str):
+        return False
+    if re.fullmatch(r"0x[0-9a-fA-F]{1,16}", loaded):
+        base = int(loaded, 16)
+    elif re.fullmatch(r"[0-9]{1,20}", loaded):
+        base = int(loaded)
+    else:
+        return False
+    try:
+        header, ranges = elf_executable_ranges(path)
+    except (OSError, ValueError, struct.error):
+        return False
+    bias = base - header
+    return bias >= 0 and any(start + bias <= address < end + bias for start, end in ranges)
 
 
 def _run(argv, cwd, env, timeout, what):
@@ -2101,6 +2236,49 @@ class BinarySession(NativeSession):
             "family": list(RETURNS_TWICE_NAMES),
             "named": sorted(getattr(self, "returns_twice", None) or ()),
         }
+
+    def library_frame(self, dap, frame):
+        """Why nothing of ``frame`` is read where the debugger's modules prove it runs a
+        shared library, never the binary: `this frame runs <library>; Peeky reads only
+        <binary>'s own units`, the library by its path (relative to the root, where it is
+        under it). Its module is the frame's moduleId where the debugger gives one (macOS);
+        else, on Linux (LLVM 18's lldb-dap gives none), the one module whose loaded
+        executable segments hold the frame's address. None where the frame runs the
+        binary's code, or which module it runs can't be told."""
+        try:
+            listed = dap.request("modules", {"startModule": 0, "moduleCount": MAX_MODULES})
+        except (RuntimeError, TimeoutError, ValueError, OSError):
+            return None
+        modules = [each for each in (listed or {}).get("modules") or () if isinstance(each, dict)]
+        if "moduleId" in frame:
+            found = [each for each in modules if each.get("id") == frame["moduleId"]]
+        elif sys.platform == "linux":
+            address = (frame or {}).get("instructionPointerReference")
+            if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", address):
+                return None
+            found = [each for each in modules if _segments_hold(each, int(address, 16))]
+        else:
+            return None
+        if len(found) != 1 or self._own_module(found[0]):
+            return None
+        path = found[0].get("path")
+        if not isinstance(path, str) or not path or "\n" in path:
+            return None
+        root = self.prepared.source_root
+        shown = Path(path).relative_to(root).as_posix() if Path(path).is_relative_to(root) else path
+        binary = self.prepared.manifest.binary.path
+        return f"this frame runs {shown[:500]}; Peeky reads only {binary}'s own units"
+
+    def _own_module(self, module):
+        """Whether the debugger's ``module`` is the binary: by its build ID or UUID, or by
+        its path."""
+        identity = module.get("id")
+        if isinstance(identity, str) and identity.replace("-", "").upper() == self.module_identity:
+            return True
+        try:
+            return Path(module["path"]).resolve(strict=True) == self.binary
+        except (OSError, KeyError, TypeError, ValueError, RuntimeError):
+            return False
 
     def _holding(self, address):
         return [

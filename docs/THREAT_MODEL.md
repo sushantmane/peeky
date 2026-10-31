@@ -114,6 +114,25 @@ directory such as `/tmp`. Peeky defends against them:
 
 A process running as the same user, or as root, isn't covered.
 
+**A binary your project built** ([ADR 0008](adr/0008-native-project-reach.md#phase-1-a-binary-the-project-built-c-and-c))
+
+- It is the project's own code, as its sources are, and runs as the program does. So do the shared
+  libraries it loads. Peeky reads no frame of theirs, even one built from sources under the root.
+- A worker takes it only from its own `--native-config`. A request names no binary, tool, path or
+  flag. Anyone holding the worker's token can run that binary, with the arguments a request gives,
+  as for any target.
+- The worker runs only the config's tools. The compiler runs only for its `--version` and the
+  replay of a unit's preprocessing, with allowlisted flags. The worker builds nothing.
+- Each file a judged unit names is checked against its recorded MD5 before launch, and its SHA-256
+  before every operation, with the binary's. These catch accidental change, not a collision made on
+  purpose by someone who can write the project's files.
+- A remote client's copies are compared with the files under the root, at most 4096 files and
+  16 MiB in all. Headers outside the root aren't compared with a client's: the worker checks them
+  against their MD5s.
+- To list those files for `version`, the worker reads the binary's debug information: dsymutil on
+  macOS, and llvm-dwarfdump, within 40 s. Any client holding the token can make it do so. The list
+  is kept until the binary's size, time or inode changes.
+
 **Target memory and source**
 
 - They can contain secrets.

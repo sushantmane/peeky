@@ -69,7 +69,9 @@ print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
 A native worker runs a fixed C or C++ target through lldb-dap:
 
 - It builds the declared sources in a fresh workspace, with debug information
-  ([what it checks](lang/c-cpp-cookbook.md#what-peeky-checks-about-a-build)).
+  ([what it checks](lang/c-cpp-cookbook.md#what-peeky-checks-about-a-build)). Or, where its
+  config names `binary`, it runs a binary the project built, where it is, and builds nothing
+  ([below](#start-a-worker-on-a-binary-your-project-built)).
 - It checks the source's, the binary's and the symbols' identity, and verifies the loaded
   executable and each stopped location.
 - It changes integers and texts, within Peeky's rules
@@ -89,9 +91,13 @@ A client on another host must show that its sources are the worker's.
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
      directory holding `pyvenv.cfg`);
-   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
+   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root. A binary
+     target's adds `"binary"`, its name under the root: the files are those its judged units name;
+   - `{"kind": "refused", "binary": ..., "error": {...}}`: the worker refuses its binary, and
+     compares nothing. The error says why, with its code.
 
-   Its `root` is the worker's `--root`.
+   Its `root` is the worker's `--root`. A `version` request of `{"sources": false}` lists none:
+   a binary target's list takes reading its debug information.
 2. With `launch` or `probe`, send `protocol`, the protocol your client speaks. It must be the
    worker's, which `version` gives. Send `expect_sha256` (`program`, and `entry` for a `--run`
    script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
@@ -99,6 +105,7 @@ A client on another host must show that its sources are the worker's.
    side only:
    - before launching;
    - for a compiled target, again after the build, before the debugger starts;
+   - for a binary target, once its units are judged, before the debugger starts;
    - for Python, before and after each later operation that resumes the program or returns a
      stop or values, `wait` included;
    - for Python, at a stack frame whose code names a file under the root that isn't a compared
@@ -126,8 +133,8 @@ A client on another host must show that its sources are the worker's.
 
 `peeky probe --worker` and `peeky session start --worker` do all of this. On every later
 `session` command, they also check the worker's protocol again. They hash your sources before
-each request except `close`, and again after each one that succeeds
-([REMOTE.md](REMOTE.md#source-identity)).
+each request except `close`, and again after each one that succeeds: the files the worker named
+at the session's start ([REMOTE.md](REMOTE.md#source-identity)).
 
 ## Start a C or C++ worker
 
@@ -148,7 +155,38 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD/examples/c" \
   configuration of its own.
 - `--java-config`, `--java-attach-config`, `--native-config`, `--rust-config` and `--python` are
   mutually exclusive: a worker serves one target. Without a config, it serves Python.
-- A config field that Peeky doesn't know is refused, and `sources` is required.
+- A config field that Peeky doesn't know is refused, and `sources` is required, unless the
+  config names a `binary` ([below](#start-a-worker-on-a-binary-your-project-built)).
+
+## Start a worker on a binary your project built
+
+A config naming `binary` instead of `sources` debugs a binary built on the worker's host, with
+clang `-O0 -g -gdwarf-5 -grecord-command-line` ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
+It takes the CLI's binary config: `binary`, relative to `--root`, and the tools.
+
+```json
+{
+  "binary": "prog",
+  "compiler": "/usr/bin/clang-18",
+  "adapter": "/usr/bin/lldb-dap-18",
+  "dwarfdump": "/usr/bin/llvm-dwarfdump-18",
+  "arguments": [],
+  "optimized": false
+}
+```
+
+```sh
+DEBUG_TOKEN="$token" peeky-worker --root "$PWD" --native-config "$PWD/work/binary.json"
+```
+
+- The worker builds nothing. It runs the binary where it is, and writes nothing beside it.
+- `compiler` runs only for its `--version` and the replay of each unit's preprocessing, as the
+  CLI's does. A request names no tool, path or flag: the binary and the tools are the config's.
+- A client names the same binary with `--binary` ([REMOTE.md](REMOTE.md#a-binary-your-project-built)).
+  The files compared with its copies are those under the root that the judged units name: at
+  most 4096 files and 16 MiB in all.
+- A frame in a shared library is never read, even one built from sources under the root. An
+  `inspect` of it is refused with `UNSUPPORTED`, naming the library, and the session is kept.
 
 ## Inspect and change a C value
 

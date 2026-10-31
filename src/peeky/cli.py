@@ -374,47 +374,32 @@ def _stored_name(root, program):
     return Path(*parts).as_posix()
 
 
-# The keys a binary target's config may hold (native_binary.BinaryTarget).
-_BINARY_KEYS = frozenset(
-    {
-        "binary",
-        "language",
-        "compiler",
-        "adapter",
-        "dwarfdump",
-        "dsymutil",
-        "arguments",
-        "optimized",
-        "returns_twice",
-    }
-)
 _CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx")
 
 
 def _binary_target(path, binary, config, program, tools):
     """(root, language, data) of `--binary`: the binary, relative to the target directory
-    and inside it, with this host's tools. Its units say whether it is C or C++ (``language`` None in the
-    data); the language returned is the `--at` file's, for what the command prints."""
+    and inside it, with this host's tools (none for a run on a worker). Its units say
+    whether it is C or C++ (``language`` None in the data); the language returned is the
+    `--at` file's, for what the command prints."""
     from peeky.errors import Refused
 
     if config is not None:
         raise Refused("INVALID_REQUEST", "Pass --binary or a config naming its binary, not both")
-    if not tools:
-        raise Refused(
-            "INVALID_REQUEST",
-            "A worker takes a binary only from its own configuration, which this version of "
-            "Peeky doesn't read yet: probe the binary on its own host",
-        )
     if not path.is_dir():
         raise Refused(
             "INVALID_REQUEST",
             "With --binary, the target is the directory the binary's sources are under",
         )
-    from peeky.native_binary import BinaryTarget
+    from peeky.native_binary import BinaryTarget, binary_name
 
+    language = "cpp" if str(program or "").endswith(_CPP_SUFFIXES) else "c"
+    if not tools:
+        # A worker's own configuration names its binary, built on its host: this host
+        # needn't have it. The name is checked against the worker's (_worker_binary).
+        return path, language, {"binary": binary_name(path, binary), "language": None}
     # Relative to the target directory, as a config's is, wherever the command runs.
     found = BinaryTarget(binary=binary).located(path)
-    language = "cpp" if str(program or "").endswith(_CPP_SUFFIXES) else "c"
     found_tools = {key: value for key, value in native_tools(language).items() if key != "sysroot"}
     data = {"binary": found.relative_to(path).as_posix(), "language": None, **found_tools}
     return path, language, data
@@ -427,12 +412,13 @@ def _resolve(path, program, line, config, tools=True):
             raise ValueError("Target configuration must be a JSON object")
         if "binary" in data:
             from peeky.errors import Refused
+            from peeky.native_binary import BINARY_KEYS
 
-            if unknown := sorted(set(data) - _BINARY_KEYS):
+            if unknown := sorted(set(data) - BINARY_KEYS):
                 raise Refused(
                     "INVALID_REQUEST",
                     "A binary target's config takes "
-                    + ", ".join(sorted(_BINARY_KEYS))
+                    + ", ".join(sorted(BINARY_KEYS))
                     + f"; not {', '.join(unknown)}"
                     + (
                         ": its sources are the files its debug information names"
@@ -856,11 +842,12 @@ def describe(args):
         "evidence about one run, never a verified fix",
     }
     if "binary" in (data or {}):
-        # The project's own build: probed in any file of a unit Peeky judges; no edit or
-        # session (they need a build Peeky runs, or its worker).
+        # The project's own build: probed, or a session started, in any file of a unit
+        # Peeky judges; no edit (it needs a build Peeky runs).
         commands = manifest["commands"]
-        commands["probe"] = commands["probe"].replace(f"--at {program}:", "--at <file>:")
-        for name in ("session", "verify", "candidate"):
+        for name in ("probe", "session"):
+            commands[name] = commands[name].replace(f"--at {program}:", "--at <file>:")
+        for name in ("verify", "candidate"):
             commands.pop(name, None)
         commands["background"] = "add --background to probe, then `peeky job wait <id>`"
     if language == "python":
@@ -1330,9 +1317,9 @@ def probe(args):
     from peeky.errors import PeekyError, Refused, classify
 
     try:
-        root, request, edit, original, language, adapter = _probe_request(args)
+        root, request, edit, original, language, adapter, binary = _probe_request(args)
         if args.worker is not None:
-            client, request, expected = _remote_probe(args, root, request)
+            client, request, expected = _remote_probe(args, root, request, binary)
     except Exception as exc:
         # Refused before the probe request was sent (here, or in the worker's version
         # handshake): the debugger's launch or attach request was not sent.
@@ -1372,8 +1359,8 @@ def probe(args):
 
 
 def _probe_request(args):
-    """(root, the Probe, edit, original text, language, the local adapter or None) for
-    `peeky probe`'s arguments."""
+    """(root, the Probe, edit, original text, language, the local adapter or None, the
+    binary a worker must debug or None) for `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
     root, program, line, language, data = resolve(
@@ -1412,7 +1399,8 @@ def _probe_request(args):
             else adapter_for(language, data, build=_build_command(args))
         )
     _build_first(args, root, adapter)
-    return root, request, edit, original, language, adapter
+    binary = _binary_of(root, data) if args.worker is not None else None
+    return root, request, edit, original, language, adapter, binary
 
 
 def _build_command(args):
@@ -1977,14 +1965,16 @@ def _remote_session(name, record):
             f"client {PROTOCOL_VERSION}: start the session again. {forget}"
         )
     client = _RemoteSession(record)
-    version = Client.call(client, "version")
+    # The sources are those the worker named at the session's start, as compared then: a
+    # binary's are what its units named, whatever the worker's binary is now.
+    version = Client.call(client, "version", sources=False)
     protocol = version.get("protocol") if isinstance(version, dict) else None
     if protocol != PROTOCOL_VERSION:
         raise ValueError(
             f"Worker speaks protocol {protocol}, this session {PROTOCOL_VERSION}: start the "
             "session again on a worker of the same Peeky version"
         )
-    client.sources = version.get("sources")
+    client.sources = record.get("sources")
     client.worker_root = version.get("root") if isinstance(version.get("root"), str) else None
     return client
 
@@ -3189,13 +3179,52 @@ def _expected(root, program, entry):
     return expected
 
 
-def _remote_probe(args, root, request):
+def _binary_of(root, data):
+    """The binary a target's config or `--binary` names, relative to ``root``; or None."""
+    if not isinstance((data or {}).get("binary"), str):
+        return None
+    from peeky.native_binary import binary_name
+
+    return binary_name(root, data["binary"])
+
+
+def _worker_binary(client, binary):
+    """Refuse a run on a worker whose configuration names another binary than this
+    command's (``binary``: its `--binary` or config's, or None): the worker debugs only
+    its own."""
+    from peeky.errors import Refused
+
+    sources = client.sources if isinstance(client.sources, dict) else {}
+    theirs = sources.get("binary") if isinstance(sources.get("binary"), str) else None
+    if theirs == binary:
+        return
+    if theirs is None:
+        message = (
+            f"The worker debugs no binary target, so not {binary}: its configuration names its "
+            "sources. Drop --binary, or start a worker with a configuration naming the binary"
+        )
+    elif binary is None:
+        message = (
+            f"The worker debugs the binary {theirs[:500]}, which its configuration names: "
+            f"add --binary {theirs[:500]}"
+        )
+    else:
+        message = (
+            f"The worker debugs the binary {theirs[:500]}, which its configuration names, not "
+            f"{binary}: pass --binary {theirs[:500]}"
+        )
+    raise Refused("INVALID_REQUEST", message)
+
+
+def _remote_probe(args, root, request, binary=None):
     """(client, the request with every source's expected hash, the program's and entry
-    script's expected hashes) for a remote probe, checked before it is sent."""
+    script's expected hashes) for a remote probe, checked before it is sent. ``binary``:
+    the binary the worker must debug (its `--binary`), or None."""
     from peeky.sources import client_sources
 
     client, _ = _remote(args.worker)
     client.client_root = root
+    _worker_binary(client, binary)
     inputs = client_sources(root, client.sources)
     expected = _expected(root, request.program, request.entry)
     client.hashed = _hashed(root, client.sources, inputs, expected, request.program, request.entry)
@@ -3334,11 +3363,12 @@ def _probe_remote(args, root, request, client, expected):
     return result
 
 
-def _start_remote(args, root, program, line, language, max_pause):
+def _start_remote(args, root, program, line, language, max_pause, binary=None):
     from peeky.sources import client_sources, difference
 
     client, token = _remote(args.worker)
     client.client_root = root
+    _worker_binary(client, binary)
     inputs = client_sources(root, client.sources)
     entry = _entry(root, args.run, language)
     expected = _expected(root, program, entry)
@@ -3376,8 +3406,10 @@ def _start_remote(args, root, program, line, language, max_pause):
         raise
     record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
     record.update(root=str(root), program=program, language=language, cwd=os.getcwd(), line=line)
-    # What a later command checks again before it uses this session.
+    # What a later command checks again before it uses this session: the sources the
+    # worker named at its start, as they were compared then.
     record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
+    record["sources"] = client.sources
     if hashed:
         record["hashed"] = hashed
     if (client.sources or {}).get("kind") == "python":
@@ -3471,19 +3503,10 @@ def _stop_worker(process):
 
 def _start(args):
     root, program, line, language, data = resolve(
-        args.target, args.at, args.config, tools=args.worker is None
+        args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
     )
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
-    if "binary" in (data or {}):
-        from peeky.errors import Refused
-
-        # A session runs in a worker, which reads no binary target's config yet.
-        raise Refused(
-            "INVALID_REQUEST",
-            "A binary target takes `peeky probe` and `peeky describe` in this version of "
-            "Peeky; sessions come with its worker support",
-        )
     _python_option(args, language)
     _seconds(args.timeout)
     max_pause = _max_pause(args.max_pause, language)
@@ -3491,7 +3514,9 @@ def _start(args):
     _reserve(args.name)
     try:
         if args.worker is not None:
-            return _start_remote(args, root, program, line, language, max_pause)
+            return _start_remote(
+                args, root, program, line, language, max_pause, _binary_of(root, data)
+            )
         state = _start_local(args, root, program, line, language, data, max_pause)
     except BaseException:
         # Failed or interrupted (e.g. SIGTERM from a tool timeout) before the session
@@ -3608,8 +3633,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
             root=str(root), program=program, language=language, cwd=os.getcwd(), line=line
         )
         # Its worker's protocol, asked before anything runs and kept: each later command
-        # checks it before it sends a request.
-        version = client.call("version")
+        # checks it before it sends a request. Its sources are compared with none.
+        version = client.call("version", sources=False)
         protocol = version.get("protocol") if isinstance(version, dict) else None
         if protocol != PROTOCOL_VERSION:
             raise RuntimeError(
@@ -5869,6 +5894,7 @@ def _main(argv, _job, _edits):
     start = actions.add_parser("start", help="Build, launch and run to --at")
     common(start)
     start.add_argument("--at", required=True)
+    binary_option(start)
     start.add_argument("--run", help="Python: script to run when --at is in an imported module")
     start.add_argument(
         "--run-module",

@@ -1,4 +1,4 @@
-# Error codes (protocol 14)
+# Error codes (protocol 15)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -164,6 +164,8 @@ The last column is the `retryable` field.
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | A binary the project built that Peeky can't read: a libtool script, no debug information or build ID, no unit Peeky judges (GCC, DWARF 4, no recorded command line, `-O2` without `"optimized": true`, no MD5s), or a probe in a file no judged unit has code in. Each message names the unit and why ([C and C++](lang/c-cpp.md#a-binary-your-project-built)) | Rebuild as the message says: clang `-O0 -g -gdwarf-5 -grecord-command-line`. Or probe a unit `peeky describe --binary` lists as judged |
+| A frame in a shared library a binary target loads, built from sources under the root or not: `Nothing in frame 1 (apply) is read: this frame runs build/libfoo.so; Peeky reads only prog's own units`. A probe's row says so, with `"code": "UNSUPPORTED"`, and the session is kept ([C and C++ 7.1](lang/c-cpp-cookbook.md#debug-a-binary-your-project-built)) | Read a frame of the binary's own code. To read the library's, link it into the binary: a static library, or `--disable-shared` |
+| A binary a worker refuses, as a client sees it: `The worker refuses its binary: …`, with the worker's own code. Its units may name more files than a client may send: `prog's units name 5,000 files under the target directory (21.3 MiB). A worker compares at most 4,096 files, 16 MiB in all, with a remote client's copies: …` ([REMOTE.md](REMOTE.md#a-binary-your-project-built)) | Do what the worker's reason says. For too many files, run Peeky on the binary's own host |
 | Debug information Peeky can't read whole: `Peeky can't read split DWARF: …`, or type units, partial units, or a unit it can't read at all (`Peeky can't read a DWARF unit: …`, such as DWARF 6), refused before anything runs | Rebuild without the option the message names: `-gsplit-dwarf` or `-fdebug-types-section`. Or use the binary as linked, before dwz. Or rebuild with `-gdwarf-5` |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
 | A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information. So is one whose sources, or a procedural macro's, mention `RUSTC_BOOTSTRAP`, which Peeky's build sets | Change what the message names, or analyse another package |
@@ -202,10 +204,14 @@ file lists what it reads.
 - A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
   `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
 - A binary target's config with `sources`, or a key it doesn't take; `--binary` with a config
-  naming one; a binary outside the target directory; or a session of one, which Peeky doesn't run
-  yet ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
-- A client and a remote worker of different protocols: `Worker speaks protocol 13, this client 14`,
-  or, from the worker, `Client speaks protocol 13, this worker 14`. Install the same Peeky version
+  naming one; or a binary outside the target directory
+  ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
+- A run on a worker that debugs another binary than the one you name: `The worker debugs the
+  binary prog, which its configuration names, not build/prog: pass --binary prog`. So is
+  `--binary` on a worker that names no binary, and a run without it on one that does
+  ([REMOTE.md](REMOTE.md#a-binary-your-project-built)).
+- A client and a remote worker of different protocols: `Worker speaks protocol 14, this client 15`,
+  or, from the worker, `Client speaks protocol 14, this worker 15`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -602,7 +608,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 14`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 15`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
@@ -648,6 +654,12 @@ request a client sends.
 - **Protocol 14** adds `BUILD_REQUIRED`. A probe or session on a Rust workspace without a
   current Peeky build is refused with it, and its message names the `peeky build` command. A
   protocol 13 client would take the code for another failure ([details](#build_required)).
+- **Protocol 15** debugs a binary your project built from another host. A worker's
+  `--native-config` may name `binary`. `version`'s `sources` then names the binary, and lists the
+  files its judged units name, or says why the worker refuses it (`kind` `refused`). A client
+  checks the binary is the one it names. `{"sources": false}` asks `version` to list none
+  ([REMOTE.md](REMOTE.md#a-binary-your-project-built)). A protocol 14 worker doesn't start with
+  a binary config.
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

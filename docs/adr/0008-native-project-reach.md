@@ -94,7 +94,9 @@ The `-O` level and LTO are read from the recorded words alone (`native_units.opt
 - `PROVENANCE_CHANGED`: a file differs from its recorded MD5, named, before launch; or a file or the binary changed during the run.
 - `BUDGET_EXHAUSTED`: today's [symbol bounds](../NATIVE_INTERNALS.md#reading-a-builds-symbols). `INVALID_REQUEST`: `binary` outside the root, or with `sources`.
 
-**The worker.** `--native-config` takes `binary`; a request can't name one. The files compared with the client's are those the judged units name under the root, within Python's bounds (4096 files, 16 MiB).
+**The worker.** `--native-config` takes `binary`; a request can't name one. The files compared with the client's are those the judged units name under the root, within Python's bounds (4096 files, 16 MiB). `version` lists them, kept per binary by its size, time and inode, and the worker compares them once its preparation has judged the units, before the debugger starts. A client names the binary with `--binary`, and is refused if the worker's is another. Sessions run on a binary, locally and through the worker.
+
+**Shared libraries.** A frame in a shared library the binary loads is never read, even one built from sources under the root: Peeky reads only the binary's own units. It is `UNSUPPORTED`, naming the library, and the session is kept. On macOS the frame's `moduleId` names its module; on Linux, where LLVM 18's lldb-dap gives none, the one module whose loaded executable segments hold the frame's address.
 
 **Servers.** A probe takes `--until hits` and `--background` ([ADR 0006](0006-agent-speed.md)). So for valkey-1842, Peeky launches the replica, the agent starts a primary and sends `ACL LOAD`, and `peeky job wait` returns the hit.
 

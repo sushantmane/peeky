@@ -1068,14 +1068,22 @@ class DebugWorker:
             return crash, crashed
         if not frames:
             return crash, crashed
-        crash["outside_program"] = not _inside_program(runtime, frames[0])
+        crash["outside_program"] = (
+            not _inside_program(runtime, frames[0])
+            or self.library_refusal(runtime, frames[0], 0) is not None
+        )
         names = [str(frame.get("name") or "") for frame in frames]
         thrown = next((i for i, name in enumerate(names) if "__cxa_throw" in name), None)
         if thrown is not None and any("terminate" in name for name in names[:thrown]):
             # A `noexcept` function's terminate leaves no `__cxa_throw` on the stack.
             crash["uncaught_exception"] = True
         for index, frame in enumerate(frames[:MAX_FRAMES]):
-            if _inside_program(runtime, frame):
+            # A shared library's frame is no code of a binary target's own, even where
+            # its sources are under the root.
+            if (
+                _inside_program(runtime, frame)
+                and self.library_refusal(runtime, frame, index) is None
+            ):
                 runtime.validate_stop(frame)
                 if validate_debugger := getattr(runtime, "validate_debugger", None):
                     validate_debugger(self.dap, frame)
@@ -1105,6 +1113,26 @@ class DebugWorker:
             return None
         caught, ignored = masks
         return not any((caught | ignored) >> (int(number) - 1) & 1 for number in numbers)
+
+    def library_refusal(self, runtime, frame, index):
+        """The UNSUPPORTED refusal of ``frame`` (frame ``index`` of the stop) where it runs
+        a shared library, and the runtime reads only its binary's own units
+        (native_binary.BinarySession.library_frame); else None."""
+        check = getattr(runtime, "library_frame", None)
+        if check is None or self.dap is None:
+            return None
+        why = check(self.dap, frame)
+        if why is None:
+            return None
+        from peeky.errors import Refused
+
+        name = str(frame.get("name") or "?")[:200]
+        return Refused(
+            "UNSUPPORTED",
+            f"Nothing in frame {index} ({name}) is read: {why}",
+            "Nothing of that frame is read, and the session is kept. Read a frame of the "
+            "binary's own code (`session inspect` lists the stack), or step out to one.",
+        )
 
     def crash_refusal(self, frame, index):
         """Why nothing of ``frame``, outside the program's sources, is read at an
@@ -2387,7 +2415,7 @@ class DebugWorker:
                     )
             # And every other source the target reads: what this worker's trusted
             # target names, or every .py file under the root for Python.
-            inputs_checked = inputs_python = None
+            inputs_checked = inputs_python = deferred = None
             self.accepted_sources = self.foreign_frame = self.remote_names = None
             self.installed_sources = {}
             if (expected_inputs := args.get("expect_inputs")) is not None:
@@ -2406,11 +2434,17 @@ class DebugWorker:
                         "would compare none of the workspace's files with yours. Run Peeky on the "
                         "workspace's own host"
                     )
-                own = worker_sources(self.adapter, self.root)
-                if what := difference(expected_inputs, own):
-                    raise ValueError(refusal(what))
+                # A binary target's are the files its judged units name: compared once
+                # its preparation has judged them (below), before anything runs.
+                deferred = getattr(self.adapter, "remote_inputs", None) is not None
+                if deferred:
+                    own = {}
+                else:
+                    own = worker_sources(self.adapter, self.root)
+                    if what := difference(expected_inputs, own):
+                        raise ValueError(refusal(what))
                 hashed = {}
-                if declared(self.adapter) is None:
+                if not deferred and declared(self.adapter) is None:
                     from peeky.sources import in_environment
 
                     # Python: what runs first must be among the files compared. One in a
@@ -2502,6 +2536,11 @@ class DebugWorker:
 
                     if what := difference(expected_inputs, built):
                         raise RuntimeError(refusal(what))
+                elif expected_inputs is not None and deferred:
+                    raise RuntimeError(
+                        "Worker source provenance is unconfirmed: the binary's run named no "
+                        "files to compare with yours; the debugger's launch request was not sent"
+                    )
                 if inputs_python is not None:
                     self.accepted_sources = {**own, **self.installed_sources}
                 staged = Path(runtime.source_path(program)) if edit else None
@@ -2912,6 +2951,23 @@ class DebugWorker:
                     "cannot be read"
                 )
             selected_frame = frames[index]
+            # A step's or a crash's stop outside the program's sources says so its own way
+            # (what the step's function returned; the nearest frame of your code).
+            stop_outside = index == 0 and (
+                (
+                    self.stop_reason in STEP_STOPS
+                    and not _in_program_sources(runtime, selected_frame, self.root)
+                )
+                or (
+                    self.stop_reason in CRASH_STOPS and not _inside_program(runtime, selected_frame)
+                )
+            )
+            if not stop_outside and (
+                refused := self.library_refusal(runtime, selected_frame, index)
+            ):
+                # A shared library a binary target doesn't read: nothing of it is read, and
+                # the session is kept.
+                raise refused
             if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
@@ -7519,8 +7575,14 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
 
                     result = {
                         "protocol": PROTOCOL_VERSION,
-                        # Which sources a client hashes for expect_inputs.
-                        "sources": describe(worker.adapter),
+                        # Which sources a client hashes for expect_inputs: not listed where
+                        # it says it needs none (`sources: false`), as a binary target's
+                        # list takes reading its debug information.
+                        **(
+                            {}
+                            if args.get("sources") is False
+                            else {"sources": describe(worker.adapter, worker.root)}
+                        ),
                         # Where its paths start: a remote client shows them as its own.
                         "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
@@ -7780,12 +7842,28 @@ def load_java_target(path):
 
 
 def load_native_target(path):
-    """Load trusted native tools and inputs; HTTP clients cannot choose executables."""
+    """Load trusted native tools and inputs; HTTP clients cannot choose executables. A
+    config naming `binary` is a binary the project built (native_binary.BinaryTarget)."""
     from peeky.native import NativeTarget
 
     config = json.loads(Path(path).read_text())
     if not isinstance(config, dict):
         raise ValueError("Native configuration must be an object")
+    if "binary" in config:
+        from peeky.native_binary import BINARY_KEYS, BinaryTarget
+
+        if unknown := sorted(set(config) - BINARY_KEYS):
+            raise ValueError(
+                "A binary target's configuration takes "
+                + ", ".join(sorted(BINARY_KEYS))
+                + f"; not {', '.join(unknown)}"
+            )
+        for key in ("arguments", "returns_twice"):
+            if isinstance(config.get(key), list):
+                config[key] = tuple(config[key])
+        if not isinstance(config.get("arguments", ()), tuple):
+            raise ValueError("Native arguments must be a JSON array")
+        return BinaryTarget(**config)
     if set(config) - {
         "sources",
         "language",

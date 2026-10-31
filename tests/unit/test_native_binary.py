@@ -432,8 +432,12 @@ def test_a_binary_config_is_checked_before_anything_runs(tmp_path, monkeypatch):
         cli.resolve(str(root), "main.c:3", binary=str(tmp_path / "other"))
     with pytest.raises(Refused, match="outside the target directory"):
         cli.resolve(str(root), "main.c:3", binary="../other")
-    with pytest.raises(Refused, match="A worker takes a binary only from its own configuration"):
-        cli.resolve(str(root), "main.c:3", binary=str(root / "prog"), tools=False)
+    # On a worker's run, the binary is the worker host's: this host needn't have it, and
+    # no tool of this host's is named.
+    found = cli.resolve(str(root), "src/main.c:3", binary="build/../out/prog", tools=False)
+    assert found[3] == "c" and found[4] == {"binary": "out/prog", "language": None}
+    with pytest.raises(Refused, match="outside the target directory"):
+        cli.resolve(str(root), "main.c:3", binary="../prog", tools=False)
     with pytest.raises(Refused, match="the target is the directory"):
         cli.resolve(str(root / "prog"), "main.c:3", binary=str(root / "prog"))
     monkeypatch.setattr(cli, "native_tools", lambda language: {"compiler": "cc", "sysroot": "/s"})
