@@ -51,7 +51,9 @@ KEEP_RUNS = 2
 _SETTLE_NS = 1_000_000_000
 # The most files Peeky notes the state of before a build, to tell a change during it.
 _MAX_SNAPSHOT = 200_000
-SCHEMA = 1
+# 2: the build's crates (`crates`), its local procedural macros (`macros`), and analysed
+# MIR with full paths. 3: each analysed unit's generated files (`generated`).
+SCHEMA = 3
 
 # Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
 # target's own compile, which it knows by crate name and source file (a build script's
@@ -142,6 +144,9 @@ if source is not None:
         "-Zmir-include-spans=yes",
         "-Zunstable-options",
         "-Csymbol-mangling-version=legacy",
+        # Every path in full (`smallnum::one`, `std::vec::Vec`): a dependency's call is
+        # told by its crate. It changes no code rustc generates.
+        "-Ztrim-diagnostic-paths=false",
     ]
     os.execve(args[0], args, nightly)
 os.execv(args[0], args)
@@ -275,24 +280,9 @@ class RustWorkspaceTarget:
                 "Peeky doesn't verify or probe candidate edits in a Rust workspace yet; "
                 "change the source and run `peeky build` again"
             )
-        root = Path(root).resolve(strict=True)
-        # Held while the program runs, so no later build removes its files.
-        with lease_build(self, root) as lease:
-            manifest = lease.manifest
-            relative = Path(program).resolve().relative_to(root).as_posix()
-            analysed = [unit for unit in manifest["units"] if relative in unit["sources"]]
-            if not analysed:
-                packages = ", ".join(self.config.analyse)
-                raise ValueError(
-                    f"Peeky stops only in the analysed packages' files ({packages}), as their "
-                    f"build read them: {relative} is none of those. Probe a line there, or add "
-                    'its package to "analyse" and build again'
-                )
-            raise ValueError(
-                "Peeky doesn't read values in a Rust workspace's build yet: it will once a "
-                "call into a dependency counts as code it can't read. The build is current; "
-                "nothing ran"
-            )
+        from peeky.rust_workspace_session import prepare_session
+
+        return prepare_session(self, program, root, deadline=deadline)
 
 
 def build_directory(target, root, *, create=True):
@@ -839,7 +829,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     analysed_names = {package.name for package in shape.analysed}
     run_package, run_target = shape.run
     executable = None
-    sources, generated, units = {}, {}, []
+    sources, generated, units, macros = {}, {}, [], set()
     seen_units = set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
     compiled = {}
@@ -890,6 +880,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             _check_bootstrap_mentions(
                 read, root, target_dir, f"the procedural macro `{artifact.get('name')}`"
             )
+            macros.add(package.name)
         if package.name not in analysed_names or {"custom-build", "proc-macro"} & set(kinds):
             continue
         crate = str(artifact.get("name", "")).replace("-", "_")
@@ -913,6 +904,9 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         _check_bootstrap_read(package.name, crate, depfile)
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         entry["sources"] = sorted(read["sources"])
+        # What it read that the build made (a build script's `OUT_DIR` file it
+        # `include!`s), under the target directory: its code too.
+        entry["generated"] = sorted(read["generated"])
         units.append(entry)
     if len(sources) + len(generated) > MAX_RECORDED:
         raise ValueError(f"The build read more than {MAX_RECORDED} files Peeky would record")
@@ -952,6 +946,10 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             "cargo_arguments": list(shape.cargo_arguments()),
         },
         "dependencies": len(shape.vendored),
+        "crates": list(shape.crates),
+        # The local packages that are procedural macros: what they write into a crate is
+        # the project's code.
+        "macros": sorted(macros),
         "units": units,
         "sources": dict(sorted(sources.items())),
         "generated": dict(sorted(generated.items())),
@@ -1669,59 +1667,68 @@ def _current(target, root, *, hold):
             raise _required(target, "its record can't be read") from None
         if manifest.get("schema") != SCHEMA or manifest.get("identity") != target.identity(root):
             raise _required(target, "the one recorded is for another configuration or Peeky")
-        for tool in manifest["tools"]:
-            try:
-                same = sha256_file(tool["path"]) == tool["sha256"]
-            except OSError:
-                same = False
-            if not same:
-                raise _stale(target, f"the tool {tool['path']} changed")
-        from peeky.build import _digest_store
-
-        store = _digest_store()
-        digest = _digest(store)
-        # Edits first (sources, manifests, a new member: BUILD_REQUIRED); then what
-        # identifies the build (PROVENANCE_CHANGED).
-        for name, recorded in manifest["sources"].items():
-            try:
-                same = sha256_file(root / name) == recorded
-            except OSError:
-                same = False
-            if not same:
-                raise _edited(target, f"{name} changed")
-        state = manifest["watch"]
-        for path, recorded in state["files"].items():
-            if (
-                Path(path).name == "Cargo.toml"
-                and path not in state.get("absent", ())
-                and rust_workspace.identity(path, digest) != recorded
-            ):
-                raise _edited(target, f"{_shown(path, root)} changed")
-        members = rust_workspace.members_now(state)
-        if members != state["candidates"]:
-            added = sorted(set(members) ^ set(state["candidates"]))
-            raise _edited(target, f"the workspace's members changed ({_shown(added[0], root)})")
-        _check_build_inputs(target, root, directory, manifest)
-        if (what := rust_workspace.recheck(state, digest)) is not None:
-            raise _stale(target, _shown(what, root))
-        target_dir = directory / "target"
-        for name, digest in manifest["generated"].items():
-            try:
-                same = sha256_file(target_dir / name) == digest
-            except OSError:
-                same = False
-            if not same:
-                raise _stale(target, f"the build's generated file {name} changed")
-        for name, digest in manifest["artifacts"].items():
-            try:
-                same = sha256_file(directory / name, store=store) == digest
-            except OSError:
-                same = False
-            if not same:
-                raise _stale(target, f"the build's output {name} changed")
+        verify(target, root, directory, manifest)
         descriptor = _lease(directory, manifest["nonce"]) if hold else None
     manifest["directory"] = str(directory)
     return manifest, descriptor
+
+
+def verify(target, root, directory, manifest):
+    """Refuse a build whose record (``manifest``, in ``directory``) no longer holds:
+    BuildRequired where a source, a manifest or a build script's input changed since it
+    ran (the normal edit cycle); a provenance error where what identifies it changed
+    (Cargo's configuration, the lockfile, a vendored copy, a tool, the build's own output).
+    Each names the file."""
+    for tool in manifest["tools"]:
+        try:
+            same = sha256_file(tool["path"]) == tool["sha256"]
+        except OSError:
+            same = False
+        if not same:
+            raise _stale(target, f"the tool {tool['path']} changed")
+    from peeky.build import _digest_store
+
+    store = _digest_store()
+    digest = _digest(store)
+    # Edits first (sources, manifests, a new member: BUILD_REQUIRED); then what
+    # identifies the build (PROVENANCE_CHANGED).
+    for name, recorded in manifest["sources"].items():
+        try:
+            same = sha256_file(root / name) == recorded
+        except OSError:
+            same = False
+        if not same:
+            raise _edited(target, f"{name} changed")
+    state = manifest["watch"]
+    for path, recorded in state["files"].items():
+        if (
+            Path(path).name == "Cargo.toml"
+            and path not in state.get("absent", ())
+            and rust_workspace.identity(path, digest) != recorded
+        ):
+            raise _edited(target, f"{_shown(path, root)} changed")
+    members = rust_workspace.members_now(state)
+    if members != state["candidates"]:
+        added = sorted(set(members) ^ set(state["candidates"]))
+        raise _edited(target, f"the workspace's members changed ({_shown(added[0], root)})")
+    _check_build_inputs(target, root, directory, manifest)
+    if (what := rust_workspace.recheck(state, digest)) is not None:
+        raise _stale(target, _shown(what, root))
+    target_dir = directory / "target"
+    for name, digest in manifest["generated"].items():
+        try:
+            same = sha256_file(target_dir / name) == digest
+        except OSError:
+            same = False
+        if not same:
+            raise _stale(target, f"the build's generated file {name} changed")
+    for name, digest in manifest["artifacts"].items():
+        try:
+            same = sha256_file(directory / name, store=store) == digest
+        except OSError:
+            same = False
+        if not same:
+            raise _stale(target, f"the build's output {name} changed")
 
 
 def _check_build_inputs(target, root, directory, manifest):

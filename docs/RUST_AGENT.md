@@ -346,7 +346,7 @@ as above.
   saying so. `global_asm!` needs no `unsafe`, but can define `free`.
 - In a crate with no unsafe code, safe Rust guarantees that a reachable `Vec` or `String` owns live
   memory. A raw pointer, such as `v.as_ptr()`, can free nothing without unsafe code.
-- The standard library is taken as sound. Peeky's builds have no other dependencies.
+- The standard library is taken as sound. A workspace's dependencies are too (ADR 0008).
 - A reference parameter's contents stay raw, because a caller may have freed the buffer of what it
   lends: `look(v: &Vec<i64>)` reading only `v.capacity()`.
 - A Box's contents are never read. A Box can be freed through a second Box made by
@@ -367,6 +367,20 @@ How the check reads the sources:
 - A nightly feature counts because Peeky's MIR builds set `RUSTC_BOOTSTRAP`. Then
   `#![feature(custom_mir)]` frees what a `&Vec` points at with `Drop(*v, ...)`, and no `unsafe`
   token.
+
+In a workspace's build (`rust_workspace_session`), the scans also read the crate as rustc expands
+it: the build's `expanded.rs`, without the prelude rustc adds (`expanded_code`). That is what
+macros write into it. `without_numbered_structs`, the names the crate defines and its traits read
+it as one more source (`EXPANDED`).
+
+- A dependency's macros write the dependency's own code, taken as sound, as std's `thread_local!`
+  is. A local procedural macro writes the project's. So where the build has one (the manifest's
+  `macros`), the unsafe scan reads the expansion too, and its note names the macros.
+- What the build generated and an analysed crate read (a build script's `OUT_DIR` file it
+  `include!`s) is the project's code too. Each analysed unit records those files (`generated`),
+  and the unsafe scan reads each, naming it.
+- A frame outside the analysed compile's files, a dependency's or another member's, is read as a
+  library's (`owns_source`), though its file is under the workspace.
 
 ## Changing a value
 
@@ -830,9 +844,10 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
   formatting runs (`_FORMAT_CODE`): an `impl` of a formatting trait (`_FORMAT_TRAITS`: `Display`,
   `Debug`, the other formats and `Write`), or of a trait not known (`GlobalState.formats`). So
   `println!("{}", x)` touches nothing where none of those does.
-- Peeky builds crates without dependencies, so the standard library's is the only other code.
-  Another crate's could run a trait `impl` through state it keeps (`log`'s logger), which these
-  rules would have to count, were dependencies allowed.
+- A crate Peeky builds alone has no dependencies: the standard library's is the only other code.
+  In a workspace's build, a dependency's code may run a trait `impl` through state it keeps
+  (`log`'s logger). So a call or drop into it may touch any global state (`GlobalState.call`,
+  `drop`), as [Dependency calls](#dependency-calls) says.
 - `impls` leaves out an inherent `impl` and one of a trait the crate defines (`_impl_trait`,
   `_own_trait`): no other crate can name that trait, so only the crate's code
   calls its functions, by their names. The trait's name must be one the crate's sources define
@@ -883,6 +898,82 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
 - What a function stores in global state isn't followed: a counter it bumps, or a flag it only
   reads, counts as a place that may hold `x`. State outside the program's memory, an environment variable or a file, isn't
   followed at all.
+
+### Dependency calls
+
+In a workspace's build, the analysed crate's MIR calls code Peeky reads none of: its
+dependencies', and the other analysed crates', each proven apart. The wrapper compiles the
+analysed crates with `-Ztrim-diagnostic-paths=false`, so the MIR roots every other crate's path:
+`std::vec::Vec::<u32>::push`, `smallnum::keep`. The crate's own print bare (`forward`). The build
+records each crate's name and each name a crate calls a dependency by (`crates`, from the unit
+graph). `OwnedLocals.foreign` is those, less the crate's own and the standard library's.
+
+- `_foreign_root` gives the crate whose code a path may run. That is the first of its words
+  rooted at one of them: the function's, a qualified path's type and trait, a generic argument.
+  It is "?" for a trait object or a type parameter, which a dependency's type may be. A span
+  (`{closure@…}`, `<impl at …>`) names none.
+- `Body.foreign_calls` gives each call and drop that may run such code. A call given or named for
+  a dependency's type counts too (`std::mem::drop::<smallnum::Holder>`), as one that may run that
+  type's code ("~"). A drop counts by what its type holds by value (`_foreign_held`): a crate
+  type's field (`layouts`), a closure's capture, a standard container's element.
+- Whose code a call runs is read from its head, in one place for every analysis
+  (`_call_runs`: `Body._foreign_edge`, `_escapes`, `_keepers`, `GlobalState.call`). A plain
+  path's first segment. For `<S as T>::m`, the trait. The crate's own trait's method is the
+  crate's code for a type the crate names (only it may implement its trait for one), and "?"
+  for a type parameter or a trait object: another crate, the program's binary, may implement a
+  public trait. So is a type rooted at one (`T::Item`, `<T as Source>::Item`,
+  `_generic_rooted`), read before its arguments are left out. So is a type parameter in `&`,
+  `Box` or `Pin`, which are `#[fundamental]`: the binary may write `impl util::Sink for
+  Box<AppType>`. A trait object in one is the crate's. A dependency's trait's method is
+  the crate's code where the crate's own `impl` of it for `S` defines `m` and names the trait
+  in full in its header (`_dependency_method`: `impl smallnum::Keep for Mine`). Otherwise it is
+  the dependency's (its default method, its blanket `impl`). A standard trait's method is
+  judged by `S`.
+- An `impl` block's type is placed from the crate's root (`_local_impls`, `_impl_self_place`):
+  a bare name in its function's module (the segments before `<impl at …>`), and `crate::`,
+  `self::` and `super::` paths followed. `&`, `Box` and `Pin` are kept around the type
+  (`_canonical_type`: `std::boxed::Box<a::Mine>`), as the MIR names the call's type. A bare
+  `Box` or `Pin` counts as the standard library's only where a function's `self`, as the MIR
+  prints it in full, says so: a `use` may bring another. Another path, a generic type
+  (`Vec<Mine>`), or a bare name the debug information places in another module only (a `use`
+  may have brought it), isn't placed. An inherent
+  `impl`, and one of another trait named in full (`tokio::Keep`, `crate::Keep`), is no
+  doubt. Peeky resolves no `use` line: an `impl` that defines `m` but names its trait by a bare
+  name, an alias or a module's alias, or isn't placed, gives "?impl", and the note says Peeky
+  can't tell whether it implements that trait. So does a derive's, or a header it can't read.
+- `global_state`, `GlobalState.call` and `GlobalState.returned` take each body's type
+  parameters (matched, else `guessed_generics`), so a call on one touches, and returns a
+  pointer into, any global state.
+- What the types a call is given may run is asked of the standard library's functions alone. A
+  function of the crate's is read, and its body says what it runs and touches.
+- A call through a function pointer (`move _6(…)`) may run a dependency's code ("?fn"). So may
+  a closure or async block whose body the dump doesn't hold ("?closure"); a dependency's own is
+  named by its path (`{closure@smallnum::keeper::{closure#0}}`).
+- Such code may write through, keep or hand on anything it is given. It may touch any global
+  state, run any code of the crate's ever handed to a dependency, and never return. So
+  `_escapes` counts such a call as keeping a pointer (`thread::spawn` alone did). `_keepers`
+  counts a crate function that makes one. `GlobalState.call` and `drop` give it every global,
+  and `_drop_effect` says "maybe".
+- Code of the crate's counts where it may hand what it is given on (`OwnedLocals._forwarding`,
+  a `_Forwarding`). That is a body with a call or drop that runs such code, given what its
+  arguments may reach (`Body._argument_reach`, flow-insensitive), by itself or through such code
+  of the crate's. What a call runs is found as `global_state` finds it: a function by name, a
+  closure by its type, an `impl` for a crate type or a trait object, and anything for `dyn Fn`,
+  a function pointer or a type parameter. It is found again until nothing grows; past
+  `_GLOBAL_ROUNDS`, everything counts. Each keeps its first such call, which the note names.
+- A body never matched to an IR function takes its type parameters from its locals' types: each
+  bare name that is no type of the crate's (`guessed_generics`).
+- `Body.foreign_given` gives, for a local at the stop's places, each such call that may have run
+  before the stop. A path from its return reaches the stop, the local not started again on the
+  way. It counts where it was given the local, a pointer into it (`lent_from`, the copy flow's
+  pointers), or a copy of it or of what is computed from it (the copy flow's direct copies).
+- A change there is refused: `RustSession.mid_statement`, and before the run `_never_in`'s
+  "foreign" at every place of the line. The note names the call, its line and its crate
+  (`_foreign_note`): ``a call to `smallnum::keep` (dependency `smallnum`) on line 17 is given a
+  pointer into `x`: Peeky reads no dependency's code, so it may keep a copy, which a change would
+  not reach``.
+- Reads don't depend on what a callee does: a dependency is taken as sound, as the standard
+  library is. No value of a dependency's frame is proven, since Peeky read no MIR of it.
 
 ### Values no path reads again
 

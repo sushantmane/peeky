@@ -53,6 +53,28 @@ PROTOCOL_VERSION = 14
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        # native_binary.BinaryRefused: a binary the project built, refused before it runs.
+        r"(is a unit Peeky doesn't judge: |^No unit of .* Peeky judges has code in |"
+        r"^Peeky judges no unit of |^No unit of .* has its file in the target directory|"
+        r"is a script, not an executable|is not an ELF or Mach-O executable|is a universal "
+        r"binary|^\S+ is an? (ELF|Mach-O) (executable|object|library)|isn't a 64-bit "
+        r"little-endian ELF|has no debug information|has no build ID Peeky can read|^A binary "
+        r"target can't take a candidate edit|^The binary's debug map records no time of |"
+        r"^Peeky can't read \S+'s debug map: |were written in the same second, and this "
+        r"filesystem's timestamps can't show which came first)",
+        "UNSUPPORTED",
+        "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 "
+        "-grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+        False,
+    ),
+    (
+        r"^Provenance: the binary is stale",
+        "PROVENANCE_CHANGED",
+        "Nothing ran. Rebuild the binary, then probe again: Peeky reads a binary only while "
+        "its sources and objects are as they were built.",
+        False,
+    ),
+    (
         # native.ForeignUnits: refused before any value is read.
         r"^Peeky can't read (split DWARF|DWARF type units|DWARF partial units|a DWARF( 5)? unit): ",
         "UNSUPPORTED",
@@ -387,13 +409,6 @@ _RULES = (
         False,
     ),
     (
-        r"^Peeky doesn't read values in a Rust workspace's build yet",
-        "UNSUPPORTED",
-        "Nothing ran. Peeky builds this workspace but doesn't probe it yet; check it with the "
-        "project's own tests meanwhile.",
-        False,
-    ),
-    (
         r"^A worker doesn't probe a Rust workspace for a remote client yet",
         "UNSUPPORTED",
         "Nothing ran. Run Peeky on the workspace's own host: `peeky build`, then the probe.",
@@ -632,6 +647,12 @@ ERROR_CODES = frozenset(code for _, code, _, _ in _RULES) | {
 # The one action each MUTATION_REJECTED rule leaves: the
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
+    (
+        # A Rust workspace's dependency, or code that hands it on, was given the value.
+        r"Peeky reads no dependency's code|Peeky proves each crate apart",
+        "Change it before the program hands it to that code: a stop on an earlier line "
+        "(`--at`, `session continue --to LINE`), or `--set-at` there.",
+    ),
     (
         # A `@before` restore Peeky cannot vouch for.
         r"@before",

@@ -7212,6 +7212,10 @@ def _inside_program(runtime, frame, *roots):
         resolved = Path(path).resolve()
     except (OSError, ValueError):
         return False
+    if (owns := getattr(runtime, "owns_source", None)) is not None:
+        # A Rust workspace's session: its program is the analysed compile's files, not
+        # every file under the workspace (a vendored dependency's, another member's).
+        return owns(resolved)
     for root in roots:
         if root is None:
             continue

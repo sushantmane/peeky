@@ -285,7 +285,8 @@ def _size(limit):
 @contextlib.contextmanager
 def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what, spent=None):
     """The lines llvm-dwarfdump writes for each argument list of ``commands`` in turn,
-    as it writes them: the text is parsed as it comes and never held whole.
+    run in ``workspace`` (a directory of Peeky's own, where it keeps their scratch), as it
+    writes them: the text is parsed as it comes and never held whole.
     Lines end at `\\n` as ``split_lines`` ends them. At most ``limit`` bytes in all
     (SymbolLimit), with ``spent`` (a one-item list: bytes earlier reads of the same build
     took of it, added to here), within ``timeout`` seconds (TimeoutError); a tool that
@@ -414,9 +415,12 @@ class _LineParser:
     """``_line_rows``'s reading of line-table text, fed its lines as they come (``feed``,
     once per dump: several tables in turn read as the text of all of them would)."""
 
-    def __init__(self, workspace, declared, rust=False):
+    def __init__(self, workspace, declared, rust=False, only=None):
         workspace = Path(workspace).resolve()
         self.key = _line_key(workspace, declared, rust)
+        # The offsets of the tables whose rows are read (None: all of them); another's
+        # rows are passed over, as of no declared source.
+        self.only, self.skipping = only, False
         self.workspace = workspace
         self.inputs = {str((workspace / name).resolve()): name for name in declared}
         # As the compiler counts lines (``rust``: rustc, at `\n` alone; else clang, at a
@@ -461,6 +465,8 @@ class _LineParser:
         for raw in lines:
             line = raw.strip()
             if line.startswith("0x"):
+                if self.skipping:
+                    continue
                 fields = line.split()
                 if (
                     self.version not in (4, 5)
@@ -506,8 +512,13 @@ class _LineParser:
                 self.table_count += 1
                 if self.table_count > 4096:
                     raise ValueError("Too many native line tables")
-                if header := _TABLE_HEADER.fullmatch(raw):
+                header = _TABLE_HEADER.fullmatch(raw)
+                if header:
                     self.headers.append(int(header[1], 16))
+                if self.only is not None:
+                    if header is None:
+                        raise ValueError("A line table without its offset")
+                    self.skipping = int(header[1], 16) not in self.only
                 self.flush()
                 self.directories, self.files, self.current = {0: str(workspace)}, {}, None
                 self.resolved, self.named = {}, set()
@@ -549,12 +560,22 @@ class _LineParser:
         )
 
 
-def read_line_table(tool, commands, workspace, env, declared, *, timeout, rust=False):
+def read_line_table(
+    tool, commands, workspace, env, declared, *, timeout, rust=False, only=None, cwd=None
+):
     """The LineTable of llvm-dwarfdump's line-table text for each argument list of
-    ``commands`` (`["--debug-line", symbols]`), read as it is written."""
-    parser = _LineParser(workspace, declared, rust)
+    ``commands`` (`["--debug-line", symbols]`), read as it is written. ``only``: the
+    offsets of the tables to read rows of (_LineParser); ``cwd``: where dwarfdump runs,
+    if not in ``workspace``, the directory the sources are named under."""
+    parser = _LineParser(workspace, declared, rust, only)
     with _symbol_text(
-        tool, commands, workspace, env, limit=MAX_LINE_TEXT, timeout=timeout, what="line tables"
+        tool,
+        commands,
+        cwd or workspace,
+        env,
+        limit=MAX_LINE_TEXT,
+        timeout=timeout,
+        what="line tables",
     ) as lines:
         parser.feed(lines)
     return parser.table()
@@ -5307,117 +5328,36 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
-            tail_calls = None
-            code, statics, results = None, (), None
-            try:
-                info = read_debug_info(
-                    dwarfdump,
-                    [["--debug-info", str(symbols)], ["--debug-addr", str(symbols)]],
-                    prepared.workspace,
-                    env,
-                    timeout=_remaining(deadline),
-                )
-                tail_calls = has_tail_calls(info)
-                with _reusing_dies():
-                    typedefs = typedef_kinds(info)
-                    nonlocal_jumps = (
-                        has_nonlocal_jumps(binary)
-                        or mentions_nonlocal_jumps(
-                            prepared.workspace / name for name in self.sources + self.headers
-                        )
-                        # A header outside the workspace can hide the builtin in a macro;
-                        # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
-                        or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
-                    )
-                    prologues, code = [], {}
-                    declarations = local_declarations(
-                        info,
-                        text,
-                        prepared.workspace,
-                        self.sources + self.headers,
-                        prologues=prologues,
-                        code=code,
-                    )
-                    if nonlocal_jumps:
-                        # Which functions may call setjmp is read from their source:
-                        # its family's names, or a macro naming one, including those
-                        # of headers outside the program (a TRY macro).
-                        returns_twice = returning_twice(
-                            Path(path).read_bytes().decode("utf-8", errors="replace")
-                            for path in external
-                        )
-                    if declarations is not None:
-                        from peeky.fields import CPP_LIBRARIES, HASHED, type_graph
-                        from peeky.hashed_nodes import node_types
+            sources = self.sources + self.headers
 
-                        # The program's variables in static storage, which prove what a
-                        # pointer at one points at live.
-                        statics = static_variables(_dies(info))
-                        # Which calls give a new object a binding keeps alive.
-                        if self.language == "cpp":
-                            results = (
-                                call_arguments(_dies(info)),
-                                allocation_replaced(_dies(info)),
-                            )
-                        # The types field and element changes walk, and theirs.
-                        fields = type_graph(
-                            _dies(info),
-                            {
-                                kind
-                                for function in declarations
-                                for kinds in (function["types"] or {}).values()
-                                for kind, _, _ in kinds
-                            }
-                            | {kind for _, _, kind in statics},
-                            CPP_LIBRARIES,
-                        )
-                        # And, one level down, what their pointers and references reach:
-                        # previews of `p[0]` and of a reference. Changes never
-                        # walk through either, so these types change nothing.
-                        aimed = {
-                            node[2]
-                            for node in fields.values()
-                            if node[0] in ("pointer", "reference") and node[2] is not None
-                        } - set(fields)
-                        if aimed:
-                            for offset, node in type_graph(
-                                _dies(info), aimed, CPP_LIBRARIES
-                            ).items():
-                                fields.setdefault(offset, node)
-                        if any(
-                            node[0] == "record" and HASHED.match(node[11] or "")
-                            for node in fields.values()
-                            if len(node) > 11
-                        ):
-                            # The node types of the unordered containers, which no
-                            # local reaches but through a pointer: their entries are
-                            # read from the nodes.
-                            hashed = type_graph(_dies(info), node_types(_dies(info)), CPP_LIBRARIES)
-                            for offset, node in hashed.items():
-                                fields.setdefault(offset, node)
-                            # And what an entry's pointer points at, which names its
-                            # type (`Pt *`); never read.
-                            aimed = {
-                                node[2]
-                                for node in hashed.values()
-                                if node[0] == "pointer" and node[2] is not None
-                            } - set(fields)
-                            if aimed:
-                                for offset, node in type_graph(
-                                    _dies(info), aimed, CPP_LIBRARIES
-                                ).items():
-                                    fields.setdefault(offset, node)
-            except (ValueError, RecursionError) as exc:
-                # Debug information over Peeky's bounds (SymbolLimit), or that its parse
-                # cannot read: values show as the debugger reads them, each local with a
-                # note that its initialization is not judged (and no field or element
-                # can be changed). A read that times out (TimeoutError), a failing
-                # dwarfdump (SymbolToolError) or another OS error fails the launch.
-                declarations, fields, prologues, code = None, None, None, None
-                statics, results = (), None
-                detail = getattr(exc, "detail", None) or str(exc)[:120] or type(exc).__name__
-                unjudged = ("unreadable", detail, None)
+            def jumps(info):
+                nonlocal_jumps = (
+                    has_nonlocal_jumps(binary)
+                    or mentions_nonlocal_jumps(prepared.workspace / name for name in sources)
+                    # A header outside the workspace can hide the builtin in a macro;
+                    # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
+                    or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
+                )
+                if not nonlocal_jumps:
+                    return None
+                # Which functions may call setjmp is read from their source: its
+                # family's names, or a macro naming one, including those of headers
+                # outside the program (a TRY macro).
+                return returning_twice(
+                    Path(path).read_bytes().decode("utf-8", errors="replace") for path in external
+                )
+
+            found = read_program_symbols(
+                dwarfdump,
+                symbols,
+                prepared.workspace,
+                env,
+                text,
+                sources,
+                self.language,
+                jumps,
+                deadline=deadline,
+            )
             session = NativeSession(
                 self,
                 prepared,
@@ -5427,25 +5367,136 @@ class NativeTarget:
                 binary,
                 symbols,
                 external,
-                declarations=declarations,
-                typedefs=typedefs,
-                fields=fields,
-                unjudged=unjudged,
-                returns_twice=returns_twice,
-                prologues=prologues,
-                code=code,
-                statics=statics,
-                results=results,
                 optimized=(
                     any(optimized.values()) if set(optimized) == set(self.sources) else None
                 ),
-                tail_calls=tail_calls,
+                **found,
             )
             session.assert_current()
             return session
         except BaseException:
             prepared.cleanup()
             raise
+
+
+def read_program_symbols(
+    dwarfdump,
+    symbols,
+    workspace,
+    env,
+    text,
+    declared,
+    language,
+    jumps,
+    *,
+    deadline=None,
+    cwd=None,
+):
+    """What NativeSession takes of a build's debug information (`--debug-info`, then
+    `--debug-addr`), read with its line table ``text`` for the ``declared`` sources: its
+    typedefs, fields, unjudged, returns_twice, prologues, code, statics, results,
+    tail_calls and declarations. ``jumps(info)``: its ``returns_twice``. Debug
+    information over Peeky's bounds, or that its parse can't read, reads as unjudged
+    (``unjudged`` says why); a read that times out, or a failing dwarfdump, fails.
+    ``cwd``: where dwarfdump runs, if not in ``workspace``."""
+    typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
+    tail_calls = None
+    code, statics, results = None, (), None
+    try:
+        info = read_debug_info(
+            dwarfdump,
+            [["--debug-info", str(symbols)], ["--debug-addr", str(symbols)]],
+            cwd or workspace,
+            env,
+            timeout=_remaining(deadline),
+        )
+        tail_calls = has_tail_calls(info)
+        with _reusing_dies():
+            typedefs = typedef_kinds(info)
+            prologues, code = [], {}
+            declarations = local_declarations(
+                info, text, workspace, declared, prologues=prologues, code=code
+            )
+            returns_twice = jumps(info)
+            if declarations is not None:
+                from peeky.fields import CPP_LIBRARIES, HASHED, type_graph
+                from peeky.hashed_nodes import node_types
+
+                # The program's variables in static storage, which prove what a
+                # pointer at one points at live.
+                statics = static_variables(_dies(info))
+                # Which calls give a new object a binding keeps alive.
+                if language == "cpp":
+                    results = (
+                        call_arguments(_dies(info)),
+                        allocation_replaced(_dies(info)),
+                    )
+                # The types field and element changes walk, and theirs.
+                fields = type_graph(
+                    _dies(info),
+                    {
+                        kind
+                        for function in declarations
+                        for kinds in (function["types"] or {}).values()
+                        for kind, _, _ in kinds
+                    }
+                    | {kind for _, _, kind in statics},
+                    CPP_LIBRARIES,
+                )
+                # And, one level down, what their pointers and references reach:
+                # previews of `p[0]` and of a reference. Changes never
+                # walk through either, so these types change nothing.
+                aimed = {
+                    node[2]
+                    for node in fields.values()
+                    if node[0] in ("pointer", "reference") and node[2] is not None
+                } - set(fields)
+                if aimed:
+                    for offset, node in type_graph(_dies(info), aimed, CPP_LIBRARIES).items():
+                        fields.setdefault(offset, node)
+                if any(
+                    node[0] == "record" and HASHED.match(node[11] or "")
+                    for node in fields.values()
+                    if len(node) > 11
+                ):
+                    # The node types of the unordered containers, which no
+                    # local reaches but through a pointer: their entries are
+                    # read from the nodes.
+                    hashed = type_graph(_dies(info), node_types(_dies(info)), CPP_LIBRARIES)
+                    for offset, node in hashed.items():
+                        fields.setdefault(offset, node)
+                    # And what an entry's pointer points at, which names its
+                    # type (`Pt *`); never read.
+                    aimed = {
+                        node[2]
+                        for node in hashed.values()
+                        if node[0] == "pointer" and node[2] is not None
+                    } - set(fields)
+                    if aimed:
+                        for offset, node in type_graph(_dies(info), aimed, CPP_LIBRARIES).items():
+                            fields.setdefault(offset, node)
+    except (ValueError, RecursionError) as exc:
+        # Debug information over Peeky's bounds (SymbolLimit), or that its parse
+        # cannot read: values show as the debugger reads them, each local with a
+        # note that its initialization is not judged (and no field or element
+        # can be changed). A read that times out (TimeoutError), a failing
+        # dwarfdump (SymbolToolError) or another OS error fails the launch.
+        declarations, fields, prologues, code = None, None, None, None
+        statics, results = (), None
+        detail = getattr(exc, "detail", None) or str(exc)[:120] or type(exc).__name__
+        unjudged = ("unreadable", detail, None)
+    return {
+        "declarations": declarations,
+        "typedefs": typedefs,
+        "fields": fields,
+        "unjudged": unjudged,
+        "returns_twice": returns_twice,
+        "prologues": prologues,
+        "code": code,
+        "statics": statics,
+        "results": results,
+        "tail_calls": tail_calls,
+    }
 
 
 MAX_EXTERNAL_INPUTS = 4096
@@ -6310,6 +6361,17 @@ class NativeSession:
     # So a `stderr` line of exactly this shape is moved out of the output, and the
     # warning says a program line like it would be moved too.
     debugger_diagnostics = r"error: \S(?:.*\S)? 0x[0-9a-fA-F]{8}: DW_TAG_\w+ \S.*"
+    # The offsets of the line tables whose rows are the program's (None: every one).
+    line_tables = None
+    # The languages whose frames are placed among the functions that may run their code
+    # (_frame_roots), and withheld where Peeky can't tell which one (_unplaced).
+    placed_languages = frozenset({"cpp"})
+
+    def frame_withheld(self, frame):
+        """Why nothing of ``frame`` is shown (a Withholding), or None. A build Peeky made
+        judges every frame of its sources; a binary target's withholds those in units
+        it doesn't judge (native_binary)."""
+        return None
 
     @property
     def implicit_receiver(self):
@@ -6982,7 +7044,10 @@ class NativeSession:
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
-        self.home = prepared.workspace / ".peeky-lldb-home"
+        # The debugger's home, in the run's own directory: one the prepared build names
+        # (a Rust workspace's build, which runs in the user's own workspace), or the
+        # run's scratch (a binary target's workspace is the project's).
+        self.home = getattr(prepared, "lldb_home", None) or self.scratch / ".peeky-lldb-home"
         self.home.mkdir()
         # The build without its artifacts (build.BuildManifest.build_id): what a probe's
         # text says once per build.
@@ -7014,6 +7079,12 @@ class NativeSession:
     @property
     def lines(self):
         return json.loads(self._lines_data)
+
+    @property
+    def scratch(self):
+        """A directory of the run's own, where tools run and keep what they write:
+        the build's workspace, or a binary target's own directory (never the project's)."""
+        return getattr(self.prepared, "scratch", None) or self.prepared.workspace
 
     @property
     def verification_command(self):
@@ -7159,12 +7230,19 @@ class NativeSession:
         info = read_debug_info(
             dwarfdump,
             [["--debug-info", str(self.symbols)], ["--debug-addr", str(self.symbols)]],
-            workspace,
+            self.scratch,
             env,
             timeout=15,
         )
         table = read_line_table(
-            dwarfdump, [["--debug-line", str(self.symbols)]], workspace, env, declared, timeout=15
+            dwarfdump,
+            [["--debug-line", str(self.symbols)]],
+            workspace,
+            env,
+            declared,
+            timeout=15,
+            only=self.line_tables,
+            cwd=self.scratch,
         )
         return function_scopes(info, table, workspace, declared, settable=(CPP_LIBRARIES, None))
 
@@ -9085,7 +9163,12 @@ class NativeSession:
         what the code names (_capture_scope).
 
         A variable in static storage ``static_rows`` shows is judged there instead: its
-        storage holds its value the whole run, once C++ has run its initializer."""
+        storage holds its value the whole run, once C++ has run its initializer.
+
+        A frame Peeky doesn't judge at all (``frame_withheld``) shows nothing."""
+        withheld = getattr(self, "frame_withheld", None)
+        if withheld is not None and (why := withheld(frame)) is not None:
+            return why
         if variable.get("peekyCapture") is True:
             if (unread := self.captures_unread(frame)) is not None:
                 return f"Peeky reads no capture of this lambda here: {unread}"
@@ -9912,7 +9995,7 @@ class NativeSession:
         build's code unknown, or the frame's address."""
         language = getattr(getattr(self, "target", None), "language", None)
         pc, code = self._unslid(frame), getattr(self, "code", None)
-        if language != "cpp" or pc is None or not code:
+        if language not in getattr(self, "placed_languages", ("cpp",)) or pc is None or not code:
             return None
         adjusted = self._block_pc(frame) != pc
         place, shown = self._place(frame), (frame or {}).get("name")
@@ -9960,7 +10043,9 @@ class NativeSession:
         (_line_level). Frames outside the program's sources (the standard library's) and
         C targets are not judged so."""
         language = getattr(getattr(self, "target", None), "language", None)
-        if not getattr(self, "declarations", None) or language != "cpp":
+        if not getattr(self, "declarations", None) or language not in getattr(
+            self, "placed_languages", ("cpp",)
+        ):
             return None
         name = variable.get("name")
         # `(Return Value)` is the function a step left's, not this frame's.
