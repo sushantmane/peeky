@@ -812,6 +812,7 @@ def test_asm_in_a_header_outside_the_program_may_return_twice(project, capsys):
 PROBED_UTIL = """#if __has_include("count.h")
 #include "count.h"
 #else
+#define COUNT_T_DEFAULT 1
 typedef int count_t;
 #endif
 
@@ -823,16 +824,19 @@ int scale(int x) {
 
 
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("case", ["found", "not found", "code alone", "no record"])
+@pytest.mark.parametrize("case", ["found", "not found", "code alone", "include alone", "no record"])
 def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, case):
     # `__has_include` may have found a file when the program was built (a header path
     # from its environment, a file since gone) that the replay doesn't. With
     # -fdebug-macro (Linux), the build's record of its macros proves it found none: it
-    # would have entered count.h. Unless the branches differ in code alone.
+    # wouldn't have defined COUNT_T_DEFAULT. Unless the branches differ in code or an
+    # include alone, which may leave no record.
     (project / "src").mkdir()
     if case == "found":
         (project / "src" / "count.h").write_text("typedef int count_t;\n")
     util = PROBED_UTIL
+    if case in ("code alone", "include alone"):
+        util = util.replace("#define COUNT_T_DEFAULT 1\n", "")
     if case == "code alone":
         util = util.replace('#include "count.h"', "typedef long count_t;")
     compiler = _clang()
@@ -851,10 +855,11 @@ def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(projec
         '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
         "have found one (its environment can add header paths, and a file may since be gone)"
     )
-    if linux and case == "code alone":
+    if linux and case in ("code alone", "include alone"):
         said += (
-            "; its group's branches may differ in code alone, which the build's record of its "
-            "macros doesn't show"
+            "; two of its group's branches may leave no record of macros (only a #define or an "
+            "#undef surely does: an #include may be skipped), so the build's record can't tell "
+            "them apart"
         )
     elif linux:
         said += (

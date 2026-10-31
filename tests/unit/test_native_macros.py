@@ -7,7 +7,7 @@ from peeky.native_macros import (
     difference,
     lone,
     replay_record,
-    settled,
+    unsettled,
 )
 
 DUMP = """src/prog:\tfile format elf64-littleaarch64
@@ -111,38 +111,76 @@ STDATOMIC = """#if __STDC_HOSTED__ && \\
 
 
 def test_a_group_is_settled_where_at_most_one_branch_may_leave_no_record():
-    # clang's stdatomic.h: its #else defines macros; including the system's may leave
-    # nothing, as a file of that name was entered (clang's own).
+    # clang's stdatomic.h: its #else defines macros; its include of the system's may leave
+    # none.
     where = conditionals(STDATOMIC)
-    branches, index = where[2]
-    assert (
-        where[1] == where[2] and index == 0 and [each.kind for each in branches] == ["if", "else"]
-    )
-    assert settled(branches, {"/usr/lib/clang/18/include/stdatomic.h"})
+    group, index = where[2]
+    assert where[1] == where[2] and index == 0
+    assert [each.kind for each in group.branches] == ["if", "else"]
+    assert unsettled(group) is None
+
+    def first(text):
+        return unsettled(conditionals(text)[1][0])
+
+    silent = "two of its group's branches may leave no record of macros"
     # Code alone on both sides: unproven.
-    code = "#if __has_include(<x.h>)\nint x = 1;\n#else\nint x = 2;\n#endif\n"
-    assert not settled(conditionals(code)[1][0], set())
+    assert first("#if __has_include(<x.h>)\nint x = 1;\n#else\nint x = 2;\n#endif\n").startswith(
+        silent
+    )
     # A #define, and an absent #else, which leaves none.
-    defines = "#if __has_include(<any>) && CPP17\n#define HAS_ANY 1\n#endif\n"
-    assert settled(conditionals(defines)[1][0], set())
-    # Including a file: only one the replay entered no file of that name may leave none.
-    include = "#if __has_include(<x.h>)\n#include <x.h>\n#endif\n"
-    assert settled(conditionals(include)[1][0], {"/usr/include/y.h"})
-    assert not settled(conditionals(include)[1][0], {"/usr/include/x.h"})
-    # A #define inside a nested group may not run; an #error fails the build.
-    nested = "#if __has_include(<x.h>)\n#if A\n#define X 1\n#endif\n#endif\n"
-    assert not settled(conditionals(nested)[1][0], set())
+    assert first("#if __has_include(<any>) && CPP17\n#define HAS_ANY 1\n#endif\n") is None
+    # An #include may leave none: a file under `#pragma once` or a guard is skipped.
+    assert first("#if __has_include(<x.h>)\n#include <x.h>\n#endif\n").startswith(silent)
+    # An #error fails the build: no way past it leaves no record.
     error = '#if __has_include(<x.h>)\nint x;\n#else\n#error "no x.h"\n#endif\n'
-    assert settled(conditionals(error)[1][0], set())
+    assert first(error) is None
     # Comments and literals are no directives; an unclosed group is none.
-    commented = "#if __has_include(<x.h>)\n/*\n#define X 1\n*/\n#endif\n"
-    assert not settled(conditionals(commented)[1][0], set())
+    assert first("#if __has_include(<x.h>)\n/*\n#define X 1\n*/\n#endif\n").startswith(silent)
     assert conditionals("#if __has_include(<x.h>)\n#define X 1\n") == {}
+
+
+def test_a_group_within_a_branch_leaves_a_record_where_each_way_through_it_does():
+    # Each branch of the inner group defines X, and it has an #else: the outer branch
+    # surely leaves a record.
+    nested = (
+        "#if __has_include(<x.h>)\n#  if A\n#    define X 1\n#  else\n#    define X 2\n"
+        "#  endif\n#endif\n"
+    )
+    assert unsettled(conditionals(nested)[1][0]) is None
+    # No #else, or a branch defining nothing: a way through it leaves none.
+    for inner in (
+        "#  if A\n#    define X 1\n#  endif\n",
+        "#  if A\n#    define X 1\n#  else\n#  endif\n",
+    ):
+        text = f"#if __has_include(<x.h>)\n{inner}#endif\n"
+        assert unsettled(conditionals(text)[1][0]) is not None, inner
+    # A way through it that ends in an #error is none the build took.
+    errors = "#if __has_include(<x.h>)\n#  if A\n#    define X 1\n#  else\n#    error no\n#  endif\n#endif\n"
+    assert unsettled(conditionals(errors)[1][0]) is None
+
+
+def test_a_group_holding_a_line_directive_is_unsettled():
+    # `#line 100` in each branch: both define M on line 100, the same record, but their
+    # code differs.
+    said = "its group holds a #line or a line marker"
+    lined = (
+        '#if __has_include("gone.h")\n#line 100\n#define M 1\nint x = 1;\n#else\n'
+        "#line 100\n#define M 1\nint x = 2;\n#endif\n"
+    )
+    assert unsettled(conditionals(lined)[1][0]).startswith(said)
+    marker = lined.replace("#line 100", '# 100 "a.h"')
+    assert unsettled(conditionals(marker)[1][0]).startswith(said)
+    # In a group within it too.
+    inner = (
+        "#if __has_include(<x.h>)\n#define X 1\n#if A\n#line 7\n#endif\n#else\n"
+        "#define X 2\n#endif\n"
+    )
+    assert unsettled(conditionals(inner)[1][0]).startswith(said)
 
 
 def test_a_branch_asking_for_a_file_alone_is_known():
     def first(condition):
-        return lone(conditionals(f"#if {condition}\n#endif\n")[1][0][0])
+        return lone(conditionals(f"#if {condition}\n#endif\n")[1][0].branches[0])
 
     assert first("__has_include(<bits/types/mbstate_t.h>)") == "__has_include"
     assert first('( __has_include_next("x.h") )') == "__has_include_next"

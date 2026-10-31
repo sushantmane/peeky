@@ -742,11 +742,11 @@ def _moot(probe, path, listed, lists, named, cache):
     group after one whose condition is a probe alone that finds a file now that the line
     table names (``named``): a probe the build answered so too, so that branch is taken
     where reached, and the probe never runs."""
-    group = _groups(path, cache).get(probe.line)
-    if group is None:
+    found = _groups(path, cache).get(probe.line)
+    if found is None:
         return False
-    branches, index = group
-    for branch in branches[:index]:
+    group, index = found
+    for branch in group.branches[:index]:
         kind = native_macros.lone(branch) if branch.kind in ("if", "elif") else None
         asking = [
             each for each in listed if branch.line <= each.line <= branch.end and each.kind == kind
@@ -893,7 +893,7 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None, record=No
     Pending, unless ``record`` is that record (native_macros.build_records'). Then the
     preprocessing is replayed with `-dD` too, and must leave the same record; the line
     table must name only files it read; and each probe's group must be settled
-    (native_macros.settled)."""
+    (native_macros.unsettled)."""
     unit, name = judged.unit, judged.name
 
     def unread(why):
@@ -1062,12 +1062,11 @@ def _proven(why, record, argv, env, comp_dir, timeout, root, facts):
     for issue in _unproven_probe(inputs, lists, root, probed, unnamed, named, entered):
         if not issue.provable:
             return issue.why
-        group = _groups(issue.path, probed).get(issue.probe.line)
-        if group is None or not native_macros.settled(group[0], entered):
-            return (
-                f"{issue.why}; its group's branches may differ in code alone, which the build's "
-                "record of its macros doesn't show"
-            )
+        found = _groups(issue.path, probed).get(issue.probe.line)
+        if found is None:
+            return f"{issue.why}; Peeky finds no #if group the probe chooses a branch of"
+        if (why := native_macros.unsettled(found[0])) is not None:
+            return f"{issue.why}; {why}"
     return None
 
 

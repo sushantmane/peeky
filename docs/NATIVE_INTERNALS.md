@@ -118,14 +118,17 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   `replay_units` reads `.debug_macro` once for every Pending unit (`build_records`), and replays
   each again (`_proven`). The replay with `-dD` must leave the same record (`replay_record`):
   each file entered, by the line including it, and each `#define` and `#undef`, by line. The
-  line table must name only files the replay read. Each probe's group must be `settled`.
+  line table must name only files the replay read. No probe's group may be `unsettled`.
 - A branch's directives leave records on its own lines, so two branches leave the same record
-  only where neither leaves any. A branch surely leaves one where its top level holds a
-  `#define`, an `#undef` or an `#error`, or includes a file the replay entered by no such name.
-  So where at most one branch may leave none, an absent `#else` counting as one, the build took
-  the replay's branch. clang's `stdatomic.h` defines macros where it doesn't include the
-  system's. Branches that differ in code alone stay unproven, as do probes in macros. A header
-  reached by two names, one only in the build's environment, is outside what Peeky checks.
+  only where neither leaves any. A branch surely leaves one where every way through it does
+  (`_sure`): it holds a `#define`, an `#undef` or an `#error` (no build gets past one), or a
+  group with an `#else` each branch of which surely leaves one. An `#include` may leave none: a
+  file under `#pragma once` or a guard, already included, is skipped. So where at most one
+  branch may leave none, an absent `#else` counting as one, the build took the replay's branch.
+  clang's `stdatomic.h` defines macros where it doesn't include the system's. Branches that
+  differ in code or includes alone stay unproven, as do probes in macros.
+- A group holding a `#line` or a line marker, at any depth, stays unproven: two branches may
+  each say `#line 100` and define the same macro, the same record for different code.
 - So does a recorded `-D` (`_defined_probe`) whose value names a probe, holds `#` or `##`,
   which may paste one together, or holds any three characters of a probe's name. String
   literals don't count. A probe the source itself pastes together from pieces is outside what

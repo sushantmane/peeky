@@ -10,11 +10,14 @@ entered the files the replay did and ran the same macro directives, on the same 
 
 A probe chooses a branch of its group (``conditionals``). Each branch's directives leave
 records on its own lines, so two branches leave the same record only where neither leaves
-any. A branch surely leaves one where its top level holds a `#define`, an `#undef` or an
-`#error` (a build can't take it), or includes a file the replay entered by no such name
-(``settled``). So where at most one branch may leave none, an absent `#else` counting as
-one, the build took the replay's branch. A probe whose branches differ in code alone stays
-unproven.
+any. A branch surely leaves one where every way through it that the build may take does
+(``unsettled``): it holds a `#define` or an `#undef`, or an `#error` (a build can't get
+past it), or a group within it every branch of which surely leaves one, with an `#else`. An
+`#include` may leave none: a file already included under `#pragma once` or a guard is
+skipped. So where at most one branch may leave none, an absent `#else` counting as one,
+the build took the replay's branch. A probe whose branches differ in code or includes alone
+stays unproven, as does one whose group holds a `#line` or a line marker, under which two
+branches' records may be alike.
 """
 
 import os
@@ -29,11 +32,9 @@ _HEADER = re.compile(r"macro header: .*\bdebug_line_offset = (0x[0-9a-fA-F]+)")
 _EVENT = re.compile(r"DW_MACRO_(\w+) - lineno: (\d+) (?:filenum: (\d+)|macro: ?(.*))$")
 _MARKER = re.compile(r'# (\d+) "((?:[^"\\]|\\.)*)"((?: \d)*)$')
 _DIRECTIVE = re.compile(r"[ \t]*#[ \t]*(\w*)")
-_OPERAND = re.compile(r'[ \t]*(?:<([^>\n]*)>|"([^"\n]*)")')
 _LONE = re.compile(r"(__has_include_next|__has_include)[ \t]*\(")
-# Directives a branch's top level may hold that always leave a record, or fail the build.
+# Directives that always leave a record, or fail the build.
 _RECORDED = frozenset(("define", "undef", "error"))
-_INCLUDES = frozenset(("include", "include_next", "import"))
 
 
 def build_records(lines, files):
@@ -159,8 +160,8 @@ def _said(event, shown):
 @dataclass
 class Branch:
     """One branch of a conditional group: its directive's lines (``line`` to ``end``),
-    which (`if`, `elif`, `else`, …), its condition (blanked), and the directives its top
-    level holds: (name, header written out or None)."""
+    which (`if`, `elif`, `else`, …), its condition (blanked), and what of it may leave a
+    record of macros, in order: `define`, `undef`, `error`, or a Group within it."""
 
     line: int
     end: int
@@ -169,60 +170,84 @@ class Branch:
     holds: list = field(default_factory=list)
 
 
+@dataclass
+class Group:
+    """A conditional group: its branches, and whether a `#line` or a line marker is within
+    it (``renumbered``), under which two branches' records may be alike."""
+
+    branches: list
+    renumbered: bool = False
+
+
 def conditionals(text):
-    """{line: (branches, index)}: for each line of an `#if` or `#elif` directive of
-    ``text``, the branches of its group and which it begins. A group left unclosed is
-    none."""
+    """{line: (group, index)}: for each line of an `#if` or `#elif` directive of ``text``,
+    its Group and which branch it begins. A group left unclosed is none."""
     original = normalized(text)
-    sources, blanked = original.split("\n"), blank(original).split("\n")
+    blanked = blank(original).split("\n")
     stack, groups, at = [], [], 0
     while at < len(blanked):
-        first, logical, source = at, blanked[at], sources[at]
+        first, logical = at, blanked[at]
         while logical.endswith("\\") and at + 1 < len(blanked):
             at += 1
-            logical, source = logical[:-1] + blanked[at], source[:-1] + sources[at]
+            logical = logical[:-1] + blanked[at]
         at += 1
         directive = _DIRECTIVE.match(logical)
         if directive is None:
             continue
-        name, rest = directive[1], logical[directive.end() :]
-        branch = Branch(first + 1, at, name, rest)
+        name = directive[1]
+        branch = Branch(first + 1, at, name, logical[directive.end() :])
         if name in ("if", "ifdef", "ifndef"):
-            stack.append([branch])
+            group = Group([branch])
+            if stack:
+                stack[-1].branches[-1].holds.append(group)
+            stack.append(group)
         elif name in ("elif", "elifdef", "elifndef", "else") and stack:
-            stack[-1].append(branch)
+            stack[-1].branches.append(branch)
         elif name == "endif" and stack:
             groups.append(stack.pop())
-        elif stack and (name in _RECORDED or name in _INCLUDES):
-            operand = _OPERAND.match(source, directive.end())
-            header = None
-            if operand is not None and name in _INCLUDES:
-                header = operand[1] if operand[1] is not None else operand[2]
-            stack[-1][-1].holds.append((name, header))
+        elif name == "line" or name.isdigit():
+            for group in stack:
+                group.renumbered = True
+        elif stack and name in _RECORDED:
+            stack[-1].branches[-1].holds.append(name)
     where = {}
     for group in groups:
-        for index, branch in enumerate(group):
+        for index, branch in enumerate(group.branches):
             if branch.kind in ("if", "elif"):
                 for line in range(branch.line, branch.end + 1):
                     where[line] = (group, index)
     return where
 
 
-def settled(branches, entered):
-    """Whether at most one of a group's ``branches``, an absent `#else` counting as one,
-    may leave no record of macros: each other's top level holds a `#define`, an `#undef`
-    or an `#error`, or includes a file whose name no file the replay entered has
-    (``entered``: their paths)."""
-    names = {posixpath.basename(path) for path in entered}
+def _sure(holds):
+    """Whether every way the build may take through what a branch ``holds`` leaves a record
+    of macros."""
+    return any(
+        held in _RECORDED
+        if isinstance(held, str)
+        else held.branches[-1].kind == "else"
+        and all(_sure(branch.holds) for branch in held.branches)
+        for held in holds
+    )
 
-    def leaves(branch):
-        return any(
-            name in _RECORDED or (header is not None and posixpath.basename(header) not in names)
-            for name, header in branch.holds
+
+def unsettled(group):
+    """Why the build's record of its macros may not tell which branch of ``group`` the
+    build took, or None: at most one of its branches, an absent `#else` counting as one,
+    may leave no record, and no `#line` or line marker is within it."""
+    if group.renumbered:
+        return (
+            "its group holds a #line or a line marker, under which two of its branches may "
+            "leave the same record of macros"
         )
-
-    silent = sum(not leaves(branch) for branch in branches)
-    return silent + (branches[-1].kind != "else") <= 1
+    silent = sum(not _sure(branch.holds) for branch in group.branches)
+    if silent + (group.branches[-1].kind != "else") > 1:
+        return (
+            "two of its group's branches may leave no record of macros (only a #define or an "
+            "#undef surely does: an #include may be skipped), so the build's record can't "
+            "tell them apart"
+        )
+    return None
 
 
 def lone(branch):

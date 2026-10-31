@@ -1027,12 +1027,47 @@ def test_a_probe_finding_none_is_proven_by_the_build_s_record_of_its_macros(root
         "src/a.h, the build recorded #define HAVE_X on line 3, the replay #define HAVE_X on line 4"
     )
     # A group whose branches differ in code alone: the record can't tell.
+    silent = (
+        "; two of its group's branches may leave no record of macros (only a #define or an "
+        "#undef surely does: an #include may be skipped), so the build's record can't tell "
+        "them apart"
+    )
     (root / "src" / "a.h").write_text(
         "#if __has_include(<extra/config.h>)\nint x = 1;\n#else\nint x = 2;\n#endif\n"
     )
-    assert _replay(root, tmp_path, record=_record(root)) == (
-        f"{said}; its group's branches may differ in code alone, which the build's record of "
-        "its macros doesn't show"
+    assert _replay(root, tmp_path, record=_record(root)) == said + silent
+    # Nor where one includes a file: one under `#pragma once` or a guard, already included
+    # by another name (a link), leaves no record.
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<extra/config.h>)\n#include <extra/config.h>\n#else\nint x = 2;\n"
+        "#endif\n"
+    )
+    assert _replay(root, tmp_path, record=_record(root)) == said + silent
+
+
+def test_a_probe_whose_group_holds_a_line_directive_stays_unproven(root, tmp_path):
+    # A header since removed: had the build found it, each branch defines M "on line 100",
+    # the same record, but their code differs.
+    from peeky.native_binary import Pending
+
+    (root / "src" / "a.h").write_text(
+        '#if __has_include("gone.h")\n#line 100\n#define M 1\nint x = 1;\n#else\n#line 100\n'
+        "#define M 1\nint x = 2;\n#endif\n"
+    )
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(
+        DUMPED.replace("\n\n\n#define HAVE_X 0\n", '# 100 "src/a.h"\n#define M 1\nint x = 2;\n')
+    )
+    _search(root, tmp_path / "include")
+    first = _replay(root, tmp_path)
+    assert isinstance(first, Pending)
+    record = [
+        ("define", 100, "M 1") if event[0] == "define" and event[1] == 4 else event
+        for event in _record(root)
+    ]
+    assert _replay(root, tmp_path, record=record) == (
+        f"{first.why}; its group holds a #line or a line marker, under which two of its "
+        "branches may leave the same record of macros"
     )
 
 
