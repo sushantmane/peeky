@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
 from peeky import rust_workspace
+from peeky.agent import check_stop
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
 from peeky.digest import sha256_file
 from peeky.textlines import split_lines
@@ -610,12 +611,16 @@ def _environment(target, home, directory, wrapper, analysed, units, project=()):
 
 
 def _hash(path, store=None):
+    """``path``'s SHA-256; first, a stopped build ends here (agent.check_stop): every file
+    the build hashes is a step it checks its stop at."""
+    check_stop()
     return sha256_file(path, store=store)
 
 
 def _digest(store):
-    """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules)."""
-    return lambda path: sha256_file(path, store=store)
+    """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules), and
+    ends a stopped build first (``_hash``)."""
+    return lambda path: _hash(path, store=store)
 
 
 def _snapshot(shape, vendor):
@@ -650,6 +655,7 @@ def _snapshot(shape, vendor):
             seen.add(base)
             folders[:] = [name for name in folders if str(Path(base, name)) not in skipped]
             for name in (".", *folders, *files):
+                check_stop()
                 path = os.path.normpath(os.path.join(base, name))
                 if "l:" + path in found:
                     # A directory, recorded as its parent's entry.
@@ -710,9 +716,9 @@ def _absent_before(path, before):
             "it is outside what Peeky records before a build (the workspace, less a `target` "
             "directory at its top)",
         )
-    for failing, why in before.get(":uncovered", ()):
-        if path.is_relative_to(failing) or Path(failing).is_relative_to(path):
-            return ("unread", f"Peeky couldn't read {failing} before the build ({why})")
+    if (found := _uncovered_on(path, before)) is not None:
+        failing, why = found
+        return ("unread", f"Peeky couldn't read {failing} before the build ({why})")
     # The deepest directory on the way that was listed whole: the next step down from it
     # wasn't among its entries, so nothing under it was there.
     if (ancestor := _listed_ancestor(path, before)) is not None:
@@ -721,6 +727,30 @@ def _absent_before(path, before):
             return ("there", f"{step} was there before the build")
         return None
     return ("outside", "it is outside what Peeky records before a build")
+
+
+def _uncovered_on(path, before):
+    """(a path _snapshot couldn't read, why) that is ``path``, on its way, or under it; or
+    None. Looked up by ``path`` and its directories in an index of the uncovered paths and
+    every directory on their way, made once per snapshot: never a scan per path."""
+    index = before.get(":uncovered-index")
+    if index is None:
+        index = {}
+        for failing, why in before.get(":uncovered", ()):
+            for each in (Path(failing), *Path(failing).parents):
+                index.setdefault(str(each), (failing, why))
+        before[":uncovered-index"] = index
+        before[":uncovered-paths"] = {
+            str(Path(failing)) for failing, _ in before.get(":uncovered", ())
+        }
+    if (found := index.get(str(path))) is not None:
+        # ``path`` is uncovered, or on the way to one: under it.
+        return found
+    paths = before[":uncovered-paths"]
+    for each in path.parents:
+        if str(each) in paths:
+            return index[str(each)]
+    return None
 
 
 def _dangling_on_the_way(path, before):
@@ -1275,6 +1305,14 @@ def jobs():
 
 
 def _spend(budget, where):
+    """Spend one of ``budget``'s entries (a list of one count) on what ``where`` holds;
+    past it, refused. A stopped build ends here first (agent.check_stop): every entry a
+    walk records is a step it checks its stop at."""
+    check_stop()
+    _spend_one(budget, where)
+
+
+def _spend_one(budget, where):
     budget[0] -= 1
     if budget[0] < 0:
         raise ValueError(
@@ -1566,6 +1604,7 @@ def _compared_file(directory, name, root, walked):
     hop by hop inside ``root`` (sources._inside), never out of it."""
     from peeky.sources import LinkLoop, OutsideRoot, _inside
 
+    check_stop()
     root = Path(os.path.realpath(root))
     path = Path(directory) / name
     if not os.path.lexists(path):
@@ -1646,6 +1685,7 @@ def _build_inputs(
     def unchanged(path):
         # The entry itself (a directory, a link, a file), and a file's contents; never
         # through a link.
+        check_stop()
         if _entry_changed_during(path, before, started_ns) or (
             Path(path).is_file()
             and not Path(path).is_symlink()
@@ -1676,9 +1716,10 @@ def _build_inputs(
                     f"{why}: Peeky compares every file of {_shown(directory, root)} with a remote "
                     "client's instead, but .DS_Store, Thumbs.db and desktop.ini"
                 )
+            # Each directory that holds an entry, in one pass: compared by its entries.
+            holding = {name.rpartition("/")[0] for name in trees[key]}
             for name, what in trees[key].items():
-                if what == ["dir"] and any(other.startswith(f"{name}/") for other in trees[key]):
-                    # A directory with entries is compared by them.
+                if what == ["dir"] and name in holding:
                     continue
                 if isinstance(what, list) and what[0] == "link":
                     _reachable(directory / name, root)
@@ -1922,6 +1963,7 @@ def _check_bootstrap_mentions(read, root, target_dir, whose):
     files = [(path, Path(root) / path) for path in read["sources"]]
     files += [(f"{path} (generated)", Path(target_dir) / path) for path in read["generated"]]
     for path, where in files:
+        check_stop()
         if where.name.endswith(".rs") and b"RUSTC_BOOTSTRAP" in where.read_bytes():
             raise ValueError(
                 f"Peeky analyses only code built as stable Rust builds it: {whose}'s {path} "
@@ -1963,6 +2005,7 @@ def _copy_executable(executable, run):
 def _artifacts(directory, run, store):
     found = {}
     for path in sorted(run.rglob("*")):
+        check_stop()
         if path.is_symlink():
             raise ValueError(f"Peeky's build holds a link: {path}")
         if path.is_file():

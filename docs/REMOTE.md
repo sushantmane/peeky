@@ -225,7 +225,8 @@ set x: 5 -> 100
   ends, within the build's deadline of 900 s. A build that outlives the client goes on there:
   run the same command again to wait for it.
 - **A build ends with its worker.** A `shutdown`, SIGTERM or the idle timeout stops it first, and
-  kills Cargo and every process Cargo ran, build scripts too. A running build is activity, so
+  kills Cargo and every process Cargo ran, build scripts too. Peeky's own walking and hashing
+  stops at its next entry. A running build is activity, so
   the idle timeout waits for it.
 - **A build that doesn't end is never called stopped.** If the build still runs 30 s after the
   worker stopped it, `shutdown` is refused with `BUSY`, and the worker keeps running. If any

@@ -890,3 +890,30 @@ def test_an_empty_directory_a_package_walk_names_is_compared(tmp_path):
         "util/feature-enabled (the copy on the worker host differs from your checkout, in its "
         "contents or in where a link is or points)"
     )
+
+
+def test_a_worker_stops_a_build_busy_in_its_own_work(tmp_path, monkeypatch):
+    # A build walking and hashing a package (no process running) ends at its next entry
+    # once the worker stops it, so the worker's end isn't held up.
+    from peeky import rust_build
+
+    for index in range(500):
+        (tmp_path / "pkg" / f"d{index}").mkdir(parents=True)
+
+    def walking(target, root, *, deadline=None, progress=None):
+        while True:
+            rust_build._tree(tmp_path / "pkg", budget=[rust_build.MAX_RECORDED])
+
+    monkeypatch.setattr(rust_build, "_build", walking)
+    target = SimpleNamespace(
+        compared_names=lambda root: ("Cargo.toml",),
+        build=lambda root, *, deadline=None, stop=None: rust_build.build(
+            None, root, deadline=deadline, stop=stop
+        ),
+    )
+    builds = _RemoteBuilds()
+    worker = SimpleNamespace(adapter=target, root=tmp_path, last_used=0.0)
+    assert builds.request(worker, {"wait": 0.2})["status"] == "building"
+    started = time.monotonic()
+    assert builds.close(timeout=10) is None
+    assert time.monotonic() - started < 5 and not builds.active()

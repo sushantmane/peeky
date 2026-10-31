@@ -168,7 +168,9 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
 - `_RemoteBuilds.close` sets the build's `stop` and joins it, before every way the worker
   ends. Each process the build runs is an `execute` in its thread, which takes that `stop`
   from `agent.stopping`: once set, it kills Cargo's process group and starts nothing.
-  A running build is the worker's activity (`active`).
+  Peeky's own work in the build checks it at every entry it walks, hashes or lists
+  (`agent.check_stop`, in `_spend`, `_hash` and `_compared_file`), and each such loop is
+  linear. A running build is the worker's activity (`active`).
 - Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
   reaped, or that started nothing. A kill or reap that fails raises its own error, with the
   group in its `process_group`, and is never hidden. A build's error that carries one, on it or

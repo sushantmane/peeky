@@ -114,6 +114,15 @@ def stopping(event):
         _STOP.reset(token)
 
 
+def check_stop():
+    """Raise Stopped (started False) where ``stopping``'s event is set: a loop of Peeky's
+    own work in a stopped build (walking, hashing, listing) ends at its next entry, as its
+    next process would never start."""
+    event = _STOP.get()
+    if event is not None and event.is_set():
+        raise Stopped(("peeky",), started=False)
+
+
 class Stopped(RuntimeError):
     """An ``execute`` that ``stopping``'s event ended: its process group was sent SIGKILL
     and its leader reaped, or, with ``started`` False, it started none."""

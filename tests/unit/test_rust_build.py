@@ -704,6 +704,69 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
     assert asked == ["app@0.1.0", "app@0.1.0"]
 
 
+def test_many_empty_directories_are_listed_in_one_pass(tmp_path):
+    # 32,000 empty directories in a package Cargo can't list: each is named (a build script
+    # may look for it), each by one membership test, not a scan of the walk per directory
+    # (~5e8 prefix checks, minutes, with no stop checked).
+    import time
+
+    root = tmp_path / "ws"
+    write(root, {"app/build.rs": "", "app/src/main.rs": "", "app/a/b/c.txt": "c\n"})
+    for index in range(32000):
+        os.mkdir(root / "app" / f"empty-{index}")
+    (root / "app/a/empty").mkdir()
+    messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
+    started = time.monotonic()
+    found = rb._build_inputs(
+        fake_shape(tmp_path),
+        root,
+        messages,
+        {"CC": None},
+        {},
+        LATER,
+        None,
+        1,
+        lambda package: (None, "it failed"),
+    )
+    assert time.monotonic() - started < 20
+    files = found["lists"][str(root / "app")]["files"]
+    assert sum(1 for name in files if name.startswith("empty-")) == 32000
+    # A directory that holds an entry is compared by it; an empty one by its name.
+    assert "a" not in files and "a/b" not in files and "src" not in files
+    assert files["a/empty"] == "dir" and "a/b/c.txt" in files
+
+
+def test_a_stopped_builds_own_work_ends_at_its_next_entry(tmp_path, monkeypatch):
+    import threading
+
+    from peeky.agent import Stopped, stopping
+
+    for index in range(200):
+        (tmp_path / "pkg" / f"d{index}").mkdir(parents=True)
+    (tmp_path / "pkg/file.txt").write_text("f\n")
+    stop = threading.Event()
+    stop.set()
+    # A walk, a hash, a listed file: each checks the stop first.
+    with stopping(stop):
+        for work in (
+            lambda: rb._tree(tmp_path / "pkg", budget=[1000]),
+            lambda: rb._hash(tmp_path / "pkg/file.txt"),
+            lambda: rb._compared_file(tmp_path / "pkg", "file.txt", tmp_path, {}),
+        ):
+            with pytest.raises(Stopped) as caught:
+                work()
+            assert caught.value.started is False
+    # Outside a stopped build, nothing is checked.
+    assert len(rb._tree(tmp_path / "pkg", budget=[1000])) == 201
+    # A build stopped in its own work ends as stopped, its next process never started.
+    monkeypatch.setattr(
+        rb, "_build", lambda *args, **kwargs: rb._tree(tmp_path / "pkg", budget=[1000])
+    )
+    with pytest.raises(rb.BuildStopped) as caught:
+        rb.build(None, tmp_path, stop=stop)
+    assert "its next process never started" in str(caught.value)
+
+
 def test_a_record_of_an_earlier_schema_is_build_required_before_it_is_read(tmp_path, monkeypatch):
     from tests.unit.test_rust_workspace_worker import toolchain
 
