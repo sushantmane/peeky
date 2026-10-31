@@ -67,7 +67,12 @@
   a current build, or with a source, a manifest or a build script's input edited since, is
   refused with the new `BUILD_REQUIRED`, naming the file and the command, and never builds;
   `--build` builds first. A changed lockfile, configuration or vendored copy is
-  `PROVENANCE_CHANGED`. Probing a workspace's values comes next.
+  `PROVENANCE_CHANGED`.
+- **A Rust workspace's build is probed (ADR 0008, phase 2):** a probe or session reads the
+  analysed packages' values, from their own MIR, and stops only in their files. A dependency's
+  code is unknown code, taken as sound: a change it may keep a copy of is refused, naming the
+  call, its line and its crate. So is one the crate's own code may hand on to it. A dependency's
+  frame is read as a library's. The source scans read the crate as rustc expands it.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

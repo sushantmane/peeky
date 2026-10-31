@@ -332,6 +332,12 @@ message says `cannot be changed here`.
   Where every path then panics or exits first: ``every path from here panics or exits before
   reading `x` ``. Where a path never leaves a loop: ``on a path from here the program loops
   forever without reading `x` ``.
+- Rust, in a workspace's build: not where a dependency's code was given the value before the stop.
+  That is the value itself, a copy of it, or a pointer into it. Peeky reads no dependency's code,
+  so it may keep a copy that a change would not reach: ``a call to `smallnum::keep` (dependency
+  `smallnum`) on line 17 is given a pointer into `x` ``. The crate's own code counts where it may
+  hand the value on: ``a call to `forward` on line 54 is given a pointer into `x`, and may hand it
+  on to `smallnum::keep` ``. The hint says to change it before the program hands it on.
 - Rust: not where no path reads the value again before it is overwritten or goes out of scope. The
   stop's own line counts, as `total = k + 3;` does for `total`:
   `the program does not read it after this stop, so a change would never be seen: it is overwritten

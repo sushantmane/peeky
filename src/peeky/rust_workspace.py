@@ -1104,6 +1104,10 @@ class WorkspaceShape:
     # build script run of its profile and features, from the unit graph's
     # `run-custom-build` units.
     build_profiles: tuple[tuple[str, str, str, tuple[str, ...]], ...] = ()
+    # The name of each crate the build compiles (a unit's target, `-` as `_`) and each
+    # name a crate calls a dependency by (`extern_crate_name`, a renamed one's own): the
+    # roots the MIR prints another crate's paths under (rust_mir's ``_foreign_root``).
+    crates: tuple[str, ...] = ()
 
     def cargo_arguments(self):
         """Cargo's subcommand and target selection for this run (after `cargo`)."""
@@ -1458,7 +1462,21 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
                 if unit["mode"] == "run-custom-build"
             )
         ),
+        _crate_names(units),
     )
+
+
+def _crate_names(units):
+    """``WorkspaceShape.crates`` of the unit graph's ``units``: each unit's target name
+    (`-` as `_`, as rustc names the crate), and each name a unit calls a dependency
+    by, its `extern_crate_name`."""
+    found = set()
+    for unit in units:
+        found.add(str(unit["target"]["name"]).replace("-", "_"))
+        for each in unit.get("dependencies") or ():
+            if isinstance(each.get("extern_crate_name"), str):
+                found.add(each["extern_crate_name"])
+    return tuple(sorted(found))
 
 
 def _run_target(run, graph, units, local):

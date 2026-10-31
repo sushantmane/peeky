@@ -1171,6 +1171,92 @@ _READINGS = (
 )
 
 
+# The stop's place, as ``OwnedLocals.foreign_given`` takes it.
+_PLACE_KEYS = ("hashed", "variable_name", "line", "path", "breakpoint", "column", "block")
+# What a dependency's call is given of the local (``OwnedLocals.foreign_given``).
+_FOREIGN_GIVEN = {
+    "value": "{target}",
+    "pointer": "a pointer into {target}",
+    "copy": "what may hold a copy of {target}, or a value computed from it",
+    "unknown": "what may be {target}, a copy of it or a pointer into it (Peeky's flow of "
+    "its copies is past its budget there)",
+}
+
+
+def _foreign_crate(root, analysed):
+    """How a note names the crate ``root`` of ``rust_mir._foreign_root``."""
+    if root == "?":
+        return "code a dependency's type may supply: a trait object or a type parameter"
+    if root == "!":
+        return "code of the crate's Peeky can't read"
+    if root.startswith("~"):
+        crate = root[1:]
+        named = (
+            f"crate `{crate}`, which Peeky proves apart"
+            if crate in analysed
+            else f"dependency `{crate}`"
+        )
+        return f"which may run code of a type of {named}"
+    if root in analysed:
+        return f"crate `{root}`, which Peeky proves apart"
+    return f"dependency `{root}`"
+
+
+def _foreign_row(row, analysed=frozenset()):
+    """What a row's mark says of the first call ``row`` of ``_foreign_note``'s: `a
+    dependency may hold a copy (`smallnum::keep`, line 17)`."""
+    _, line, what, root, _, via = row
+    crate = root.lstrip("~")
+    who = (
+        "code Peeky can't read"
+        if crate == "!"
+        else "another crate"
+        if crate in analysed
+        else "a dependency"
+    )
+    return (
+        f"{who} may hold a copy ({what}"
+        + (f", line {line}" if line is not None else "")
+        + (f", which may hand it on to {via[0]}" if via else "")
+        + ")"
+    )
+
+
+def _foreign_note(rows, target, home, analysed=frozenset()):
+    """The reason a change of ``target`` can't reach a copy a dependency may keep: each
+    call or drop of ``rows`` (``OwnedLocals.foreign_given``'s) given it, its line and
+    the crate whose code it runs, or the code of the crate's it runs that may hand it on
+    to that crate's (via); at most three, then how many more."""
+    parts = []
+    for file, line, what, root, how, via in rows[:3]:
+        where = "" if line is None else f" on {_line_list({(file, line)}, home)}"
+        given = _FOREIGN_GIVEN[how].format(target=target)
+        drop = what.startswith(("the drop of ", "a drop"))
+        if via is None:
+            crate = f" ({_foreign_crate(root, analysed)})"
+            parts.append(
+                f"{what}{crate}{where} drops {given}"
+                if drop
+                else f"a call to {what}{crate}{where} is given {given}"
+            )
+        else:
+            onward = f"may hand it on to {via[0]} ({_foreign_crate(via[1], analysed)})"
+            parts.append(
+                f"{what}{where} drops {given}, and its `Drop` {onward}"
+                if drop
+                else f"a call to {what}{where} is given {given}, and {onward}"
+            )
+    if len(rows) > 3:
+        parts.append(f"{len(rows) - 3} more such call{'s' if len(rows) > 4 else ''}")
+    roots = {row[3].lstrip("~") for row in rows}
+    why = (
+        "Peeky proves each crate apart and reads none of its code here"
+        if roots <= set(analysed)
+        else "Peeky reads no dependency's code"
+    )
+    return f"{'; '.join(parts)}: {why}, so it may keep a copy, which a change would not reach"
+
+
 def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
     """How sure a refusal may be of what a statement under way holds, from
     ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
@@ -3042,9 +3128,11 @@ class RustSession(NativeSession):
             except Unsettable as exc:
                 return ("type", str(exc))
         if kept is True:
-            return self._copied_everywhere(
-                hashed, plain, source, line, projection
-            ) or self._unread_everywhere(hashed, plain, source, line, projection)
+            return (
+                self._foreign_everywhere(hashed, plain, source, line)
+                or self._copied_everywhere(hashed, plain, source, line, projection)
+                or self._unread_everywhere(hashed, plain, source, line, projection)
+            )
         if _state_held(body, plain):
             return ("state", plain)
         if kept is None and body is None:
@@ -3053,6 +3141,26 @@ class RustSession(NativeSession):
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
         return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
+
+    def _foreign_everywhere(self, hashed, plain, source, line):
+        """("foreign", why) where, at every place ``line`` can stop at in ``hashed``, a
+        call into a dependency's code may have been given ``plain``'s value before the
+        stop (``OwnedLocals.foreign_everywhere``), so a copy it keeps would not see a
+        change; else None."""
+        proofs = getattr(self, "owned", None)
+        check = getattr(proofs, "foreign_everywhere", None)
+        if check is None or self._optimized():
+            return None
+        path = str(Path(self.prepared.source_root) / source)
+        rows = check(hashed, plain, line, path)
+        if not rows:
+            return None
+        return ("foreign", _foreign_note(rows, f"`{plain}`", path, self._analysed_crates()))
+
+    def _analysed_crates(self):
+        """The crates of the build Peeky proves values in, each apart (a workspace's
+        `analyse`): a call into one from another is into code those proofs don't read."""
+        return frozenset(getattr(self.prepared, "analysed_crates", ()) or ())
 
     def _unread_everywhere(self, hashed, plain, source, line, projection=()):
         """("unread", (where it ends unread, whether it is overwritten there)) where, from
@@ -3169,7 +3277,7 @@ class RustSession(NativeSession):
         # (function, rule naming it as FUNCTION): the functions sharing a rule are named
         # together, each rule once (a generic's instances, a closure on the line).
         parts, registers, states = [], set(), False  # registers: the advice for each
-        statements = unread = False
+        statements = unread = foreign = False
         for function, (kind, detail) in failures:
             if kind == "register":
                 parameter, why = detail
@@ -3223,6 +3331,9 @@ class RustSession(NativeSession):
                         + (f": {where}" if where else ""),
                     )
                 )
+            elif kind == "foreign":
+                foreign = True
+                parts.append((function, f"in {FUNCTION}, {detail}"))
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
@@ -3265,6 +3376,10 @@ class RustSession(NativeSession):
             )
         if unread:
             text += f". {_UNREAD_ADVICE[unread]} (`--set-at` there)"
+        if foreign:
+            text += (
+                ". Change it before the program hands it to that code (`--set-at` an earlier line)"
+            )
         if states:
             text += (
                 ". Change what it is computed from before it is assigned, or copy it with a "
@@ -3436,6 +3551,23 @@ class RustSession(NativeSession):
                 ),
                 "named": not members,
             }
+            given = getattr(proofs, "foreign_given", None)
+            rows = (
+                given(**{key: value for key, value in asked.items() if key in _PLACE_KEYS})
+                if given is not None
+                else None
+            )
+            if rows:
+                # A dependency's code was given it before the stop: a copy it keeps is
+                # out of the change's reach.
+                home = (place.get("source") or {}).get("path")
+                analysed = self._analysed_crates()
+                return _Copied(
+                    _foreign_note(rows, f"`{variable.get('name')}`", home, analysed),
+                    "Change it before the program hands it to that code (a stop on an earlier "
+                    "line)",
+                    _foreign_row(rows[0], analysed),
+                )
             found = proofs.copy_hazards(**asked)
         if found is not None and not any(hazards for _, hazards in found):
             # No path from the stop reads it before it is overwritten or ends.

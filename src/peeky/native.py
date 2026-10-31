@@ -6982,7 +6982,9 @@ class NativeSession:
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
-        self.home = prepared.workspace / ".peeky-lldb-home"
+        # The debugger's home: the staged workspace's, or one the prepared build names
+        # (a Rust workspace's build, which runs in the user's own workspace).
+        self.home = getattr(prepared, "lldb_home", None) or prepared.workspace / ".peeky-lldb-home"
         self.home.mkdir()
         # The build without its artifacts (build.BuildManifest.build_id): what a probe's
         # text says once per build.
