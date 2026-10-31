@@ -31,7 +31,7 @@
   a probe at a file in the root's `.venv` said its breakpoint was pending, then ended `no-stop`.
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
-  before your script starts, with why (#446).
+  before debugpy starts your script, with why (#446).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

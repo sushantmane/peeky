@@ -168,8 +168,9 @@ peeky probe . --at .venv/lib/python3.12/site-packages/tally/core.py:14 --capture
   editable.
 - debugpy may skip other files too: the standard library's, a directory named `site-packages` on
   the program's path, or one under its `LIBRARY_ROOTS`. A breakpoint there is refused with
-  `INVALID_BREAKPOINT` before your script or module starts. The interpreter's startup has run by
-  then: its `.pth` files and `sitecustomize`. Probe the code that calls it.
+  `INVALID_BREAKPOINT` before debugpy starts your script or module. The interpreter's startup
+  has run by then: its `.pth` files and `sitecustomize`, which may have run project code. Probe
+  the code that calls it.
 
 A project installed without `-e` runs its copy in `site-packages`, not its source. So a breakpoint
 in `src/pkg/mod.py` never stops, and the probe ends `no-stop`. Install it editable,

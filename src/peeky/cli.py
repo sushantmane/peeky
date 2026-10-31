@@ -113,18 +113,18 @@ def _private_write(path, text):
 
 
 class OutsideTarget(ValueError):
-    """`--at` or `--run` names a file outside the target: ``path``, resolved, and
-    ``root``."""
+    """`--at` or `--run` names a file outside the target: ``path``, resolved, ``root``, and
+    the target's ``language`` (None where not known)."""
 
-    def __init__(self, root, path):
+    def __init__(self, root, path, language=None):
         super().__init__(
             f"--at and --run must name a file inside the target, {root}, and {path} is not "
             "inside it. Give a target directory that holds it"
         )
-        self.root, self.path = root, path
+        self.root, self.path, self.language = root, path, language
 
 
-def _confined(root, program):
+def _confined(root, program, language=None):
     """A program path relative to and inside the target root."""
     if program is None:
         return None
@@ -132,13 +132,18 @@ def _confined(root, program):
     try:
         return path.relative_to(root.resolve()).as_posix()
     except ValueError:
-        raise OutsideTarget(root, path) from None
+        raise OutsideTarget(root, path, language) from None
 
 
 def _outside(exc, args):
-    """The refusal of a file outside the target: where the program's interpreter (the
-    one `--python` or the root chooses) proves it installed code, what to do instead."""
-    if getattr(args, "worker", None) is not None or exc.path.suffix != ".py":
+    """The refusal of a file outside a Python target: where the program's interpreter (the
+    one `--python` or the root chooses) proves it installed code, what to do instead. For
+    another language, or a remote worker, the refusal as it is."""
+    if (
+        exc.language != "python"
+        or getattr(args, "worker", None) is not None
+        or exc.path.suffix != ".py"
+    ):
         return exc
     adapter = None
     try:
@@ -332,7 +337,7 @@ def resolve(target, at=None, config=None, *, tools=True):
         else:
             program = text
     root, program, line, language, data = _resolve(path, program, line, config, tools)
-    program = _confined(root, program)
+    program = _confined(root, program, language)
     if language == "python" and program:
         # A Python candidate runs a copy whose files keep their stored names, and the
         # debugger reports those: `APP.py` typed for `app.py` must not stop elsewhere.
@@ -632,7 +637,7 @@ def _entry(root, run, language):
         return None
     if language != "python":
         raise ValueError("--run is supported only for Python targets")
-    return _confined(root, run)
+    return _confined(root, run, language)
 
 
 def _default_program(program, data, command):
@@ -659,7 +664,7 @@ def _default_program(program, data, command):
 
 def describe(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
-    program = _confined(root, _default_program(program, data, "describe"))
+    program = _confined(root, _default_program(program, data, "describe"), language)
     _python_option(args, language)
     run = (
         " [--run <script.py>] [--arg A ...]"

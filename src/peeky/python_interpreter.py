@@ -537,7 +537,9 @@ def _self_contained(optimize, text, places=()):
 
 def _installed_dirs(optimize):
     """Where this interpreter installs packages: its site-packages directories, its user
-    site, and sysconfig's purelib and platlib (debugpy counts code there as library code)."""
+    site, and sysconfig's purelib and platlib (debugpy counts code there as library code).
+    Absolute, from the directory the helper runs in, the program's: a relative
+    PYTHONUSERBASE gives a relative user site."""
     import site
     import sysconfig
 
@@ -550,7 +552,7 @@ def _installed_dirs(optimize):
         found += [each] if isinstance(each, str) else list(each)
     paths = sysconfig.get_paths()
     found += [paths.get("purelib"), paths.get("platlib")]
-    return sorted({str(each) for each in found if isinstance(each, str) and each})
+    return sorted({os.path.abspath(each) for each in found if isinstance(each, str) and each})
 
 
 def _anonymous(optimize, text, lines):

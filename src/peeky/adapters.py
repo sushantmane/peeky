@@ -155,8 +155,8 @@ COPY_NOTE = "This Python candidate ran from a copy of "
 _SKIPPED_FILE = "excluded by filters"
 # What a refusal of such a breakpoint at launch says ran, and what didn't.
 STARTUP_RAN = (
-    "Refused before your script or module started; the interpreter's startup (.pth files, "
-    "sitecustomize) had already run"
+    "Refused before debugpy started your script or module; the interpreter's startup (.pth "
+    "files, sitecustomize) had already run, and may have run project code"
 )
 
 

@@ -8,6 +8,7 @@ other: its readings are the program's interpreter's, and the file is hashed as i
 
 import hashlib
 import json
+import os
 
 import pytest
 from python_packages import TALLY, install
@@ -93,14 +94,96 @@ def test_a_file_debugpy_skips_as_library_code_is_refused_before_it_runs(
     assert code == 1 and result["error"]["code"] == "INVALID_BREAKPOINT", result
     assert "A breakpoint in app.py would never stop: debugpy counts" in message
     assert (
-        "Refused before your script or module started; the interpreter's startup (.pth "
-        "files, sitecustomize) had already run" in message
+        "Refused before debugpy started your script or module; the interpreter's startup "
+        "(.pth files, sitecustomize) had already run, and may have run project code" in message
     ), message
     assert "Probe the code that calls it" in result["error"]["hint"]
     assert "ran" not in (result.get("output") or ""), result["output"]
     # The program's own interpreter, which debugpy started, ran the `.pth` file.
     started = [line for line in marks.read_text().splitlines() if "debugpy" in line]
     assert started, marks.read_text()
+
+
+def test_a_startup_hook_may_have_run_the_program_and_the_refusal_says_so(
+    project, tmp_path, capsys, monkeypatch
+):
+    # A `.pth` file can import the program itself: "before your script or module started"
+    # was not true of what it ran. The refusal claims nothing of whether app.py ran.
+    root, library = project
+    marks = tmp_path / "marks.txt"
+    (root / "app.py").write_text(
+        f"import sys\nopen({str(marks)!r}, 'a').write(' '.join(sys.argv) + '\\n')\n" + APP
+    )
+    (root / library).parent.parent.joinpath("import_app.pth").write_text(
+        f"import sys; sys.path.insert(0, {str(root)!r}); import app\n"
+    )
+    monkeypatch.setenv("LIBRARY_ROOTS", str(root.resolve()))
+    code, out = run(
+        capsys, "probe", root, "--at", "app.py:5", "--capture", "twice", "--json", "--no-save"
+    )
+    result = json.loads(out.out)
+    message = result["error"]["message"]
+    assert code == 1 and result["error"]["code"] == "INVALID_BREAKPOINT", result
+    assert "and may have run project code" in message, message
+    assert "before your script or module started" not in message, message
+    assert "nothing ran" not in message and "before the program" not in message, message
+    # app.py ran, imported by the startup of the process debugpy started.
+    assert [line for line in marks.read_text().splitlines() if "debugpy" in line], marks
+
+
+def test_a_relative_user_site_is_where_the_program_runs(project, tmp_path, monkeypatch):
+    # A relative PYTHONUSERBASE gave a relative user site, which Peeky looked for in its
+    # own working directory: a file there was not found installed.
+    import subprocess
+
+    from peeky.cli import python_adapter
+
+    root, _ = project
+    monkeypatch.setenv("PYTHONUSERBASE", "userbase")
+    site = subprocess.run(
+        [root / ".venv" / "bin" / "python", "-c", "import site; print(site.getusersitepackages())"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout.strip()
+    assert not os.path.isabs(site), site
+    (root / site / "userpkg").mkdir(parents=True)
+    (root / site / "userpkg" / "__init__.py").write_text("x = 1\n")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / site).mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    adapter = python_adapter(root)
+    try:
+        assert adapter.installed(root / site / "userpkg" / "__init__.py")
+        assert not adapter.installed(elsewhere / site / "x.py")
+    finally:
+        adapter.close()
+
+
+def test_a_file_outside_another_languages_target_gets_no_python_advice(tmp_path, capsys):
+    # A C or Java target with --at naming a .py file that Peeky's own interpreter installed
+    # was told to install the project editable, in the program's Python interpreter.
+    import debugpy
+
+    (tmp_path / "c").mkdir()
+    (tmp_path / "c" / "main.c").write_text("int main(void) { return 0; }\n")
+    (tmp_path / "j" / "pkg").mkdir(parents=True)
+    (tmp_path / "j" / "pkg" / "Main.java").write_text(
+        "package pkg;\npublic class Main { public static void main(String[] a) {} }\n"
+    )
+    (tmp_path / "j" / "run.json").write_text(
+        '{"sources": ["pkg/Main.java"], "main_class": "pkg.Main"}\n'
+    )
+    for target in (
+        [tmp_path / "c" / "main.c"],
+        [tmp_path / "j", "--config", tmp_path / "j" / "run.json"],
+    ):
+        code, out = run(capsys, "describe", *target, "--at", debugpy.__file__, "--json")
+        message = json.loads(out.out)["error"]["message"]
+        assert code == 2 and message.endswith("Give a target directory that holds it"), message
+        assert "installed" not in message and "pip install" not in message, message
 
 
 def test_installed_is_what_the_programs_interpreter_says(project, tmp_path):

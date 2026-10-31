@@ -2561,8 +2561,9 @@ class DebugWorker:
                     timeout=left(),
                 )
                 if isinstance(self.adapter, PythonAdapter) and skipped_lines(points):
-                    # Before configurationDone: the script or module has not started, but
-                    # the interpreter debugpy started has run its startup.
+                    # Before configurationDone: debugpy has not started the script or
+                    # module, but the interpreter has run its startup, which may import
+                    # anything (a `.pth` file's `import app`).
                     raise ValueError(
                         f"{skipped_message(program.relative_to(self.root).as_posix())}. "
                         f"{STARTUP_RAN}"
