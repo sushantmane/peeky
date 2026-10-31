@@ -698,25 +698,49 @@ def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, caps
 
 
 def test_the_program_must_be_among_the_compared_sources(app):
-    # A program in a virtual environment was never compared, but ran.
+    # A program in a virtual environment was never compared, but ran. Now it is compared
+    # by its own hash (expect_sha256), and refused without one.
     (app / "tools").mkdir()
     (app / "tools" / "pyvenv.cfg").write_text("home = /usr/bin\n")
     (app / "tools" / "run.py").write_text("x = 1\nprint(x)\n")
     worker = DebugWorker(app)
     try:
-        with pytest.raises(ValueError, match=r"the program tools/run.py \(not among the compared"):
+        with pytest.raises(
+            ValueError,
+            match=r"the program tools/run.py \(not among the compared sources: it is in a "
+            r"virtual environment, and your client sent no hash of it\)",
+        ):
             worker.dispatch(
                 "launch",
                 {
                     "program": "tools/run.py",
                     "breakpoints": [{"line": 2}],
-                    "expect_sha256": {"program": sha("x = 1\nprint(x)\n")},
                     "expect_inputs": dict(sources.python_sources(app)),
                 },
             )
         assert worker.dap is None
     finally:
         worker.close()
+
+
+def test_an_installed_file_compared_by_its_hash_is_checked_again(app):
+    # The installed --at file is in no python_sources walk: hashed on its own at each check.
+    (app / ".venv" / "lib").mkdir(parents=True)
+    (app / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (app / ".venv" / "lib" / "pkg.py").write_text("x = 1\n")
+    worker = DebugWorker(app)
+    worker.dap = object()
+    worker.installed_sources = {".venv/lib/pkg.py": sha("x = 1\n")}
+    worker.accepted_sources = {**dict(sources.python_sources(app)), **worker.installed_sources}
+    worker.check_sources()
+    frames = {"stackFrames": [{"source": {"path": str(app / ".venv" / "lib" / "pkg.py")}}]}
+    worker.check_frames(frames)
+    (app / ".venv" / "lib" / "pkg.py").write_text("x = 2\n")
+    with pytest.raises(RuntimeError, match=r"\.venv/lib/pkg\.py changed on the worker host"):
+        worker.check_sources()
+    (app / ".venv" / "lib" / "pkg.py").unlink()
+    with pytest.raises(RuntimeError, match=r"\.venv/lib/pkg\.py changed on the worker host"):
+        worker.check_sources()
 
 
 def test_frames_in_uncompared_files_under_the_root_are_refused(app):

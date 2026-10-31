@@ -1,9 +1,10 @@
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from peeky.adapters import PythonAdapter
+from peeky.adapters import PythonAdapter, skipped_lines, under
 from peeky.dap import DAP
 
 
@@ -22,6 +23,78 @@ def test_python_launch_configuration_preserves_existing_behavior(tmp_path):
         # A debugged run writes no __pycache__ into the root.
         "env": {"PYTHONDONTWRITEBYTECODE": "1"},
     }
+
+
+def test_installed_code_is_launched_for_debugpy_to_stop_in(tmp_path):
+    # debugpy skips installed code (`justMyCode`): a breakpoint there never stopped.
+    adapter = PythonAdapter()
+    library = tmp_path / "pkg.py"
+    assert adapter.launch_args(library, tmp_path, library=True)["justMyCode"] is False
+    assert adapter.launch_args(library, tmp_path)["justMyCode"] is True
+
+
+def _site(tmp_path, *parts):
+    """A file at ``parts`` under tmp_path, with its directories."""
+    path = tmp_path.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x = 1\n")
+    return path
+
+
+def test_installed_is_what_the_programs_interpreter_reports(tmp_path):
+    # A path component named site-packages decided it: an ordinary directory of that name
+    # was installed code, and a checkout under one got justMyCode false.
+    site = tmp_path / "env" / "lib" / "python3.13" / "site-packages"
+    mine = _site(tmp_path, "env", "lib", "python3.13", "site-packages", "pkg", "mod.py")
+    ordinary = _site(tmp_path, "work", "site-packages", "tool.py")
+    checkout = _site(tmp_path, "site-packages", "proj", "app.py")
+    debian = _site(tmp_path, "usr", "lib", "python3", "dist-packages", "pkg", "mod.py")
+    assert under(mine, [site]) and under(debian, [debian.parent.parent])
+    assert not under(ordinary, [site]) and not under(checkout, [site])
+    assert not under(debian, [site]) and not under(mine, [tmp_path / "missing"])
+    # Through a link (`lib64` to `lib`), either way.
+    (tmp_path / "env" / "lib64").symlink_to("lib")
+    linked = tmp_path / "env" / "lib64" / "python3.13" / "site-packages"
+    assert under(mine, [linked])
+    assert under(linked / "pkg" / "mod.py", [site])
+    # Spelled in another case, on a volume that ignores case (macOS by default).
+    upper = Path(str(mine.parent).upper()) / mine.name
+    if upper.exists():
+        assert under(upper, [site]) and under(mine, [Path(str(site).upper())])
+
+
+def test_installed_asks_the_programs_interpreter_and_assumes_nothing(tmp_path):
+    from peeky.python_interpreter import Unavailable
+
+    site = tmp_path / "site-packages"
+    mine = _site(tmp_path, "site-packages", "pkg", "mod.py")
+    adapter = PythonAdapter()
+    asked = []
+
+    def readings(reading, *args):
+        asked.append(reading)
+        return [str(site)]
+
+    object.__setattr__(adapter, "_readings", readings)
+    assert adapter.installed(mine) and asked == ["installed_dirs"]
+
+    def unavailable(reading, *args):
+        raise Unavailable("it ended")
+
+    object.__setattr__(adapter, "_readings", unavailable)
+    assert not adapter.installed(mine)
+
+
+def test_debugpys_word_that_it_skips_a_file_is_recognized():
+    skipped = {
+        "verified": False,
+        "line": 4,
+        "message": "Breakpoint in file excluded by filters.\nNote: may be excluded because of "
+        '"justMyCode" option (default == true).',
+    }
+    assert skipped_lines({"breakpoints": [{"verified": True, "line": 2}, skipped]}) == [4]
+    assert skipped_lines({"breakpoints": [{"verified": False, "line": 3}]}) == []
+    assert skipped_lines(None) == []
 
 
 def test_scope_selection_is_python_specific():
