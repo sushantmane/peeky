@@ -8,6 +8,7 @@ A measurement, not Peeky's judging: it reads every unit's debug information at o
 Each unit is reported by its offset, as several may share a name (`<artificial>`)."""
 
 import collections
+import itertools
 import json
 import posixpath
 import subprocess
@@ -99,7 +100,12 @@ def main(dwarfdump, binary, root, compiler):
     # The bounds are measured, not applied.
     native.MAX_DIES, native.MAX_KEPT = 10**9, 1 << 40
     started, total = time.monotonic(), [0]
-    dies = native._parse_dies(_lines(dwarfdump, ["--debug-info", binary], total))
+    # As Peeky reads them: a DWARF 5 unit's addresses by index, from `--debug-addr`.
+    text = itertools.chain(
+        _lines(dwarfdump, ["--debug-info", binary], total),
+        _lines(dwarfdump, ["--debug-addr", binary], total),
+    )
+    dies = native._parse_dies(text)
     report["debug_information"] = {
         "bytes": total[0],
         "seconds": round(time.monotonic() - started, 2),

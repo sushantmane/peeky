@@ -116,6 +116,24 @@ Done (`native_macros`). The replay with `-dD` must leave the build's record: eac
 
 Each also checks refusals: an edit without a rebuild, by name; the default optimized build, unless opted in; GCC and `-gdwarf-4` builds. Every value read must match the program's own print of it. Probe times and symbol sizes are recorded against `MAX_DIES`, `MAX_DEBUG_INFO` and `MAX_LINE_TEXT`.
 
+**Acceptance results** (October 2026, `tests/projects/accept.sh`). Each project was rebuilt in its study image with clang 18 on 4 CPUs (aarch64), and Peeky run on it with lldb-dap 18. Peeky's own clang builds have been DWARF 5 since phase 1's second part, and the native lanes run every C and C++ test with them.
+
+| Project | Checks | Units judged | Text read | Probe | Symbols (of the bounds) |
+| --- | --- | --- | --- | --- | --- |
+| jq-2650 | 14 of 14 | 36 of 36 (with `bison -l`, `flex -L`) | 33 | 3 to 4 s | 5.8 MB line tables, 21,000 entries |
+| valkey-1842 | 9 of 10 | 106 of 173 | 35 | 21 s, 18 s of it the replica's sync | 20.7 MB, 58.2 MB, 217,000 entries, 233 MB kept (74%) |
+| micropython-13569 | 11 of 11 | 215 of 218 | 215 | 14 to 17 s | 23.1 MB, 27.2 MB, 121,000 entries |
+| fmt-3158 | 10 of 11 | 1 of 5 | 0 | 4 s | 8.4 MB, 37.9 MB, 122,000 entries |
+| fmt-3272 | 10 of 11 | 3 of 6 | 0 | 5 s | 11.3 MB, 45.5 MB, 146,000 entries |
+| json-4237 | 6 of 6 | 0 of 2 | none | refused in 0.5 s | 5.5 MB, 36.9 MB, 93,000 entries |
+
+- **What passed.** jq's grammar action in `src/parser.c` reads its rule and length. Its `yyerror` reads the message and the error count jq prints, and `main.c` reads the result jq prints. `src/parser.y` is refused, and so is `src/parser.c` built with bison's `#line`, naming `bison -l`. MicroPython's `compile_try_finally` reads the stack size mpy-cross's output records for `get` (4: `n_state` 5, less its one local), with a note that its object can't be proven live. A local declared at the stop carries the note naming `nlr_push`. fmt's and json's test units, and fmt's `include/fmt/ranges.h`, are refused, saying their tables record no MD5s and name `<stdin>`. Every project's edit, optimized build (and its opt-in), GCC and DWARF 4 refusals passed.
+- **valkey's replica probe** ran as a background job: `peeky job wait` returned the hit, and the replica crashed on `ACL LOAD`, as the bug report says. But `c->user` was withheld, not read as the null pointer `CLIENT LIST` shows as `(superuser)`. `src/acl.c`'s text isn't read: clang's `stdatomic.h` asks for the system's (`__has_include_next`), which glibc lacks. This is the follow-up below; 71 of valkey's units wait on it, or on `float.h`'s probe.
+- **fmt's `test-main.cc`** is judged, but its text isn't read, so `argc` and `argv` are withheld. In fmt-3158, gtest's `__has_include(<any>)` finds libc++'s `<any>`, which the line table doesn't name, as the file isn't included in C++11. In fmt-3272, libc++ asks for Apple's `<sys/_types/_mbstate_t.h>`, and finds none. The follow-up below covers both.
+- **Found and fixed here:** a unit not judged was named by its absolute path where CMake compiles by one. So a probe in it was refused without why. A probe in a header only unjudged units name now names them, and why. `measure.py` reads DWARF 5 address indexes. jq's flex runs without `LFLAGS`: the lexer is generated first.
+- **Found and fixed apart:** the toolchain's archive code (glibc's `atexit`, libgcc's `__extenddftf2`) made every binary's calls return twice: now matched by its bytes. valkey's own Lua, built without `-g`, still truly counts: 515 functions.
+- **Seen once, in about 12 runs:** valkey's replica crash ended in `DEBUGGER_ERROR` ("Native stopped source does not match prepared symbols"), not `PROGRAM_CRASHED`. No value was shown. It wasn't reproduced since; it is to be investigated.
+
 ### Phase 2: Rust workspaces with dependencies
 
 **Shape.**
