@@ -14,10 +14,13 @@ import pytest
 from native_compilers import default_cc, default_cxx, gcc, is_gcc
 
 from peeky.native_units import (
+    _COMPLETE_WORDS,
     LineFiles,
     NotRecorded,
     compiler_of,
+    driver_jobs,
     md5_of,
+    optimization,
     read_units,
     recorded_command,
 )
@@ -144,7 +147,11 @@ def test_clang_records_each_preprocessor_argument_and_each_file_s_md5(tmp_path):
     start = words.index("-I")
     assert words[start : start + len(RECORDED)] == RECORDED
     assert words[words.index("-c") + 1] == "main.c"
-    assert table.checksummed() and table.describes(unit)
+    assert table.checksummed() and table.differs(unit) is None
+    # Apple's driver adds options of its own (`-Xclang -clang-vendor-feature=…`): each is
+    # known, and the driver's own answer agrees with the words read as it reads them.
+    cc1 = driver_jobs(compiler, words, unit.comp_dir, _environment())
+    assert optimization(words, cc1) == optimization(words) == ("0", False)
     named = _named(unit, table)
     root = tmp_path.resolve()
     assert named[str(root / "main.c")] == md5_of(root / "main.c")
@@ -164,6 +171,54 @@ def test_without_the_flag_clang_records_no_command_line(tmp_path):
     assert table.checksummed()
     with pytest.raises(NotRecorded, match="rebuild with -grecord-command-line"):
         recorded_command(unit, _version(compiler))
+
+
+def _environment():
+    # The recorded words hold what CCC_OVERRIDE_OPTIONS added: it is not added again.
+    return {key: value for key, value in os.environ.items() if not key.startswith("CCC_")}
+
+
+def test_the_driver_s_own_answer_reads_an_option_s_value_as_one(tmp_path):
+    # clang takes the `-O0` after `-fmodules-user-build-path` as its value, and builds at
+    # -O2. Its own `-###` says so; the words alone can't, so they are refused.
+    dwarfdump, compiler = _tools(), _clang()
+    _program(tmp_path)
+    flags = ["-grecord-command-line", *ARGUMENTS, "-O2", "-fmodules-user-build-path", "-O0"]
+    unit, _ = _read(dwarfdump, _build(compiler, tmp_path, flags))
+    words = recorded_command(unit, _version(compiler))
+    assert ("-fmodules-user-build-path", "-O0") in _pairs(words)
+    assert optimization(words, driver_jobs(compiler, words, unit.comp_dir, _environment())) == (
+        "2",
+        False,
+    )
+    with pytest.raises(NotRecorded, match="-fmodules-user-build-path -O0"):
+        optimization(words)
+    # So with LTO: `-fno-lto` is the option's value, and thin LTO stays.
+    words = [words[0], "-O0", "-flto=thin", "-fmodules-user-build-path", "-fno-lto"]
+    words += ["-c", "main.c", "-o", "lto.o"]
+    assert optimization(words, driver_jobs(compiler, words, str(tmp_path), _environment())) == (
+        "0",
+        True,
+    )
+    with pytest.raises(NotRecorded, match="-fmodules-user-build-path -fno-lto"):
+        optimization(words)
+    # Without the inputs where it ran, the driver gives no answer.
+    assert driver_jobs(compiler, words, str(tmp_path / "inc"), _environment()) is None
+
+
+def test_the_options_known_to_take_no_value_take_none(tmp_path):
+    # Each word the reading takes as complete leaves the next word to be an option of its
+    # own, as the driver itself reads it: here, `-O3`.
+    _tools()
+    compiler = _clang()
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
+    forms = ["-Wall", "-Wno-unused-parameter", "-Wl,-O1", "-std=gnu11", "-fvisibility=hidden"]
+    for word in [*sorted(_COMPLETE_WORDS), *forms, "-O0"]:
+        words = [compiler, word, "-O3", "-c", "main.c", "-o", "main.o"]
+        cc1 = driver_jobs(compiler, words, str(tmp_path), _environment())
+        assert cc1 is not None and "-O3" in cc1, word
+        found = ("3", word == "-flto")
+        assert optimization(words, cc1) == optimization(words) == found, word
 
 
 def _pairs(words):
@@ -225,7 +280,7 @@ def test_a_relative_compilation_directory_names_no_path(tmp_path):
         dwarfdump, _build(compiler, tmp_path, [*ARGUMENTS, "-fdebug-compilation-dir=rel"])
     )
     assert unit.comp_dir == "rel" and table.directories[0] == "rel"
-    assert table.checksummed() and not table.describes(unit)
+    assert table.checksummed() and table.differs(unit) is not None
     assert {table.path(index, unit.comp_dir) for index in table.files} == {None}
 
 

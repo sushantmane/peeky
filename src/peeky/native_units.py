@@ -17,8 +17,11 @@ This module only reads: it judges nothing, and runs no tool.
 """
 
 import hashlib
+import os
 import posixpath
 import re
+import shlex
+import subprocess
 from dataclasses import dataclass
 
 from peeky.textlines import octal_string, split_lines
@@ -173,37 +176,133 @@ _SEPARATE = frozenset(
     -Xpreprocessor -Xanalyzer -Xopenmp-target -Xcuda-fatbinary -Xcuda-ptxas -arch -target
     -F -L -l -u -z -A -B -T -dependency-file -dependency-dot -serialize-diagnostics
     -install_name -framework -weak_framework -filelist -working-directory --sysroot
-    -index-store-path""".split()
+    -index-store-path -fmodules-user-build-path""".split()
 )
-# Options that take no value, or join theirs: the word after one is its own. Another
-# option (one this doesn't know) may take the next word as its value.
-_COMPLETE = re.compile(
-    r"-(?:[WfgOm].*|std=.*|stdlib=.*|[cSEvwPC]|pipe|pthreads?|M[DMPG]?|MMD|ansi"
-    r"|pedantic.*|shared|static.*|rdynamic|nostd.*|nodefaultlibs|integrated-as"
-    r"|no-integrated-as|save-temps.*|fsyntax-only|[DUILl].+|.*=.*)"
+# Options known to take no separate value: the word after one is its own. Each is
+# checked against clang's driver itself (tests/native/test_native_units.py). Without the
+# driver's own answer, an -O or LTO word after any other option can't be read.
+_COMPLETE_WORDS = frozenset(
+    """-g -g0 -g1 -g2 -g3 -ggdb -gdwarf-4 -gdwarf-5 -grecord-command-line
+    -gno-record-gcc-switches -gline-tables-only -gcolumn-info -fdebug-macro
+    -fno-omit-frame-pointer -fomit-frame-pointer -fPIC -fpic -fPIE -fpie
+    -fno-strict-aliasing -fno-common -fexceptions -fno-exceptions -fno-rtti
+    -fvisibility-inlines-hidden -fstack-protector -fstack-protector-strong
+    -fno-stack-protector -ffunction-sections -fdata-sections -fcolor-diagnostics
+    -fno-builtin -fsigned-char -funsigned-char -fno-delete-null-pointer-checks
+    -fasynchronous-unwind-tables -pthread -pedantic -ansi -c -S -E -w -v -pipe -MD -MMD
+    -MP -flto -fno-lto""".split()
 )
+# And by form: an -O option, a warning (`-Wall`, `-Wl,-O1`), or an -f, -m or -std
+# option joining its value with `=`.
+_COMPLETE = re.compile(r"-O\w*|-W[\w,=+.-]*|-std=\S+|-[fm][\w-]+=\S*")
 # What the driver's -O options mean (`-O` is -O1, `-O4` is -O3: clang's own aliases).
 _LEVELS = {"": "1", "0": "0", "1": "1", "2": "2", "3": "3", "4": "3", "s": "s", "z": "z"}
 _LEVELS |= {"g": "g", "fast": "fast"}
 # Options clang passes on to its compiler (`-Xclang`) that change no code it makes:
-# warnings, and those Apple's driver adds of its own.
-_INERT = re.compile(r"-W.*|-clang-vendor-feature=.*|-fno-odr-hash-protocols")
+# warnings, and exactly those Apple clang 21's driver adds of its own.
+_INERT = re.compile(r"-W[\w=-]*")
+_APPLE = frozenset(
+    """-clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation
+    -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding
+    -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr
+    -clang-vendor-feature=+thisNoNullAttr
+    -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError""".split()
+)
+# clang's compiler's options (`-cc1`) whose value is the next word, a word of the
+# recorded command: a word after one is its value, whatever it looks like.
+_CC1_VALUED = _SEPARATE | {"-main-file-name", "-internal-isystem", "-internal-externc-isystem"}
 
 
 def _optimizing(word):
     return word.startswith("-O") or word == "-fno-lto" or re.fullmatch(r"-flto(?:=.*)?", word)
 
 
-def optimization(words):
+def _forwarded(words):
+    """Refuses (NotRecorded) an option the recorded ``words`` pass on with `-mllvm` or
+    `-Xarch_…`, or with `-Xclang` but neither inert nor an -O or LTO option."""
+    at = 1
+    while at < len(words):
+        word = words[at]
+        at += 1
+        if word in _SEPARATE:
+            at += 1
+        elif word.startswith("-Xarch_"):
+            raise NotRecorded(f"records {word}, which Peeky can't judge")
+        elif word in ("-Xclang", "-mllvm"):
+            forwarded = words[at] if at < len(words) else ""
+            at += 1
+            if word == "-mllvm" or not (
+                _INERT.fullmatch(forwarded)
+                or forwarded in _APPLE
+                or (forwarded.startswith("-O") and forwarded[2:] in _LEVELS)
+                or re.fullmatch(r"-flto(?:=(?:full|thin))?", forwarded)
+            ):
+                raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
+
+
+def driver_jobs(compiler, words, cwd, env, timeout=10):
+    """The arguments ``compiler``'s driver gives its compiler (`-cc1`) for the recorded
+    ``words``: its own `-###` answer, run in ``cwd`` (the unit's compilation directory,
+    where its inputs are). None where it gives none: no such directory, an input not
+    there, or not exactly one compile. `-###` runs nothing; ``env`` should hold no
+    CCC_OVERRIDE_OPTIONS, which the recorded words already hold the effect of."""
+    if not cwd or not posixpath.isabs(cwd) or not os.path.isdir(cwd):
+        return None
+    try:
+        said = subprocess.run(
+            [compiler, "-###", *words[1:]],
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if said.returncode:
+        return None
+    jobs = []
+    for line in said.stderr.splitlines():
+        if line.startswith(' "') and '"-cc1"' in line:
+            try:
+                jobs.append(shlex.split(line))
+            except ValueError:
+                return None
+    return jobs[0] if len(jobs) == 1 and jobs[0][1:2] == ["-cc1"] else None
+
+
+def optimization(words, cc1=None):
     """(level, lto) of the arguments ``recorded_command`` read: the last `-O` option's
     level (`"0"` without one: clang's default), and whether the last of `-flto`,
     `-flto=…` and `-fno-lto` asks for LTO. An `-O` or LTO option passed to clang's
-    compiler (`-Xclang -O2`) counts too.
+    compiler (`-Xclang -O2`) counts too. Only these: whether an option such as
+    `-ffast-math` changes what the code computes is judged apart.
 
-    Raises NotRecorded naming an option that may change either but can't be read: one
+    ``cc1``: the driver's own answer (``driver_jobs``), read where given. Without it,
+    the words are read as the driver would, where they can be. Either way, raises
+    NotRecorded naming an option that may change the level but can't be read: one
     passed with `-mllvm` or `-Xarch_…`, or with `-Xclang` but not known; an unknown
     `-O` level; or a word like an `-O` or LTO option where it may be another option's
-    value (`-o -O0`, or after an option this doesn't know)."""
+    value (`-o -O0`, `-fmodules-user-build-path -O0`, or after an option not known to
+    take none)."""
+    _forwarded(words)
+    if cc1 is not None:
+        level, lto = "0", False
+        for at in range(2, len(cc1)):
+            word = cc1[at]
+            if not _optimizing(word) and word != "-flto-unit":
+                continue
+            if cc1[at - 1] in _CC1_VALUED:
+                raise NotRecorded(f"records {cc1[at - 1]} {word}, which Peeky can't judge")
+            if word.startswith("-O"):
+                if word[2:] not in _LEVELS:
+                    raise NotRecorded(f"records {word}, which Peeky can't judge")
+                level = _LEVELS[word[2:]]
+            else:
+                lto = word != "-fno-lto"
+        return level, lto
     level, lto, at = "0", False, 1
     while at < len(words):
         word = words[at]
@@ -211,19 +310,11 @@ def optimization(words):
         if word in ("-Xclang", "-mllvm"):
             forwarded = words[at] if at < len(words) else ""
             at += 1
-            if word == "-mllvm" or not (_INERT.fullmatch(forwarded) or _optimizing(forwarded)):
-                raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
-            if _INERT.fullmatch(forwarded):
-                continue
             if forwarded.startswith("-O") and forwarded[2:] in _LEVELS:
                 level = _LEVELS[forwarded[2:]]
             elif re.fullmatch(r"-flto(?:=(?:full|thin))?", forwarded):
                 lto = True
-            else:
-                raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
             continue
-        if word.startswith("-Xarch_"):
-            raise NotRecorded(f"records {word}, which Peeky can't judge")
         if word in _SEPARATE:
             value = words[at] if at < len(words) else ""
             at += 1
@@ -233,7 +324,12 @@ def optimization(words):
         if not _optimizing(word):
             continue
         before = words[at - 2]
-        if at > 2 and before.startswith("-") and not _COMPLETE.fullmatch(before):
+        if (
+            at > 2
+            and before.startswith("-")
+            and before not in _COMPLETE_WORDS
+            and not _COMPLETE.fullmatch(before)
+        ):
             raise NotRecorded(f"records {word} after {before}, which Peeky can't judge")
         if word.startswith("-O"):
             if word[2:] not in _LEVELS:
@@ -266,7 +362,7 @@ class LineHeader:
 
     def checksummed(self):
         """Whether the table holds an MD5 of every file it names. A DWARF 5 table must
-        name file 0, its unit's own (``describes``)."""
+        name file 0, its unit's own (``differs``)."""
         return (
             bool(self.files)
             and (self.version < 5 or 0 in self.files)
@@ -294,21 +390,22 @@ class LineHeader:
         found = posixpath.join(directory, entry.name)
         return found if posixpath.isabs(found) else None
 
-    def describes(self, unit):
-        """Whether this DWARF 5 table's file 0 is ``unit``'s own: its directory 0 is the
-        unit's `DW_AT_comp_dir`, and its file 0 the unit's `DW_AT_name` there, both
-        absolute. False for a DWARF 4 table, which has no file 0."""
-        if self.version < 5 or 0 not in self.files or not unit.name or not unit.comp_dir:
-            return False
-        if self.directories.get(0) != unit.comp_dir or self.files[0].directory != 0:
-            return False
+    def differs(self, unit):
+        """None where this DWARF 5 table's file 0 is ``unit``'s own file: the same
+        absolute path, normalized, as its `DW_AT_name` under its `DW_AT_comp_dir`.
+        Otherwise why not, in a few words naming both paths. A DWARF 4 table has no
+        file 0."""
+        if self.version < 5:
+            return f"its line table is DWARF {self.version}, which names no file of its own"
+        if 0 not in self.files:
+            return "its line table names no file 0"
         own = self.path(0, unit.comp_dir)
-        named = posixpath.join(unit.comp_dir, unit.name)
-        return (
-            own is not None
-            and posixpath.isabs(named)
-            and posixpath.normpath(own) == posixpath.normpath(named)
-        )
+        named = posixpath.join(unit.comp_dir or "", unit.name or "")
+        if own is None or not posixpath.isabs(named):
+            return "its line table or its unit names no absolute path"
+        if posixpath.normpath(own) != posixpath.normpath(named):
+            return f"its line table's file 0 is {own}, but the unit names {named}"
+        return None
 
 
 _TABLE = re.compile(r"debug_line\[0x([0-9a-f]{8,16})\]")

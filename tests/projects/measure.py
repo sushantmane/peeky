@@ -9,6 +9,7 @@ Each unit is reported by its offset, as several may share a name (`<artificial>`
 
 import collections
 import json
+import os
 import posixpath
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import peeky.native as native
 from peeky.native_units import (
     LineFiles,
     NotRecorded,
+    driver_jobs,
     md5_of,
     optimization,
     read_units,
@@ -37,8 +39,13 @@ def _lines(dwarfdump, arguments, total):
         raise RuntimeError(f"{dwarfdump} {' '.join(arguments)} failed: {process.returncode}")
 
 
-def _why(unit, version, tables, root):
-    """Why ``unit`` isn't judged, in a few words each; empty where it is."""
+# How many units' optimization the driver itself answered for (True), or not.
+_ANSWERED = collections.Counter()
+
+
+def _why(unit, compiler, version, tables, root):
+    """Why ``unit`` isn't judged, in a few words each; empty where it is. Its optimization
+    is the driver's own answer where it gives one (``driver_jobs``)."""
     why = []
     main = posixpath.join(unit.comp_dir or "", unit.name or "")
     if not posixpath.isabs(main):
@@ -50,7 +57,11 @@ def _why(unit, version, tables, root):
     if unit.version < 5:
         why.append(f"DWARF {unit.version}")
     try:
-        level, lto = optimization(recorded_command(unit, version))
+        words = recorded_command(unit, version)
+        environment = {key: value for key, value in os.environ.items() if key[:4] != "CCC_"}
+        cc1 = driver_jobs(compiler, words, unit.comp_dir, environment)
+        level, lto = optimization(words, cc1)
+        _ANSWERED[cc1 is not None] += 1
         if level != "0":
             why.append(f"-O{level}")
         if lto:
@@ -62,9 +73,10 @@ def _why(unit, version, tables, root):
         return [*why, "no line table"]
     if not table.checksummed():
         named = {entry.name for entry in table.files.values() if not entry.checksum}
-        return [*why, "no MD5s" + (" (names <stdin>)" if "<stdin>" in named else "")]
-    if not table.describes(unit):
-        return [*why, "its line table's file 0 isn't the unit's own"]
+        stdin = "<stdin>" in named
+        return [*why, "the line table records no MD5s" + (", and names <stdin>" if stdin else "")]
+    if differs := table.differs(unit):
+        return [*why, differs]
     for index, entry in table.files.items():
         path = table.path(index, unit.comp_dir)
         if path is None:
@@ -112,7 +124,8 @@ def main(dwarfdump, binary, root, compiler):
     }
     units = [unit for unit in units if unit.kind == "Compile"]
     report["units"] = {
-        f"0x{unit.offset:08x} {unit.name}": "; ".join(_why(unit, version, tables, root)) or "judged"
+        f"0x{unit.offset:08x} {unit.name}": "; ".join(_why(unit, compiler, version, tables, root))
+        or "judged"
         for unit in units
     }
     names = collections.Counter(unit.name for unit in units)
@@ -122,6 +135,10 @@ def main(dwarfdump, binary, root, compiler):
         "shared": {name: count for name, count in names.items() if count > 1},
     }
     report["summary"] = dict(collections.Counter(report["units"].values()).most_common())
+    report["optimization_read_by_the_driver"] = {
+        "yes": _ANSWERED[True],
+        "no": _ANSWERED[False],
+    }
     json.dump(report, sys.stdout, indent=1)
     print()
 
