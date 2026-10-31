@@ -127,9 +127,9 @@ def _session_class():
             the build's record."""
             from peeky.sources import structured
 
-            trees, skip = rust_build.compared_trees(self.build)
+            trees = rust_build.compared_trees(self.build)
             recorded = rust_build.compared_sources(self.build)
-            return structured(self.root, recorded, trees, skip, contents=recorded)
+            return structured(self.root, recorded, trees, contents=recorded)
 
         def remote_refusal(self):
             """Why a remote client can't compare this build's files with its own, or None

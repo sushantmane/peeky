@@ -10,7 +10,8 @@ packages). Both sides must hold the same set, file for file.
 
 A Rust workspace's are compared by their structure too (``structured``): each file's kind, the
 links on its way and what they say, and each directory a build script watches entry by entry,
-so a link where the other side has a file, or an entry on one side only, differs.
+so a link where the other side has a file, or an entry on one side only, differs. A link that
+leads out of the root is refused, and nothing through it is read (``OutsideRoot``).
 """
 
 import hashlib
@@ -137,21 +138,57 @@ def declared(adapter, root=None):
 
 def describe(adapter, root=None):
     """The worker's `version` field that tells a client which sources to hash: for a Rust
-    workspace, the directories compared entry by entry too (``trees``: {directory: how},
-    and ``skip``), each source by its structure (``structured``)."""
+    workspace, the directories compared entry by entry too (``trees``: {directory:
+    "exact"}), each source by its structure (``structured``)."""
     names = declared(adapter, root)
     if names is None:
         return {"kind": "python"}
     found = {"kind": "declared", "names": list(names)}
     if (trees_for := getattr(adapter, "compared_trees", None)) is not None:
-        trees, skip = trees_for(root)
-        found.update(structured=True, trees=dict(trees), skip=list(skip))
+        found.update(structured=True, trees=dict(trees_for(root)))
     return found
 
 
 # The most entries Peeky lists of the directories a Rust workspace's build scripts watch.
 MAX_TREE_ENTRIES = 200_000
-_HOW = ("exact", "package")
+# How a directory is compared entry by entry: as Cargo scans a `rerun-if-changed` one.
+_HOW = ("exact",)
+
+
+class OutsideRoot(ValueError):
+    """A compared path that a link leads out of the root: refused, and nothing through the
+    link read."""
+
+    def __init__(self, name, link, target, side):
+        super().__init__(
+            f"Peeky compares only files inside the root: on {side}, {name} leads out of it "
+            f"through {link}, a link to {target}. Nothing there was read. Point the link inside "
+            "the root, or make it a file or directory there"
+        )
+
+
+# The most links Peeky follows on one path, as the kernel does (ELOOP).
+_MAX_HOPS = 40
+
+
+def _inside(root, name, side):
+    """Follow ``name`` under the resolved ``root`` one component, and one link, at a time,
+    each link's target held inside ``root`` before it is followed: OutsideRoot names the
+    first that leaves it, out and back in too. Only links' texts are read (``readlink``),
+    never a file."""
+    current, pending, hops = root, list(PurePosixPath(name).parts), 0
+    while pending:
+        part = pending.pop(0)
+        candidate = current.parent if part == ".." else current / part
+        if not os.path.islink(candidate):
+            current = candidate
+            continue
+        hops += 1
+        target = Path(os.path.normpath(current / os.readlink(candidate)))
+        if hops > _MAX_HOPS or not target.is_relative_to(root):
+            link = candidate.relative_to(root).as_posix()
+            raise OutsideRoot(name, link, target, side)
+        current, pending = root, [*target.relative_to(root).parts, *pending]
 
 
 def _kind(path):
@@ -176,13 +213,14 @@ def _checkout_metadata(name):
     return ".git" in PurePosixPath(name).parts
 
 
-def _identity(root, name, content=None):
+def _identity(root, name, content=None, side="the worker host"):
     """``name``'s identity: its content's SHA-256 for a regular file reached through no
     link (as every target's sources are compared); else the SHA-256 of what it is (the links
     on its way, and what each says; a link's text and its target's SHA-256). None where it is
     missing or not a file. ``content``: the content's SHA-256 as a build recorded it, taken
-    instead of the disk's."""
+    instead of the disk's. One a link leads out of ``root`` (resolved) is refused, unread."""
     root, parts, links = Path(root), PurePosixPath(name).parts, []
+    _inside(root, name, side)
     for depth in range(1, len(parts)):
         found = _kind(root.joinpath(*parts[:depth]))
         if found is not None and found[0] == "link":
@@ -201,17 +239,15 @@ def _identity(root, name, content=None):
     return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
 
 
-def _tree(root, top, how, skip):
-    """The SHA-256 of what the directory ``top`` holds, as the build scripts' watch reads
-    it: its own kind (and a link's text), and each entry under it by its path, kind, and a
-    link's text and its file's SHA-256 (files' contents are compared by name). "exact": every
-    entry, hidden and
-    `target` ones too, through links to directories under the root, as Cargo scans a
-    `rerun-if-changed` directory. "package": as Cargo lists a package's files, with no
-    hidden or `target` directory, no other package's, and none of ``skip``. Never a `.git`
-    entry."""
-    root = Path(root).resolve()
+def _tree(root, top, side="the worker host"):
+    """The SHA-256 of what the directory ``top`` holds, as Cargo scans a `rerun-if-changed`
+    directory: its own kind (and a link's text), and every entry under it, hidden and
+    `target` ones too, through links to directories, by its path, kind, and a link's text and
+    its file's SHA-256 (files' contents are compared by name). Never a `.git` entry. ``root``
+    is resolved; a link on the way, or under it, that leads out of it is refused, unread
+    (OutsideRoot)."""
     start = root / top
+    _inside(root, top, side)
     entries, seen = [], set()
     pending = [(start, "")]
     while pending:
@@ -233,15 +269,8 @@ def _tree(root, top, how, skip):
             if _checkout_metadata(relative):
                 continue
             kind, says = _kind(path) or ("missing", None)
-            if how == "package" and kind in ("dir", "link") and path.is_dir():
-                place = (Path(top) / relative).as_posix()
-                if (
-                    name.startswith(".")
-                    or name == "target"
-                    or place in skip
-                    or (path / "Cargo.toml").exists()
-                ):
-                    continue
+            if kind == "link":
+                _inside(root, (PurePosixPath(top) / relative).as_posix(), side)
             if kind == "link" and path.is_file():
                 try:
                     says = [says, _hash(path)]
@@ -253,25 +282,22 @@ def _tree(root, top, how, skip):
                     f"{top} holds more than {MAX_TREE_ENTRIES} entries, more than Peeky compares "
                     "with a remote client's: run Peeky on the worker's host"
                 )
-            if kind == "dir" or (
-                kind == "link"
-                and path.is_dir()
-                and (how == "exact" and path.resolve().is_relative_to(root))
-            ):
+            if kind == "dir" or (kind == "link" and path.is_dir()):
                 pending.append((path, relative + "/"))
     found = {"root": list(_kind(start) or ("missing", None)), "entries": sorted(entries)}
     return hashlib.sha256(json.dumps(found, sort_keys=True).encode()).hexdigest()
 
 
-def structured(root, names, trees=None, skip=(), contents=None):
+def structured(root, names, trees=None, contents=None, side="the worker host"):
     """{name: ``_identity``} of a Rust workspace's sources, and {directory + "/": ``_tree``}
-    of each it compares entry by entry (``trees``: {directory: "exact" or "package"}).
-    ``contents``: {name: SHA-256} of the files' contents as a build recorded them, taken
-    instead of the disk's: what the build read, in the shape the disk has now."""
-    contents = contents or {}
-    found = {name: _identity(root, name, contents.get(name)) for name in names}
-    for top, how in (trees or {}).items():
-        found[top.rstrip("/") + "/"] = _tree(root, top, how, frozenset(skip))
+    of each it compares entry by entry (``trees``: {directory: "exact"}). ``contents``:
+    {name: SHA-256} of the files' contents as a build recorded them, taken instead of the
+    disk's: what the build read, in the shape the disk has now. ``side`` names the host in
+    a refusal: a path a link leads out of the root (OutsideRoot)."""
+    root, contents = Path(os.path.realpath(root)), contents or {}
+    found = {name: _identity(root, name, contents.get(name), side) for name in names}
+    for top in trees or {}:
+        found[top.rstrip("/") + "/"] = _tree(root, top, side)
     return found
 
 
@@ -364,16 +390,16 @@ def worker_sources(adapter, root):
     workspace's by their structure (``structured``)."""
     names = declared(adapter, root)
     if names is not None:
-        trees, skip = ({}, ())
+        trees = {}
         if (trees_for := getattr(adapter, "compared_trees", None)) is not None:
-            trees, skip = trees_for(root)
+            trees = trees_for(root)
         if len(names) + len(trees) > MAX_SOURCES:
             raise ValueError(too_many(len(names) + len(trees)))
         # A Rust workspace's build may have read what no client can send a hash of.
         if (refusal := getattr(adapter, "remote_refusal", None)) and (why := refusal(root)):
             raise ValueError(why)
         if trees_for is not None:
-            return structured(root, names, trees, skip)
+            return structured(root, names, trees)
         return files(root, names)
     try:
         return dict(python_sources(root))
@@ -403,22 +429,17 @@ def client_sources(root, info):
     names = info.get("names")
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
         raise ValueError("The worker's source list is not a list of paths")
-    trees, skip = info.get("trees") or {}, info.get("skip") or []
-    if not (
-        isinstance(trees, dict)
-        and all(how in _HOW for how in trees.values())
-        and isinstance(skip, list)
-        and all(isinstance(each, str) for each in skip)
-    ):
+    trees = info.get("trees") or {}
+    if not (isinstance(trees, dict) and all(how in _HOW for how in trees.values())):
         raise ValueError("The worker's directories to compare are not a map of paths")
     if len(names) + len(trees) > MAX_SOURCES:
         raise ValueError(too_many(len(names) + len(trees)))
-    for name in [*names, *trees, *skip]:
+    for name in [*names, *trees]:
         parts = PurePosixPath(name).parts
         if not name or PurePosixPath(name).is_absolute() or ".." in parts or "\x00" in name:
             raise ValueError(f"The worker named a source outside the target's directory: {name}")
     if info.get("structured"):
-        manifest = structured(root, names, trees, skip)
+        manifest = structured(root, names, trees, side="your checkout")
     else:
         manifest = files(root, names)
     if missing := sorted(name for name, sha in manifest.items() if sha is None):

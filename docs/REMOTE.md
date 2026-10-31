@@ -227,19 +227,30 @@ set x: 5 -> 100
 - **A build ends with its worker.** A `shutdown`, SIGTERM or the idle timeout stops it first, and
   kills Cargo and every process Cargo ran, build scripts too. A running build is activity, so
   the idle timeout waits for it.
+- **A build that doesn't end is never called stopped.** If the build still runs 30 s after the
+  worker stopped it, `shutdown` is refused with `BUSY`, and the worker keeps running. If the kill
+  failed, the worker says so, naming the process group to end, and exits with status 1.
 - **The files compared** are the build's: every `Cargo.toml` of its packages, `Cargo.lock`, the
   workspace's own Cargo configuration, and every file of the workspace it compiled, from rustc's
   dependency files ([Source identity](#source-identity)). That includes the binary's own code,
   which decides what reaches the analysed packages: `app/src/main.rs` that differs is refused.
 - **What a local build script reads** is compared too: each `rerun-if-changed` file, each file
-  under such a directory, or, with none, every file of its package. A schema it reads shapes the
-  code it generates, which the program runs.
+  under such a directory, or, with none, every file of its package as Cargo lists it. A schema it
+  reads shapes the code it generates, which the program runs.
+- **A package with no `rerun-if-changed`** is compared by the files `cargo package --list` gave
+  on the worker's host. That honours `include`, `exclude` and, with git, what git ignores. Your
+  own ignored files and a `.DS_Store` aren't compared; a listed file you lack is named.
+- **If Cargo can't list a package,** the worker compares every file of it instead, but
+  `.DS_Store`, `Thumbs.db` and `desktop.ini`, and `peeky build` says why. Without git, Cargo
+  lists every file but hidden ones and `target`.
 - **Each file is compared by its links too,** not only its bytes. A link on one side only, the
   file or a directory on its path, is refused though the bytes are the same. So is a link that
   points elsewhere.
-- **A watched directory is compared entry by entry,** and so is a package with no
-  `rerun-if-changed`, as Cargo lists its files. An entry only in your checkout is refused, even
-  an empty directory: Cargo would rerun the build script, which may read it.
+- **A watched directory is compared entry by entry.** An entry only in your checkout is refused,
+  even an empty directory: Cargo would rerun the build script, which may read it.
+- **A link that leads out of the root is refused,** on either side: the file itself, a directory
+  on its way, or an entry of a watched directory. A link out and back in is refused too. Nothing
+  through it is read, and the message names the link.
 - **Not `.git`:** nothing under a `.git` directory is compared. It is the checkout's metadata,
   not the project's source, and differs between two checkouts of the same sources: a build
   script watching `.git/HEAD` for its version would refuse every client.

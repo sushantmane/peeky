@@ -105,12 +105,36 @@ _STOP = contextvars.ContextVar("peeky_execute_stop", default=None)
 @contextlib.contextmanager
 def stopping(event):
     """Within it, ``execute`` takes ``event`` for its ``stop`` where given none: a Rust
-    workspace's build, whose Cargo commands a worker's shutdown stops."""
+    workspace's build, whose Cargo commands a worker's shutdown stops. Such an ``execute``
+    that the event ends raises Stopped."""
     token = _STOP.set(event)
     try:
         yield
     finally:
         _STOP.reset(token)
+
+
+class Stopped(RuntimeError):
+    """An ``execute`` that ``stopping``'s event ended: its process group was sent SIGKILL
+    and its leader reaped, or, with ``started`` False, it started none."""
+
+    def __init__(self, command, started):
+        self.started = started
+        super().__init__(
+            f"{Path(str(command[0])).name} was stopped" + ("" if started else " before it started")
+        )
+
+
+class GroupNotEnded(OSError):
+    """``execute`` couldn't kill its process group, or reap its leader: processes of it may
+    still run."""
+
+    def __init__(self, command, group, cause):
+        self.group = group
+        super().__init__(
+            f"Peeky couldn't make sure the processes {Path(str(command[0])).name} started "
+            f"ended (process group {group}): {cause}. End them yourself: kill -KILL -- -{group}"
+        )
 
 
 def execute(
@@ -132,15 +156,20 @@ def execute(
     the first line that starts in them); more than ``output_limit`` bytes, both streams
     together, kills it.
     Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code, and
-    `stopped`. Without one, ``stopping``'s applies. One set already starts nothing.
+    `stopped`. One set already starts nothing. Without one, ``stopping``'s applies, and its
+    end raises Stopped instead, once the group was killed and its leader reaped. Where the
+    group can't be killed, or its leader reaped, GroupNotEnded is raised, never hidden.
     ``gate()``, a context manager, is held while the process is started; it may raise
     to keep the process from starting.
 
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
     """
-    stop = _STOP.get() if stop is None else stop
+    contextual = stop is None
+    stop = _STOP.get() if contextual else stop
     if stop is not None and stop.is_set():
+        if contextual:
+            raise Stopped(command, started=False)
         return {
             "exit_code": None,
             "stdout": "",
@@ -214,17 +243,23 @@ def execute(
                 break
             time.sleep(0.01)
     finally:
-        if os.name == "posix":
-            kill_process_group(process)
-        elif process.poll() is None:
-            process.kill()
-        process.wait(timeout=5)
+        try:
+            if os.name == "posix":
+                kill_process_group(process)
+            elif process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise GroupNotEnded(command, process.pid, exc) from exc
         for reader in readers:
             reader.join(timeout=5)
         if writer:
             writer.join(timeout=5)
         process.stdout.close()
         process.stderr.close()
+    if stopped and contextual:
+        # Its group was killed and its leader reaped (the `finally` above).
+        raise Stopped(command, started=True)
     for slot, kept in enumerate(buffers):
         if not whole[slot] and (start := kept.find(b"\n")) >= 0:
             # The tail began part-way through a line.
@@ -749,7 +784,8 @@ def main():
                 sys.exit(1)
     finally:
         if server:
-            server.builds.close()
+            if problem := server.builds.close():
+                print(f"Peeky's worker: {problem}", file=sys.stderr, flush=True)
             server.worker.close()
             server.shutdown()
             server.server_close()

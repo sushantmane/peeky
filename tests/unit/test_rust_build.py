@@ -474,6 +474,112 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
     assert set(found["trees"]) == {str(root / "derive"), str(root / "util")}
 
 
+def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
+    root = tmp_path / "ws"
+    write(
+        root,
+        {
+            "app/build.rs": "",
+            "app/src/main.rs": "",
+            "app/.tracked": "t\n",
+            "app/ignored.log": "i\n",
+            "app/.DS_Store": "junk\n",
+            "app/Thumbs.db": "junk\n",
+            "util/src/lib.rs": "",
+            "derive/src/lib.rs": "",
+            "derive/.DS_Store": "junk\n",
+        },
+    )
+    (tmp_path / "outside.txt").write_text("o\n")
+    (root / "app/escape.txt").symlink_to(tmp_path / "outside.txt")
+    messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
+    asked = []
+
+    def lister(package):
+        # `cargo package --list`, with git: tracked and untracked files git doesn't ignore,
+        # hidden ones too, and the files Cargo writes into a package.
+        asked.append(package)
+        return [
+            ".tracked",
+            "Cargo.lock",
+            "Cargo.toml",
+            "Cargo.toml.orig",
+            "build.rs",
+            "escape.txt",
+            "src/main.rs",
+        ], None
+
+    shape = fake_shape(tmp_path)
+    found = rb._build_inputs(shape, root, messages, {"CC": None}, {}, LATER, None, 1, lister)
+    assert asked == ["app@0.1.0"]
+    listed = found["lists"][str(root / "app")]
+    assert listed["cargo"] is True and listed["note"] is None
+    # A link out of the root is recorded unread; Cargo's own files that aren't there aren't.
+    assert listed["files"] == {
+        ".tracked": hashlib.sha256(b"t\n").hexdigest(),
+        "build.rs": hashlib.sha256(b"").hexdigest(),
+        "escape.txt": None,
+        "src/main.rs": hashlib.sha256(b"").hexdigest(),
+    }
+    # The walk, for the build's freshness, has what Cargo ignores too.
+    assert "ignored.log" in found["trees"][str(root / "app")]
+    record = {"root": str(root), "build_inputs": found, "watch": {}}
+    assert rb._watched_inputs(record)[1] == (
+        "A remote client can't compare what this build read with its own files: app/escape.txt "
+        "is a link that leads out of the root on the worker's host, among the files of a "
+        "package Cargo watches whole. Run Peeky on the worker's host, or point the link inside "
+        "the root"
+    )
+    # Cargo can't list it: every file Peeky walks, but OS junk, and the record says why.
+    found = rb._build_inputs(
+        shape, root, messages, {"CC": None}, {}, LATER, None, 1, lambda p: (None, "it failed")
+    )
+    listed = found["lists"][str(root / "app")]
+    assert listed["cargo"] is False and listed["note"] == "it failed"
+    assert sorted(listed["files"]) == [".tracked", "build.rs", "ignored.log", "src/main.rs"]
+    # A procedural macro's package, and the analysed ones: every file but OS junk.
+    macro = {
+        "reason": "compiler-artifact",
+        "manifest_path": str(root / "derive/Cargo.toml"),
+        "target": {"name": "derive", "kind": ["proc-macro"]},
+    }
+    shape = fake_shape(tmp_path, local=("util", "app", "derive"))
+    found = rb._build_inputs(shape, root, [macro], {}, {}, LATER, None, 1, lister)
+    assert sorted(found["lists"][str(root / "derive")]["files"]) == ["src/lib.rs"]
+    assert asked == ["app@0.1.0"]
+
+
+def test_a_listed_file_the_walk_leaves_out_keeps_the_build_current_until_it_changes(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    root = tmp_path / "ws"
+    write(root, {"app/build.rs": "", "app/.hidden/h.txt": "h\n", "app/ignored.log": "i\n"})
+    messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
+    found = rb._build_inputs(
+        fake_shape(tmp_path),
+        root,
+        messages,
+        {"CC": None},
+        {},
+        LATER,
+        None,
+        1,
+        lambda package: ([".hidden/h.txt", "build.rs"], None),
+    )
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    (root / "app/.hidden/h.txt").write_text("changed\n")
+    with pytest.raises(rb.BuildRequired) as caught:
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    assert str(caught.value).startswith(
+        "No current Peeky build of this workspace: app/.hidden/h.txt changed since"
+    )
+
+
 def test_a_build_input_changed_while_cargo_ran_is_refused(tmp_path):
     root = tmp_path / "ws"
     write(root, {"util/build.rs": "", "util/schema.txt": "one\n"})

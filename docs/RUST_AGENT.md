@@ -133,8 +133,15 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   the root, or missing, unreadable or not a file on the worker's host.
   The names are read again only once the record changes (`recorded_names`).
 - Both sides compare them as `sources.structured` gives them: a file's bytes and the links on
-  its path, with what they say. Each directory a build script watches, and each package Cargo's
-  default watches, is compared entry by entry (`compared_trees`, and `sources._tree`).
+  its path, with what they say. Each directory a build script watches is compared entry by entry
+  (`compared_trees`, and `sources._tree`).
+- Each path is followed one link at a time, every link's target held inside the resolved root
+  before it is followed (`sources._inside`). A link out, even out and back in, is
+  `OutsideRoot`, and nothing through it is read.
+- A package Cargo watches whole is compared by the files `cargo package --list` gave at the build
+  (`lists` in the record, `_package_files`). If Cargo can't list it, every walked file but
+  `OS_JUNK`, saying why. A procedural macro's package and the analysed ones: every walked file
+  but `OS_JUNK`. The walk (`trees`) still decides the build's freshness on the worker's host.
 - After the launch's `assert_current`, the build's own record of those files is compared with
   the client's again, in the shape the disk has (`remote_identities`).
 - A directory Cargo's own dependency file lists is a build script's `rerun-if-changed` one. It
@@ -149,6 +156,10 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   ends. Each process the build runs is an `execute` in its thread, which takes that `stop`
   from `agent.stopping`: once set, it kills Cargo's process group and starts nothing.
   A running build is the worker's activity (`active`).
+- Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
+  reaped, or that started nothing. A kill or reap that fails is `agent.GroupNotEnded`, naming
+  the group, and is never hidden. `close` returns why the stopped build didn't end as stopped,
+  if it didn't: `shutdown` then refuses (still running) or warns, and `main` exits 1.
 - The client rewrites a worker's `BUILD_REQUIRED` to name its own command (`_remote_build_required`).
   A client resolves the target without a `--config`: a manifest Peeky doesn't build itself is the
   worker's to read (`resolve`, `tools=False`).

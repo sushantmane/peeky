@@ -53,7 +53,7 @@ _SETTLE_NS = 1_000_000_000
 _MAX_SNAPSHOT = 200_000
 # 2: the build's crates (`crates`), its local procedural macros (`macros`), and analysed
 # MIR with full paths. 3: each analysed unit's generated files (`generated`).
-SCHEMA = 3
+SCHEMA = 4
 
 # Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
 # target's own compile, which it knows by crate name and source file (a build script's
@@ -293,11 +293,10 @@ class RustWorkspaceTarget:
         return None if found is None else found[1]
 
     def compared_trees(self, root):
-        """({directory: how}, the directories a package's listing leaves out) of the
-        recorded build (``compared_trees``), compared with a client's entry by entry;
-        ({}, ()) where none is recorded."""
+        """{directory: "exact"} of the recorded build (``compared_trees``), compared with a
+        client's entry by entry; {} where none is recorded."""
         found = recorded_comparison(self, root or ".")
-        return ({}, ()) if found is None else found[2]
+        return {} if found is None else found[2]
 
     def trusted_config(self):
         """The trusted configuration this target is (``from_config`` reads it back as the
@@ -397,30 +396,22 @@ def _checkout_metadata(path):
 
 
 def compared_trees(manifest):
-    """({directory under the root: how}, the directories a package's listing leaves out) of
-    what a client's checkout is compared with entry by entry (`sources.structured`): each
-    directory a local build script's `rerun-if-changed` names ("exact", as Cargo scans it),
-    and each package Cargo's default watches, a local procedural macro's and the analysed
-    ones with one ("package", as Cargo lists its files, less the vendored copies). None
-    under `.git`, or outside the root (``remote_refusal`` refuses that)."""
+    """{directory under the root: "exact"} of what a client's checkout is compared with
+    entry by entry (`sources.structured`): each directory a local build script's
+    `rerun-if-changed` names, as Cargo scans it. A package compared whole is compared by
+    the files its record lists (``_package_files``), not entry by entry: a client's file
+    Cargo leaves out, such as a git-ignored one, is no difference. None under `.git`, or
+    outside the root (``remote_refusal`` refuses that)."""
     root = Path(manifest["root"]).resolve()
-    inputs = manifest.get("build_inputs") or {}
     trees = {}
-    for key, how in (("dirs", "exact"), ("trees", "package")):
-        for top in inputs.get(key) or {}:
-            try:
-                name = Path(top).relative_to(root).as_posix()
-            except ValueError:
-                continue
-            if not _checkout_metadata(name):
-                trees.setdefault(name, how)
-    skip = []
-    if (vendor := manifest["watch"].get("vendor_directory")) is not None:
+    for top in (manifest.get("build_inputs") or {}).get("dirs") or {}:
         try:
-            skip.append(Path(vendor).resolve().relative_to(root).as_posix())
+            name = Path(top).relative_to(root).as_posix()
         except ValueError:
-            pass
-    return dict(sorted(trees.items())), tuple(skip)
+            continue
+        if not _checkout_metadata(name):
+            trees[name] = "exact"
+    return dict(sorted(trees.items()))
 
 
 def remote_refusal(manifest):
@@ -440,8 +431,8 @@ def _watched_inputs(manifest):
     """({name under the root: SHA-256} of what local build scripts and procedural macros may
     read, as the build recorded it (``_build_inputs``): each `rerun-if-changed` file, each
     file under a `rerun-if-changed` directory, followed through links, and each file of a
-    package Cargo's default watches; the refusal of the first a client can't compare, or
-    None). Anything under a `.git` directory is left out: it is the checkout's metadata, not
+    package compared whole, as its record lists them (``_package_files``); the refusal of the
+    first a client can't compare, or None). Anything under a `.git` directory is left out: it is the checkout's metadata, not
     the project's source, and differs between two checkouts of the same sources (a build
     script watching `.git/HEAD` for its version). A directory is compared by its files."""
     root = Path(manifest["root"]).resolve()
@@ -493,9 +484,17 @@ def _watched_inputs(manifest):
                 add(path, entry[2])
             else:
                 add(path, None, "not a file")
-    for top, tree in (inputs.get("trees") or {}).items():
-        for relative, digest in tree.items():
-            add(Path(top) / relative, digest)
+    for top, listed in (inputs.get("lists") or {}).items():
+        for relative, digest in listed["files"].items():
+            if digest is not None:
+                add(Path(top) / relative, digest)
+            elif not _checkout_metadata(relative):
+                refusals.append(
+                    "A remote client can't compare what this build read with its own files: "
+                    f"{_shown(Path(top) / relative, root)} is a link that leads out of the root "
+                    "on the worker's host, among the files of a package Cargo watches whole. Run "
+                    "Peeky on the worker's host, or point the link inside the root"
+                )
     return found, (sorted(refusals)[0] if refusals else None)
 
 
@@ -574,9 +573,6 @@ def _run(argv, cwd, env, deadline, what):
         output_limit=CARGO_OUTPUT_LIMIT,
         retain=CARGO_RETAINED,
     )
-    if result.get("stopped"):
-        # ``build``'s ``stop``: Cargo's process group was killed.
-        raise BuildStopped()
     if result.get("timed_out"):
         raise TimeoutError(f"The build exceeded its deadline during {what}") from (
             BuildCommandError(tuple(argv), result)
@@ -879,12 +875,18 @@ def _changed_during(path, before, started_ns):
 
 
 class BuildStopped(RuntimeError):
-    """A build its ``stop`` ended: no process it ran is left running."""
+    """A build its ``stop`` ended (agent.Stopped): the process group it ran was killed and
+    its leader reaped, or its next process never started."""
 
-    def __init__(self):
+    def __init__(self, started):
         super().__init__(
-            "The worker is shutting down, so it stopped its build, and no process the build ran "
-            "is left running. Start the worker again, then build"
+            "The worker is shutting down, so it stopped its build: "
+            + (
+                "it killed Cargo and the processes Cargo ran. "
+                if started
+                else "its next process never started. "
+            )
+            + "Start the worker again, then build"
         )
 
 
@@ -893,16 +895,15 @@ def build(target, root, *, deadline=None, progress=None, stop=None):
     ``stop`` (a threading.Event), once set, kills each process the build runs (Cargo, its
     build scripts and rustc) and starts none: a worker's shutdown. Every process the build
     runs is an ``execute`` in this thread (``_run``, ``_tools``, ``rust_workspace.read``),
-    which takes it from ``stopping``."""
-    from peeky.agent import stopping
+    which takes it from ``stopping``. Only such an end is BuildStopped: any other error,
+    a failed kill among them (agent.GroupNotEnded), is raised as it is."""
+    from peeky.agent import Stopped, stopping
 
     with stopping(stop):
         try:
             return _build(target, root, deadline=deadline, progress=progress)
-        except BaseException:
-            if stop is not None and stop.is_set():
-                raise BuildStopped() from None
-            raise
+        except Stopped as exc:
+            raise BuildStopped(exc.started) from None
 
 
 def _build(target, root, *, deadline=None, progress=None):
@@ -992,8 +993,34 @@ def _build(target, root, *, deadline=None, progress=None):
             manifest = _record(
                 target, root, shape, directory, run, messages, before, started_ns, store
             )
+
+            def lister(package):
+                # `cargo package --list`: the files Cargo's default watch of a build script
+                # covers (`include`, `exclude`, and with git, what it ignores).
+                try:
+                    listed = _run(
+                        [target.cargo, "package", "--list", "--allow-dirty", "--offline"]
+                        + ["--locked", "-p", package, *extra],
+                        shape.workspace,
+                        env,
+                        deadline,
+                        "`cargo package --list`",
+                    )
+                except BuildCommandError as exc:
+                    lines = split_lines(exc.result.get("stderr") or "")
+                    error = next((line for line in lines if line.startswith("error")), "")
+                    why = f"`cargo package --list -p {package}` failed" + (
+                        f" ({error.strip()})" if error else ""
+                    )
+                    say(
+                        f"{why}: Peeky compares every file of the package with a remote "
+                        "client's, but .DS_Store, Thumbs.db and desktop.ini"
+                    )
+                    return None, why
+                return split_lines(listed["stdout"]), None
+
             manifest["build_inputs"] = _build_inputs(
-                shape, root, messages, env, before, started_ns, vendor, jobs_
+                shape, root, messages, env, before, started_ns, vendor, jobs_, lister
             )
             _watched_directories(manifest.pop("directories_read"), manifest, shape, vendor)
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
@@ -1474,7 +1501,33 @@ def _script_value(name, package_id, shape, env, jobs_):
     return found, how
 
 
-def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1):
+def _package_files(directory, names, walked, root):
+    """{path relative to ``directory``: SHA-256, or None for a link that leads out of
+    ``root``, whose target isn't read} of a package's files as Cargo lists them (``names``,
+    `cargo package --list`'s lines): each that is a file there (not the `Cargo.toml.orig`,
+    `.cargo_vcs_info.json` or a member's `Cargo.lock` that Cargo writes into a package), none
+    under `.git`. ``walked``: the hashes the package's walk already took."""
+    found = {}
+    for line in names:
+        name = line.strip()
+        if not name or PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts:
+            continue
+        path = Path(directory) / name
+        if _checkout_metadata(name) or not path.is_file():
+            continue
+        if not Path(os.path.realpath(path)).is_relative_to(root):
+            found[name] = None
+            continue
+        found[name] = walked[name] if name in walked else _hash(path)
+    return found
+
+
+# Files an operating system's file manager leaves in any directory, which no build reads:
+# never compared where Peeky lists a package's files itself.
+OS_JUNK = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+
+def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1, lister=None):
     """What build scripts and procedural macros may read, beyond what rustc's dependency
     files list, as the manifest keeps it: {"files": {path: identity}, "dirs": {directory:
     _exact_tree}, "trees": {directory: _tree}, "env": {variable: value or None}}. That
@@ -1483,9 +1536,15 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
     script's `rerun-if-env-changed` variables (dependencies' too), as Cargo gives them
     (_script_value); and with a local procedural macro, every file of its package and of
     each analysed one (a macro reading files elsewhere isn't followed). Refused where one
-    changed while Cargo ran, or where Peeky can't record it."""
+    changed while Cargo ran, or where Peeky can't record it.
+
+    A package compared whole is walked (``trees``: every file, for the build's freshness), and
+    its files a client's are compared with are listed (``lists``, ``_package_files``): as
+    Cargo lists them (``lister(package)``: its `cargo package --list`) for a build script's
+    package, every walked file but OS junk for a procedural macro's and the analysed ones."""
     skip = {shape.watch["vendor_directory"]} if vendor else set()
     files, dirs, trees, variables, budget = {}, {}, {}, {}, [MAX_RECORDED]
+    lists = {}
     by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
 
     def unchanged(path):
@@ -1498,12 +1557,31 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                 "workspace, so the build may not be of it. Build again"
             )
 
-    def watch_tree(directory):
+    def watch_tree(directory, package=None):
+        """Walk ``directory`` (a package's), and list its files a client's are compared
+        with: as Cargo lists them, given ``package`` (`name@version`); else every walked
+        file but OS junk."""
         key = str(directory)
         if key not in trees:
             trees[key] = _tree(directory, skip, budget=budget)
             for name in trees[key]:
                 unchanged(directory / name)
+        entry = lists.setdefault(key, {"files": {}, "cargo": False, "note": None})
+        names, why = (None, None)
+        if package is not None:
+            names, why = lister(package) if lister else (None, "Peeky didn't ask Cargo")
+        if names is None:
+            entry["note"] = entry["note"] if package is None else why
+            for name, digest in trees[key].items():
+                if PurePosixPath(name).name not in OS_JUNK:
+                    entry["files"][name] = digest
+            return
+        entry["cargo"] = True
+        for name, digest in _package_files(directory, names, trees[key], root).items():
+            if digest is not None and name not in trees[key]:
+                _spend(budget, directory)
+                unchanged(directory / name)
+            entry["files"][name] = digest
 
     for message in messages:
         if message.get("reason") != "build-script-executed":
@@ -1537,7 +1615,8 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
             continue
         package_directory = Path(directory).resolve()
         if not changed:
-            watch_tree(package_directory)
+            # Cargo's default: any file of the package, as Cargo lists it.
+            watch_tree(package_directory, f"{name}@{found[3]}")
         for each in changed:
             # Its directory as found; its last segment not followed (a link is recorded).
             joined = package_directory / each
@@ -1614,6 +1693,10 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         "files": dict(sorted(files.items())),
         "dirs": dict(sorted(dirs.items())),
         "trees": dict(sorted(trees.items())),
+        "lists": {
+            key: {**entry, "files": dict(sorted(entry["files"].items()))}
+            for key, entry in sorted(lists.items())
+        },
         "env": [
             {"package": package_id, "name": variable, **record}
             for (package_id, variable), record in sorted(variables.items())
@@ -2039,6 +2122,15 @@ def _check_build_inputs(target, root, directory, manifest):
         if now != recorded:
             name = sorted(set(now.items()) ^ set(recorded.items()))[0][0]
             raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
+    # The files of a package Cargo listed that its walk leaves out (a hidden one git tracks).
+    for top, listed in (inputs.get("lists") or {}).items():
+        for name, recorded in listed["files"].items():
+            try:
+                same = recorded is None or sha256_file(Path(top) / name) == recorded
+            except (OSError, ValueError):
+                same = False
+            if not same:
+                raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
     fresh = _environment(
         target,
         directory / "cargo-home",

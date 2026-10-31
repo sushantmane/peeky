@@ -410,7 +410,6 @@ def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, caps
         # Each by its links too; no directory a build script watches, entry by entry.
         "structured": True,
         "trees": {},
-        "skip": ["vendor"],
     }
     assert "build" in version["operations"]
     # The value read matches the program's own print.
@@ -562,6 +561,59 @@ def test_a_remote_client_compares_a_watched_directorys_entries_and_links(worker,
     (local / "util/proto/a.txt").unlink()
     (local / "util/proto/a.txt").symlink_to("../data.txt")
     read(*remote_probe(capsys, local, url))
+
+
+@pytest.mark.timeout(600)
+def test_a_package_cargo_watches_whole_is_compared_as_cargo_lists_it(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    # No `rerun-if-changed`: Cargo reruns the script for any file of its package, as
+    # `cargo package --list` lists them, which with git leaves out what git ignores.
+    for side in (host, local):
+        (side / "util/build.rs").write_text("fn main() {}\n")
+        (side / "util/data.txt").write_text("d\n")
+        (side / "util/.gitignore").write_text("*.log\n")
+    subprocess.run(["git", "init", "-q", str(host)], check=True)
+    subprocess.run(["git", "-C", str(host), "add", "-A"], check=True)
+    (host / "util/build.log").write_text("the worker's own\n")
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    sources = Client(url, TOKEN).call("version")["sources"]
+    assert sources["trees"] == {}, sources
+    names = set(sources["names"])
+    assert {"util/build.rs", "util/data.txt", "util/.gitignore"} <= names, names
+    assert "util/build.log" not in names, names
+    # What a client has that Cargo leaves out is no difference: a git-ignored file, or
+    # a .DS_Store.
+    (local / "util/client.log").write_text("the client's own\n")
+    (local / "util/.DS_Store").write_text("Finder's\n")
+    read(*remote_probe(capsys, local, url))
+    # A file Cargo lists that the client lacks is named.
+    (local / "util/data.txt").unlink()
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "util/data.txt (missing in your checkout)" in result["error"]["message"], result
+
+
+@pytest.mark.timeout(600)
+def test_a_link_out_of_the_root_is_never_followed_for_a_remote_client(worker, capsys, tmp_path):
+    host, local, url, _ = worker
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    # The client's app/src, which the build compiled, is a link out of its checkout, to a
+    # copy of the same files.
+    outside = tmp_path / "elsewhere"
+    (local / "app/src").rename(outside)
+    (local / "app/src").symlink_to(outside)
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    assert result["error"]["message"] == (
+        "Peeky compares only files inside the root: on your checkout, app/src/main.rs leads out "
+        f"of it through app/src, a link to {outside.resolve()}. Nothing there was read. Point "
+        "the link inside the root, or make it a file or directory there"
+    )
 
 
 # A build script that says where it runs, then outlives any test: what a worker's end must

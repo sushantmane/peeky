@@ -3,6 +3,7 @@
 build command. Without a real toolchain."""
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -73,6 +74,9 @@ class Builds:
 
     def __init__(self, fail=None):
         self.release, self.fail, self.calls = threading.Event(), fail, 0
+        # What a stop ends it with; whether it goes on regardless (``stubborn``), and the
+        # error it then ends with (``fail_on_stop``).
+        self.stopped_with, self.stubborn, self.fail_on_stop = BuildStopped(True), False, None
 
     def compared_names(self, root):
         return ("Cargo.toml",)
@@ -81,8 +85,10 @@ class Builds:
         self.calls += 1
         assert deadline is not None and deadline > time.monotonic()
         while not self.release.wait(0.01):
-            if stop is not None and stop.is_set():
-                raise BuildStopped()
+            if stop is not None and stop.is_set() and not self.stubborn:
+                raise self.stopped_with
+        if self.fail_on_stop is not None and stop is not None and stop.is_set():
+            raise self.fail_on_stop
         if self.fail:
             raise self.fail
         return {"peeky": "build", "status": "built", "build_id": f"b{self.calls}"}
@@ -220,7 +226,16 @@ def test_a_client_compares_what_local_build_scripts_read_but_their_checkouts_met
                     },
                 }
             },
-            "trees": {"/srv/ws/rust/gen": {"build.rs": "t", "data/x.json": "u"}},
+            # The package's walk, for the build's freshness; what a client's are compared
+            # with is its files as Cargo lists them, never a git-ignored one.
+            "trees": {"/srv/ws/rust/gen": {"build.rs": "t", "data/x.json": "u", "x.log": "i"}},
+            "lists": {
+                "/srv/ws/rust/gen": {
+                    "files": {"build.rs": "t", "data/x.json": "u", ".tracked": "v"},
+                    "cargo": True,
+                    "note": None,
+                }
+            },
         }
     )
     found = compared_sources(record)
@@ -236,6 +251,7 @@ def test_a_client_compares_what_local_build_scripts_read_but_their_checkouts_met
         "rust/util/proto/to-file": "c",
         "rust/gen/build.rs": "t",
         "rust/gen/data/x.json": "u",
+        "rust/gen/.tracked": "v",
     }
     assert not any(".git" in name for name in found)
     assert remote_refusal(record) is None
@@ -262,6 +278,11 @@ def test_a_client_compares_what_local_build_scripts_read_but_their_checkouts_met
         (
             {"dirs": {"/srv/ws/rust/util/proto": {"root": ["missing"], "entries": "missing"}}},
             "rust/util/proto, a directory that is missing on the worker's host",
+        ),
+        # A package's file Cargo lists, through a link out of the root: never read.
+        (
+            {"lists": {"/srv/ws/rust/gen": {"files": {"data.txt": None}}}},
+            "rust/gen/data.txt is a link that leads out of the root on the worker's host",
         ),
     ],
 )
@@ -346,7 +367,8 @@ def test_a_workers_close_stops_its_build_and_starts_none(tmp_path):
     # A request is activity, and so is a running build (`active`).
     assert worker.last_used > 0
     asked = worker.last_used
-    builds.close(timeout=5)
+    # The build ended as its stop says: its processes killed.
+    assert builds.close(timeout=5) is None
     assert not builds.active()
     # The build's end is activity too.
     assert worker.last_used > asked
@@ -355,8 +377,12 @@ def test_a_workers_close_stops_its_build_and_starts_none(tmp_path):
     found = classify(stopped.value)
     assert found["code"] == "UNREACHABLE" and "Start the worker again" in found["hint"], found
     assert found["message"] == (
-        "The worker is shutting down, so it stopped its build, and no process the build ran is "
-        "left running. Start the worker again, then build"
+        "The worker is shutting down, so it stopped its build: it killed Cargo and the processes "
+        "Cargo ran. Start the worker again, then build"
+    )
+    assert str(BuildStopped(False)) == (
+        "The worker is shutting down, so it stopped its build: its next process never started. "
+        "Start the worker again, then build"
     )
     with pytest.raises(RuntimeError) as refused:
         builds.request(worker, {"wait": 0})
@@ -364,29 +390,96 @@ def test_a_workers_close_stops_its_build_and_starts_none(tmp_path):
         "The worker is shutting down, so no build starts. Start the worker again, then build"
     )
     assert target.calls == 1
+    # Asked again, it answers for the same build.
+    assert builds.close(timeout=5) is None
+
+
+def test_a_build_that_doesnt_end_when_stopped_is_never_reported_ended(tmp_path):
+    builds, target = _RemoteBuilds(), Builds()
+    target.stubborn = True
+    worker = SimpleNamespace(adapter=target, root=tmp_path, last_used=0.0)
+    builds.request(worker, {"wait": 0})
+    assert builds.close(timeout=0.2) == (
+        "its build is still running 0.2 s after the worker stopped it, and so may the processes "
+        "it runs"
+    )
+    assert builds.active()
+    # It ends, but not as stopped: a kill that failed, say. Every later answer says so.
+    target.fail_on_stop = OSError("Peeky couldn't make sure the processes cargo started ended")
+    target.release.set()
+    for _ in range(2):
+        assert builds.close(timeout=5) == (
+            "its build, stopped, ended with an error instead, so its processes may still run: "
+            "Peeky couldn't make sure the processes cargo started ended"
+        )
+    assert not builds.active()
+
+
+def test_a_worker_whose_build_doesnt_end_refuses_to_shut_down_and_says_why(tmp_path):
+    import threading as threads
+
+    from peeky.client import Client
+    from peeky.errors import PeekyError
+    from peeky.worker import make_server
+
+    token = "rust-workspace-worker-token-0123456789abcdef"
+    target = Builds()
+    target.stubborn = True
+    server = make_server(tmp_path, token, 0, adapter=target)
+    threads.Thread(target=server.serve_forever, daemon=True).start()
+    client = Client(f"http://127.0.0.1:{server.server_port}", token)
+    try:
+        assert client.call("build", wait=0)["status"] == "building"
+        server.builds.close = lambda timeout=30, close=server.builds.close: close(0.2)
+        with pytest.raises(PeekyError) as refused:
+            client.call("shutdown")
+        error = refused.value.payload
+        assert error["code"] == "BUSY" and error["retryable"] is True, error
+        assert error["message"] == (
+            "The worker didn't shut down: its build is still running 0.2 s after the worker "
+            "stopped it, and so may the processes it runs"
+        )
+        # It still answers, and owns its build.
+        assert client.call("version")["protocol"] > 0
+        # The build ends, but not as stopped: the worker shuts down, and says so.
+        target.fail_on_stop = OSError("its group survived")
+        target.release.set()
+        assert client.call("shutdown") == {
+            "state": "shutdown",
+            "warning": "its build, stopped, ended with an error instead, so its processes may "
+            "still run: its group survived",
+        }
+    finally:
+        target.release.set()
+        server.shutdown()
+        server.server_close()
 
 
 def test_a_stopped_context_kills_and_starts_no_process(tmp_path):
-    from peeky.agent import execute, stopping
+    from peeky.agent import Stopped, execute, stopping
 
     stop = threading.Event()
     marker = tmp_path / "ran"
     with stopping(stop):
         threading.Timer(0.2, stop.set).start()
         started = time.monotonic()
-        result = execute(["sleep", "30"], tmp_path, 60)
-        assert result["stopped"] is True and result["exit_code"] is None
-        assert time.monotonic() - started < 10
+        with pytest.raises(Stopped) as ended:
+            execute(["sleep", "30"], tmp_path, 60)
+        assert ended.value.started is True and time.monotonic() - started < 10
         # Once set, nothing starts.
-        again = execute(["touch", str(marker)], tmp_path, 60)
-    assert again["stopped"] is True and not marker.exists()
-    # Outside the context, an execute takes no stop of it.
+        with pytest.raises(Stopped) as ended:
+            execute(["touch", str(marker)], tmp_path, 60)
+    assert ended.value.started is False and not marker.exists()
+    # Outside the context, an execute takes no stop of it; one given its own stop answers
+    # as before.
     assert execute(["true"], tmp_path, 60)["exit_code"] == 0
+    assert execute(["true"], tmp_path, 60, stop=stop)["stopped"] is True
 
 
-def test_a_stopped_workspace_build_leaves_no_process_of_cargos(tmp_path, monkeypatch):
-    # Cargo runs in a process group of its own; a build script it runs is in that group.
-    # The build's `stop` kills the group, whatever runs in it, and the build ends.
+def cargo_with_a_build_script(tmp_path, monkeypatch):
+    """(``build``'s stop, the build script's pid file): ``rust_build._build`` runs a Cargo
+    whose build script outlives it, a child in its process group, and the stop is set once
+    the script runs."""
     import os
 
     from peeky import rust_build
@@ -404,10 +497,58 @@ def test_a_stopped_workspace_build_leaves_no_process_of_cargos(tmp_path, monkeyp
 
     monkeypatch.setattr(rust_build, "_build", cargo)
     threading.Thread(target=stop_once_running, daemon=True).start()
+    return stop, pid_file
+
+
+def test_a_stopped_workspace_build_leaves_no_process_of_cargos(tmp_path, monkeypatch):
+    # Cargo runs in a process group of its own; a build script it runs is in that group.
+    # The build's `stop` kills the group, whatever runs in it, and the build ends.
+    from peeky import rust_build
+
+    stop, pid_file = cargo_with_a_build_script(tmp_path, monkeypatch)
     started = time.monotonic()
     with pytest.raises(BuildStopped):
         rust_build.build(None, tmp_path, deadline=time.monotonic() + 120, stop=stop)
     assert time.monotonic() - started < 60
+    assert gone(int(pid_file.read_text()))
+
+
+def test_a_kill_that_fails_is_never_called_a_stopped_build(tmp_path, monkeypatch):
+    import os
+    import signal
+
+    from peeky import agent, rust_build
+    from peeky.agent import GroupNotEnded
+
+    def refused(process):
+        raise PermissionError(1, "Operation not permitted")
+
+    stop, pid_file = cargo_with_a_build_script(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "kill_process_group", refused)
+    group = None
+    try:
+        with pytest.raises(GroupNotEnded) as failed:
+            rust_build.build(None, tmp_path, deadline=time.monotonic() + 120, stop=stop)
+        group = failed.value.group
+        assert str(failed.value) == (
+            f"Peeky couldn't make sure the processes sh started ended (process group {group}): "
+            f"[Errno 1] Operation not permitted. End them yourself: kill -KILL -- -{group}"
+        )
+        # It is so: the build script still runs.
+        assert not gone(int(pid_file.read_text()), timeout=0.5)
+        # And a worker's close says so.
+        builds, target = _RemoteBuilds(), Builds()
+        target.stubborn, target.fail_on_stop = True, failed.value
+        worker = SimpleNamespace(adapter=target, root=tmp_path, last_used=0.0)
+        builds.request(worker, {"wait": 0})
+        threading.Timer(0.2, target.release.set).start()
+        assert builds.close(timeout=5) == (
+            "its build, stopped, ended with an error instead, so its processes may still run: "
+            + str(failed.value)
+        )
+    finally:
+        if group is not None:
+            os.killpg(group, signal.SIGKILL)
     assert gone(int(pid_file.read_text()))
 
 
@@ -453,7 +594,7 @@ def compared(host, client, names, trees=None):
     the first that differs, as the worker refuses it, or None."""
     adapter = SimpleNamespace(
         compared_names=lambda root: tuple(names),
-        compared_trees=lambda root: (dict(trees or {}), ("vendor",)),
+        compared_trees=lambda root: dict(trees or {}),
         remote_refusal=lambda root: None,
     )
     ours = sources.worker_sources(adapter, host)
@@ -475,20 +616,25 @@ def test_an_entry_only_in_the_clients_watched_directory_is_refused(tmp_path):
         "util/proto/ (its entries on the worker host differ from your checkout's: an entry on "
         "one side only, one of another kind, or a link that points elsewhere)"
     )
-    # An empty directory too, and one in a package Cargo's default watches.
+    # An empty directory too.
     (client / "util/proto/extra.txt").unlink()
     (client / "util/proto/more").mkdir()
     assert compared(host, client, names, {"util/proto": "exact"}).startswith("util/proto/ ")
-    (client / "util/proto/more").rmdir()
-    (client / "util/notes.txt").write_text("n\n")
-    assert compared(host, client, names, {"util": "package"}).startswith("util/ ")
-    # What a package's listing leaves out, as Cargo's does: a hidden or `target` directory,
-    # another package's, and the vendored copies (a root package's).
-    (client / "util/notes.txt").unlink()
-    for name in ("util/.cache/x", "util/target/x", "util/inner/Cargo.toml", "vendor/x/y"):
-        (client / name).parent.mkdir(parents=True, exist_ok=True)
-        (client / name).write_text("x\n")
-    assert compared(host, client, names, {".": "package", "util": "package"}) is None
+
+
+def test_a_package_compared_whole_is_compared_by_the_files_cargo_lists(tmp_path):
+    # A build script with no `rerun-if-changed`: its package's files as Cargo lists them
+    # are the names compared. A client's git-ignored file, or a .DS_Store, is none of them.
+    host, client = checkouts(tmp_path, WATCHED)
+    names = ("util/build.rs", "util/data.txt", "util/proto/a.txt")
+    for junk in ("util/.DS_Store", "util/ignored.log", "util/target/x", "util/proto/Thumbs.db"):
+        (client / junk).parent.mkdir(parents=True, exist_ok=True)
+        (client / junk).write_text("junk\n")
+    assert compared(host, client, names) is None
+    # A listed file the client lacks is named.
+    (client / "util/data.txt").unlink()
+    with pytest.raises(RuntimeError, match=r"util/data.txt \(missing in your checkout\)"):
+        compared(host, client, names)
 
 
 @pytest.mark.parametrize(
@@ -526,13 +672,10 @@ def test_a_directory_linked_on_one_side_only_is_refused(tmp_path):
 def test_links_that_point_elsewhere_are_refused_though_the_bytes_are_the_same(tmp_path):
     files = {**WATCHED, "util/other.txt": "a\n"}
     del files["util/proto/a.txt"]
-    links = {"util/proto/a.txt": "../data.txt", "util/notes.txt": ".hidden/n.txt"}
+    links = {"util/proto/a.txt": "../data.txt", "util/proto/b.txt": "../other.txt"}
     host, client = checkouts(tmp_path, files, links)
-    for side in (host, client):
-        (side / "util/.hidden").mkdir()
-        (side / "util/.hidden/n.txt").write_text("n\n")
-    names = ("util/build.rs", "util/proto/a.txt")
-    trees = {"util/proto": "exact", "util": "package"}
+    names = ("util/build.rs", "util/proto/a.txt", "util/proto/b.txt")
+    trees = {"util/proto": "exact"}
     assert compared(host, client, names, trees) is None
     (client / "util/proto/a.txt").unlink()
     (client / "util/proto/a.txt").symlink_to("../other.txt")
@@ -540,10 +683,59 @@ def test_links_that_point_elsewhere_are_refused_though_the_bytes_are_the_same(tm
         "util/proto/a.txt (the copy on the worker host differs from your checkout, in its "
         "contents or in where a link is or points)"
     )
-    (client / "util/proto/a.txt").unlink()
-    (client / "util/proto/a.txt").symlink_to("../data.txt")
-    assert compared(host, client, names, trees) is None
-    # A link in a package's listing, which isn't among the files compared by name: what it
-    # names differs.
-    (client / "util/.hidden/n.txt").write_text("changed\n")
-    assert compared(host, client, names, trees).startswith("util/ (its entries ")
+
+
+@pytest.mark.parametrize("side", ["host", "client"])
+@pytest.mark.parametrize(
+    ("link", "says", "name", "trees", "named"),
+    [
+        # The file itself.
+        ("util/src/lib.rs", "{outside}/lib.rs", "util/src/lib.rs", None, "util/src/lib.rs"),
+        # A directory on its way.
+        ("util/src", "{outside}", "util/src/lib.rs", None, "util/src/lib.rs"),
+        # Out of the root and back in: what it reads is inside, but a link outside decides it.
+        ("util/src", "{outside}/back", "util/src/lib.rs", None, "util/src/lib.rs"),
+        # An entry of a watched directory, which isn't among the names.
+        ("util/proto/x.txt", "{outside}/lib.rs", "util/build.rs", "util/proto", "util/proto/x.txt"),
+        # A watched directory itself.
+        ("util/proto", "{outside}", "util/build.rs", "util/proto", "util/proto"),
+    ],
+    ids=["file", "directory-on-the-way", "out-and-back", "watched-entry", "watched-directory"],
+)
+def test_a_link_out_of_the_root_is_refused_and_nothing_through_it_read(
+    tmp_path, monkeypatch, side, link, says, name, trees, named
+):
+    import shutil
+
+    from peeky.errors import classify
+
+    host, client = checkouts(tmp_path, {**WATCHED, "util/src/lib.rs": "pub fn f() {}\n"})
+    checkout = host if side == "host" else client
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "lib.rs").write_text("pub fn f() {}\n")
+    # Back into the checkout: its own copy of util/src, moved aside.
+    shutil.copytree(checkout / "util/src", checkout / "util/real")
+    (outside / "back").symlink_to(checkout / "util/real")
+    if (checkout / link).is_dir():
+        shutil.rmtree(checkout / link)
+    else:
+        (checkout / link).unlink(missing_ok=True)
+    (checkout / link).symlink_to(says.format(outside=outside))
+    read = []
+    original = sources._hash
+    monkeypatch.setattr(sources, "_hash", lambda path: read.append(str(path)) or original(path))
+    with pytest.raises(ValueError) as refused:
+        compared(host, client, ("util/build.rs", name), {trees: "exact"} if trees else None)
+    where = "the worker host" if side == "host" else "your checkout"
+    target = says.format(outside=os.path.realpath(outside))
+    assert str(refused.value) == (
+        f"Peeky compares only files inside the root: on {where}, {named} leads out of "
+        f"it through {link}, a link to {target}. Nothing there was read. Point the link inside "
+        "the root, or make it a file or directory there"
+    )
+    assert classify(refused.value)["code"] == "UNSUPPORTED"
+    # Nothing outside was read, nor anything through the link.
+    through = os.path.realpath(checkout / link.split("/x.txt")[0])
+    assert not [path for path in read if path.startswith((str(checkout / link), through))]
+    assert not [path for path in read if os.path.realpath(path).startswith(str(outside))]

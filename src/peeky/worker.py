@@ -7257,6 +7257,7 @@ class _RemoteBuilds:
         self.current = None  # (id, thread, {"result" or "error": ...})
         # Set by ``close``: the running build's processes are killed, and none starts.
         self.stopping = threading.Event()
+        self.stopped = None  # the build ``close`` stopped, as ``current``
 
     def active(self):
         """Whether a build runs: the worker's activity, as a request is."""
@@ -7266,12 +7267,35 @@ class _RemoteBuilds:
     def close(self, timeout=30):
         """Stop the running build, its processes killed (Cargo's process group, its build
         scripts and rustc among it), and wait for it; no build starts after. Every way the
-        worker ends calls it: `shutdown`, SIGTERM, an idle exit, `main`'s end."""
-        self.stopping.set()
+        worker ends calls it: `shutdown`, SIGTERM, an idle exit, `main`'s end. None once no
+        build runs and none was stopped but as rust_build.BuildStopped says (its processes
+        killed, or none started); else why not: the build still runs, or it ended otherwise
+        (a kill that failed among it), so its processes may too."""
+        from peeky.rust_build import BuildStopped
+
         with self.lock:
             current = self.current
-        if current is not None:
-            current[1].join(timeout)
+            if self.stopped is None and current is not None and current[1].is_alive():
+                # The build this worker stopped: what a later call answers for too.
+                self.stopped = current
+            self.stopping.set()
+            stopped = self.stopped
+        if stopped is None:
+            return None
+        identifier, thread, outcome = stopped
+        thread.join(timeout)
+        if thread.is_alive():
+            return (
+                f"its build is still running {timeout:g} s after the worker stopped it, and so "
+                "may the processes it runs"
+            )
+        error = outcome.get("error")
+        if error is None or isinstance(error, BuildStopped):
+            return None
+        return (
+            f"its build, stopped, ended with an error instead, so its processes may still run: "
+            f"{error}"
+        )
 
     def request(self, worker, args):
         from peeky.rust_build import BUILD_TIMEOUT_S
@@ -7639,11 +7663,15 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
                     result = builds.request(worker, args)
                 elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
-                    builds.close()
+                    problem = builds.close()
+                    if builds.active():
+                        # It keeps running, so it still owns the build and its processes.
+                        raise RuntimeError(f"The worker didn't shut down: {problem}")
                     with worker.lock:
                         worker.close()
                     threading.Thread(target=server.shutdown, daemon=True).start()
-                    result = {"state": "shutdown"}
+                    # A build that ended otherwise than stopped may have left processes.
+                    result = {"state": "shutdown", **({"warning": problem} if problem else {})}
                 else:
                     result = (
                         probe(args) if operation == "probe" else worker.dispatch(operation, args)
@@ -8101,15 +8129,19 @@ def main():
         f"Debugger worker: http://127.0.0.1:{server.server_port}; root={Path(args.root).resolve()}",
         flush=True,
     )
+    problem = None
     try:
         server.serve_forever()
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         # A build's processes go with the worker: none outlives it, or its deadline.
-        server.builds.close()
+        problem = server.builds.close()
         server.worker.close()
         server.server_close()
+    if problem:
+        print(f"peeky-worker: exiting, but {problem}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

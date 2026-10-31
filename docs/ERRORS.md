@@ -37,13 +37,13 @@ The last column is the `retryable` field.
 | `DEBUGGER_ERROR` | The adapter, the debugger or llvm-dwarfdump failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
 | `SESSION_ACTIVE` | A session was misused: one is already open. | Close the session. | no |
 | `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
-| `BUSY` | Another probe is running on this worker, or it is serving its most connections (HTTP 503). Nothing was run. | Retry later. | yes |
+| `BUSY` | Another probe is running on this worker, or it is serving its most connections (HTTP 503). Nothing was run. A `shutdown` whose Rust workspace build still runs after it was stopped is refused too, and the worker keeps running. | Retry later. | yes |
 | `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
 | `UNAUTHORIZED` | The bearer token is missing or wrong, or the process at the worker's URL didn't prove it holds yours. | Set `PEEKY_WORKER_TOKEN` to the worker's `DEBUG_TOKEN`. If it is, check which process holds the port. | no |
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
 | `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
-| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. A worker shutting down stopped its Rust workspace's build, or starts none ([REMOTE.md](REMOTE.md#a-rust-workspace)). | Restore the tunnel or the worker, and retry. | yes |
+| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. A worker shutting down stopped its Rust workspace's build, its processes killed, or starts none ([REMOTE.md](REMOTE.md#a-rust-workspace)). | Restore the tunnel or the worker, and retry. | yes |
 | `TRANSPORT_LOST` | The connection broke mid-request. The outcome is unknown. | Reconnect, then `inspect` or `wait`. Never repeat a change blindly. | no |
 | `JOB_LOST` | A `--background` job's process died before it finished. | Rerun the command. | no |
 
@@ -174,6 +174,7 @@ The last column is the `retryable` field.
 | A Rust workspace build script Peeky can't record: `Peeky records at most … files a build script or procedural macro may read, …`, `Peeky reads at most 16 MiB of a build script's output, …`, `Peeky can't tell the value Cargo gives …`, for a `rerun-if-env-changed` variable Cargo sets whose value Peeky can't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`), or `Peeky can't tell whether … was there while …`, for a missing `rerun-if-changed` file Peeky has no record of from before the build (outside the workspace, unreadable, or past the record's 200,000 entries), or `… build script watches …, a link to … that doesn't exist`, for one that is or passes through a link to nothing | Give the build script narrower `cargo::rerun-if-changed` lines, make it print less, or move large data out of the package |
 | A Rust workspace's remote run whose build read what a client can't compare: `A remote client can't compare what this build read with its own files: a build script says it reads …`, a file missing, unreadable or not a file on the worker's host. `.git` is never compared ([REMOTE.md](REMOTE.md#a-rust-workspace)) | Run Peeky on the worker's host, or change what the build script reads, as the message says |
 | A Rust workspace build that read a file outside the root: `Peeky builds only files inside …: … read …`, an `include!`, a `#[path]` or a build script's `rerun-if-changed`. No remote client could compare it either | Move it into the workspace, or drop what names it |
+| A compared file that a link leads out of the root, on the worker's host or in your checkout: `Peeky compares only files inside the root: on your checkout, app/src/main.rs leads out of it through app/src, a link to …`. Nothing through the link was read ([REMOTE.md](REMOTE.md#a-rust-workspace)) | Point the link inside the root, or make it a file or directory there |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -262,7 +263,9 @@ file lists what it reads.
   a manifest changed since the build, or a new member appeared: the normal edit cycle.
 - So is a change to what a build script or procedural macro may read. That is each
   `rerun-if-changed` path of a local build script, or, with none, every file of its package. A
-  local procedural macro adds every file of its package and of the analysed ones.
+  local procedural macro adds every file of its package and of the analysed ones. Through a
+  worker, a package with no `rerun-if-changed` is compared by the files `cargo package --list`
+  gives ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - The message names the file and gives the command: `No current Peeky build of this workspace:
   util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again,
   or add --build`.

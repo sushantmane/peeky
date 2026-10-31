@@ -514,6 +514,13 @@ _RULES = (
         False,
     ),
     (
+        # A `shutdown` while the worker's build still runs, past the wait (worker._RemoteBuilds).
+        r"^The worker didn't shut down: ",
+        "BUSY",
+        "The worker keeps running, and so does its build. Retry the shutdown once the build ends.",
+        True,
+    ),
+    (
         # A worker's shutdown stopped its build, or refused to start one (worker._RemoteBuilds).
         r"^The worker is shutting down, so ",
         "UNREACHABLE",
@@ -526,6 +533,14 @@ _RULES = (
         "TIMEOUT",
         "The build goes on on the worker: run the same `peeky build --worker` command again to "
         "wait for it.",
+        False,
+    ),
+    (
+        # sources.OutsideRoot: a compared path a link leads out of the root.
+        r"^Peeky compares only files inside the root: ",
+        "UNSUPPORTED",
+        "Nothing ran, and nothing outside the root was read. Point the link inside the root, as "
+        "the message says.",
         False,
     ),
     (
