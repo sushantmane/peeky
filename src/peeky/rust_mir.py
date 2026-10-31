@@ -134,6 +134,9 @@ _STORE_BASE = re.compile(r"^\(+\*[(*]*_([0-9]+)\b")
 _BOX_TYPE = re.compile(r"^(?:(?:std|alloc)::boxed::)?Box<")
 # `copy_nonoverlapping(dst = move _5, src = move _6, count = const 1_usize);`: a store
 # through `dst` of what `src` points at.
+# A pointer as it is passed on, unchanged: a copy, a move, a reborrow (`&(*_3)`, `&mut
+# (*_3)`, `&raw const (*_3)`).
+_PLAIN_POINTER = re.compile(r"(?:copy|move) _([0-9]+)|&(?:mut |raw (?:const|mut) )?\(\*_([0-9]+)\)")
 _COPY_NONOVERLAPPING = re.compile(
     r"^copy_nonoverlapping\(dst = (?:copy|move) _([0-9]+), src = (?:copy|move) _([0-9]+),"
 )
@@ -3982,12 +3985,15 @@ class Body:
                     # A pointer a call returned, where that call may return
                     # one into global state (``GlobalState.returned``): `slot()` of
                     # `lock_set(slot(), x)` returning `&S`, `registry()`'s `&'static
-                    # Mutex<Vec<u32>>`; not `fresh()` returning a leaked `Box`. For a call,
-                    # a binding that stands for it is the program's own (``_outlives_frame``):
-                    # `r` of `let r = slot(); lock_set(r, x);`. A store writes there itself,
-                    # though made through such a binding: `*r.lock().unwrap() = x;` writes the
-                    # static through the guard's `deref_mut`, whatever `r` is.
-                    if stored or not any(n in named and self._outlives_frame(n) for n in owners):
+                    # Mutex<Vec<u32>>`; not `fresh()` returning a leaked `Box`. A call
+                    # given a binding that stands for it, or a copy or reborrow of one, is
+                    # the program's own (``_outlives_frame``): `r` of `let r = slot();
+                    # lock_set(r, x);`. A store writes there itself, though made through such
+                    # a binding (`*r.lock().unwrap() = x;` writes the static through the
+                    # guard's `deref_mut`), and so does a call given what another call made
+                    # of it (`r.lock().unwrap().push(x)`, given the `deref_mut`'s `&mut
+                    # Vec`).
+                    if stored or not self._binding_itself(base, named):
                         found |= self._returned_kinds(owners)
                 return found
 
@@ -4059,6 +4065,25 @@ class Body:
                         )
             self._copy_reads = (parts, mentions, seeds, at, frozenset(named), stores)
         return self._copy_reads
+
+    def _binding_itself(self, local, named):
+        """Whether ``local`` is a pointer binding of the program's own that outlives the
+        frame (``_outlives_frame``), or a copy, move or reborrow of one, through such
+        assignments alone (`copy _3`, `&(*_3)`): not what a call returned (`deref_mut`'s)."""
+        seen, pending, assigned = set(), [local], self._assignments()
+        while pending:
+            each = pending.pop()
+            if each in seen:
+                continue
+            seen.add(each)
+            if each in named and self._outlives_frame(each):
+                return True
+            values = assigned.get(each, ())
+            plain = [_PLAIN_POINTER.fullmatch(_STRING.sub('""', value)) for value in values]
+            if not values or not all(plain):
+                continue
+            pending.extend(int(found[1] or found[2]) for found in plain)
+        return False
 
     def _pointees(self, owners, aiming):
         """The pointer bindings of ``aiming`` that stand for what a write through them

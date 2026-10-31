@@ -326,8 +326,9 @@ message says `cannot be changed here`.
   scope, before reading it. The copy may be used before or after that:
   ``the program has already copied `x` into `n` ``. Where a call given `&mut x` since may have
   changed `x`: ``the program's own `n` (at line 34) may hold a copy of `x` that it goes on with``.
-  Where a call, or a store through a lock's guard (`*r.lock().unwrap() = x;`), may have kept it
-  in a `static` or a `thread_local!` that a later call reads:
+  Where a call, or a store through a lock's guard (`*r.lock().unwrap() = x;`,
+  `r.lock().unwrap().push(x)`), may have kept it in a `static` or a `thread_local!` that a
+  later call reads:
   ``a static or thread-local may hold a copy of `x` (from line 72) that the program may go on
   with``.
   Where every path then panics or exits first: ``every path from here panics or exits before

@@ -31,7 +31,8 @@
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
   into the static, yet `x` was marked `[settable]`: a change didn't reach the static's copy,
   which the program went on with. It is refused now, naming the store. So through an
-  `RwLock`'s write guard, and a `RefCell`'s `RefMut` in a `static mut`.
+  `RwLock`'s write guard, and a `RefCell`'s `RefMut` in a `static mut`, and by a call given
+  what the guard's `deref_mut` returned (`r.lock().unwrap().push(x)`, `mem::replace`).
 
 - **`verify --check-command` checks a Python edit with the project's own tests:** it runs the
   command in a fresh copy of the project with the edit, on the program's interpreter, with its

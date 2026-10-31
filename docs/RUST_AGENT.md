@@ -857,10 +857,12 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
   pointer into it (`_made_from` reaches a root), a call `global_touch` says may touch it, a store
   through such a pointer, and a drop that may. A pointer a call returned counts as one into global
   state where that call may return one (`Body._returned_kinds`, `GlobalState.returned`): `slot()`
-  of `lock_set(slot(), x)`, not `fresh()` returning a leaked `Box`. For a call, a binding that
-  stands for it is the program's own (`r` of `let r = slot(); lock_set(r, x);`). A store
-  writes there itself, though made through such a binding: `*r.lock().unwrap() = x;` writes the
-  static through the guard's `deref_mut` (a `MutexGuard`, an `RwLockWriteGuard`, a `RefMut`).
+  of `lock_set(slot(), x)`, not `fresh()` returning a leaked `Box`. A call given a binding
+  that stands for it, or a copy or reborrow of one (`_binding_itself`), is the program's own
+  (`r` of `let r = slot(); lock_set(r, x);`). A store writes there itself, though made
+  through such a binding: `*r.lock().unwrap() = x;` writes the static through the guard's
+  `deref_mut` (a `MutexGuard`, an `RwLockWriteGuard`, a `RefMut`). So does a call given what
+  another call made of it (`r.lock().unwrap().push(x)`, `mem::replace(&mut *guard, x)`).
 - `global_state` also finds what each function's return may point into
   (`Body.returned_globals`, the `GlobalState.returns` view). That is nothing where its type holds
   no pointer. Else it is a global it names that the return is made from, what a call it is made

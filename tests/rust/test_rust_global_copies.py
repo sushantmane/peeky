@@ -692,6 +692,8 @@ GUARDS = """use std::sync::{Mutex, RwLock};
 
 static S: Mutex<u32> = Mutex::new(0);
 static RW: RwLock<u32> = RwLock::new(0);
+static V: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static R: Mutex<u32> = Mutex::new(0);
 
 #[inline(never)]
 fn other() -> u32 {
@@ -706,6 +708,16 @@ fn slot() -> &'static Mutex<u32> {
 #[inline(never)]
 fn rw() -> &'static RwLock<u32> {
     &RW
+}
+
+#[inline(never)]
+fn vec_slot() -> &'static Mutex<Vec<u32>> {
+    &V
+}
+
+#[inline(never)]
+fn replaced_slot() -> &'static Mutex<u32> {
+    &R
 }
 
 #[inline(never)]
@@ -729,6 +741,24 @@ fn written(arg: u32) -> u32 {
     let k = other(); // WRITTEN
     std::hint::black_box(&x);
     *RW.read().unwrap() + k
+}
+
+fn pushed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = vec_slot();
+    r.lock().unwrap().push(x); // PUSHED_STORE
+    let k = other(); // PUSHED
+    std::hint::black_box(&x);
+    V.lock().unwrap()[0] + k
+}
+
+fn replaced(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = replaced_slot();
+    let _ = std::mem::replace(&mut *r.lock().unwrap(), x); // REPLACED_STORE
+    let k = other(); // REPLACED
+    std::hint::black_box(&x);
+    *R.lock().unwrap() + k
 }
 
 fn referenced(arg: u32) -> u32 {
@@ -755,6 +785,8 @@ fn main() {
     let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
     println!("GUARDED {}", guarded(n));
     println!("WRITTEN {}", written(n));
+    println!("PUSHED {}", pushed(n));
+    println!("REPLACED {}", replaced(n));
     println!("REFERENCED {}", referenced(n));
     println!("OWNED {}", owned(n));
 }
@@ -1037,10 +1069,14 @@ def test_only_a_proven_keeping_call_or_a_use_beyond_the_address_withholds_the_lo
 def test_a_store_through_a_guard_into_a_static_is_a_copy_there(guards, cells, capsys):
     # `*r.lock().unwrap() = x;` writes `S` through the guard's `deref_mut`: `S` keeps the old
     # value, which the program goes on with (`GUARDED 6` for 5, whatever `x` becomes). So
-    # through an `RwLock`'s write guard, and a `RefCell`'s `RefMut` in a `static mut`.
+    # through an `RwLock`'s write guard, and a `RefCell`'s `RefMut` in a `static mut`; and by
+    # a call given what the guard's `deref_mut` returned (`r.lock().unwrap().push(x)`,
+    # `mem::replace(&mut *r.lock().unwrap(), x)`), unlike `lock_set(r, x)` given `r` itself.
     for root, marker, text in (
         (guards, "GUARDED", GUARDS),
         (guards, "WRITTEN", GUARDS),
+        (guards, "PUSHED", GUARDS),
+        (guards, "REPLACED", GUARDS),
         (cells, "BORROWED", CELLS),
     ):
         message, hint = refused(*probe(capsys, root, marker, "--set", "x=100", text=text), marker)
@@ -1051,7 +1087,12 @@ def test_a_store_through_a_guard_into_a_static_is_a_copy_there(guards, cells, ca
         ) in message, (marker, message)
         assert hint.startswith("Change it before the program copies it"), (marker, hint)
     # Before the store, the change reaches the static.
-    for marker, printed in (("GUARDED_STORE", "GUARDED 101"), ("WRITTEN_STORE", "WRITTEN 101")):
+    for marker, printed in (
+        ("GUARDED_STORE", "GUARDED 101"),
+        ("WRITTEN_STORE", "WRITTEN 101"),
+        ("PUSHED_STORE", "PUSHED 101"),
+        ("REPLACED_STORE", "REPLACED 101"),
+    ):
         code, result = probe(capsys, guards, marker, "--set", "x=100", text=GUARDS)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
