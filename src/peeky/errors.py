@@ -60,7 +60,8 @@ _RULES = (
         r"binary|^\S+ is an? (ELF|Mach-O) (executable|object|library)|isn't a 64-bit "
         r"little-endian ELF|has no debug information|has no build ID Peeky can read|^A binary "
         r"target can't take a candidate edit|^The binary's debug map records no time of |"
-        r"^Peeky can't read \S+'s debug map: )",
+        r"^Peeky can't read \S+'s debug map: |were written in the same second, and this "
+        r"filesystem's timestamps can't show which came first)",
         "UNSUPPORTED",
         "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 "
         "-grecord-command-line), or probe a unit `peeky describe --binary` judges.",

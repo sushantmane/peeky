@@ -928,8 +928,10 @@ def check_debug_map(entries, root, binary):
     wrote the binary after reading it. One rebuilt after the link, gone, or changed makes
     the binary stale (BinaryChanged, naming it). Timestamps forged on purpose aren't
     caught, as no same-user tampering is. A time of 0 (`ZERO_AR_DATE`) can't be checked:
-    refused (UNSUPPORTED)."""
-    hashes, stale = {}, []
+    refused (UNSUPPORTED). So is a file written in the binary's second where either time
+    has no part of a second, as a filesystem keeping whole seconds gives: which came
+    first can't be told."""
+    hashes, stale, unordered = {}, [], None
     linked = os.stat(binary).st_mtime_ns
     for name, moment in entries:
         member = re.fullmatch(r"(.+)\(([^()]+)\)", name)
@@ -951,7 +953,11 @@ def check_debug_map(entries, root, binary):
                 current = moment if moment in times else times[0]
             else:
                 current = int(os.stat(path).st_mtime)
-            newer = os.stat(path).st_mtime_ns > linked
+            written = os.stat(path).st_mtime_ns
+            newer = written > linked
+            coarse = written % 10**9 == 0 or linked % 10**9 == 0
+            if not newer and coarse and written // 10**9 == linked // 10**9:
+                unordered = unordered or _shown(os.path.realpath(path), Path(root))
             hashes[path] = sha256_file(path)
         except (OSError, ValueError):
             stale.append(f"{shown} is gone or unreadable")
@@ -968,6 +974,13 @@ def check_debug_map(entries, root, binary):
         raise BinaryChanged(
             f"Provenance: the binary is stale: {listed}{more} (its debug map records each "
             "object it was linked from, and when). Rebuild it (make), then probe again"
+        )
+    if unordered is not None:
+        name = Path(binary).name
+        raise _refused(
+            "UNSUPPORTED",
+            f"{unordered} and {name} were written in the same second, and this filesystem's "
+            f"timestamps can't show which came first; relink {name} (or touch it) and retry",
         )
     return hashes
 

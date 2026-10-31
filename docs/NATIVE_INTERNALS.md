@@ -47,7 +47,10 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   the time the linker read, in seconds. `check_debug_map` requires each file to have that time,
   and to be no newer than the binary, to the nanosecond: the linker wrote the binary after
   reading it. It checks again after dsymutil, by hash too.
-- So an object rebuilt after the link makes the binary stale, by name, even in the same second.
+- So an object rebuilt after the link makes the binary stale, by name. In the binary's own second,
+  that holds where the filesystem keeps parts of a second. Where the object's time or the
+  binary's has none (FAT, SMB), which came first can't be told: the binary is refused, with
+  "relink it (or touch it)". Objects written in an earlier second stay accepted.
   Timestamps forged on purpose aren't caught: like other tampering by the same user, that is
   outside the threat model. Phase 3's compiler wrapper binds by hash.
 - A time of 0 (`ZERO_AR_DATE`) can't be checked, and any dsymutil warning refuses the binary.

@@ -243,7 +243,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   recorded, and its line table holds an MD5 of every file, each still matching
   ([ADR 0008](../adr/0008-native-project-reach.md#phase-1-a-binary-the-project-built-c-and-c)).
 - A file changed since the build, or on macOS an object rebuilt without a relink, refuses the
-  binary by name: `PROVENANCE_CHANGED`.
+  binary by name: `PROVENANCE_CHANGED`. On a filesystem keeping whole seconds, relink (or touch)
+  a binary written in its objects' second.
 - A frame in a unit Peeky doesn't judge shows nothing, saying why. So does a frame whose code
   several functions share (`--icf`). A breakpoint where no judged unit has code is refused.
 - `"optimized": true` reads units built at another `-O` level, or with LTO, as an optimized

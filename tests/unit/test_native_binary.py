@@ -614,7 +614,8 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
 
     obj = tmp_path / "main.o"
     obj.write_bytes(b"object")
-    os.utime(obj, (1_700_000_000, 1_700_000_000))
+    early = 1_700_000_000 * 10**9 + 100_000_000
+    os.utime(obj, ns=(early, early))
     library = tmp_path / "libu.a"
     library.write_bytes(_archive([("util.o", 1_600_000_000, b"util"), ("x.o", 5, b"x")]))
     entries = [
@@ -643,6 +644,23 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
     # A binary touched or copied later still has its objects older than it.
     os.utime(binary, None)
     assert set(check_debug_map(found, tmp_path, binary)) == {str(obj), str(library)}
+    # Whole seconds, as a filesystem keeping no more gives: in the binary's second, which
+    # was written first can't be told. In an earlier second, the object was.
+    second = 1_700_000_000 * 10**9
+    os.utime(library, ns=(second - 10**9, second - 10**9))
+    for written, linked in ((second, second + 500_000_000), (second, second)):
+        os.utime(obj, ns=(written, written))
+        os.utime(binary, ns=(linked, linked))
+        with pytest.raises(BinaryRefused, match="main.o and prog were written in the same") as same:
+            check_debug_map(found, tmp_path, binary)
+        assert "relink prog (or touch it) and retry" in str(same.value)
+        assert classify(same.value)["code"] == "UNSUPPORTED"
+    os.utime(binary, ns=(second + 10**9, second + 10**9))
+    assert set(check_debug_map(found, tmp_path, binary)) == {str(obj), str(library)}
+    # An archive too.
+    os.utime(library, ns=(second + 10**9, second + 10**9))
+    with pytest.raises(BinaryRefused, match="libu.a and prog were written in the same second"):
+        check_debug_map(found, tmp_path, binary)
     # Rebuilt since the link, gone, or a member not there: the binary is stale, by name.
     for entries, said in (
         ([(str(obj), 1_699_999_999)], "main.o changed since the binary was linked"),
