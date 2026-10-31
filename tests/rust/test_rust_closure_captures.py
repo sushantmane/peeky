@@ -278,9 +278,12 @@ def test_borrows_and_copies_left_out_move_nothing_but_a_change_is_refused(crate,
 def test_a_variable_whose_type_moves_nothing_is_unaffected(crate, capsys):
     # `n` (a `usize`) and `p.a` are printed, `p.name`'s move left out: only `p` may have lost
     # something.
-    rows, output = read(capsys, crate, "UNAFFECTED", "n,p.name")
+    rows, output = read(capsys, crate, "UNAFFECTED", "n,p.a,p.name")
     assert rows["n"]["value"] == "19" and rows["n"].get("stale") is not True, rows["n"]
     assert moved(rows["p.name"], "UNAFFECTED", "p"), rows["p.name"]
+    # Peeky proves a variable initialized whole or not at all: `p.a` is withheld after a
+    # printed `let s = p.name;` too. Here the row says why.
+    assert moved(rows["p.a"], "UNAFFECTED", "p"), rows["p.a"]
     assert "UNAFFECTED 60" in output
 
 
