@@ -34,6 +34,7 @@ from peeky.java_metadata import descriptor_name, loop_header_stops
 from peeky.loop_headers import loop_header_note
 from peeky.processes import without_credentials
 from peeky.text_sets import parse_text
+from peeky.textlines import split_lines
 
 MAX_BUNDLE_FILES = 4096
 MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
@@ -545,7 +546,7 @@ def _version_text(text):
     its runtime's build line. Not the VM's mode, nor what a JVM says of options it picked up
     from the environment (JAVA_TOOL_OPTIONS and the like), which change with the options.
     A text without either line counts whole, but for those notes."""
-    lines = [line.strip() for line in str(text).strip().splitlines()]
+    lines = [line.strip() for line in split_lines(str(text).strip())]
     lines = [line for line in lines if line and not _PICKED_UP.match(line)]
     named = [line for line in lines if ' version "' in line or "Runtime Environment" in line]
     return "\n".join(named or lines)
@@ -637,11 +638,11 @@ def adapter_java(bundle, named=None, program=None, environment=None, *, launched
         try:
             now = _version_text(run([runner, "-version"], env=environment))
         except (OSError, RuntimeError, TimeoutError) as exc:
-            reason = (str(exc).strip() or type(exc).__name__).splitlines()[0][:200]
+            reason = (str(exc).strip() or type(exc).__name__).partition("\n")[0][:200]
             changed = f"its `-version` failed ({reason})"
         else:
             then = _version_text(version)
-            pairs = itertools.zip_longest(now.splitlines(), then.splitlines(), fillvalue="")
+            pairs = itertools.zip_longest(split_lines(now), split_lines(then), fillvalue="")
             first = next(((n, t) for n, t in pairs if n != t), None)
             changed = first and f"its `-version` now prints `{first[0]}`, not `{first[1]}`"
     if changed:
