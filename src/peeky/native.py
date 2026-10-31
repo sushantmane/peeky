@@ -155,6 +155,20 @@ def compiler_family(path):
     return family
 
 
+def dwarf_version(compiler):
+    """The DWARF version Peeky builds with: 5 with clang, as projects build (ADR 0008),
+    else 4 (GCC's DWARF 5 says other things: bit fields' offsets, call sites dwarfdump
+    can't decode). `PEEKY_NATIVE_DWARF=4` keeps clang at 4, so tests cover both readings.
+    A compiler that can't be found is taken as not clang: nothing is built with it."""
+    if os.environ.get("PEEKY_NATIVE_DWARF") == "4":
+        return 4
+    try:
+        family = compiler_family(_tool(compiler))
+    except ValueError:
+        return 4
+    return 5 if family == "clang" else 4
+
+
 def _path_name(name, suffix):
     if (
         not isinstance(name, str)
@@ -413,6 +427,8 @@ class _LineParser:
         self.directories, self.files, self.current = {0: str(workspace)}, {}, None
         # {file id: declared name or None} for this table: one resolve per file, not per row.
         self.resolved = {}
+        # The directories the table names (a DWARF 5 one names directory 0 too).
+        self.named = set()
         self.table_count = 0
         self.version = None
         self.rows = []
@@ -447,7 +463,7 @@ class _LineParser:
             if line.startswith("0x"):
                 fields = line.split()
                 if (
-                    self.version != 4
+                    self.version not in (4, 5)
                     or len(fields) < 4
                     or not re.fullmatch(r"0x[0-9a-fA-F]+", fields[0])
                 ):
@@ -458,6 +474,15 @@ class _LineParser:
                     if file_id not in resolved:
                         entry = self.files[file_id]
                         directory = self.directories[entry["directory"]]
+                        if self.version == 5:
+                            # Directory 0 is the compilation directory, which the table
+                            # names; the others are under it where relative.
+                            if 0 not in self.named or not posixpath.isabs(self.directories[0]):
+                                raise ValueError(
+                                    "A DWARF 5 line table names no absolute directory 0"
+                                )
+                            if entry["directory"] != 0:
+                                directory = posixpath.join(self.directories[0], directory)
                         path = (workspace / directory / entry["name"]).resolve()
                         # SDK/system header instructions are not selectable user source.
                         resolved[file_id] = inputs.get(str(path))
@@ -485,16 +510,17 @@ class _LineParser:
                     self.headers.append(int(header[1], 16))
                 self.flush()
                 self.directories, self.files, self.current = {0: str(workspace)}, {}, None
-                self.resolved = {}
+                self.resolved, self.named = {}, set()
                 self.version = None
             elif match := re.fullmatch(r"version:\s+(\d+)", line):
                 self.version = int(match[1])
-                if self.version != 4:
-                    raise ValueError("Only explicitly built DWARF4 line tables are supported")
+                if self.version not in (4, 5):
+                    raise ValueError("Only DWARF 4 and 5 line tables are supported")
             elif match := re.fullmatch(r"include_directories\[\s*(\d+)\]\s*=\s*(\".*\")", line):
                 key = int(match[1])
-                if key in self.directories and key != 0:
+                if key in self.named:
                     raise ValueError("Duplicate line directory")
+                self.named.add(key)
                 self.directories[key] = _line_string(match[2])
             elif match := re.fullmatch(r"file_names\[\s*(\d+)\]:", line):
                 self.current = int(match[1])
@@ -635,10 +661,41 @@ def _held(raw, start, end):
 
 # One `[low, high)` of an entry's code: its tuple, its numbers and its place in a list.
 _RANGE_BYTES = 200
+# An entry's ``locations``: its slot in the entry's dict, the dict, and one list in it.
+_LOCATIONS_BYTES = 3 * _NAME_BYTES + sys.getsizeof({}) + sys.getsizeof([]) + 2 * 64
 _DIE = re.compile(r"(0x[0-9a-fA-F]+):( +)(DW_TAG_\w+|NULL)")
 _ATTRIBUTE = re.compile(r" +(DW_AT_\w+)\s+\((.*)\)$")
-_RANGES_START = re.compile(r" +DW_AT_ranges\s+\((0x[0-9a-fA-F]+)\s*$")
+# A range list over several lines: DWARF 4's `DW_AT_ranges (0x00000000`, or DWARF 5's
+# `DW_AT_ranges (indexed (0x0) rangelist = 0x00000010`, then `[low, high)` rows to `))`.
+_RANGES_START = re.compile(
+    r" +DW_AT_ranges\s+\((?:indexed \(0x[0-9a-fA-F]+\) rangelist = )?(0x[0-9a-fA-F]+)\s*$"
+)
 _RANGE = re.compile(r"\[(0x[0-9a-fA-F]+), (0x[0-9a-fA-F]+)\)")
+# A location list over several lines, as either version writes it (`DW_AT_location
+# (0x00000000:`, `(indexed (0x0) loclist = 0x00000010:`), then `[low, high): expression`
+# rows, the last closed by `)`.
+_LOCATIONS_START = re.compile(
+    r" +(DW_AT_\w+)\s+\((?:indexed \(0x[0-9a-fA-F]+\) loclist = )?0x[0-9a-fA-F]+:\s*$"
+)
+_LOCATION_ROW = re.compile(r"\s+\[(0x[0-9a-fA-F]+), (0x[0-9a-fA-F]+)\): (.*)")
+# DWARF 5's one-line value naming its list by index: the rest is DWARF 4's form.
+_INDEXED_LIST = re.compile(r"indexed \(0x[0-9a-fA-F]+\) (?:rangelist|loclist) = ")
+_UNIT_HEADER = re.compile(
+    r"0x[0-9a-fA-F]+: [A-Za-z ]{1,32} Unit: (.*) \(next unit at 0x[0-9a-fA-F]+\)"
+)
+_UNIT_VERSION = re.compile(r"(?:^|, )version = 0x([0-9a-fA-F]{4})(?:,|$)")
+_FILE_HEADER = re.compile(r"\S.*:\s+file format \S.*")
+# `--debug-addr`: each unit's addresses, in order; a unit's DW_AT_addr_base is the offset
+# of its first, past its table's header.
+_ADDRESS_TABLE = re.compile(
+    r"Address table header: length = (0x[0-9a-fA-F]+), format = DWARF(32|64), "
+    r"version = 0x0005, addr_size = 0x0([48]), seg_size = 0x00"
+)
+# An expression's operand that is an index into its unit's address table.
+_INDEXED_OPERAND = re.compile(r"DW_OP_(addrx|constx) (0x[0-9a-fA-F]+)")
+# What dwarfdump writes where it can't read a value (outside its strings).
+_UNREAD = re.compile(r"<(?:decoding )?error|indexed \(|\binvalid\b", re.I)
+_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
 _REFERENCE = re.compile(r"(0x[0-9a-fA-F]+)(?: \"(.*)\")?")
 # Containers that qualify a function's name (`ns::Type::method`).
 _QUALIFIERS = {
@@ -700,16 +757,44 @@ def _dies(text):
     return dies
 
 
+def _closes(expression):
+    """Whether a location list's row ``expression`` ends with the list's own `)`:
+    one more `)` than `(` outside its strings. None where it is neither that nor
+    balanced: not a row dwarfdump writes."""
+    bare = _QUOTED.sub("", expression)
+    depth = bare.count("(") - bare.count(")")
+    return {-1: True, 0: False}.get(depth)
+
+
 def _parse_dies(text, into=None):
     """``text``: dwarfdump's `--debug-info` text, or its lines as they come. ``into``: a
     DieMap to add them to (several dumps read in turn, as the text of all of them).
     At most MAX_DIES entries, and MAX_KEPT bytes kept (SymbolLimit): each line's cost is
-    reckoned, at most, before anything of it is kept or copied."""
+    reckoned, at most, before anything of it is kept or copied.
+
+    A DWARF 5 unit (its header says) is read as DWARF 4's would be: an indexed range or
+    location list as the list, and an address index (`DW_OP_addrx`, `DW_OP_constx`) as
+    the address `--debug-addr`'s text, which must follow in the same text, gives it.
+    Any line of a DWARF 5 unit it doesn't know, or value dwarfdump couldn't read, fails
+    the parse (ValueError): nothing of one is dropped.
+
+    A location list over several lines is kept in the entry's ``locations``
+    ({attribute: [(low, high, expression)]}), never in its ``attrs``: a location in
+    ``attrs`` is one for all of the entry's code (`_prologue_kept`)."""
     dies = DieMap() if into is None else into
     stack, ranges, tail_calls, size = [], None, dies.tail_calls, dies.kept
     # One copy of each repeated name and value (a type's name, a header's path): a dump
     # of tens of megabytes repeats most of its text.
     kept = {}
+    # The unit being read: its DWARF version (None before a unit header, as in a dump of
+    # one entry), and its index in ``bases``, the units' DW_AT_addr_base.
+    version, unit, bases = None, -1, []
+    # The location list being read: (entry, attribute, rows), or None.
+    locations = None
+    # Values to read an address index of: (entry, attribute, row or None, unit).
+    indexed = []
+    # `--debug-addr`'s tables {base: addresses}, the one being read, and the next's offset.
+    section, tables, table, offset = "info", {}, None, 0
 
     def room(need):
         if size + need > MAX_KEPT:
@@ -722,6 +807,10 @@ def _parse_dies(text, into=None):
             size += sys.getsizeof(item) + _VALUE_BYTES
         return found
 
+    def strict(why):
+        if version == 5:
+            raise ValueError(f"Unreadable DWARF 5 debug information: {why}")
+
     for raw in split_lines(text) if isinstance(text, str) else text:
         if not tail_calls and "tail_call" in raw and _TAIL_CALL.search(raw):
             tail_calls = True
@@ -732,9 +821,56 @@ def _parse_dies(text, into=None):
             for found in _RANGE.finditer(raw):
                 ranges.append((int(found[1], 16), int(found[2], 16)))
                 size += _RANGE_BYTES
+            if version == 5 and not re.fullmatch(
+                r"\s*(?:\[0x[0-9a-fA-F]+, 0x[0-9a-fA-F]+\))?\)?\s*", raw
+            ):
+                strict("a range list's row")
             if raw.rstrip().endswith("))") or not _RANGE.search(raw):
                 ranges = None
-        elif match := _DIE.match(raw):
+            continue
+        if locations is not None:
+            row = _LOCATION_ROW.fullmatch(raw)
+            closes = _closes(row[3]) if row else None
+            if version == 5 and row and _UNREAD.search(_QUOTED.sub("", row[3])):
+                strict(f"a location list's row ({row[3][:80]})")
+            if closes is None:
+                # Not a row: the list is not read (a DWARF 4 one, as before; a DWARF 5
+                # one fails), and the line is read as itself.
+                strict("a location list's row")
+                entry, attribute, _ = locations
+                held = dies[entry]["locations"]
+                del held[attribute]
+                if not held:
+                    del dies[entry]["locations"]
+                locations = None
+            else:
+                entry, attribute, rows = locations
+                expression = row[3][:-1].rstrip() if closes else row[3]
+                room(_RANGE_BYTES + _held(raw, row.start(3), row.end(3)))
+                size += _RANGE_BYTES
+                rows.append((int(row[1], 16), int(row[2], 16), one(expression)))
+                if _INDEXED_OPERAND.search(expression):
+                    indexed.append((entry, attribute, len(rows) - 1, unit))
+                if closes:
+                    locations = None
+                continue
+        if section == "addr":
+            line = raw.strip()
+            if match := _ADDRESS_TABLE.fullmatch(line):
+                # Its unit length's field, then 4 more bytes of header (DWARF64: 12, 4).
+                length = 4 if match[2] == "32" else 12
+                table = tables[offset + length + 4] = []
+                offset += length + int(match[1], 16)
+                continue
+            if table is not None and (match := re.fullmatch(r"0x[0-9a-fA-F]{1,16}", line)):
+                room(_RANGE_BYTES)
+                size += _RANGE_BYTES
+                table.append(int(line, 16))
+                continue
+            if line in ("Addrs: [", "]", "Addrs: []", "") or _FILE_HEADER.fullmatch(raw):
+                continue
+            raise ValueError("Unreadable DWARF address table")
+        if match := _DIE.match(raw):
             depth = (len(match[2]) - 1) // 2
             del stack[depth:]
             if match[3] == "NULL":
@@ -742,10 +878,10 @@ def _parse_dies(text, into=None):
             if len(dies) >= MAX_DIES:
                 raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
             room(_ENTRY_BYTES + _held(raw, match.start(3), match.end(3)))
-            offset = int(match[1], 16)
+            offset_of = int(match[1], 16)
             parent = stack[-1] if stack else None
             size += _ENTRY_BYTES
-            dies[offset] = {
+            dies[offset_of] = {
                 "tag": one(match[3]),
                 "attrs": {},
                 "parent": parent,
@@ -754,14 +890,22 @@ def _parse_dies(text, into=None):
                 "ranges": [],
             }
             if parent is not None:
-                dies[parent]["children"].append(offset)
-            stack.append(offset)
+                dies[parent]["children"].append(offset_of)
+            stack.append(offset_of)
         elif stack and _RANGES_START.match(raw):
             # A multi-line range list: `[low, high)` rows until the closing `))`.
             room(_NAME_BYTES)
             ranges = dies[stack[-1]]["ranges"]
             size += _NAME_BYTES
-        elif stack and (match := _ATTRIBUTE.match(raw)):
+        elif stack and (match := _LOCATIONS_START.match(raw)):
+            room(_LOCATIONS_BYTES)
+            size += _LOCATIONS_BYTES
+            rows = dies[stack[-1]].setdefault("locations", {}).setdefault(one(match[1]), [])
+            locations = (stack[-1], match[1], rows)
+        elif match := _ATTRIBUTE.match(raw):
+            if not stack:
+                strict("an attribute outside any entry")
+                continue
             ranged = raw.startswith("DW_AT_ranges", match.start(1)) and match.end(1) == (
                 match.start(1) + len("DW_AT_ranges")
             )
@@ -771,14 +915,59 @@ def _parse_dies(text, into=None):
                 + _held(raw, match.start(2), match.end(2))
                 + (raw.count("[", match.start(2)) * _RANGE_BYTES if ranged else 0)
             )
-            name, value = one(match[1]), one(match[2])
+            value = match[2]
+            if version == 5:
+                value = _INDEXED_LIST.sub("", value, count=1)
+                if _UNREAD.search(_QUOTED.sub("", value)):
+                    strict(f"{match[1]} ({value[:80]})")
+            name, value = one(match[1]), one(value)
             size += _NAME_BYTES
-            dies[stack[-1]]["attrs"].setdefault(name, value)
+            attrs = dies[stack[-1]]["attrs"]
+            if name not in attrs:
+                attrs[name] = value
+                if _INDEXED_OPERAND.search(value):
+                    indexed.append((stack[-1], name, None, unit))
+                if name == "DW_AT_addr_base" and depth == 0 and version == 5:
+                    bases[unit] = int(value, 16) if re.fullmatch(r"0x[0-9a-fA-F]+", value) else None
             if ranged:
                 spans = dies[stack[-1]]["ranges"]
                 for found in _RANGE.finditer(value):
                     spans.append((int(found[1], 16), int(found[2], 16)))
                     size += _RANGE_BYTES
+        elif header := _UNIT_HEADER.fullmatch(raw):
+            stack = []
+            found = _UNIT_VERSION.search(header[1])
+            version = int(found[1], 16) if found else None
+            unit += 1
+            bases.append(None)
+            if version is None:
+                raise ValueError("A DWARF unit header without its version")
+        elif raw == ".debug_addr contents:":
+            section, version = "addr", None
+        elif raw == ".debug_info contents:" or not raw.strip() or _FILE_HEADER.fullmatch(raw):
+            continue
+        else:
+            strict(f"a line it doesn't know ({raw.strip()[:80]})")
+    if locations is not None or ranges is not None:
+        strict("a list without its end")
+    for entry, attribute, row, at in indexed:
+        base = bases[at] if 0 <= at < len(bases) else None
+        addresses = tables.get(base)
+
+        def address(found, addresses=addresses):
+            index = int(found[2], 16)
+            if addresses is None or index >= len(addresses):
+                raise ValueError("A DWARF 5 address index without its address")
+            op = "DW_OP_addr" if found[1] == "addrx" else "DW_OP_constu"
+            return f"{op} 0x{addresses[index]:x}"
+
+        attrs = dies[entry]["attrs"]
+        if row is None:
+            attrs[attribute] = one(_INDEXED_OPERAND.sub(address, attrs[attribute]))
+        else:
+            rows = dies[entry]["locations"][attribute]
+            low, high, expression = rows[row]
+            rows[row] = (low, high, one(_INDEXED_OPERAND.sub(address, expression)))
     dies.tail_calls, dies.kept = tail_calls, size
     return dies
 
@@ -4825,7 +5014,11 @@ class NativeTarget:
     @property
     def compiler_options(self):
         flags = CPP_FLAGS if self.language == "cpp" else FLAGS
-        return tuple(f"-{self.optimization}" if flag == "-O0" else flag for flag in flags)
+        dwarf = f"-gdwarf-{dwarf_version(self.compiler)}"
+        return tuple(
+            f"-{self.optimization}" if flag == "-O0" else dwarf if flag == "-gdwarf-4" else flag
+            for flag in flags
+        )
 
     @property
     def verification_inputs(self):
@@ -5029,7 +5222,7 @@ class NativeTarget:
             try:
                 info = read_debug_info(
                     dwarfdump,
-                    [["--debug-info", str(symbols)]],
+                    [["--debug-info", str(symbols)], ["--debug-addr", str(symbols)]],
                     prepared.workspace,
                     env,
                     timeout=_remaining(deadline),
@@ -6873,7 +7066,11 @@ class NativeSession:
         from peeky.fields import CPP_LIBRARIES
 
         info = read_debug_info(
-            dwarfdump, [["--debug-info", str(self.symbols)]], workspace, env, timeout=15
+            dwarfdump,
+            [["--debug-info", str(self.symbols)], ["--debug-addr", str(self.symbols)]],
+            workspace,
+            env,
+            timeout=15,
         )
         table = read_line_table(
             dwarfdump, [["--debug-line", str(self.symbols)]], workspace, env, declared, timeout=15

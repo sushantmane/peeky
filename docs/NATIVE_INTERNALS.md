@@ -52,6 +52,26 @@ Peeky reads a build's line tables and debug information as llvm-dwarfdump writes
   describes a tail call.
 - Rust's `parse_dies` reads a unit's lines the same way, and fails closed.
 
+Peeky builds with clang at DWARF 5, as projects do ([ADR 0008](adr/0008-native-project-reach.md)).
+It builds with GCC at DWARF 4: GCC's DWARF 5 moves bit fields' offsets, and writes call sites
+that llvm-dwarfdump can't decode. Either version is read as DWARF 4 is:
+
+- `_LineParser` takes a table of either version. A DWARF 5 table names its compilation directory
+  as directory 0, which must be absolute. Its other relative directories are under it.
+- A DWARF 5 range or location list named by index (`indexed (0x0) rangelist = 0x10`) is read as
+  DWARF 4's list.
+- A location list over several lines, of either version, is kept in the entry's `locations`,
+  never in `attrs`. A location in `attrs` holds for all of the entry's code: `_prologue_kept`
+  counts a local with a list, or none, as kept.
+- On Linux, a static's address is an index into its unit's address table (`DW_OP_addrx`). Peeky
+  reads `--debug-addr` after `--debug-info`, and writes each index as the address it names
+  (`DW_OP_addr`). dsymutil writes the addresses itself.
+- In a DWARF 5 unit, a line the parse doesn't know fails it. So do a value or row dwarfdump
+  couldn't decode (`<decoding error>`), an index with no address, and a list without its end.
+  Nothing of one is dropped. A DWARF 4 unit is read as before.
+- `PEEKY_NATIVE_DWARF=4` keeps clang at DWARF 4. `tests/native/test_native_dwarf_versions.py`
+  builds the same programs both ways, and checks that they read alike.
+
 The bounds are on what is kept, and on the time. The sizes given were measured in October 2026, on
 the programs in `examples/large`, on macOS and Linux:
 

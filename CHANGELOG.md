@@ -32,6 +32,9 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
+  reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
+  unit, anything it can't read fails the read, and is never dropped.
 - **Phase 1 of ADR 0008 checked:** clang records every `-D`, `-I` and `-include` exactly, and
   GCC 13 writes no checksums. The study's C projects can be judged by their line tables'
   checksums. Few of its C++ units can: a `#pragma GCC system_header` or an inheriting
