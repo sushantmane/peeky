@@ -27,6 +27,12 @@
 
 ### Other changes
 
+- **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
+  slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
+  into the static, yet `x` was marked `[settable]`: a change didn't reach the static's copy,
+  which the program went on with. It is refused now, naming the store. So through an
+  `RwLock`'s write guard, and a `RefCell`'s `RefMut` in a `static mut`.
+
 - **`verify --check-command` checks a Python edit with the project's own tests:** it runs the
   command in a fresh copy of the project with the edit, on the program's interpreter, with its
   directory first on `PATH` and no worker token. It runs no shell, and gets a checker's 20 s. The

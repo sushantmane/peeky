@@ -685,6 +685,113 @@ fn main() {
 """
 
 
+# A store through a guard's `deref_mut` into a static, the guard made from a binding a
+# function returned the static's address in (`let r = slot(); *r.lock().unwrap() = x;`), and
+# a call given that binding (`lock_set(r, x)`), which the binding stands for.
+GUARDS = """use std::sync::{Mutex, RwLock};
+
+static S: Mutex<u32> = Mutex::new(0);
+static RW: RwLock<u32> = RwLock::new(0);
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(1)
+}
+
+#[inline(never)]
+fn slot() -> &'static Mutex<u32> {
+    &S
+}
+
+#[inline(never)]
+fn rw() -> &'static RwLock<u32> {
+    &RW
+}
+
+#[inline(never)]
+fn lock_set(m: &Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+fn guarded(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = slot();
+    *r.lock().unwrap() = x; // GUARDED_STORE
+    let k = other(); // GUARDED
+    std::hint::black_box(&x);
+    *S.lock().unwrap() + k
+}
+
+fn written(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = rw();
+    *r.write().unwrap() = x; // WRITTEN_STORE
+    let k = other(); // WRITTEN
+    std::hint::black_box(&x);
+    *RW.read().unwrap() + k
+}
+
+fn referenced(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = slot();
+    lock_set(r, x); // REFERENCED_CALL
+    let k = other(); // REFERENCED
+    std::hint::black_box(&x);
+    *S.lock().unwrap() + k
+}
+
+fn owned(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let m = Mutex::new(0);
+    let r = &m;
+    *r.lock().unwrap() = x;
+    std::hint::black_box(&m);
+    let k = other(); // OWNED
+    std::hint::black_box(&x);
+    x + k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("GUARDED {}", guarded(n));
+    println!("WRITTEN {}", written(n));
+    println!("REFERENCED {}", referenced(n));
+    println!("OWNED {}", owned(n));
+}
+"""
+
+# A `RefMut` of a `RefCell` in a `static mut`, through a binding a function returned.
+CELLS = """use std::cell::RefCell;
+
+static mut CELL: RefCell<u32> = RefCell::new(0);
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(1)
+}
+
+#[inline(never)]
+fn cell() -> &'static RefCell<u32> {
+    // SAFETY: one thread, and no `&mut` to `CELL` anywhere.
+    unsafe { &*(&raw const CELL) }
+}
+
+fn borrowed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = cell();
+    *c.borrow_mut() = x; // BORROWED_STORE
+    let k = other(); // BORROWED
+    std::hint::black_box(&x);
+    *cell().borrow() + k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("BORROWED {}", borrowed(n));
+}
+"""
+
+
 def line_of(marker, text=SOURCE):
     return next(i for i, line in enumerate(text.splitlines(), 1) if line.endswith(f"// {marker}"))
 
@@ -730,6 +837,16 @@ def keeps(tmp_path, monkeypatch):
 @pytest.fixture
 def kept(tmp_path, monkeypatch):
     return make(tmp_path, monkeypatch, "kept", KEPT)
+
+
+@pytest.fixture
+def guards(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "guards", GUARDS)
+
+
+@pytest.fixture
+def cells(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "cells", CELLS)
 
 
 def probe(capsys, root, marker, *argv, text=SOURCE):
@@ -914,3 +1031,38 @@ def test_only_a_proven_keeping_call_or_a_use_beyond_the_address_withholds_the_lo
     assert "the program's own `r` (at lines 36 and 37) may point at a copy of `x`" in message, (
         message
     )
+
+
+@pytest.mark.timeout(900)
+def test_a_store_through_a_guard_into_a_static_is_a_copy_there(guards, cells, capsys):
+    # `*r.lock().unwrap() = x;` writes `S` through the guard's `deref_mut`: `S` keeps the old
+    # value, which the program goes on with (`GUARDED 6` for 5, whatever `x` becomes). So
+    # through an `RwLock`'s write guard, and a `RefCell`'s `RefMut` in a `static mut`.
+    for root, marker, text in (
+        (guards, "GUARDED", GUARDS),
+        (guards, "WRITTEN", GUARDS),
+        (cells, "BORROWED", CELLS),
+    ):
+        message, hint = refused(*probe(capsys, root, marker, "--set", "x=100", text=text), marker)
+        store = line_of(f"{marker}_STORE", text)
+        assert (
+            f"a static or thread-local may hold a copy of `x` (from line {store}) that the "
+            "program may go on with"
+        ) in message, (marker, message)
+        assert hint.startswith("Change it before the program copies it"), (marker, hint)
+    # Before the store, the change reaches the static.
+    for marker, printed in (("GUARDED_STORE", "GUARDED 101"), ("WRITTEN_STORE", "WRITTEN 101")):
+        code, result = probe(capsys, guards, marker, "--set", "x=100", text=GUARDS)
+        assert code == 0, (marker, result.get("error"))
+        assert printed in result["output"].splitlines(), (marker, result["output"])
+    # `lock_set(r, x)`: as before, `r` stands for what it points at.
+    message, _ = refused(*probe(capsys, guards, "REFERENCED", "--set", "x=100", text=GUARDS), "R")
+    assert (
+        f"the program's own `r` (at lines {line_of('REFERENCED_CALL', GUARDS) - 1} and "
+        f"{line_of('REFERENCED_CALL', GUARDS)}) may point at a copy of `x` that it goes on with"
+    ) in message, message
+    # A guard of a `Mutex` the frame owns and no longer reads: no static, and the program
+    # reads the change.
+    code, result = probe(capsys, guards, "OWNED", "--set", "x=100", text=GUARDS)
+    assert code == 0, result.get("error")
+    assert "OWNED 101" in result["output"].splitlines(), result["output"]

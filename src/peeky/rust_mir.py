@@ -3970,7 +3970,7 @@ class Body:
                 one = frozenset({holder})
                 return made, one, frozenset(), one, frozenset(), one, frozenset()
 
-            def reached_roots(bases):
+            def reached_roots(bases, stored=False):
                 found = set()
                 if state is None:
                     return found
@@ -3982,9 +3982,12 @@ class Body:
                     # A pointer a call returned, where that call may return
                     # one into global state (``GlobalState.returned``): `slot()` of
                     # `lock_set(slot(), x)` returning `&S`, `registry()`'s `&'static
-                    # Mutex<Vec<u32>>`; not `fresh()` returning a leaked `Box`. A binding
-                    # that stands for it is the program's own (``_outlives_frame``).
-                    if not any(n in named and self._outlives_frame(n) for n in owners):
+                    # Mutex<Vec<u32>>`; not `fresh()` returning a leaked `Box`. For a call,
+                    # a binding that stands for it is the program's own (``_outlives_frame``):
+                    # `r` of `let r = slot(); lock_set(r, x);`. A store writes there itself,
+                    # though made through such a binding: `*r.lock().unwrap() = x;` writes the
+                    # static through the guard's `deref_mut`, whatever `r` is.
+                    if stored or not any(n in named and self._outlives_frame(n) for n in owners):
                         found |= self._returned_kinds(owners)
                 return found
 
@@ -4001,8 +4004,9 @@ class Body:
                         value = text.split(" = ", 1)[1].removesuffix(";")
                         stores[number, index] = (through({int(stored[1])}, value, text),)
                         # A store through a pointer into global state (`RAW = x;` of a
-                        # `static mut`, `*LAZY.lock().unwrap() = x;`).
-                        if kinds := reached_roots({int(stored[1])}):
+                        # `static mut`, `*LAZY.lock().unwrap() = x;`, `*r.lock().unwrap() =
+                        # x;` with `r` from `slot()`).
+                        if kinds := reached_roots({int(stored[1])}, stored=True):
                             mentioned = {int(n) for n in _MENTIONED.findall(value)}
                             stores[number, index] += (
                                 into_global(number, index, value, text, mentioned, kinds),
@@ -4010,7 +4014,7 @@ class Body:
                     elif copied:
                         value = f"copy (*_{copied[2]})"
                         stores[number, index] = (through({int(copied[1])}, value, text),)
-                        if kinds := reached_roots({int(copied[1])}):
+                        if kinds := reached_roots({int(copied[1])}, stored=True):
                             stores[number, index] += (
                                 into_global(number, index, value, text, {int(copied[2])}, kinds),
                             )
