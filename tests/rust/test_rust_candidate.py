@@ -106,3 +106,42 @@ def test_a_program_using_std_collections_is_debuggable(crate, capsys):
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     assert result["rows"][0]["value"] == "4" and '{"a": 2, "b": 1, "c": 1} 4' in result["output"]
+
+
+@pytest.mark.timeout(300)
+def test_a_cargo_build_past_the_output_limit_is_build_failed(crate, monkeypatch):
+    # The output limit counts both streams together, so a build may pass it before its
+    # diagnostic is whole: that was "Rust toolchain or Cargo infrastructure failed",
+    # DEBUGGER_ERROR, not the failed build it is.
+    from peeky import agent
+    from peeky.build import BuildCommandError, SourceEdit
+    from peeky.errors import classify
+    from peeky.rust import RustTarget
+
+    real = agent.execute
+
+    def limited(command, *args, **kwargs):
+        if Path(command[0]).name == "cargo" and "build" in command:
+            kwargs["output_limit"] = 2048
+        return real(command, *args, **kwargs)
+
+    monkeypatch.setattr(agent, "execute", limited)
+    target = RustTarget(
+        sources=("src/main.rs",),
+        tests=("tests/pagination.rs",),
+        cargo=os.environ["PEEKY_RUST_CARGO"],
+        rustc=os.environ["PEEKY_RUST_RUSTC"],
+        adapter=os.environ["PEEKY_RUST_DAP"],
+        dwarfdump=os.environ["PEEKY_RUST_DWARFDUMP"],
+        linker=os.environ["PEEKY_RUST_LINKER"],
+        dsymutil=os.environ.get("PEEKY_RUST_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_RUST_SYSROOT"),
+    )
+    unused = "".join(f"    let unused_{n} = {n}usize;\n" for n in range(40))
+    edit = SourceEdit("src/main.rs", "fn main() {\n", "fn main() {\n" + unused)
+    with pytest.raises(BuildCommandError) as failed:
+        target.prepare(crate / "src/main.rs", crate, edit=edit)
+    assert failed.value.result["output_limit_exceeded"] is True
+    error = classify(failed.value)
+    assert error["code"] == "BUILD_FAILED", error
+    assert error["message"].startswith("The build failed: cargo wrote more output than Peeky keeps")

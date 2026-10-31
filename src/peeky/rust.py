@@ -664,6 +664,10 @@ class RustTarget:
                     validate_workspace=validate_workspace,
                 )
             except BuildCommandError as exc:
+                # A command stopped for its time or its output is a failed build, whatever
+                # it printed before: its diagnostic may be cut short.
+                if exc.result.get("timed_out") or exc.result.get("output_limit_exceeded"):
+                    raise
                 if exc.command != build.argv or not compiler_diagnostic(exc.result, self.sources):
                     raise RuntimeError("Rust toolchain or Cargo infrastructure failed") from exc
                 raise

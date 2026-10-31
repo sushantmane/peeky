@@ -1,4 +1,4 @@
-# Error codes (protocol 12)
+# Error codes (protocol 13)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -112,6 +112,8 @@ The last column is the `retryable` field.
 - A probe's failed build is a refusal before launch: exit 2, `refused_before_launch`, and no run
   saved.
 - `verify`'s failed build is a failed verify: exit 1.
+- A build command that runs past its time, or prints over 1 MiB, both streams together, is a
+  failed build too: `cargo wrote more output than Peeky keeps`.
 
 ### TIMEOUT
 
@@ -126,6 +128,13 @@ The last column is the `retryable` field.
   that stop was shown. Start again once the load has passed.
 - A debugger that refuses that read, as it may at a crash, doesn't end the session. The stop then
   has no location.
+- A `--check-command` that isn't a Python Peeky starts, such as `make` or a shell script, isn't
+  an error: it runs, and its `verdict` is `unknown`. Run the test command directly, as
+  `python -m pytest …` ([6.7](COOKBOOK.md#what-the-command-loaded)).
+- `verify ran past its --timeout while the check command was running` means that `--timeout` cut a
+  `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
+  that runs past its own 20 s isn't an error: the verify's `verdict` is `unknown`, and `reason`
+  says so ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
 
 ### DEBUGGER_ERROR
 
@@ -155,6 +164,7 @@ The last column is the `retryable` field.
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | Debug information Peeky can't read whole: `Peeky can't read split DWARF: …`, or type units, partial units, or a unit it can't read at all (`Peeky can't read a DWARF unit: …`, such as DWARF 6), refused before anything runs | Rebuild without the option the message names: `-gsplit-dwarf` or `-fdebug-types-section`. Or use the binary as linked, before dwz. Or rebuild with `-gdwarf-5` |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
+| `verify --check-command` on a target that isn't Python: `--check-command supports Python targets for now …`, refused before building ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)) | Pass `--check` with a checker script ([6.5](COOKBOOK.md#65-writing-a-checker)) |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -171,9 +181,22 @@ file lists what it reads.
   lists them, and says which one to pass: `verify needs --at <source> (one of: a/One.java,
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
+- A `verify --check-command` that Peeky won't run as given. It may hold shell syntax (`|`, `>`,
+  `$`, `[` …), or start by setting a variable (`FOO=1 …`). Its program may not be on `PATH`, or be
+  outside the root. Or `--check` came with it. The message says which, and what to pass instead
+  ([6.7](COOKBOOK.md#what-it-runs)).
+- A `verify --check-command` that would read your files or run another Python: an argument, or a
+  `PYTEST_ADDOPTS` word, that names a path inside the root by its absolute path, another Python, or
+  a script that runs on one.
+  `tox` and `nox` are refused too: give the test command they run ([6.7](COOKBOOK.md#what-it-runs)).
+- A `verify --check-command` edit that a module the project supplies may not import from the copy:
+  `verify --check-command can't test this edit: …`. The message names where `import pkg` finds
+  it: an installed copy in `site-packages`, an outside `PYTHONPATH` entry, or an editable install
+  Peeky can't redirect. Uninstall it, or install the project editable, or check the edit with a
+  `--check` checker ([6.7](COOKBOOK.md#what-it-imports)).
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 8, this client 9`,
-  or, from the worker, `Client speaks protocol 8, this worker 9`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 12, this client 13`,
+  or, from the worker, `Client speaks protocol 12, this worker 13`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -198,6 +221,17 @@ file lists what it reads.
 - A Python candidate edit of an installed file, such as one in the root's `.venv`: `A Python
   candidate cannot edit …`. Its copy links the environment to yours. Edit a checkout of the
   package, installed editable, instead.
+- `--run-module` with `--run`, or with a module other than `pytest`, such as `pip` or
+  `pytest.__main__`. A worker runs no other module. For another program, use `--run` with a
+  script.
+- `--run-module pytest` where `python -m pytest` would run another `pytest` than the package
+  installed for the program's interpreter, such as a `pytest.py` in the root, or finds none. The
+  message names the file. Rename it, or install pytest for that interpreter
+  ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
+- `--run-module pytest` whose arguments set `--assert` to other than `plain`, or a program run at
+  `-O` (`PYTHONOPTIMIZE`). Peeky runs pytest with `--assert=plain`, so the test files run as Peeky
+  reads them. At `-O`, plain asserts don't run. Leave `--assert` out, and unset `PYTHONOPTIMIZE`
+  ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
 - `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
   reads no value there, and the session goes on. `session step` reaches your code's next line.
 
@@ -501,7 +535,7 @@ The CLI's exit status is the same for `peeky probe` and the `peeky-probe` script
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass; a `session get` with a failed selector. |
+| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, its `verdict` `failed` or `unknown` ([6.7](COOKBOOK.md#what-it-reports)); a `session get` with a failed selector. |
 | 2 | An error, or a refusal: anything Peeky turned down. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for. |
 | 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`) in full. Its stop never came, an `@all` reached its cap, a restore was never made, or the debugger stopped at its line without reporting it. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. A `@before` restore whose hits never came, so that it made no restore for writes it owed, exits 4 too. Its `unapplied` entry has `unrestored_all`, each such write's `LINE@HIT`, `unrestored_kinds`, and `unrestored`, the latest one's. That says no restore was made, not that the value stayed. Where the debugger stopped at the change's line without reporting it (java-debug), the entry has `unreported_stop: true`, and `stops` counts only the stops it reported. An `@all` made at each of those stops has `made` too. Where Peeky can't match that stop to a line, every pending change is listed, without `unreported_stop`. |
@@ -523,7 +557,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 12`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 13`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
@@ -562,6 +596,10 @@ request a client sends.
   `venv`, or the worker's `--python`. The launch's `target_identity` names it, and a probe's
   `python`. A protocol 11 worker runs it on its own interpreter, and names none
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
+- **Protocol 13** runs pytest, as `python -m pytest` does: `launch` and `probe` take `module`,
+  which must be `pytest` (`--run-module pytest`), and pytest gets `--assert=plain`. A protocol 12 worker
+  ignores `module` and runs the `--at` file itself
+  ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

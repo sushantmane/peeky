@@ -42,7 +42,10 @@ from peeky.textlines import split_lines
 # environment, or the worker's `--python`), and names it in the launch's
 # `target_identity`; a protocol 11 worker runs it on its own interpreter, and a protocol
 # 11 client would not say which one ran it.
-PROTOCOL_VERSION = 12
+# 13: a Python `launch` or `probe` takes `module`, which is `pytest`: the worker runs it as
+# `python -m pytest` does (`--run-module pytest`), with `--assert=plain`, and no other
+# module; a protocol 12 worker ignores `module` and runs the --at file itself.
+PROTOCOL_VERSION = 13
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -370,6 +373,12 @@ _RULES = (
         r"cannot verify edits|Attached JVMs cannot",
         "UNSUPPORTED",
         "Verify on a fresh-build target, not an attached JVM.",
+        False,
+    ),
+    (
+        r"^--check-command supports Python targets",
+        "UNSUPPORTED",
+        "Pass --check <checker.py>: a checker gets the fresh build's descriptor (COOKBOOK 6.5).",
         False,
     ),
     (

@@ -15,7 +15,8 @@ Peeky pays off when a print costs more:
 - **You need it at several hits, or across runs:** `--hits all`, then `peeky queries diff`.
 - **You want to test a hypothesis:** `--set` changes a value mid-run, with no edit.
 - **Builds or test runs are slow:** one probe reads many values in one run.
-- **You want to try a fix:** `peeky verify` runs your checker on a fresh copy with the edit.
+- **You want to try a fix:** `peeky verify` runs your checker or tests on a fresh copy with the
+  edit.
 
 Each question costs a run, and Peeky can't run every project (below).
 
@@ -27,16 +28,16 @@ value: a breakpoint stops before its line runs. `--capture a,b.c` names what to 
 language's page has the rest: [Python](lang/python.md), [Java](lang/java.md),
 [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
-**Python, a test or a script in a repository.** The target is the root. `--run` names a `.py`
-script that reaches the line. For a pytest test, write a two-line runner (delete it after):
+**Python, a test or a script in a repository.** The target is the root. `--run-module pytest`
+runs a pytest test, as `python -m pytest` does. Its arguments go after `--`:
 
 ```sh
-printf 'import sys, pytest\nsys.exit(pytest.main(sys.argv[1:]))\n' > peeky_pytest.py
 peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c \
-  --run peeky_pytest.py -- -q tests/test_x.py::test_y
+  --run-module pytest -- -q tests/test_x.py::test_y
 ```
 
-- Without `--run`, the `--at` file runs as the program: `peeky probe . --at scripts/job.py:LINE`.
+- `--run script.py` runs a script that reaches the line. Without either, the `--at` file runs as
+  the program: `peeky probe . --at scripts/job.py:LINE`.
 - `--at` and `--run` must be inside the root; a package's file in its `.venv` works. A project
   installed without `-e` runs its `site-packages` copy, not its source: `pip install -e .`.
 - It runs on the root's `.venv` or `venv`, else the active virtual environment. For the `python`
@@ -80,7 +81,7 @@ dependencies works, as from `cargo new`, with its `Cargo.lock`. A crate with dep
    edit. Run its `compare:` line. Write the general fix, not a special case (6.6).
 5. **Verify:** `peeky verify <target> --check <checker.py> --baseline` must say `passed: False`,
    or the checker can't tell a fix from the bug. Then, with `--old`/`--new`, report `passed: True`
-   only from `verify` (6.1, 6.5).
+   only from `verify` (6.1, 6.5). Python can run your tests: `--check-command '<tests>'` (6.7).
 6. **Several looks at one stop:** `peeky session start <target> --at FILE:LINE`, then `inspect`,
    `get`, `step`, `continue`, and always `close` (5).
 
@@ -129,10 +130,9 @@ Report what you observed, changed and verified, quoting the commands.
     before stepping past its last statement (1.1, 5.2).
 11. **Sessions need `--name` on every command** (unless `default`), and a `close`. Their programs'
     clocks run while you think, so prefer probes for timed code (5.3, 5.4).
-12. **`queries diff` pairs the last two runs by hit number.** Name runs (`--param a=1 --param
-    b=5`). Check the `(output)`, `(args)`, `(edit)` and `(sets)` rows before crediting an edit.
-    After a candidate, run its `compare:` command. When hits don't line up (a sort's comparator),
-    use `queries join` (3.1, 3.5).
+12. **`queries diff` pairs the last two runs by hit number.** Check the `(output)`, `(args)`,
+    `(edit)` and `(sets)` rows before crediting an edit. After a candidate, run its `compare:`
+    command. When hits don't line up (a sort's comparator), use `queries join` (3.1, 3.5).
 13. **`--old` must match the source exactly once**, with real newlines (`--old-file` for long text:
     6.3). It goes before `--`, because everything after `--` goes to the program (2.5, 10).
 14. **Same-named locals (C, C++):** a plain name means the one the code names at the stop;
@@ -209,7 +209,6 @@ Report what you observed, changed and verified, quoting the commands.
   - a line that stops several times per pass, or a loop header only before its loop (rule 5);
   - runs that ended before all requested hits;
   - a Java exit Peeky inferred when the debugger dropped its exit event (the result stands).
-- `unavailable: true`, `no value yet:` and `note`: rule 6. Opaque values: rule 15.
 - Each row's `function` names the stopped function. A line shared with a closure or lambda can
   stop in each (Java: in one; 7.3).
 - `output_complete: false`: `output` isn't proven whole (2.6). `--until hits` adds
@@ -248,13 +247,15 @@ probe, read its JSON.
 
 - With several `--old`/`--new` pairs, each `--old` matches the original file exactly once, and
   the edits must not overlap (rule 13). An error names the edit (`(edit 2)`) and why. Multi-line
-  text: 6.3. `--at` names the file to edit when the target is a directory.
-- The result has `stage` (`build` or `verification`), `seconds`, and the unified `diff` applied. On
-  failure it has a `reason`: the checker's failure line if it only exited nonzero, else its
-  exception or the build diagnostic. `--timeout S` bounds the whole verify, build included
-  (`TIMEOUT`). `--keep`, failed Cargo tests and `--details`: 6.1.
+  text: 6.3.
+- The result has `stage` (`build` or `verification`), `seconds` and the `diff`. On failure it has
+  a `reason`: the checker's failure line if it only exited nonzero, else its exception or the
+  build diagnostic. `--timeout S` bounds the whole verify, build included (`TIMEOUT`). `--keep`,
+  failed Cargo tests and `--details`: 6.1.
 - At `stage: build`, read the compiler diagnostics and try again. Provenance or toolchain errors are
   fatal: stop and report them.
+- `--check-command` (Python) runs in a copy of the root, no shell, at most 20 s, not sandboxed.
+  `verdict: unknown` is no fail (6.7).
 
 ### Targets and selectors
 

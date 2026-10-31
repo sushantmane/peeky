@@ -89,9 +89,9 @@ when a print costs more ([when][when]):
 On your own project, the first command depends on its kind ([first command][first-command]):
 
 - **Python:** from the repository's root,
-  `peeky probe . --at src/pkg/mod.py:LINE --capture a,b --run script.py`. The script reaches the
-  line; for a pytest test, a two-line one calls `pytest.main`. A project installed without `-e`
-  runs its `site-packages` copy, not its source.
+  `peeky probe . --at src/pkg/mod.py:LINE --capture a,b --run-module pytest -- tests/test_x.py`
+  runs a pytest test. `--run script.py` runs a script that reaches the line instead. A project
+  installed without `-e` runs its `site-packages` copy, not its source.
 - **Java:** attach to a Maven or Gradle test started waiting for a debugger, or launch a class
   with no Maven or Gradle dependencies.
 - **C and C++:** a directory of sources, which Peeky builds itself. A project with its own build,
@@ -153,7 +153,7 @@ PASS: 12 independent pagination checks
 | `peeky probe` | Stops, captures, changes and finishes, in one command. | [COOKBOOK 2][cookbook-2] |
 | `peeky queries`, `peeky sql` | Ask saved runs with canned queries, or in SQL. | [COOKBOOK 3 and 4][cookbook-3] |
 | `peeky session` | Several looks at one stop, with steps. | [COOKBOOK 5][cookbook-5] |
-| `peeky verify` | Checks an edit with your checker, on a fresh build. | [COOKBOOK 6][cookbook-6] |
+| `peeky verify` | Checks an edit with your checker, or a Python project's tests, on a fresh copy. | [COOKBOOK 6][cookbook-6] |
 
 - Every probe not refused before launch is saved in a local SQLite store, so you can ask
   follow-up questions without running the program again. `--no-save` opts out.

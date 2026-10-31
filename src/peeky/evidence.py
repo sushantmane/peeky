@@ -61,7 +61,7 @@ TABLES = {
             "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
             "configured ones); NULL for an attached JVM, whose arguments are unknown",
-            "entry": "Python --run script, or NULL",
+            "entry": "Python --run script, `-m MODULE` for --run-module, or NULL",
             "worker": "Remote worker URL, or NULL for a local run",
             "status": "completed, no-stop, failed or timeout",
             "error_code": "Error code when the probe did not complete (see ERRORS.md)",
@@ -1770,7 +1770,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "set_hit": probe.get("set_hit") if probe.get("set") else None,
         "hits_requested": probe.get("hits"),
         "args": _program_args(result, probe, language),
-        "entry": probe.get("entry"),
+        # A module run as `python -m` names it: never a script's name, which ends in .py.
+        "entry": probe.get("entry") or (f"-m {probe['module']}" if probe.get("module") else None),
         "worker": worker,
         "status": result.get("status"),
         "error_code": error.get("code"),

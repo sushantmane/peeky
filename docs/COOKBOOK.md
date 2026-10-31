@@ -103,6 +103,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
    - [6.4 Several Edits at Once](#64-several-edits-at-once): repeated `--old`/`--new` pairs
    - [6.5 Writing a Checker](#65-writing-a-checker): what a checker gets and must do
    - [6.6 See What a Fix Does Before Making It](#66-see-what-a-fix-does-before-making-it): candidate probes (`--old`/`--new`) and the `compare:` line
+   - [6.7 Check an Edit With the Project's Tests](#67-check-an-edit-with-the-projects-tests): `--check-command`, Python's own test command
 7. [C, C++, Rust and Java](#7-c-c-rust-and-java): what each language reads and changes
    - [7.1 C and C++](#71-c-and-c): read, set, withheld locals, strings and changing their text, maps, what `set` checks
    - [7.2 Rust (a Cargo crate)](#72-rust-a-cargo-crate): values read from memory, settable locals and texts, crate shape
@@ -202,7 +203,7 @@ breakpoint lines in pagination_bug.py: 1, 4-9, 12-13
 names in <module>: get_page
 names in get_page (lines 4-9): end, items, page, page_size, start
 mutable: Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them
-probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--run <script.py>] [--arg A ...] --capture <a,b.c> ...
+probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--run <script.py> | --run-module pytest] [--arg A ...] --capture <a,b.c> ...
 ...
 ```
 
@@ -976,6 +977,8 @@ output:
 - `--arg` passes one program argument, and can be repeated. For a value that starts with a dash,
   write `--arg=-v`.
 - Or put all of the program's arguments after `--`: `peeky probe app.py --at 5 -- A 5 5 0`.
+- In Python, `--run-module pytest` runs pytest instead of a script, as `python -m pytest` does:
+  `--run-module pytest -- -q tests/test_x.py::test_y` ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
 
 C, C++, Rust and launched Java programs take arguments too:
 
@@ -3975,6 +3978,207 @@ program.
   register.
 - [Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it): what a Python
   candidate's copy holds.
+
+### 6.7 Check an Edit With the Project's Tests
+
+**What it answers:** Do the project's own tests pass with this edit, and fail without it?
+
+For a Python target, `--check-command` runs your test command in place of a checker. Peeky copies
+the target root, applies the edit to the copy, and runs the command there. Peeky doesn't change
+your files. Run it with `--baseline` first: the tests should fail on the bug.
+
+```sh
+peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc.py' --baseline
+```
+
+```
+verdict: failed  passed: False  stage: verification  seconds: 0.174
+python: /home/me/calc/.venv/bin/python, Python 3.12.4 (the root's .venv)
+command: python -m pytest -q tests/test_calc.py
+ran: /home/me/calc/.venv/bin/python /tmp/peeky-candidate-…/peeky-watch-…/start/peeky_start.py module pytest -p peeky_check_2f6c0e1d9a4b7c35 -q tests/test_calc.py (in a copy of /home/me/calc, for at most 20 s)
+check report: 1 test file, nothing loaded from your project
+reason: FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3 (and 1 more)
+command exit: 1
+output:
+FF                                                                       [100%]
+...
+FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3
+FAILED tests/test_calc.py::test_add[2-2-4] - assert 0 == 4
+2 failed in 0.01s
+
+baseline: the unedited program, no edit (its tests fail on it, as they should fail on the bug)
+```
+
+Then the fix:
+
+```sh
+peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc.py' \
+  --old 'return a - b' --new 'return a + b'
+```
+
+```
+verdict: passed  passed: True  stage: verification  seconds: 0.169
+...
+check report: 1 test file, nothing loaded from your project
+command exit: 0
+output:
+..                                                                       [100%]
+2 passed in 0.00s
+
+diff:
+...
+```
+
+**The command is trusted, not sandboxed.** It runs with your permissions, and it can write outside
+the copy. The copy's `.venv` and `venv` are links to yours, since the interpreter lives there, so a
+command that installs or writes there changes your environment.
+
+#### What it runs
+
+- A Python command passes when it exits 0 and its report shows the copy's code, and fails on
+  another status. A command Peeky stops, past its time or over 1 MiB of output across both
+  streams, has no verdict. So has any command that isn't a Python Peeky starts
+  ([below](#what-the-command-loaded)).
+- It runs on the program's interpreter, the one the `python:` line names
+  ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)). `python` and `python3`
+  are that interpreter. Other names are found on `PATH`, with the interpreter's directory first, so
+  `pytest` is its environment's. `VIRTUAL_ENV` names that environment.
+- The working directory is the copy's root. A path such as `tests/check.py` names a file in it. A
+  program that `PATH` finds inside the root runs as the copy's file. `PATH`'s entries there are
+  the copy's, and so are its relative and empty entries.
+- An argument that names a path inside the root by its absolute path is refused: the command would
+  read your file, not the copy's. Give it relative to the root.
+- Another Python is refused, such as a `python3.11` found on `PATH`. So is a Python script whose
+  first line runs it on another interpreter, such as another environment's `pytest`.
+- `tox` and `nox` are refused: they build their own environments, outside the copy. Give the test
+  command they run. The copy leaves out `.tox`, `.nox` and `.eggs`.
+- No shell runs the command. Quotes group words, and shell syntax is refused: `|`, `>`, `$`, `*`,
+  `[`, `;`, `&` and the like. For a pipe or a redirect, run a Python script. For a word with such
+  characters, such as a test id with `[`, put the command's words last, after
+  `--check-command --`:
+
+  ```sh
+  peeky verify . --at calc.py --baseline \
+    --check-command -- python -m pytest -q 'tests/test_calc.py::test_add[1-2-3]'
+  ```
+
+- The command gets 20 seconds, as a checker does. `--timeout` can only shorten that. A command
+  that runs longer is stopped, with no verdict: `reason: the check command ran past 20 s and was
+  stopped`. A `--timeout` that cuts it short is a `TIMEOUT` error.
+- The command gets no worker token, and Python writes no bytecode (`PYTHONDONTWRITEBYTECODE=1`).
+- `--check-command` runs only in the `peeky` command. No worker request runs it.
+
+#### What it imports
+
+- The copy is the one a candidate probe makes
+  ([Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it)). Nothing above the
+  root is copied. A warning says so unless the root is a project's. It warns even when the edited
+  file imports nothing, because the tests may import anything.
+- For a Python command other than pytest, each module the project supplies must import from the
+  copy. So must each package on the way to the edited file. Those in its root and `src` count, as
+  do those in a `PYTHONPATH` entry of the copy. A command that isn't Python isn't checked.
+- Peeky looks each one up as the command's own Python starts, without importing it. It takes the
+  same `-I`, `-E`, `-P`, `-s` and `-S`, and the same environment. The working directory comes first
+  for `-c` and `-m`, and a script's own directory for a script. A console script, such as
+  `.venv/bin/mytool`, runs on the Python its first line names, with its own directory first.
+- An edit is refused when one imports from elsewhere. That may be an installed copy in
+  `site-packages`, an outside `PYTHONPATH` entry, or an editable install Peeky can't redirect. The
+  message names where it is found. Uninstall it, or install the project editable
+  (`pip install -e .`), or check the edit with a `--check` checker. At `--baseline`, a warning says
+  so instead.
+- A namespace package, one without `__init__.py`, may have parts elsewhere, from other
+  distributions. Then only the edited module's path through it must be the copy's. A part found
+  first elsewhere shadows it, and is refused.
+- A relative `PYTHONPATH` entry means the root's, so `PYTHONPATH=src` is the copy's `src`.
+
+#### What the command loaded
+
+- **Only a Python command that Peeky starts can pass.** That is `python -m MODULE`, `python -c`,
+  `python script.py`, or a console script on the program's interpreter. Peeky starts it through
+  its bootstrap, which installs a watch, then runs the command as Python would. The import path,
+  `sys.argv` and `__main__` are the same. `ran` shows it: `python -I <bootstrap> module pytest …`.
+- As that Python exits, the watch writes a report. It holds the run's nonce and the watch's own
+  file, each module's file, and the processes the command started. Peeky reads only reports
+  with this run's nonce and files.
+- Any other command, such as `make`, a shell script or a native program, runs and shows its exit
+  status and output. Its verdict is `unknown`: `Peeky can only vouch for a Python command it
+  starts itself; run the test command directly, as python -m pytest …`.
+- For pytest (`pytest`, `python -m pytest` or `-m pytest.__main__`), Peeky also loads its plugin,
+  `-p peeky_check_<16 hex digits>`, a name new for each run. At the session's end, it reports each
+  test file collected, each conftest loaded, and the tests run.
+- With pytest-xdist, each worker writes its own report, and the main process names its workers.
+  Workers start before the watch can, so a run with `-n` is no verdict: run without it for one.
+- The bootstrap puts the watch's directory on the path, so `-I` and `-E` don't stop it. Code that
+  runs as Python starts, from a `.pth` file or `sitecustomize`, comes before it: Peeky doesn't see
+  a process it starts.
+- The run is no verdict if it shows any of these:
+  - no report as the command's Python exited (`os._exit`, a crash or a kill);
+  - an uncaught `KeyboardInterrupt`, as on Ctrl-C, that stopped the command's Python;
+  - for pytest, no report from its main process, or a worker's missing;
+  - a test file, conftest or module loaded from your project instead of the copy;
+  - a module of the project's loaded from outside the copy, such as a stale install;
+  - a process the command started, unless its program starts no other (below);
+  - for pytest, a pass with no test run, as with `--collect-only` or all tests skipped.
+- That holds whatever the exit status, and at `--baseline` too: a run on stale code says nothing
+  about the edit, or the bug. So `verdict: passed` always rests on a report.
+- Peeky sees the processes started through `subprocess`, `os.exec*`, `os.spawn*`,
+  `os.posix_spawn`, `os.system` and `os.fork`. It sees each process multiprocessing starts,
+  `concurrent.futures.ProcessPoolExecutor`'s too, whatever its start method. A start that fails
+  before it makes a process counts for nothing.
+- **A command that starts other programs gets `verdict: unknown`.** Peeky can't check what those
+  programs ran or loaded. The message names the first one: `the command started /usr/bin/find .
+  -exec …; Peeky can't check what it ran or loaded`.
+- The only exception is a native program, ELF or Mach-O, that starts no other. Peeky finds it as
+  the process would, from its own working directory or on its own `PATH`. Such a process is a
+  warning only.
+- Everything else is no verdict, such as a shell, `env`, `find`, `xargs`, `git`, `make`, a
+  Python, a script, `os.fork` or multiprocessing. So, for a verdict, select tests that start no
+  other program, with `-k` or a test path. Or read the tests' output yourself.
+
+The programs that start no other, by their file's real name:
+
+```
+basename cat chmod cksum cmp comm cp cut date df diff dirname du echo false grep head id ln ls
+md5 md5sum mkdir mv od paste printenv printf pwd readlink realpath rm rmdir seq sha1sum
+sha256sum sleep stat tail tee touch tr true uname uniq wc whoami yes
+```
+
+- `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
+- The text has a `check report:` line, and JSON a `check_report`: `reports`, `problems`, and for
+  pytest, `test_files`.
+- The report catches accidental mistakes, such as a stale install or a config's absolute
+  `testpaths`. It doesn't stop hostile tests or candidate code: they run as you, and could write
+  the report themselves ([THREAT_MODEL](THREAT_MODEL.md)).
+
+#### What it reports
+
+- JSON's `verdict` is `passed`, `failed` or `unknown`, and the text's first line leads with it.
+  `unknown` is no failure of the edit: Peeky can't tell. `no_verdict` says why. `passed` stays,
+  true only for `passed`.
+- `unknown` comes from what the run loaded (above), or a test runner that ran no test: pytest's
+  3, 4 and 5, and unittest's 5. So does a command Peeky stopped at its time or output bound,
+  whatever runs it: `the check command ran past 20 s and was stopped`.
+- `stdout` and `stderr` keep the last 16,000 bytes of each stream, where pytest's summary is.
+- `reason` is looked for in both streams. pytest's first `FAILED` line comes first, then unittest's
+  `FAIL:` header with its exception. Then comes the first line that starts like a failure
+  ([Where `reason` comes from](#where-reason-comes-from)), and only then the last line. For an
+  `unknown` run, `reason: no verdict: …` says why.
+- The `baseline:` line says that the tests fail on the bug only when Peeky reads it. The command
+  must be pytest or unittest: `pytest`, or `python -m pytest`, with any interpreter options. Its
+  output must show failed tests: pytest's exit 1 with `N failed`, or unittest's
+  `FAILED (failures=N)`. A unittest error counts too, unless unittest couldn't import a test module.
+- pytest's 2 (a test file failed to import) and an exit 1 with no failed test say no test failed.
+  So do the statuses above. `reason` and the `baseline:` line say so.
+- Another command that fails, such as a script that crashes, is no verdict either. The `baseline:`
+  line asks you to check that its output shows the bug.
+- `--keep` keeps the copy, named by `kept` in JSON, with the edited file at `candidate:`.
+- JSON adds `check_command`: `argv` as given, `ran` as run, `copy_of` and `timeout_s`. `exit_code`,
+  `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy, and
+  `check_report` the reports.
+- A checker's `verdict` is `passed` or `failed`.
+- Only Python targets take it for now. Others are refused with `UNSUPPORTED`: write a checker
+  ([6.5](#65-writing-a-checker)). A Cargo crate's tests run with its checker anyway
+  ([6.1](#a-cargo-crates-tests)).
 
 ---
 

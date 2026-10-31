@@ -647,6 +647,22 @@ def _entry(root, run, language):
     return _confined(root, run, language)
 
 
+def _module(args, language):
+    """`--run-module`'s module, checked; None without one."""
+    module = getattr(args, "run_module", None)
+    if module is None:
+        return None
+    if language != "python":
+        raise ValueError("--run-module is supported only for Python targets")
+    if getattr(args, "run", None) is not None:
+        raise ValueError(
+            "Pass --run or --run-module, not both: --run names a script, --run-module pytest"
+        )
+    from peeky.adapters import check_module
+
+    return check_module(module)
+
+
 def _default_program(program, data, command):
     if program is not None:
         return program
@@ -674,7 +690,7 @@ def describe(args):
     program = _confined(root, _default_program(program, data, "describe"), language)
     _python_option(args, language)
     run = (
-        " [--run <script.py>] [--arg A ...]"
+        " [--run <script.py> | --run-module pytest] [--arg A ...]"
         if language == "python"
         else ""
         if language == "java-attach"
@@ -716,6 +732,12 @@ def describe(args):
                     "--old <text> --new <text> (or --old-file/--new-file; repeat the pair for "
                     "several edits, each quoting the original file); --baseline instead checks "
                     "the unedited program, which the checker should fail"
+                    + (
+                        "; --check-command '<test command>' in place of --check runs your tests "
+                        "on a fresh copy of the project"
+                        if language == "python"
+                        else ""
+                    )
                 }
             ),
             "background": "add --background to probe"
@@ -1250,6 +1272,7 @@ def _probe_request(args):
         args.until if args.until != "auto" else ("hits" if language == "java-attach" else "exit"),
         args.set_hit,
         entry=_entry(root, args.run, language),
+        module=_module(args, language),
         args=tuple(args.arg),
         expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
         edit=edit,
@@ -3064,6 +3087,7 @@ def _probe_remote(args, root, request, client, expected):
         until=request.until,
         set_hit=request.set_hit,
         entry=request.entry,
+        module=request.module,
         args=request.args,
         # The worker refuses before launching when its sources differ.
         expect_sha256=expected,
@@ -3171,6 +3195,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         breakpoints=[{"line": line}],
         max_pause=max_pause,
         **({"entry": entry} if entry else {}),
+        **({"module": module} if (module := _module(args, language)) else {}),
         **({"args": list(args.arg)} if args.arg else {}),
         expect_sha256=expected,
         expect_inputs=inputs,
@@ -3413,6 +3438,7 @@ def _start_local(args, root, program, line, language, data, max_pause):
             breakpoints=[{"line": line}],
             max_pause=max_pause,
             **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
+            **({"module": module} if (module := _module(args, language)) else {}),
             **({"args": list(args.arg)} if args.arg else {}),
         )
         record.update(session_id=launch["session_id"], state="running", stop_id=None)
@@ -3674,6 +3700,968 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
     )
 
 
+CHECK_COMMAND = "--check-command"
+# What a shell would read as its own syntax: --check-command runs no shell.
+_SHELL_SYNTAX = frozenset("|&;<>()$`\\*?[]{}~!#\n\r")
+_SHOWN = {"\n": "a newline", "\r": "a carriage return", "`": "a backquote"}
+
+
+def _check_command_words(args):
+    """The words of --check-command (None for --check): a string split into words as a
+    shell splits them, with no shell syntax in it, or the words after `--check-command
+    --`, as given."""
+    text, words = args.check_command, args.check_argv
+    if text is not None and words is not None:
+        raise ValueError(
+            "Pass --check-command once: as one string, or as words after `--check-command --`"
+        )
+    if args.check is not None and (text is not None or words is not None):
+        raise ValueError("Pass either --check or --check-command, not both")
+    if text is None and words is None:
+        if args.check is None:
+            raise ValueError(
+                "verify needs a check: --check <checker.py>, or for Python, --check-command "
+                "'<test command>'"
+            )
+        return None
+    if words is None:
+        if found := sorted(set(text) & _SHELL_SYNTAX):
+            shown = ", ".join(_SHOWN.get(char, f"`{char}`") for char in found)
+            raise ValueError(
+                f"--check-command takes no shell syntax ({shown}): Peeky runs the command "
+                "itself, with no shell. For a pipe or a redirect, run a script. To pass these "
+                "characters as text, as in a test id with `[`, put the command's words after "
+                "`--check-command --`, last"
+            )
+        try:
+            words = shlex.split(text)
+        except ValueError as error:
+            raise ValueError(f"--check-command could not be split into words: {error}") from None
+    if not words or not words[0]:
+        raise ValueError(
+            "--check-command needs a command, such as 'python -m pytest tests/test_x.py -q'"
+        )
+    if "=" in words[0]:
+        raise ValueError(
+            f"--check-command's first word, {words[0]}, must be the program to run: Peeky runs "
+            "no shell, so set a variable in the environment you run peeky in"
+        )
+    tool = Path(words[0]).name if Path(words[0]).name in ("tox", "nox") else _module_run(words)
+    if tool in ("tox", "nox"):
+        raise ValueError(
+            f"--check-command doesn't run {tool}: tox and nox build their own environments, "
+            "outside the copy. Give the test command they run, such as 'python -m pytest "
+            "tests/test_x.py -q'"
+        )
+    return words
+
+
+# A Python interpreter's name (`python`, `python3.12`), as a command or a script's `#!`.
+_PYTHON_NAME = re.compile(r"python[0-9.]*")
+# Interpreter options that take no value: `python -I -B -m pytest`.
+_PYTHON_FLAGS = frozenset("bBdEhiIOPqsSuvx")
+
+
+def _python_start(args):
+    """How `python ARGS` starts: (flags, how). ``flags``: those of -I, -E, -P, -s and -S it
+    takes, which decide its import path. ``how``: ("module", index of the module's word),
+    ("command", None), ("stdin", None), ("script", the script's word), or (None, None) for
+    an option Peeky doesn't know."""
+    flags, at = [], 0
+    while at < len(args):
+        word = args[at]
+        at += 1
+        if word == "-" or not word.startswith("-"):
+            return flags, ("stdin", None) if word == "-" else ("script", word)
+        if word.startswith("--"):
+            return flags, (None, None)
+        for place, flag in enumerate(word[1:], 1):
+            if flag in "IEPsS":
+                if f"-{flag}" not in flags:
+                    flags.append(f"-{flag}")
+                continue
+            if flag in _PYTHON_FLAGS:
+                continue
+            if flag in "WX":
+                # Its value is the rest of the word, or the next word.
+                if place == len(word) - 1:
+                    at += 1
+                break
+            if flag == "m":
+                return flags, ("module", at - 1 if place < len(word) - 1 else at)
+            if flag == "c":
+                return flags, ("command", None)
+            return flags, (None, None)
+    return flags, ("stdin", None)
+
+
+def _module_at(words):
+    """(module, index of its word) that `python [options] -m MODULE` runs, or None."""
+    if not words or not _PYTHON_NAME.fullmatch(Path(words[0]).name):
+        return None
+    _, (how, at) = _python_start(words[1:])
+    if how != "module" or 1 + at >= len(words):
+        return None
+    word = words[1 + at]
+    if word.startswith("-"):
+        module = word[word.index("m") + 1 :]
+        return (module, 1 + at) if module else None
+    return word, 1 + at
+
+
+def _module_run(words):
+    """The module `python [options] -m MODULE ...` runs, or None: not an interpreter's
+    command line, a script or `-c`, or an option Peeky doesn't know."""
+    found = _module_at(words)
+    return found and found[0]
+
+
+def _runner(words):
+    """The test runner a check command runs, as its words say: `pytest` (`pytest`,
+    `py.test`, `python ... -m pytest`), `unittest` (`python ... -m unittest`), or None."""
+    if not words:
+        return None
+    if Path(words[0]).name in ("pytest", "py.test"):
+        return "pytest"
+    return {
+        "pytest": "pytest",
+        "pytest.__main__": "pytest",
+        "unittest": "unittest",
+        "unittest.__main__": "unittest",
+    }.get(_module_run(words))
+
+
+def _command_environment(interpreter, candidate):
+    """The environment a check command runs in: Peeky's, without the worker's token, as
+    a launched program gets it, with the interpreter's directory first on PATH, its other
+    entries inside the root moved to the copy (relative and empty ones are the copy's
+    root's, where the command runs), and the interpreter's virtual environment, if it is
+    in one, as VIRTUAL_ENV."""
+    from peeky.python_interpreter import PROGRAM_ENV
+
+    environment = {**without_credentials(os.environ), **PROGRAM_ENV}
+    executable = interpreter.executable or interpreter.path
+    entries = []
+    for path in (executable, interpreter.path):
+        if (folder := os.path.dirname(path)) and folder not in entries:
+            entries.append(folder)
+    for entry in (environment.get("PATH", os.defpath) or "").split(os.pathsep):
+        if not os.path.isabs(entry):
+            entry = os.path.normpath(os.path.join(candidate.root, entry))
+        elif moved := candidate.copy_path(entry):
+            entry = moved
+        entries.append(entry)
+    environment["PATH"] = os.pathsep.join(entries)
+    home = Path(executable).parent.parent
+    if (home / "pyvenv.cfg").is_file():
+        environment["VIRTUAL_ENV"] = str(home)
+    else:
+        environment.pop("VIRTUAL_ENV", None)
+    # As a shell sets it there.
+    environment["PWD"] = str(candidate.root)
+    if candidate.pythonpath is not None:
+        environment["PYTHONPATH"] = candidate.pythonpath
+    return environment
+
+
+def _check_command_arguments(words, root, where="argument"):
+    """Refuse a check command's argument (or a word of ``where``, as `PYTEST_ADDOPTS`)
+    that names a path inside ``root`` by its absolute path: the command would read your
+    files, not the copy's."""
+    for word in words:
+        for part in (word, *word.split("=", 1)[1:]):
+            if os.path.isabs(part) and any(
+                Path(path).is_relative_to(root)
+                for path in (os.path.normpath(part), os.path.realpath(part))
+            ):
+                raise ValueError(
+                    f"--check-command's {where} {word} names a path in your project, not in "
+                    "the copy the command runs in: give it relative to the root"
+                )
+
+
+def _same_python(path, interpreter):
+    """Whether ``path`` is the program's interpreter: the same file, in the same directory
+    (a virtual environment's `python3` is its `python`, also through the copy's link to
+    its `bin`; another environment's is not)."""
+    for chosen in {interpreter.path, interpreter.executable} - {"", None}:
+        try:
+            if os.path.realpath(os.path.dirname(os.path.abspath(path))) == os.path.realpath(
+                os.path.dirname(os.path.abspath(chosen))
+            ) and os.path.samefile(path, chosen):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+# pip's first lines for a script whose interpreter's path is too long for `#!`.
+_SH_EXEC = re.compile(r"'''exec' \"?(.+?)\"? \"\$0\" \"\$@\"")
+
+
+def _script_python(path, environment):
+    """The Python a script's first line runs it on, and that line's options for it
+    (`#!/p/bin/python -I`, `#!/usr/bin/env python3`, or pip's `#!/bin/sh` with
+    ``_SH_EXEC`` next), or None: not a Python script."""
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(4096)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    lines = head.decode(errors="replace").split("\n")
+    words = lines[0][2:].split()
+    if not words:
+        return None
+    target, options = words[0], words[1:]
+    if Path(target).name == "env":
+        named = next((word for word in words[1:] if not word.startswith("-")), None)
+        target = named and (shutil.which(named, path=environment.get("PATH")) or named)
+        options = words[words.index(named) + 1 :] if named else []
+    elif Path(target).name == "sh" and len(lines) > 1:
+        found = _SH_EXEC.match(lines[1])
+        target, options = found and found[1], []
+    if not target or not _PYTHON_NAME.fullmatch(Path(target).name):
+        return None
+    return target, options
+
+
+def _command_program(word, candidate, environment, interpreter):
+    """What a check command's first word runs, in the copy: `python` and `python3` are the
+    program's interpreter; a path with a `/` is that file (a relative one in the copy's
+    root); another name is found on the command's PATH. A file inside the root is the
+    copy's. Another Python, and a Python script that runs on another, are refused."""
+    executable = interpreter.executable or interpreter.path
+    if word in ("python", "python3"):
+        return executable
+    if "/" in word:
+        path = os.path.normpath(os.path.join(candidate.root, word))
+        if not os.path.isabs(word) and not Path(path).is_relative_to(candidate.root):
+            raise ValueError(
+                f"--check-command's program {word} is outside the root, which is all the copy "
+                "holds: give its absolute path"
+            )
+    else:
+        path = shutil.which(word, path=environment.get("PATH"))
+        if path is None:
+            raise ValueError(
+                f"--check-command's program {word} is not on PATH, with the interpreter's "
+                f"directory first ({environment['PATH'].split(os.pathsep)[0]}): install it in "
+                "the project's environment, or give its path"
+            )
+    # Your file runs as the copy's, so what it reads and imports beside it is the copy's.
+    path = candidate.copy_path(path) or path
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        raise ValueError(f"--check-command's program {word} is not an executable file")
+    if _PYTHON_NAME.fullmatch(Path(path).name) and not _same_python(path, interpreter):
+        raise ValueError(
+            f"--check-command's program {word} is {path}, not the program's interpreter "
+            f"({executable}): run `python`, or pass --python"
+        )
+    script = _script_python(path, environment)
+    if script is not None and not _same_python(script[0], interpreter):
+        raise ValueError(
+            f"--check-command's program {word} ({path}) runs on {script[0]}, not the "
+            f"program's interpreter ({executable}): install it in the project's environment, "
+            "or run `python -m <module>`"
+        )
+    return path
+
+
+def _invocation(ran, candidate, environment, interpreter):
+    """How the command's own Python starts, for ``command_imports``: (python, flags,
+    first entry of its import path). An interpreter's command line: its options, and the
+    working directory first for -m, -c and stdin, or the script's directory (its links
+    followed). A Python script, such as a console script: the Python and options its
+    first line names, and its own directory. Any other program: the program's
+    interpreter, with nothing first, as Peeky can't see what Pythons it starts."""
+    program = ran[0]
+    if _PYTHON_NAME.fullmatch(Path(program).name):
+        flags, (how, script) = _python_start(ran[1:])
+        if how == "script":
+            folder = os.path.dirname(os.path.realpath(os.path.join(candidate.root, script)))
+            return program, flags, folder
+        return program, flags, "" if how in ("module", "command", "stdin") else None
+    if (script := _script_python(program, environment)) is not None:
+        flags, _ = _python_start(script[1])
+        return script[0], flags, os.path.dirname(os.path.realpath(program))
+    return interpreter.executable or interpreter.path, [], None
+
+
+# Peeky's watch on a check command's Python, as a module of a name of the run's own (no
+# module of the project's can stand in for it), with that run's nonce and report folder
+# written in, in a directory of Peeky's at the end of the command's PYTHONPATH. Peeky's
+# bootstrap installs it before the command runs: an audit hook on process starts, and
+# multiprocessing's BaseProcess.start. As the process exits, it writes a report: the
+# nonce, its own file, each module's file, and the processes started. It detects accidental
+# mistakes, not hostile code, which runs as you.
+_WATCH_TEXT = '''"""Peeky's watch on a check command's Python (`peeky verify --check-command`).
+
+PYTEST_DONT_REWRITE: Peeky's bootstrap imports it before pytest could rewrite it.
+"""
+
+import atexit
+import json
+import multiprocessing.process as _process
+import os
+import shlex
+import sys
+import threading
+
+NONCE = {nonce!r}
+FOLDER = {folder!r}
+# The processes started: "unknown" counts all but those of ``_LEAVES``.
+STARTED = {{"count": 0, "unknown": 0, "examples": []}}
+# A process start's own events (subprocess.Popen's os.posix_spawn, a multiprocessing
+# start's os.fork) are that one start: counted once.
+_SPAWNING = threading.local()
+# Programs that start no others, by their file's real name: whatever they are given, they
+# run nothing (no `-exec`, `system()`, compress program or editor). Any other program
+# started may start Python, which Peeky can't follow.
+_LEAVES = frozenset({{
+    "basename", "cat", "chmod", "cksum", "cmp", "comm", "cp", "cut", "date", "df", "diff",
+    "dirname", "du", "echo", "false", "grep", "head", "id", "ln", "ls", "md5", "md5sum",
+    "mkdir", "mv", "od", "paste", "printenv", "printf", "pwd", "readlink", "realpath", "rm",
+    "rmdir", "seq", "sha1sum", "sha256sum", "sleep", "stat", "tail", "tee", "touch", "tr",
+    "true", "uname", "uniq", "wc", "whoami", "yes",
+}})
+# A native executable's first bytes: ELF, Mach-O (both byte orders, 32 and 64 bits), and a
+# universal (fat) Mach-O.
+_NATIVE = (b"\\x7fELF", b"\\xfe\\xed\\xfa\\xce", b"\\xfe\\xed\\xfa\\xcf", b"\\xce\\xfa\\xed\\xfe",
+           b"\\xcf\\xfa\\xed\\xfe", b"\\xca\\xfe\\xba\\xbe", b"\\xbe\\xba\\xfe\\xca")
+# Who installed the watch: "bootstrap", before the command ran; "plugin", the pytest
+# plugin as it loaded (a pytest-xdist worker, which execnet starts), after what loaded
+# before it. The process the bootstrap started writes the report at its exit.
+INSTALLED = [None]
+MAIN = [None]
+# Whether the command ended on an uncaught KeyboardInterrupt, as on Ctrl-C.
+INTERRUPTED = [False]
+
+
+def _words(args):
+    if isinstance(args, (str, bytes)):
+        text = os.fsdecode(args)
+        try:
+            return shlex.split(text)
+        except ValueError:
+            return text.split()
+    try:
+        return [os.fsdecode(arg) for arg in args]
+    except TypeError:
+        return []
+
+
+def _resolve(program, cwd, env):
+    """The file the child runs for ``program``: a path is its cwd's; a name is looked
+    up on its own PATH (relative entries are its cwd's)."""
+    if not program:
+        return None
+    if os.sep in program:
+        found = [os.path.join(cwd, program)]
+    else:
+        path = os.environ.get("PATH") if env is None else (env.get("PATH") or env.get(b"PATH"))
+        path = os.fsdecode(path) if path else os.defpath
+        found = [os.path.join(cwd, entry, program) for entry in path.split(os.pathsep)]
+    return next((each for each in found if os.path.isfile(each) and os.access(each, os.X_OK)), None)
+
+
+def _kind(program, cwd, env):
+    """("other", None) for a native program of ``_LEAVES``, found as the child finds it;
+    else ("unknown", why or None)."""
+    path = _resolve(program, cwd, env)
+    if path is None:
+        return "unknown", "Peeky can't find it"
+    real = os.path.realpath(path)
+    if os.path.basename(real) not in _LEAVES:
+        return "unknown", None
+    try:
+        with open(real, "rb") as stream:
+            native = stream.read(4).startswith(_NATIVE)
+    except OSError:
+        native = False
+    return ("other", None) if native else ("unknown", None)
+
+
+def _started(words, kind, why):
+    STARTED["count"] += 1
+    STARTED["unknown"] += kind == "unknown"
+    listed = [each for each in STARTED["examples"] if each["kind"] == kind]
+    if len(listed) < 5:
+        STARTED["examples"].append({{"args": words[:6], "kind": kind, "why": why}})
+
+
+def _audit(event, args):
+    try:
+        if getattr(_SPAWNING, "multiprocessing", False):
+            return
+        cwd, env = os.getcwd(), None
+        if event in ("os.fork", "os.forkpty"):
+            _started([event], "unknown", "a copy of the process, which Peeky doesn't follow")
+            return
+        if event == "subprocess.Popen":
+            program, words = os.fsdecode(args[0] or ""), _words(args[1])
+            cwd = os.path.join(cwd, os.fsdecode(args[2])) if args[2] else cwd
+            env = args[3]
+            _SPAWNING.executable = program
+        elif event in ("os.exec", "os.posix_spawn"):
+            program, words, env = os.fsdecode(args[0]), _words(args[1]), args[2]
+            if program == getattr(_SPAWNING, "executable", None):
+                _SPAWNING.executable = None
+                return
+        elif event == "os.spawn":
+            program, words, env = os.fsdecode(args[1]), _words(args[2]), args[3]
+        elif event == "os.system":
+            program, words = "/bin/sh", ["/bin/sh", "-c", os.fsdecode(args[0])]
+        else:
+            return
+        if any("exec(eval(sys.stdin.readline()))" in word for word in words):
+            return  # execnet starting a pytest-xdist worker, which reports itself
+        _started(words or [program], *_kind(program or (words[0] if words else ""), cwd, env))
+    except Exception:
+        try:
+            _started(["?"], "unknown", "Peeky couldn't read how it was started")
+        except Exception:
+            pass
+
+
+# multiprocessing (and concurrent.futures.ProcessPoolExecutor, through it) starts its
+# processes in BaseProcess.start: each call that returns is one, whatever its start
+# method, some of which (spawn, forkserver) raise no audit event.
+_starting = _process.BaseProcess.start
+
+
+def _start(self, *args, **kwargs):
+    method = getattr(self, "_start_method", None) or "default"
+    _SPAWNING.multiprocessing = True
+    try:
+        started = _starting(self, *args, **kwargs)
+    finally:
+        _SPAWNING.multiprocessing = False
+    _started(["multiprocessing", str(method)], "unknown", "a multiprocessing process")
+    return started
+
+
+def modules():
+    """Each loaded module's file."""
+    found = {{}}
+    for name, module in list(sys.modules.items()):
+        file = getattr(module, "__file__", None)
+        if isinstance(file, str):
+            found[name] = os.path.abspath(file)
+    return found
+
+
+def write(kind, report):
+    path = os.path.join(FOLDER, str(os.getpid()) + "-" + kind + ".json")
+    report = {{"nonce": NONCE, "watch": os.path.abspath(__file__), "kind": kind, **report}}
+    with open(path + ".part", "w") as stream:
+        json.dump(report, stream)
+    os.replace(path + ".part", path)
+
+
+def _at_exit():
+    # Not in a forked copy, which inherits this handler.
+    if os.getpid() == MAIN[0]:
+        write("process", {{
+            "instrumented": INSTALLED[0],
+            "interrupted": INTERRUPTED[0],
+            "modules": modules(),
+            "started": STARTED,
+        }})
+
+
+def install(by):
+    if INSTALLED[0] is None:
+        INSTALLED[0] = by
+        sys.addaudithook(_audit)
+        _process.BaseProcess.start = _start
+        if by == "bootstrap":
+            MAIN[0] = os.getpid()
+            atexit.register(_at_exit)
+'''
+
+# Peeky's pytest plugin, for a pytest command, beside the watch and named for the run too:
+# at each pytest process's session end it reports the test files collected, the conftests
+# loaded, the tests run, and pytest-xdist's workers (each worker writes its own report).
+_PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`).
+
+PYTEST_DONT_REWRITE: Peeky's bootstrap imports it before pytest could rewrite it.
+"""
+
+import os
+
+import pytest
+
+watch = __import__({watch!r})
+WORKERS = set()
+RAN = [0]
+
+
+def pytest_addoption(parser):
+    # As this plugin is registered: where Peeky's bootstrap didn't install the watch.
+    watch.install("plugin")
+
+
+def pytest_runtest_logreport(report):
+    if report.when == "call":
+        RAN[0] += 1
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodeready(node):
+    worker = (getattr(node, "workerinput", None) or {{}}).get("workerid")
+    worker = worker or getattr(getattr(node, "gateway", None), "id", None)
+    if worker:
+        WORKERS.add(str(worker))
+
+
+def pytest_sessionfinish(session):
+    worker = getattr(session.config, "workerinput", None)
+    tests = set()
+    for item in getattr(session, "items", None) or ():
+        path = getattr(item, "path", None) or getattr(item, "fspath", None)
+        if path is not None:
+            tests.add(os.path.abspath(os.fspath(path)))
+    conftests = set()
+    for plugin in session.config.pluginmanager.get_plugins():
+        file = getattr(plugin, "__file__", None)
+        if isinstance(file, str) and os.path.basename(file) == "conftest.py":
+            conftests.add(os.path.abspath(file))
+    watch.write("pytest", {{
+        "plugin": os.path.abspath(__file__),
+        "role": "worker" if worker is not None else "main",
+        "worker": None if worker is None else str(worker.get("workerid")),
+        "workers": sorted(WORKERS),
+        "tests": sorted(tests),
+        "conftests": sorted(conftests),
+        "modules": watch.modules(),
+        "started": watch.STARTED,
+        "ran": RAN[0],
+        "instrumented": watch.INSTALLED[0],
+    }})
+'''
+
+# Peeky's start of a check command's Python: the watch goes in first, then the command
+# runs as Python would have run it: `-m MODULE`, `-c CODE` or a script (a console script
+# too), with the same import path, `sys.argv` and `__main__`. An uncaught KeyboardInterrupt
+# is in the report: a run cut short says nothing of the edit.
+_BOOTSTRAP_TEXT = '''"""Peeky's start of a check command (`peeky verify --check-command`)."""
+
+# A program's `__main__` has `__annotations__` as it starts, or not, by Python's version.
+ANNOTATED = "__annotations__" in globals()
+
+import builtins
+import importlib.machinery
+import importlib.util
+import marshal
+import os
+import sys
+import zipimport
+
+how, target = sys.argv[1:3]
+del sys.argv[1:3]
+
+
+def _entry(path):
+    """Whether Python runs ``path`` from its `__main__` module: a directory or a zip."""
+    if os.path.isdir(path):
+        return True
+    try:
+        zipimport.zipimporter(path)
+    except (zipimport.ZipImportError, OSError):
+        return False
+    return True
+
+
+if how == "script" and _entry(target):
+    how = "entry"
+if how == "entry":
+    # Python puts it first, safe path or not.
+    if sys.flags.safe_path:
+        sys.path.insert(0, os.path.abspath(target))
+    else:
+        sys.path[0] = os.path.abspath(target)
+elif not sys.flags.safe_path:
+    # This script's directory is first: Python's own for the command, instead.
+    if how == "module":
+        sys.path[0] = os.getcwd()
+    elif how == "command":
+        sys.path[0] = ""
+    else:
+        sys.path[0] = os.path.dirname(os.path.realpath(target))
+if {folder!r} not in sys.path:
+    sys.path.append({folder!r})
+watch = __import__({watch!r})
+watch.install("bootstrap")
+# A `__main__` as Python makes it: none of this script's names.
+main = type(sys)("__main__")
+if ANNOTATED:
+    main.__annotations__ = {{}}
+main.__builtins__ = builtins
+main.__loader__ = importlib.machinery.BuiltinImporter
+sys.modules["__main__"] = main
+try:
+    if how == "module":
+        import runpy
+
+        sys.argv[0] = "-m"
+        runpy._run_module_as_main(target)
+    elif how == "entry":
+        import runpy
+
+        sys.argv[0] = target
+        runpy._run_module_as_main("__main__", alter_argv=False)
+    elif how == "command":
+        sys.argv[0] = "-c"
+        exec(compile(target, "<string>", "exec"), vars(main))
+    else:
+        sys.argv[0] = target
+        main.__file__ = os.path.abspath(target)
+        main.__cached__ = None
+        with open(main.__file__, "rb") as stream:
+            source = stream.read()
+        if target.endswith(".pyc") or source[:2] == importlib.util.MAGIC_NUMBER[:2]:
+            if source[:4] != importlib.util.MAGIC_NUMBER:
+                raise RuntimeError("Bad magic number in .pyc file")
+            main.__loader__ = importlib.machinery.SourcelessFileLoader("__main__", main.__file__)
+            code = marshal.loads(source[16:])
+        else:
+            main.__loader__ = importlib.machinery.SourceFileLoader("__main__", main.__file__)
+            code = compile(source, main.__file__, "exec")
+        exec(code, vars(main))
+except KeyboardInterrupt:
+    watch.INTERRUPTED[0] = True
+    raise
+'''
+# Why a command Peeky doesn't start as Python has no verdict.
+NOT_WATCHED = (
+    "Peeky can only vouch for a Python command it starts itself; run the test command "
+    "directly, as `python -m pytest …`"
+)
+
+
+def _python_split(words):
+    """(interpreter options, how, target, the rest) of `python [options] -m MODULE ...`
+    ("module"), `-c CODE ...` ("command") or `SCRIPT ...` ("script"), the options word
+    for word (`-IBmpytest` gives `-IB`); None for stdin, no program, or an option Peeky
+    doesn't know."""
+    args, options, at = words[1:], [], 0
+    while at < len(args):
+        word = args[at]
+        at += 1
+        if word == "-" or word.startswith("--"):
+            return None
+        if not word.startswith("-"):
+            return options, "script", word, args[at:]
+        for place, flag in enumerate(word[1:], 1):
+            if flag in _PYTHON_FLAGS:
+                continue
+            if flag in "WX":
+                # Its value is the rest of the word, or the next word.
+                options.append(word)
+                if place == len(word) - 1:
+                    if at >= len(args):
+                        return None
+                    options.append(args[at])
+                    at += 1
+                break
+            if flag in "mc":
+                if word[:place] != "-":
+                    options.append(word[:place])
+                value = word[place + 1 :]
+                if not value:
+                    if at >= len(args):
+                        return None
+                    value, at = args[at], at + 1
+                return options, "module" if flag == "m" else "command", value, args[at:]
+            return None
+        else:
+            options.append(word)
+    return None
+
+
+def _python_command(ran, environment):
+    """(python, its options, how, target, the rest) of a command Peeky starts as Python,
+    through its bootstrap: the interpreter's own command line (`-m`, `-c` or a script), or
+    a console script on its `#!` Python and options; None for any other command."""
+    if _PYTHON_NAME.fullmatch(Path(ran[0]).name):
+        if (split := _python_split(ran)) is None:
+            return None
+        return ran[0], *split
+    if (script := _script_python(ran[0], environment)) is not None:
+        return script[0], script[1], "script", ran[0], ran[1:]
+    return None
+
+
+def _watched(command, candidate, environment, pytest):
+    """``command`` (``_python_command``'s) run through Peeky's bootstrap, which installs
+    the watch before it runs: `python [its options] <bootstrap> module|command|script
+    TARGET ARGS`. For pytest (``pytest``), with `-p <plugin>` after its word. The watch,
+    the plugin and the bootstrap are written, with the run's nonce and report folder, to a
+    directory of Peeky's, at the end of the command's PYTHONPATH. Returns (ran, how to
+    read the reports: folder, nonce, watch file, plugin file)."""
+    python, options, how, target, rest = command
+    folder = Path(tempfile.mkdtemp(prefix="peeky-watch-", dir=candidate.scratch))
+    tag, nonce = secrets.token_hex(8), secrets.token_hex(16)
+    watch, plugin = f"peeky_watch_{tag}", f"peeky_check_{tag}"
+    for each in ("modules", "start", "reports"):
+        (folder / each).mkdir()
+    modules = str(folder / "modules")
+    (folder / "modules" / f"{watch}.py").write_text(
+        _WATCH_TEXT.format(nonce=nonce, folder=str(folder / "reports"))
+    )
+    (folder / "modules" / f"{plugin}.py").write_text(_PYTEST_PLUGIN_TEXT.format(watch=watch))
+    # Not on any import path: it is run, never imported.
+    bootstrap = folder / "start" / "peeky_start.py"
+    bootstrap.write_text(_BOOTSTRAP_TEXT.format(folder=modules, watch=watch))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [environment.get("PYTHONPATH"), modules])
+    )
+    if pytest:
+        rest = ["-p", plugin, *rest]
+    reading = (
+        folder / "reports",
+        nonce,
+        folder / "modules" / f"{watch}.py",
+        folder / "modules" / f"{plugin}.py",
+    )
+    return [python, *options, str(bootstrap), how, target, *rest], reading
+
+
+def _example(started, kind):
+    """`/usr/bin/find . -exec ...`: one process started of ``kind`` ("unknown": not of a
+    program that starts no other, with why if Peeky knows; "other"), as a short example;
+    "" if none."""
+    examples = [each for each in started.get("examples") or () if each.get("kind") == kind]
+    if not examples:
+        return ""
+    shown = shlex.join(str(word) for word in (examples[0].get("args") or [])[:6])
+    why = examples[0].get("why")
+    return f"{shown} ({why})" if kind == "unknown" and why else shown
+
+
+def _command_reports(reading, candidate, names, pytest):
+    """What Peeky's watch (and for pytest, its plugin) reported: (reports, test files,
+    tests run, problems, notes). A problem leaves the run without a verdict:
+    - a report that isn't this run's (``reading``: folder, nonce, watch and plugin files);
+    - no report from the command's process as it exited (os._exit, a crash, a kill), or
+      one that says it stopped on an uncaught KeyboardInterrupt;
+    - for pytest: no report from its main process, or from a pytest-xdist worker the main
+      process started; a worker watched only from the plugin's load;
+    - a test file, conftest or module loaded from your project instead of the copy, or a
+      module of the project's (``names``) from outside the copy;
+    - a process started, other than of a program that starts no other (the watch's
+      ``_LEAVES``), which Peeky can't follow. Those are a note."""
+    folder, nonce, watch, plugin = reading
+    copy = Path(os.path.realpath(candidate.root))
+    processes, pytests, problems, notes = [], [], [], []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            report = json.loads(path.read_text())
+            kind = report.get("kind")
+            ours = (
+                report.get("nonce") == nonce
+                and os.path.realpath(str(report.get("watch"))) == os.path.realpath(watch)
+                and (
+                    kind == "process"
+                    or kind == "pytest"
+                    and os.path.realpath(str(report.get("plugin"))) == os.path.realpath(plugin)
+                )
+            )
+            files = [("collected", file) for file in report.get("tests") or ()]
+            files += [("loaded", file) for file in report.get("conftests") or ()]
+            modules = dict(report["modules"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            ours = False
+        if not ours:
+            problems.append(f"{path.name} in the command's reports isn't from Peeky's watch")
+            continue
+        (processes if kind == "process" else pytests).append(report)
+        if kind == "process" and report.get("interrupted"):
+            problems.append(
+                "the command's Python stopped on an uncaught KeyboardInterrupt, as on Ctrl-C, "
+                "so its exit status says nothing of the edit"
+            )
+        if kind == "pytest" and report.get("role") == "worker":
+            if report.get("instrumented") != "bootstrap":
+                problems.append(
+                    f"pytest-xdist's worker {report.get('worker')} started before Peeky could "
+                    "watch the processes its tests start (run without -n for a verdict)"
+                )
+        for each, file in files:
+            if candidate.copy_path(file) is not None:
+                problems.append(f"pytest {each} {file} from your project, not the copy")
+        for name, file in sorted(modules.items()):
+            if candidate.copy_path(file) is not None:
+                problems.append(f"`{name}` was loaded from {file}, in your project, not the copy")
+            elif name.split(".")[0] in names and not Path(os.path.realpath(file)).is_relative_to(
+                copy
+            ):
+                problems.append(f"`{name}` was loaded from {file}, outside the copy")
+    if not processes:
+        problems.insert(
+            0,
+            "the command's Python wrote no report as it exited (it ended by os._exit, a crash "
+            "or a kill), so Peeky can't tell what it loaded or started",
+        )
+    if pytest:
+        if not any(report.get("role") == "main" for report in pytests):
+            problems.insert(
+                0,
+                "pytest wrote no report from Peeky's plugin (-p no:<its name> turned it off, "
+                "or pytest stopped first), so Peeky can't tell which test files it ran",
+            )
+        expected = {worker for report in pytests for worker in report.get("workers") or ()}
+        workers = {
+            str(report.get("worker")) for report in pytests if report.get("role") == "worker"
+        }
+        if missing := sorted(expected - workers):
+            problems.insert(0, f"pytest-xdist's worker {', '.join(missing)} wrote no report")
+    # The command's process reports what it started; each pytest-xdist worker, its own.
+    started = [report.get("started") or {} for report in processes]
+    started += [report.get("started") or {} for report in pytests if report.get("role") == "worker"]
+    unknown = sum(int(each.get("unknown") or 0) for each in started)
+    count = sum(int(each.get("count") or 0) for each in started)
+    if unknown:
+        example = next((found for each in started if (found := _example(each, "unknown"))), "")
+        problems.append(
+            f"the command started {example}; Peeky can't check what it ran or loaded"
+            if unknown == 1
+            else f"the command started {unknown} programs, such as {example}; Peeky can't "
+            "check what they ran or loaded"
+        )
+    if count > unknown:
+        example = next((found for each in started if (found := _example(each, "other"))), "")
+        others = count - unknown
+        notes.append(
+            f"The command started {others} process{'es' if others > 1 else ''} of programs "
+            f"that start no other ({example})"
+        )
+    tests = {file for report in pytests for file in report.get("tests") or ()}
+    ran = sum(int(report.get("ran") or 0) for report in pytests)
+    return len(processes) + len(pytests), len(tests), ran, list(dict.fromkeys(problems)), notes
+
+
+def _verify_command(args, root, source, words, deadline):
+    """`verify --check-command`: run ``words`` in a fresh copy of ``root`` with the edit
+    (with --baseline, none), on the program's interpreter's environment, through Peeky's
+    bootstrap where it is a Python Peeky starts. Its `verdict` is "unknown" where Peeky
+    stopped it, its test runner ran no test, or the run may not be the copy's: what the
+    watch reported, an import from outside the copy, or no report at all (a command that
+    isn't a Python Peeky starts)."""
+    from peeky import agent
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+    from peeky.python_interpreter import find
+
+    root = Path(root).resolve()
+    _check_command_arguments(words[1:], root)
+    if addopts := os.environ.get("PYTEST_ADDOPTS"):
+        try:
+            options = shlex.split(addopts)
+        except ValueError:
+            options = addopts.split()
+        _check_command_arguments(options, root, "PYTEST_ADDOPTS word")
+    # The command runs on the program's interpreter, as a probe and a checker do.
+    interpreter = find(root, args.python)
+    original = agent.digest(source)
+    relative = source.relative_to(root).as_posix()
+    edit = None if args.old is None else SourceEdit(relative, args.old, args.new)
+    candidate = PythonCandidate(
+        PythonAdapter.on(interpreter), source, root, edit, deadline, command=True
+    )
+    try:
+        environment = _command_environment(interpreter, candidate)
+        ran = [_command_program(words[0], candidate, environment, interpreter), *words[1:]]
+        pytest = _runner(words) == "pytest"
+        # A command that isn't a Python Peeky starts runs with no verdict, whatever its
+        # imports would be: they are checked only for one it watches.
+        command = _python_command(ran, environment)
+        # What pytest loads it reports itself, as pytest's import path differs.
+        static = (
+            candidate.command_imports(
+                *_invocation(ran, candidate, environment, interpreter), environment
+            )
+            if command is not None and not pytest
+            else []
+        )
+        reasons = [*candidate.unedited_imports, *static] if command is not None else []
+        if edit is not None and reasons:
+            raise ValueError(
+                f"verify --check-command can't test this edit: {reasons[0]}. Otherwise, check "
+                "the edit with a --check checker, which is given the edited file"
+            )
+        ran, reading = (
+            (ran, None) if command is None else _watched(command, candidate, environment, pytest)
+        )
+        candidate_sha256 = hashlib.sha256(candidate.staged.read_bytes()).hexdigest()
+        timeout, limited = agent.CHECK_S, False
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("verify ran past its --timeout before the check command")
+            timeout, limited = min(timeout, remaining), remaining < timeout
+        result = agent.execute(ran, candidate.root, timeout, env=environment, tail=True)
+        if limited and result["timed_out"]:
+            # The --timeout cut the command short: that says nothing about the candidate.
+            raise TimeoutError("verify ran past its --timeout while the check command was running")
+        if agent.digest(source) != original:
+            raise RuntimeError("Original source changed during verification")
+        result.update(
+            check_command={
+                "argv": list(words),
+                "ran": ran,
+                "copy_of": str(root),
+                "timeout_s": agent.CHECK_S,
+            },
+            candidate=str(candidate.staged),
+            candidate_sha256=candidate_sha256,
+            python=interpreter.identity(),
+        )
+        # Why the run may not be the copy's: then it is no verdict, whatever its status.
+        provenance, notes = list(static), []
+        if reading is None:
+            provenance.append(NOT_WATCHED)
+        else:
+            count, tests, ran_tests, problems, notes = _command_reports(
+                reading,
+                candidate,
+                candidate.project_names((environment.get("PYTHONPATH") or "").split(os.pathsep)),
+                pytest,
+            )
+            if pytest and not ran_tests and result["exit_code"] == 0 and count:
+                # A pass with no test run (`--collect-only`, all skipped) shows nothing.
+                problems.append("pytest ran no test, so its pass shows nothing of the edit")
+            result["check_report"] = {
+                "reports": count,
+                **({"test_files": tests} if pytest else {}),
+                "problems": problems,
+            }
+            provenance += problems
+        if result["timed_out"] or result["output_limit_exceeded"]:
+            # Peeky stopped it at its bound: no verdict, whatever runs it.
+            result.update(verdict="unknown", no_verdict=_command_reason(result))
+        elif no_tests := _no_tests(result):
+            # No test ran: what the run loaded is beside the point.
+            result.update(verdict="unknown", no_verdict=no_tests)
+        elif provenance:
+            result.update(verdict="unknown", no_verdict=provenance[0])
+            result["reason"] = f"no verdict: {provenance[0]}"
+        elif result["exit_code"] == 0:
+            result["verdict"] = "passed"
+        else:
+            result["verdict"] = "failed"
+        result["passed"] = result["verdict"] == "passed"
+        if warnings := [*candidate.warnings, *notes]:
+            result["warnings"] = warnings
+        if args.keep:
+            result["kept"] = str(candidate.scratch)
+        return result
+    finally:
+        candidate.close(keep=args.keep)
+
+
 MAX_VERIFY_S = 600
 
 
@@ -3682,12 +4670,20 @@ def verify(args):
     if args.timeout is not None and not 0 < args.timeout <= MAX_VERIFY_S:
         raise ValueError(f"--timeout must be within (0, {MAX_VERIFY_S}] seconds")
     deadline = None if args.timeout is None else started + args.timeout
+    words = _check_command_words(args)
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     if language == "java-attach":
         raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
+    if words is not None and language != "python":
+        named = {"c": "C", "cpp": "C++", "rust": "Rust", "java": "Java"}.get(language, language)
+        raise ValueError(
+            f"--check-command supports Python targets for now, and this target is {named}: "
+            "pass a --check checker, which runs on the fresh build"
+        )
     _python_option(args, language)
     program = _default_program(program, data, "verify")
-    source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
+    source = (root / program).resolve(strict=True)
+    check = None if words is not None else Path(args.check).resolve(strict=True)
     original = source.read_text()
     if args.baseline:
         if any(getattr(args, name) for name in ("old", "new", "old_file", "new_file")):
@@ -3702,13 +4698,17 @@ def verify(args):
     edited = original if args.baseline else original.replace(args.old, args.new, 1)
     from peeky.build import private_base
 
-    # Where no other user can write: a candidate that reaches above its folder finds
-    # nothing of theirs there.
-    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-", dir=private_base()))
+    destination = None
     try:
-        result = _verify_candidate(
-            args, root, program, language, data, source, check, destination, deadline
-        )
+        if words is not None:
+            result = _verify_command(args, root, source, words, deadline)
+        else:
+            # Where no other user can write: a candidate that reaches above its folder finds
+            # nothing of theirs there.
+            destination = Path(tempfile.mkdtemp(prefix="peeky-verify-", dir=private_base()))
+            result = _verify_candidate(
+                args, root, program, language, data, source, check, destination, deadline
+            )
         # The reported diff must describe exactly the candidate that was verified.
         expected = edited.encode()
         if hashlib.sha256(expected).hexdigest() != result.get("candidate_sha256"):
@@ -3717,7 +4717,7 @@ def verify(args):
                 "not match the reported edit"
             )
     finally:
-        if not args.keep:
+        if destination is not None and not args.keep:
             shutil.rmtree(destination, ignore_errors=True)
     result.setdefault("stage", "verification")
     result["seconds"] = round(time.monotonic() - started, 3)
@@ -3726,7 +4726,7 @@ def verify(args):
         # The checker's verdict on the program as it is: it should fail on the bug.
         result["baseline"] = True
     if args.keep:
-        result["kept"] = str(destination)
+        result.setdefault("kept", str(destination))
     else:
         for key in ("candidate", "evidence_file"):
             result.pop(key, None)
@@ -3735,8 +4735,10 @@ def verify(args):
         # toolchain probes, it is several KB an agent rarely needs).
         for key in ("descriptor", "build_manifest"):
             result.pop(key, None)
-    if not result["passed"] and (reason := _verify_reason(result)):
+    if not result["passed"] and "reason" not in result and (reason := _verify_reason(result)):
         result["reason"] = reason
+    # A checker's verdict is its pass or fail; a check command's may be "unknown".
+    result.setdefault("verdict", "passed" if result["passed"] else "failed")
 
     _emit(result, args.json, lambda shown: _verify_text(shown, args.keep))
     return 0 if result["passed"] else 1
@@ -3744,11 +4746,30 @@ def verify(args):
 
 def _verify_text(result, keep=False):
     lines = [
-        f"passed: {result['passed']}  stage: {result['stage']}"
+        # A check command's verdict leads: "unknown" is no failure of the edit.
+        (f"verdict: {result.get('verdict')}  " if result.get("check_command") else "")
+        + f"passed: {result['passed']}  stage: {result['stage']}"
         + (f"  seconds: {result['seconds']}" if "seconds" in result else "")
     ]
     if python := _python_line(result.get("python")):
         lines.append(python)
+    if command := result.get("check_command"):
+        lines.append(f"command: {shlex.join(command['argv'])}")
+        lines.append(
+            f"ran: {shlex.join(command['ran'])} (in a copy of {command['copy_of']}, for at most "
+            f"{command['timeout_s']} s)"
+        )
+    if (report := result.get("check_report")) and report.get("reports"):
+        files, problems = report.get("test_files"), len(report["problems"])
+        lines.append(
+            "check report: "
+            + ("" if files is None else f"{files} test file" + "s" * (files != 1) + ", ")
+            + (
+                f"{problems} problem{'s' * (problems > 1)} (`reason:` names the first)"
+                if problems
+                else "nothing loaded from your project"
+            )
+        )
     if tests := result.get("tests"):
         lines.extend(_tests_text(tests))
     elif result.get("language") == "rust" and result.get("stage") == "verification":
@@ -3758,20 +4779,31 @@ def _verify_text(result, keep=False):
     reason = not result["passed"] and (result.get("reason") or _verify_reason(result))
     if reason:
         lines.append(f"reason: {reason}")
-    lines.append(f"checker exit: {result.get('exit_code')}")
+    lines.append(f"{'command' if command else 'checker'} exit: {result.get('exit_code')}")
     output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
     shown = "\n".join(text.strip() for text in output if text.strip())
     if reason and shown and shown == re.sub(r" \(SystemExit: [^)]*\)$", "", reason):
         # The checker printed only the line `reason` shows.
-        lines.append("output: the checker printed only the `reason:` line above")
+        lines.append(
+            f"output: the {'command' if command else 'checker'} printed only the `reason:` "
+            "line above"
+        )
     elif any(output):
         lines.extend(("output:", *output))
-    if keep:
+    lines.extend(f"warning: {warning}" for warning in result.get("warnings") or ())
+    if keep and command:
+        lines.append(
+            f"candidate: {result.get('candidate')} (the edited file, in the copy the command "
+            f"ran in; remove {result.get('kept')} when done)"
+        )
+    elif keep:
         lines.append(
             f"candidate: {result.get('candidate')} (the edited file, and for compiled "
             "programs the build evidence beside it; build artifacts are not kept)"
         )
-    if result.get("baseline"):
+    if result.get("baseline") and command:
+        lines.append("baseline: the unedited program, no edit" + _baseline_note(result))
+    elif result.get("baseline"):
         lines.append(
             "baseline: the unedited program, no edit"
             + (
@@ -3827,7 +4859,10 @@ def _verify_reason(result):
     unittest's `sys.exit(True)`), the first line of its stdout that says what failed
     (``_FAILURE``), else stdout's last line; with no stdout, the same of stderr. The
     status stays in `checker exit` (and
-    `checker.error`), and in the reason where it is not that exit code."""
+    `checker.error`), and in the reason where it is not that exit code. A check command's:
+    ``_command_reason``."""
+    if result.get("check_command"):
+        return _command_reason(result)
     checker = str((result.get("checker") or {}).get("error") or "")
     reason = result.get("diagnostic") or checker
     # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
@@ -3853,10 +4888,143 @@ def _verify_reason(result):
     return chosen if code == str(result.get("exit_code")) else f"{chosen} ({checker})"
 
 
+# pytest's exit statuses other than 0 and 1: none says a test failed.
+_PYTEST_EXITS = {
+    2: "pytest exited 2: it was interrupted, as by a test file it could not import",
+    3: "pytest exited 3: an internal error",
+    4: "pytest exited 4: a usage error, such as a test path that doesn't exist",
+    5: "pytest exited 5: no tests ran",
+}
+# pytest's last line: `2 failed, 1 passed in 0.12s`, or `===== 1 failed in 0.1s =====`.
+_PYTEST_FAILED = re.compile(
+    r"^=*\s*(?:[0-9]+ [a-z]+, )*[1-9][0-9]* failed(?:, [0-9]+ [a-z]+)* in [0-9.]+s\b", re.M
+)
+# unittest's last line: `FAILED (failures=1, errors=2)`.
+_UNITTEST_FAILED = re.compile(r"^FAILED \(([^)]*)\)\s*$", re.M)
+# unittest's error for a test module it could not import.
+_UNITTEST_IMPORT = re.compile(r"unittest\.loader\._FailedTest|^ImportError: Failed to import", re.M)
+
+
+def _verdict(result):
+    """Whether a check command that exited nonzero failed tests, and if not, why that says
+    nothing about the program: (True, None) only where its words name a test runner Peeky
+    reads (``_runner``) and its output shows failed tests (pytest: exit 1 with `N failed`;
+    unittest: exit 1 with `FAILED (failures=N)`, or errors none of which is a test module
+    it could not import). (False, why) for such a runner's other statuses, and (False,
+    None) for any other command."""
+    command = result.get("check_command") or {}
+    code = result.get("exit_code")
+    output = "\n".join(result.get(key) or "" for key in ("stdout", "stderr"))
+    runner = _runner(command.get("argv") or [])
+    if runner == "pytest":
+        if code == 1 and _PYTEST_FAILED.search(output):
+            return True, None
+        if code == 1:
+            return False, "pytest exited 1, and its output shows no failed test"
+        return False, _PYTEST_EXITS.get(code, f"pytest exited {code}")
+    if runner == "unittest":
+        found = _UNITTEST_FAILED.findall(output)
+        counts = dict(re.findall(r"\b(failures|errors)=([0-9]+)", found[-1])) if found else {}
+        failures, errors = (int(counts.get(key, 0)) for key in ("failures", "errors"))
+        imported = _UNITTEST_IMPORT.search(output) is not None
+        if code == 1 and (failures or (errors and not imported)):
+            return True, None
+        if code == 1 and imported:
+            return False, "unittest exited 1: it could not import a test module"
+        if code == 5:
+            return False, "unittest exited 5: no tests ran"
+        return False, f"unittest exited {code}, and its output shows no failed test"
+    return False, None
+
+
+def _no_tests(result):
+    """A test runner's status that says it ran no test, or couldn't (pytest's 3, 4 and 5,
+    unittest's 5), as ``_verdict`` words it; else None."""
+    runner = _runner((result.get("check_command") or {}).get("argv") or [])
+    code = result.get("exit_code")
+    if runner == "pytest" and code in (3, 4, 5):
+        return _PYTEST_EXITS[code]
+    if runner == "unittest" and code == 5:
+        return "unittest exited 5: no tests ran"
+    return None
+
+
+def _command_reason(result):
+    """Why a check command failed, in one line: a timeout, too much output, or the line
+    of its output that says what failed, looked for in both streams: pytest's `FAILED
+    tests/t.py::test_x - ...` summary, then unittest's `FAIL: test_x (...)` header with
+    its exception, then any line ``_failure_line`` finds (stdout's first); only then the
+    last line (stdout's, else stderr's). A test runner's status that says no test failed
+    follows (``_verdict``)."""
+    command = result.get("check_command") or {}
+    if result.get("timed_out"):
+        return f"the check command ran past {command.get('timeout_s')} s and was stopped"
+    if result.get("output_limit_exceeded"):
+        return (
+            "the check command printed over 1 MiB of output, both streams together, and was stopped"
+        )
+    streams = [result.get(key) or "" for key in ("stdout", "stderr")]
+    chosen = None
+    for stream in streams:
+        # pytest's `FAILED tests/t.py::test_x - ...`, not unittest's `FAILED (failures=1)`.
+        summary = [
+            line.strip()
+            for line in split_lines(stream)
+            if re.match(r"(?:FAILED|ERROR) [^\s(]", line)
+        ]
+        if summary:
+            more = f" (and {len(summary) - 1} more)" if len(summary) > 1 else ""
+            chosen = summary[0] + more
+            break
+    for stream in streams if chosen is None else ():
+        if header := re.search(r"^(?:FAIL|ERROR): \S", stream, re.M):
+            chosen = _failure_line(stream[header.start() :])
+            break
+    for stream in streams if chosen is None else ():
+        if chosen := _failure_line(stream):
+            break
+    for stream in streams if chosen is None else ():
+        if lines := [line.strip() for line in split_lines(stream) if line.strip()]:
+            chosen = lines[-1]
+            break
+    why = None if result.get("exit_code") in (0, None) else _verdict(result)[1]
+    parts = [part for part in (chosen and chosen[:500], why) if part]
+    return "; ".join(parts) or f"the check command exited {result.get('exit_code')}"
+
+
+def _baseline_note(result):
+    """What a check command's result at --baseline says of it: that tests failed on the
+    unedited program, as they should on the bug, only where ``_verdict`` reads that."""
+    code = result.get("exit_code")
+    if result.get("verdict") == "unknown":
+        return f" ({result.get('no_verdict')}, so this says nothing about the bug)"
+    if result.get("timed_out") or result.get("output_limit_exceeded"):
+        return ""
+    if result.get("passed"):
+        return " (the command passes on it, so it can't tell a fix from the bug)"
+    caught, why = _verdict(result)
+    if caught:
+        return " (its tests fail on it, as they should fail on the bug)"
+    if why:
+        return f" ({why}, so this says nothing about the bug)"
+    return (
+        f" (the command exited {code}, but Peeky reads failed tests only from pytest and "
+        "unittest: check that its output shows the bug)"
+    )
+
+
 def _rejected(result):
     """Whether the checker ran to its own verdict and rejected the program: an assertion
     failed, or it exited with a nonzero status. Not a crash of the checker (any other
-    exception), a timeout, nor a build that failed before it ran."""
+    exception), a timeout, nor a build that failed before it ran. A check command: its
+    tests failed (``_verdict``)."""
+    if result.get("check_command"):
+        return (
+            not result.get("timed_out")
+            and not result.get("output_limit_exceeded")
+            and result.get("exit_code") not in (0, None)
+            and _verdict(result)[0]
+        )
     error = str((result.get("checker") or {}).get("error") or "")
     return (
         result.get("stage") == "verification"
@@ -4240,6 +5408,12 @@ def _main(argv, _job, _edits):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
+    elif argv[:1] == ["verify"] and "--" in argv and argv[argv.index("--") - 1] == CHECK_COMMAND:
+        # `--check-command -- python -m pytest 't.py::test[1]'`: the rest are its words.
+        split = argv.index("--")
+        argv = argv[: split - 1] + (
+            [f"--check-argv={word}" for word in argv[split + 1 :]] or ["--check-argv="]
+        )
     parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION)
     add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -4343,6 +5517,12 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
     )
+    sub.add_argument(
+        "--run-module",
+        metavar="MODULE",
+        help="Python: run pytest, as `python -m pytest` does, when --at is in code a test runs "
+        "(pytest only); its arguments go after `--` (--run-module pytest -- tests/test_x.py -q)",
+    )
     python_option(sub)
     sub.add_argument(
         "--worker",
@@ -4436,6 +5616,11 @@ def _main(argv, _job, _edits):
     common(start)
     start.add_argument("--at", required=True)
     start.add_argument("--run", help="Python: script to run when --at is in an imported module")
+    start.add_argument(
+        "--run-module",
+        metavar="MODULE",
+        help="Python: run pytest, as `python -m pytest` does (--run-module pytest -- TEST)",
+    )
     python_option(start)
     start.add_argument(
         "--worker",
@@ -4546,18 +5731,27 @@ def _main(argv, _job, _edits):
     sub = commands.add_parser(
         "verify",
         help="Fresh build + independent checker for one edit (--baseline: the unedited program)",
-        usage="%(prog)s target --check CHECK (--old OLD --new NEW [--old OLD --new NEW ...] | "
-        "--baseline)\n                    [--at AT] [--config CONFIG] [--json] [--keep] "
-        "[--details] [--timeout TIMEOUT]\n                    [--python PATH] [--quiet] "
-        "[--background]",
+        usage="%(prog)s target (--check CHECK | --check-command COMMAND) (--old OLD --new NEW "
+        "[--old OLD --new NEW ...] | --baseline)\n                    [--at AT] [--config "
+        "CONFIG] [--json] [--keep] [--details] [--timeout TIMEOUT]\n                    "
+        "[--python PATH] [--quiet] [--background] [--check-command -- WORD ...]",
         description="Build the program fresh with the edit and run the trusted checker on it. "
         "--old and --new (or --old-file/--new-file) are required, once per edit, unless "
         "--baseline, which checks the unedited program instead: the checker should fail there "
-        "before a fix's `passed: True` means anything.",
+        "before a fix's `passed: True` means anything. For Python, --check-command runs the "
+        "project's own test command instead, in a fresh copy of the project with the edit.",
     )
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
-    sub.add_argument("--check", required=True, help="Trusted checker script")
+    sub.add_argument("--check", help="Trusted checker script (or --check-command)")
+    sub.add_argument(
+        CHECK_COMMAND,
+        metavar="COMMAND",
+        help="Python: instead of a checker, run this test command in a fresh copy of the "
+        "project with the edit, as `python -m pytest tests/test_x.py -q`; it passes if it exits "
+        "0. No shell: put words with shell characters after `--check-command --`, last",
+    )
+    sub.add_argument("--check-argv", action="append", help=argparse.SUPPRESS)
     python_option(sub)
     sub.add_argument(
         "--old",
