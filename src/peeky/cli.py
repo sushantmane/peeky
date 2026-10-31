@@ -632,6 +632,13 @@ def _python_line(identity):
     return f"python: {shown}" if shown else ""
 
 
+def _java_line(runtimes):
+    from peeky.java import java_text
+
+    shown = java_text(runtimes)
+    return f"java: {shown}" if shown else ""
+
+
 def _entry(root, run, language):
     if run is None:
         return None
@@ -3200,12 +3207,16 @@ def _start_remote(args, root, program, line, language, max_pause):
         record["optimized"] = launch["optimized"]
     if python := _launched_python(launch):
         record["python"] = python
+    if isinstance(launch.get("java"), dict):
+        record["java"] = launch["java"]
     _save(record)
     state, complete = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
     if record.get("python"):
         state["python"] = record["python"]
+    if record.get("java"):
+        state["java"] = record["java"]
     if launch.get("warnings"):
         state["warnings"] = launch["warnings"]
     if moved := _moved_start(launch, state, line, program):
@@ -3221,6 +3232,7 @@ def _start_remote(args, root, program, line, language, max_pause):
             f"session {s['session']} ({s['language']}, remote): "
             + _state_text(s, s["session"])
             + (f"\n{line}" if (line := _python_line(s.get("python"))) else "")
+            + (f"\n{line}" if (line := _java_line(s.get("java"))) else "")
         ),
     )
     return 0 if complete else 3
@@ -3307,6 +3319,7 @@ def _start(args):
             f"session {s['session']} ({s['language']}): "
             + _state_text(s, s["session"])
             + (f"\n{line}" if (line := _python_line(s.get("python"))) else "")
+            + (f"\n{line}" if (line := _java_line(s.get("java"))) else "")
         ),
     )
     # 3: the session exists but is not at the requested hit (see the note).
@@ -3407,6 +3420,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
             record["optimized"] = launch["optimized"]
         if python := _launched_python(launch):
             record["python"] = python
+        if isinstance(launch.get("java"), dict):
+            record["java"] = launch["java"]
         _save(record)
     except BaseException as exc:
         _stop_worker(process)
@@ -3424,6 +3439,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
         state["optimized"] = record["optimized"]
     if record.get("python"):
         state["python"] = record["python"]
+    if record.get("java"):
+        state["java"] = record["java"]
     if not complete:
         state["incomplete"] = True
     if launch.get("warnings"):

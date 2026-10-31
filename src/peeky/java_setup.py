@@ -8,9 +8,10 @@ place in one step, with its provenance in adapter.json and the upstream licence 
 in notices/. A failure removes only its own staging. Setup never publishes anything.
 
 Each bundle records its recipe: the text of Peeky's patches, the launcher, the lock, the
-notices, the compiler flags (`--release 17`, so any JDK 17 or later runs it) and javac's
-version, with the recipe's fingerprint. The worker runs a bundle only if its recipe, but for
-javac, is this Peeky's (recipe_mismatch); setup keeps one only if javac's version is the
+notices, the compiler flags (`--release 17`, so any JDK 17 or later runs it), javac's
+version, and the file `java` is (its real path and SHA-256), with the recipe's fingerprint.
+The worker runs a bundle only if its recipe, but for the JDK, is this Peeky's
+(recipe_mismatch), and only on that `java` file; setup keeps one only if the JDK is the
 same too (current).
 
 Without an output directory, setup installs Peeky's own bundle (install). Each build is an
@@ -63,8 +64,10 @@ VERSION = re.compile(r"[0-9a-f]{20}-[0-9a-f]{8}\Z")
 # What a build does beyond its inputs; bump it when the steps change.
 RECIPE_SCHEMA = 1
 JAVAC_FLAGS = ("--release", "17")
-# The recipe's part the JDK gives: setup rebuilds when it differs, the worker doesn't ask.
-JDK_KEYS = ("javac_version",)
+# The recipe's part the JDK gives: setup rebuilds when it differs. The worker never runs the
+# JDK to ask it, but checks that the bundle's `java` is still the file it recorded: its real
+# path (links followed) and its bytes (peeky.java._verify_bundle).
+JDK_KEYS = ("javac_version", "java_path", "java_sha256", "java_jdk")
 UNUSABLE = "Peeky's own Java adapter can't be used: "
 
 # Source patches to the pinned java-debug, applied before compiling and recorded in
@@ -160,14 +163,20 @@ def acquire(item: dict, deadline: float | None = None) -> bytes:
     return data
 
 
-def run(command: list[str]) -> str:
+def run(command: list[str], env: dict | None = None) -> str:
+    """``command``'s output, stderr too; ``env``, by default this process's environment,
+    loses the credentials either way."""
     # Pinned compiler inputs still deserve bounded diagnostics and a process deadline.
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(
             command,
             stdout=output,
             stderr=subprocess.STDOUT,
-            env={k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV},
+            env={
+                k: v
+                for k, v in (os.environ if env is None else env).items()
+                if k not in CREDENTIAL_ENV
+            },
             start_new_session=True,
         )
         deadline = time.monotonic() + 90
@@ -198,15 +207,46 @@ def run(command: list[str]) -> str:
             process.wait(timeout=3)
 
 
+def java_identity(java: str) -> dict:
+    """The file ``java`` names: its real path, links followed, and its SHA-256. Where it is
+    a JDK's own bin/java (peeky.java.jdk_of), also that JDK's release file and JVM library,
+    each by path and SHA-256 (`java_jdk`; else None): the worker checks them all before
+    it runs the bundle (peeky.java._same_java)."""
+    from peeky.java import jdk_of
+
+    real = os.path.realpath(java)
+    jdk, _ = jdk_of(real)
+    return {
+        "java_path": real,
+        "java_sha256": digest(Path(real)),
+        "java_jdk": None
+        if jdk is None
+        else {
+            "release": jdk.release,
+            "release_sha256": digest(Path(jdk.release)),
+            "libjvm": jdk.libjvm,
+            "libjvm_sha256": digest(Path(jdk.libjvm)),
+        },
+    }
+
+
 def toolchain(java: str, javac: str) -> dict:
     """The JDK setup builds with: java's and javac's paths and the version texts they print
-    now (asked afresh each time)."""
-    return {
+    now (asked afresh each time), and the file java is (java_identity). Where that file is
+    not a JDK's own bin/java (peeky.java.jdk_of), such as macOS's /usr/bin/java, also
+    the JDK home it says it runs, which only refusals name."""
+    from peeky.java import reported_home
+
+    tools = {
         "java": java,
         "java_version": run([java, "-version"]),
         "javac": javac,
         "javac_version": run([javac, "-version"]),
+        **java_identity(java),
     }
+    if tools["java_jdk"] is None:
+        tools["java_home"] = reported_home(java)
+    return tools
 
 
 def recipe(tools: dict) -> dict:
@@ -240,18 +280,21 @@ def _difference(recorded, wanted: dict) -> str | None:
         recorded[key] != wanted[key] for key in wanted if key not in JDK_KEYS
     ):
         return "it was built by another version of Peeky"
-    if any(recorded[key] != wanted[key] for key in JDK_KEYS):
+    if recorded["javac_version"] != wanted["javac_version"]:
         return "it was built with another javac"
+    if any(recorded[key] != wanted[key] for key in JDK_KEYS):
+        return "it was built with another java"
     return None
 
 
 def recipe_mismatch(manifest: dict) -> str | None:
     """Why a bundle's manifest doesn't record what this Peeky builds, or None. Only the
     bundle's own content counts: the recipe must match its fingerprint and, but for the
-    javac it was built with, be this Peeky's (flags, patch texts, launcher, lock, notices).
-    The JDK that runs it is not asked: setup compiles for `--release 17`, and a JVM that
-    can't run such classes refuses them itself. The worker checks this before it runs a
-    bundle; setup also compares javac's version (current)."""
+    JDK it was built with (JDK_KEYS), be this Peeky's (flags, patch texts, launcher, lock,
+    notices). The JDK that runs it is not asked: setup compiles for `--release 17`, and a
+    JVM that can't run such classes refuses them itself. The worker checks this before it
+    runs a bundle, and that its `java` is still the file the recipe records
+    (peeky.java._verify_bundle); setup also compares javac's version (current)."""
     recorded = manifest.get("recipe")
     if not isinstance(recorded, dict):
         return _difference(None, {})
@@ -386,6 +429,7 @@ def _build(output: Path, tools: dict, private: bool) -> dict:
             "launcher_sha256": wanted["launcher_sha256"],
             "java_version": tools["java_version"],
             "javac_version": tools["javac_version"],
+            **({"java_home": tools["java_home"]} if tools.get("java_home") else {}),
             "recipe": wanted,
             "fingerprint": fingerprint(wanted),
             "files": {
@@ -610,7 +654,7 @@ def current(bundle: Path, wanted: dict, java: str) -> str | None:
     """Why ``bundle`` is not what this Peeky builds now, with the recipe ``wanted`` (recipe,
     with javac's version asked afresh), or None when it is: the same fingerprint, and it
     verifies as the worker verifies it before every use, run by ``java``."""
-    from peeky.java import _tool, _verify_bundle
+    from peeky.java import ADAPTER_JAVA, _tool, _verify_bundle
 
     try:
         resolved = bundle.resolve(strict=True)
@@ -624,6 +668,8 @@ def current(bundle: Path, wanted: dict, java: str) -> str | None:
     except (OSError, ValueError) as exc:
         if "predates Peeky's java-debug fixes" in str(exc):
             return "it predates Peeky's java-debug fixes"
+        if str(exc).startswith(ADAPTER_JAVA):
+            return "it was built with another java"
         return f"it does not verify: {str(exc)[:200] or type(exc).__name__}"
     return None
 

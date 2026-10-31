@@ -37,6 +37,14 @@
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
   yet. The README says the same in short. In the value study, agents read the guide but rarely
   ran Peeky (#441).
+- **Java on the project's JDK:** the adapter runs on the `java` its bundle was built with,
+  whatever `java` is on `PATH`, and the program builds and runs on the project's JDK. A `java:`
+  line, and `java` in `--json`, say which ran what. A config's `java` must still be the bundle's.
+  Another is refused with `UNSUPPORTED`, naming the bundle's `java` and what to do. The bundle
+  records its `java` file, by real path and SHA-256, and Peeky checks it before every use, so run
+  `peeky setup-java` again after upgrading. Where the two differ, each must be a JDK's own
+  `bin/java`. An adapter on JDK 19 or later launches programs only on JDK 19 or later, so build
+  the bundle with JDK 17 for older projects (#442).
 - **A study of Peeky's value on real bugs** (`experiments/value-study`, #441). A coding agent
   attempted 29 real bugs, 3 times each, with and without Peeky. The outcome was the same: 89%
   of bugs solved without Peeky and 86% with it, a paired difference of −2 points (95% interval

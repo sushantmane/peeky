@@ -260,7 +260,7 @@ the token or any request ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundarie
 
 | Operation | Required input | Result |
 | --- | --- | --- |
-| launch | worker-relative program, breakpoint list (at most 100); optional `args`, `entry` (Python's `--run` script), `edit` (a candidate), `sets` and `entry_lines` (a probe's changes and restores), `max_pause`; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256`; `target_identity` (for Python, the interpreter that runs the program) |
+| launch | worker-relative program, breakpoint list (at most 100); optional `args`, `entry` (Python's `--run` script), `edit` (a candidate), `sets` and `entry_lines` (a probe's changes and restores), `max_pause`; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256`; `target_identity` (for Python, the interpreter that runs the program); for Java, `java` ([below](#the-launch-replys-java)) |
 | wait | session ID, bounded timeout | stopped, terminated, or still running; at a `calls` step's own end, `call_change` (`left`, `deeper` or `other`) where its stack, read whole up to 256 frames, differs in function or depth; `macro_stop` (Rust) where the debugger shows the stop on a line with no code of its own in its function that is in a macro's definition, or may be one (Peeky can't read the source as rustc does; the text says which), why `inspect` reads none of that frame; where the function's DWARF blocks are known, only once the stop's address proves it; `crash` where a C or C++ program crashed (SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE, from a fault or `abort`, that its signal masks show it neither handles nor ignores; not another signal, or a C++ throw or catch filter's stop): the debugger's `description`, `outside_program`, the nearest frame of the program's own code among the first 64 (`frame`, `function`, `location`), checked against the build as `inspect` checks a frame, and `uncaught_exception` where `__cxa_throw` called `std::terminate`, and `kind`, `exceptionInfo`'s `exceptionId` (`signal`, `exception`, or a filter's name, `cpp_throw`); `signal_stop` with the same fields at any other `exception` or `signal` stop; `inspect` reads nothing in a frame outside the program's sources at any `exception` or `signal` stop |
 | inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost; 10 frames are listed, or up to `frame`, at most 64) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`); optional `previews` and `extents` (C and C++: `true`, `false` or up to 32 root names), and `depth` (`true` adds the stack's `depth`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity`; `no_longer_visible`: after a `calls` step that stayed in the function at its depth, names listed at an earlier stop and not here, with `same_call` where the debugger's steps prove it (Java); not Python |
 | expand | session ID, stop ID, opaque child handle, start/count, or `index`; or `key` (a map's key as the debugger shows one, for entries Peeky read from an unordered container's nodes); optional `previews` | bounded read-only children; for `key`, the entry with that key, if any, with the `key`, `compared` (how many keys) and `keys` (the first 20) |
@@ -280,6 +280,27 @@ the token or any request ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundarie
 - Check DAP capabilities before adding an optional operation.
 - When a breakpoint's line is relocated, return the actual line to the agent. Never treat it
   silently as the requested line.
+
+### The launch reply's `java`
+
+A Java launch's reply has `java`, which says which `java` runs what. A probe's result and
+`session start --json` repeat it. It is optional: a worker before it sends none, and a client
+shows it only where it is there.
+
+- `program`: the `java` the program runs on. A launched target has it; an attached one doesn't,
+  since the JVM runs on the JDK that started it.
+- `adapter`: the `java` the adapter runs on, the bundle's own.
+- Each has `path`, `version` and `version_from`. `path` is a real path, with links followed.
+- `version` is the JDK's `JAVA_VERSION`, from its `release` file (`version_from`: `release`).
+  Where the `java` isn't a JDK's own `bin/java`, a launched target's is what the build's
+  `java -version` printed (`version_from`: `-version`).
+- `version` is `null` where neither says, such as an attached target's adapter on macOS's
+  `/usr/bin/java`.
+
+```json
+"java": {"program": {"path": "/usr/lib/jvm/java-11-openjdk-arm64/bin/java", "version": "11.0.32.1", "version_from": "release"},
+         "adapter": {"path": "/usr/lib/jvm/java-17-openjdk-arm64/bin/java", "version": "17.0.20.1", "version_from": "release"}}
+```
 
 ## The agent loop (`peeky-agent`)
 

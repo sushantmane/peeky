@@ -25,7 +25,7 @@ from peeky import add_version
 from peeky.adapters import PythonAdapter
 from peeky.errors import Refused, UnplacedStop, classify
 from peeky.identifiers import invisible, is_name, name_end, twin_hint
-from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
+from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview, java_text
 from peeky.names import changes_named, display_function, function_labels, hits_named, shortened_note
 from peeky.python_interpreter import text as python_text
 from peeky.textlines import split_lines
@@ -4913,6 +4913,9 @@ def run_probe(
         ):
             # Which interpreter ran the program, and how it was chosen (python_interpreter).
             result["python"] = {key: value for key, value in identity.items() if key != "language"}
+        if isinstance(launch.get("java"), dict):
+            # Which `java` ran the program, and which the adapter (peeky.java._runtimes).
+            result["java"] = launch["java"]
         if isinstance(launch.get("build_id"), str):
             # The build by its sources and tools, not its artifacts: what `peeky probe`'s
             # text says LLDB's notes once per.
@@ -6675,6 +6678,8 @@ def _table(result, short_names=True, sent_before=False):
     )
     if python := python_text(result.get("python")):
         lines.append(f"python: {python}")
+    if java := java_text(result.get("java")):
+        lines.append(f"java: {java}")
     for warning in result.get("warnings", ()):
         lines.append(f"warning: {warning}")
     if error := result.get("error"):

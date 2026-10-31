@@ -89,6 +89,10 @@ java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:500
 }
 ```
 
+The JVM may run on any JDK. The adapter runs on the `java` that `peeky setup-java` built its bundle
+with, whatever `java` is on `PATH`. A `java` in the config must be that one; another is refused,
+with `UNSUPPORTED` ([Java 7.3](lang/java-cookbook.md#which-jdk-runs-what)).
+
 Then probe it:
 
 ```
