@@ -985,6 +985,7 @@ def test_a_feature_cargo_would_build_without_is_refused(workspace):
     # Under resolver 1, a workspace whose root is a package gives `--features` to the root's
     # package: Cargo's unit graph builds the run's without it, saying nothing.
     units = graph(workspace)
+    units["units"][0]["dependencies"] = [{"index": 2, "extern_crate_name": "smallnum"}]
     with pytest.raises(ValueError) as caught:
         shape(workspace, units=units, features=["fast"])
     assert str(caught.value) == (
@@ -1001,6 +1002,28 @@ def test_a_feature_cargo_would_build_without_is_refused(workspace):
     units["units"][2]["features"] = ["big"]
     found = shape(workspace, units=units, features=["fast", "smallnum/big", "far/x"])
     assert found.features == ("fast", "smallnum/big", "far/x")
+
+
+def test_a_feature_is_checked_on_the_unit_it_names_not_a_namesake(workspace):
+    # Another package called `app` (another source and version) built with `fast`, and a
+    # dependency renamed `app`: neither is the run's `app`, which Cargo builds without it.
+    units = graph(workspace)["units"]
+    data = shape(workspace)
+    local = {ident(workspace, package.name): package for package in data.local}
+    namesake = unit(f"{rw.CRATES_IO}#app@2.0.0", "app", ["lib"], workspace / "vendor/app/lib.rs")
+    namesake["features"] = ["fast"]
+    units = [*units, namesake]
+    root = {**units[0], "dependencies": [{"index": 3, "extern_crate_name": "num"}]}
+    for features in (["fast"], ["app/fast"]):
+        with pytest.raises(ValueError, match="Cargo would build `app` without `fast`"):
+            rw.check_features(features, root, units, local)
+    # `num/fast` is the dependency the run calls `num`: built with it.
+    rw.check_features(["num/fast"], root, units, local)
+    # The workspace's `util`, by its own package ID.
+    with pytest.raises(ValueError, match="Cargo would build `util` without `fast`"):
+        rw.check_features(["util/fast"], root, units, local)
+    units[1]["features"] = ["fast"]
+    rw.check_features(["util/fast"], root, units, local)
 
 
 def test_only_the_workspaces_own_code_is_analysed(workspace):

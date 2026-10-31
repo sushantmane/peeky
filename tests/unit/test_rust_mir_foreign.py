@@ -788,3 +788,45 @@ def test_an_edition_2018_compiles_text_peeky_lexes_otherwise_is_refused(tmp_path
         "`cr`, as edition 2018 reads it"
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+ALIASES = (
+    "pub trait Sink {}\n"
+    "use self::Sink as Alias;\n"
+    "impl smallnum::Keep for &Alias {\n"
+    "type Bare = Sink;\n"
+    "impl smallnum::Keep for Box<Bare> {\n"
+    "use smallnum::Keep as K;\n"
+    "impl smallnum::Keep for Box<K> {\n"
+    "impl smallnum::Keep for Mine {\n"
+)
+
+
+def test_a_trait_alias_or_an_unconfirmed_bare_name_is_never_the_dependencys():
+    # Edition 2018 reads `impl smallnum::Keep for &Alias`, `Alias` a `use` of the crate's trait
+    # `Sink`, as one for `&dyn Sink`. Without the debug information's types, `&Alias` was
+    # placed as a type, its block discarded, and the call named `smallnum`'s (a false reason).
+    texts = {"src/d.rs": ALIASES}
+    cases = {
+        "3:1: 3:32": "&dyn Sink",
+        "5:1: 5:34": "std::boxed::Box<dyn Sink>",
+        "7:1: 7:31": "std::boxed::Box<dyn smallnum::Keep>",
+    }
+    for span, kind in cases.items():
+        method = impl_of([], "src/d.rs", span, receiver=f"&{kind}")
+        # Edition 2018, no types: placed only where the MIR's `self` says so.
+        blocks = _local_impls([method], texts, None, confirm=True)
+        assert blocks[0][0] == "", (span, blocks)
+        found = call(f"<{kind} as smallnum::Keep>::noted", (), state(blocks=blocks))
+        assert found[1].startswith("?impl\x1f`impl smallnum::Keep for "), (span, found)
+    # A `use` or `type` alias of the crate's trait is never placed, in any edition.
+    for span in ("3:1: 3:32", "5:1: 5:34"):
+        assert _local_impls([impl_of([], "src/d.rs", span)], texts)[0][0] == "", span
+    # A bare name the MIR's `self` confirms is the crate's type: its `impl`, its code.
+    mine = impl_of([], "src/d.rs", "8:1: 8:30", receiver="&Mine")
+    blocks = _local_impls([mine], texts, None, confirm=True)
+    assert blocks[0][0] == "Mine"
+    assert call("<Mine as smallnum::Keep>::noted", (), state(blocks=blocks)) is None
+    # One no function's `self` confirms: Peeky can't tell, never the dependency's.
+    unsaid = _local_impls([impl_of([], "src/d.rs", "8:1: 8:30")], texts, None, confirm=True)
+    assert call("<Mine as smallnum::Keep>::noted", (), state(blocks=unsaid))[1].startswith("?impl")

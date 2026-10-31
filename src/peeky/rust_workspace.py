@@ -1396,7 +1396,7 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
         raise ValueError(f"Peeky can't tell apart two path packages named `{twice[0]}`")
     by_name = {package.name: (package_key, package) for package_key, package in local.items()}
     run = _run_target(config.run, graph, units, local)
-    check_features(config.features, units[graph["roots"][0]], units)
+    check_features(config.features, units[graph["roots"][0]], units, local)
     command = "cargo " + " ".join(_selection(run[0].name, run[1], config.features))
     analysed = []
     for name in config.analyse:
@@ -1488,23 +1488,35 @@ def _crate_names(units):
     return tuple(sorted(found))
 
 
-def check_features(features, root, units):
+def check_features(features, root, units, local):
     """Refuse where Cargo's unit graph builds without a feature ``features`` names: a plain
-    one on the run's package (``root``: the graph's root unit), `package/feature` on that
-    package where the graph compiles it. Under resolver 1, a workspace whose root is a
-    package gives `--features` to that package, not to the one `-p` selects, and builds
-    the selected one without them, saying nothing."""
+    one in the graph's root unit's own (``root``: the run's); `package/feature` in the
+    workspace's package so named, by its exact package ID (``local``: {package ID:
+    Package}), or else in the dependency the root unit calls so (its `extern_crate_name`).
+    A name neither gives is Cargo's to judge. Under resolver 1, a workspace whose root is a
+    package gives `--features` to that package, not to the one `-p` selects, and builds the
+    selected one without them, saying nothing."""
     run = package_id(root["pkg_id"])[2]
     for feature in features:
         package, _, name = feature.rpartition("/")
-        package = package or run
-        compiled = [unit for unit in units if package_id(unit["pkg_id"])[2] == package]
+        if not package:
+            compiled = [root]
+        elif ids := {key for key, each in local.items() if each.name == package}:
+            compiled = [unit for unit in units if unit["pkg_id"] in ids]
+        else:
+            crate = package.replace("-", "_")
+            compiled = [
+                units[each["index"]]
+                for each in root.get("dependencies") or ()
+                if each.get("extern_crate_name") == crate
+            ]
         if compiled and not any(name in unit["features"] for unit in compiled):
+            named = package or run
             raise ValueError(
                 f'Peeky builds only with the features "features" names, and Cargo would build '
-                f"`{package}` without `{name}`. Under resolver 1, Cargo gives --features to the "
+                f"`{named}` without `{name}`. Under resolver 1, Cargo gives --features to the "
                 "package in the workspace's root directory, not to the one it builds. Name it "
-                f'`{package}/{name}`, or set resolver = "2" in the workspace\'s Cargo.toml'
+                f'`{named}/{name}`, or set resolver = "2" in the workspace\'s Cargo.toml'
             )
 
 

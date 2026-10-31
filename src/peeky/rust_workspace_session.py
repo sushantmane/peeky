@@ -291,7 +291,8 @@ def prepare_session(target, program, root, *, deadline=None):
             raise ValueError(
                 f"Peeky can't read rustc's expansion of `{unit['package']}`'s {crate}: build again"
             )
-        if _edition(files) == "2018":
+        edition = _edition(files)
+        if edition == "2018":
             _check_lexed_as_2018(unit, {**texts, f"`{crate}` as rustc expands it": expanded})
         defined = set()
         # The other crates of the build, whose code these proofs read none of: the
@@ -307,6 +308,7 @@ def prepare_session(target, program, root, *, deadline=None):
             defined=defined,
             foreign=foreign,
         )
+        owned.edition = edition
         dwarfdump = _absolute_tool(target.dwarfdump, "dwarfdump")
         budget = SYMBOL_BUDGET_S
         if deadline is not None:
