@@ -7,6 +7,7 @@ pytest suite on the candidate, the natural check of a fix.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -67,8 +68,11 @@ def test_the_projects_tests_fail_at_baseline_and_pass_with_the_fix(project, caps
     # pytest runs with Peeky's report plugin, which saw one test file, from the copy.
     words = PYTEST.split()
     assert command["argv"] == words
-    assert command["ran"][1:] == [*words[1:3], "-p", "peeky_check_report", *words[3:]]
+    assert command["ran"][1:4] == [*words[1:3], "-p"] and command["ran"][5:] == words[3:]
+    # Its name is the run's own: no module of the project's stands in for it.
+    assert re.fullmatch(r"peeky_check_[0-9a-f]{16}", command["ran"][4]), command["ran"]
     assert result["pytest_report"] == {"reports": 1, "test_files": 1, "problems": []}
+    assert result["verdict"] == "failed"
     # `python` is the program's interpreter, the one `python:` names.
     assert Path(command["ran"][0]).resolve() == Path(sys.executable).resolve()
     assert command["copy_of"] == str(project.resolve()) and command["timeout_s"] == 20
@@ -77,6 +81,8 @@ def test_the_projects_tests_fail_at_baseline_and_pass_with_the_fix(project, caps
     code, out = verify(capsys, project, "--check-command", PYTEST, "--baseline")
     assert code == 1
     assert f"command: {PYTEST}\nran: " in out.out and "\ncommand exit: 1\n" in out.out
+    assert out.out.startswith("verdict: failed  passed: False  stage: verification")
+    assert "\npytest report: 1 test file, and nothing loaded from your project\n" in out.out
     assert (
         "baseline: the unedited program, no edit (its tests fail on it, as they should fail on "
         "the bug)"
@@ -113,10 +119,23 @@ def test_a_command_past_its_time_is_stopped(project, capsys, monkeypatch):
     result = json.loads(out.out)
     assert time.monotonic() - started < 30
     assert code == 1 and result["timed_out"] is True and result["exit_code"] is None, result
-    assert result["reason"] == "the check command ran past 1 s and was stopped"
+    # Stopped before pytest's report, the run may have loaded anything: no verdict.
+    assert result["verdict"] == "unknown"
+    assert result["reason"] == (
+        "no verdict: the check command ran past 1 s and was stopped before pytest's report"
+    )
     code, out = verify(capsys, project, "--check-command", slow, "--baseline")
-    # Stopped, it failed for no reason the bug gives.
-    assert out.out.rstrip().endswith("baseline: the unedited program, no edit"), out.out
+    assert out.out.startswith("verdict: unknown  passed: False  stage: verification"), out.out
+    assert out.out.rstrip().endswith(
+        "baseline: the unedited program, no edit (the check command ran past 1 s and was "
+        "stopped before pytest's report, so this says nothing about the bug)"
+    ), out.out
+    # A command other than pytest that runs past its time fails.
+    sleep = ["python", "-c", "import time; time.sleep(60)"]
+    code, out = verify(capsys, project, "--baseline", "--json", "--check-command", "--", *sleep)
+    result = json.loads(out.out)
+    assert result["verdict"] == "failed", result
+    assert result["reason"] == "the check command ran past 1 s and was stopped"
     # A --timeout shorter than the command's own bound: TIMEOUT, as with a checker.
     monkeypatch.setattr(agent, "CHECK_S", 20)
     code, out = verify(capsys, project, "--check-command", slow, *FIX, "--timeout", "3", "--json")
@@ -780,14 +799,16 @@ def test_a_stale_package_pytest_loads_is_no_verdict(src_project, capsys):
 
 
 def test_a_pytest_run_without_peekys_report_is_no_verdict(project, capsys):
-    command = f"{PYTEST} -p no:peeky_check_report"
-    code, out = verify(capsys, project, "--check-command", command, *FIX)
-    assert code == 1 and "passed: False" in out.out, out.out
+    # A conftest that ends the process before the session's end: no report.
+    (project / "tests" / "conftest.py").write_text("import os\n\nos._exit(0)\n")
+    code, out = verify(capsys, project, "--check-command", PYTEST, *FIX)
+    assert code == 1 and out.out.startswith("verdict: unknown  passed: False"), out.out
     assert (
-        "reason: no verdict: pytest wrote no report from Peeky's plugin (-p "
-        "no:peeky_check_report turned it off, or pytest stopped first), so Peeky can't tell "
-        "whether the tests loaded your project's files instead of the copy's\n"
+        "reason: no verdict: pytest wrote no report from Peeky's plugin (-p no:<its name> "
+        "turned it off, or pytest stopped first), so Peeky can't tell whether the tests loaded "
+        "your project's files instead of the copy's\n"
     ) in out.out
+    (project / "tests" / "conftest.py").unlink()
     # Under -I, which ignores PYTHONPATH, pytest runs without it.
     (project / "conftest.py").write_text("")
     isolated = "python -I -m pytest -q -p no:cacheprovider tests/test_calc.py"
@@ -813,3 +834,175 @@ def test_relative_path_entries_are_the_copys_root(project, capsys, monkeypatch, 
     ran = Path(result["check_command"]["ran"][0])
     assert code == 0 and result["passed"] is True, result
     assert ran.parent.name == "bin" and not ran.is_relative_to(project.resolve())
+
+
+# Review round 3: the report is this run's plugin's; processes the tests start; a run that
+# loaded outside code is no verdict whatever its status; the tri-state verdict.
+
+FORGED = """\
+import json
+import os
+
+
+def pytest_sessionfinish(session):
+    folder = os.environ.get("PEEKY_CHECK_REPORTS")
+    if folder:
+        with open(os.path.join(folder, "1.json"), "w") as stream:
+            json.dump({"tests": [], "conftests": [], "modules": {}}, stream)
+"""
+
+
+def stale_pytest_project(root):
+    """``root``'s `.venv` with a stale `pkg` in site-packages, and pytest (Peeky's) after it."""
+    import _pytest
+
+    _, site = make_venv(root / ".venv")
+    (site / "pkg").mkdir()
+    (site / "pkg" / "__init__.py").write_text(PKG)
+    (site / "with_pytest.pth").write_text(f"{Path(_pytest.__file__).parents[1]}\n")
+    (root / "tests").mkdir()
+
+
+def test_a_module_named_like_peekys_plugin_cant_forge_its_report(src_project, capsys):
+    # A `peeky_check_report.py` in the root stood in for the plugin and reported nothing
+    # loaded: `passed: true`, though the tests imported a stale outside `pkg`.
+    stale_pytest_project(src_project)
+    (src_project / "peeky_check_report.py").write_text(FORGED)
+    (src_project / "tests" / "test_pkg.py").write_text(
+        "import pkg\n\n\ndef test_value():\n    assert pkg.VALUE == 1\n"
+    )
+    code = main(["verify", str(src_project), *SET_VALUE, "--json", "--check-command",
+                 "python -m pytest -q -p no:cacheprovider tests"])  # fmt: skip
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"].startswith("`pkg` was loaded from "), result["no_verdict"]
+
+
+def test_a_stale_package_makes_a_failing_run_no_verdict_too(src_project, capsys):
+    # The tests failed on the stale `pkg`, not on the edit: that was reported as the
+    # edit failing.
+    stale_pytest_project(src_project)
+    (src_project / "tests" / "test_pkg.py").write_text(
+        "import pkg\n\n\ndef test_value():\n    assert pkg.VALUE == 2\n"
+    )
+    command = ["--check-command", "python -m pytest -q -p no:cacheprovider tests"]
+    code = main(["verify", str(src_project), *SET_VALUE, *command])
+    out = capsys.readouterr().out
+    assert code == 1 and out.startswith("verdict: unknown  passed: False"), out
+    assert "reason: no verdict: `pkg` was loaded from " in out and "command exit: 1\n" in out
+    # Nor does the unedited program's failure say the tests catch the bug.
+    code = main(["verify", str(src_project), "--at", "src/pkg/__init__.py", "--baseline", *command])
+    out = capsys.readouterr().out
+    assert code == 1 and "baseline: the unedited program, no edit (`pkg` was loaded from " in out
+    assert "outside the copy, so this says nothing about the bug)" in out
+
+
+CHILD = """\
+import subprocess
+import sys
+
+
+def test_child():
+    subprocess.run({argv}, check=True)
+"""
+
+
+def test_a_python_process_the_tests_start_is_no_verdict(project, capsys):
+    # A test that ran `python -I -c "import pkg; ..."` imported what Peeky never saw.
+    (project / "tests" / "test_child.py").write_text(
+        CHILD.format(argv='[sys.executable, "-I", "-c", "print(1)"]')
+    )
+    command = "python -m pytest -q -p no:cacheprovider tests"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"].startswith("the tests started 1 Python process ("), result
+    assert "-I -c 'print(1)'), and Peeky didn't check what they imported" in result["no_verdict"]
+
+
+def test_another_process_the_tests_start_is_a_note(project, capsys):
+    (project / "tests" / "test_child.py").write_text(CHILD.format(argv='["/bin/echo", "hi"]'))
+    command = "python -m pytest -q -p no:cacheprovider tests"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["verdict"] == "passed" and result["passed"] is True, result
+    assert (
+        "The tests started 1 other process (/bin/echo hi), and Peeky didn't check what they loaded"
+    ) in result["warnings"]
+
+
+class _Candidate:
+    """What _pytest_reports asks of a candidate: its copy, and your tree's files."""
+
+    def __init__(self, root, yours):
+        self.root, self.yours = root, yours
+
+    def copy_path(self, path):
+        return str(path) if Path(path).is_relative_to(self.yours) else None
+
+
+def write_reports(folder, *reports):
+    folder.mkdir(parents=True, exist_ok=True)
+    for number, report in enumerate(reports, 1):
+        (folder / f"{number}.json").write_text(json.dumps(report))
+
+
+def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_path):
+    from peeky.cli import _pytest_reports
+
+    copy, yours, plugin = tmp_path / "copy", tmp_path / "yours", tmp_path / "plugin.py"
+    candidate = _Candidate(copy, yours)
+
+    def report(**extra):
+        return {"nonce": "n1", "plugin": str(plugin), "role": "main", "worker": None,
+                "workers": [], "tests": [str(copy / "tests/test_x.py")], "conftests": [],
+                "modules": {}, "started": {"count": 0, "python": 0, "examples": []},
+                **extra}  # fmt: skip
+
+    def read(*reports):
+        folder = tmp_path / f"reports{len(list(tmp_path.glob('reports*')))}"
+        write_reports(folder, *reports)
+        return _pytest_reports((folder, "n1", plugin), candidate, {"pkg"})
+
+    assert read(report()) == (1, 1, 0, [], [])
+    # Another nonce, or another plugin file: not this run's plugin's.
+    assert read(report(nonce="n2"))[3] == ["1.json in pytest's reports isn't from Peeky's plugin"]
+    other = report(plugin=str(tmp_path / "peeky_check_report.py"))
+    assert read(report(), other)[3] == ["2.json in pytest's reports isn't from Peeky's plugin"]
+    # pytest-xdist: the main process names its workers; each must report.
+    main_report = report(workers=["gw0", "gw1"], tests=[])
+    gw0 = report(role="worker", worker="gw0")
+    assert read(main_report, gw0)[3] == ["pytest-xdist's worker gw1 wrote no report"]
+    assert read(main_report, gw0, report(role="worker", worker="gw1"))[3] == []
+    assert read(gw0)[3] == ["pytest's main process wrote no report from Peeky's plugin"]
+    # Files from your tree, and the project's modules from outside the copy.
+    loaded = report(
+        conftests=[str(yours / "conftest.py")],
+        modules={"pkg": str(tmp_path / "site/pkg/__init__.py"), "json": "/usr/lib/json.py"},
+    )
+    assert read(loaded)[3] == [
+        f"pytest loaded {yours / 'conftest.py'} from your project, not the copy",
+        f"`pkg` was loaded from {tmp_path / 'site/pkg/__init__.py'}, outside the copy",
+    ]
+    # Python processes the tests started are a problem, other processes a note.
+    started = {"count": 3, "python": 1, "examples": [
+        {"args": ["git", "status"], "python": False},
+        {"args": ["/v/bin/python", "-I", "-c", "import pkg"], "python": True}]}  # fmt: skip
+    _, _, _, problems, notes = read(report(started=started))
+    assert problems == [
+        "the tests started 1 Python process (/v/bin/python -I -c 'import pkg'), and Peeky "
+        "didn't check what they imported"
+    ]
+    assert notes == [
+        "The tests started 2 other processes (git status), and Peeky didn't check what they loaded"
+    ]
+
+
+def test_a_pass_that_ran_no_test_is_no_verdict(project, capsys):
+    # `--collect-only` exits 0 having run no test.
+    code, out = verify(capsys, project, "--check-command", f"{PYTEST} --collect-only", *FIX,
+                       "--json")  # fmt: skip
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"] == "pytest ran no test, so its pass shows nothing of the edit"
+    assert result["pytest_report"]["test_files"] == 1

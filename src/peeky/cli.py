@@ -3864,21 +3864,108 @@ def _invocation(ran, candidate, environment, interpreter):
 
 
 # The pytest plugin Peeky loads into a pytest check command (-p), from a directory of its
-# own at the end of PYTHONPATH. At the session's end it writes, to
-# $PEEKY_CHECK_REPORTS/<pid>.json, the test files collected, the conftest files loaded and
-# each module's file: one report per process (pytest-xdist's workers write theirs).
-PYTEST_PLUGIN = "peeky_check_report"
+# own at the end of PYTHONPATH, under a name of its own for each run (no module of the
+# project's can stand in for it), with that run's nonce and report folder written in.
+# Each pytest process that loads it (pytest-xdist's workers too) writes one report at its
+# session's end: the nonce, the plugin's own file, its role, the test files it collected,
+# the conftests and modules it loaded, and the processes its tests started (an audit
+# hook). It detects accidental mistakes, not hostile tests, which run as you.
 _PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`)."""
 
 import json
 import os
+import re
+import shlex
+import shutil
 import sys
+import threading
+
+import pytest
+
+NONCE = {nonce!r}
+FOLDER = {folder!r}
+STARTED = {{"count": 0, "python": 0, "examples": []}}
+WORKERS = set()
+RAN = [0]
+# subprocess.Popen's own spawn (os.posix_spawn) is the same process: counted once.
+_SPAWNING = threading.local()
+_PYTHON = re.compile(r"python[0-9.]*")
+
+
+def _words(args):
+    if isinstance(args, (str, bytes)):
+        text = os.fsdecode(args)
+        try:
+            return shlex.split(text)
+        except ValueError:
+            return text.split()
+    try:
+        return [os.fsdecode(arg) for arg in args]
+    except TypeError:
+        return []
+
+
+def _is_python(word):
+    """Whether a program word starts Python: by its name, its file's, or its `#!` lines."""
+    found = word if os.sep in word else shutil.which(word)
+    for path in (word, found, found and os.path.realpath(found)):
+        if path and _PYTHON.fullmatch(os.path.basename(path)):
+            return True
+    try:
+        with open(found, "rb") as stream:
+            head = stream.read(512).split(b"\\n")[:2]
+    except (OSError, TypeError):
+        return False
+    return head[0].startswith(b"#!") and any(b"python" in line for line in head)
+
+
+def _audit(event, args):
+    try:
+        if event == "subprocess.Popen":
+            words, shell = _words(args[1]), isinstance(args[1], (str, bytes))
+            program = os.fsdecode(args[0]) if args[0] else ("/bin/sh" if shell else "")
+            program = program or (words[0] if words else "")
+            _SPAWNING.popen = True
+        elif event in ("os.exec", "os.posix_spawn"):
+            if getattr(_SPAWNING, "popen", False):
+                _SPAWNING.popen = False
+                return
+            program, words, shell = os.fsdecode(args[0]), _words(args[1]), False
+        elif event == "os.spawn":
+            program, words, shell = os.fsdecode(args[1]), _words(args[2]), False
+        elif event == "os.system":
+            program, words, shell = "/bin/sh", _words(args[0]), True
+        else:
+            return
+        if any("exec(eval(sys.stdin.readline()))" in word for word in words):
+            return  # execnet starting a pytest-xdist worker, which reports itself
+        python = any(_is_python(word) for word in [program, *(words if shell else words[:1])] if word)
+        STARTED["count"] += 1
+        STARTED["python"] += python
+        if len(STARTED["examples"]) < 10:
+            STARTED["examples"].append({{"args": words[:6] or [program], "python": python}})
+    except Exception:
+        pass
+
+
+sys.addaudithook(_audit)
+
+
+def pytest_runtest_logreport(report):
+    if report.when == "call":
+        RAN[0] += 1
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodeready(node):
+    worker = (getattr(node, "workerinput", None) or {{}}).get("workerid")
+    worker = worker or getattr(getattr(node, "gateway", None), "id", None)
+    if worker:
+        WORKERS.add(str(worker))
 
 
 def pytest_sessionfinish(session):
-    folder = os.environ.get("PEEKY_CHECK_REPORTS")
-    if not folder:
-        return
+    worker = getattr(session.config, "workerinput", None)
     tests = set()
     for item in getattr(session, "items", None) or ():
         path = getattr(item, "path", None) or getattr(item, "fspath", None)
@@ -3889,13 +3976,24 @@ def pytest_sessionfinish(session):
         file = getattr(plugin, "__file__", None)
         if isinstance(file, str) and os.path.basename(file) == "conftest.py":
             conftests.add(os.path.abspath(file))
-    modules = {}
+    modules = {{}}
     for name, module in list(sys.modules.items()):
         file = getattr(module, "__file__", None)
         if isinstance(file, str):
             modules[name] = os.path.abspath(file)
-    report = {"tests": sorted(tests), "conftests": sorted(conftests), "modules": modules}
-    path = os.path.join(folder, str(os.getpid()) + ".json")
+    report = {{
+        "nonce": NONCE,
+        "plugin": os.path.abspath(__file__),
+        "role": "worker" if worker is not None else "main",
+        "worker": None if worker is None else str(worker.get("workerid")),
+        "workers": sorted(WORKERS),
+        "tests": sorted(tests),
+        "conftests": sorted(conftests),
+        "modules": modules,
+        "started": STARTED,
+        "ran": RAN[0],
+    }}
+    path = os.path.join(FOLDER, str(os.getpid()) + ".json")
     with open(path + ".part", "w") as stream:
         json.dump(report, stream)
     os.replace(path + ".part", path)
@@ -3903,37 +4001,58 @@ def pytest_sessionfinish(session):
 
 
 def _with_pytest_plugin(ran, words, candidate, environment):
-    """``ran`` with `-p peeky_check_report` after pytest's own word, its plugin written
-    to a directory of Peeky's at the end of the command's PYTHONPATH, and the folder its
-    reports go to (PEEKY_CHECK_REPORTS)."""
+    """``ran`` with `-p <plugin>` after pytest's own word: Peeky's plugin under a name of
+    this run's, written with its nonce and report folder to a directory of Peeky's at the
+    end of the command's PYTHONPATH. Returns (ran, how to read its reports: the folder,
+    the nonce and the plugin's file)."""
     folder = Path(tempfile.mkdtemp(prefix="peeky-pytest-", dir=candidate.scratch))
+    name, nonce = f"peeky_check_{secrets.token_hex(8)}", secrets.token_hex(16)
     (folder / "plugin").mkdir()
-    (folder / "plugin" / f"{PYTEST_PLUGIN}.py").write_text(_PYTEST_PLUGIN_TEXT)
     (folder / "reports").mkdir()
+    plugin = folder / "plugin" / f"{name}.py"
+    plugin.write_text(_PYTEST_PLUGIN_TEXT.format(nonce=nonce, folder=str(folder / "reports")))
     given = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, [given, str(folder / "plugin")]))
-    environment["PEEKY_CHECK_REPORTS"] = str(folder / "reports")
     at = 1 if (found := _module_at(words)) is None else found[1] + 1
-    return [*ran[:at], "-p", PYTEST_PLUGIN, *ran[at:]], folder / "reports"
+    return [*ran[:at], "-p", name, *ran[at:]], (folder / "reports", nonce, plugin)
 
 
-def _pytest_reports(folder, candidate, names):
-    """What Peeky's pytest plugin reported: (reports, test files, problems). A problem is
+def _example(started, python):
+    """`python -c ...`: one process the tests started (a Python one, or not), as a short
+    example; "" if none is listed."""
+    examples = [
+        each for each in started.get("examples") or () if bool(each.get("python")) == python
+    ]
+    return shlex.join(str(word) for word in (examples[0].get("args") or [])[:6]) if examples else ""
+
+
+def _pytest_reports(reading, candidate, names):
+    """What Peeky's pytest plugin reported: (reports, test files, tests run, problems,
+    notes). A
+    problem leaves the run without a verdict: no report from pytest's main process, or
+    one that isn't this run's plugin's (``reading``: folder, nonce, plugin file); a
+    pytest-xdist worker the main process started with no report; no test file collected;
     a test file, conftest or module loaded from your project instead of the copy, or a
-    module of the project's (``names``) loaded from outside the copy."""
+    module of the project's (``names``) from outside the copy; a Python process the tests
+    started, whose imports Peeky didn't check. Other processes they started are a note."""
+    folder, nonce, plugin = reading
     copy = Path(os.path.realpath(candidate.root))
-    reports, tests, problems = 0, set(), []
+    reports, problems, notes = [], [], []
     for path in sorted(folder.glob("*.json")):
         try:
             report = json.loads(path.read_text())
+            ours = report.get("nonce") == nonce and os.path.realpath(
+                str(report.get("plugin"))
+            ) == os.path.realpath(plugin)
             files = [("collected", file) for file in report["tests"]]
             files += [("loaded", file) for file in report["conftests"]]
             modules = dict(report["modules"])
-        except (OSError, ValueError, KeyError, TypeError):
-            problems.append(f"Peeky could not read pytest's report {path.name}")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            ours = False
+        if not ours:
+            problems.append(f"{path.name} in pytest's reports isn't from Peeky's plugin")
             continue
-        reports += 1
-        tests.update(file for kind, file in files if kind == "collected")
+        reports.append(report)
         for kind, file in files:
             if candidate.copy_path(file) is not None:
                 problems.append(f"pytest {kind} {file} from your project, not the copy")
@@ -3944,12 +4063,40 @@ def _pytest_reports(folder, candidate, names):
                 copy
             ):
                 problems.append(f"`{name}` was loaded from {file}, outside the copy")
-    return reports, len(tests), list(dict.fromkeys(problems))
+    if reports and not any(report.get("role") == "main" for report in reports):
+        problems.insert(0, "pytest's main process wrote no report from Peeky's plugin")
+    expected = {worker for report in reports for worker in report.get("workers") or ()}
+    missing = sorted(expected - {str(report.get("worker")) for report in reports})
+    if missing:
+        problems.insert(0, f"pytest-xdist's worker {', '.join(missing)} wrote no report")
+    started = [report.get("started") or {} for report in reports]
+    python = sum(int(each.get("python") or 0) for each in started)
+    count = sum(int(each.get("count") or 0) for each in started)
+    if python:
+        example = next((_example(each, True) for each in started if each.get("python")), "")
+        problems.append(
+            f"the tests started {python} Python process{'es' if python > 1 else ''} "
+            f"({example}), and Peeky didn't check what they imported"
+        )
+    if count > python:
+        example = next(
+            (found for each in started if (found := _example(each, False))),
+            "",
+        )
+        notes.append(
+            f"The tests started {count - python} other process{'es' if count - python > 1 else ''} "
+            f"({example}), and Peeky didn't check what they loaded"
+        )
+    tests = {file for report in reports for file in report.get("tests") or ()}
+    ran = sum(int(report.get("ran") or 0) for report in reports)
+    return len(reports), len(tests), ran, list(dict.fromkeys(problems)), notes
 
 
 def _verify_command(args, root, source, words, deadline):
     """`verify --check-command`: run ``words`` in a fresh copy of ``root`` with the edit
-    (with --baseline, none), on the program's interpreter's environment."""
+    (with --baseline, none), on the program's interpreter's environment. Its `verdict` is
+    "unknown" where the run may not be the copy's (provenance: an import from outside the
+    copy, or what pytest's report shows), or where its test runner ran no test."""
     from peeky import agent
     from peeky.adapters import PythonAdapter, PythonCandidate
     from peeky.build import SourceEdit
@@ -3974,8 +4121,8 @@ def _verify_command(args, root, source, words, deadline):
     try:
         environment = _command_environment(interpreter, candidate)
         ran = [_command_program(words[0], candidate, environment, interpreter), *words[1:]]
-        reasons = list(candidate.unedited_imports)
-        pytest, reports, plugin_off = _runner(words) == "pytest", None, None
+        static, reading, plugin_off = [], None, None
+        pytest = _runner(words) == "pytest"
         if pytest:
             # What pytest loads is read from the run itself, by Peeky's plugin, which -I
             # and -E can't load: pytest would fail on it, so it runs without.
@@ -3983,12 +4130,12 @@ def _verify_command(args, root, source, words, deadline):
             if isolated := [flag for flag in flags if flag in ("-I", "-E")]:
                 plugin_off = f"{isolated[0]} ignores PYTHONPATH, where the plugin is"
             else:
-                ran, reports = _with_pytest_plugin(ran, words, candidate, environment)
+                ran, reading = _with_pytest_plugin(ran, words, candidate, environment)
         else:
-            reasons += candidate.command_imports(
+            static = candidate.command_imports(
                 *_invocation(ran, candidate, environment, interpreter), environment
             )
-        if edit is not None and reasons:
+        if edit is not None and (reasons := [*candidate.unedited_imports, *static]):
             raise ValueError(
                 f"verify --check-command can't test this edit: {reasons[0]}. Otherwise, check "
                 "the edit with a --check checker, which is given the edited file"
@@ -4007,7 +4154,6 @@ def _verify_command(args, root, source, words, deadline):
         if agent.digest(source) != original:
             raise RuntimeError("Original source changed during verification")
         result.update(
-            passed=result["exit_code"] == 0,
             check_command={
                 "argv": list(words),
                 "ran": ran,
@@ -4018,34 +4164,46 @@ def _verify_command(args, root, source, words, deadline):
             candidate_sha256=candidate_sha256,
             python=interpreter.identity(),
         )
-        warnings = list(candidate.warnings)
+        # Why the run may not be the copy's: then it is no verdict, whatever its status.
+        provenance, notes = list(static), []
         if pytest:
-            count, tests, problems = (
-                (0, 0, [])
-                if reports is None
+            count, tests, ran_tests, problems, notes = (
+                (0, 0, 0, [], [])
+                if reading is None
                 else _pytest_reports(
-                    reports,
+                    reading,
                     candidate,
                     candidate.project_names(
                         (environment.get("PYTHONPATH") or "").split(os.pathsep)
                     ),
                 )
             )
-            result["pytest_report"] = {"reports": count, "test_files": tests, "problems": problems}
-            problem = problems[0] if problems else None
-            if not count:
-                why = plugin_off or f"-p no:{PYTEST_PLUGIN} turned it off, or pytest stopped first"
-                problem = (
+            if not count and (result["timed_out"] or result["output_limit_exceeded"]):
+                problems.insert(0, f"{_command_reason(result)} before pytest's report")
+            elif not count:
+                why = plugin_off or "-p no:<its name> turned it off, or pytest stopped first"
+                problems.insert(
+                    0,
                     f"pytest wrote no report from Peeky's plugin ({why}), so Peeky can't tell "
-                    "whether the tests loaded your project's files instead of the copy's"
+                    "whether the tests loaded your project's files instead of the copy's",
                 )
-            if problem and edit is not None and result["passed"]:
-                # A pass that may not be the edit's is no verdict.
-                result["passed"] = False
-                result["no_verdict"] = problem
-            elif problem:
-                warnings.append(problem)
-        if warnings:
+            elif not ran_tests and result["exit_code"] == 0:
+                # A pass with no test run (`--collect-only`, all skipped) shows nothing.
+                problems.append("pytest ran no test, so its pass shows nothing of the edit")
+            result["pytest_report"] = {"reports": count, "test_files": tests, "problems": problems}
+            provenance += problems
+        if no_tests := _no_tests(result):
+            # No test ran: what the run loaded is beside the point.
+            result.update(verdict="unknown", no_verdict=no_tests)
+        elif provenance:
+            result.update(verdict="unknown", no_verdict=provenance[0])
+            result["reason"] = f"no verdict: {provenance[0]}"
+        elif result["exit_code"] == 0:
+            result["verdict"] = "passed"
+        else:
+            result["verdict"] = "failed"
+        result["passed"] = result["verdict"] == "passed"
+        if warnings := [*candidate.warnings, *notes]:
             result["warnings"] = warnings
         if args.keep:
             result["kept"] = str(candidate.scratch)
@@ -4127,8 +4285,10 @@ def verify(args):
         # toolchain probes, it is several KB an agent rarely needs).
         for key in ("descriptor", "build_manifest"):
             result.pop(key, None)
-    if not result["passed"] and (reason := _verify_reason(result)):
+    if not result["passed"] and "reason" not in result and (reason := _verify_reason(result)):
         result["reason"] = reason
+    # A checker's verdict is its pass or fail; a check command's may be "unknown".
+    result.setdefault("verdict", "passed" if result["passed"] else "failed")
 
     _emit(result, args.json, lambda shown: _verify_text(shown, args.keep))
     return 0 if result["passed"] else 1
@@ -4136,7 +4296,9 @@ def verify(args):
 
 def _verify_text(result, keep=False):
     lines = [
-        f"passed: {result['passed']}  stage: {result['stage']}"
+        # A check command's verdict leads: "unknown" is no failure of the edit.
+        (f"verdict: {result.get('verdict')}  " if result.get("check_command") else "")
+        + f"passed: {result['passed']}  stage: {result['stage']}"
         + (f"  seconds: {result['seconds']}" if "seconds" in result else "")
     ]
     if python := _python_line(result.get("python")):
@@ -4149,9 +4311,11 @@ def _verify_text(result, keep=False):
         )
     if (report := result.get("pytest_report")) and report.get("reports"):
         lines.append(
-            f"pytest report: {report['test_files']} test files"
+            f"pytest report: {report['test_files']} test file"
+            + "s" * (report["test_files"] != 1)
             + (
-                f"; {len(report['problems'])} loaded from outside the copy"
+                f", {len(report['problems'])} problem{'s' * (len(report['problems']) > 1)}"
+                " (`reason:` names the first)"
                 if report["problems"]
                 else ", and nothing loaded from your project"
             )
@@ -4323,6 +4487,18 @@ def _verdict(result):
     return False, None
 
 
+def _no_tests(result):
+    """A test runner's status that says it ran no test, or couldn't (pytest's 3, 4 and 5,
+    unittest's 5), as ``_verdict`` words it; else None."""
+    runner = _runner((result.get("check_command") or {}).get("argv") or [])
+    code = result.get("exit_code")
+    if runner == "pytest" and code in (3, 4, 5):
+        return _PYTEST_EXITS[code]
+    if runner == "unittest" and code == 5:
+        return "unittest exited 5: no tests ran"
+    return None
+
+
 def _command_reason(result):
     """Why a check command failed, in one line: a timeout, too much output, or the line
     of its output that says what failed, looked for in both streams: pytest's `FAILED
@@ -4331,8 +4507,6 @@ def _command_reason(result):
     last line (stdout's, else stderr's). A test runner's status that says no test failed
     follows (``_verdict``)."""
     command = result.get("check_command") or {}
-    if result.get("no_verdict"):
-        return f"no verdict: {result['no_verdict']}"
     if result.get("timed_out"):
         return f"the check command ran past {command.get('timeout_s')} s and was stopped"
     if result.get("output_limit_exceeded"):
@@ -4370,6 +4544,8 @@ def _baseline_note(result):
     """What a check command's result at --baseline says of it: that tests failed on the
     unedited program, as they should on the bug, only where ``_verdict`` reads that."""
     code = result.get("exit_code")
+    if result.get("verdict") == "unknown":
+        return f" ({result.get('no_verdict')}, so this says nothing about the bug)"
     if result.get("timed_out") or result.get("output_limit_exceeded"):
         return ""
     if result.get("passed"):

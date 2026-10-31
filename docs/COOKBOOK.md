@@ -3988,10 +3988,11 @@ peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc
 ```
 
 ```
-passed: False  stage: verification  seconds: 0.174
+verdict: failed  passed: False  stage: verification  seconds: 0.174
 python: /home/me/calc/.venv/bin/python, Python 3.12.4 (the root's .venv)
 command: python -m pytest -q tests/test_calc.py
-ran: /home/me/calc/.venv/bin/python -m pytest -q tests/test_calc.py (in a copy of /home/me/calc, for at most 20 s)
+ran: /home/me/calc/.venv/bin/python -m pytest -p peeky_check_2f6c0e1d9a4b7c35 -q tests/test_calc.py (in a copy of /home/me/calc, for at most 20 s)
+pytest report: 1 test file, and nothing loaded from your project
 reason: FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3 (and 1 more)
 command exit: 1
 output:
@@ -4012,8 +4013,9 @@ peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc
 ```
 
 ```
-passed: True  stage: verification  seconds: 0.169
+verdict: passed  passed: True  stage: verification  seconds: 0.169
 ...
+pytest report: 1 test file, and nothing loaded from your project
 command exit: 0
 output:
 ..                                                                       [100%]
@@ -4084,37 +4086,59 @@ command that installs or writes there changes your environment.
 
 #### What pytest loaded
 
-- For pytest, Peeky reads what the run itself loaded. It adds its own plugin, `-p
-  peeky_check_report`, after pytest's word, from a directory of its own at the end of
-  `PYTHONPATH`. At the session's end, the plugin writes each test file collected, each conftest
-  loaded, and each module's file.
-- An edit passes only if that report exists, and shows nothing loaded from your project and each
-  of the project's modules from the copy. Otherwise `passed` is false, with `reason: no verdict:
-  …` and `no_verdict` in JSON. Examples are a config's absolute `testpaths`, or a stale install.
-- With `-p no:peeky_check_report`, there is no report. Nor under `-I` or `-E`, which ignore
-  `PYTHONPATH`: then pytest runs without the plugin. Either is no verdict.
+- For pytest, Peeky reads what the run itself loaded. It adds its own plugin after pytest's word,
+  as `-p peeky_check_<16 hex digits>`, a name new for each run. The plugin is in a directory of
+  Peeky's own at the end of `PYTHONPATH`.
+- At the session's end, the plugin writes a report. It holds the run's nonce and the plugin's own
+  file, each test file collected, each conftest loaded, each module's file, and the tests run. It
+  lists the processes the tests started, too.
+- Peeky reads only reports with this run's nonce and plugin file. With pytest-xdist, each worker
+  writes its own report, and the main process names its workers: a worker without a report counts
+  as missing.
+- The run is no verdict if it shows any of these:
+  - no report from the main process, or a worker's missing;
+  - a test file, conftest or module loaded from your project instead of the copy;
+  - a module of the project's loaded from outside the copy, such as a stale install;
+  - a Python process the tests started, whose imports Peeky didn't check;
+  - a pass with no test run, as with `--collect-only` or all tests skipped.
+- That holds whatever the exit status, and at `--baseline` too: a run on stale code says nothing
+  about the edit, or the bug.
+- Peeky sees the processes started through `subprocess`, `os.exec*`, `os.spawn*`,
+  `os.posix_spawn` and `os.system`. A process that isn't Python is a warning only.
+- `-I` and `-E` ignore `PYTHONPATH`, so pytest runs without the plugin, and there is no report.
+- A run stopped for its time or output wrote no report: no verdict either.
 - `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
 - The text has a `pytest report:` line, and JSON a `pytest_report`: `reports`, `test_files` and
   `problems`.
+- The report catches accidental mistakes, such as a stale install or a config's absolute
+  `testpaths`. It doesn't stop hostile tests or candidate code: they run as you, and could write
+  the report themselves ([THREAT_MODEL](THREAT_MODEL.md)).
 
 #### What it reports
 
+- JSON's `verdict` is `passed`, `failed` or `unknown`, and the text's first line leads with it.
+  `unknown` is no failure of the edit: Peeky can't tell. `no_verdict` says why. `passed` stays,
+  true only for `passed`.
+- `unknown` comes from what the run loaded (above), or a test runner that ran no test: pytest's
+  3, 4 and 5, and unittest's 5. A command other than pytest that runs past its time fails.
 - `stdout` and `stderr` keep the last 16,000 bytes of each stream, where pytest's summary is.
 - `reason` is looked for in both streams. pytest's first `FAILED` line comes first, then unittest's
   `FAIL:` header with its exception. Then comes the first line that starts like a failure
-  ([Where `reason` comes from](#where-reason-comes-from)), and only then the last line.
+  ([Where `reason` comes from](#where-reason-comes-from)), and only then the last line. For an
+  `unknown` run, `reason: no verdict: …` says why.
 - The `baseline:` line says that the tests fail on the bug only when Peeky reads it. The command
   must be pytest or unittest: `pytest`, or `python -m pytest`, with any interpreter options. Its
   output must show failed tests: pytest's exit 1 with `N failed`, or unittest's
   `FAILED (failures=N)`. A unittest error counts too, unless unittest couldn't import a test module.
-- pytest's 2 (a test file failed to import), 3, 4 (a usage error) and 5 (no tests ran), and
-  unittest's 5, say no test failed. `reason` and the `baseline:` line say so.
+- pytest's 2 (a test file failed to import) and an exit 1 with no failed test say no test failed.
+  So do the statuses above. `reason` and the `baseline:` line say so.
 - Another command that fails, such as a script that crashes, is no verdict either. The `baseline:`
   line asks you to check that its output shows the bug.
 - `--keep` keeps the copy, named by `kept` in JSON, with the edited file at `candidate:`.
 - JSON adds `check_command`: `argv` as given, `ran` as run, `copy_of` and `timeout_s`. `exit_code`,
   `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy. For
-  pytest, `pytest_report`, and `no_verdict` where it blocked a pass.
+  pytest, `pytest_report`.
+- A checker's `verdict` is `passed` or `failed`.
 - Only Python targets take it for now. Others are refused with `UNSUPPORTED`: write a checker
   ([6.5](#65-writing-a-checker)). A Cargo crate's tests run with its checker anyway
   ([6.1](#a-cargo-crates-tests)).

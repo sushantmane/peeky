@@ -153,8 +153,12 @@ Peeky debugs Python with debugpy, Python's debugger.
   from outside the copy, as from a stale install in `site-packages`. Peeky looks it up as the
   command's own Python starts. Uninstall it, or install the project editable
   ([6.7](../COOKBOOK.md#what-it-imports)).
-- For pytest, Peeky's plugin reports what the run loaded. A pass that loaded your project's files,
-  or none reported, is no verdict ([6.7](../COOKBOOK.md#what-pytest-loaded)).
+- For pytest, Peeky's plugin reports what the run loaded. A run that loaded your project's files or
+  stale code, started a Python process, or reported nothing, is no verdict
+  ([6.7](../COOKBOOK.md#what-pytest-loaded)).
+- The result leads with `verdict: passed`, `failed` or `unknown`. `unknown` is no failure of the
+  edit: Peeky can't tell, and `reason: no verdict: …` says why
+  ([6.7](../COOKBOOK.md#what-it-reports)).
 - `baseline:` says the tests fail on the bug only for pytest or unittest output that shows failed
   tests ([6.7](../COOKBOOK.md#what-it-reports)).
 - Nothing above the root is copied, and a warning says so unless the root is a project's. The

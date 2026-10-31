@@ -142,6 +142,9 @@ A process running as the same user, or as root, isn't covered.
   root. It isn't sandboxed: it runs with your permissions, and can write outside the copy, such as
   into the `.venv` the copy links to. It runs only in the `peeky` command: no worker request runs
   it, and none should.
+- For pytest, Peeky's report plugin catches accidental provenance mistakes, such as a stale
+  install. It doesn't stop hostile tests or candidate code, which run as you and could write the
+  report themselves.
 
 **Provenance hashes** of sources, build outputs, toolchain binaries and adapter bundles
 

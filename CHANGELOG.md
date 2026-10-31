@@ -33,8 +33,10 @@
   result names the command, its exit code and the end of its output. `--baseline` says the tests
   fail on the bug only when pytest's or unittest's output shows failed tests. An edit is refused
   when a module the project supplies would import from outside the copy, such as a stale install,
-  as the command's own Python starts. For pytest, a plugin of Peeky's reports what the run loaded:
-  a pass that loaded your project's files is no verdict. The command is trusted, not sandboxed.
+  as the command's own Python starts. For pytest, a plugin of Peeky's reports what the run loaded,
+  and which processes its tests started. A run that may not be the copy's is `verdict: unknown`,
+  whatever its status: the result leads with `passed`, `failed` or `unknown`. The command is
+  trusted, not sandboxed.
   Other languages are refused for now. A build's output limit now counts both streams together,
   and a Cargo build past it is `BUILD_FAILED` (#448).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
