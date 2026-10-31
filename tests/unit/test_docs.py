@@ -475,3 +475,27 @@ def test_the_guide_lists_session_wait_and_program_arguments_up_front():
     assert "A step can also land back on an `if`'s line after the last line of its block" in (
         cookbook
     )
+
+
+def test_the_docs_name_the_current_protocol():
+    # After the bump to protocol 13, DESIGN.md's headers and answers, and ERRORS.md's, still
+    # said 12. Each place that names the protocol a worker or client speaks now must be
+    # PROTOCOL_VERSION; the protocol history names older ones as such.
+    from peeky.errors import PROTOCOL_VERSION
+
+    current = re.compile(
+        r"X-Peeky-Protocol: (\d+)|\"protocol\": (\d+)|^# Error codes \(protocol (\d+)\)"
+        r"|this (?:client|worker|session) (\d+)|^\*\*Protocol (\d+)\.\*\*",
+        re.M,
+    )
+    found = []
+    for page in [DOCS.parent / "README.md", *sorted(DOCS.rglob("*.md"))]:
+        if "evaluations" in page.parts or page.name == "HISTORY.md":
+            continue
+        for match in current.finditer(page.read_text()):
+            number = int(next(group for group in match.groups() if group))
+            found.append((page.relative_to(DOCS.parent).as_posix(), number))
+    assert len(found) >= 10, found
+    assert all(number == PROTOCOL_VERSION for _, number in found), [
+        each for each in found if each[1] != PROTOCOL_VERSION
+    ]

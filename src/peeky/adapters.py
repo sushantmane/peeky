@@ -209,14 +209,24 @@ def skipped_message(name):
     )
 
 
-# `--run-module`: a module run as `python -m` runs it, such as `pytest`.
-MAX_MODULE = 200
-# Modules that run pytest, which rewrites test files' asserts unless told not to.
-PYTEST_MODULES = frozenset({"pytest", "py.test"})
+# `--run-module`'s one module: pytest, which Peeky runs as `python -m pytest` does. A
+# worker runs no other: a client could run any installed module there (pip, http.server).
+RUN_MODULE = "pytest"
 # The note on a pytest run Peeky turned rewriting off for (``module_arguments``).
 PLAIN_ASSERTS = (
     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change "
     "the test files' code from the source Peeky reads. So a failing assert shows less detail"
+)
+# The note on a pytest run whose own arguments turned its assertion plugin off.
+NO_ASSERTION = (
+    "pytest ran with its assertion plugin off (-p no:assertion), so it rewrote no asserts: the "
+    "test files ran as Peeky reads them. Peeky added nothing"
+)
+# The note where pytest refused the --assert=plain Peeky added (``refused_plain``).
+REFUSED_PLAIN = (
+    "pytest refused the --assert=plain that Peeky added (`unrecognized arguments`): its "
+    "configuration turns its assertion plugin off. So it ran nothing. Pass -p no:assertion "
+    "after `--`, and Peeky adds nothing"
 )
 
 
@@ -232,17 +242,30 @@ _IMPORTS_PYTEST = re.compile(
 
 
 def check_module(name):
-    """Refuse a `--run-module` that is not a module's dotted name (`pytest`, `app.cli`)."""
-    if (
-        not isinstance(name, str)
-        or not 0 < len(name) <= MAX_MODULE
-        or not all(part.isidentifier() for part in name.split("."))
-    ):
+    """Refuse a `--run-module` other than pytest."""
+    if name != RUN_MODULE:
         raise ValueError(
-            f"--run-module takes a module's name, as `python -m` does (such as pytest or "
-            f"app.cli), at most {MAX_MODULE} characters; not {str(name)[:80]!r}"
+            f"--run-module takes only pytest (`--run-module pytest`), not {str(name)[:80]!r}: "
+            "Peeky runs pytest as `python -m pytest` does, and no other module. For another "
+            "program, use --run with a script"
         )
     return name
+
+
+def _plugin_off(args):
+    """Whether pytest's arguments ``args`` turn its assertion plugin off (`-p
+    no:assertion`), which then rewrites nothing and takes no --assert."""
+    for at, arg in enumerate(args):
+        if arg == "--":
+            break
+        if arg == "-pno:assertion" or (arg == "-p" and args[at + 1 : at + 2] == ["no:assertion"]):
+            return True
+    return False
+
+
+def refused_plain(output):
+    """Whether pytest's ``output`` says it refused the --assert=plain Peeky added."""
+    return isinstance(output, str) and "unrecognized arguments: --assert=plain" in output
 
 
 def _assert_mode(args):
@@ -1553,15 +1576,24 @@ class PythonAdapter:
             return False
         return isinstance(directories, list) and under(path, directories)
 
-    def module_arguments(self, module, args):
-        """``(args, notes)``: what `--run-module` ``module`` gets, and why it differs. pytest
-        rewrites each test file's asserts as it imports it, so the code that runs is not
-        what Peeky reads (other lines have code; at -O the asserts still run): it gets
-        `--assert=plain` first. Refused where that would change the run: an `--assert`
-        of the program's own other than plain, or an optimization level above 0, where
-        pytest's plain asserts would not run."""
-        if module not in PYTEST_MODULES:
-            return list(args), []
+    def module_arguments(self, module, args, environ=None):
+        """``(args, notes)``: what `--run-module` ``module`` (pytest) gets, and why it
+        differs. pytest rewrites each test file's asserts as it imports it, so the code
+        that runs is not what Peeky reads (other lines have code; at -O the asserts still
+        run): it gets `--assert=plain` first, unless its arguments or `PYTEST_ADDOPTS`
+        (in ``environ``, the program's) turn its assertion plugin off. Refused where
+        that would change the run: an `--assert` of the program's own other than plain,
+        or an optimization level above 0, where pytest's plain asserts would not run."""
+        import shlex
+
+        check_module(module)
+        environ = os.environ if environ is None else environ
+        try:
+            added = shlex.split(environ.get("PYTEST_ADDOPTS") or "")
+        except ValueError:
+            added = []
+        if _plugin_off(list(args)) or _plugin_off(added):
+            return list(args), [NO_ASSERTION]
         if (mode := _assert_mode(list(args))) not in (None, "plain"):
             raise ValueError(
                 f"--run-module {module} runs pytest with --assert=plain, and its arguments set "
@@ -1576,6 +1608,42 @@ class PythonAdapter:
                 "PYTHONOPTIMIZE"
             )
         return ["--assert=plain", *args], [PLAIN_ASSERTS]
+
+    def check_pytest(self, root):
+        """Refuse a `--run-module pytest` that would not run the pytest package installed
+        for the program's interpreter: where `python -m pytest` there, in the root, finds
+        another `pytest` first (a `pytest.py` in the root, a package outside that
+        interpreter's site-packages), or none. Asked of that interpreter, as the program
+        runs."""
+        from peeky.python_interpreter import Unavailable, identify, module_origin
+
+        interpreter = getattr(self.readings, "given", None) or identify(
+            self.interpreter, "--python", cwd=root
+        )
+        found = module_origin(interpreter, RUN_MODULE)
+        if found is None:
+            raise ValueError(
+                f"--run-module pytest needs pytest installed for the program's interpreter, "
+                f"{interpreter.executable}, and `python -m pytest` there finds none. Install it "
+                "there (in the root's .venv), or pass --python with one that has it"
+            )
+        origin, locations = found
+        try:
+            directories = self.readings("installed_dirs")
+        except Unavailable:
+            directories = []
+        package = bool(locations) and isinstance(origin, str) and origin.endswith("__init__.py")
+        if not (package and under(origin, directories)):
+            why = (
+                "it is not the pytest package"
+                if not package
+                else "it is not in a site-packages directory of that interpreter"
+            )
+            raise ValueError(
+                f"--run-module pytest runs the pytest package installed for the program's "
+                f"interpreter, and there `python -m pytest` would run {origin}: {why}. Rename "
+                "it, or use --run with a script"
+            )
 
     @staticmethod
     def script_notes(path):

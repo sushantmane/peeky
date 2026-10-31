@@ -301,8 +301,8 @@ it doesn't read one. Protocol 9 reads a caller frame's values in a probe (`1:i`)
 reads a key of a GCC build's unordered container past its first 256 entries. Protocol 11 adds
 `hello`: a client sends nothing else, and not the token, before the worker proves it holds the
 token. Protocol 12 runs a Python program on the worker root's virtual environment, or the
-worker's `--python`, and names it. Protocol 13 runs a Python module, as `python -m` does
-(`--run-module`). Both hosts need the same protocol. A client and a worker of different protocols refuse
+worker's `--python`, and names it. Protocol 13 runs pytest, as `python -m pytest` does
+(`--run-module pytest`). Both hosts need the same protocol. A client and a worker of different protocols refuse
 each other:
 
 - A client refuses a worker of another protocol before sending anything but a `hello`, which

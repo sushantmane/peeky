@@ -142,3 +142,56 @@ def test_a_session_runs_a_module_and_the_evidence_names_it(project, capsys):
     with sqlite3.connect(store) as connection:
         entry, args = connection.execute("SELECT entry, args FROM runs").fetchone()
     assert entry == "-m pytest" and json.loads(args)[0] == "--assert=plain", (entry, args)
+
+
+def test_only_the_pytest_installed_for_the_programs_interpreter_runs(project, capsys):
+    # `--run-module pytest.__main__` ran pytest with its asserts rewritten, and with no
+    # warning; and a `pytest.py` in the root ran instead of pytest.
+    at = ["probe", project, "--at", "src/shop/cart.py:4", "--capture", "cut", "--no-save"]
+    code, out = run(capsys, *at, "--run-module", "pytest.__main__", "--json", "--", *QUIET)
+    error = json.loads(out.out)["error"]
+    assert code == 2 and "--run-module takes only pytest" in error["message"], error
+    shadows = {
+        "pytest.py": "it is not the pytest package",
+        "pytest/__init__.py": "it is not in a site-packages directory of that interpreter",
+    }
+    for name, why in shadows.items():
+        shadow = project / name
+        shadow.parent.mkdir(exist_ok=True)
+        shadow.write_text("print('shadow ran')\n")
+        code, out = run(capsys, *at, "--run-module", "pytest", "--json", "--", *QUIET)
+        result = json.loads(out.out)
+        message = result["error"]["message"]
+        assert code == 2 and result["refused_before_launch"] is True, result
+        assert f"`python -m pytest` would run {shadow.resolve()}: {why}" in message, message
+        assert "shadow ran" not in (result.get("output") or "")
+        shadow.unlink()
+
+
+def test_pytest_must_be_installed_for_the_programs_interpreter(project, capsys):
+    from python_packages import make_env
+
+    python = make_env(project / ".venv")
+    code, out = run(
+        capsys,
+        *("probe", project, "--at", "src/shop/cart.py:4", "--capture", "cut", "--no-save"),
+        *("--run-module", "pytest", "--json", "--", *QUIET),
+    )
+    error = json.loads(out.out)["error"]
+    assert code == 2 and f"interpreter, {python}, and `python -m pytest`" in error["message"]
+    assert "finds none" in error["message"], error
+
+
+def test_pytest_without_its_assertion_plugin_runs_as_it_is(project, capsys):
+    # With `-p no:assertion`, pytest rewrites nothing, and refuses --assert (exit 4):
+    # Peeky adds nothing, and says why.
+    code, out = run(
+        capsys,
+        *("probe", project, "--at", "tests/test_cart.py:9", "--capture", "d", "--hits", "all"),
+        *("--run-module", "pytest", "--json", "--no-save"),
+        *("--", *QUIET, "-p", "no:assertion", "tests/test_cart.py::test_total"),
+    )
+    result = json.loads(out.out)
+    assert code == 0 and [row["value"] for row in result["rows"]] == ["0.1", "0.2"], result
+    assert "--assert=plain" not in result["program_args"], result["program_args"]
+    assert any("assertion plugin off (-p no:assertion)" in note for note in result["warnings"])

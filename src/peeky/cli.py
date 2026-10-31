@@ -656,7 +656,7 @@ def _module(args, language):
         raise ValueError("--run-module is supported only for Python targets")
     if getattr(args, "run", None) is not None:
         raise ValueError(
-            "Pass --run or --run-module, not both: --run names a script, --run-module a module"
+            "Pass --run or --run-module, not both: --run names a script, --run-module pytest"
         )
     from peeky.adapters import check_module
 
@@ -690,7 +690,7 @@ def describe(args):
     program = _confined(root, _default_program(program, data, "describe"), language)
     _python_option(args, language)
     run = (
-        " [--run <script.py> | --run-module <module>] [--arg A ...]"
+        " [--run <script.py> | --run-module pytest] [--arg A ...]"
         if language == "python"
         else ""
         if language == "java-attach"
@@ -4366,8 +4366,8 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--run-module",
         metavar="MODULE",
-        help="Python: run this module, as `python -m` does, when --at is in code it runs; its "
-        "arguments go after `--` (--run-module pytest -- tests/test_x.py::test_y -q)",
+        help="Python: run pytest, as `python -m pytest` does, when --at is in code a test runs "
+        "(pytest only); its arguments go after `--` (--run-module pytest -- tests/test_x.py -q)",
     )
     python_option(sub)
     sub.add_argument(
@@ -4465,7 +4465,7 @@ def _main(argv, _job, _edits):
     start.add_argument(
         "--run-module",
         metavar="MODULE",
-        help="Python: run this module, as `python -m` does (--run-module pytest -- TEST)",
+        help="Python: run pytest, as `python -m pytest` does (--run-module pytest -- TEST)",
     )
     python_option(start)
     start.add_argument(

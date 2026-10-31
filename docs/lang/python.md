@@ -16,11 +16,15 @@ Peeky debugs Python with debugpy, Python's debugger.
   `peeky probe app/ --at lib/parse.py:42 --run main.py`
   ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 - To stop in code that a pytest test runs, run pytest as a module. Name the test after `--`:
-  `--run-module pytest -- -q tests/test_x.py::test_y`. `--run-module M` runs any module, as
-  `python -m M` does, in the root ([Python 0](python-cookbook.md#run-a-pytest-test)).
+  `--run-module pytest -- -q tests/test_x.py::test_y`. It runs pytest in the root, as
+  `python -m pytest` does, and no other module ([Python 0](python-cookbook.md#run-a-pytest-test)).
+- The pytest that runs must be the one installed for the program's interpreter. A `pytest.py` in
+  the root that `python -m pytest` would find first is refused, and so is none
+  ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - Peeky gives pytest `--assert=plain`. pytest's assert rewriting changes a test file's code from
   the source Peeky reads: a line in a loop can stop twice per pass. So a failing assert shows less
-  detail ([Python 0](python-cookbook.md#run-a-pytest-test)).
+  detail. With `-p no:assertion`, pytest rewrites nothing, and Peeky adds nothing
+  ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - A `--run` script that runs pytest lets it rewrite asserts, and a warning says so. Use
   `--run-module pytest` instead ([Python 0](python-cookbook.md#run-a-pytest-test)).
 - `--at` and `--run` name `.py` files inside the root. `--at` may name an installed package's

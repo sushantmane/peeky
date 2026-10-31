@@ -2369,6 +2369,10 @@ class DebugWorker:
                     else [],
                 )
             )
+            if module is not None:
+                # The pytest that would run is the one installed for the program's
+                # interpreter, not another `pytest` first on its path.
+                self.adapter.check_pytest(self.root)
             # A remote client's expected source identity is checked before anything runs,
             # so a mismatched program is never executed or changed.
             for role, path in (("program", program), ("entry", entry)):

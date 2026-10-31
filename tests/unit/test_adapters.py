@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from peeky.adapters import PythonAdapter, check_module, skipped_lines, under
+from peeky.adapters import PythonAdapter, check_module, refused_plain, skipped_lines, under
 from peeky.dap import DAP
 
 
@@ -102,27 +102,53 @@ def test_a_module_run_is_launched_as_python_minus_m(tmp_path):
     launch = adapter.launch_args(tmp_path / "x.py", tmp_path, ["-q"], module="pytest")
     assert launch["module"] == "pytest" and "program" not in launch, launch
     assert launch["args"] == ["-q"] and launch["cwd"] == str(tmp_path)
-    for bad in ("py test", "pytest.", "-m", "", "a" * 201, "tests/test_x.py"):
-        with pytest.raises(ValueError, match="--run-module takes a module's name"):
+    # Only pytest: a worker ran any installed module a client named (pip, http.server),
+    # and an alias of pytest's ran it with its asserts rewritten.
+    for bad in ("pip", "http.server", "pytest.__main__", "py.test", "_pytest", "", 7):
+        with pytest.raises(ValueError, match="--run-module takes only pytest"):
             check_module(bad)
-    assert check_module("app.cli") == "app.cli"
+        with pytest.raises(ValueError, match="--run-module takes only pytest"):
+            adapter.launch_args(tmp_path / "x.py", tmp_path, module=bad)
+    assert check_module("pytest") == "pytest"
 
 
 def test_pytest_runs_with_plain_asserts_or_is_refused():
     # pytest rewrites test files' asserts: their code is then not the source Peeky reads.
     adapter = PythonAdapter(identity={"optimize": 0})
-    args, notes = adapter.module_arguments("pytest", ["-q", "tests/test_x.py::test_y"])
-    assert args == ["--assert=plain", "-q", "tests/test_x.py::test_y"]
-    assert notes and "pytest ran with --assert=plain, which Peeky added" in notes[0]
-    assert adapter.module_arguments("pytest", ["--assert=plain"])[0][-1] == "--assert=plain"
+    plain = adapter.module_arguments("pytest", ["-q", "tests/test_x.py::test_y"], {})
+    assert plain[0] == ["--assert=plain", "-q", "tests/test_x.py::test_y"]
+    assert plain[1] and "pytest ran with --assert=plain, which Peeky added" in plain[1][0]
+    assert adapter.module_arguments("pytest", ["--assert=plain"], {})[0][-1] == "--assert=plain"
     # After `--`, an argument is pytest's file name, not an option.
-    assert adapter.module_arguments("pytest", ["--", "--assert=rewrite"])[0][0] == "--assert=plain"
-    assert adapter.module_arguments("unittest", ["-v"]) == (["-v"], [])
+    assert adapter.module_arguments("pytest", ["--", "--assert=rewrite"], {})[0][0] == (
+        "--assert=plain"
+    )
     for given in (["--assert=rewrite"], ["--assert", "rewrite"], ["-q", "--assert"]):
         with pytest.raises(ValueError, match="Leave --assert out"):
-            adapter.module_arguments("pytest", given)
+            adapter.module_arguments("pytest", given, {})
     with pytest.raises(ValueError, match="Unset PYTHONOPTIMIZE"):
-        PythonAdapter(identity={"optimize": 1}).module_arguments("py.test", [])
+        PythonAdapter(identity={"optimize": 1}).module_arguments("pytest", [], {})
+    with pytest.raises(ValueError, match="--run-module takes only pytest"):
+        adapter.module_arguments("pip", ["install", "x"], {})
+
+
+def test_pytest_without_its_assertion_plugin_gets_nothing_added():
+    # Its assertion plugin off, pytest rewrites nothing, and refuses --assert (exit 4).
+    adapter = PythonAdapter(identity={"optimize": 1})
+    for args, environ in (
+        (["-p", "no:assertion", "-q"], {}),
+        (["-pno:assertion"], {}),
+        (["-q"], {"PYTEST_ADDOPTS": "-x -p no:assertion"}),
+    ):
+        given, notes = adapter.module_arguments("pytest", args, environ)
+        assert given == args and "assertion plugin off (-p no:assertion)" in notes[0], notes
+    # After `--`, `-p` is a file name.
+    after = PythonAdapter(identity={"optimize": 0}).module_arguments(
+        "pytest", ["--", "-p", "no:assertion"], {}
+    )
+    assert after[0][0] == "--assert=plain", after
+    assert refused_plain("ERROR: usage: ...\nerror: unrecognized arguments: --assert=plain\n")
+    assert not refused_plain("1 passed") and not refused_plain(None)
 
 
 def test_a_script_that_imports_pytest_is_noted(tmp_path):

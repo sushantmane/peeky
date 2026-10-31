@@ -1577,17 +1577,57 @@ def test_each_runtime_proves_a_no_op_by_the_values_type_never_its_name():
     assert Session(3).exact_text(lossy) is False
 
 
-def test_a_launch_runs_a_module_named_as_python_minus_m_takes_it(tmp_path):
-    # `module` (protocol 13): a module's dotted name, never with a script (`entry`).
+def test_a_launch_runs_only_pytest_as_a_module(tmp_path):
+    # `module` (protocol 13) is pytest or nothing: a client ran `pip` through a worker, and
+    # could have installed packages or started http.server there.
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from peeky.client import Client
+    from peeky.errors import PROTOCOL_VERSION
     from peeky.probe import Probe
 
     DebugWorker.validate("launch", {"program": "a.py", "module": "pytest"})
-    for module in ("py test", "", 7, "tests/test_x.py"):
-        with pytest.raises(ValueError, match="--run-module takes a module's name"):
+    for module in ("pip", "pytest.__main__", "http.server", "", 7):
+        with pytest.raises(ValueError, match="--run-module takes only pytest"):
             DebugWorker.validate("launch", {"program": "a.py", "module": module})
+        with pytest.raises(ValueError, match="--run-module takes only pytest"):
+            Probe("a.py", 1, module=module)
     with pytest.raises(ValueError, match="not both"):
         DebugWorker.validate("launch", {"program": "a.py", "module": "pytest", "entry": "b.py"})
     with pytest.raises(ValueError, match="not both"):
         Probe("a.py", 1, module="pytest", entry="b.py")
-    with pytest.raises(ValueError, match="--run-module takes a module's name"):
-        Probe("a.py", 1, module="-m pytest")
+    # Over HTTP, refused before anything runs.
+    (tmp_path / "a.py").write_text("print('ran')\n")
+    token = "t" * 32
+    server = make_server(tmp_path, token, 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        Client(url, token).call("version")
+        for operation, body in (
+            ("launch", {"program": "a.py", "breakpoints": [{"line": 1}], "module": "pip"}),
+            ("probe", {"at": "a.py:1", "module": "pip", "args": ["--version"]}),
+            ("probe", {"at": "a.py:1", "module": "pytest.__main__"}),
+        ):
+            request = urllib.request.Request(
+                f"{url}/{operation}",
+                data=json.dumps(body).encode(),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-Peeky-Protocol": str(PROTOCOL_VERSION),
+                    "Content-Type": "application/json",
+                },
+            )
+            with pytest.raises(urllib.error.HTTPError) as refused:
+                urllib.request.urlopen(request, timeout=30)
+            error = json.loads(refused.value.read())["error"]
+            assert refused.value.code == 400 and error["code"] == "INVALID_REQUEST", error
+            assert "--run-module takes only pytest" in error["message"], error
+        assert server.worker.dap is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        server.worker.close()
