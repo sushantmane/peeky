@@ -12,7 +12,12 @@ import pytest
 
 from peeky import sources
 from peeky.cli import _remote_build_required, resolve
-from peeky.rust_build import RustWorkspaceTarget, compared_sources, recorded_names
+from peeky.rust_build import (
+    RustWorkspaceTarget,
+    compared_sources,
+    recorded_comparison,
+    remote_refusal,
+)
 from peeky.worker import _RemoteBuilds
 
 
@@ -188,6 +193,84 @@ def test_a_client_compares_every_file_of_the_workspace_the_build_compiled():
     }
 
 
+def test_a_client_compares_what_local_build_scripts_read_but_their_checkouts_metadata():
+    record = manifest(
+        build_inputs={
+            "files": {
+                "/srv/ws/rust/util/schema.txt": ["file", "/srv/ws/rust/util/schema.txt", "s"],
+                "/srv/ws/rust/util/linked.txt": ["link", "/srv/ws/rust/shared/x.txt", "l"],
+                # The checkout's metadata: never compared, at the root or above it.
+                "/srv/ws/.git/HEAD": ["file", "/srv/ws/.git/HEAD", "h"],
+                "/srv/.git/HEAD": ["file", "/srv/.git/HEAD", "h"],
+            },
+            "dirs": {
+                "/srv/ws/rust/util/proto": {
+                    "root": ["dir"],
+                    "entries": {
+                        "a.proto": "p",
+                        "sub": "dir",
+                        "sub/b.proto": "q",
+                        "to-file": ["link", "../shared/c.proto", "c"],
+                        "to-dir": ["link", "../shared", "dir"],
+                        ".git": "dir",
+                        ".git/config": "g",
+                    },
+                }
+            },
+            "trees": {"/srv/ws/rust/gen": {"build.rs": "t", "data/x.json": "u"}},
+        }
+    )
+    found = compared_sources(record)
+    assert {
+        name: digest
+        for name, digest in found.items()
+        if name.startswith(("rust/util/schema", "rust/util/linked", "rust/util/proto", "rust/gen"))
+    } == {
+        "rust/util/schema.txt": "s",
+        "rust/util/linked.txt": "l",
+        "rust/util/proto/a.proto": "p",
+        "rust/util/proto/sub/b.proto": "q",
+        "rust/util/proto/to-file": "c",
+        "rust/gen/build.rs": "t",
+        "rust/gen/data/x.json": "u",
+    }
+    assert not any(".git" in name for name in found)
+    assert remote_refusal(record) is None
+
+
+@pytest.mark.parametrize(
+    ("inputs", "said"),
+    [
+        # The client has no copy of a file outside the root.
+        (
+            {"files": {"/elsewhere/schema.txt": ["file", "/elsewhere/schema.txt", "s"]}},
+            "a build script says it reads /elsewhere/schema.txt, outside the worker's root "
+            "/srv/ws, which no client has a copy of",
+        ),
+        # Nor can it send the hash of what isn't a file.
+        (
+            {"files": {"/srv/ws/rust/util/gone.txt": ["missing"]}},
+            "a build script says it reads rust/util/gone.txt, missing on the worker's host",
+        ),
+        (
+            {"files": {"/srv/ws/rust/util/fifo": ["other", "/srv/ws/rust/util/fifo"]}},
+            "rust/util/fifo, not a file on the worker's host",
+        ),
+        (
+            {"dirs": {"/srv/ws/rust/util/proto": {"root": ["missing"], "entries": "missing"}}},
+            "rust/util/proto, a directory that is missing on the worker's host",
+        ),
+    ],
+)
+def test_a_build_input_a_client_cant_compare_refuses_a_remote_run(inputs, said):
+    from peeky.errors import classify
+
+    why = remote_refusal(manifest(root="/srv/ws", build_inputs=inputs))
+    assert why.startswith("A remote client can't compare what this build read with its own"), why
+    assert said in why, why
+    assert classify(ValueError(why))["code"] == "UNSUPPORTED"
+
+
 def test_the_recorded_builds_names_are_read_again_only_once_its_record_changed(
     tmp_path, monkeypatch
 ):
@@ -200,8 +283,9 @@ def test_the_recorded_builds_names_are_read_again_only_once_its_record_changed(
     root = tmp_path / "ws"
     root.mkdir()
     # None recorded: the workspace's manifest and lockfile, which a probe is then refused on.
-    assert recorded_names(target, root) is None
+    assert recorded_comparison(target, root) is None
     assert target.compared_names(root) == ("Cargo.toml", "Cargo.lock")
+    assert target.remote_refusal(root) is None
     directory = rust_build.build_directory(target, root)
     record = manifest(
         str(root), str(root / "rust"), schema=rust_build.SCHEMA, identity=target.identity(root)
@@ -216,7 +300,7 @@ def test_the_recorded_builds_names_are_read_again_only_once_its_record_changed(
     monkeypatch.undo()
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     (directory / "manifest.json").write_text(json.dumps({**record, "identity": {}}))
-    assert recorded_names(target, root) is None
+    assert recorded_comparison(target, root) is None
 
 
 def test_more_files_than_a_client_may_send_are_refused_on_both_sides(tmp_path):

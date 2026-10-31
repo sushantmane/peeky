@@ -215,6 +215,9 @@ def worker_sources(adapter, root):
     if names is not None:
         if len(names) > MAX_SOURCES:
             raise ValueError(too_many(len(names)))
+        # A Rust workspace's build may have read what no client can send a hash of.
+        if (refusal := getattr(adapter, "remote_refusal", None)) and (why := refusal(root)):
+            raise ValueError(why)
         return files(root, names)
     try:
         return dict(python_sources(root))

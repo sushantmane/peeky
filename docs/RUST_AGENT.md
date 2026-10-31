@@ -122,9 +122,12 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
 - `compared_names` gives the files a client's are compared with: `compared_sources` of the
   recorded build. That is every manifest, the lockfile and the workspace's Cargo configuration;
   every workspace file the build compiled, from each local package's dependency files, the
-  binary's too; and each vendored copy's `.cargo-checksum.json`. The binary decides what reaches
-  the analysed code, so a run on other code isn't the client's. Before any build, the
-  workspace's `Cargo.toml` and `Cargo.lock`.
+  binary's too; what local build scripts and procedural macros may read (`_watched_inputs`);
+  and each vendored copy's `.cargo-checksum.json`. The binary decides what reaches the analysed
+  code, so a run on other code isn't the client's. Nothing under `.git` is compared
+  (`_checkout_metadata`). Before any build, the workspace's `Cargo.toml` and `Cargo.lock`.
+- `remote_refusal` refuses a remote run where a build script's input can't be compared: outside
+  the root, or missing, unreadable or not a file on the worker's host.
   The names are read again only once the record changes (`recorded_names`).
 - After the launch's `assert_current`, the session's `source_manifest` (the build's own record
   of those files) is compared with the client's again.

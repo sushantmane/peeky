@@ -228,6 +228,15 @@ set x: 5 -> 100
   workspace's own Cargo configuration, and every file of the workspace it compiled, from rustc's
   dependency files ([Source identity](#source-identity)). That includes the binary's own code,
   which decides what reaches the analysed packages: `app/src/main.rs` that differs is refused.
+- **What a local build script reads** is compared too: each `rerun-if-changed` file, each file
+  under such a directory, or, with none, every file of its package. A schema it reads shapes the
+  code it generates, which the program runs.
+- **Not `.git`:** nothing under a `.git` directory is compared. It is the checkout's metadata,
+  not the project's source, and differs between two checkouts of the same sources: a build
+  script watching `.git/HEAD` for its version would refuse every client.
+- **Outside the root,** no client has a copy. Peeky builds only files inside the root, so `peeky
+  build` already refuses a build script's input there. One a client can't send a hash of, such
+  as a watched file missing on the worker's host, refuses a remote run with `UNSUPPORTED`.
 - **Of a vendored copy,** only its `.cargo-checksum.json` is compared. The build checked each of
   its files against that list, and the list against `Cargo.lock`. Before any build, only the
   workspace's `Cargo.toml` and `Cargo.lock` are compared.

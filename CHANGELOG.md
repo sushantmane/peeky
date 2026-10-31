@@ -88,8 +88,9 @@
 - **A Rust workspace through a worker (protocol 15; ADR 0008, phase 2):** a worker started with a
   workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
   from its own configuration only. It compares every workspace file the build compiled, the
-  binary's included, its manifests, lockfile, Cargo configuration and vendored checksum files
-  with the client's, and its `BUILD_REQUIRED` names the client's own command. A line of a generic function only another crate uses is refused before
+  binary's included, what local build scripts read, its manifests, lockfile, Cargo
+  configuration and vendored checksum files with the client's; never `.git`. Its
+  `BUILD_REQUIRED` names the client's own command. A line of a generic function only another crate uses is refused before
   launch, naming it, where it was a `DEBUGGER_ERROR`. A stop in another crate's copy of the
   crate's code reads no value, and says why: it was read as the crate's own, with none of the
   checks of that copy. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.

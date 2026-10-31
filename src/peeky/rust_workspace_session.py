@@ -119,6 +119,11 @@ def _session_class():
             them (rust_build.compared_sources): the run's inputs_sha256."""
             return rust_build.compared_sources(self.build)
 
+        def remote_refusal(self):
+            """Why a remote client can't compare this build's files with its own, or None
+            (rust_build.remote_refusal)."""
+            return rust_build.remote_refusal(self.build)
+
         def owns_source(self, path):
             """Whether ``path`` (resolved) is one of the analysed compile's files: the
             program a stop is read in. A dependency's file, or another member's, is read

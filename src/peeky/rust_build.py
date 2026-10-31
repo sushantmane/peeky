@@ -276,14 +276,20 @@ class RustWorkspaceTarget:
         (`sources.declared`): the recorded build's (``compared_sources``). Where none is
         recorded, the workspace's manifest and lockfile: a probe is refused for that once
         they compare (BUILD_REQUIRED)."""
-        names = recorded_names(self, root or ".")
-        if names is not None:
-            return names
+        found = recorded_comparison(self, root or ".")
+        if found is not None:
+            return found[0]
         workspace = Path(self.config.workspace)
         return tuple(
             (workspace / name).as_posix().removeprefix("./")
             for name in ("Cargo.toml", "Cargo.lock")
         )
+
+    def remote_refusal(self, root):
+        """Why a remote client can't compare the recorded build with its own files
+        (``remote_refusal``), or None."""
+        found = recorded_comparison(self, root or ".")
+        return None if found is None else found[1]
 
     def trusted_config(self):
         """The trusted configuration this target is (``from_config`` reads it back as the
@@ -317,22 +323,22 @@ class RustWorkspaceTarget:
         return prepare_session(self, program, root, deadline=deadline)
 
 
-# {a build's manifest's path: (its status when read, ``compared_sources``' names)}: a
-# worker asks at every `version` and launch.
-_RECORDED_NAMES = {}
+# {a build's manifest's path: (its status when read, ``compared_sources``' names, and
+# ``remote_refusal``'s)}: a worker asks at every `version` and launch.
+_RECORDED = {}
 
 
-def recorded_names(target, root):
-    """The names of ``compared_sources`` of ``target``'s build under ``root`` as recorded,
-    unchecked (a probe checks the build: ``current_build``); None where none is recorded, or
-    it is another configuration's or Peeky's."""
+def recorded_comparison(target, root):
+    """(the names of ``compared_sources``, ``remote_refusal``) of ``target``'s build under
+    ``root`` as recorded, unchecked (a probe checks the build: ``current_build``); None where
+    none is recorded, or it is another configuration's or Peeky's."""
     path = build_directory(target, root, create=False) / "manifest.json"
     try:
         status = path.stat()
     except OSError:
         return None
     key = (status.st_ino, status.st_mtime_ns, status.st_size)
-    if (cached := _RECORDED_NAMES.get(path)) is not None and cached[0] == key:
+    if (cached := _RECORDED.get(path)) is not None and cached[0] == key:
         return cached[1]
     try:
         manifest = json.loads(path.read_text())
@@ -344,9 +350,9 @@ def recorded_names(target, root):
         or manifest.get("identity") != target.identity(root)
     ):
         return None
-    names = tuple(compared_sources(manifest))
-    _RECORDED_NAMES[path] = (key, names)
-    return names
+    found = (tuple(compared_sources(manifest)), remote_refusal(manifest))
+    _RECORDED[path] = (key, found)
+    return found
 
 
 def compared_sources(manifest):
@@ -354,15 +360,103 @@ def compared_sources(manifest):
     compared with: what Cargo read that identifies the build (every manifest, the lockfile,
     the workspace's own Cargo configuration: ``inputs``), every file of the workspace the
     build compiled (each local package's compiles, the program's own included, from rustc's
-    dependency files: ``sources``), and each vendored copy's `.cargo-checksum.json`, which
-    lists its files' hashes (not every vendored file)."""
+    dependency files: ``sources``), each vendored copy's `.cargo-checksum.json`, which
+    lists its files' hashes (not every vendored file), and what local build scripts and
+    procedural macros may read (``_watched_inputs``); none of the checkout's metadata
+    (``_checkout_metadata``)."""
     found = {**manifest["inputs"], **manifest["sources"]}
     state = manifest["watch"]
     prefix = Path(state["workspace"]).resolve().relative_to(Path(manifest["root"]).resolve())
     for name, digest in state["vendored"].items():
         if PurePosixPath(name).name == ".cargo-checksum.json":
             found[(prefix / name).as_posix()] = digest
-    return dict(sorted(found.items()))
+    found.update(_watched_inputs(manifest)[0])
+    # Cargo's dependency file of the binary lists its build scripts' inputs too.
+    return {name: found[name] for name in sorted(found) if not _checkout_metadata(name)}
+
+
+def _checkout_metadata(path):
+    """Whether ``path`` is under a `.git` directory, or is a `.git` file: the checkout's
+    metadata, not the project's source, which differs between two checkouts of the same
+    sources (a build script watching `.git/HEAD` for its version). Never compared with a
+    remote client's."""
+    return ".git" in PurePosixPath(Path(path).as_posix()).parts
+
+
+def remote_refusal(manifest):
+    """Why a remote client can't compare the build's files with its own, or None: a local
+    build script's input that is outside the root, or that a client can't send a hash of
+    (missing, unreadable, not a file) (``_watched_inputs``)."""
+    return _watched_inputs(manifest)[1]
+
+
+_UNCOMPARED = (
+    "A remote client can't compare what this build read with its own files: a build script "
+    "says it reads {what}. Run Peeky on the worker's host, or {remedy}"
+)
+
+
+def _watched_inputs(manifest):
+    """({name under the root: SHA-256} of what local build scripts and procedural macros may
+    read, as the build recorded it (``_build_inputs``): each `rerun-if-changed` file, each
+    file under a `rerun-if-changed` directory, followed through links, and each file of a
+    package Cargo's default watches; the refusal of the first a client can't compare, or
+    None). Anything under a `.git` directory is left out: it is the checkout's metadata, not
+    the project's source, and differs between two checkouts of the same sources (a build
+    script watching `.git/HEAD` for its version). A directory is compared by its files."""
+    root = Path(manifest["root"]).resolve()
+    inputs = manifest.get("build_inputs") or {}
+    found, refusals = {}, []
+
+    def add(path, digest, why=None):
+        path = Path(path)
+        if _checkout_metadata(path):
+            return
+        try:
+            name = path.relative_to(root).as_posix()
+        except ValueError:
+            refusals.append(
+                _UNCOMPARED.format(
+                    what=f"{path}, outside the worker's root {root}, which no client has a copy of",
+                    remedy="move it into the workspace",
+                )
+            )
+            return
+        if digest is None:
+            refusals.append(
+                _UNCOMPARED.format(
+                    what=f"{name}, {why} on the worker's host, and a client sends only the "
+                    "hashes of files it has",
+                    remedy="make it a file, or take the line out of the build script",
+                )
+            )
+            return
+        found[name] = digest
+
+    for path, identity in (inputs.get("files") or {}).items():
+        if identity and identity[0] in ("file", "link") and len(identity) == 3:
+            add(path, identity[2])
+        else:
+            add(path, None, "missing" if identity == ["missing"] else "not a file")
+    for top, recorded in (inputs.get("dirs") or {}).items():
+        entries = recorded.get("entries")
+        if not isinstance(entries, dict):
+            add(top, None, f"a directory that is {entries}")
+            continue
+        for relative, entry in entries.items():
+            path = Path(top) / relative
+            if entry == "dir" or (isinstance(entry, list) and entry[2:3] == ["dir"]):
+                continue
+            if isinstance(entry, str) and entry != "other":
+                add(path, entry)
+            elif isinstance(entry, list) and isinstance(entry[2], str):
+                add(path, entry[2])
+            else:
+                add(path, None, "not a file")
+    for top, tree in (inputs.get("trees") or {}).items():
+        for relative, digest in tree.items():
+            add(Path(top) / relative, digest)
+    return found, (sorted(refusals)[0] if refusals else None)
 
 
 def build_directory(target, root, *, create=True):
@@ -1481,6 +1575,14 @@ def _read_dependencies(depfile, workspace, root, target_dir, package, producer="
             found["generated"].append(resolved.relative_to(target_dir).as_posix())
         elif resolved.is_relative_to(root):
             found["sources"].append(resolved.relative_to(root).as_posix())
+        elif producer == "make":
+            # Cargo's own dependency file lists its build scripts' `rerun-if-changed` paths too.
+            raise ValueError(
+                f"Peeky builds only files inside {root}: `{package}`'s build read "
+                f"{os.path.normpath(path)}, which no remote client could compare either. Move it "
+                "into the workspace, or drop what names it: an `include!`, a `#[path]`, or a "
+                "build script's `rerun-if-changed`"
+            )
         else:
             raise ValueError(
                 f"Peeky builds only files inside {root}: `{package}`'s build read {path}. Move it "

@@ -447,6 +447,61 @@ def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, caps
 
 
 @pytest.mark.timeout(600)
+def test_a_remote_client_compares_what_a_build_script_reads_but_the_checkouts_metadata(
+    worker, capsys, tmp_path
+):
+    import time
+
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    script = BUILD_SCRIPT.replace(
+        "fn main() {\n",
+        'fn main() {\n    println!("cargo::rerun-if-changed=../.git/HEAD");\n',
+    )
+    for side, head in ((host, "ref: refs/heads/main\n"), (local, "ref: refs/heads/mine\n")):
+        (side / "util/build.rs").write_text(script)
+        (side / "util/schema.txt").write_text("one\n")
+        (side / ".git").mkdir()
+        (side / ".git/HEAD").write_text(head)
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    names = Client(url, TOKEN).call("version")["sources"]["names"]
+    assert {"util/build.rs", "util/schema.txt"} <= set(names), names
+    # `.git` is the checkout's: two checkouts of the same sources differ there.
+    assert not [name for name in names if ".git" in name], names
+    read(*remote_probe(capsys, local, url))
+    # What the script reads shapes the program: a client's copy that differs is refused.
+    (local / "util/schema.txt").write_text("two\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "util/schema.txt (the copy on the worker host differs from your checkout)"
+        in (result["error"]["message"])
+    )
+    (local / "util/schema.txt").write_text("one\n")
+    # An input outside the root: Peeky builds only what it records there, and no client has a
+    # copy of it.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("out\n")
+    script = script.replace(
+        "fn main() {\n", 'fn main() {\n    println!("cargo::rerun-if-changed=../../outside.txt");\n'
+    )
+    for side in (host, local):
+        (side / "util/build.rs").write_text(script)
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, result = remote_probe(capsys, local, url, "--build")
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    assert result["error"]["message"] == (
+        f"Peeky builds only files inside {host.resolve()}: `app`'s build read "
+        f"{outside.resolve()}, which no remote client could compare either. Move it into the "
+        "workspace, or drop what names it: an `include!`, a `#[path]`, or a build script's "
+        "`rerun-if-changed`"
+    )
+    assert result["refused_before_launch"] is True
+
+
+@pytest.mark.timeout(600)
 def test_a_remote_session_on_a_workspace_reads_the_workers_build(worker, capsys):
     host, local, url, _ = worker
     code, result = run(

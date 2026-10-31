@@ -49,9 +49,9 @@ from peeky.textlines import split_lines
 # is refused with BUILD_REQUIRED, which names the build command; an agent builds, then
 # repeats the request. A protocol 13 client would take an unknown code for another failure.
 # 15: a worker on a Rust workspace builds it for a remote client (`build`, from its own
-# `--rust-config`), compares every workspace file the build compiled, its manifests, Cargo
-# configuration and vendored checksum files with the client's, and probes it; a protocol 14
-# worker refuses a remote client's workspace probe.
+# `--rust-config`), compares every workspace file the build compiled and its build scripts
+# read (never `.git`), its manifests, Cargo configuration and vendored checksum files with
+# the client's, and probes it; a protocol 14 worker refuses a remote client's workspace probe.
 PROTOCOL_VERSION = 15
 
 # (pattern on the message, code, hint, retryable). First match wins.
@@ -519,6 +519,13 @@ _RULES = (
         "TIMEOUT",
         "The build goes on on the worker: run the same `peeky build --worker` command again to "
         "wait for it.",
+        False,
+    ),
+    (
+        r"^A remote client can't compare what this build read with its own files",
+        "UNSUPPORTED",
+        "Nothing ran. Run Peeky on the worker's host, or change what the build script reads, as "
+        "the message says.",
         False,
     ),
     (

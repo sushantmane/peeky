@@ -2495,6 +2495,11 @@ class DebugWorker:
                     # request: a source changed after the check above is refused.
                     from peeky.sources import difference, refusal
 
+                    if (uncompared := getattr(runtime, "remote_refusal", None)) and (
+                        why := uncompared()
+                    ):
+                        raise ValueError(why)
+
                     if what := difference(expected_inputs, built):
                         raise RuntimeError(refusal(what))
                 if inputs_python is not None:
