@@ -576,3 +576,23 @@ def test_a_listing_on_macos_hashes_no_object_and_no_dsym_and_keeps_its_deadline(
     # Past its deadline, the debug map's check stops.
     with pytest.raises(TimeoutError, match="ran past Peeky's deadline"):
         judge(False, time.monotonic() - 1, scratch)
+
+
+def test_an_archive_read_past_the_deadline_is_a_timeout_not_a_stale_binary(tmp_path, monkeypatch):
+    # TimeoutError is an OSError: it must not read as an archive gone or unreadable, which
+    # would refuse the binary as stale.
+    archive = tmp_path / "libfoo.a"
+    archive.write_bytes(b"!<arch>\n")
+    os.utime(archive, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    binary = tmp_path / "prog"
+    binary.write_bytes(b"binary")
+    os.utime(binary, ns=(1_700_000_100_000_000_000, 1_700_000_100_000_000_000))
+
+    def late(path, deadline=None):
+        raise TimeoutError(f"Reading {path}'s members ran past Peeky's deadline")
+
+    monkeypatch.setattr(native_binary, "_members", late)
+    entries = [(f"{archive}(foo.o)", 1_700_000_000)]
+    for hashes in (False, True):
+        with pytest.raises(TimeoutError, match="ran past Peeky's deadline"):
+            native_binary.check_debug_map(entries, tmp_path, binary, hashes, time.monotonic() + 40)

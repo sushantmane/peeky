@@ -2194,6 +2194,9 @@ def check_debug_map(entries, root, binary, hashed=True, deadline=None):
             hashes[path] = (
                 sha256_file(path) if hashed else (info.st_size, info.st_mtime_ns, info.st_ino)
             )
+        except TimeoutError:
+            # An OSError too, but the deadline's: nothing is known of the file.
+            raise
         except (OSError, ValueError):
             stale.append(f"{shown} is gone or unreadable")
             continue
