@@ -59,6 +59,15 @@
   and `session start` take it. It must be the pytest installed for the program's interpreter.
   Peeky gives pytest `--assert=plain`, since rewritten asserts are not the code Peeky reads. A
   `--run` script that imports pytest gets a warning (#447).
+- **`peeky build` builds a Rust workspace with dependencies (protocol 14; ADR 0008, phase 2):** a
+  config names the packages to analyse and what runs (`analyse`, `run`, `features`, `vendor`).
+  The build is offline, from the lockfile and `cargo vendor`'s copy, into Peeky's own directory;
+  the analysed packages are compiled every time, at opt-level 0, checked from rustc's commands.
+  What stable rustc refuses fails the build, as a stable build fails. A probe or session without
+  a current build, or with a source, a manifest or a build script's input edited since, is
+  refused with the new `BUILD_REQUIRED`, naming the file and the command, and never builds;
+  `--build` builds first. A changed lockfile, configuration or vendored copy is
+  `PROVENANCE_CHANGED`. Probing a workspace's values comes next.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

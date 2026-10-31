@@ -375,9 +375,11 @@ def _resolve(path, program, line, config, tools=True):
         data = json.loads(Path(config).read_text())
         if not isinstance(data, dict):
             raise ValueError("Target configuration must be a JSON object")
+        from peeky.rust_workspace import is_workspace_config
+
         language = data.pop("language", None) or (
             "rust"
-            if "cargo" in data
+            if "cargo" in data or is_workspace_config(data)
             else "java-attach"
             if "port" in data
             else "java"
@@ -395,6 +397,9 @@ def _resolve(path, program, line, config, tools=True):
             data["bundle"] = str(default_bundle())
         if language in ("c", "cpp"):
             data["language"] = language
+        if language == "rust" and is_workspace_config(data) and tools:
+            # The tools the configuration leaves out are this host's (PEEKY_RUST_*, rustup).
+            data = {**rust_tools(), **data}
         root = path if path.is_dir() else path.parent
         return root, program, line, language, data
     if path.suffix == ".java" or str(program or "").endswith(".java"):
@@ -571,9 +576,17 @@ def _native_sources(root, target, suffixes, tools=None, language="c"):
     return tuple(name for name in sources if name == target or name not in mains)
 
 
-def adapter_for(language, data):
+def adapter_for(language, data, *, build=None):
+    """The target ``data`` names. ``build``: the `peeky build` command a Rust workspace's
+    refusal names (rust_build.build_command)."""
     if data is None:
         return None
+    from peeky.rust_workspace import is_workspace_config
+
+    if language == "rust" and is_workspace_config(data):
+        from peeky.rust_build import RustWorkspaceTarget
+
+        return RustWorkspaceTarget.from_config(data, build)
     data = {key: tuple(value) if isinstance(value, list) else value for key, value in data.items()}
     if language == "rust":
         from peeky.rust import RustTarget
@@ -1284,9 +1297,39 @@ def _probe_request(args):
         adapter = (
             python_adapter(root, args.python)
             if language == "python"
-            else adapter_for(language, data)
+            else adapter_for(language, data, build=_build_command(args))
         )
+    _build_first(args, root, adapter)
     return root, request, edit, original, language, adapter
+
+
+def _build_command(args):
+    """The `peeky build` command for this command's target and --config, as typed."""
+    from peeky.rust_build import build_command
+
+    return build_command(args.target, args.config) if getattr(args, "config", None) else None
+
+
+def _build_first(args, root, adapter):
+    """`--build`: build a Rust workspace (`peeky build`) under the build's own deadline,
+    before anything else runs. Without it, a probe or session never builds."""
+    if not getattr(args, "build", False):
+        return None
+    from peeky.rust_build import BUILD_TIMEOUT_S, RustWorkspaceTarget
+
+    if getattr(args, "worker", None) is not None:
+        raise ValueError(
+            "--build builds here, not on a worker: run `peeky build` on the worker's host, "
+            "then probe without --build"
+        )
+    if not isinstance(adapter, RustWorkspaceTarget):
+        raise ValueError(
+            "--build is for a Rust workspace's configuration (analyse and run); other "
+            "targets are built by every probe"
+        )
+    return adapter.build(
+        root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
+    )
 
 
 def _expect_inputs(args):
@@ -1300,7 +1343,7 @@ def _expect_inputs(args):
 
 
 def _progress(args):
-    if args.quiet:
+    if getattr(args, "quiet", False):
         return None
     return lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
 
@@ -3323,6 +3366,7 @@ def _start(args):
     _python_option(args, language)
     _seconds(args.timeout)
     max_pause = _max_pause(args.max_pause, language)
+    _workspace_ready(args, root, language, data)
     _reserve(args.name)
     try:
         if args.worker is not None:
@@ -3349,6 +3393,20 @@ def _start(args):
     )
     # 3: the session exists but is not at the requested hit (see the note).
     return 3 if state.pop("incomplete", False) else 0
+
+
+def _workspace_ready(args, root, language, data):
+    """A session on a Rust workspace: its build first with --build, then a current one,
+    checked here so that a refusal names the build command as typed."""
+    from peeky.rust_build import RustWorkspaceTarget
+
+    if args.worker is not None:
+        _build_first(args, root, None)
+        return
+    target = adapter_for(language, data, build=_build_command(args))
+    _build_first(args, root, target)
+    if isinstance(target, RustWorkspaceTarget):
+        target.current(root)
 
 
 def _moved_start(launch, state, line, program):
@@ -3396,6 +3454,13 @@ def _start_local(args, root, program, line, language, data, max_pause):
         config = _state_dir() / f"{args.name}.target.json"
         _private_write(config, json.dumps(data, default=list))
         command += [f"--{'native' if language in ('c', 'cpp') else language}-config", str(config)]
+        from peeky.rust_workspace import is_workspace_config
+
+        typed = _build_command(args)
+        if language == "rust" and is_workspace_config(data) and typed is not None:
+            # The worker reads a private copy of the configuration: its refusals name the
+            # command as the user would type it.
+            command += ["--rust-build-command", typed]
     log_path = _state_dir() / f"{args.name}.log"
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
     process = subprocess.Popen(
@@ -4665,6 +4730,46 @@ def _verify_command(args, root, source, words, deadline):
 MAX_VERIFY_S = 600
 
 
+def build_workspace(args):
+    """`peeky build`: build a Rust workspace its configuration names (rust_build)."""
+    from peeky.rust_build import BUILD_TIMEOUT_S, RustWorkspaceTarget
+
+    if not args.config:
+        raise ValueError(
+            "peeky build needs --config <file.json> naming a Rust workspace's packages to "
+            'analyse and what runs, e.g. {"analyse": ["util"], "run": {"bin": "app"}, '
+            '"vendor": "vendor"} (lang/rust.md)'
+        )
+    timeout = BUILD_TIMEOUT_S if args.timeout is None else args.timeout
+    if not 0 < timeout <= BUILD_TIMEOUT_S:
+        raise ValueError(f"--timeout must be within (0, {BUILD_TIMEOUT_S}] seconds")
+    root, _, _, language, data = resolve(args.target, None, args.config)
+    target = adapter_for(language, data, build=_build_command(args))
+    if not isinstance(target, RustWorkspaceTarget):
+        raise ValueError(
+            "peeky build builds a Rust workspace's configuration (analyse and run); other "
+            "targets are built by every probe"
+        )
+    result = target.build(root, deadline=time.monotonic() + timeout, progress=_progress(args))
+    _emit(result, args.json, _build_text)
+    return 0
+
+
+def _build_text(result):
+    run = result["run"]
+    kind = next((kind for kind in ("bin", "test") if kind in run["kinds"]), "lib")
+    what = f"the unit tests of `{run['package']}`" if kind == "lib" else f"{kind} {run['target']}"
+    lines = [
+        f"built {result['workspace']} in {result['seconds']} s: analysed "
+        f"{', '.join(result['analysed'])}; runs {what}",
+        f"executable: {result['executable']}",
+        f"build: {result['build_id']}",
+    ]
+    if unread := [unit["crate"] for unit in result["units"] if not unit["expanded"]]:
+        lines.append(f"rustc could not expand {', '.join(unread)}: their source scans withhold")
+    return "\n".join(lines)
+
+
 def verify(args):
     started = time.monotonic()
     if args.timeout is not None and not 0 < args.timeout <= MAX_VERIFY_S:
@@ -4674,6 +4779,13 @@ def verify(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     if language == "java-attach":
         raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
+    from peeky.rust_workspace import is_workspace_config
+
+    if language == "rust" and is_workspace_config(data):
+        raise ValueError(
+            "Peeky doesn't verify or probe candidate edits in a Rust workspace yet: edit the "
+            "source, run `peeky build` again, and run the project's own tests"
+        )
     if words is not None and language != "python":
         named = {"c": "C", "cpp": "C++", "rust": "Rust", "java": "Java"}.get(language, language)
         raise ValueError(
@@ -5271,6 +5383,8 @@ def _job_text(spec, out):
     text = (
         _verify_text(result, spec.get("keep", False))
         if spec["command"] == "verify"
+        else _build_text(result)
+        if spec["command"] == "build"
         else _probe_text(result, quiet="--quiet" in spec.get("argv", ()))
     )
     return text + "\n"
@@ -5450,6 +5564,14 @@ def _main(argv, _job, _edits):
             sub.add_argument("--config", help="Trusted target JSON (required for Java)")
         sub.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    def build_option(sub):
+        sub.add_argument(
+            "--build",
+            action="store_true",
+            help="Rust workspace: run `peeky build` first, under the build's own deadline "
+            "(900 s); without it, nothing is built",
+        )
+
     def evidence_store(sub):
         sub.add_argument(
             "--store", help="Evidence database (default: $PEEKY_STATE_DIR/evidence/evidence.db)"
@@ -5565,6 +5687,7 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--quiet", action="store_true", help="No progress messages on stderr, nor one-time notes"
     )
+    build_option(sub)
     sub.add_argument("--label", help="Tag this run in the evidence store (e.g. input=empty)")
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
@@ -5638,6 +5761,7 @@ def _main(argv, _job, _edits):
         type=_positive_count,
         help="Run on to the Nth stop at the breakpoint (state lines show `hit N`)",
     )
+    build_option(start)
     start.add_argument(
         "--max-pause",
         type=float,
@@ -5784,6 +5908,21 @@ def _main(argv, _job, _edits):
     )
     sub.add_argument("--quiet", action="store_true", help="No progress messages (verify has none)")
     background(sub)
+    sub = commands.add_parser(
+        "build",
+        help="Build a Rust workspace for probes: its analysed packages, what runs",
+        description="Build the Rust workspace a configuration names (analyse, run, vendor), "
+        "offline, into Peeky's own directory. Probes use the build while its files are "
+        "unchanged, and never build themselves (add --build to one to build first).",
+    )
+    common(sub)
+    sub.add_argument(
+        "--timeout",
+        type=float,
+        help="Fail with TIMEOUT after this many seconds (default and most: 900)",
+    )
+    sub.add_argument("--quiet", action="store_true", help="No progress messages on stderr")
+    background(sub)
     sub = commands.add_parser("job", help="Results of --background probes and verifies")
     actions = sub.add_subparsers(dest="action", required=True)
     wait = actions.add_parser("wait", help="Wait up to --timeout; exit 3 while still running")
@@ -5830,6 +5969,7 @@ def _main(argv, _job, _edits):
         "queries": queries,
         "session": session,
         "verify": verify,
+        "build": build_workspace,
         "job": job,
         "setup-java": setup_java,
     }

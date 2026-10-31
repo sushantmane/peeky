@@ -1,4 +1,4 @@
-# Error codes (protocol 13)
+# Error codes (protocol 14)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -31,6 +31,7 @@ The last column is the `retryable` field.
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
+| `BUILD_REQUIRED` | A Rust workspace has no current Peeky build of its configuration, or a source or manifest changed since it ran. A probe never builds ([details](#build_required)). Nothing ran. | Run the `peeky build` command the message gives, then the request again; or add `--build`. | yes |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
 | `DEBUGGER_ERROR` | The adapter, the debugger or llvm-dwarfdump failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
@@ -164,8 +165,9 @@ The last column is the `retryable` field.
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | Debug information Peeky can't read whole: `Peeky can't read split DWARF: …`, or type units, partial units, or a unit it can't read at all (`Peeky can't read a DWARF unit: …`, such as DWARF 6), refused before anything runs | Rebuild without the option the message names: `-gsplit-dwarf` or `-fdebug-types-section`. Or use the binary as linked, before dwz. Or rebuild with `-gdwarf-5` |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
-| A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information | Change what the message names, or analyse another package |
+| A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information. So is one whose sources, or a procedural macro's, mention `RUSTC_BOOTSTRAP`, which Peeky's build sets | Change what the message names, or analyse another package |
 | `verify --check-command` on a target that isn't Python: `--check-command supports Python targets for now …`, refused before building ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)) | Pass `--check` with a checker script ([6.5](COOKBOOK.md#65-writing-a-checker)) |
+| A Rust workspace build script Peeky can't record: `Peeky records at most … files a build script or procedural macro may read, …`, `Peeky reads at most 16 MiB of a build script's output, …`, `Peeky can't tell the value Cargo gives …`, for a `rerun-if-env-changed` variable Cargo sets whose value Peeky can't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`), or `Peeky can't tell whether … was there while …`, for a missing `rerun-if-changed` file Peeky has no record of from before the build (outside the workspace, unreadable, or past the record's 200,000 entries), or `… build script watches …, a link to … that doesn't exist`, for one that is or passes through a link to nothing | Give the build script narrower `cargo::rerun-if-changed` lines, make it print less, or move large data out of the package |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -198,8 +200,8 @@ file lists what it reads.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
   `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
-- A client and a remote worker of different protocols: `Worker speaks protocol 12, this client 13`,
-  or, from the worker, `Client speaks protocol 12, this worker 13`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 13, this client 14`,
+  or, from the worker, `Client speaks protocol 13, this worker 14`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -238,6 +240,23 @@ file lists what it reads.
 - `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
   reads no value there, and the session goes on. `session step` reaches your code's next line.
 
+### BUILD_REQUIRED
+
+- A probe or session on a Rust workspace runs on Peeky's own build of it, and never builds. A
+  workspace's config names `analyse` and `run`. The request is refused before anything runs where
+  there is no build for this configuration and these tools. It is refused too where a source or
+  a manifest changed since the build, or a new member appeared: the normal edit cycle.
+- So is a change to what a build script or procedural macro may read. That is each
+  `rerun-if-changed` path of a local build script, or, with none, every file of its package. A
+  local procedural macro adds every file of its package and of the analysed ones.
+- The message names the file and gives the command: `No current Peeky build of this workspace:
+  util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again,
+  or add --build`.
+- `--build` on the probe or `session start` builds first, under the build's own deadline
+  (900 s). Without it, nothing is built.
+- What identifies the build is `PROVENANCE_CHANGED` instead: Cargo's configuration, the lockfile, a
+  vendored copy, a tool or the build's own output. So is a change during a build or a run.
+
 ### PROVENANCE_CHANGED
 
 - A source, a build output or a tool changed during the session. Start a new session on a fresh
@@ -251,6 +270,10 @@ file lists what it reads.
   no values come back: `helper.py changed on the worker host after launch`.
 - A remote Python session with a stack frame whose code names a file under the root that wasn't
   compared is closed the same way: `a stack frame is in hook.py`. A probe is discarded.
+- A Rust workspace's build whose identity changed since `peeky build` ran: Cargo's configuration,
+  the lockfile, a vendored file, a tool, or the build's own output. The message names the first
+  one, and the `peeky build` command to run again. An edited source or manifest is
+  `BUILD_REQUIRED` instead.
 - A Rust workspace's vendored copy that isn't what `cargo vendor` wrote: a file's SHA-256, or
   the package's checksum, differs. Run the `cargo vendor` command the message gives.
 - A file Cargo reads in a Rust workspace that changed while Peeky read it and Cargo ran: a
@@ -564,7 +587,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 13`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 14`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
@@ -607,6 +630,9 @@ request a client sends.
   which must be `pytest` (`--run-module pytest`), and pytest gets `--assert=plain`. A protocol 12 worker
   ignores `module` and runs the `--at` file itself
   ([Python 0](lang/python-cookbook.md#run-a-pytest-test)).
+- **Protocol 14** adds `BUILD_REQUIRED`. A probe or session on a Rust workspace without a
+  current Peeky build is refused with it, and its message names the `peeky build` command. A
+  protocol 13 client would take the code for another failure ([details](#build_required)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.
