@@ -101,7 +101,9 @@
 - **A Rust workspace's analysed packages may be edition 2018 (ADR 0008, phase 2):** rustc lowers
   2018's closure captures, arrays' `into_iter` and `panic!` forms into the MIR Peeky reads, so
   its proofs hold. Edition 2015 is still refused. A 2018 crate whose text holds a raw C string
-  (`cr"…"`), which 2018 lexes otherwise, is refused, naming the line. Under resolver 1, a
+  (`cr"…"`), which 2018 lexes otherwise, is refused, naming the line. An `impl` for a trait
+  object written bare or through an alias (`impl Keep for Box<Sink>`) is never read as one for
+  a type: its call is one Peeky can't tell, never the dependency's. Under resolver 1, a
   configured feature Cargo would build without is refused, naming `package/feature`. tokio-4867
   and ripgrep-2209 now build and probe, once their version 2 lockfiles say `version = 3` (#467).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a

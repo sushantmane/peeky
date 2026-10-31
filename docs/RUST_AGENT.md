@@ -384,8 +384,12 @@ it as one more source (`EXPANDED`).
 - An analysed package of edition 2018 is lexed as Rust 2021 is. The two differ only on a raw C
   string, `cr"…"`, which 2018 reads as `cr` and an ordinary string. So a 2018 compile whose
   sources or expansion hold one is refused, naming the line (`_check_lexed_as_2018`).
-- An `impl` header's bare name that the crate defines as a trait is a 2018 trait object
-  (`impl Keep for Box<Sink>`). It is never placed as a type (`_impl_self_place`).
+- An `impl` header's bare name that the crate defines as a trait, or a `use` or `type` alias of
+  one, is a 2018 trait object (`impl Keep for Box<Sink>`). It is never placed as a type
+  (`_impl_self_place`). Peeky finds no pattern for every alias (`type Paren = (dyn Sink);`).
+  So without the debug information's types, any type a 2018 header names counts only where a
+  function's `self`, as the MIR prints it in full, confirms it (`_receivers_of`). That holds
+  inside a `Box`, a `Pin` or a reference too.
 
 ## Changing a value
 
@@ -941,7 +945,8 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   `Box` or `Pin` counts as the standard library's only where a function's `self`, as the MIR
   prints it in full, says so: a `use` may bring another. Another path, a generic type
   (`Vec<Mine>`), or a bare name the debug information places in another module only (a `use`
-  may have brought it), isn't placed. An inherent
+  may have brought it), isn't placed. Nor is a `crate::`, `self::` or `super::` path to no
+  type it names, such as an alias. An inherent
   `impl`, and one of another trait named in full (`tokio::Keep`, `crate::Keep`), is no
   doubt. Peeky resolves no `use` line: an `impl` that defines `m` but names its trait by a bare
   name, an alias or a module's alias, or isn't placed, gives "?impl", and the note says Peeky

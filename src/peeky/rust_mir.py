@@ -1483,8 +1483,9 @@ def _impl_self_place(text, module, types=None, traits=frozenset()):
     `self::` and `super::` paths followed, a reference and the standard library's `Box` and
     `Pin` kept (`&a::Mine`, `std::boxed::Box<a::Mine>`), a path rooted at the standard
     library's as named. "" where Peeky can't place it: another path (through a `use`, or a
-    module's), a bare name ``types`` (the crate's type paths, from the debug information)
-    doesn't have in that module (a `use` may have brought it, or the prelude: `String`), a
+    module's), a bare name or a path from the crate's root ``types`` (the crate's type paths,
+    from the debug information) doesn't have (a `use` may have brought it, or the prelude:
+    `String`; an alias, `type Paren = (dyn Sink);`, is no type there), a
     name ``traits`` (those the crate's sources define) has, which edition 2018 reads as a
     trait object (`impl Keep for Box<Sink>`), any other type (a tuple, a slice, a trait
     object, another generic one: `Vec<Mine>`)."""
@@ -1513,17 +1514,18 @@ def _impl_self_place(text, module, types=None, traits=frozenset()):
         return ""
     if len(segments) == 1:
         placed = "::".join([*module, plain])
-        return "" if types is not None and placed not in types else placed
-    if segments[0] == "crate":
-        return "::".join(segments[1:])
-    if segments[0] in ("self", "super"):
+    elif segments[0] == "crate":
+        placed = "::".join(segments[1:])
+    elif segments[0] in ("self", "super"):
         while segments and segments[0] in ("self", "super"):
             if segments.pop(0) == "super":
                 if not module:
                     return ""
                 module.pop()
-        return "::".join([*module, *segments])
-    return ""
+        placed = "::".join([*module, *segments])
+    else:
+        return ""
+    return "" if types is not None and placed not in types else placed
 
 
 def _crate_traits(texts):
@@ -1869,10 +1871,9 @@ def _local_impls(bodies, texts, types=None, confirm=False):
     crate's root (``_impl_self_place``; "" where Peeky can't place it), the trait
     (``_impl_trait``), the names of the functions it defines, the type as its header names
     it), each block once. ``types``: the crate's type paths, from the debug information.
-    With ``confirm`` (edition 2018, where a bare name may be a trait object's) and no
-    ``types``, a type placed by its name alone counts only where some function of the
-    block takes `self` as the MIR prints it in full (`S`, `&S`, `&mut S`); else Peeky can't
-    place it."""
+    With ``confirm`` (edition 2018, where a name may be a trait object's) and no ``types``,
+    every type placed counts only where some function of the block takes `self` as the MIR
+    prints it in full (``_receivers_of``: `S`, `&S`, `Box<S>`); else Peeky can't place it."""
     blocks, receivers = {}, {}
     traits = _trait_names(texts)
     for body in bodies:
@@ -1889,16 +1890,28 @@ def _local_impls(bodies, texts, types=None, confirm=False):
             receivers.setdefault(block, set()).add(_canonical_type(body.types.get(1)))
     found = []
     for block, (kind, trait, names, named) in blocks.items():
-        unconfirmed = confirm and types is None and kind.split("::")[0] not in _STD_CRATES
-        if kind and (_BARE_WRAPPER.search(named) or unconfirmed):
+        if kind and (_BARE_WRAPPER.search(named) or (confirm and types is None)):
             # A bare `Box` or `Pin` is the standard library's only where no `use` or local
-            # item shadows it, and a bare name a type only where it isn't a trait object
-            # (edition 2018) nor an alias: a function's `self`, as the MIR prints it in
-            # full, says so.
-            if not {kind, f"&{kind}", f"&mut {kind}"} & receivers.get(block, set()):
+            # item shadows it. In edition 2018, any name the header gives, inside a `Box`, a
+            # `Pin` or a reference too, may be a trait object's through an alias Peeky
+            # doesn't see. A function's `self`, as the MIR prints it in full, says which.
+            if not _receivers_of(kind) & receivers.get(block, set()):
                 kind = ""
         found.append((kind, trait, frozenset(names), named))
     return tuple(found)
+
+
+def _receivers_of(kind):
+    """The types, in ``_canonical_type``'s form, a method's `self` has where its `impl` is
+    for ``kind`` (`self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Pin<&mut Self>`)."""
+    return {
+        kind,
+        f"&{kind}",
+        f"&mut {kind}",
+        f"std::boxed::Box<{kind}>",
+        f"std::pin::Pin<&{kind}>",
+        f"std::pin::Pin<&mut {kind}>",
+    }
 
 
 def _foreign_rows(body, found):

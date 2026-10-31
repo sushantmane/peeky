@@ -799,6 +799,10 @@ ALIASES = (
     "use smallnum::Keep as K;\n"
     "impl smallnum::Keep for Box<K> {\n"
     "impl smallnum::Keep for Mine {\n"
+    "type Paren = (dyn Sink);\n"
+    "impl smallnum::Keep for std::boxed::Box<Paren> {\n"
+    "impl smallnum::Keep for &crate::Paren {\n"
+    "impl smallnum::Keep for std::boxed::Box<Mine> {\n"
 )
 
 
@@ -830,3 +834,34 @@ def test_a_trait_alias_or_an_unconfirmed_bare_name_is_never_the_dependencys():
     # One no function's `self` confirms: Peeky can't tell, never the dependency's.
     unsaid = _local_impls([impl_of([], "src/d.rs", "8:1: 8:30")], texts, None, confirm=True)
     assert call("<Mine as smallnum::Keep>::noted", (), state(blocks=unsaid))[1].startswith("?impl")
+
+
+def test_an_alias_no_pattern_finds_is_never_placed_as_a_type():
+    # `type Paren = (dyn Sink);`, its parentheses kept in the expanded text, is no alias
+    # `_trait_names` finds. `impl smallnum::Keep for std::boxed::Box<Paren>` was placed, being
+    # rooted at `std`, unconfirmed: its block was discarded, and the call named `smallnum`'s.
+    texts = {"src/d.rs": ALIASES}
+    boxed = "std::boxed::Box<dyn Sink>"
+    method = impl_of([], "src/d.rs", "10:1: 10:48", receiver=f"&{boxed}")
+    # Edition 2018, no types: every type a header names counts only where the MIR's `self`
+    # says so, inside a `Box`, a `Pin` or a reference too.
+    blocks = _local_impls([method], texts, None, confirm=True)
+    assert blocks[0][0] == "", blocks
+    found = call(f"<{boxed} as smallnum::Keep>::noted", (), state(blocks=blocks))
+    assert found[1].startswith("?impl\x1f`impl smallnum::Keep for std::boxed::Box<Paren>`"), found
+    # With the debug information's types, a `crate::` path is placed only where it is a type.
+    for types in (None, TYPES):
+        method = impl_of([], "src/d.rs", "11:1: 11:39", receiver="&&dyn Sink")
+        blocks = _local_impls([method], texts, types, confirm=True)
+        assert blocks[0][0] == "", (types, blocks)
+        found = call("<&dyn Sink as smallnum::Keep>::noted", (), state(blocks=blocks))
+        assert found[1].startswith("?impl\x1f`impl smallnum::Keep for &crate::Paren`"), found
+    # A type the MIR's `self` confirms is placed, in a `Box` too.
+    mine = impl_of([], "src/d.rs", "12:1: 12:47", receiver="&std::boxed::Box<Mine>")
+    blocks = _local_impls([mine], texts, None, confirm=True)
+    assert blocks[0][0] == "std::boxed::Box<Mine>"
+    assert (
+        call("<std::boxed::Box<Mine> as smallnum::Keep>::noted", (), state(blocks=blocks)) is None
+    )
+    owned = impl_of([], "src/d.rs", "8:1: 8:30", receiver="std::boxed::Box<Mine>")
+    assert _local_impls([owned], texts, None, confirm=True)[0][0] == "Mine"
