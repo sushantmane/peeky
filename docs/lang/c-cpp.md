@@ -35,6 +35,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 - To pin the compiler and debugger, name them in a `--config`
   ([C and C++ 7.1](c-cpp-cookbook.md#name-the-tools-in-a-config)).
+- Peeky builds the program itself, with no flags, include paths or libraries of the project's. A
+  project with its own build (Make, CMake, autotools) isn't supported yet
+  ([guide](../AGENT_GUIDE.md#your-first-command)).
 - Peeky launches the program. It doesn't attach to a running one, evaluate expressions, or deploy
   a remote debug server ([WORKER](../WORKER.md#what-the-c-and-c-worker-does)).
 - To debug on another host, run a worker there with `--native-config`. Then add `--worker URL`

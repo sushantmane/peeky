@@ -15,6 +15,13 @@ Peeky debugs Python with debugpy, Python's debugger.
 - To stop in a module that a script imports, name the script with `--run`:
   `peeky probe app/ --at lib/parse.py:42 --run main.py`
   ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
+- To stop in code that a pytest test runs, `--run` a two-line script that calls `pytest.main`.
+  Name the test after `--`: `--run peeky_pytest.py -- -q tests/test_x.py::test_y`
+  ([guide](../AGENT_GUIDE.md#your-first-command)).
+- `--at` and `--run` name `.py` files inside the root. Peeky stops only in the project's own
+  code, because debugpy skips library code. So a file in `site-packages` never stops: the probe
+  ends `no-stop`. An installed project must be editable, `pip install -e .`
+  ([guide](../AGENT_GUIDE.md#your-first-command)).
 - Pass program arguments after `--`, or with repeated `--arg`. Write `--arg=-v` for a value that
   starts with a dash ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 

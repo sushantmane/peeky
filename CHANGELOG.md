@@ -27,6 +27,11 @@
 
 ### Other changes
 
+- **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
+  print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
+  test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
+  yet. The README says the same in short. In the value study, agents read the guide but rarely
+  ran Peeky (#441).
 - **A study of Peeky's value on real bugs** (`experiments/value-study`, #441). A coding agent
   attempted 29 real bugs, 3 times each, with and without Peeky. The outcome was the same: 89%
   of bugs solved without Peeky and 86% with it, a paired difference of −2 points (95% interval
