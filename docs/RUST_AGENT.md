@@ -555,9 +555,13 @@ used again. Such a temporary is:
 - rustc prints a closure's or coroutine's aggregate with one capture per variable it mentions.
   Since Rust 2021 a closure captures the places it uses, so two of one variable's leave one out,
   and another variable's may go by the next name (#465). The annotation after the aggregate
-  counts them (its last `+ args` item, a tuple). Where it counts more than are printed, or is
-  missing, as for an async closure, every variable the aggregate names is moved into it whole
-  (`_whole_captures`). Its leftovers then read as moved, never as a value.
+  gives their types (its last `+ args` item, a tuple), so the ones left out are known by type
+  (`Body.omitted`). Each name is the binding in the nearest enclosing scope; one bound twice
+  there, or not at all, leaves the body unanalyzed.
+- Where what is left out is only references and `Copy` values, nothing was moved: every value
+  reads as before. Else, or with no annotation (an async closure), a named variable whose type
+  isn't `Copy` may have lost part of it. Past the aggregate, it isn't proven initialized, and
+  its rows say why. A change of any named variable is refused there, saying so.
 - So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`,
   while `Counter { c: Cell<u32> }` does.
 - A field moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of `_6`

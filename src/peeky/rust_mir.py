@@ -2841,6 +2841,10 @@ class Body:
     _share_edges: dict | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
+    # Closures and coroutines built whose captures rustc's MIR prints only some of
+    # (``_captured_kinds``): [((block, index), {local}: the variables it may have taken
+    # something from, {local}: those it may have moved part of, the line it is built on)].
+    omitted: list = field(default_factory=list)
     _lent_cache: frozenset | None = None
     _written_fields: frozenset = frozenset()
     _into: dict | None = None
@@ -3978,16 +3982,33 @@ class Body:
                     grown = True
         return frozenset(found)
 
-    def _reaches_before_restart(self, place, local, positions):
+    def omitted_before(self, local, positions, moves=False):
+        """The lines of ``omitted``'s closures and coroutines that may have been built
+        before a stop at one of ``positions`` (a path from the statement after the aggregate
+        reaches one, ``local`` not restarted on the way) and may have taken something from
+        ``local`` (with ``moves``, moved something out of it)."""
+        return sorted(
+            {
+                line or 0
+                for place, taken, moved, line in self.omitted
+                if local in (moved if moves else taken)
+                and self._reaches_before_restart(place, local, positions, statement=True)
+            }
+        )
+
+    def _reaches_before_restart(self, place, local, positions, statement=False):
         """Whether some path from the return of the call or drop at ``place`` (the end of
-        its block) reaches one of ``positions`` before ``local``'s value starts again (its
-        storage starts or ends, or the whole of it is assigned): the call ran before
-        that stop, on the value it has there."""
+        its block; with ``statement``, from the statement after it) reaches one of
+        ``positions`` before ``local``'s value starts again (its storage starts or ends, or
+        the whole of it is assigned): the call ran before that stop, on the value it has
+        there."""
         targets = set(positions)
         restart = re.compile(rf"Storage(?:Live|Dead)\(_{local}\);$|_{local} = ")
         number = place[0]
         resumed = (self.resumes[number],) if number in self.resumes else ()
         pending = [(each, 0) for each in (*self.blocks[number].successors, *resumed)]
+        if statement:
+            pending = [(number, place[1] + 1)]
         seen = set()
         while pending:
             node = pending.pop()
@@ -8025,12 +8046,12 @@ _CAPTURING = re.compile(
 )
 
 
-def _captured_count(lines, index):
-    """How many places the closure or coroutine built on ``lines[index]`` captures, from
-    the annotation `-Zmir-include-spans` writes after it (`// closure`, then `// + args:
-    […]`, whose last item is the tuple of their types; a coroutine's too). None where
-    Peeky can't count them: no annotation (rustc writes none for an async closure's), or
-    one whose last item isn't that tuple (a `coroutine-closure`'s)."""
+def _captured_kinds(lines, index):
+    """The types of the places the closure or coroutine built on ``lines[index]`` captures,
+    in order, from the annotation `-Zmir-include-spans` writes after it (`// closure`, then
+    `// + args: […]`, whose last item is the tuple of their types; a coroutine's too). None
+    where Peeky can't tell them: no annotation (rustc writes none for an async closure's),
+    or one whose last item isn't that tuple (a `coroutine-closure`'s)."""
     following = []
     for line in lines[index + 1 :]:
         stripped = line.strip()
@@ -8042,31 +8063,48 @@ def _captured_count(lines, index):
     last = following[following.index("]") - 1].removesuffix(",")
     if "{coroutine-closure@" in lines[index] or not (last.startswith("(") and last.endswith(")")):
         return None
-    return len(_top_level_items(last[1:-1]))
+    return _top_level_items(last[1:-1])
 
 
-def _whole_captures(text, body):
-    """The closure or coroutine built by the statement ``text``, rustc's MIR printing fewer
-    of its captures than it has, with each variable it names moved in whole besides
-    (`{ p: copy (_2.0: u32), p: move _2 }`). rustc prints one capture per variable it
-    mentions (`FIXME(project-rfc-2229#48)`), but since Rust 2021 a closure captures the
-    places it uses, so two of one variable's leave one out, and may label another's with
-    the next name. Every variable it names is then taken as moved into it. None where a name
-    binds nothing in ``body``: what it captures is unknown."""
-    built = _CAPTURING.match(text)
-    added = []
-    for item in _top_level_items(built[3] or ""):
+def _moves_nothing(kind):
+    """Whether a capture of the MIR type ``kind`` moves nothing out of the variable it is
+    taken from: a reference (`&T`, `&mut T`), a raw or function pointer, a primitive, `()`,
+    or a tuple or array of these, each `Copy` whatever the crate defines."""
+    text = (kind or "").strip()
+    if text.startswith("&") or _RAW_ONLY.match(text) or _FN_START.match(text):
+        return True
+    if text in _NUMERIC_PRIMITIVES or text in ("()", "!"):
+        return True
+    if text.startswith("(") and text.endswith(")"):
+        return all(_moves_nothing(each) for each in _top_level_items(text[1:-1]))
+    found = re.fullmatch(r"\[(.+); [^;\[\]]+\]", text)
+    return bool(found) and _moves_nothing(found[1])
+
+
+def _captured_locals(body, printed, scope):
+    """{local} of the variables a closure's or coroutine's aggregate names (``printed``: its
+    `name: operand` items), each the binding of that name in the nearest scope enclosing
+    ``scope`` (the aggregate's) that binds it. A binding through a projection (an enclosing
+    closure's capture) is none: Peeky proves nothing of one. None where a name binds
+    nothing there, or twice in one scope: Peeky can't tell which was captured."""
+    enclosing, at = [], scope
+    while at is not None and at not in enclosing:
+        enclosing.append(at)
+        at = body.scopes.get(at)
+    found = set()
+    for item in printed:
         name = item.partition(": ")[0]
-        bindings = body.bindings.get(name)
-        if not bindings:
-            return None
-        for local, file, line, _, scope in bindings:
-            place = f"_{local}" if local is not None else body.places.get((name, file, line, scope))
-            if place is None:
+        for each in enclosing:
+            here = [binding for binding in body.bindings.get(name, ()) if binding[4] == each]
+            if len(here) > 1:
                 return None
-            added.append(f"{name}: move {place}")
-    operands = ", ".join([*_top_level_items(built[3] or ""), *dict.fromkeys(added)])
-    return f"{built[1]} {{ {operands} }};" if operands else text
+            if here:
+                if here[0][0] is not None:
+                    found.add(here[0][0])
+                break
+        else:
+            return None
+    return found
 
 
 def parse_body(text):
@@ -8126,7 +8164,8 @@ def parse_body(text):
             opened_scopes.pop()
             continue
         if opened := _BLOCK.match(line):
-            block = body.blocks.setdefault(int(opened[1]), Block())
+            current = int(opened[1])
+            block = body.blocks.setdefault(current, Block())
             continue
         if line == "    }":
             if block is not None and not _finish(block):
@@ -8143,14 +8182,35 @@ def parse_body(text):
             body.supported = False
             continue
         span = _SPAN.match(statement[3])
-        code = statement[1]
-        if built := _CAPTURING.match(code):
-            count = _captured_count(lines, index)
-            if count is None or count > len(_top_level_items(built[3] or "")):
-                code = _whole_captures(code, body)
-                if code is None:
-                    code, body.supported = statement[1], False
-        block.statements.append((code, span[1] if span else None, int(span[2]) if span else None))
+        if built := _CAPTURING.match(statement[1]):
+            # rustc prints one capture per variable it mentions (it zips them,
+            # `FIXME(project-rfc-2229#48)`), but since Rust 2021 a closure captures the
+            # places it uses: two of one variable's leave one out, and the next variable's
+            # may go by its name. What it took, and from which variable, is then unknown.
+            printed = _top_level_items(built[3] or "")
+            kinds = _captured_kinds(lines, index)
+            if kinds is None or len(kinds) > len(printed):
+                taken = _captured_locals(body, printed, int(statement[2]))
+                if taken is None:
+                    body.supported = False
+                elif taken:
+                    # What is left out moves nothing where each is a reference or `Copy`;
+                    # nor is anything moved out of a variable of such a type.
+                    moves = kinds is None or not all(
+                        _moves_nothing(each) for each in kinds[len(printed) :]
+                    )
+                    moved = frozenset(
+                        local
+                        for local in taken
+                        if moves and not _moves_nothing(body.types.get(local))
+                    )
+                    at = (current, len(block.statements))
+                    body.omitted.append(
+                        (at, frozenset(taken), moved, int(span[2]) if span else None)
+                    )
+        block.statements.append(
+            (statement[1], span[1] if span else None, int(span[2]) if span else None)
+        )
         block.scopes.append(int(statement[2]))
         full = _FULL_SPAN.match(statement[3])
         block.spans.append((int(full[3]), int(full[4]), int(full[5])) if full else None)
@@ -10915,6 +10975,11 @@ class OwnedLocals:
 
     def _initialized(self, site, local, line):
         body, function, blocks, shared = site
+        if any(local in moved for _, _, moved, _ in body.omitted):
+            # A closure built before the stop may have moved part of it: rustc's MIR leaves
+            # that capture out.
+            if self._omitted_at(site, local, line, moves=True) != []:
+                return False
         if function.inline_only:
             return body.initialized_before(local, self._positions(site, line, None))
         if not self.precise:
@@ -10927,6 +10992,53 @@ class OwnedLocals:
             function.line,
             shared,
             foreign=may_invoke_macro(self.texts.get(function.file), line),
+        )
+
+    def _omitted_at(self, site, local, line, moves=False, positions=None):
+        """``Body.omitted_before`` at the places a stop on ``line`` can be (``positions``,
+        or every place of it); None where they are not known."""
+        if positions is None:
+            positions = self._positions(site, line, None)
+        if not positions:
+            return None
+        return site[0].omitted_before(local, positions, moves)
+
+    def omitted_captures(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+    ):
+        """For the frame's local ``variable_name``: (the lines of the closures and coroutines
+        built before a stop on ``line`` of ``path`` that may have taken something from it,
+        rustc's MIR leaving that capture out, whether one may have moved something out of
+        it), or None where there is none or that is not understood. ``breakpoint``,
+        ``column`` and ``block`` as for ``copy_hazards``."""
+        placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
+        if placed is None or not placed[0].omitted:
+            return None
+        body, local, positions = placed
+        lines = body.omitted_before(local, positions)
+        if not lines:
+            return None
+        return lines, bool(body.omitted_before(local, positions, moves=True))
+
+    def omitted_everywhere(self, hashed, variable_name, line, path):
+        """``omitted_captures`` where every place of ``line`` a stop can be at (before a
+        statement that emits code, as ``foreign_everywhere``) has one: no change there is
+        known to reach what the closure took (refused before the program runs). None
+        where some place has none, or that is not understood."""
+        placed = self._stop_places(hashed, variable_name, line, path, False, None, None)
+        if placed is None or not placed[0].omitted:
+            return None
+        body, local, positions = placed
+        coded = [
+            position
+            for position in positions
+            if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
+        ] or positions
+        each = [body.omitted_before(local, [position]) for position in coded]
+        if not each or not all(each):
+            return None
+        return sorted({line for found in each for line in found}), bool(
+            body.omitted_before(local, coded, moves=True)
         )
 
 

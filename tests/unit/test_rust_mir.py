@@ -4859,27 +4859,55 @@ def _built(text):
     return body, [code for code, _, _ in body.blocks[0].statements if " = {closure@" in code]
 
 
-def test_a_closure_the_mir_prints_fewer_captures_of_moves_each_variable_it_names():
+def test_a_closure_the_mir_prints_fewer_captures_of_is_an_uncertainty_of_its_own():
     # rustc prints one capture per variable it mentions, so `p.name`'s move was missing, and
-    # `p.name` read as `p`'s own value from memory the closure had freed (#465).
-    body, built = _built(TWO_CAPTURES)
-    assert body.supported
-    assert built == ["_2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32), p: move _1 };"]
-    assert body.closure_captures() == {"{closure@src/lib.rs:6:13: 6:20}": ["u32", "Named"]}
-    # Every capture printed (one, `(u32,)`): as rustc wrote it.
-    _, built = _built(TWO_CAPTURES.replace("(u32, std::string::String),", "(u32,),"))
-    assert built == ["_2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32) };"]
+    # `p.name` read as `p`'s own value from memory the closure had freed (#465). The
+    # statement stays as rustc wrote it; what the closure may have taken, and moved, is noted.
+    built = "_2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32) };"
+    body, statements = _built(TWO_CAPTURES)
+    assert body.supported and statements == [built]
+    assert body.omitted == [((0, 1), frozenset({1}), frozenset({1}), 6)]
+
+    def omitted(text):
+        body = _built(text)[0]
+        assert body.supported
+        return body.omitted
+
+    tuple_ = "(u32, std::string::String),"
+    # Every capture printed (one, `(u32,)`): nothing is left out.
+    assert omitted(TWO_CAPTURES.replace(tuple_, "(u32,),")) == []
+    # What is left out moves nothing: a `Copy` value or a reference. It still took something.
+    for kinds in ("(u32, u32),", "(&u32, &std::string::String),", "(u32, &mut [u8; 4]),"):
+        assert omitted(TWO_CAPTURES.replace(tuple_, kinds)) == [
+            ((0, 1), frozenset({1}), frozenset(), 6)
+        ], kinds
+    # Nor is anything moved out of a variable whose type moves nothing.
+    assert omitted(TWO_CAPTURES.replace("(_1: Named)", "(_1: (u32, u32))"))[0][2] == frozenset()
     # Without the annotation, which rustc writes for every closure and coroutine but an async
-    # closure, Peeky can't count them: every variable it names is moved.
+    # closure, or one Peeky can't count from, anything may have been moved.
     plain = "\n".join(
         line
         for line in TWO_CAPTURES.splitlines()
         if not line.strip().startswith("// ") or "MIR" in line
     )
-    assert _built(plain)[1][0].endswith("{ p: copy (_1.0: u32), p: move _1 };")
-    # An annotation Peeky can't count from moves them too.
-    _, built = _built(TWO_CAPTURES.replace("(u32, std::string::String),", "Unknown,"))
-    assert built[0].endswith("{ p: copy (_1.0: u32), p: move _1 };")
-    # A name that binds nothing: what it captures is unknown, so the body isn't analyzed.
-    body, _ = _built(TWO_CAPTURES.replace("{ p: copy", "{ r: copy"))
-    assert not body.supported
+    assert omitted(plain)[0][2] == frozenset({1})
+    assert omitted(TWO_CAPTURES.replace(tuple_, "Unknown,"))[0][2] == frozenset({1})
+    # The nearest binding of the name in the aggregate's scope: an inner `p` shadows `_1`.
+    inner = TWO_CAPTURES.replace(
+        "        debug f => _2;",
+        "        debug p => _4;                   // in scope 1 at src/lib.rs:6:9: 6:10\n"
+        "        debug f => _2;",
+    )
+    assert omitted(inner)[0][1] == frozenset({1})
+    assert omitted(inner.replace(built + " // scope 0", built + " // scope 1"))[0][1] == frozenset(
+        {4}
+    )
+    # A name bound twice in one scope, or not at all: what it took is unknown, so the body
+    # isn't analyzed.
+    twice = TWO_CAPTURES.replace(
+        "    debug p => _1;",
+        "    debug p => _3;                       // in scope 0 at src/lib.rs:5:12: 5:13\n"
+        "    debug p => _1;",
+    )
+    assert not _built(twice)[0].supported
+    assert not _built(TWO_CAPTURES.replace("{ p: copy", "{ r: copy"))[0].supported

@@ -1,8 +1,10 @@
 """A closure or async block that captures two places of one variable (Rust 2021's disjoint
 captures), or an async closure. rustc's MIR prints one capture per variable, so the others
 were missing from what Peeky read: a field moved into the closure read as the variable's own
-value, from memory the closure had freed (#465). Now every variable such a closure names
-counts as moved into it, and its leftovers are never shown as a value."""
+value, from memory the closure had freed (#465). Now what such a closure took is unknown to
+Peeky, and says so: a variable it may have moved part of reads as stale, and a change of one
+it may hold a copy of or a pointer into is refused. Where what is left out is only references
+or `Copy` values, nothing was moved, and every value reads as before."""
 
 import json
 import os
@@ -35,13 +37,18 @@ pub struct Named {
     pub name: String,
 }
 
+pub struct Pair {
+    pub a: u32,
+    pub b: u32,
+}
+
 const LONGER: &str = "defghijklmnopqrstuvwxyz0123456789";
 
 /// `p.a` is copied into `f` and `p.name` moved; the MIR prints only `p.a`'s. `f` grows the
 /// `String` it holds, freeing the buffer `p.name`'s leftover bytes point at.
 fn grown(arg: u32) -> usize {
     let mut p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
-    let mut f = move || {
+    let mut f = move || { // GROWN_BUILT
         let a = p.a as usize;
         p.name.push_str(LONGER);
         a + p.name.len()
@@ -56,7 +63,7 @@ fn grown(arg: u32) -> usize {
 fn labeled(arg: u32) -> usize {
     let p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
     let q = String::from("some text");
-    let f = move || {
+    let f = move || { // LABELED_BUILT
         let n = p.a as usize + p.name.len();
         drop(q);
         n
@@ -69,7 +76,7 @@ fn labeled(arg: u32) -> usize {
 /// An async block captures as a closure does.
 fn awaited(arg: u32) -> usize {
     let mut p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
-    let mut future = pin!(async move {
+    let mut future = pin!(async move { // AWAITED_BUILT
         let a = p.a as usize;
         p.name.push_str(LONGER);
         a + p.name.len()
@@ -86,7 +93,7 @@ fn awaited(arg: u32) -> usize {
 /// An async closure: rustc writes no count of its captures, so Peeky can't tell.
 fn closured(arg: u32) -> usize {
     let mut p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
-    let mut f = async move || {
+    let mut f = async move || { // CLOSURED_BUILT
         let a = p.a as usize;
         p.name.push_str(LONGER);
         a + p.name.len()
@@ -103,6 +110,50 @@ fn closured(arg: u32) -> usize {
     k + r
 }
 
+/// Two shared borrows (`&p.a`, `&p.name`), one printed: nothing is moved.
+fn borrowed(arg: u32) -> usize {
+    let p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
+    let f = || p.a as usize + p.name.len(); // BORROWED_BUILT
+    let r = f();
+    let k = std::hint::black_box(1); // BORROWED
+    k + r + p.a as usize
+}
+
+/// Two copies (`p.a`, `p.b`), one printed: nothing is moved, but `f` holds copies.
+fn copied(arg: u32) -> u32 {
+    let p = Pair { a: std::hint::black_box(arg), b: std::hint::black_box(2) };
+    std::hint::black_box(&p);
+    let f = move || p.a + p.b; // COPIED_BUILT
+    let k = std::hint::black_box(1); // COPIED
+    k + f() + p.a
+}
+
+/// `n` and `p.a` printed, `p.name`'s move left out: `n`, a `usize`, can lose nothing.
+fn unaffected(arg: u32) -> usize {
+    let n = std::hint::black_box(arg as usize);
+    let p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
+    let f = move || n + p.a as usize + p.name.len(); // UNAFFECTED_BUILT
+    let r = f();
+    let k = std::hint::black_box(n); // UNAFFECTED
+    k + r
+}
+
+/// The closure captures the inner `p`: the outer one, read after, is untouched.
+fn shadowed(arg: u32) -> usize {
+    let p = Named { a: std::hint::black_box(arg), name: String::from("outer") };
+    let r = {
+        let mut p = Named { a: std::hint::black_box(arg + 1), name: String::from("inner") };
+        let mut f = move || {
+            let a = p.a as usize;
+            p.name.push_str(LONGER);
+            a + p.name.len()
+        };
+        f()
+    };
+    let k = std::hint::black_box(1); // SHADOWED
+    k + r + p.a as usize + p.name.len()
+}
+
 /// One place of each variable: every capture is printed, and `p` reads as it is.
 fn single(arg: u32) -> usize {
     let p = Named { a: std::hint::black_box(arg), name: String::from("abc") };
@@ -117,6 +168,10 @@ fn main() {
     println!("LABELED {}", labeled(7));
     println!("AWAITED {}", awaited(9));
     println!("CLOSURED {}", closured(13));
+    println!("BORROWED {}", borrowed(15));
+    println!("COPIED {}", copied(17));
+    println!("UNAFFECTED {}", unaffected(19));
+    println!("SHADOWED {}", shadowed(21));
     println!("SINGLE {}", single(11));
 }
 """
@@ -136,62 +191,111 @@ def crate(tmp_path, monkeypatch):
     return root
 
 
-def probe(capsys, root, marker, selectors):
-    line = next(i for i, text in enumerate(MAIN.splitlines(), 1) if text.endswith(f"// {marker}"))
-    argv = ["probe", str(root), "--at", f"src/main.rs:{line}", "--capture", selectors]
-    code = main([*argv, "--json", "--quiet", "--no-save"])
-    result = json.loads(capsys.readouterr().out)
-    assert code == 0, result.get("error")
-    return {row["selector"]: row for row in result["rows"]}, result["output"]
+def line_of(marker):
+    return next(i for i, text in enumerate(MAIN.splitlines(), 1) if text.endswith(f"// {marker}"))
 
 
-def moved(row):
-    """The row reads no value: the local's leftovers, which the MIR doesn't prove
-    initialized, so they may be moved."""
+def probe(capsys, root, marker, *argv):
+    at = ["probe", str(root), "--at", f"src/main.rs:{line_of(marker)}", "--json", "--quiet"]
+    main([*at, "--no-save", *argv])
+    return json.loads(capsys.readouterr().out)
+
+
+def read(capsys, root, marker, selectors):
+    result = probe(capsys, root, marker, "--capture", selectors)
+    assert "error" not in result, result["error"]
+    rows = {row["selector"]: row for row in result["rows"] if row["phase"] == "observed"}
+    return rows, result["output"]
+
+
+def omitted(marker, name, moved=True):
+    """What a row or refusal says of a closure whose captures the MIR leaves out."""
+    return (
+        "rustc's MIR omits some of the captures of the closure or async block on line "
+        f"{line_of(marker + '_BUILT')}, so Peeky can't tell what it took from `{name}`: "
+        + ("part of it may be moved" if moved else "it may hold a copy of part of it")
+    )
+
+
+def moved(row, marker, name):
+    """The row reads no value: what the closure took is unknown, and may be moved."""
     note = row.get("note") or ""
     return (
-        row.get("view") != "memory"
-        and row.get("stale") is True
-        and "not prove" in note
-        and "may be moved" in note
+        row.get("view") != "memory" and row.get("stale") is True and omitted(marker, name) in note
     )
 
 
 @pytest.mark.timeout(400)
 def test_a_field_a_closure_moved_is_never_read_as_the_variables(crate, capsys):
-    rows, output = probe(capsys, crate, "GROWN", "p.name,r")
-    assert moved(rows["p.name"]), rows["p.name"]
+    rows, output = read(capsys, crate, "GROWN", "p.name,r")
+    assert moved(rows["p.name"], "GROWN", "p"), rows["p.name"]
     assert rows["r"]["value"] == "41"
     assert "GROWN 42" in output
 
 
 @pytest.mark.timeout(400)
 def test_a_capture_the_mir_labels_with_another_name_still_counts(crate, capsys):
-    rows, output = probe(capsys, crate, "LABELED", "q,p.name")
-    assert moved(rows["q"]), rows["q"]
-    assert moved(rows["p.name"]), rows["p.name"]
+    rows, output = read(capsys, crate, "LABELED", "q,p.name")
+    assert moved(rows["q"], "LABELED", "q"), rows["q"]
+    assert moved(rows["p.name"], "LABELED", "p"), rows["p.name"]
     assert "LABELED 11" in output
 
 
 @pytest.mark.timeout(400)
-def test_an_async_block_captures_as_a_closure_does(crate, capsys):
-    rows, output = probe(capsys, crate, "AWAITED", "p.name,r")
-    assert moved(rows["p.name"]), rows["p.name"]
+def test_an_async_block_and_an_async_closure_capture_as_a_closure_does(crate, capsys):
+    rows, output = read(capsys, crate, "AWAITED", "p.name,r")
+    assert moved(rows["p.name"], "AWAITED", "p"), rows["p.name"]
     assert rows["r"]["value"] == "45"
     assert "AWAITED 46" in output
-
-
-@pytest.mark.timeout(400)
-def test_an_async_closures_captures_are_taken_as_moved(crate, capsys):
-    rows, output = probe(capsys, crate, "CLOSURED", "p.name,r")
-    assert moved(rows["p.name"]), rows["p.name"]
+    # rustc writes no count of an async closure's captures.
+    rows, output = read(capsys, crate, "CLOSURED", "p.name,r")
+    assert moved(rows["p.name"], "CLOSURED", "p"), rows["p.name"]
     assert rows["r"]["value"] == "49"
     assert "CLOSURED 50" in output
 
 
 @pytest.mark.timeout(400)
+def test_borrows_and_copies_left_out_move_nothing_but_a_change_is_refused(crate, capsys):
+    # `|| p.a as usize + p.name.len()` borrows both: `p` reads as it is.
+    rows, output = read(capsys, crate, "BORROWED", "p.a,p.name")
+    assert rows["p.a"]["value"] == "15" and rows["p.a"].get("stale") is not True, rows["p.a"]
+    assert rows["p.name"].get("stale") is not True, rows["p.name"]
+    assert "BORROWED 34" in output
+    # `move || p.a + p.b` copies both: they read, and `f` goes on with its copies.
+    rows, output = read(capsys, crate, "COPIED", "p.a,p.b")
+    assert (rows["p.a"]["value"], rows["p.b"]["value"]) == ("17", "2")
+    assert rows["p.a"].get("stale") is not True
+    assert "COPIED 37" in output
+    # What `f` holds is unknown: a change of `p.a` is refused, saying so.
+    for marker in ("BORROWED", "COPIED"):
+        error = probe(capsys, crate, marker, "--set", "p.a=100")["error"]
+        assert error["code"] == "MUTATION_REJECTED", error
+        assert omitted(marker, "p", moved=False) in error["message"], error["message"]
+        assert "Change it before the program makes that closure" in error["message"]
+
+
+@pytest.mark.timeout(400)
+def test_a_variable_whose_type_moves_nothing_is_unaffected(crate, capsys):
+    # `n` (a `usize`) and `p.a` are printed, `p.name`'s move left out: only `p` may have lost
+    # something.
+    rows, output = read(capsys, crate, "UNAFFECTED", "n,p.name")
+    assert rows["n"]["value"] == "19" and rows["n"].get("stale") is not True, rows["n"]
+    assert moved(rows["p.name"], "UNAFFECTED", "p"), rows["p.name"]
+    assert "UNAFFECTED 60" in output
+
+
+@pytest.mark.timeout(400)
+def test_a_shadowed_variable_the_closure_doesnt_capture_is_untouched(crate, capsys):
+    # The closure captures the inner `p`, in its own scope; the outer `p` reads as it is.
+    rows, output = read(capsys, crate, "SHADOWED", "p.a,p.name")
+    assert rows["p.a"]["value"] == "21" and rows["p.a"].get("stale") is not True, rows["p.a"]
+    assert rows["p.name"].get("stale") is not True, rows["p.name"]
+    assert "SHADOWED 87" in output
+
+
+@pytest.mark.timeout(400)
 def test_a_closure_whose_captures_are_all_printed_reads_as_before(crate, capsys):
-    rows, output = probe(capsys, crate, "SINGLE", "p.a,p.name")
+    rows, output = read(capsys, crate, "SINGLE", "p.a,p.name")
     assert rows["p.a"]["value"] == "11"
     assert rows["p.name"].get("stale") is not True, rows["p.name"]
     assert "SINGLE 15" in output

@@ -30,9 +30,10 @@
 - **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
   closure or async block captures the places it uses. rustc's MIR prints one capture per
   variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
-  value, from memory the closure had freed after growing its `String`. Where the MIR prints
-  fewer captures than the closure has, every variable it names now counts as moved into it.
-  So does an async closure's, whose captures rustc doesn't count.
+  value, from memory the closure had freed after growing its `String`. Now, where the MIR leaves
+  captures out and they may move something, the variables it names read as stale, saying so.
+  Where only references or `Copy` values are left out, they read as before. A change of a
+  named variable is refused either way, since Peeky can't tell what the closure holds.
 
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
