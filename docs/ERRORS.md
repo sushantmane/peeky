@@ -126,6 +126,10 @@ The last column is the `retryable` field.
   that stop was shown. Start again once the load has passed.
 - A debugger that refuses that read, as it may at a crash, doesn't end the session. The stop then
   has no location.
+- `verify ran past its --timeout while the check command was running` means that `--timeout` cut a
+  `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
+  that runs past its own 20 s isn't an error: the verify fails, and `reason` says so
+  ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
 
 ### DEBUGGER_ERROR
 
@@ -151,6 +155,7 @@ The last column is the `retryable` field.
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
+| `verify --check-command` on a target that isn't Python: `--check-command supports Python targets for now …`, refused before building ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)) | Pass `--check` with a checker script ([6.5](COOKBOOK.md#65-writing-a-checker)) |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -167,6 +172,13 @@ file lists what it reads.
   lists them, and says which one to pass: `verify needs --at <source> (one of: a/One.java,
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
+- A `verify --check-command` that Peeky won't run as given. It may hold shell syntax (`|`, `>`,
+  `$`, `[` …), or start by setting a variable (`FOO=1 …`). Its program may not be on `PATH`, or be
+  outside the root. Or `--check` came with it. The message says which, and what to pass instead
+  ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- A `verify --check-command` edit whose imports in the copy may load your unedited module, as from
+  an editable install Peeky can't redirect: `verify --check-command can't test this edit: …`. Check
+  the edit with a `--check` checker, which is given the edited file.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A client and a remote worker of different protocols: `Worker speaks protocol 8, this client 9`,
   or, from the worker, `Client speaks protocol 8, this worker 9`. Install the same Peeky version

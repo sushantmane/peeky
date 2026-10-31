@@ -668,6 +668,12 @@ def describe(args):
                     "--old <text> --new <text> (or --old-file/--new-file; repeat the pair for "
                     "several edits, each quoting the original file); --baseline instead checks "
                     "the unedited program, which the checker should fail"
+                    + (
+                        "; --check-command '<test command>' in place of --check runs your tests "
+                        "on a fresh copy of the project"
+                        if language == "python"
+                        else ""
+                    )
                 }
             ),
             "background": "add --background to probe"
@@ -3573,6 +3579,167 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
     )
 
 
+CHECK_COMMAND = "--check-command"
+# What a shell would read as its own syntax: --check-command runs no shell.
+_SHELL_SYNTAX = frozenset("|&;<>()$`\\*?[]{}~!#\n\r")
+_SHOWN = {"\n": "a newline", "\r": "a carriage return", "`": "a backquote"}
+
+
+def _check_command_words(args):
+    """The words of --check-command (None for --check): a string split into words as a
+    shell splits them, with no shell syntax in it, or the words after `--check-command
+    --`, as given."""
+    text, words = args.check_command, args.check_argv
+    if text is not None and words is not None:
+        raise ValueError(
+            "Pass --check-command once: as one string, or as words after `--check-command --`"
+        )
+    if args.check is not None and (text is not None or words is not None):
+        raise ValueError("Pass either --check or --check-command, not both")
+    if text is None and words is None:
+        if args.check is None:
+            raise ValueError(
+                "verify needs a check: --check <checker.py>, or for Python, --check-command "
+                "'<test command>'"
+            )
+        return None
+    if words is None:
+        if found := sorted(set(text) & _SHELL_SYNTAX):
+            shown = ", ".join(_SHOWN.get(char, f"`{char}`") for char in found)
+            raise ValueError(
+                f"--check-command takes no shell syntax ({shown}): Peeky runs the command "
+                "itself, with no shell. For a pipe or a redirect, run a script. To pass these "
+                "characters as text, as in a test id with `[`, put the command's words after "
+                "`--check-command --`, last"
+            )
+        try:
+            words = shlex.split(text)
+        except ValueError as error:
+            raise ValueError(f"--check-command could not be split into words: {error}") from None
+    if not words or not words[0]:
+        raise ValueError(
+            "--check-command needs a command, such as 'python -m pytest tests/test_x.py -q'"
+        )
+    if "=" in words[0]:
+        raise ValueError(
+            f"--check-command's first word, {words[0]}, must be the program to run: Peeky runs "
+            "no shell, so set a variable in the environment you run peeky in"
+        )
+    return words
+
+
+def _command_environment(interpreter):
+    """The environment a check command runs in: Peeky's, without the worker's token, as
+    a launched program gets it, with the interpreter's directory first on PATH, and its
+    virtual environment, if it is in one, as VIRTUAL_ENV."""
+    from peeky.python_interpreter import PROGRAM_ENV
+
+    environment = {**without_credentials(os.environ), **PROGRAM_ENV}
+    executable = interpreter.executable or interpreter.path
+    first = []
+    for path in (executable, interpreter.path):
+        if (folder := os.path.dirname(path)) and folder not in first:
+            first.append(folder)
+    rest = environment.get("PATH", os.defpath)
+    environment["PATH"] = os.pathsep.join([*first, *([rest] if rest else [])])
+    home = Path(executable).parent.parent
+    if (home / "pyvenv.cfg").is_file():
+        environment["VIRTUAL_ENV"] = str(home)
+    else:
+        environment.pop("VIRTUAL_ENV", None)
+    return environment
+
+
+def _command_program(word, root, environment, interpreter):
+    """What a check command's first word runs: `python` and `python3` are the program's
+    interpreter; a path with a `/` is that file (a relative one inside the root, run from
+    its copy); another name is found on the command's PATH."""
+    if word in ("python", "python3"):
+        return interpreter.executable or interpreter.path
+    if "/" in word:
+        path = Path(word) if os.path.isabs(word) else Path(root) / word
+        if not os.path.isabs(word) and not path.resolve().is_relative_to(Path(root).resolve()):
+            raise ValueError(
+                f"--check-command's program {word} is outside the root, which is all the copy "
+                "holds: give its absolute path"
+            )
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            raise ValueError(f"--check-command's program {word} is not an executable file")
+        return word
+    found = shutil.which(word, path=environment.get("PATH"))
+    if found is None:
+        raise ValueError(
+            f"--check-command's program {word} is not on PATH, with the interpreter's "
+            f"directory first ({environment['PATH'].split(os.pathsep)[0]}): install it in the "
+            "project's environment, or give its path"
+        )
+    return found
+
+
+def _verify_command(args, root, source, words, deadline):
+    """`verify --check-command`: run ``words`` in a fresh copy of ``root`` with the edit
+    (with --baseline, none), on the program's interpreter's environment."""
+    from peeky import agent
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+    from peeky.python_interpreter import find
+
+    root = Path(root).resolve()
+    # The command runs on the program's interpreter, as a probe and a checker do.
+    interpreter = find(root, args.python)
+    environment = _command_environment(interpreter)
+    program = _command_program(words[0], root, environment, interpreter)
+    original = agent.digest(source)
+    relative = source.relative_to(root).as_posix()
+    edit = None if args.old is None else SourceEdit(relative, args.old, args.new)
+    candidate = PythonCandidate(
+        PythonAdapter.on(interpreter), source, root, edit, deadline, command=True
+    )
+    try:
+        if edit is not None and candidate.unedited_imports:
+            raise ValueError(
+                f"verify --check-command can't test this edit: {candidate.unedited_imports[0]}. "
+                "Check the edit with a --check checker, which is given the edited file"
+            )
+        if candidate.pythonpath is not None:
+            environment["PYTHONPATH"] = candidate.pythonpath
+        # As a shell sets it there.
+        environment["PWD"] = str(candidate.root)
+        ran = [program if os.path.isabs(program) else str(candidate.root / program), *words[1:]]
+        candidate_sha256 = hashlib.sha256(candidate.staged.read_bytes()).hexdigest()
+        timeout, limited = agent.CHECK_S, False
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("verify ran past its --timeout before the check command")
+            timeout, limited = min(timeout, remaining), remaining < timeout
+        result = agent.execute(ran, candidate.root, timeout, env=environment, tail=True)
+        if limited and result["timed_out"]:
+            # The --timeout cut the command short: that says nothing about the candidate.
+            raise TimeoutError("verify ran past its --timeout while the check command was running")
+        if agent.digest(source) != original:
+            raise RuntimeError("Original source changed during verification")
+        result.update(
+            passed=result["exit_code"] == 0,
+            check_command={
+                "argv": list(words),
+                "ran": ran,
+                "copy_of": str(root),
+                "timeout_s": agent.CHECK_S,
+            },
+            candidate=str(candidate.staged),
+            candidate_sha256=candidate_sha256,
+            python=interpreter.identity(),
+        )
+        if candidate.warnings:
+            result["warnings"] = list(candidate.warnings)
+        if args.keep:
+            result["kept"] = str(candidate.scratch)
+        return result
+    finally:
+        candidate.close(keep=args.keep)
+
+
 MAX_VERIFY_S = 600
 
 
@@ -3581,12 +3748,20 @@ def verify(args):
     if args.timeout is not None and not 0 < args.timeout <= MAX_VERIFY_S:
         raise ValueError(f"--timeout must be within (0, {MAX_VERIFY_S}] seconds")
     deadline = None if args.timeout is None else started + args.timeout
+    words = _check_command_words(args)
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     if language == "java-attach":
         raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
+    if words is not None and language != "python":
+        named = {"c": "C", "cpp": "C++", "rust": "Rust", "java": "Java"}.get(language, language)
+        raise ValueError(
+            f"--check-command supports Python targets for now, and this target is {named}: "
+            "pass a --check checker, which runs on the fresh build"
+        )
     _python_option(args, language)
     program = _default_program(program, data, "verify")
-    source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
+    source = (root / program).resolve(strict=True)
+    check = None if words is not None else Path(args.check).resolve(strict=True)
     original = source.read_text()
     if args.baseline:
         if any(getattr(args, name) for name in ("old", "new", "old_file", "new_file")):
@@ -3601,13 +3776,17 @@ def verify(args):
     edited = original if args.baseline else original.replace(args.old, args.new, 1)
     from peeky.build import private_base
 
-    # Where no other user can write: a candidate that reaches above its folder finds
-    # nothing of theirs there.
-    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-", dir=private_base()))
+    destination = None
     try:
-        result = _verify_candidate(
-            args, root, program, language, data, source, check, destination, deadline
-        )
+        if words is not None:
+            result = _verify_command(args, root, source, words, deadline)
+        else:
+            # Where no other user can write: a candidate that reaches above its folder finds
+            # nothing of theirs there.
+            destination = Path(tempfile.mkdtemp(prefix="peeky-verify-", dir=private_base()))
+            result = _verify_candidate(
+                args, root, program, language, data, source, check, destination, deadline
+            )
         # The reported diff must describe exactly the candidate that was verified.
         expected = edited.encode()
         if hashlib.sha256(expected).hexdigest() != result.get("candidate_sha256"):
@@ -3616,7 +3795,7 @@ def verify(args):
                 "not match the reported edit"
             )
     finally:
-        if not args.keep:
+        if destination is not None and not args.keep:
             shutil.rmtree(destination, ignore_errors=True)
     result.setdefault("stage", "verification")
     result["seconds"] = round(time.monotonic() - started, 3)
@@ -3625,7 +3804,7 @@ def verify(args):
         # The checker's verdict on the program as it is: it should fail on the bug.
         result["baseline"] = True
     if args.keep:
-        result["kept"] = str(destination)
+        result.setdefault("kept", str(destination))
     else:
         for key in ("candidate", "evidence_file"):
             result.pop(key, None)
@@ -3648,6 +3827,12 @@ def _verify_text(result, keep=False):
     ]
     if python := _python_line(result.get("python")):
         lines.append(python)
+    if command := result.get("check_command"):
+        lines.append(f"command: {shlex.join(command['argv'])}")
+        lines.append(
+            f"ran: {shlex.join(command['ran'])} (in a copy of {command['copy_of']}, for at most "
+            f"{command['timeout_s']} s)"
+        )
     if tests := result.get("tests"):
         lines.extend(_tests_text(tests))
     elif result.get("language") == "rust" and result.get("stage") == "verification":
@@ -3657,20 +3842,43 @@ def _verify_text(result, keep=False):
     reason = not result["passed"] and (result.get("reason") or _verify_reason(result))
     if reason:
         lines.append(f"reason: {reason}")
-    lines.append(f"checker exit: {result.get('exit_code')}")
+    lines.append(f"{'command' if command else 'checker'} exit: {result.get('exit_code')}")
     output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
     shown = "\n".join(text.strip() for text in output if text.strip())
     if reason and shown and shown == re.sub(r" \(SystemExit: [^)]*\)$", "", reason):
         # The checker printed only the line `reason` shows.
-        lines.append("output: the checker printed only the `reason:` line above")
+        lines.append(
+            f"output: the {'command' if command else 'checker'} printed only the `reason:` "
+            "line above"
+        )
     elif any(output):
         lines.extend(("output:", *output))
-    if keep:
+    lines.extend(f"warning: {warning}" for warning in result.get("warnings") or ())
+    if keep and command:
+        lines.append(
+            f"candidate: {result.get('candidate')} (the edited file, in the copy the command "
+            f"ran in; remove {result.get('kept')} when done)"
+        )
+    elif keep:
         lines.append(
             f"candidate: {result.get('candidate')} (the edited file, and for compiled "
             "programs the build evidence beside it; build artifacts are not kept)"
         )
-    if result.get("baseline"):
+    if result.get("baseline") and command:
+        untested = _untested(result)
+        lines.append(
+            "baseline: the unedited program, no edit"
+            + (
+                " (the command fails on it, as it should fail on the bug)"
+                if _rejected(result)
+                else f" ({untested}, so this says nothing about the bug)"
+                if untested
+                else " (the command passes on it, so it can't tell a fix from the bug)"
+                if result.get("passed")
+                else ""
+            )
+        )
+    elif result.get("baseline"):
         lines.append(
             "baseline: the unedited program, no edit"
             + (
@@ -3726,7 +3934,10 @@ def _verify_reason(result):
     unittest's `sys.exit(True)`), the first line of its stdout that says what failed
     (``_FAILURE``), else stdout's last line; with no stdout, the same of stderr. The
     status stays in `checker exit` (and
-    `checker.error`), and in the reason where it is not that exit code."""
+    `checker.error`), and in the reason where it is not that exit code. A check command's:
+    ``_command_reason``."""
+    if result.get("check_command"):
+        return _command_reason(result)
     checker = str((result.get("checker") or {}).get("error") or "")
     reason = result.get("diagnostic") or checker
     # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
@@ -3752,10 +3963,69 @@ def _verify_reason(result):
     return chosen if code == str(result.get("exit_code")) else f"{chosen} ({checker})"
 
 
+# A test runner's exit statuses that are no verdict on the program: it tested nothing
+# that could fail (pytest's 1, and unittest's, are failed tests).
+_NO_VERDICT = {
+    "pytest": {
+        2: "pytest exited 2: it was interrupted, as by a test file it could not import",
+        3: "pytest exited 3: an internal error",
+        4: "pytest exited 4: a usage error, such as a test path that doesn't exist",
+        5: "pytest exited 5: no tests ran",
+    },
+    "unittest": {5: "unittest exited 5: no tests ran"},
+}
+
+
+def _untested(result):
+    """Why a check command's exit status is no verdict on the program (pytest's 5: no
+    tests ran), or None."""
+    words = (result.get("check_command") or {}).get("argv") or [""]
+    if Path(words[0]).name in ("pytest", "py.test") or words[1:3] == ["-m", "pytest"]:
+        runner = "pytest"
+    elif words[1:3] == ["-m", "unittest"]:
+        runner = "unittest"
+    else:
+        return None
+    return _NO_VERDICT[runner].get(result.get("exit_code"))
+
+
+def _command_reason(result):
+    """Why a check command failed, in one line: a timeout, too much output, or its
+    output's line that says what failed (pytest's `FAILED tests/t.py::test_x - ...`
+    summary first, else ``_failure_line``), else its last line; stdout first, then
+    stderr. A test runner's status that is no verdict follows (``_untested``)."""
+    command = result.get("check_command") or {}
+    if result.get("timed_out"):
+        return f"the check command ran past {command.get('timeout_s')} s and was stopped"
+    if result.get("output_limit_exceeded"):
+        return "the check command printed over 1 MiB and was stopped"
+    chosen = None
+    for key in ("stdout", "stderr"):
+        lines = [line.strip() for line in split_lines(result.get(key) or "") if line.strip()]
+        if not lines:
+            continue
+        # pytest's `FAILED tests/t.py::test_x - ...`, not unittest's `FAILED (failures=1)`.
+        summary = [line for line in lines if re.match(r"(?:FAILED|ERROR) [^\s(]", line)]
+        chosen = summary[0] if summary else _failure_line("\n".join(lines)) or lines[-1]
+        if len(summary) > 1:
+            chosen += f" (and {len(summary) - 1} more)"
+        break
+    parts = [part for part in (chosen and chosen[:500], _untested(result)) if part]
+    return "; ".join(parts) or f"the check command exited {result.get('exit_code')}"
+
+
 def _rejected(result):
     """Whether the checker ran to its own verdict and rejected the program: an assertion
     failed, or it exited with a nonzero status. Not a crash of the checker (any other
-    exception), a timeout, nor a build that failed before it ran."""
+    exception), a timeout, nor a build that failed before it ran. A check command: it
+    exited nonzero by itself, with a status that is a verdict (``_untested``)."""
+    if result.get("check_command"):
+        return (
+            not result.get("timed_out")
+            and not result.get("output_limit_exceeded")
+            and result.get("exit_code") not in (0, None)
+            and _untested(result) is None
+        )
     error = str((result.get("checker") or {}).get("error") or "")
     return (
         result.get("stage") == "verification"
@@ -4139,6 +4409,12 @@ def _main(argv, _job, _edits):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
+    elif argv[:1] == ["verify"] and "--" in argv and argv[argv.index("--") - 1] == CHECK_COMMAND:
+        # `--check-command -- python -m pytest 't.py::test[1]'`: the rest are its words.
+        split = argv.index("--")
+        argv = argv[: split - 1] + (
+            [f"--check-argv={word}" for word in argv[split + 1 :]] or ["--check-argv="]
+        )
     parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION)
     add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -4445,18 +4721,27 @@ def _main(argv, _job, _edits):
     sub = commands.add_parser(
         "verify",
         help="Fresh build + independent checker for one edit (--baseline: the unedited program)",
-        usage="%(prog)s target --check CHECK (--old OLD --new NEW [--old OLD --new NEW ...] | "
-        "--baseline)\n                    [--at AT] [--config CONFIG] [--json] [--keep] "
-        "[--details] [--timeout TIMEOUT]\n                    [--python PATH] [--quiet] "
-        "[--background]",
+        usage="%(prog)s target (--check CHECK | --check-command COMMAND) (--old OLD --new NEW "
+        "[--old OLD --new NEW ...] | --baseline)\n                    [--at AT] [--config "
+        "CONFIG] [--json] [--keep] [--details] [--timeout TIMEOUT]\n                    "
+        "[--python PATH] [--quiet] [--background] [--check-command -- WORD ...]",
         description="Build the program fresh with the edit and run the trusted checker on it. "
         "--old and --new (or --old-file/--new-file) are required, once per edit, unless "
         "--baseline, which checks the unedited program instead: the checker should fail there "
-        "before a fix's `passed: True` means anything.",
+        "before a fix's `passed: True` means anything. For Python, --check-command runs the "
+        "project's own test command instead, in a fresh copy of the project with the edit.",
     )
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
-    sub.add_argument("--check", required=True, help="Trusted checker script")
+    sub.add_argument("--check", help="Trusted checker script (or --check-command)")
+    sub.add_argument(
+        CHECK_COMMAND,
+        metavar="COMMAND",
+        help="Python: instead of a checker, run this test command in a fresh copy of the "
+        "project with the edit, as `python -m pytest tests/test_x.py -q`; it passes if it exits "
+        "0. No shell: put words with shell characters after `--check-command --`, last",
+    )
+    sub.add_argument("--check-argv", action="append", help=argparse.SUPPRESS)
     python_option(sub)
     sub.add_argument(
         "--old",

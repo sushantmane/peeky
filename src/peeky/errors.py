@@ -336,6 +336,12 @@ _RULES = (
         False,
     ),
     (
+        r"^--check-command supports Python targets",
+        "UNSUPPORTED",
+        "Pass --check <checker.py>: a checker gets the fresh build's descriptor (COOKBOOK 6.5).",
+        False,
+    ),
+    (
         r"Unknown operation|Unknown .*field|unsupported command",
         "UNSUPPORTED",
         "Call `version` for supported operations.",

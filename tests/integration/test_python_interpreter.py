@@ -172,6 +172,57 @@ def test_verify_checks_on_the_projects_interpreter(project, tmp_path, capsys):
     assert result["python"]["interpreter"] == str(python)
 
 
+UNITTEST = """\
+import contextlib
+import io
+import runpy
+import unittest
+
+
+class AppTest(unittest.TestCase):
+    def test_greets_ana(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            runpy.run_path("app.py")
+        self.assertEqual(out.getvalue(), "hello ana\\n")
+"""
+
+
+def test_verify_runs_the_projects_tests_on_its_environment(project, capsys):
+    # `verify --check-command` runs the project's own tests on its interpreter, with its
+    # environment's scripts first on PATH: `greet` imports only there.
+    root, python = project
+    (root / "tests").mkdir()
+    (root / "tests" / "test_app.py").write_text(UNITTEST)
+    tests = "python -m unittest tests/test_app.py"
+    argv = ["verify", root, "--at", "app.py", "--check-command", tests]
+    code, out = run(capsys, *argv, "--baseline", "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 1, result
+    assert result["reason"].startswith("FAIL: test_greets_ana"), result["reason"]
+    assert "'hello ada\\n' != 'hello ana\\n'" in result["stderr"]
+    assert result["check_command"]["ran"][0] == str(python)
+    assert result["python"]["chosen"] == ".venv"
+    code, out = run(capsys, *argv, "--old", '"ada"', "--new", '"ana"', "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["passed"] is True, result
+    # Peeky's own interpreter can't import it: the tests fail for that reason.
+    code, out = run(
+        capsys, *argv, "--old", '"ada"', "--new", '"ana"', "--python", "peeky", "--json"
+    )
+    result = json.loads(out.out)
+    assert code == 1 and "No module named 'greet'" in result["stderr"], result
+    # A name is found on PATH, the environment's scripts first.
+    script = python.parent / "show-environment"
+    script.write_text('#!/bin/sh\necho "VIRTUAL_ENV=$VIRTUAL_ENV"\n')
+    script.chmod(0o755)
+    argv[-1] = "show-environment"
+    code, out = run(capsys, *argv, "--baseline", "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["check_command"]["ran"] == [str(script)], result
+    assert result["stdout"] == f"VIRTUAL_ENV={root / '.venv'}\n"
+
+
 def test_describe_reads_with_the_projects_interpreter(project, capsys):
     root, python = project
     code, out = run(capsys, "describe", root / "app.py", "--json")

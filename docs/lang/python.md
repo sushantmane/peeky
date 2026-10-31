@@ -131,3 +131,19 @@ Peeky debugs Python with debugpy, Python's debugger.
   `verify` ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - An edit with a syntax error fails with `NO_STOP`. The output shows the `SyntaxError`
   ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).
+
+## Verify an edit with your tests
+
+- `verify --check-command 'python -m pytest tests/test_x.py -q'` runs your test command in place
+  of a checker. It runs in a fresh copy of the root with the edit, and passes when the command exits
+  0. Run it with `--baseline` first: it should fail on the bug
+  ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- `python` is the program's interpreter. Other programs are found on `PATH`, with the interpreter's
+  directory first ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- No shell runs it, so shell syntax is refused. Put words such as a test id with `[` last, after
+  `--check-command --` ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- It gets 20 seconds, as a checker does. Its output keeps each stream's end, where pytest's summary
+  is ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- Nothing above the root is copied, and a warning says so unless the root is a project's. The
+  edited file being self-contained doesn't remove it: the tests may import anything
+  ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).

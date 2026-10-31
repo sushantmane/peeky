@@ -153,6 +153,23 @@ _IMPURE_NAMES = frozenset(
 COPY_NOTE = "This Python candidate ran from a copy of "
 
 
+def _command_copy_note(root, above, at):
+    """The note on the copy `verify --check-command` ran its command in: nothing above
+    ``root`` (inside the repository at ``above``, the --at file being ``at`` there)."""
+    where = (
+        f", inside the repository at {above}/"
+        if above
+        else " (no .git, pyproject.toml, setup.py or setup.cfg there)"
+    )
+    target = f"{above} --at {at.as_posix()}" if above else "<project> --at <path/to/file.py>"
+    return (
+        f"The check command ran in a copy of {root}/ only{where}. If it or the tests read, "
+        "import or run anything above it, give that directory as the target (`peeky verify "
+        f"{target} ...`): nothing above was copied, so the result may differ for that reason, "
+        "not the edit's"
+    )
+
+
 def _shadowed(names, places):
     """Whether a module of one of ``names`` may not be the standard library's where the
     program imports it: a module or package of that name (any case: a volume may ignore
@@ -274,11 +291,14 @@ def _self_contained(text, places=()):
 
 MAX_COPIED_FILES = 20_000
 MAX_COPIED_BYTES = 256 * 1024 * 1024
-_TOO_LARGE = (
-    f"A Python candidate copies the target root, and this one is too large (over "
-    f"{MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB): give a smaller target "
-    "directory, or check the edit with `peeky verify`"
-)
+
+
+def _too_large(instead):
+    return (
+        f"A Python candidate copies the target root, and this one is too large (over "
+        f"{MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB): give a smaller target "
+        f"directory, or {instead}"
+    )
 
 
 class PythonCandidate:
@@ -288,11 +308,20 @@ class PythonCandidate:
     `__file__`, multiprocessing's spawn, an editable install's path) is the copy, so all
     of it runs the edit. Files above the root are not copied. The program's writes stay in
     the copy, except inside an environment directory or through a link that leaves the
-    root, which reach the originals."""
+    root, which reach the originals. With ``command`` (`verify --check-command`), the copy
+    is where a test command runs, and ``edit`` may be None (`--baseline`: no edit)."""
 
-    def __init__(self, adapter, program, root, edit, deadline=None):
+    def __init__(self, adapter, program, root, edit, deadline=None, *, command=False):
         self.adapter = adapter
         self._deadline = deadline
+        # What to do instead where the copy cannot serve.
+        self._instead = (
+            "check the edit with a `--check` checker"
+            if command
+            else "check the edit with `peeky verify`"
+        )
+        # Why an import in the copy may load the user's unedited module, if it may.
+        self.unedited_imports = []
         self.original = Path(program).resolve(strict=True)
         root = Path(root).resolve(strict=True)
         relative = self.original.relative_to(root)
@@ -307,11 +336,17 @@ class PythonCandidate:
                     f"target (`peeky probe {parent} --at "
                     f"{self.original.relative_to(parent).as_posix()}:<line>`)"
                 )
-        if relative.as_posix() != edit.path:
-            raise ValueError("A Python candidate edits the --at file only")
         text = self.original.read_text()
-        if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
-            raise ValueError("--old must match the --at file exactly once and --new must change it")
+        if edit is None and command:
+            edited = text
+        else:
+            if relative.as_posix() != edit.path:
+                raise ValueError("A Python candidate edits the --at file only")
+            if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
+                raise ValueError(
+                    "--old must match the --at file exactly once and --new must change it"
+                )
+            edited = text.replace(edit.old, edit.new, 1)
         from peeky.build import private_base
 
         def outside(base):
@@ -332,8 +367,7 @@ class PythonCandidate:
                 self.staged = self._copy(root, self.root, relative, os.stat(self.original))
             except OSError as error:
                 raise ValueError(
-                    f"A Python candidate could not copy the target root ({error}); check the "
-                    "edit with `peeky verify`"
+                    f"A Python candidate could not copy the target root ({error}); {self._instead}"
                 ) from None
             # Before the edit, so the copied repositories see the copy as unchanged.
             self._finish_git()
@@ -349,7 +383,7 @@ class PythonCandidate:
             handle = os.open(self.staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
             os.fchmod(handle, stat.S_IMODE(os.stat(self.original).st_mode))
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                stream.write(text.replace(edit.old, edit.new, 1))
+                stream.write(edited)
             # Other names of the same file (hard links) are the edited file too, and stay
             # hard links: a symlink would give a script run by that name (`python
             # backup/app.py`) the --at file's directory as `sys.path[0]` and `__file__`.
@@ -360,7 +394,7 @@ class PythonCandidate:
                 except OSError as error:
                     raise ValueError(
                         f"A Python candidate could not link {twin.name} to the edited file "
-                        f"({error}); check the edit with `peeky verify`"
+                        f"({error}); {self._instead}"
                     ) from None
             # Directories last, deepest first: their writes are done, and a read-only one
             # (`r-x`) stays read-only for the program.
@@ -415,13 +449,14 @@ class PythonCandidate:
             os.path.lexists(root / marker) for marker in _PROJECT_MARKERS
         )
         # A script that reaches nothing outside its own file needs no note (a candidate
-        # runs the --at file itself: launch_args).
-        if (above is not None or not project) and not self._self_contained(
-            text.replace(edit.old, edit.new, 1)
-        ):
+        # runs the --at file itself: launch_args). A test command runs other files, which
+        # may reach anything.
+        if (above is not None or not project) and (command or not self._self_contained(edited)):
             target, at = (above, self.original.relative_to(above)) if above else (None, None)
             self.warnings.append(
-                f"{COPY_NOTE}{root}/ only"
+                _command_copy_note(root, above, at)
+                if command
+                else f"{COPY_NOTE}{root}/ only"
                 + (
                     f", inside the repository at {above}/"
                     if above
@@ -483,8 +518,7 @@ class PythonCandidate:
                 if key in seen:
                     raise ValueError(
                         f"A Python candidate cannot copy {Path(here) / name}: {seen[key]!r} "
-                        "beside it differs only by case or Unicode form; check the edit with "
-                        "`peeky verify`"
+                        f"beside it differs only by case or Unicode form; {self._instead}"
                     )
                 seen[key] = name
             kept = []
@@ -517,7 +551,7 @@ class PythonCandidate:
                 path = Path(here) / name
                 files += 1
                 if files > MAX_COPIED_FILES:
-                    raise ValueError(_TOO_LARGE)
+                    raise ValueError(_too_large(self._instead))
                 status = path.lstat()
                 if name == ".git":
                     # A worktree's or submodule's `gitdir:` pointer (or a link to one):
@@ -543,7 +577,7 @@ class PythonCandidate:
                 else:
                     size += status.st_size
                     if size > MAX_COPIED_BYTES:
-                        raise ValueError(_TOO_LARGE)
+                        raise ValueError(_too_large(self._instead))
                     # Bytes, mode and times: no flags (a locked file could not be removed).
                     shutil.copyfile(path, folder / name, follow_symlinks=False)
                 shutil.copymode(path, folder / name, follow_symlinks=False)
@@ -562,7 +596,7 @@ class PythonCandidate:
             except (_NotPrivate, subprocess.SubprocessError) as error:
                 raise ValueError(
                     f"A Python candidate cannot copy this git repository privately ({error}); "
-                    "check the edit with `peeky verify`"
+                    f"{self._instead}"
                 ) from None
         if staged is None and len(self.twins) == 1:
             # The --at path as typed in another spelling: its one copy.
@@ -816,10 +850,14 @@ class PythonCandidate:
             moved = self._project_copy(real.parent) if name in (real.name, real.stem) else None
             if moved is None:
                 unmoved.add(name)
+                self.unedited_imports.append(
+                    f"in the copy, `import {name}` loads your unedited module: an editable "
+                    f"install maps it to {module}, and Peeky can't move that to the copy"
+                )
                 self._notes.append(
                     f"This Python candidate cannot move an editable install's `{name}` (it "
                     f"maps to {module}) to the copy, so `import {name}` loads your unedited "
-                    "module; check the edit with `peeky verify`"
+                    f"module; {self._instead}"
                 )
                 continue
             later.append(moved)
@@ -889,11 +927,15 @@ class PythonCandidate:
                 None,
             )
             if served is not None:
+                self.unedited_imports.append(
+                    f"in the copy, `import {name}` loads {served} from your tree: an import "
+                    "hook or install serves it ahead of every import path"
+                )
                 self._notes.append(
                     f"This Python candidate's `import {name}` loads {served} from your tree, "
-                    "not the copy, so values from it are not the edit's: check the edit with "
-                    "`peeky verify`. An import hook or install, such as meson-python's editable "
-                    "loader, serves it ahead of every import path, and may rebuild there"
+                    f"not the copy, so values from it are not the edit's: {self._instead}. An "
+                    "import hook or install, such as meson-python's editable loader, serves it "
+                    "ahead of every import path, and may rebuild there"
                 )
 
     def _self_contained(self, text):
@@ -968,6 +1010,10 @@ class PythonCandidate:
             )
             if note not in self._notes:
                 self._notes.append(note)
+                self.unedited_imports.append(
+                    "Peeky could not ask the interpreter where imports come from, so an "
+                    "editable install's `import` may load your unedited modules"
+                )
             return None
 
     def __getattr__(self, name):
@@ -993,10 +1039,17 @@ class PythonCandidate:
             launch["env"] = {**launch.get("env", {}), "PYTHONPATH": self._pythonpath}
         return launch
 
-    def close(self):
+    @property
+    def pythonpath(self):
+        """The `PYTHONPATH` that puts the copy first (None: the user's, unchanged)."""
+        return self._pythonpath
+
+    def close(self, keep=False):
+        """Remove the copy (with ``keep``, leave it, removable); end the readings."""
         try:
             _make_removable(self.scratch)
-            shutil.rmtree(self.scratch, ignore_errors=True)
+            if not keep:
+                shutil.rmtree(self.scratch, ignore_errors=True)
         finally:
             # The launch's readings end with it.
             self.adapter.close()

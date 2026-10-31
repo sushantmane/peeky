@@ -103,6 +103,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
    - [6.4 Several Edits at Once](#64-several-edits-at-once): repeated `--old`/`--new` pairs
    - [6.5 Writing a Checker](#65-writing-a-checker): what a checker gets and must do
    - [6.6 See What a Fix Does Before Making It](#66-see-what-a-fix-does-before-making-it): candidate probes (`--old`/`--new`) and the `compare:` line
+   - [6.7 Check an Edit With the Project's Tests](#67-check-an-edit-with-the-projects-tests): `--check-command`, Python's own test command
 7. [C, C++, Rust and Java](#7-c-c-rust-and-java): what each language reads and changes
    - [7.1 C and C++](#71-c-and-c): read, set, withheld locals, strings and changing their text, maps, what `set` checks
    - [7.2 Rust (a Cargo crate)](#72-rust-a-cargo-crate): values read from memory, settable locals and texts, crate shape
@@ -3973,6 +3974,93 @@ program.
   register.
 - [Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it): what a Python
   candidate's copy holds.
+
+### 6.7 Check an Edit With the Project's Tests
+
+**What it answers:** Do the project's own tests pass with this edit, and fail without it?
+
+For a Python target, `--check-command` runs your test command in place of a checker. Peeky copies
+the target root, applies the edit to the copy, and runs the command there. Your files don't change.
+Run it with `--baseline` first: the tests should fail on the bug.
+
+```sh
+peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc.py' --baseline
+```
+
+```
+passed: False  stage: verification  seconds: 0.174
+python: /home/me/calc/.venv/bin/python, Python 3.12.4 (the root's .venv)
+command: python -m pytest -q tests/test_calc.py
+ran: /home/me/calc/.venv/bin/python -m pytest -q tests/test_calc.py (in a copy of /home/me/calc, for at most 20 s)
+reason: FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3 (and 1 more)
+command exit: 1
+output:
+FF                                                                       [100%]
+...
+FAILED tests/test_calc.py::test_add[1-2-3] - assert -1 == 3
+FAILED tests/test_calc.py::test_add[2-2-4] - assert 0 == 4
+2 failed in 0.01s
+
+baseline: the unedited program, no edit (the command fails on it, as it should fail on the bug)
+```
+
+Then the fix:
+
+```sh
+peeky verify . --at calc.py --check-command 'python -m pytest -q tests/test_calc.py' \
+  --old 'return a - b' --new 'return a + b'
+```
+
+```
+passed: True  stage: verification  seconds: 0.169
+...
+command exit: 0
+output:
+..                                                                       [100%]
+2 passed in 0.00s
+
+diff:
+...
+```
+
+- It passes when the command exits 0. Other exit codes fail, and so does a command that runs past
+  its time or prints over 1 MiB.
+- It runs on the program's interpreter, the one the `python:` line names
+  ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)). `python` and `python3`
+  are that interpreter. Other names are found on `PATH`, with the interpreter's directory first, so
+  `pytest` is its environment's. `VIRTUAL_ENV` names that environment.
+- The working directory is the copy's root. A path such as `./run_tests.sh` names a file in it.
+- No shell runs the command. Quotes group words, and shell syntax is refused: `|`, `>`, `$`, `*`,
+  `[`, `;`, `&` and the like. For a pipe or a redirect, run a script. For a word with such
+  characters, such as a test id with `[`, put the command's words last, after
+  `--check-command --`:
+
+  ```sh
+  peeky verify . --at calc.py --baseline \
+    --check-command -- python -m pytest -q 'tests/test_calc.py::test_add[1-2-3]'
+  ```
+
+- The command gets 20 seconds, as a checker does. `--timeout` can only shorten that. A command
+  that runs longer is stopped: `reason: the check command ran past 20 s and was stopped`.
+- `stdout` and `stderr` keep the last 16,000 bytes of each stream, where pytest's summary is.
+  `reason` is pytest's first `FAILED` line. Otherwise it is the first line that starts like a
+  failure ([Where `reason` comes from](#where-reason-comes-from)), else the last line.
+- Some statuses mean no test failed: pytest's 2 (a test file failed to import), 3, 4 (a usage
+  error) and 5 (no tests ran), and unittest's 5. `reason` and the `baseline:` line say so: the
+  command didn't catch the bug.
+- The command gets no worker token, and Python writes no bytecode (`PYTHONDONTWRITEBYTECODE=1`).
+- The copy is the one a candidate probe makes
+  ([Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it)). Nothing above the
+  root is copied. A warning says so unless the root is a project's. It warns even when the edited
+  file imports nothing, because the tests may import anything.
+- An edit is refused when imports in the copy may load your unedited module, as from an editable
+  install Peeky can't redirect. Check it with a `--check` checker instead.
+- `--keep` keeps the copy, named by `kept` in JSON, with the edited file at `candidate:`.
+- JSON adds `check_command`: `argv` as given, `ran` as run, `copy_of` and `timeout_s`. `exit_code`,
+  `stdout`, `stderr` and `timed_out` are the command's. `warnings` lists notes on the copy.
+- Only Python targets take it for now. Others are refused with `UNSUPPORTED`: write a checker
+  ([6.5](#65-writing-a-checker)). A Cargo crate's tests run with its checker anyway
+  ([6.1](#a-cargo-crates-tests)).
 
 ---
 
