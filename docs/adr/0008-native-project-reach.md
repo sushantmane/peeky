@@ -127,11 +127,11 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 - `analyse`: the packages Peeky builds with its MIR wrapper and proves values in. Breakpoints go only in their files.
 - `run`: `{"bin": "rg"}`, `{"package": "axum", "lib": true}` for unit tests, or a `test`. A test's filter follows `--`: `-- --exact <name> --test-threads=1`.
-- `vendor`: from `cargo vendor`, passed as `--config` source replacement. The workspace's `.cargo/config.toml` is a hashed input; any above it stays refused.
+- `vendor`: from `cargo vendor`, passed as `--config` source replacement. The workspace's `.cargo/config.toml` is a hashed input. Configuration above it, `~/.cargo/config.toml` included, is accepted under the same allowlist; each file's path and SHA-256 are recorded, so a change is `PROVENANCE_CHANGED`. A manifest above the workspace stays refused.
 
 **Build.** `peeky build . --config rust.json [--background]` runs `cargo build` or `cargo test --no-run`, `--offline --locked`, into a private target directory in Peeky's state directory.
 
-- Dependency artifacts are reused. Each vendored package's checksum must equal Cargo.lock's, and Cargo checks each file against it.
+- Dependency artifacts are reused. Each vendored copy's `.cargo-checksum.json` must give Cargo.lock's checksum and list every file of the copy, none missing and none more; Peeky hashes each file and compares. This proves the copy is what `cargo vendor` wrote, unless its checksum file was edited to match. It doesn't authenticate the crate against crates.io beyond Cargo.lock's checksum.
 - The analysed packages are compiled every time, as Peeky first removes their fingerprints. The wrapper stamps their MIR with the build's nonce, and records their rustc commands, so `opt-level=0` is checked whatever the profiles say. `--emit=llvm-ir` moves into the wrapper, for them only.
 - Their dependency files' entries are hashed inputs, and `OUT_DIR` files hashed artifacts.
 - A probe uses the build while its manifest holds (`assert_current`), and never builds: [ADR 0004](0004-stateless-probes.md)'s step 5 for these targets.
@@ -144,7 +144,7 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 **Macros.** The source scans (`unsafe_source`, `without_numbered_structs`, `_crate_traits`, trusted names) read each analysed crate as rustc expands it (`-Zunpretty=expanded`). A glob `use` of a dependency makes bare standard names untrusted, as it shadows the prelude.
 
-**Errors.** `BUILD_FAILED` as today. A new `BUILD_REQUIRED`: no current build, naming `peeky build`. `PROVENANCE_CHANGED`: an analysed source changed since the build, or a vendored checksum differs from Cargo.lock. `UNSUPPORTED`: a git dependency without vendored source, `[patch]`, or an analysed package outside editions 2021 and 2024.
+**Errors.** `BUILD_FAILED` as today. A new `BUILD_REQUIRED`: no current build, naming `peeky build`. `PROVENANCE_CHANGED`: an analysed source changed since the build, or a vendored checksum differs from Cargo.lock. `UNSUPPORTED`: a git dependency, vendored or not (Cargo.lock records no checksum for a git source), `[patch]`, or an analysed package outside editions 2021 and 2024. Edition 2018 is refused until the last part of phase 2 qualifies it.
 
 **Trust and the worker.** Build scripts and procedural macros are the project's code, as the program is; `THREAT_MODEL.md` says so. A worker builds only from its `--rust-config`, as a job. It compares every `Cargo.toml`, `Cargo.lock` and the analysed sources with the client's.
 
@@ -152,10 +152,10 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
 
 **Acceptance,** on the six images:
 
-- **tokio-4867, tokio-6752:** a library's integration tests. tokio has unsafe code, so memory reads stay withheld with today's note; scalars read.
+- **tokio-4867, tokio-6752:** a library's integration tests. tokio has unsafe code, so memory reads stay withheld with today's note; scalars read. tokio-4867's tokio is edition 2018: refused until 2018 is qualified.
 - **axum-1934:** unit tests of a crate that forbids unsafe code, so memory reads are exercised.
 - **bat-3108:** a binary with `build.rs`; clap's types stay raw.
-- **ripgrep-2209:** `rg -U --replace`, with the path dependency `grep-printer` analysed.
+- **ripgrep-2209:** `rg -U --replace`, with the path dependency `grep-printer` analysed. Both are edition 2018: refused until 2018 is qualified.
 - **coreutils-6690:** the multicall binary, with `uu_cp` analysed.
 
 Each also checks a change refused with a note naming a dependency call, and one allowed where only std is called. No value may contradict the program. Build times with a cold and a warm dependency cache, and analysed entries against `MAX_DIES`, are recorded.
@@ -214,7 +214,37 @@ All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000
 
 ## Not yet verified
 
-- `-Zunpretty=expanded` works through the wrapper on rustc 1.96, and a warm workspace build fits an agent's wait.
+Nothing for phases 1 and 2: phase 1's items are verified above, and phase 2's below.
+
+### Verified for phase 2
+
+Measured with Rust 1.96.0 on macOS and in the study's images (aarch64 Linux, 4 CPUs), with a prototype of the wrapper. `tests/rust/test_rust_workspace_shape.py` keeps the first and fourth points checked.
+
+- **Expansion works, through `RUSTC_BOOTSTRAP` for one crate.** `-Zunpretty=expanded` is a nightly flag. `RUSTC_BOOTSTRAP` set to the crate's name allows it for that crate's compile alone, as it allows the MIR dump's flags today. Another crate's name is refused. No stable flag expands a crate.
+- **The wrapper runs it as a second rustc process,** before the compile, with `-o` and without `--emit` or `--out-dir`. Its messages stay out of Cargo's: they go to a file. It took 0.01 to 0.21 s per crate, for 4 KB to 3.4 MB of text (tokio). The text starts with `#![feature(prelude_import)]` and the prelude's `use`, which the scans must skip.
+- **Build scripts run rustc through the wrapper too:** tokio's `autocfg` probes did, with `CARGO_PKG_NAME` set to tokio. So the wrapper acts only on an analysed target's own compile, by its crate name and source file from Cargo's metadata.
+- **Cargo checks each file of a vendored copy as it compiles the package,** and refuses a changed file by name. It doesn't check again while it reuses the compiled package, and it accepts a checksum file that lists no files. So Peeky hashes every file of each copy itself, before and after Cargo runs and at every probe. The copy's checksum file must list them all.
+- **`cargo metadata` doesn't describe the build:** without the configured features it leaves out an optional path dependency that a feature enables, and with every feature it reads ones the build doesn't. Cargo's unit graph of the build's own command describes it: `--unit-graph`, an unstable flag that `RUSTC_BOOTSTRAP=1` allows for that one command, which compiles nothing. It gives each unit's package, features, target and profile. Peeky reads the members with `cargo metadata --no-deps`, which resolves no dependency, and everything else from the graph. Every path package the graph compiles must be inside the root, and each analysed package a member it compiles. A graph or metadata that isn't what Cargo 1.96 writes, field by field, is refused, naming the Cargo that wrote it.
+- **Profiles:** environment variables override a profile's own settings, in Cargo.toml and in Cargo's configuration, but not a setting for one package (`[profile.dev.package.x]`). Peeky sets opt-level, debug, split-debuginfo, strip, lto and incremental for the dev and test profiles. It refuses an analysed package whose unit in the graph differs, or aborts on a panic.
+- **Configuration:** where `.cargo/config` and `.cargo/config.toml` both exist, Cargo reads only `config`, and so does Peeky. A `[target.'cfg(...)']` table applies only where its expression holds for the host: `rustc --print cfg`, with the flags the build has. `true` and `false` are literals, as in Cargo. One Peeky can't evaluate is refused, saying so.
+- **Rustflags:** Peeky builds with its own flags (`CARGO_ENCODED_RUSTFLAGS`), so no configuration's `rustflags` apply. It keeps the project's own where each is a `--cfg` or `--check-cfg` flag, chosen as Cargo chooses them: every applicable `target.<triple>` and `target.'cfg(...)'` table's, joined, where any has `rustflags`, else `build.rustflags`; only the chosen ones are checked, so a `target-cpu=native` in an ignored `build.rustflags` is no refusal. They are recorded in the build's provenance. Any other flag is refused, naming the file and key. Where the chosen key is set in more than one configuration file, Cargo merges them (the deeper file's string wins, arrays join); Peeky doesn't model that, and refuses, naming both files. `build.target-dir` gives way to Peeky's own target directory, for the metadata, the unit graph and the build.
+- **Races:** before Cargo runs, Peeky records what Cargo reads: each configuration file, the lockfile, the root manifest and every manifest a member pattern can name (hidden and `target` directories included, those `workspace.exclude` leaves out not, as Cargo excludes them), and each vendored file. What must be absent is recorded as absent: a manifest in any directory above the workspace, and configuration or credentials in Cargo's home (Peeky's own); one that appears is a change. A record is a file's kind, where it resolves to and its SHA-256. What Peeky checked is recorded as the bytes it parsed, not read again, and compared once more just before Cargo starts. After Cargo ran, every manifest its metadata and unit graph name (the members', the compiled packages', and each path dependency a member names, built or not) joins the record; the metadata and the unit graph are taken again and must be identical, and everything is compared again. The configuration files are compared as a set before any is read, and the vendored copies rechecked file by file (a new file or a link is refused). A change is `PROVENANCE_CHANGED`. There is no private copy of the workspace.
+- **A warm build fits an agent's wait.** "Warm" removes the analysed packages' artifacts (`cargo clean -p`) and builds again, as every `peeky build` will; dependencies are reused.
+
+| Project | Analysed (what runs) | Cold | Warm | No change | MIR files, MB (`after`) |
+| --- | --- | --- | --- | --- | --- |
+| tokio-6752 | tokio-util (test `time_delay_queue`) | 2.7 s | 0.2 s | 0.03 s | 224, 4 (1) |
+| tokio-4867 | tokio (test `sync_broadcast`) | 5.0 s | 1.1 s | 0.04 s | 3134, 34 (13) |
+| axum-1934 | axum (its unit tests) | 19.6 s | 7.0 s | 0.06 s | 4246, 131 (63) |
+| bat-3108 | bat (bin `bat`) | 14.8 s | 2.3 s | 0.04 s | 1376, 44 (20) |
+| ripgrep-2209 | grep-printer (bin `rg`) | 3.5 s | 0.9 s | 0.02 s | 672, 10 (4) |
+| coreutils-6690 | uu_cp (bin `coreutils`) | 9.7 s | 1.8 s | 0.06 s | 286, 9 (3) |
+
+- **MIR size:** axum's `PreCodegen.after` bodies are 63 MB (2,123 bodies), just under `MAX_MIR_BYTES` (64 MiB). Peeky's reader parses them in 1.5 s. Larger crates will need the bound per crate, or bodies read as a stop needs them.
+- **Editions:** tokio at tokio-4867, and ripgrep and grep-printer at ripgrep-2209, are edition 2018. Phase 2 refuses to analyse edition 2018 until its last part qualifies it. That part checks which differences change Peeky's readings or proofs: disjoint closure captures, arrays' `IntoIterator`, `panic!`'s forms and the prelude. It tests them on tokio-4867 and ripgrep-2209. Until then, their acceptance checks the refusal.
+- **Cargo configuration:** ripgrep's and coreutils' `.cargo/config.toml` set only other targets' flags and linkers, and clippy's lints. tokio-4867's `.cargo/config` is all comments. Peeky accepts these, and refuses what would change its build (`rust_workspace.check_cargo_config`).
+- **Git dependencies:** Cargo.lock records no checksum for one, so nothing ties a vendored copy to the commit it names. Phase 2 refuses every git dependency, vendored or not, and says so (owner's decision).
+- **Configuration above the workspace** is accepted under the workspace's allowlist (owner's decision), as Cargo reads `~/.cargo/config.toml` above a workspace in the home directory. A key off the allowlist is refused, naming the file and the key. Each file's path and SHA-256 are recorded, so a change is `PROVENANCE_CHANGED`. Peeky's own CARGO_HOME holds no configuration, so Cargo reads no other.
 
 ## Consequences
 
