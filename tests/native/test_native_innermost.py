@@ -1552,7 +1552,10 @@ def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
     result, rows = probed(capsys, path, line_of(JUMPED, "// AFTER"), capture, 2)
     for hit in (1, 2):
         note = rows[hit, "later"]["note"]
-        assert "value" in rows[hit, "later"] and "calls setjmp (line" in note, rows
+        assert (
+            "value" in rows[hit, "later"]
+            and "calls setjmp, or another function that returns twice (line" in note
+        ), rows
         assert rows[hit, "later"]["settable"] is False
         assert all("note" not in rows[hit, name] for name in ("total", "before", "tries", "n"))
     assert rows[1, "before"]["value"] == "6" and rows[2, "total"]["value"] == "100", rows

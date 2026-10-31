@@ -528,6 +528,10 @@ def test_a_unit_s_preprocessing_is_replayed_with_the_options_that_choose_what_it
         ("-c main.c -include", "-include without its value"),
         ("-mllvm -x -c main.c", "-mllvm"),
         ("--driver-mode=cl -c main.c", "--driver-mode=cl"),
+        # The build's host CPU, which the replay's host may not share.
+        ("-march=native -c main.c", "-march=native, whose macros are those of the CPU"),
+        ("-mcpu=native+crc -c main.c", "-mcpu=native+crc"),
+        ("-mtune=native -c main.c", "-mtune=native"),
     ],
 )
 def test_what_can_t_be_passed_leaves_the_unit_s_text_unread(words, why):

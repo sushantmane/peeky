@@ -981,8 +981,10 @@ def _describe_text(manifest):
         if (twice := manifest.get("returns_twice")) and twice.get("any"):
             lines.append(f"calls that may return twice: any ({twice['why']})")
         elif twice:
-            named = ", ".join(twice["named"]) or "none"
-            lines.append(f"calls that may return twice: setjmp's, and {named}")
+            from peeky.c_source import RETURNS_TWICE_FAMILY
+
+            named = f"; and {', '.join(twice['named'])}" if twice["named"] else ""
+            lines.append(f"calls that may return twice: {RETURNS_TWICE_FAMILY}{named}")
     for source, numbers in manifest["breakpoint_lines"].items():
         lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):

@@ -365,6 +365,8 @@ _REPLAY_FORMS = re.compile(
     r"|cf-protection|openmp|wchar-type|constexpr-steps|constexpr-depth|template-depth"
     r"|bracket-depth)=\S+"
 )
+# A CPU the compiler detects on the host it runs on: the replay's host may differ.
+_HOST_CPU = re.compile(r"-m(?:arch|cpu|tune)=native(?:\W.*)?")
 _INERT_SEPARATE = frozenset(
     """-o -MF -MT -MQ -MJ -Xlinker -Xassembler -L -l -u -z -T -filelist -install_name
     -framework -weak_framework -serialize-diagnostics -dependency-file -dependency-dot
@@ -441,6 +443,11 @@ def replay_arguments(words, comp_dir, main):
                     unread(f"-x {value} after its input, for later inputs only")
                 passed += [word, value]
             continue
+        if _HOST_CPU.fullmatch(word):
+            raise NotRecorded(
+                f"its command uses {word}, whose macros are those of the CPU that built it, "
+                "which Peeky can't tell"
+            )
         if word in _REPLAY_WORDS or word in _MODES or _REPLAY_FORMS.fullmatch(word):
             passed.append(word)
         elif not (word in _INERT_WORDS or _INERT_FORMS.fullmatch(word)):

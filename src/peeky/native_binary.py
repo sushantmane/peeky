@@ -50,7 +50,17 @@ from peeky.build import (
     jobs,
     private_base,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
+from peeky.c_source import (
+    _RETURNS_TWICE,
+    RETURNS_TWICE_NAMES,
+    Preprocessed,
+    Statements,
+    blank,
+    macro_hazards,
+    normalized,
+    optimizes,
+    returning_twice,
+)
 from peeky.digest import sha256_file
 from peeky.errors import Refused
 from peeky.native import (
@@ -391,8 +401,9 @@ def check_files(units, root):
 class UnitText:
     """A read unit's text, as the config's compiler preprocesses it again: its
     c_source.Preprocessed and Statements, whether it may optimize a function beyond its
-    level (c_source.optimizes), whether the program's text in it holds `asm`, and
-    ``reads``, the files under the root its preprocessing reads (relative)."""
+    level (c_source.optimizes), why its text may return twice by assembly (``asm``:
+    asm_uses', with where, or None), and ``reads``, the files under the root its
+    preprocessing reads (relative)."""
 
     preprocessed: object
     statements: object
@@ -400,6 +411,279 @@ class UnitText:
     asm: bool
     reads: tuple
     cpp: bool
+
+
+# What asks the preprocessor whether a file exists (or may be embedded), and `#embed`,
+# which reads a file no line table names.
+_PROBE = re.compile(r"(?<![\w$])(__has_include_next|__has_include|__has_embed)(?![\w$])")
+_EMBED = re.compile(r"^[ \t]*#[ \t]*embed(?![\w$])", re.M)
+_DIRECTIVE = re.compile(r"[ \t]*#[ \t]*(\w*)")
+_DEFINE_NAME = re.compile(r"[ \t]*#[ \t]*define[ \t]+(\w+)")
+_DEFINED_BEFORE = re.compile(r"defined[ \t]*\(?[ \t]*$")
+_OPERAND = re.compile(r"(?:[ \t]|\\\n)*\(")
+_GAP = re.compile(r"(?:[ \t]|\\\n)*")
+
+
+@dataclass(frozen=True)
+class Probe:
+    """One availability probe in a file, or an `#embed`: its line, its kind
+    (`__has_include`, `__has_include_next`, `__has_embed`, `#embed`), its operand where
+    it is written out (``angled``: `<x.h>`; else `"x.h"`; ``header`` None where it isn't),
+    and the macro whose body holds it (``macro``; "" where Peeky can't tell which)."""
+
+    line: int
+    kind: str
+    angled: bool
+    header: str | None
+    macro: str | None
+
+
+def probes(text):
+    """The availability probes of a file's ``text``, and its `#embed`s, outside comments
+    and literals. One that only asks whether the name exists (`defined(__has_include)`,
+    `#ifdef`, `#undef`), or defines it (`#define __has_include(x) 0`), is none."""
+    import bisect
+
+    original = normalized(text)
+    blanked = blank(original)
+    starts = [0] + [found.end() for found in re.finditer("\n", blanked)]
+    found = []
+    for match in _PROBE.finditer(blanked):
+        at = match.start()
+        index = bisect.bisect_right(starts, at) - 1
+        # A line continues after a backslash at its end.
+        while index > 0 and blanked[starts[index] - 2 : starts[index] - 1] == "\\":
+            index -= 1
+        begin = starts[index]
+        directive = _DIRECTIVE.match(blanked, begin)
+        name = directive[1] if directive else None
+        if name in ("ifdef", "ifndef", "elifdef", "elifndef", "undef"):
+            continue
+        if _DEFINED_BEFORE.search(blanked, begin, at):
+            continue
+        macro = None
+        if name == "define":
+            defined = _DEFINE_NAME.match(blanked, begin)
+            if defined is not None and defined.start(1) == at:
+                continue
+            macro = defined[1] if defined is not None else ""
+        angled, header = False, None
+        if (operand := _OPERAND.match(blanked, match.end())) is not None:
+            # In the text itself: a literal's inside is blank.
+            start = _GAP.match(original, operand.end()).end()
+            close = re.compile(r'<([^>\n]*)>|"([^"\n]*)"').match(original, start)
+            if close is not None:
+                angled = close[1] is not None
+                header = close[1] if angled else close[2]
+        line = bisect.bisect_right(starts, at)
+        found.append(Probe(line, match[1], angled, header, macro))
+    for match in _EMBED.finditer(blanked):
+        found.append(Probe(bisect.bisect_right(starts, match.start()), "#embed", False, None, None))
+    return found
+
+
+def _search_lists(said):
+    """The header search lists clang's `-v` writes: (quoted, angled), each a list of
+    (directory, whether Peeky can look in it: not a framework directory or header map),
+    or None where it wrote none."""
+    quoted, angled, current = [], [], None
+    for line in said.split("\n"):
+        if line.startswith('#include "..." search starts here:'):
+            current = quoted
+        elif line.startswith("#include <...> search starts here:"):
+            current = angled
+        elif line.startswith("End of search list."):
+            return quoted, angled
+        elif current is not None and line.startswith(" "):
+            entry = line[1:]
+            plain = not entry.endswith((" (framework directory)", " (headermap)"))
+            current.append((entry.rsplit(" (", 1)[0] if not plain else entry, plain))
+    return None
+
+
+def _found(probe, includer, lists):
+    """The file a probe of ``includer`` (its path as the compiler opened it) finds, looked
+    up as clang does on its search ``lists``; None where it finds none, or where Peeky
+    can't tell where its search starts. Never a file clang's search would not reach: a
+    `__has_include_next` searches on after the last directory holding the includer."""
+    header = probe.header
+    if posixpath.isabs(header):
+        return header if os.path.isfile(header) else None
+    quoted, angled = lists
+    combined = [*quoted, *angled]
+    first = len(quoted) if probe.angled else 0
+    if probe.kind == "__has_include_next":
+        real = os.path.realpath(includer)
+        holding = [
+            index
+            for index, (directory, plain) in enumerate(combined)
+            if plain and real.startswith(os.path.realpath(directory).rstrip("/") + "/")
+        ]
+        if not holding:
+            return None
+        first = max(first, holding[-1] + 1)
+        directories = [directory for directory, plain in combined[first:] if plain]
+    else:
+        directories = [directory for directory, plain in combined[first:] if plain]
+        if not probe.angled:
+            directories.insert(0, posixpath.dirname(includer))
+    for directory in directories:
+        if os.path.isfile(path := posixpath.join(directory, header)):
+            return path
+    return None
+
+
+def _unproven_probe(read, lists, root, cache):
+    """Why a probe the replay's inputs (``read``: their paths as the compiler opened them)
+    hold may have been answered otherwise when the program was built, or None.
+
+    A probe that finds a file now (``_found``, never further than clang's own search)
+    is proven, or never ran: where it runs, clang lists the file it finds among the
+    replay's dependencies, each of which the unit's line table must name. So the build
+    read that file: it existed then, and the build's search held the replay's (its
+    environment only adds directories), so the build found it too. A probe that finds
+    none may have been answered otherwise: the build's environment may have added a
+    directory holding the file, or the file may since be gone. Peeky can't tell whether
+    it ran (its group may have been skipped), so it counts. A probe in a macro counts
+    where any input names the macro."""
+    contents = {}
+    for path in read:
+        real = os.path.realpath(path)
+        if real not in cache:
+            data = Path(real).read_bytes()
+            listed = []
+            if b"__has_" in data or b"embed" in data:
+                listed = probes(data.decode("utf-8", "replace"))
+            cache[real] = (data, listed)
+        contents[str(path)] = cache[real]
+    for path, (data, listed) in contents.items():
+        for probe in listed:
+            where = f"{probe.kind}, in {_shown(path, root)}:{probe.line}"
+            if probe.macro:
+                token = probe.macro.encode()
+                if data.count(token) < 2 and not any(
+                    token in other for name, (other, _) in contents.items() if name != path
+                ):
+                    continue
+            if probe.kind in ("#embed", "__has_embed"):
+                return (
+                    f"its preprocessing reads a file to embed ({where}), which no line table names"
+                )
+            if probe.header is None:
+                return (
+                    f"its preprocessing asks whether a file exists ({where}), naming it in a "
+                    "way Peeky doesn't read"
+                )
+            asked = f"<{probe.header}>" if probe.angled else f'"{probe.header}"'
+            if probe.macro is not None and (not probe.angled or probe.kind != "__has_include"):
+                # Where a macro's probe searches from depends on where it is expanded.
+                return (
+                    f"its preprocessing asks whether {asked} exists ({where}), in a macro, "
+                    "whose search Peeky can't follow"
+                )
+            if lists is None:
+                return (
+                    f"its preprocessing asks whether {asked} exists ({where}), and Peeky "
+                    "can't read the compiler's search path"
+                )
+            if _found(probe, path, lists) is None:
+                return (
+                    f"its preprocessing asks whether {asked} exists ({where}), and finds "
+                    "none: the build may have found one (its environment can add header "
+                    "paths, and a file may since be gone)"
+                )
+    return None
+
+
+_ASM_QUALIFIERS = frozenset(
+    "volatile __volatile__ __volatile goto inline __inline __inline__".split()
+)
+# What a statement may follow: a `(` after one of these closes its condition.
+_STATEMENT_HEADS = frozenset("if while for switch".split())
+_STATEMENT_WORDS = frozenset("else do return case default".split())
+_WORD = re.compile(r"[A-Za-z_$][\w$]*")
+_SPACE = re.compile(r"\s*")
+
+
+def _closing(blanked, at):
+    """The index of the bracket matching ``blanked[at]`` (`(` forward, `)` back), or -1."""
+    step, opening = (1, blanked[at]) if blanked[at] == "(" else (-1, blanked[at])
+    closing = ")" if opening == "(" else "("
+    depth = 0
+    while 0 <= at < len(blanked):
+        if blanked[at] == opening:
+            depth += 1
+        elif blanked[at] == closing:
+            depth -= 1
+            if depth == 0:
+                return at
+        at += step
+    return -1
+
+
+def _before(blanked, at):
+    """The last token before ``at``: (its start, its text), or (-1, "")."""
+    at -= 1
+    while at >= 0 and blanked[at].isspace():
+        at -= 1
+    if at < 0:
+        return -1, ""
+    if blanked[at] == "_" or blanked[at] == "$" or blanked[at].isalnum():
+        end = at + 1
+        while at >= 0 and (blanked[at] == "_" or blanked[at] == "$" or blanked[at].isalnum()):
+            at -= 1
+        return at + 1, blanked[at + 1 : end]
+    return at, blanked[at]
+
+
+def asm_uses(text, cpp):
+    """What of the preprocessed ``text`` (all of it, headers too) may make a call return
+    twice by assembly: an `asm` statement or one at file scope, whose code Peeky can't
+    read, or an asm label giving a declaration a symbol of RETURNS_TWICE_NAMES' family.
+    Each as (its offset, a phrase); a label giving another symbol (glibc's and Apple's
+    `__asm__("" "fopen")`) is none. Read cautiously: where Peeky can't tell a label, it
+    counts as a statement."""
+    original = normalized(text)
+    blanked = blank(original, cpp)
+    found = []
+    for keyword in _C_KEYWORD.finditer(blanked):
+        at = _SPACE.match(blanked, keyword.end()).end()
+        token = _WORD.match(blanked, at)
+        qualified = False
+        while token is not None and token[0] in _ASM_QUALIFIERS:
+            qualified = True
+            at = _SPACE.match(blanked, token.end()).end()
+            token = _WORD.match(blanked, at)
+        close = _closing(blanked, at) if blanked.startswith("(", at) else -1
+        label = (
+            not qualified
+            and close > at
+            and not blanked[at + 1 : close].strip()
+            and _declares(blanked, keyword.start())
+        )
+        if not label:
+            found.append((keyword.start(), "holds asm"))
+            continue
+        symbol = "".join(re.findall(r'"([^"\n]*)"', original[at + 1 : close]))
+        if any(_RETURNS_TWICE.fullmatch(name) for name in (symbol, symbol[1:]) if name):
+            found.append((keyword.start(), f"gives a function the symbol {symbol} in an asm label"))
+    return found
+
+
+def _declares(blanked, at):
+    """Whether the `asm` at ``at`` follows a declarator, as an asm label does: a name (not
+    `else`, `do`, ...), a `]`, or a `)` closing a declarator's parameters, an attribute or
+    a `noexcept`, not an `if`'s or a loop's condition."""
+    start, token = _before(blanked, at)
+    if token == "]":
+        return True
+    if token == ")":
+        opening = _closing(blanked, start)
+        if opening <= 0:
+            return False
+        _, head = _before(blanked, opening)
+        return bool(_WORD.fullmatch(head)) and head not in _STATEMENT_HEADS
+    return bool(_WORD.fullmatch(token)) and token not in _STATEMENT_WORDS
 
 
 def replay_environment(scratch):
@@ -412,7 +696,20 @@ def replay_environment(scratch):
     return without_credentials(env)
 
 
-def replay(judged, compiler, env, scratch, root, timeout):
+def _marked(text, at, root):
+    """Where offset ``at`` of preprocessed ``text`` comes from, by its line markers:
+    `file:line`."""
+    import bisect
+
+    starts = [0] + [found.end() for found in re.finditer("\n", text[:at])]
+    line = len(starts)
+    for marker in reversed(list(re.finditer(r'^# (\d+) "((?:[^"\\]|\\.)*)"', text[:at], re.M))):
+        number = int(marker[1]) + line - 1 - bisect.bisect_right(starts, marker.start())
+        return f"{_shown(marker[2], root)}:{number}"
+    return f"line {line}"
+
+
+def replay(judged, compiler, env, scratch, root, timeout, probed=None):
     """The UnitText of ``judged`` (a read unit), or why it can't be read: its
     preprocessing replayed (`-E`, with its dependencies) by ``compiler``, in its
     compilation directory, with the options replay_arguments passes and
@@ -440,7 +737,7 @@ def replay(judged, compiler, env, scratch, root, timeout):
     work = Path(tempfile.mkdtemp(prefix="unit-", dir=scratch))
     try:
         output, depends, errors = work / "unit.i", work / "unit.d", work / "errors.txt"
-        argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-MD", "-MF"]
+        argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-v", "-MD", "-MF"]
         argv += [str(depends), arguments[-1], "-o", str(output)]
         with errors.open("wb") as stderr:
             process = subprocess.Popen(
@@ -460,9 +757,9 @@ def replay(judged, compiler, env, scratch, root, timeout):
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     process.wait(timeout=5)
                 return unread(f"its preprocessing took over {timeout:.0f} s")
+        with errors.open("rb") as diagnostics:
+            said = diagnostics.read(MAX_REPLAY_ERRORS).decode("utf-8", "replace")
         if process.returncode:
-            with errors.open("rb") as diagnostics:
-                said = diagnostics.read(MAX_REPLAY_ERRORS).decode("utf-8", "replace")
             first = next((line for line in said.split("\n") if "error" in line), said)
             return unread(f"its preprocessing failed: {' '.join(first.split())[:200]}")
         if not output.is_file() or output.stat().st_size > MAX_UNIT:
@@ -474,10 +771,14 @@ def replay(judged, compiler, env, scratch, root, timeout):
         named = {path for path, _ in judged.files}
         # Apple's driver reads the SDK's own settings, no header: its version, which the
         # recorded -mmacos-version-min holds, for the macros.
-        settings = {
-            os.path.realpath(posixpath.join(comp_dir, value, "SDKSettings.json"))
+        roots = [
+            value
             for option, value in zip(arguments, arguments[1:])
             if option in ("-isysroot", "--sysroot")
+        ]
+        roots += [word.split("=", 1)[1] for word in arguments if word.startswith("--sysroot=")]
+        settings = {
+            os.path.realpath(posixpath.join(comp_dir, value, "SDKSettings.json")) for value in roots
         }
         reads = []
         for path in read:
@@ -491,6 +792,12 @@ def replay(judged, compiler, env, scratch, root, timeout):
                 )
             if Path(real).is_relative_to(root):
                 reads.append(Path(real).relative_to(root).as_posix())
+        inputs = [path for path in read if os.path.realpath(path) not in settings]
+        unproven = _unproven_probe(
+            inputs, _search_lists(said), root, {} if probed is None else probed
+        )
+        if unproven is not None:
+            return unread(unproven)
         own = set(reads)
 
         def program(path):
@@ -507,11 +814,17 @@ def replay(judged, compiler, env, scratch, root, timeout):
         with output.open("rb") as lines:
             preprocessed = Preprocessed(lines, program)
         statements = Statements(preprocessed.text, cpp, trigraphs=False)
+        decoded = text.decode("utf-8", "replace")
+        uses = asm_uses(decoded, cpp)
+        asm = None
+        if uses:
+            at, what = uses[0]
+            asm = f"{name}'s text {what} ({_marked(decoded, at, root)})"
         return UnitText(
             preprocessed,
             statements,
             optimizes(text, cpp),
-            bool(_C_KEYWORD.search(statements.blanked)),
+            asm,
             tuple(sorted(own)),
             cpp,
         )
@@ -529,17 +842,53 @@ def replay_units(read, compiler, scratch, root, deadline):
 
     env = replay_environment(scratch)
 
-    def one(judged):
+    def one(judged, probed):
         left = 15 if deadline is None else deadline - time.monotonic() - REPLAY_MARGIN
         if left <= 0:
             return TEXT_UNREAD.format(
                 unit=judged.name, why="there was no time left for it before the launch"
             )
-        return replay(judged, compiler, env, scratch, root, min(15, left))
+        return replay(judged, compiler, env, scratch, root, min(15, left), probed)
 
-    workers = max(1, min(MAX_REPLAYS, jobs(), len(read)))
+    # Peeky reads a unit's text by its file's name: units built from one file with other
+    # commands (`-D`s) would have one's text stand for all.
+    groups = {}
+    for each in read:
+        groups.setdefault(each.name, []).append(each)
+    texts, replayed = {}, []
+    for name, units in groups.items():
+        alike = {_built_as(each) for each in units}
+        if len(alike) > 1:
+            texts[name] = TEXT_UNREAD.format(
+                unit=name,
+                why=f"{len(units)} units are built from it, with different commands, and "
+                "Peeky reads a unit's text by its file's name",
+            )
+        else:
+            replayed.append(units[0])
+    probed = {}
+    workers = max(1, min(MAX_REPLAYS, jobs(), len(replayed) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return dict(zip((each.name for each in read), pool.map(one, read)))
+        texts.update(
+            zip(
+                (each.name for each in replayed), pool.map(lambda each: one(each, probed), replayed)
+            )
+        )
+    return texts
+
+
+def _built_as(judged):
+    """What a unit's text depends on, of what it records: its directory, its file, its
+    command, its language, its SDK and each file its line table names, with its MD5."""
+    unit = judged.unit
+    return (
+        unit.comp_dir,
+        unit.name,
+        tuple(judged.words),
+        judged.language,
+        unit.sysroot,
+        frozenset(judged.files),
+    )
 
 
 # The code the toolchain links into a program with no debug information of its own, by
@@ -839,7 +1188,7 @@ def any_call_returns_twice(judged, texts, uncovered=()):
         elif not isinstance(text, UnitText):
             found.append(f"Peeky can't read {each.name}'s text")
         elif text.asm:
-            found.append(f"{each.name}'s text holds asm")
+            found.append(text.asm)
     if not found:
         return None
     more = f", and {len(found) - 1} more" if len(found) > 1 else ""
@@ -1283,10 +1632,9 @@ class BinaryTarget:
                 macros = returning_twice(
                     Path(path).read_bytes().decode("utf-8", errors="replace") for path in outside
                 )
-            if self.returns_twice is not None:
-                returns_twice = tuple(sorted(set(self.returns_twice) | macros))
-            else:
-                returns_twice = tuple(sorted(macros)) if jumps else None
+            # The family's names are always looked for: the check above only spares
+            # reading the headers outside the program.
+            returns_twice = tuple(sorted(set(self.returns_twice or ()) | macros))
         found = read_program_symbols(
             dwarfdump,
             symbols,
@@ -1603,12 +1951,15 @@ class BinarySession(NativeSession):
 
     @property
     def returning_twice(self):
-        """Which calls may return twice, for `describe`: any, and why; those named; or
-        setjmp's alone (None where the program can't call one)."""
+        """Which calls may return twice, for `describe`: any, and why; or the family's
+        (c_source.RETURNS_TWICE_NAMES), and those the config or a macro names."""
         if self.any_call is not None:
             return {"any": True, "why": self.any_call}
-        named = getattr(self, "returns_twice", None)
-        return None if named is None else {"any": False, "named": sorted(named)}
+        return {
+            "any": False,
+            "family": list(RETURNS_TWICE_NAMES),
+            "named": sorted(getattr(self, "returns_twice", None) or ()),
+        }
 
     def _holding(self, address):
         return [
@@ -1794,8 +2145,8 @@ class BinarySession(NativeSession):
             # Calls the config names count as setjmp's do.
             where = f"line {jump}" if jump else "a line Peeky cannot tell"
             why = (
-                f'this function calls setjmp, or one the config\'s "returns_twice" names '
-                f"({where}), above the stop"
+                "this function calls setjmp, another function that returns twice, or one "
+                f'the config\'s "returns_twice" names ({where}), above the stop'
             )
         else:
             why = (

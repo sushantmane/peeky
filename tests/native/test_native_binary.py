@@ -747,6 +747,105 @@ def test_code_no_unit_covers_may_return_twice(project, capsys, stripped):
     assert "any call above the stop may return twice (" in notes[None] and said in notes[None]
     # The config's claim: nlr_push, called on the line above, returns twice.
     assert (
-        'calls setjmp, or one the config\'s "returns_twice" names (line 4)' in notes[("nlr_push",)]
+        'returns twice, or one the config\'s "returns_twice" names (line 4)' in notes[("nlr_push",)]
     ), notes
     assert "return twice" not in notes[()] and notes[()].startswith("no value yet"), notes
+
+
+VFORK_UTIL = """int vfork(void);
+void _exit(int);
+
+int scale(int x) {
+    if (x > 100 && vfork() == 0)
+        _exit(0);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_vfork_above_the_stop_notes_a_local_declared_below_it(project):
+    # vfork returns twice, as setjmp does: Peeky's names left it out, so a program
+    # calling only it had no note.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=VFORK_UTIL)
+    line = next(n for n, text in enumerate(VFORK_UTIL.splitlines(), 1) if "doubled =" in text)
+    result = run_probe(project, Probe("src/util.c", line, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert "calls setjmp, or another function that returns twice (line 5)" in (
+        row.get("note") or ""
+    ), row
+
+
+SPIN = """static inline int spin(int x) {
+    __asm__ volatile("" ::: "memory");
+    return x;
+}
+"""
+SPIN_UTIL = """#include "spin.h"
+
+int scale(int x) {
+    int doubled = spin(x) * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_asm_in_a_header_outside_the_program_may_return_twice(project, capsys):
+    # Peeky looked for asm only in the program's own files: a header outside them, its
+    # MD5 checked, hid it.
+    ext = project.parent / f"{project.name}-ext"
+    ext.mkdir()
+    (ext / "spin.h").write_text(SPIN)
+    compiler = _clang()
+    _build_text(project, compiler, {}, extra={"util": ("-I", str(ext))}, util=SPIN_UTIL)
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    twice = json.loads(capsys.readouterr().out)["returns_twice"]
+    assert twice["any"] and twice["why"].startswith("src/util.c's text holds asm ("), twice
+    assert twice["why"].endswith("spin.h:2)"), twice
+
+
+PROBED_UTIL = """#if __has_include("count.h")
+#include "count.h"
+#else
+typedef int count_t;
+#endif
+
+int scale(int x) {
+    count_t doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("present", [True, False], ids=["found", "not found"])
+def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, present):
+    # `__has_include` may have found a file when the program was built (a header path
+    # from its environment, a file since gone) that the replay doesn't.
+    (project / "src").mkdir()
+    if present:
+        (project / "src" / "count.h").write_text("typedef int count_t;\n")
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=PROBED_UTIL)
+    stop = next(n for n, text in enumerate(PROBED_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    if present:
+        assert row.get("value") == "4", row
+    else:
+        assert (
+            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+            '"count.h" exists'
+        ) in (row.get("error") or ""), row
+        assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+        units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+        assert units["src/util.c"]["text"] == (
+            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+            '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
+            "have found one (its environment can add header paths, and a file may since be gone)"
+        ), units

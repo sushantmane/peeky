@@ -89,7 +89,8 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   launch's deadline. The config's `compiler` runs `-E -MD`, in the unit's compilation directory,
   with `--no-default-config`. `native_units.replay_arguments` passes only the recorded options
   that choose what the preprocessor reads or defines (`_REPLAY_*`), in order, and the unit's
-  own input last.
+  own input last. `-march=native`, `-mcpu=native` and `-mtune=native` leave the text unread:
+  they name the CPU of the host that built the unit.
 - It leaves out options that define no macro (`_INERT_*`): each is checked against clang's own
   `-dM -E`, in C and C++, on Linux and macOS. Any other option leaves the text unread, naming it:
   `-fplugin=`, `-Xclang -load`, `-Wp,`, `-Xpreprocessor`, `-ivfsoverlay`, `-B`, `@file`.
@@ -101,15 +102,32 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   checked against its MD5. Only Apple's `SDKSettings.json`, under the recorded SDK, is no header.
   On Linux, `-fdebug-macro` names each header. Apple's clang can't use it with DWARF 5: a header
   of declarations alone leaves the unit's text unread.
+- A probe (`__has_include`, `__has_include_next`) in any file the replay read may have been
+  answered otherwise at the build (`_unproven_probe`). `probes` finds each, outside comments and
+  literals. `_found` looks its file up on the search list clang's `-v` gives, never further than
+  clang would. A probe that finds a file is proven, or never ran: clang lists what a probe finds
+  among the dependencies, which the line table must name, so the build found it too. One that
+  finds none leaves the text unread: the build's environment may have added a directory, or the
+  file may be gone. So does `#embed`, `__has_embed`, an operand Peeky can't read, and a quoted
+  or `_next` probe in a macro. A probe in a macro no input names never runs.
+- Units built from one file with different commands leave its text unread (`replay_units`):
+  Peeky reads a unit's text by its file's name. Alike, they share one replay.
 - `UnitText` keeps the replay's `Preprocessed` and `Statements` (`_preprocessed`), whether it may
-  optimize a function (`optimizes`: the session's `optimized` where every text is read), whether
-  the program's own text holds `asm`, and the files under the root it read. `_statements` of a
+  optimize a function (`optimizes`: the session's `optimized` where every text is read), where
+  its text may return twice by assembly (`asm`), and the files under the root it read.
+- `asm_uses` reads the whole preprocessed text, headers outside the program too. An `asm`
+  statement, or one at file scope, counts. An asm label counts only where it gives a symbol of
+  the returns-twice family: glibc's and Apple's headers label hundreds of declarations. Where
+  Peeky can't tell a label from a statement (`_declares`), it counts it. `_statements` of a
   source reads its raw text with those files' macros (`macro_hazards`), where every unit holding
   it has its text read.
 - Any call may return twice (`any_call_returns_twice`) where a unit isn't read, or its text isn't,
   or holds `asm`: the program's own assembly can, as MicroPython's `nlr_push` does. Then every
   local at or below a stop carries the setjmp note, saying why. A config's `returns_twice` is a
-  trusted claim instead: those functions, and setjmp's, are found by name, as today.
+  trusted claim instead: those functions, and setjmp's family, are found by name, as today.
+- The family is one set, used everywhere (`c_source.RETURNS_TWICE_NAMES`): setjmp's (any
+  name holding `setjmp`), `savectx`, `vfork`, `getcontext` and `swapcontext`, with any `_`
+  before them. A binary target always looks for them by name, where any call can't.
 - An assembly file built without `-g` leaves no unit, so `uncovered_code` reads the binary's
   symbol table (`code_symbols`: ELF's `.symtab`, Mach-O's nlist). A function symbol outside
   every unit's ranges counts, and so does code with no symbol, outside those ranges, that isn't

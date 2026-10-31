@@ -697,7 +697,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ -f fail ]; then echo "src/main.c:1:10: fatal error: 'gone.h' file not found" >&2; exit 1; fi
-printf '# 1 "%s"\\nint main(void) { return 0; }\\n' "$input" > "$out"
+if [ -f search ]; then cat search >&2; fi
+if [ -f output ]; then cat output > "$out"; else
+printf '# 1 "%s"\\nint main(void) { return 0; }\\n' "$input" > "$out"; fi
 printf 'x.o: %s %s\\n' "$input" "$(cat reads 2>/dev/null)" > "$deps"
 """
 
@@ -727,7 +729,7 @@ def test_a_unit_s_text_is_its_replayed_preprocessing(root, tmp_path):
     # Only the passed options, `--no-default-config` first, its own -E, its own input last.
     argv = (root / "argv").read_text().split()
     assert argv[0] == "--no-default-config" and argv[1] == "-O0"
-    assert argv[2:5] == ["-E", "-MD", "-MF"] and argv[-3:] == ["src/main.c", "-o", argv[-1]]
+    assert argv[2:6] == ["-E", "-v", "-MD", "-MF"] and argv[-3:] == ["src/main.c", "-o", argv[-1]]
 
 
 def test_what_a_replay_reads_must_be_what_the_line_table_names(root, tmp_path):
@@ -781,7 +783,7 @@ def test_the_replay_environment_is_peeky_s_own(tmp_path, monkeypatch):
 def test_any_call_may_return_twice_where_a_unit_isnt_read_or_holds_asm(root):
     from peeky.native_binary import UnitText, any_call_returns_twice
 
-    def text(asm=False):
+    def text(asm=None):
         return UnitText(None, None, False, asm, (), False)
 
     read = Judged(_unit(root), "src/main.c", JUDGED)
@@ -791,8 +793,9 @@ def test_any_call_may_return_twice_where_a_unit_isnt_read_or_holds_asm(root):
     assert any_call_returns_twice([read, unread], {"src/main.c": text()}) == (
         "py/nlraarch64.c is a unit Peeky doesn't read"
     )
-    assert any_call_returns_twice([read, other], {"src/main.c": text(True), "src/b.c": "why"}) == (
-        "src/main.c's text holds asm, and 1 more"
+    held = "src/main.c's text holds asm (src/main.c:3)"
+    assert any_call_returns_twice([read, other], {"src/main.c": text(held), "src/b.c": "why"}) == (
+        f"{held}, and 1 more"
     )
 
 
@@ -834,7 +837,8 @@ def test_the_note_names_the_configs_claim(root):
     session.target = SimpleNamespace(target=SimpleNamespace(returns_twice=("nlr_push",)))
     note = session._setjmp_note(5, 4, "declared on line {}, at this stop")
     assert note.refuses and note.startswith(
-        "declared on line 5, at this stop, and this function calls setjmp, or one the config's "
+        "declared on line 5, at this stop, and this function calls setjmp, another function "
+        "that returns twice, or one the config's "
         '"returns_twice" names (line 4), above the stop'
     )
 
@@ -890,3 +894,183 @@ def test_padding_longer_than_a_read_is_read_to_its_end(root):
     with open(binary, "rb") as stream:
         assert _code_between(stream, section, section.low, section.high) == 0x1000 + (3 << 20)
         assert _code_between(stream, section, section.low, section.high - 4) is None
+
+
+def _search(root, *angled):
+    (root / "search").write_text(
+        '#include "..." search starts here:\n#include <...> search starts here:\n'
+        + "".join(f" {directory}\n" for directory in angled)
+        + "End of search list.\n"
+    )
+
+
+def test_what_asks_whether_a_file_exists_is_found():
+    from peeky.native_binary import probes
+
+    text = """#ifndef __has_include
+#define __has_include(x) 0
+#endif
+#if defined(__has_include) && __has_include(<a/b.h>) // __has_include(<no.h>)
+#endif
+/* __has_include("c.h") */
+#if __has_include_next( "d.h" )
+#endif
+#define USE_TBB __has_include(<tbb/tbb.h>)
+#define ASK(x) __has_include(x)
+const char *s = "__has_include(<str.h>)";
+#if __has_include \\
+  (<cont.h>)
+#endif
+#embed "data.bin"
+"""
+    found = [
+        (probe.line, probe.kind, probe.angled, probe.header, probe.macro) for probe in probes(text)
+    ]
+    assert found == [
+        (4, "__has_include", True, "a/b.h", None),
+        (7, "__has_include_next", False, "d.h", None),
+        (9, "__has_include", True, "tbb/tbb.h", "USE_TBB"),
+        (10, "__has_include", False, None, "ASK"),
+        (12, "__has_include", True, "cont.h", None),
+        (15, "#embed", False, None, None),
+    ]
+
+
+def test_a_probe_the_replay_answers_no_leaves_the_text_unread(root, tmp_path):
+    from peeky.native_binary import UnitText
+
+    (root / "src" / "a.h").write_text("#if __has_include(<extra/config.h>)\n#endif\n")
+    (root / "reads").write_text("src/a.h")
+    include = tmp_path / "include"
+    _search(root, include)
+    assert _replay(root, tmp_path) == (
+        "Peeky can't read src/main.c as compiled: its preprocessing asks whether "
+        "<extra/config.h> exists (__has_include, in src/a.h:1), and finds none: the build may "
+        "have found one (its environment can add header paths, and a file may since be gone)"
+    )
+    # Found now: clang lists what a probe finds among the replay's dependencies, which
+    # the line table must name; so the build found it too, or the probe never ran.
+    (include / "extra").mkdir(parents=True)
+    (include / "extra" / "config.h").write_text("")
+    assert isinstance(_replay(root, tmp_path), UnitText)
+    # Without the compiler's search path, Peeky can't tell.
+    (root / "search").unlink()
+    assert "can't read the compiler's search path" in _replay(root, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "header, said",
+    [
+        ('#embed "table.bin"\n', "reads a file to embed (#embed, in src/a.h:1)"),
+        ("#if __has_embed(<t.bin>)\n#endif\n", "reads a file to embed (__has_embed, in "),
+        ("#define ASK(x) __has_include(x)\n#if ASK(<q.h>)\n#endif\n", "naming it in a way"),
+        ('#define HAVE __has_include("q.h")\n#if HAVE\n#endif\n', "in a macro, whose search"),
+    ],
+)
+def test_what_peeky_cant_follow_leaves_the_text_unread(root, tmp_path, header, said):
+    (root / "src" / "a.h").write_text(header)
+    (root / "reads").write_text("src/a.h")
+    _search(root, tmp_path)
+    assert said in _replay(root, tmp_path)
+
+
+def test_a_probe_in_a_macro_no_input_names_never_runs(root, tmp_path):
+    from peeky.native_binary import UnitText
+
+    (root / "src" / "a.h").write_text("#define HAVE_TBB __has_include(<tbb/tbb.h>)\n")
+    (root / "reads").write_text("src/a.h")
+    _search(root, tmp_path)
+    assert isinstance(_replay(root, tmp_path), UnitText)
+
+
+def test_a_probe_s_file_is_looked_up_as_clang_does(tmp_path):
+    from peeky.native_binary import Probe, _found
+
+    first, second, own = tmp_path / "first", tmp_path / "second", tmp_path / "own"
+    for directory in (first, second, own):
+        directory.mkdir()
+    (first / "stdint.h").write_text("")
+    (second / "stdint.h").write_text("")
+    (own / "local.h").write_text("")
+    lists = ([], [(str(first), True), (str(second), True)])
+    includer = str(first / "stdint.h")
+
+    def probe(kind, header, angled=True):
+        return Probe(1, kind, angled, header, None)
+
+    assert _found(probe("__has_include", "stdint.h"), includer, lists) == str(first / "stdint.h")
+    # Next: on after the directory that holds the includer.
+    found = _found(probe("__has_include_next", "stdint.h"), includer, lists)
+    assert found == str(second / "stdint.h")
+    assert _found(probe("__has_include_next", "stdint.h"), str(second / "stdint.h"), lists) is None
+    # Not under any directory searched: Peeky can't tell where the search goes on.
+    assert _found(probe("__has_include_next", "local.h"), str(own / "x.h"), lists) is None
+    # Quoted: the includer's own directory first; never for an angled one.
+    assert _found(probe("__has_include", "local.h", False), str(own / "x.h"), lists)
+    assert _found(probe("__has_include", "local.h"), str(own / "x.h"), lists) is None
+    # A framework directory isn't looked in.
+    framework = ([], [(str(own), False)])
+    assert _found(probe("__has_include", "local.h"), includer, framework) is None
+
+
+def test_asm_in_a_header_outside_the_program_counts(root, tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-ext" / "spin.h"
+    (root / "output").write_text(
+        f'# 1 "src/main.c"\n# 1 "{outside}" 1\nstatic inline int spin(int x) {{\n'
+        '  __asm__ volatile("" ::: "memory");\n  return x;\n}\n'
+        '# 2 "src/main.c" 2\nint main(void) { return spin(0); }\n'
+    )
+    text = _replay(root, tmp_path)
+    assert text.asm == f"src/main.c's text holds asm ({outside}:2)", text
+
+
+@pytest.mark.parametrize(
+    "code, said",
+    [
+        ('extern int fscanf(void *) __asm__ ("" "__isoc99_fscanf");', None),
+        ('int x __asm__("xx"); int a[2] asm("arr");', None),
+        ('void g(void) noexcept (true) __asm__ ("g2");', None),
+        ('extern int jump(void *) __attribute__((nothrow)) __asm__ ("_setjmp");', "symbol _setjmp"),
+        ('extern int spawn(void) __asm__ ("_vfork");', "symbol _vfork"),
+        ('void f(int x) { if (x) __asm__("nop"); }', "holds asm"),
+        ('void f(void) { __asm__ volatile ("" ::: "memory"); }', "holds asm"),
+        ('__asm__(".globl foo");', "holds asm"),
+        ('void f(void) { asm goto ("" :::: done); done:; }', "holds asm"),
+    ],
+)
+def test_an_asm_label_is_read_by_the_symbol_it_gives(code, said):
+    from peeky.native_binary import asm_uses
+
+    found = asm_uses(code, True)
+    assert (found[0][1] if found else None) == said or said in found[0][1], found
+
+
+def test_units_built_from_one_file_with_other_commands_leave_its_text_unread(root, tmp_path):
+    from peeky.native_binary import UnitText, replay_units
+
+    compiler = tmp_path / "fake-cc"
+    compiler.write_text(FAKE_CC)
+    compiler.chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    one = judge(_unit(root), _tables(root), CLANG, root)
+    other = Judged(**{**one.__dict__, "words": (*one.words[:-1], "-DVARIANT=2", one.words[-1])})
+    texts = replay_units([one, other], str(compiler), scratch, root, None)
+    assert texts == {
+        "src/main.c": "Peeky can't read src/main.c as compiled: 2 units are built from it, with "
+        "different commands, and Peeky reads a unit's text by its file's name"
+    }
+    # Built alike, they are one text.
+    texts = replay_units([one, one], str(compiler), scratch, root, None)
+    assert isinstance(texts["src/main.c"], UnitText)
+
+
+def test_a_joined_sysroot_holds_the_sdk_settings_too(root, tmp_path):
+    from peeky.native_binary import UnitText
+
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text("{}")
+    (root / "reads").write_text(str(sdk / "SDKSettings.json"))
+    words = ["/usr/bin/clang", f"--sysroot={sdk}", "-O0", "-c", "src/main.c"]
+    assert isinstance(_replay(root, tmp_path, words=words), UnitText)

@@ -281,9 +281,16 @@ def _digit_separator(text, i):
     return start < i and text[start].isdigit()
 
 
-# What may return twice into the function calling it: setjmp's family (`_setjmp`,
-# `sigsetjmp`, `__builtin_setjmp`, ...) and the ucontext switches.
-_RETURNS_TWICE = re.compile(r"\w*setjmp\w*|getcontext|swapcontext|savectx")
+# What may return twice into the function calling it, by name, with any `_` before it:
+# setjmp's family (`_setjmp`, `sigsetjmp`, `__sigsetjmp`, `__builtin_setjmp`, `qsetjmp`,
+# any name holding `setjmp`), `savectx` and `vfork`, which GCC and clang mark
+# returns_twice, and the ucontext calls a saved context resumes: `getcontext`, and
+# `swapcontext`, whose saved context may be resumed more than once. One set, everywhere.
+RETURNS_TWICE_NAMES = ("setjmp", "sigsetjmp", "savectx", "vfork", "getcontext", "swapcontext")
+RETURNS_TWICE_FAMILY = (
+    "setjmp, sigsetjmp, savectx, vfork, getcontext and swapcontext, with any `_` before them"
+)
+_RETURNS_TWICE = re.compile(r"\w*setjmp\w*|_*(?:savectx|vfork|getcontext|swapcontext)")
 # What declares a name with static or external storage, or brings one into a block.
 _STORAGE = frozenset(
     ("static", "extern", "using", "thread_local", "_Thread_local", "__thread", "typedef")
