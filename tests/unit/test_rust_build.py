@@ -827,6 +827,115 @@ def test_a_large_artifact_tree_is_read_lazily_and_stops_promptly(tmp_path, monke
         assert isinstance(raised, Stopped) and len(listed) <= 1, (raised, len(listed))
 
 
+def a_build_stopped_in_cargo(tmp_path, monkeypatch, files):
+    """(``build``'s stop, the build's directory, the time ``build`` took): a build whose
+    Cargo leaves ``files`` files in the run's units and is then stopped, every step before
+    Cargo stood in for."""
+    import threading
+    import time
+
+    from peeky import build as peeky_build
+    from peeky.stopping import Stopped
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = SimpleNamespace(
+        identity=lambda root: {"test": "stopped"},
+        rustc="rustc",
+        cargo="cargo",
+        rustflags=lambda: (),
+        config=SimpleNamespace(vendor=None, analyse=["util"]),
+    )
+    shape = SimpleNamespace(workspace=root, analysed=(), vendored={}, rustflags=())
+    monkeypatch.setattr(peeky_build, "require_private", lambda path: None)
+    monkeypatch.setattr(rb, "_tools", lambda target, env: ([], {}))
+    monkeypatch.setattr(rb.rust_workspace, "read", lambda *args, **kwargs: shape)
+    monkeypatch.setattr(rb, "_write_wrapper", lambda directory: (directory / "wrapper", ""))
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    monkeypatch.setattr(rb, "_snapshot", lambda shape, vendor: {})
+    stop = threading.Event()
+
+    def cargo(argv, cwd, env, deadline, what):
+        units = next((rb.build_directory(target, root) / "runs").iterdir()) / "units"
+        for index in range(files):
+            (units / f"f{index}.mir").write_text("")
+        stop.set()
+        raise Stopped(["cargo"], started=True)
+
+    monkeypatch.setattr(rb, "_run", cargo)
+    started = time.monotonic()
+    with pytest.raises(rb.BuildStopped):
+        rb.build(target, root, stop=stop)
+    return stop, rb.build_directory(target, root), time.monotonic() - started, target, root
+
+
+def test_a_stopped_build_leaves_its_run_to_the_trash_and_ends_at_once(tmp_path, monkeypatch):
+    stop, directory, _, target, root = a_build_stopped_in_cargo(tmp_path, monkeypatch, 20000)
+    # Not removed while the stopped build ends: one rename into the trash.
+    assert list((directory / "runs").iterdir()) == []
+    (left,) = (directory / "trash").iterdir()
+    assert len(list((left / "units").iterdir())) == 20000
+    # A later build empties the trash, a bounded part at a time, its stop checked at each.
+    with rb_stopping(stop):
+        with pytest.raises(Exception) as caught:
+            rb._empty_trash(directory, 10**6)
+    assert type(caught.value).__name__ == "Stopped"
+    assert len(list((left / "units").iterdir())) == 20000
+    rb._empty_trash(directory, 1000)
+    assert 18000 < len(list((left / "units").iterdir())) < 20000
+    while (left / "units").exists():
+        rb._empty_trash(directory, 5000)
+    assert list((directory / "trash").iterdir()) == []
+
+
+def rb_stopping(stop):
+    from peeky.stopping import stopping
+
+    return stopping(stop)
+
+
+def test_debug_symbols_are_copied_lazily_and_bounded(tmp_path, monkeypatch):
+    import threading
+
+    from peeky.stopping import Stopped
+
+    monkeypatch.setattr(rb.sys, "platform", "darwin")
+    executable = tmp_path / "target/debug/app"
+    symbols = executable.with_name("app.dSYM")
+    (symbols / "Contents/Resources/DWARF").mkdir(parents=True)
+    executable.write_text("binary\n")
+    (symbols / "Contents/Info.plist").write_text("plist\n")
+    (symbols / "Contents/Resources/DWARF/app").write_text("dwarf\n")
+
+    def copied(name):
+        run = tmp_path / "runs" / name
+        run.mkdir(parents=True)
+        return run, lambda: rb._copy_executable(executable, run)
+
+    run, copy = copied("whole")
+    assert copy() == "runs/whole/bin/app"
+    assert (run / "bin/app.dSYM/Contents/Resources/DWARF/app").read_text() == "dwarf\n"
+    # A stop ends it at the bundle's first entry, not once it is all copied.
+    stop = threading.Event()
+    stop.set()
+    run, copy = copied("stopped")
+    with rb_stopping(stop):
+        with pytest.raises(Stopped):
+            copy()
+    assert list((run / "bin/app.dSYM").iterdir()) == []
+    # More entries than a bundle holds: refused as read; a link: refused.
+    monkeypatch.setattr(rb, "MAX_SYMBOL_ENTRIES", 3)
+    run, copy = copied("bounded")
+    with pytest.raises(ValueError, match="holds more than 3 entries"):
+        copy()
+    monkeypatch.setattr(rb, "MAX_SYMBOL_ENTRIES", 4096)
+    (symbols / "Contents/Resources/link").symlink_to("DWARF/app")
+    run, copy = copied("linked")
+    with pytest.raises(ValueError, match="Peeky's build holds a link"):
+        copy()
+
+
 def test_a_record_of_an_earlier_schema_is_build_required_before_it_is_read(tmp_path, monkeypatch):
     from tests.unit.test_rust_workspace_worker import toolchain
 

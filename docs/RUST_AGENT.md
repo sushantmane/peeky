@@ -173,7 +173,11 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   linear. Every directory the build reads (the snapshot, its artifacts, the MIR left
   behind, Cargo's build directories, the vendored copies, member patterns) is read lazily
   by `stopping.listed` and `stopping.walked`: each entry checks the stop and spends a bound
-  as it is read, before any is sorted. A running build is the worker's activity (`active`).
+  as it is read, before any is sorted. A run the build leaves (failed, stopped, or pruned)
+  is renamed into the build directory's trash (`_discard`), never removed in one step. Each
+  later build removes a bounded part of the trash, an entry at a time, its stop checked at
+  each (`_empty_trash`). The macOS symbols are copied the same way (`_copy_symbols`). A
+  running build is the worker's activity (`active`).
 - Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
   reaped, or that started nothing. A kill or reap that fails raises its own error, with the
   group in its `process_group`, and is never hidden. A build's error that carries one, on it or

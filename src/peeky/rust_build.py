@@ -37,7 +37,7 @@ from pathlib import Path, PurePosixPath
 from peeky import rust_workspace
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
 from peeky.digest import sha256_file
-from peeky.stopping import check_stop
+from peeky.stopping import Stopped, check_stop
 from peeky.stopping import listed as _listed
 from peeky.stopping import walked as _walked
 from peeky.textlines import split_lines
@@ -974,6 +974,8 @@ def _build(target, root, *, deadline=None, progress=None):
 
     require_private(directory)
     with _locked(directory, exclusive=True):
+        # What earlier builds left to remove, a bounded part of it each time.
+        _empty_trash(directory, MAX_RECORDED)
         home = directory / "cargo-home"
         home.mkdir(mode=0o700, exist_ok=True)
         env = rust_workspace.cargo_environment(target.rustc, home)
@@ -1080,7 +1082,9 @@ def _build(target, root, *, deadline=None, progress=None):
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
         except BaseException:
-            shutil.rmtree(run, ignore_errors=True)
+            # Never removed here: a stopped build ends at once, however much its run holds.
+            # A later build removes it, a bounded part at a time (``_empty_trash``).
+            _discard(directory, run)
             raise
         files = shape.watch["files"]
         manifest.update(
@@ -2036,8 +2040,31 @@ def _copy_executable(executable, run):
     if sys.platform == "darwin":
         if not symbols.is_dir():
             raise ValueError(f"Cargo wrote no debug symbols for {executable.name}")
-        shutil.copytree(symbols, folder / symbols.name, symlinks=True)
+        _copy_symbols(symbols, folder / symbols.name)
     return copy.relative_to(run.parent.parent).as_posix()
+
+
+# The most entries Peeky copies of a macOS debug symbols bundle (a handful in dsymutil's).
+MAX_SYMBOL_ENTRIES = 4096
+
+
+def _copy_symbols(symbols, destination):
+    """Copy the macOS debug symbols bundle ``symbols`` to ``destination``, read lazily
+    (``_walked``): at most ``MAX_SYMBOL_ENTRIES`` entries, the build's stop checked at each.
+    A link, or what is neither a file nor a directory, is refused."""
+    destination.mkdir(mode=0o700)
+    refusal = f"Cargo's {symbols.name} holds more than {MAX_SYMBOL_ENTRIES} entries"
+    for entry in _walked(symbols, [MAX_SYMBOL_ENTRIES], refusal):
+        path = Path(entry.path)
+        target = destination / path.relative_to(symbols)
+        if entry.is_symlink():
+            raise ValueError(f"Peeky's build holds a link: {path}")
+        if entry.is_dir(follow_symlinks=False):
+            target.mkdir(mode=0o700)
+        elif entry.is_file(follow_symlinks=False):
+            shutil.copy2(path, target)
+        else:
+            raise ValueError(f"Cargo's {symbols.name} holds {path}, which is not a file")
 
 
 def _artifacts(directory, run, store):
@@ -2140,13 +2167,63 @@ def _prune(directory, nonce):
     )
     for path in kept[KEEP_RUNS:]:
         if not _held(leases / path.name):
-            shutil.rmtree(path, ignore_errors=True)
+            _discard(directory, path)
     if leases.is_dir():
         refusal = f"{leases} holds more than {MAX_RECORDED} leases"
         listing = _listed(leases, [MAX_RECORDED], refusal, stoppable=False)
         for lease in (Path(entry.path) for entry in listing):
             if not (runs / lease.name).is_dir():
                 _held(lease)
+    try:
+        _empty_trash(directory, MAX_RECORDED)
+    except Stopped:
+        # The build is recorded: a stop ends only the cleaning, which a later build resumes.
+        pass
+
+
+def _discard(directory, path):
+    """Move ``path`` (a run, in the build ``directory``) into its trash: one rename, nothing
+    under it read. A later build empties the trash within a bound (``_empty_trash``). Where
+    the rename fails, ``path`` stays where it is, for a later ``_prune``."""
+    trash = Path(directory) / "trash"
+    try:
+        trash.mkdir(mode=0o700, exist_ok=True)
+        os.rename(path, trash / f"{Path(path).name}-{secrets.token_hex(4)}")
+    except OSError:
+        pass
+
+
+def _empty_trash(directory, budget):
+    """Remove what the build ``directory``'s trash holds, at most ``budget`` entries this
+    time (a later build goes on): each removed as scandir yields it, checking the build's
+    stop first (``check_stop``), so never a whole tree in one step."""
+    trash = Path(directory) / "trash"
+    if not trash.is_dir():
+        return
+    left, pending = budget, [(trash, False)]
+    while pending:
+        folder, emptied = pending.pop()
+        if emptied:
+            if folder != trash:
+                with contextlib.suppress(OSError):
+                    os.rmdir(folder)
+            continue
+        pending.append((folder, True))
+        try:
+            with os.scandir(folder) as listing:
+                for entry in listing:
+                    check_stop()
+                    if left <= 0:
+                        # This time's part is done: the rest the next time.
+                        return
+                    left -= 1
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append((Path(entry.path), False))
+                    else:
+                        with contextlib.suppress(OSError):
+                            os.unlink(entry.path)
+        except OSError:
+            continue
 
 
 def summary(manifest, directory):
