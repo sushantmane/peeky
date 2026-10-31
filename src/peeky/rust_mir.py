@@ -8240,15 +8240,71 @@ def _signature_continues(body, function, text):
     """Whether the `fn` line the DISubprogram of ``function`` names (rustc puts no MIR span on
     it) opens a signature whose next lines hold ``body``'s parameters and return place
     (``Body.head``), as rustfmt writes a long one: the source ``text`` from that line to the
-    first of them is `fn` and the function's name, then nothing that ends a signature."""
+    first of them is `fn` and the function's name (after a visibility, qualifiers, an ABI and
+    comments: ``_fn_keyword``), then nothing that ends a signature."""
     if not text or not body.head or function.line is None or min(body.head) <= function.line:
         return False
     lines = text.split("\n")
     if min(body.head) > len(lines):
         return False
     opening = "\n".join(lines[function.line - 1 : min(body.head) - 1])
+    start = _fn_keyword(opening)
     name = re.escape(_mir_name(function.name))
-    return bool(re.match(rf"\s*(?:[\w\s()\"]*\s)?fn\s+{name}\b[^{{}};]*$", opening))
+    return start is not None and bool(re.match(rf"fn\s+{name}\b[^{{}};]*$", opening[start:]))
+
+
+# What may come before a signature's `fn` (`pub(in crate::m) unsafe extern "C-unwind" fn`),
+# besides comments: a visibility, qualifiers, and an ABI after `extern`.
+_VISIBILITY = re.compile(
+    r"pub\b(?:\s*\(\s*(?:crate|self|super|in\s+(?:::\s*)?\w+(?:\s*::\s*\w+)*)\s*\))?"
+)
+_QUALIFIERS = frozenset({"async", "const", "default", "extern", "safe", "unsafe"})
+_ABI = re.compile(r'"(?:[^"\\]|\\.)*"|r(#*)".*?"\1', re.DOTALL)
+_WORD = re.compile(r"\w+")
+
+
+def _past_comments(text, index):
+    """The index in ``text`` past the whitespace and comments at ``index``; None in a block
+    comment that doesn't end."""
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            index = len(text) if end < 0 else end
+        elif text.startswith("/*", index):
+            depth, index = 1, index + 2
+            while depth:
+                opened, closed = text.find("/*", index), text.find("*/", index)
+                if closed < 0:
+                    return None
+                if 0 <= opened < closed:
+                    depth, index = depth + 1, opened + 2
+                else:
+                    depth, index = depth - 1, closed + 2
+        else:
+            return index
+
+
+def _fn_keyword(text):
+    """The index of the `fn` that ``text`` opens with, past a visibility (`pub(in
+    crate::m)`), qualifiers (`const`, `async`, `unsafe`), an ABI (`extern "C-unwind"`) and
+    comments; None where anything else comes first."""
+    index = 0
+    while (index := _past_comments(text, index)) is not None:
+        if visibility := _VISIBILITY.match(text, index):
+            index = visibility.end()
+            continue
+        word = _WORD.match(text, index)
+        if word is None or word[0] not in _QUALIFIERS | {"fn"}:
+            return None
+        if word[0] == "fn":
+            return index
+        index = word.end()
+        if word[0] == "extern" and (after := _past_comments(text, index)) is not None:
+            if abi := _ABI.match(text, after):
+                index = abi.end()
+    return None
 
 
 def load_bodies(directory, crate, defined=None):

@@ -134,6 +134,9 @@ Around it:
 - rustc puts no MIR span on the `fn` line where rustfmt has put the parameters on lines of their
   own. There, the source from the `fn` line to the body's first parameter or return place must be
   `fn` and the function's name, then nothing that ends a signature (`_signature_continues`).
+  Before `fn` may come only a visibility (`pub(in crate::m)`), qualifiers, an ABI after `extern`
+  (`"C-unwind"`) and comments, read token by token (`_fn_keyword`). Anything else leaves the
+  function unmatched, so a change in it stays refused.
 
 A second dataflow follows, for every local, only whether it was assigned since its storage began.
 
