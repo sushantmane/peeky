@@ -4794,3 +4794,33 @@ def test_files_of_one_name_in_two_directories_are_not_one_file(tmp_path):
     other = ir.replace('directory: "/w/src/a")', 'directory: "/elsewhere")')
     path.write_text(other)
     assert "h4853d4a0533b6443" not in ir_functions(path, ["src/a/mod.rs"])
+
+
+def test_a_signature_over_several_lines_is_matched_by_its_source():
+    # rustc's MIR has spans on the parameters' and the return place's lines, but none on the
+    # `fn` line itself (#466).
+    from types import SimpleNamespace
+
+    from peeky.rust_mir import _signature_continues
+
+    text = "\n".join(
+        [
+            "pub fn trimmed(",
+            "    slice: &[u8],",
+            "    range: Span,",
+            ") -> usize {",
+            "    let count = 0;",
+            "}",
+            "fn other() -> u32 { 1 }",
+        ]
+    )
+    body = SimpleNamespace(head=frozenset({2, 3, 4}))
+    function = SimpleNamespace(line=1, name="trimmed")
+    assert _signature_continues(body, function, text)
+    # Not another function's `fn` line, nor one whose signature ended before.
+    assert not _signature_continues(body, SimpleNamespace(line=1, name="other"), text)
+    assert not _signature_continues(SimpleNamespace(head=frozenset({7})), function, text)
+    # A one-line signature has a span on its `fn` line already; no head: nothing to match.
+    assert not _signature_continues(SimpleNamespace(head=frozenset({1})), function, text)
+    assert not _signature_continues(SimpleNamespace(head=frozenset()), function, text)
+    assert not _signature_continues(body, function, None)
