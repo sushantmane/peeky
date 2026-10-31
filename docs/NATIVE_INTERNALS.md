@@ -132,13 +132,17 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   trusted claim instead: those functions, and setjmp's family, are found by name, as today.
 - The family is one set, used everywhere (`c_source.RETURNS_TWICE_NAMES`): setjmp's (any
   name holding `setjmp`), `savectx`, `vfork`, `getcontext` and `swapcontext`, with any `_`
-  before them. A binary target always looks for them by name, where any call can't.
+  before them (`c_source._RETURNS_TWICE`). A binary target always looks for them by name,
+  where any call can't.
 - An assembly file built without `-g` leaves no unit, so `uncovered_code` reads the binary's
   symbol table (`code_symbols`: ELF's `.symtab`, Mach-O's nlist). A function symbol outside
   every unit's ranges counts, and so does code with no symbol, outside those ranges, that isn't
   padding (`_padding`). Then any call may return twice, the note naming each. A binary with no
   symbol table counts as well. The linker's stubs (`_TOOLCHAIN_SECTIONS`) are left out, and so
-  is the toolchain's startup code, each seen in clang 18's and Apple's clang 21's builds:
+  is the toolchain's startup code, each seen in clang 18's and Apple's clang 21's builds.
+  Code matched by its bytes below is treated as equivalent to the object or archive member it
+  matches, and only on Linux: Peeky reads 64-bit ELF objects alone, checked against clang 18
+  with glibc 2.39 and GCC 13's libgcc on Ubuntu 24.04 (AArch64 and x86-64).
   - By name, only where C and C++ reserve it for the implementation, as it begins with `_`
     (`_RESERVED_STARTUP`, `_ATOMICS`): `_start`, `_init`, `__libc_csu_init`, `__aarch64_*`. A
     program defining such a name is outside what Peeky checks.
@@ -161,8 +165,23 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     (`-print-libgcc-file-name`: `__extenddftf2`, `__sfp_handle_exceptions`) and glibc's
     `libc_nonshared.a` (`-print-file-name`: `atexit`, `pthread_atfork`). Each member defining
     it, by the archive's symbol index, is placed as above. One the program defines itself, by
-    such a name but with other bytes, counts, naming the member. A symbol of the returns-twice
-    family is never looked for: it counts, whatever its bytes.
+    such a name but with other bytes, counts, naming the member.
+  - A member may call a function the program defines: libc's `atexit` calls `__cxa_atexit`,
+    which a program may define itself, and which may then return twice. So a member's code is
+    the toolchain's only where each function its relocations reach by the binary's symbols
+    is too: by name or bytes, recursively, or the linker's stubs. A call through the PLT or
+    the GOT reaches a shared library. Otherwise it counts, naming what it reaches.
+  - A symbol of the returns-twice family, by its pattern (`_vfork`, `__sigsetjmp`), is never
+    looked for. It counts, whatever its bytes, even at an address matched code holds.
+  - Each note says why the code isn't the toolchain's (`native_startup.Placed`): its bytes
+    differ, a relocation points elsewhere, the member holds a relocation Peeky doesn't read or
+    is built for another machine, or an archive can't be searched (the compiler fails, or the
+    archive can't be read or exceeds 64 MiB). An archive the compiler finds none of isn't linked.
+  - The compiler is asked with the units' recorded `--target`, `--sysroot`, `-rtlib` and GCC
+    installation, where every unit records the same (`toolchain_options`). Where they differ,
+    each note says the code Peeky compared may not be what was linked. A link's own options
+    aren't recorded: a binary linked with another runtime library shows its functions as code
+    no unit covers.
   - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
     tail, matched byte for byte, are the toolchain's. Anything else there counts.
   - Peeky asks the compiler in its own environment (`replay_environment`), never the one the

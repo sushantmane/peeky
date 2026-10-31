@@ -1168,7 +1168,53 @@ def _code_between(stream, section, low, high):
     return None
 
 
-def uncovered_code(binary, units, startup=None):
+# What a unit's recorded words say of where the compiler finds the toolchain's startup
+# objects and archives, by the name clang's driver takes with `=`: a link may say more.
+_TOOLCHAIN_OPTIONS = {
+    "--target": "--target",
+    "-target": "--target",
+    "--sysroot": "--sysroot",
+    "-rtlib": "--rtlib",
+    "--rtlib": "--rtlib",
+    "--gcc-toolchain": "--gcc-toolchain",
+    "--gcc-install-dir": "--gcc-install-dir",
+}
+# Of those, the ones naming a directory, relative to the unit's.
+_TOOLCHAIN_PATHS = frozenset(("--sysroot", "--gcc-toolchain", "--gcc-install-dir"))
+
+
+def toolchain_options(read):
+    """(options, unsure): what every unit of ``read`` (Judged) records of where the
+    toolchain's startup objects and archives are (_TOOLCHAIN_OPTIONS), as `--name=value`
+    words for asking the compiler; or, where the units record different ones, none, and
+    why the archives Peeky reads may not be the ones linked."""
+    seen = {}
+    for each in read:
+        words, found = list(each.words[1:]), {}
+        for at, word in enumerate(words):
+            name, equals, value = word.partition("=")
+            if name not in _TOOLCHAIN_OPTIONS:
+                continue
+            if not equals:
+                if word not in ("-target", "--sysroot", "--rtlib") or at + 1 >= len(words):
+                    continue
+                value = words[at + 1]
+            name = _TOOLCHAIN_OPTIONS[name]
+            if name in _TOOLCHAIN_PATHS:
+                value = posixpath.normpath(posixpath.join(each.unit.comp_dir or "/", value))
+            found[name] = value
+        seen.setdefault(tuple(sorted(found.items())), each.name)
+    if len(seen) > 1:
+        differ = sorted({name for options in seen for name, _ in options})
+        return (), (
+            f"the units record different {', '.join(differ)}, so the toolchain's code Peeky "
+            "compared it with may not be what was linked"
+        )
+    options = next(iter(seen), ())
+    return tuple(f"{name}={value}" for name, value in options), None
+
+
+def uncovered_code(binary, units, startup=None, unsure=None):
     """What of ``binary``'s code no unit of its debug information covers (``units``:
     native_units.Unit, each with its code ranges), but the toolchain's own: each symbol
     there (hand-written assembly built without -g, a library linked without debug
@@ -1180,9 +1226,11 @@ def uncovered_code(binary, units, startup=None):
     archive member's (``startup``: a callable given the names to look for, giving
     toolchain_startup's), as other startup names, crti.o's and crtn.o's parts of `.init`
     and `.fini`, and functions linked from libgcc's archive or libc_nonshared.a
-    (`__extenddftf2`, `atexit`) must be. Never one of the returns-twice family. Each as a
-    phrase, for a note; where the binary has no symbol table, or one Peeky can't read,
-    that instead."""
+    (`__extenddftf2`, `atexit`) must be. An archive member's code is the toolchain's only
+    where the code its relocations reach by the binary's symbols is too. Never a symbol of
+    the returns-twice family. Each as a phrase, for a note; where the binary has no symbol
+    table, or one Peeky can't read, that instead. ``unsure``: why the toolchain's archives
+    Peeky reads may not be the ones linked, said with each phrase they bear on."""
     import bisect
 
     try:
@@ -1205,6 +1253,9 @@ def uncovered_code(binary, units, startup=None):
     def reserved(symbol):
         return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
 
+    def family(symbol):
+        return bool(_RETURNS_TWICE.fullmatch(symbol.name))
+
     units_hold = _holder(covered)
     # Symbols whose code may be the toolchain's: startup names, and any other no unit
     # covers, but the returns-twice family's, which are never taken for the toolchain's.
@@ -1212,44 +1263,66 @@ def uncovered_code(binary, units, startup=None):
         symbol
         for symbol in symbols
         if not reserved(symbol)
-        and symbol.name not in RETURNS_TWICE_NAMES
+        and not family(symbol)
         and (symbol.name in _MATCHED_STARTUP or not units_hold(symbol.address))
     ]
-    matched, unframed, pieces, why = set(), {}, [], None
+    unframed, pieces, why, unsearched = {}, [], None, None
     if framed or wanted:
         names = sorted({symbol.name for symbol in wanted} - _MATCHED_STARTUP)
-        pieces, why = (
-            startup(names) if startup is not None else ([], "Peeky has no compiler to ask")
-        )
+        if startup is None:
+            why = unsearched = "Peeky has no compiler to ask"
+        else:
+            pieces, why, unsearched = startup(names)
     image = None
     if pieces:
         try:
             image = native_startup.Image(binary)
         except (OSError, ValueError, struct.error) as exc:
             pieces, why = [], f"Peeky can't read the binary's sections ({exc})"
+            unsearched = why
+    # Each piece placed where a wanted symbol of it says: {(piece, base): Placed}.
+    placed, tried = {}, {}
     for symbol in wanted:
-        if symbol.address in matched:
-            continue
-        for piece in pieces:
-            if symbol.name not in piece.symbols:
-                continue
-            base = symbol.address - piece.symbols[symbol.name]
-            if native_startup.place(piece, base, image):
-                covered.append((base, base + len(piece.data)))
-                matched |= {base + at for at in piece.symbols.values()}
-                break
+        for index, piece in enumerate(pieces):
+            if symbol.name in piece.symbols:
+                key = (index, symbol.address - piece.symbols[symbol.name])
+                if key not in placed:
+                    placed[key] = native_startup.place(piece, key[1], image)
+                tried.setdefault(symbol, []).append(key)
     for name, section in framed.items():
         # crti.o begins the section and crtn.o ends it; others add what lies between.
-        head = [piece for piece in pieces if piece.origin == "crti.o" and piece.section == name]
-        tail = [piece for piece in pieces if piece.origin == "crtn.o" and piece.section == name]
+        head = [at for at, piece in enumerate(pieces) if piece.origin == "crti.o"]
+        tail = [at for at, piece in enumerate(pieces) if piece.origin == "crtn.o"]
+        head = [at for at in head if pieces[at].section == name]
+        tail = [at for at in tail if pieces[at].section == name]
         if not head or not tail:
             unframed[name] = why or "Peeky found no crti.o or crtn.o"
             continue
-        start, end = len(head[0].data), len(tail[0].data)
-        if native_startup.place(head[0], section.low, image):
-            covered.append((section.low, section.low + start))
-        if native_startup.place(tail[0], section.high - end, image):
-            covered.append((section.high - end, section.high))
+        for key in ((head[0], section.low), (tail[0], section.high - len(pieces[tail[0]].data))):
+            placed[key] = native_startup.place(pieces[key[0]], key[1], image)
+    # An archive member's code is the toolchain's only where what it reaches is too:
+    # code the toolchain's by name or bytes, or the linker's stubs. Until none changes.
+    alive = {key for key, outcome in placed.items() if outcome}
+    named_by_toolchain = {symbol.address for symbol in symbols if reserved(symbol)}
+    reaching = {}
+    while True:
+        holds = _holder([(base, base + len(pieces[at].data)) for at, base in alive])
+        dead = {}
+        for key in alive:
+            if not pieces[key[0]].archived:
+                continue
+            for address, name in placed[key].reaches:
+                if address not in named_by_toolchain and not holds(address):
+                    dead[key] = name
+                    break
+        if not dead:
+            break
+        alive -= dead.keys()
+        reaching.update(dead)
+    matched = set()
+    for at, base in alive:
+        covered.append((base, base + len(pieces[at].data)))
+        matched |= {base + offset for offset in pieces[at].symbols.values()}
 
     starts = sorted(symbol.address for symbol in symbols)
     for symbol in symbols:
@@ -1264,25 +1337,56 @@ def uncovered_code(binary, units, startup=None):
         covered.append((symbol.address, min(end, section.high) if section else end))
     spans = _merged(covered)
     held = _holder(covered)
+    doubt = f"; {unsure}" if unsure else ""
     named, found = [], []
     for symbol in symbols:
-        if reserved(symbol) or symbol.address in matched or held(symbol.address):
+        if reserved(symbol):
+            continue
+        said = f"{symbol.name} is code no unit's debug information covers"
+        if family(symbol):
+            # Whatever code holds it, the toolchain's or not.
+            if not units_hold(symbol.address):
+                named.append(symbol)
+                found.append(
+                    f"{said} (one of the returns-twice family, which Peeky never takes for "
+                    "the toolchain's code)"
+                )
+            continue
+        if symbol.address in matched or held(symbol.address):
             continue
         named.append(symbol)
-        said = f"{symbol.name} is code no unit's debug information covers"
-        origins = sorted({piece.origin for piece in pieces if symbol.name in piece.symbols})
-        if symbol.name not in _MATCHED_STARTUP and not origins:
-            found.append(f"{said} (assembly built without -g?)")
+        keys = tried.get(symbol, [])
+        if not keys:
+            if symbol.name in _MATCHED_STARTUP:
+                found.append(
+                    f"{said}, and Peeky found no toolchain startup object holding it "
+                    f"({why or 'none names it'}){doubt}"
+                )
+            elif unsearched:
+                found.append(
+                    f"{said}, and Peeky can't tell whether it is the toolchain's: it can't "
+                    f"search all the toolchain's archives ({unsearched}){doubt}"
+                )
+            else:
+                found.append(f"{said} (assembly built without -g?){doubt}")
             continue
-        if origins:
-            found.append(
-                f"{said}, and its bytes are none of the toolchain's ({', '.join(origins)})"
-            )
-        else:
-            found.append(
-                f"{said}, and Peeky found no toolchain startup object holding it "
-                f"({why or 'none names it'})"
-            )
+        differ = sorted(
+            {
+                pieces[at].origin
+                for at, base in keys
+                if placed[(at, base)].kind == native_startup.BYTES
+            }
+        )
+        parts = [f"its bytes are none of the toolchain's ({', '.join(differ)})"] if differ else []
+        for key in keys:
+            if key in reaching:
+                parts.append(
+                    f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
+                    f"{reaching[key]}, code that isn't the toolchain's"
+                )
+            elif placed[key].kind not in (None, native_startup.BYTES):
+                parts.append(placed[key].why)
+        found.append(f"{said}, and {'; '.join(dict.fromkeys(parts))}{doubt}")
     with open(binary, "rb") as stream:
         for section in sections:
             if section.name in _TOOLCHAIN_SECTIONS or section.high <= section.low:
@@ -1784,12 +1888,14 @@ class BinaryTarget:
         if self.returns_twice is None:
             # The toolchain's own environment, never the program's (``env``).
             tools = replay_environment(scratch)
+            options, unsure = toolchain_options(read)
             uncovered = uncovered_code(
                 binary,
                 units,
                 lambda names: native_startup.toolchain_startup(
-                    compiler, tools, _remaining(deadline, 10), names
+                    compiler, tools, _remaining(deadline, 10), names, options
                 ),
+                unsure,
             )
             any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()

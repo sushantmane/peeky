@@ -1250,9 +1250,10 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
 - **Calls that return twice:** setjmp's family, `vfork`, `getcontext`, `swapcontext` and
   `savectx`, by name. Where a unit isn't read, or holds `asm` (its headers too), any call may. So may any
   where the binary holds code no unit covers, such as assembly built without `-g`: the note names
-  its symbol. The toolchain's own code isn't counted where its bytes are the toolchain's: its
-  startup objects', and what it links from libgcc's archive and glibc's `libc_nonshared.a`
-  (`atexit`, `__extenddftf2`). Locals at or below a stop then carry the setjmp note. If you know which functions do, name them, as
+  its symbol. On Linux, the toolchain's own code isn't counted where its bytes are the
+  toolchain's: its startup objects', and what it links from libgcc's archive and glibc's
+  `libc_nonshared.a` (`atexit`, `__extenddftf2`). Such code is treated as equivalent to the
+  archive member, unless it reaches a function of your own. Locals at or below a stop then carry the setjmp note. If you know which functions do, name them, as
   MicroPython's `nlr_push`: `"returns_twice": ["nlr_push"]`. Peeky trusts that claim: a function
   left out of it can show a local's old value as its own.
 

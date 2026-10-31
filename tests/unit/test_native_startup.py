@@ -34,12 +34,17 @@ def _low(opcode, value, scale=1):
 
 
 class Image:
-    """A linked binary, as native_startup.Image reads it: its code at ``base``."""
+    """A linked binary, as native_startup.Image reads it: its code at ``base``, and
+    ``code``, (low, high) of the rest of its code."""
 
-    def __init__(self, machine, base, data, addresses=None, slots=None, stubs=None):
+    def __init__(self, machine, base, data, addresses=None, slots=None, stubs=None, code=()):
         self.machine, self.base, self.data = machine, base, data
         self.addresses = addresses or {}
         self.slots, self.stubs = slots or {}, stubs or {}
+        self.code = [(base, base + len(data)), *code]
+
+    def runs(self, address):
+        return any(low <= address < high for low, high in self.code)
 
     def read(self, address, length):
         at = address - self.base
@@ -246,3 +251,77 @@ def test_an_archive_s_members_are_found_by_the_names_its_symbol_index_says_they_
     assert list(archive_members(archive, defining={"nlr_push"})) == []
     # By bytes, as libgcc's local constructor is found.
     assert [name for name, _ in archive_members(archive, b"__extenddftf2")] == ["extenddftf2.o"]
+
+
+def test_why_a_piece_isn_t_the_code_says_which_way():
+    from peeky.native_startup import BYTES, MACHINE, TARGET, UNREAD
+
+    piece = _piece(_bl(0, 0) + RET, _external(0, 283, "__cxa_atexit"), atexit=0)
+    linked = _bl(BASE, 0x700) + RET
+    # Its bytes, its call to where the binary defines it: the code, reaching that.
+    found = place(piece, BASE, Image(EM_AARCH64, BASE, linked, {"__cxa_atexit": {0x700}}))
+    assert found and found.reaches == ()
+    inside = Image(EM_AARCH64, BASE, linked, {"__cxa_atexit": {0x700}}, code=[(0x700, 0x800)])
+    assert place(piece, BASE, inside).reaches == ((0x700, "__cxa_atexit"),)
+    # Its bytes, but its call elsewhere: the relocation, not the bytes.
+    missed = place(piece, BASE, Image(EM_AARCH64, BASE, linked, {"__cxa_atexit": {0x800}}))
+    assert not missed and missed.kind == TARGET
+    assert missed.why == (
+        "its bytes are crtbeginS.o's, but its relocation at +0x0, to __cxa_atexit, points elsewhere"
+    )
+    assert place(piece, BASE, Image(EM_AARCH64, BASE, MOV + RET)).kind == BYTES
+    # Before any byte is compared: a relocation Peeky doesn't read, another machine.
+    unread = _piece(RET, unread="a relocation of kind 257 at 0x0 of its .text")
+    assert place(unread, BASE, Image(EM_AARCH64, BASE, RET)).kind == UNREAD
+    assert place(_piece(RET), BASE, Image(EM_X86_64, BASE, RET)).why == (
+        "Peeky can't compare it with crtbeginS.o, built for AArch64, not x86-64"
+    )
+    assert place(_piece(RET), BASE, Image(EM_X86_64, BASE, RET)).kind == MACHINE
+    # x86-64: other code where a call's field is, though its field points nowhere, is
+    # other bytes.
+    call = _piece(b"\xe8\0\0\0\0\xc3", _external(1, 4, "f", -4), machine=EM_X86_64)
+    other = Image(EM_X86_64, BASE, b"\xe9\x10\0\0\0\xc3")
+    assert place(call, BASE, other).kind == BYTES
+    assert place(call, BASE, Image(EM_X86_64, BASE, b"\xe8\x10\0\0\0\xc3")).kind == TARGET
+    # A GOT load on an instruction Peeky doesn't read: it can't compare it.
+    test = _piece(b"\x48\x85\x05\0\0\0\0", _external(3, 42, "g", -4), machine=EM_X86_64)
+    assert place(test, BASE, Image(EM_X86_64, BASE, b"\x48\x85\x05\0\0\0\0")).kind == UNREAD
+
+
+def _compiler(tmp_path, answers, status=0):
+    """A compiler answering `-print-file-name=…` and `-print-libgcc-file-name` from
+    ``answers`` ({option: path}), logging its arguments to ``log``."""
+    log = tmp_path / "log"
+    lines = [f'printf "%s\\n" "$*" >> "{log}"']
+    for option, answer in answers.items():
+        lines.append(f'case "$*" in *{option}) echo "{answer}"; exit {status};; esac')
+    lines.append(f'echo "${{@: -1}}" | sed "s/.*=//"; exit {status}')
+    compiler = tmp_path / "clang"
+    compiler.write_text("#!/bin/bash\n" + "\n".join(lines) + "\n")
+    compiler.chmod(0o755)
+    return compiler, log
+
+
+def test_the_toolchain_is_asked_with_the_units_options_and_says_what_it_can_t_search(tmp_path):
+    from peeky.native_startup import toolchain_startup
+
+    bad = tmp_path / "libc_nonshared.a"
+    bad.write_bytes(b"not an archive")
+    compiler, log = _compiler(tmp_path, {"-print-file-name=libc_nonshared.a": bad})
+    env = {"PATH": "/usr/bin:/bin"}
+    options = ("--target=aarch64-linux-gnu", "--sysroot=/opt/sysroot")
+    pieces, why, unsearched = toolchain_startup(compiler, env, 10, ["atexit"], options)
+    assert pieces == []
+    asked = log.read_text().splitlines()
+    assert asked and all(
+        line.startswith("--no-default-config --target=aarch64-linux-gnu --sysroot=/opt/sysroot")
+        for line in asked
+    ), asked
+    # An archive the compiler finds none of isn't linked; one it can't read can't be
+    # searched.
+    assert f"{compiler} finds no libgcc" in why and "finds no crti.o" in why
+    assert unsearched == f"Peeky can't read {bad} (not an ar archive)"
+    # A compiler that fails can't say.
+    failing, _ = _compiler(tmp_path, {}, status=1)
+    _, _, unsearched = toolchain_startup(failing, env, 10, ["atexit"])
+    assert unsearched.startswith(f"{failing} -print-libgcc-file-name failed (exit status 1)")

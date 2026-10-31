@@ -927,6 +927,34 @@ def test_a_program_s_own_function_named_like_an_archive_member_counts(project, c
 
 
 @pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a")
+def test_archive_code_calling_the_program_s_own_function_counts(project, capsys):
+    # libc_nonshared.a's atexit calls __cxa_atexit: here the program's own, with debug
+    # information, which may return twice. atexit's bytes are the member's, but it runs
+    # the program's code.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    (project / "src" / "own.c").write_text(
+        "int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { return f == 0; }\n"
+    )
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", "-c", "src/own.c", "-o", "own.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "own.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and (
+            "atexit is code no unit's debug information covers, and its bytes are "
+            "libc_nonshared.a(atexit.oS)'s, but it reaches __cxa_atexit, code that isn't the "
+            "toolchain's"
+        )
+        in twice["why"]
+    ), twice
+
+
+@pytest.mark.timeout(300)
 def test_a_program_s_own_frame_dummy_without_debug_information_counts(project, capsys):
     # frame_dummy isn't reserved: crtbegin.o's is local and called by .init_array; one
     # the program defines is neither.

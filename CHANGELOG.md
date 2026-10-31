@@ -52,11 +52,14 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
-- **C and C++: the toolchain's archive code is its own.** A binary target's functions linked from
-  libgcc's archive and glibc's `libc_nonshared.a` (`atexit`, `__extenddftf2`) no longer make any
-  call possibly return twice. Each is the toolchain's where its bytes are the archive member's, as
-  linked, checked as startup code is. A function of the program's own by such a name still counts,
-  naming the member. jq now shows no code no unit covers, and MicroPython only its `nlr_push`.
+- **C and C++: the toolchain's archive code is its own.** On Linux, a binary target's functions
+  linked from libgcc's archive and glibc's `libc_nonshared.a` (`atexit`, `__extenddftf2`) no
+  longer make any call possibly return twice. Each is treated as equivalent to the archive
+  member where its bytes are the member's, as linked, checked as startup code is. One reaching a
+  function of the program's own still counts, as does a function of the program's own by such a
+  name. Each note says why: other bytes, a relocation pointing elsewhere, or an archive Peeky
+  can't search. The returns-twice family, by its pattern (`_vfork`), always counts. jq now shows
+  no code no unit covers, and MicroPython only its `nlr_push`.
 - **C and C++: a binary your project built** (ADR 0008, phase 1). `peeky probe . --binary ./jq
   --at src/execute.c:120` and `describe` read a binary clang built at `-O0` with `-g -gdwarf-5
   -grecord-command-line`. Each unit is judged from its own debug information. A file changed

@@ -4,12 +4,12 @@ theirs as linked.
 A program links code no unit of its debug information covers: crtbegin.o's, crti.o's and
 crtn.o's, and the members of the toolchain's static archives it calls: libc_nonshared.a's
 (`atexit`) and libgcc's (`__extenddftf2`). A program may use those names too (`frame_dummy`,
-`atexit`), so such code is the toolchain's only where its bytes are, as the linker relocates
-them. Each
-relocation's immediate field is decoded, and where it points checked: into the matched
-code itself, at the binary's symbol of the name the object names, at a GOT slot or PLT
-stub for it, or at 0 for a weak symbol nothing defines. A relocation of a kind not seen
-in the real startup objects (``_AARCH64``, ``_X86_64``) never matches.
+`atexit`), so such code is treated as equivalent to the toolchain's only where its bytes
+are, as the linker relocates them. Each relocation's immediate field is decoded, and where
+it points checked: into the matched code itself, at the binary's symbol of the name the
+object names, at a GOT slot or PLT stub for it, or at 0 for a weak symbol nothing defines.
+A relocation of a kind not seen in the real startup objects (``_AARCH64``, ``_X86_64``)
+never matches. Only 64-bit little-endian ELF is read: Linux's toolchains.
 """
 
 import mmap
@@ -84,17 +84,26 @@ class StartupPiece:
     symbols: dict
     unread: str | None = None
 
+    @property
+    def archived(self):
+        """Whether it is a static archive's member (`libgcc.a(extenddftf2.o)`)."""
+        return self.origin.endswith(")")
 
-def toolchain_startup(compiler, env, timeout=10, names=()):
-    """(pieces, why): the StartupPieces of the startup objects the config's ``compiler``
-    links (STARTUP_OBJECTS, as its `-print-file-name` finds them, and libgcc's archive
-    member holding LIBGCC_STARTUP), and of each member of its static archives (libgcc's,
-    and ARCHIVES) that defines one of ``names``; and why some can't be read, or None."""
+
+def toolchain_startup(compiler, env, timeout=10, names=(), options=()):
+    """(pieces, why, unsearched): the StartupPieces of the startup objects the config's
+    ``compiler`` links (STARTUP_OBJECTS, as its `-print-file-name` finds them, and
+    libgcc's archive member holding LIBGCC_STARTUP), and of each member of its static
+    archives (libgcc's, and ARCHIVES) that defines one of ``names``; why some can't be
+    read, or None; and why some archive can't be searched, or None: the compiler fails,
+    or the archive can't be read. One the compiler finds none of isn't linked: it isn't
+    the toolchain's. ``options``: what the binary's units record of the toolchain
+    (`--target=…`), passed when asking."""
 
     def find(option):
         try:
             done = subprocess.run(
-                [compiler, "--no-default-config", option],
+                [compiler, "--no-default-config", *options, option],
                 env=env,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -103,16 +112,18 @@ def toolchain_startup(compiler, env, timeout=10, names=()):
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return None, f"{compiler} {option} failed ({exc})"
+            return None, f"{compiler} {option} failed ({exc})", True
         path = done.stdout.strip()
-        if done.returncode or not os.path.isabs(path) or not os.path.isfile(path):
+        if done.returncode:
+            return None, f"{compiler} {option} failed (exit status {done.returncode})", True
+        if not os.path.isabs(path) or not os.path.isfile(path):
             wanted = option.split("=", 1)[1] if "=" in option else "libgcc"
-            return None, f"{compiler} finds no {wanted}"
-        return path, None
+            return None, f"{compiler} finds no {wanted}", False
+        return path, None, False
 
-    pieces, missing = [], []
+    pieces, missing, unsearched = [], [], []
     for name in STARTUP_OBJECTS:
-        path, why = find(f"-print-file-name={name}")
+        path, why, _ = find(f"-print-file-name={name}")
         if path is None:
             missing.append(why)
             continue
@@ -125,16 +136,19 @@ def toolchain_startup(compiler, env, timeout=10, names=()):
     archives = [("-print-libgcc-file-name", (LIBGCC_STARTUP,))]
     archives += [(f"-print-file-name={name}", ()) for name in ARCHIVES if names]
     for option, wanted in archives:
-        path, why = find(option)
+        path, why, failed = find(option)
         if path is None:
             missing.append(why)
+            if failed:
+                unsearched.append(why)
             continue
         try:
             for member, data in archive_members(path, wanted, defining=names):
                 pieces += object_pieces(data, f"{Path(path).name}({member})")
         except (OSError, ValueError, struct.error) as exc:
             missing.append(f"Peeky can't read {path} ({exc})")
-    return pieces, "; ".join(missing) or None
+            unsearched.append(missing[-1])
+    return pieces, "; ".join(missing) or None, "; ".join(unsearched) or None
 
 
 def archive_members(path, wanted=(), limit=MAX_ARCHIVE, defining=()):
@@ -353,6 +367,12 @@ class Image:
             for name, address, length, _, _ in self.mapped
             if name.startswith((".plt", ".iplt"))
         ]
+        # Code but the linker's stubs: SHF_EXECINSTR.
+        self.code = [
+            (address, address + length)
+            for name, kind, flags, address, _, length, *_ in sections
+            if flags & 0x6 == 0x6 and not _string(titles, name).startswith((".plt", ".iplt"))
+        ]
         self.relocated = {slot for each in self.slots.values() for slot in each}
         self.cache = {}
 
@@ -362,6 +382,10 @@ class Image:
             if kind == 1 and low <= address and address + length <= low + size:
                 return self.blob[at + address - low : at + address - low + length]
         return None
+
+    def runs(self, address):
+        """Whether ``address`` is in code, but the linker's stubs."""
+        return any(low <= address < high for low, high in self.code)
 
     def got(self, name, weak=False):
         """The GOT slots holding ``name``'s address: those a dynamic relocation names it
@@ -423,22 +447,123 @@ def _page(place, word):
 def place(piece, base, image):
     """Whether ``piece`` is the code at ``base`` in ``image``, as the linker relocated it:
     its bytes, but each relocation's immediate field, which must point where the
-    relocation names."""
-    if piece.unread is not None or piece.machine != image.machine:
-        return False
+    relocation names. A Placed: true where it is; else why not."""
+    if piece.unread is not None:
+        return Placed(
+            UNREAD,
+            f"Peeky can't compare it with {piece.origin}, which holds {piece.unread}, "
+            "a kind Peeky doesn't read",
+        )
+    if piece.machine != image.machine:
+        return Placed(
+            MACHINE,
+            f"Peeky can't compare it with {piece.origin}, built for {_machine(piece.machine)}, "
+            f"not {_machine(image.machine)}",
+        )
     data = image.read(base, len(piece.data))
-    if data is None:
+    if data is None or not _same(piece, data, image.machine):
+        return Placed(BYTES, f"its bytes are none of the toolchain's ({piece.origin})")
+    for relocation in piece.relocations:
+        kind = _check(piece, relocation, base, image, data)
+        if kind is not None:
+            return _missed(piece, relocation, kind)
+    if image.machine == EM_AARCH64:
+        missed = _split(piece, base, image, data)
+        if missed is not None:
+            return _missed(piece, *missed)
+    return Placed(reaches=tuple(sorted(_reaches(piece, base, image))))
+
+
+# What placing a StartupPiece may find: it is built for another machine; it holds a
+# relocation Peeky doesn't read; its bytes differ, but its relocations' immediate fields;
+# or one of its relocations points elsewhere.
+MACHINE, UNREAD, BYTES, TARGET = "machine", "unread", "bytes", "target"
+# Why a relocation can't be checked: an AArch64 LO12 no ADRP begins, or an x86-64 GOT
+# load on an instruction Peeky doesn't read (its relaxations are a `mov`'s).
+_UNPAIRED, _FORM = "unpaired", "form"
+_MACHINES = {EM_AARCH64: "AArch64", EM_X86_64: "x86-64"}
+
+
+@dataclass(frozen=True)
+class Placed:
+    """What placing a StartupPiece found: where it isn't the code there, of what ``kind``
+    (MACHINE, UNREAD, BYTES, TARGET) and ``why``, as a phrase; where it is, the code
+    outside it its relocations point at by the binary's symbols (``reaches``: (address,
+    name) pairs), which may be the program's. True where it is the code."""
+
+    kind: str | None = None
+    why: str | None = None
+    reaches: tuple = ()
+
+    def __bool__(self):
+        return self.kind is None
+
+
+def _machine(machine):
+    return _MACHINES.get(machine, f"machine {machine}")
+
+
+def _missed(piece, relocation, kind):
+    at = f"+0x{relocation.offset:x}"
+    if kind == BYTES:
+        return Placed(BYTES, f"its bytes are none of the toolchain's ({piece.origin})")
+    if kind in (_UNPAIRED, _FORM):
+        what = (
+            "pair it with the ADRP that begins its address"
+            if kind == _UNPAIRED
+            else "read the instruction it is in"
+        )
+        return Placed(
+            UNREAD,
+            f"Peeky can't compare it with {piece.origin}: of its relocation at {at}, Peeky "
+            f"can't {what}",
+        )
+    to = "into its own code" if relocation.own is not None else f"to {_target(relocation)}"
+    return Placed(
+        TARGET,
+        f"its bytes are {piece.origin}'s, but its relocation at {at}, {to}, points elsewhere",
+    )
+
+
+def _target(relocation):
+    if relocation.name:
+        return relocation.name
+    return f"its {relocation.section}" if relocation.section else "a symbol it doesn't name"
+
+
+def _same(piece, data, machine):
+    """Whether ``data`` is the piece's bytes, but its relocations' immediate fields (and
+    the instruction an x86-64 GOT load may be relaxed to)."""
+    if len(data) != len(piece.data):
         return False
     linked, original = bytearray(data), bytearray(piece.data)
     for relocation in piece.relocations:
-        spots = _check(piece, relocation, base, image, data)
-        if spots is None:
+        at = relocation.offset
+        if at + 4 > len(data):
             return False
-        for at in spots:
-            linked[at] = original[at] = 0
-    if image.machine == EM_AARCH64 and not _split(piece, base, image, data):
-        return False
+        if machine == EM_AARCH64:
+            mask = _AARCH64[relocation.kind][0]
+            now = struct.unpack_from("<I", data, at)[0]
+            if (now ^ struct.unpack_from("<I", piece.data, at)[0]) & ~mask & 0xFFFFFFFF:
+                return False
+            spots = range(at, at + 4)
+        elif _X86_64[relocation.kind] == "rex got" and at >= 3:
+            spots = range(at - 3, at + 4)
+        else:
+            spots = range(at, at + 4)
+        for each in spots:
+            linked[each] = original[each] = 0
     return linked == original
+
+
+def _reaches(piece, base, image):
+    """The code outside the piece its relocations name by the binary's symbols: (address,
+    name) of each, but the linker's stubs."""
+    for relocation in piece.relocations:
+        if relocation.own is None and relocation.name:
+            for address in _expected(relocation, base, image) - {0}:
+                if image.runs(address):
+                    yield address, relocation.name
 
 
 # AArch64's split addresses: the ADRP whose page each LO12 completes.
@@ -446,10 +571,11 @@ _PAGES = {277: 275, 278: 275, 286: 275, 312: 311}
 
 
 def _split(piece, base, image, data):
-    """Whether each address the piece splits over an ADRP and an LO12 (an ADD, a load
-    or a store) is, whole, one the relocations name. Each LO12 completes the nearest
-    ADRP before it to the same target, into the register it reads; one with none can't
-    be checked. An ADRP no LO12 completes is checked by its page."""
+    """None where each address the piece splits over an ADRP and an LO12 (an ADD, a load
+    or a store) is, whole, one the relocations name; else (relocation, TARGET), or
+    _UNPAIRED where an LO12 completes no ADRP. Each LO12 completes the nearest ADRP before
+    it to the same target, into the register it reads; one with none can't be checked.
+    An ADRP no LO12 completes is checked by its page."""
 
     def word(blob, at):
         return struct.unpack_from("<I", blob, at)[0]
@@ -483,19 +609,19 @@ def _split(piece, base, image, data):
             and word(piece.data, page.offset) & 0x1F == register
         ]
         if not paired:
-            return False
+            return low, _UNPAIRED
         page = max(paired, key=lambda each: each.offset)
         completed.add(page.offset)
         address = _page(base + page.offset, word(data, page.offset))
         address += ((word(data, low.offset) >> 10) & 0xFFF) * _AARCH64[low.kind][2]
         if address not in allowed(low):
-            return False
+            return low, TARGET
     for page in pages:
         if page.offset not in completed and _page(
             base + page.offset, word(data, page.offset)
         ) not in {each & ~0xFFF for each in allowed(page)}:
-            return False
-    return True
+            return page, TARGET
+    return None
 
 
 def _expected(relocation, base, image):
@@ -518,41 +644,31 @@ def _expected(relocation, base, image):
 
 
 def _check(piece, relocation, base, image, data):
-    """The offsets of the relocation's immediate field, where it holds what it must; else
-    None."""
+    """None where the relocation's immediate field holds what it must (its bytes but
+    that field are _same's); else TARGET, BYTES where an x86-64 GOT load is relaxed to
+    no instruction the linker writes, or _FORM where the object's instruction isn't a
+    `mov` Peeky reads."""
     at = relocation.offset
     place_ = base + at
     targets = _expected(relocation, base, image)
     if image.machine == EM_AARCH64:
-        mask, how, scale = _AARCH64[relocation.kind]
-        if at + 4 > len(data):
-            return None
+        mask, how, _ = _AARCH64[relocation.kind]
+        if how != "branch":
+            return None  # An address split over ADRP and its LO12: checked whole, by _split.
         word = struct.unpack_from("<I", data, at)[0]
-        if (
-            word & ~mask & 0xFFFFFFFF
-            != struct.unpack_from("<I", piece.data, at)[0] & ~mask & 0xFFFFFFFF
-        ):
-            return None
-        wanted = {target + relocation.addend for target in targets}
-        if how == "branch":
-            lands = place_ + _signed(word & mask, 26) * 4
-            stub = image.stub(lands)
-            good = lands in wanted or (
-                not relocation.defined
-                and stub is not None
-                and stub in image.got(relocation.name, relocation.weak)
-            )
-        else:
-            # An address split over ADRP and its LO12: checked whole, by _split.
-            good = True
-        return range(at, at + 4) if good else None
+        lands = place_ + _signed(word & mask, 26) * 4
+        stub = image.stub(lands)
+        good = lands in {target + relocation.addend for target in targets} or (
+            not relocation.defined
+            and stub is not None
+            and stub in image.got(relocation.name, relocation.weak)
+        )
+        return None if good else TARGET
     how = _X86_64[relocation.kind]
-    if at + 4 > len(data):
-        return None
     field = struct.unpack_from("<i", data, at)[0]
     if how in ("absolute", "signed"):
         value = field & 0xFFFFFFFF if how == "absolute" else field
-        return range(at, at + 4) if value in {t + relocation.addend for t in targets} else None
+        return None if value in {t + relocation.addend for t in targets} else TARGET
     if how == "pc":
         lands = field + place_ - relocation.addend
         stub = image.stub(lands)
@@ -562,24 +678,23 @@ def _check(piece, relocation, base, image, data):
             and stub is not None
             and stub in image.got(relocation.name, relocation.weak)
         )
-        return range(at, at + 4) if good else None
+        return None if good else TARGET
     slots = image.got(relocation.name, relocation.weak) if relocation.name else set()
     if how == "got":
-        return range(at, at + 4) if field + place_ - relocation.addend in slots else None
+        return None if field + place_ - relocation.addend in slots else TARGET
     # REX_GOTPCRELX: `mov sym@GOTPCREL(%rip), %reg`, or what the linker relaxes it to.
     if at < 3:
-        return None
+        return _FORM
     rex, opcode, modrm = piece.data[at - 3 : at]
     if opcode != 0x8B or modrm & 0xC7 != 0x05:
-        return None
-    spots = range(at - 3, at + 4)
+        return _FORM
     now = data[at - 3 : at]
     if now == bytes((rex, 0x8B, modrm)):  # still through the GOT
-        return spots if field + place_ - relocation.addend in slots else None
+        return None if field + place_ - relocation.addend in slots else TARGET
     if now == bytes((rex, 0x8D, modrm)):  # lea sym(%rip), %reg
-        return spots if field + place_ - relocation.addend in targets - {0} else None
+        return None if field + place_ - relocation.addend in targets - {0} else TARGET
     register = (modrm >> 3) & 7
     moved = (rex & ~0x04) | (0x01 if rex & 0x04 else 0)
     if now == bytes((moved, 0xC7, 0xC0 | register)):  # mov $sym, %reg
-        return spots if field in targets else None
-    return None
+        return None if field in targets else TARGET
+    return BYTES
