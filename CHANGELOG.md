@@ -36,9 +36,10 @@
   import from outside the copy, such as a stale install. A Python command runs through a bootstrap
   of Peeky's, whose watch reports what it loaded and started (for pytest, a plugin adds the test
   files). A run that may not be the copy's, that started a program other than one that starts none
-  (`echo`, `cp`), that Peeky stopped at its bound, or that isn't a Python Peeky starts, is
-  `unknown`. The command is trusted, not sandboxed. Other languages are refused for now. A build's
-  output limit now counts both streams together, and a Cargo build past it is `BUILD_FAILED` (#448).
+  (`echo`, `cp`), that Peeky stopped at its bound or an uncaught KeyboardInterrupt stopped, or that
+  isn't a Python Peeky starts, is `unknown`. The command is trusted, not sandboxed. Other languages
+  are refused for now. A build's output limit now counts both streams together, and a Cargo build
+  past it is `BUILD_FAILED` (#448).
 - **Python: a breakpoint in an installed package stops there.** debugpy skipped library code, so
   a probe at a file in the root's `.venv` said its breakpoint was pending, then ended `no-stop`.
   Now debugpy stops there too, where the program's interpreter says the file is installed, with

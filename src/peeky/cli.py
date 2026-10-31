@@ -4015,6 +4015,8 @@ _NATIVE = (b"\\x7fELF", b"\\xfe\\xed\\xfa\\xce", b"\\xfe\\xed\\xfa\\xcf", b"\\xc
 # before it. The process the bootstrap started writes the report at its exit.
 INSTALLED = [None]
 MAIN = [None]
+# Whether the command ended on an uncaught KeyboardInterrupt, as on Ctrl-C.
+INTERRUPTED = [False]
 
 
 def _words(args):
@@ -4141,7 +4143,12 @@ def write(kind, report):
 def _at_exit():
     # Not in a forked copy, which inherits this handler.
     if os.getpid() == MAIN[0]:
-        write("process", {{"instrumented": INSTALLED[0], "modules": modules(), "started": STARTED}})
+        write("process", {{
+            "instrumented": INSTALLED[0],
+            "interrupted": INTERRUPTED[0],
+            "modules": modules(),
+            "started": STARTED,
+        }})
 
 
 def install(by):
@@ -4217,38 +4224,95 @@ def pytest_sessionfinish(session):
 
 # Peeky's start of a check command's Python: the watch goes in first, then the command
 # runs as Python would have run it: `-m MODULE`, `-c CODE` or a script (a console script
-# too), with the same import path and `sys.argv`.
+# too), with the same import path, `sys.argv` and `__main__`. An uncaught KeyboardInterrupt
+# is in the report: a run cut short says nothing of the edit.
 _BOOTSTRAP_TEXT = '''"""Peeky's start of a check command (`peeky verify --check-command`)."""
 
+# A program's `__main__` has `__annotations__` as it starts, or not, by Python's version.
+ANNOTATED = "__annotations__" in globals()
+
+import builtins
+import importlib.machinery
+import importlib.util
+import marshal
 import os
-import runpy
 import sys
+import zipimport
 
 how, target = sys.argv[1:3]
 del sys.argv[1:3]
-if not sys.flags.safe_path:
+
+
+def _entry(path):
+    """Whether Python runs ``path`` from its `__main__` module: a directory or a zip."""
+    if os.path.isdir(path):
+        return True
+    try:
+        zipimport.zipimporter(path)
+    except (zipimport.ZipImportError, OSError):
+        return False
+    return True
+
+
+if how == "script" and _entry(target):
+    how = "entry"
+if how == "entry":
+    # Python puts it first, safe path or not.
+    if sys.flags.safe_path:
+        sys.path.insert(0, os.path.abspath(target))
+    else:
+        sys.path[0] = os.path.abspath(target)
+elif not sys.flags.safe_path:
     # This script's directory is first: Python's own for the command, instead.
     if how == "module":
         sys.path[0] = os.getcwd()
     elif how == "command":
         sys.path[0] = ""
-    elif os.path.isdir(target):
-        sys.path[0] = os.path.abspath(target)
     else:
         sys.path[0] = os.path.dirname(os.path.realpath(target))
 if {folder!r} not in sys.path:
     sys.path.append({folder!r})
-__import__({watch!r}).install("bootstrap")
-if how == "module":
-    runpy.run_module(target, run_name="__main__", alter_sys=True)
-elif how == "script":
-    runpy.run_path(target, run_name="__main__")
-else:
-    main = type(sys)("__main__")
-    main.__builtins__ = __builtins__
-    sys.modules["__main__"] = main
-    sys.argv[0] = "-c"
-    exec(compile(target, "<string>", "exec"), main.__dict__)
+watch = __import__({watch!r})
+watch.install("bootstrap")
+# A `__main__` as Python makes it: none of this script's names.
+main = type(sys)("__main__")
+if ANNOTATED:
+    main.__annotations__ = {{}}
+main.__builtins__ = builtins
+main.__loader__ = importlib.machinery.BuiltinImporter
+sys.modules["__main__"] = main
+try:
+    if how == "module":
+        import runpy
+
+        sys.argv[0] = "-m"
+        runpy._run_module_as_main(target)
+    elif how == "entry":
+        import runpy
+
+        sys.argv[0] = target
+        runpy._run_module_as_main("__main__", alter_argv=False)
+    elif how == "command":
+        sys.argv[0] = "-c"
+        exec(compile(target, "<string>", "exec"), vars(main))
+    else:
+        sys.argv[0] = target
+        main.__file__ = os.path.abspath(target)
+        main.__cached__ = None
+        with open(main.__file__, "rb") as stream:
+            source = stream.read()
+        if target.endswith(".pyc") or source[:2] == importlib.util.MAGIC_NUMBER[:2]:
+            if source[:4] != importlib.util.MAGIC_NUMBER:
+                raise RuntimeError("Bad magic number in .pyc file")
+            main.__loader__ = importlib.machinery.SourcelessFileLoader("__main__", main.__file__)
+            code = marshal.loads(source[16:])
+        else:
+            main.__loader__ = importlib.machinery.SourceFileLoader("__main__", main.__file__)
+            code = compile(source, main.__file__, "exec")
+        exec(code, vars(main))
+except KeyboardInterrupt:
+    watch.INTERRUPTED[0] = True
+    raise
 '''
 # Why a command Peeky doesn't start as Python has no verdict.
 NOT_WATCHED = (
@@ -4297,22 +4361,27 @@ def _python_split(words):
     return None
 
 
-def _watched(ran, words, candidate, environment, pytest):
-    """The command run through Peeky's bootstrap, which installs the watch before it runs:
-    `python [its options] <bootstrap> module|command|script TARGET ARGS`, and for a
-    console script, its `#!` Python and options. For pytest (``pytest``), with `-p
-    <plugin>` after its word. The watch, the plugin and the bootstrap are written, with
-    the run's nonce and report folder, to a directory of Peeky's, at the end of the
-    command's PYTHONPATH. Returns (ran, how to read the reports: folder, nonce, watch
-    file, plugin file), or (ran, None) for a command that isn't a Python Peeky starts."""
+def _python_command(ran, environment):
+    """(python, its options, how, target, the rest) of a command Peeky starts as Python,
+    through its bootstrap: the interpreter's own command line (`-m`, `-c` or a script), or
+    a console script on its `#!` Python and options; None for any other command."""
     if _PYTHON_NAME.fullmatch(Path(ran[0]).name):
         if (split := _python_split(ran)) is None:
-            return ran, None
-        python, (options, how, target, rest) = ran[0], split
-    elif (script := _script_python(ran[0], environment)) is not None:
-        python, options, how, target, rest = script[0], script[1], "script", ran[0], ran[1:]
-    else:
-        return ran, None
+            return None
+        return ran[0], *split
+    if (script := _script_python(ran[0], environment)) is not None:
+        return script[0], script[1], "script", ran[0], ran[1:]
+    return None
+
+
+def _watched(command, candidate, environment, pytest):
+    """``command`` (``_python_command``'s) run through Peeky's bootstrap, which installs
+    the watch before it runs: `python [its options] <bootstrap> module|command|script
+    TARGET ARGS`. For pytest (``pytest``), with `-p <plugin>` after its word. The watch,
+    the plugin and the bootstrap are written, with the run's nonce and report folder, to a
+    directory of Peeky's, at the end of the command's PYTHONPATH. Returns (ran, how to
+    read the reports: folder, nonce, watch file, plugin file)."""
+    python, options, how, target, rest = command
     folder = Path(tempfile.mkdtemp(prefix="peeky-watch-", dir=candidate.scratch))
     tag, nonce = secrets.token_hex(8), secrets.token_hex(16)
     watch, plugin = f"peeky_watch_{tag}", f"peeky_check_{tag}"
@@ -4356,7 +4425,8 @@ def _command_reports(reading, candidate, names, pytest):
     """What Peeky's watch (and for pytest, its plugin) reported: (reports, test files,
     tests run, problems, notes). A problem leaves the run without a verdict:
     - a report that isn't this run's (``reading``: folder, nonce, watch and plugin files);
-    - no report from the command's process as it exited (os._exit, a crash, a kill);
+    - no report from the command's process as it exited (os._exit, a crash, a kill), or
+      one that says it stopped on an uncaught KeyboardInterrupt;
     - for pytest: no report from its main process, or from a pytest-xdist worker the main
       process started; a worker watched only from the plugin's load;
     - a test file, conftest or module loaded from your project instead of the copy, or a
@@ -4388,6 +4458,11 @@ def _command_reports(reading, candidate, names, pytest):
             problems.append(f"{path.name} in the command's reports isn't from Peeky's watch")
             continue
         (processes if kind == "process" else pytests).append(report)
+        if kind == "process" and report.get("interrupted"):
+            problems.append(
+                "the command's Python stopped on an uncaught KeyboardInterrupt, as on Ctrl-C, "
+                "so its exit status says nothing of the edit"
+            )
         if kind == "pytest" and report.get("role") == "worker":
             if report.get("instrumented") != "bootstrap":
                 problems.append(
@@ -4480,20 +4555,26 @@ def _verify_command(args, root, source, words, deadline):
         environment = _command_environment(interpreter, candidate)
         ran = [_command_program(words[0], candidate, environment, interpreter), *words[1:]]
         pytest = _runner(words) == "pytest"
+        # A command that isn't a Python Peeky starts runs with no verdict, whatever its
+        # imports would be: they are checked only for one it watches.
+        command = _python_command(ran, environment)
         # What pytest loads it reports itself, as pytest's import path differs.
         static = (
-            []
-            if pytest
-            else candidate.command_imports(
+            candidate.command_imports(
                 *_invocation(ran, candidate, environment, interpreter), environment
             )
+            if command is not None and not pytest
+            else []
         )
-        if edit is not None and (reasons := [*candidate.unedited_imports, *static]):
+        reasons = [*candidate.unedited_imports, *static] if command is not None else []
+        if edit is not None and reasons:
             raise ValueError(
                 f"verify --check-command can't test this edit: {reasons[0]}. Otherwise, check "
                 "the edit with a --check checker, which is given the edited file"
             )
-        ran, reading = _watched(ran, words, candidate, environment, pytest)
+        ran, reading = (
+            (ran, None) if command is None else _watched(command, candidate, environment, pytest)
+        )
         candidate_sha256 = hashlib.sha256(candidate.staged.read_bytes()).hexdigest()
         timeout, limited = agent.CHECK_S, False
         if deadline is not None:

@@ -1358,3 +1358,105 @@ def test_a_python_that_ends_without_exiting_is_no_verdict(project, capsys):
     result = json.loads(out.out)
     assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
     assert result["no_verdict"].startswith("the command's Python wrote no report as it exited")
+
+
+# Review round 8.
+
+
+def test_a_command_peeky_doesnt_start_as_python_runs_whatever_python_would_import(
+    src_project, capsys, monkeypatch, tmp_path
+):
+    # Python's imports were checked for `true` too: a stale package on PYTHONPATH refused
+    # the edit, though `true` imports nothing and has no verdict anyway.
+    outside = tmp_path / "outside"
+    (outside / "pkg").mkdir(parents=True)
+    (outside / "pkg" / "__init__.py").write_text(PKG)
+    monkeypatch.setenv("PYTHONPATH", str(outside))
+    code = main(["verify", str(src_project), *SET_VALUE, "--json", "--check-command", "true"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"] == NOT_WATCHED and "check_report" not in result, result
+
+
+DESCRIBE = """\
+import json
+import os
+import sys
+
+
+def show(names, main):
+    \"\"\"The `__main__` a program starts with, with paths from the working directory.\"\"\"
+
+    def where(path):
+        if not isinstance(path, str) or not os.path.isabs(path):
+            return path
+        return os.path.relpath(os.path.realpath(path), os.path.realpath(os.getcwd()))
+
+    shown = []
+    for name, value in names.items():
+        if name == "__builtins__":
+            value = type(value).__name__
+        elif name == "__loader__" and isinstance(value, type):
+            value = value.__name__
+        elif name == "__loader__" and value is not None:
+            value = [type(value).__name__, value.name, where(value.path)]
+        elif name == "__spec__" and value is not None:
+            value = [value.name, type(value.loader).__name__, where(value.origin)]
+        elif name in ("__file__", "__cached__") and value is not None:
+            value = [where(value), os.path.isabs(value)]
+        else:
+            value = repr(value)
+        shown.append([name, value])
+    print(json.dumps({
+        "main": shown,
+        "is_main": vars(sys.modules["__main__"]) is main,
+        "argv": [where(os.path.abspath(each)) if os.path.exists(each) else each
+                 for each in sys.argv],
+        "path0": where(sys.path[0]),
+        "code": where(sys._getframe(1).f_code.co_filename),
+    }))
+"""
+SHOW = "names = dict(globals()); import describe; describe.show(names, globals())"
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        ["-c", SHOW, "x"],
+        ["showmain.py", "x"],
+        ["-m", "showmain", "x"],
+        ["-B", "-u", "-m", "showmain"],
+    ],
+    ids=["command", "script", "module", "module-with-options"],
+)
+def test_the_bootstrap_starts_main_as_python_does(project, capsys, words):
+    # `-c` ran with `__loader__` None and no `__annotations__`; runpy gave a script and a
+    # module their own `__main__`, with a dict of builtins.
+    (project / "describe.py").write_text(DESCRIBE)
+    (project / "showmain.py").write_text(SHOW + "\n")
+    code, out = verify(capsys, project, *FIX, "--json", "--check-command", "--", "python", *words)
+    result = json.loads(out.out)
+    assert code == 0 and result["verdict"] == "passed", result
+    python = result["check_command"]["ran"][0]
+    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    direct = subprocess.run(
+        [python, *words], cwd=project, env=environment, capture_output=True, text=True
+    )
+    assert direct.returncode == 0, direct.stderr
+    assert json.loads(result["stdout"]) == json.loads(direct.stdout)
+
+
+def test_an_uncaught_keyboard_interrupt_is_no_verdict(project, capsys):
+    # It exited by SIGINT, as Python does, with a whole report: "failed: KeyboardInterrupt".
+    command = ["--check-command", "--", "python", "-c", "raise KeyboardInterrupt"]
+    code, out = verify(capsys, project, *FIX, "--json", *command)
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == -2 and result["verdict"] == "unknown", result
+    assert result["no_verdict"].startswith(
+        "the command's Python stopped on an uncaught KeyboardInterrupt"
+    ), result
+    # A status of the command's own stays a verdict.
+    command = ["--check-command", "--", "python", "-c", "raise SystemExit(3)"]
+    code, out = verify(capsys, project, *FIX, "--json", *command)
+    result = json.loads(out.out)
+    assert code == 1 and result["exit_code"] == 3 and result["verdict"] == "failed", result

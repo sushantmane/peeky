@@ -4072,9 +4072,9 @@ command that installs or writes there changes your environment.
   ([Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it)). Nothing above the
   root is copied. A warning says so unless the root is a project's. It warns even when the edited
   file imports nothing, because the tests may import anything.
-- For a command other than pytest, each module the project supplies must import from the copy. So
-  must each package on the way to the edited file. Those in its root and `src` count, as do those
-  in a `PYTHONPATH` entry of the copy.
+- For a Python command other than pytest, each module the project supplies must import from the
+  copy. So must each package on the way to the edited file. Those in its root and `src` count, as
+  do those in a `PYTHONPATH` entry of the copy. A command that isn't Python isn't checked.
 - Peeky looks each one up as the command's own Python starts, without importing it. It takes the
   same `-I`, `-E`, `-P`, `-s` and `-S`, and the same environment. The working directory comes first
   for `-c` and `-m`, and a script's own directory for a script. A console script, such as
@@ -4093,8 +4093,8 @@ command that installs or writes there changes your environment.
 
 - **Only a Python command that Peeky starts can pass.** That is `python -m MODULE`, `python -c`,
   `python script.py`, or a console script on the program's interpreter. Peeky starts it through
-  its bootstrap, which installs a watch, then runs the command as Python would. The import path
-  and `sys.argv` are the same. `ran` shows it: `python -I <bootstrap> module pytest …`.
+  its bootstrap, which installs a watch, then runs the command as Python would. The import path,
+  `sys.argv` and `__main__` are the same. `ran` shows it: `python -I <bootstrap> module pytest …`.
 - As that Python exits, the watch writes a report. It holds the run's nonce and the watch's own
   file, each module's file, and the processes the command started. Peeky reads only reports
   with this run's nonce and files.
@@ -4111,6 +4111,7 @@ command that installs or writes there changes your environment.
   a process it starts.
 - The run is no verdict if it shows any of these:
   - no report as the command's Python exited (`os._exit`, a crash or a kill);
+  - an uncaught `KeyboardInterrupt`, as on Ctrl-C, that stopped the command's Python;
   - for pytest, no report from its main process, or a worker's missing;
   - a test file, conftest or module loaded from your project instead of the copy;
   - a module of the project's loaded from outside the copy, such as a stale install;
