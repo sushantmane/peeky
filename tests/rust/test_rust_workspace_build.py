@@ -590,3 +590,75 @@ def test_a_build_scripts_jobs_are_the_builds_own(workspace, capsys):
     assert shown.stdout == f"2 {rb.jobs()}\n"
     _, manifest = manifest_of(summary)
     assert manifest["build_inputs"]["env"] == {"NUM_JOBS": str(rb.jobs())}
+
+
+GENERATING_SCRIPT = """fn main() {
+    let out = std::env::var("OUT_DIR").unwrap();
+    let name = ["RUSTC", "BOOTSTRAP"].join("_");
+    let code = format!("fn bootstrap() -> String {{ std::env::var({name:?}).unwrap_or_default() }}\\n");
+    std::fs::write(format!("{out}/generated.rs"), code).unwrap();
+    println!("cargo::rerun-if-changed=build.rs");
+}
+"""
+GENERATED_MACRO = """use proc_macro::TokenStream;
+
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
+#[proc_macro]
+pub fn seen(_: TokenStream) -> TokenStream {
+    format!("{:?}", bootstrap()).parse().unwrap()
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("vendored", [False, True])
+def test_a_procedural_macros_generated_source_is_scanned_too(workspace, capsys, vendored):
+    # Its own sources never name the variable: the source its build script generates,
+    # which it `include!`s, does.
+    name = "genmac"
+    base = workspace / ("vendor" if vendored else "") / name
+    (base / "src").mkdir(parents=True)
+    (base / "Cargo.toml").write_text(
+        f'[package]\nname = "{name}"\nversion = "1.0.0"\nedition = "2021"\n\n'
+        "[lib]\nproc-macro = true\n"
+    )
+    (base / "build.rs").write_text(GENERATING_SCRIPT)
+    (base / "src/lib.rs").write_text(GENERATED_MACRO)
+    assert b"RUSTC_BOOTSTRAP" not in (base / "src/lib.rs").read_bytes()
+    if vendored:
+        files = {
+            path.relative_to(base).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in base.rglob("*")
+            if path.is_file()
+        }
+        (base / ".cargo-checksum.json").write_text(
+            json.dumps({"files": files, "package": CHECKSUM})
+        )
+        dependency = f'{name} = "1"'
+    else:
+        manifest = workspace / "Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('"util"]', f'"util", "{name}"]'))
+        dependency = f'{name} = {{ path = "../{name}" }}'
+    util = workspace / "util/Cargo.toml"
+    util.write_text(util.read_text() + f"\n[dependencies]\n{dependency}\n")
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + f"\npub fn seen() -> &'static str {{\n    {name}::seen!()\n}}\n"
+    )
+    subprocess.run(
+        [os.environ["PEEKY_RUST_CARGO"], "generate-lockfile", "--offline"]
+        + list(rw.vendor_arguments(workspace, "vendor")),
+        cwd=workspace,
+        env=rw.cargo_environment(os.environ["PEEKY_RUST_RUSTC"], workspace.parent / "cargo-home"),
+        check=True,
+        capture_output=True,
+    )
+    config = configure(workspace)
+    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    message = result["error"]["message"]
+    assert message.startswith(
+        "Peeky analyses only code built as stable Rust builds it: the procedural macro "
+        f"`{name}`'s debug/build/{name}-"
+    ), message
+    assert "/out/generated.rs (generated) mentions RUSTC_BOOTSTRAP" in message

@@ -358,7 +358,12 @@ def fake_shape(tmp_path, local=("util", "app"), analysed=("util",)):
         analysed=tuple(packages[name] for name in analysed),
         watch={"vendor_directory": None},
         host="aarch64-unknown-linux-gnu",
-        build_profiles=((f"path+file://{tmp_path / 'ws' / 'util'}#0.1.0", "0", "true"),),
+        build_profiles=(
+            (f"path+file://{tmp_path / 'ws' / 'util'}#0.1.0", "0", "true", ("default", "my-feat")),
+        ),
+        cfgs=('target_has_atomic="16"', 'target_has_atomic="8"', "unix", 'target_os="linux"'),
+        vendored={("zstd-sys", "1.0.0"): "vendor/zstd-sys"},
+        root=tmp_path / "ws",
     )
 
 
@@ -406,7 +411,10 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
         ],
     }
     assert found["dirs"] == {
-        str(root / "util/proto"): {"a.proto": hashlib.sha256(b"a\n").hexdigest()}
+        str(root / "util/proto"): {
+            "root": ["dir"],
+            "entries": {"a.proto": hashlib.sha256(b"a\n").hexdigest()},
+        }
     }
     assert set(found["trees"]) == {str(root / "app")}
     assert sorted(found["trees"][str(root / "app")]) == [
@@ -543,7 +551,7 @@ def test_a_watched_directory_is_recorded_entry_by_entry(tmp_path, monkeypatch):
     (root / "util/data/link").symlink_to("nested/Cargo.toml")
     messages = [build_script_run(tmp_path, "util", "cargo::rerun-if-changed=data\n")]
     found = rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
-    assert found["dirs"][str(root / "util/data")] == {
+    assert found["dirs"][str(root / "util/data")]["entries"] == {
         ".schema": hashlib.sha256(b"one\n").hexdigest(),
         "link": ["link", "nested/Cargo.toml", hashlib.sha256(b"[package]\n").hexdigest()],
         "nested": "dir",
@@ -567,6 +575,60 @@ def test_a_watched_directory_is_recorded_entry_by_entry(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Peeky builds only files inside") as caught:
         rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
     assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_a_watched_directorys_own_identity_is_recorded(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    for name in ("util/empty", "util/a", "util/b"):
+        (root / name).mkdir(parents=True)
+    (root / "util/linked").symlink_to("a")
+    output = "cargo::rerun-if-changed=empty\ncargo::rerun-if-changed=linked\n"
+    messages = [build_script_run(tmp_path, "util", output)]
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
+    assert found["dirs"] == {
+        str(root / "util/empty"): {"root": ["dir"], "entries": {}},
+        str(root / "util/linked"): {"root": ["link", "a"], "entries": {}},
+    }
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    # An empty watched directory removed, and a watched link retargeted between empty
+    # directories: each is a change.
+    (root / "util/empty").rmdir()
+    with pytest.raises(rb.BuildRequired, match=r"util/empty, which a build script reads"):
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    (root / "util/empty").mkdir()
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    (root / "util/linked").unlink()
+    (root / "util/linked").symlink_to("b")
+    with pytest.raises(rb.BuildRequired, match=r"util/linked, which a build script reads"):
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+
+
+def test_a_watched_link_retargeted_while_cargo_ran_is_refused(tmp_path):
+    import time
+
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    for name in ("util/a", "util/b"):
+        (root / name).mkdir(parents=True)
+    (root / "util/linked").symlink_to("a")
+    shape = fake_shape(tmp_path, local=("util",))
+    before = rb._snapshot(shape, None)
+    assert "l:" + str(root / "util/linked") in before
+    started = time.time_ns()
+    # Retargeted after the build started: the record would be of the final state.
+    (root / "util/linked").unlink()
+    (root / "util/linked").symlink_to("b")
+    messages = [build_script_run(tmp_path, "util", "cargo::rerun-if-changed=linked\n")]
+    with pytest.raises(RuntimeError) as caught:
+        rb._build_inputs(shape, root, messages, {}, before, started, None)
+    assert str(caught.value).startswith("Provenance: util/linked changed while Peeky built")
+    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
 
 
 def test_explicit_files_count_against_the_limit(tmp_path, monkeypatch):
@@ -611,7 +673,14 @@ def test_a_build_scripts_variables_are_recorded_as_cargo_gives_them(tmp_path, mo
     with pytest.raises(rb.BuildRequired, match="the build environment's NUM_JOBS"):
         rb._check_build_inputs(target, root, tmp_path, manifest)
     # One Cargo sets that Peeky can't compute is refused, naming it.
-    for name in ("OUT_DIR", "CARGO_PKG_NAME", "DEP_Z_INCLUDE"):
+    for name in (
+        "OUT_DIR",
+        "DEP_Z_INCLUDE",
+        "CARGO_MAKEFLAGS",
+        "CARGO_PKG_README",
+        "CARGO_CFG_DEBUG_ASSERTIONS",
+        "CARGO",
+    ):
         messages = [
             build_script_run(tmp_path / name, "util", f"cargo::rerun-if-env-changed={name}\n")
         ]
@@ -625,15 +694,75 @@ def test_a_build_scripts_variables_are_recorded_as_cargo_gives_them(tmp_path, mo
 
 def test_a_mention_of_rustc_bootstrap_is_refused_naming_the_crate_and_file(tmp_path):
     write(
-        tmp_path, {"util/src/lib.rs": "pub fn f() {}\n", "util/src/env.rs": "// RUSTC_BOOTSTRAP\n"}
+        tmp_path,
+        {
+            "ws/util/src/lib.rs": "pub fn f() {}\n",
+            "ws/util/src/env.rs": "// RUSTC_BOOTSTRAP\n",
+            "target/debug/build/derive-0123/out/generated.rs": 'std::env::var("RUSTC_BOOTSTRAP")\n',
+            "target/debug/build/derive-0123/out/data.txt": "RUSTC_BOOTSTRAP\n",
+        },
     )
-    rb._check_bootstrap_mentions(["util/src/lib.rs"], tmp_path, "`util`")
-    with pytest.raises(ValueError) as caught:
-        rb._check_bootstrap_mentions(
-            ["util/src/lib.rs", "util/src/env.rs"], tmp_path, "the procedural macro `derive`"
+    root, target_dir = tmp_path / "ws", tmp_path / "target"
+    generated = "debug/build/derive-0123/out/generated.rs"
+    clean = {"sources": ["util/src/lib.rs"], "generated": ["debug/build/derive-0123/out/data.txt"]}
+    rb._check_bootstrap_mentions(clean, root, target_dir, "`util`")
+    for read, said in (
+        ({"sources": ["util/src/lib.rs", "util/src/env.rs"], "generated": []}, "util/src/env.rs"),
+        # A source a build script generated, which the compile `include!`s.
+        ({"sources": ["util/src/lib.rs"], "generated": [generated]}, f"{generated} (generated)"),
+    ):
+        with pytest.raises(ValueError) as caught:
+            rb._check_bootstrap_mentions(read, root, target_dir, "the procedural macro `derive`")
+        assert str(caught.value).startswith(
+            "Peeky analyses only code built as stable Rust builds it: the procedural macro "
+            f"`derive`'s {said} mentions RUSTC_BOOTSTRAP"
         )
-    assert str(caught.value).startswith(
-        "Peeky analyses only code built as stable Rust builds it: the procedural macro "
-        "`derive`'s util/src/env.rs mentions RUSTC_BOOTSTRAP"
+        assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_cargos_own_variables_for_a_build_script_are_computed(tmp_path):
+    root = tmp_path / "ws"
+    write(
+        root,
+        {
+            "Cargo.toml": '[workspace]\nmembers = ["util"]\n[workspace.package]\n'
+            'license = "MIT"\nauthors = ["A <a@x>", "B"]\n',
+            "util/Cargo.toml": '[package]\nname = "util"\nversion = "0.1.0"\nlinks = "z"\n'
+            'description = "d"\nlicense.workspace = true\nauthors.workspace = true\n',
+            "util/build.rs": "",
+        },
     )
-    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    names = (
+        "CARGO_MANIFEST_DIR CARGO_MANIFEST_PATH CARGO_MANIFEST_LINKS CARGO_PKG_NAME "
+        "CARGO_PKG_VERSION CARGO_PKG_VERSION_MAJOR CARGO_PKG_VERSION_PRE CARGO_PKG_AUTHORS "
+        "CARGO_PKG_DESCRIPTION CARGO_PKG_HOMEPAGE CARGO_PKG_LICENSE CARGO_FEATURE_MY_FEAT "
+        "CARGO_FEATURE_OTHER CARGO_CFG_FEATURE CARGO_CFG_TARGET_HAS_ATOMIC CARGO_CFG_UNIX "
+        "CARGO_CFG_WINDOWS CARGO_ENCODED_RUSTFLAGS CARGO_HOME CARGO_PRIMARY_PACKAGE"
+    ).split()
+    output = "".join(f"cargo::rerun-if-env-changed={name}\n" for name in names)
+    output += "cargo::rerun-if-changed=build.rs\n"
+    messages = [build_script_run(tmp_path, "util", output)]
+    env = {"CARGO_ENCODED_RUSTFLAGS": "-C\x1fdwarf-version=4", "CARGO_HOME": "/home"}
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
+    assert found["env"] == {
+        "CARGO_CFG_FEATURE": "default,my-feat",
+        "CARGO_CFG_TARGET_HAS_ATOMIC": "16,8",
+        "CARGO_CFG_UNIX": "",
+        "CARGO_CFG_WINDOWS": None,
+        "CARGO_ENCODED_RUSTFLAGS": "-C\x1fdwarf-version=4",
+        "CARGO_FEATURE_MY_FEAT": "1",
+        "CARGO_FEATURE_OTHER": None,
+        "CARGO_HOME": "/home",
+        "CARGO_MANIFEST_DIR": str(root / "util"),
+        "CARGO_MANIFEST_LINKS": "z",
+        "CARGO_MANIFEST_PATH": str(root / "util/Cargo.toml"),
+        "CARGO_PKG_AUTHORS": "A <a@x>:B",
+        "CARGO_PKG_DESCRIPTION": "d",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT",
+        "CARGO_PKG_NAME": "util",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+        "CARGO_PRIMARY_PACKAGE": None,
+    }

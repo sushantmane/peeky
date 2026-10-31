@@ -27,6 +27,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -69,6 +70,7 @@ SCHEMA = 1
 WRAPPER = r"""import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -414,7 +416,8 @@ def _digest(store):
 
 def _snapshot(shape, vendor):
     """{path: (mtime, ctime, size)} of the files under the local packages' directories
-    (not a target directory, hidden directories or the vendored copies), to tell a file
+    (not a target directory, hidden directories or the vendored copies), and {"l:" path:
+    the same, not followed} of each entry there, a directory or a link too: to tell one
     changed while Cargo ran from one changed before."""
     skip = {str((shape.workspace / vendor).resolve())} if vendor else set()
     seen, found = set(), {}
@@ -425,6 +428,12 @@ def _snapshot(shape, vendor):
                 folders[:] = []
                 continue
             seen.add(base)
+            # Each entry itself, not followed ("l:"), a directory or link too.
+            for name in (".", *folders, *files):
+                path = os.path.normpath(os.path.join(base, name))
+                with contextlib.suppress(OSError):
+                    info = os.lstat(path)
+                    found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
             folders[:] = [
                 name
                 for name in folders
@@ -741,7 +750,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
                 read = _read_dependencies(
                     depfile, shape.workspace, root, target_dir, name, producer
                 )
-                _check_bootstrap_mentions(read["sources"], root, f"the procedural macro `{name}`")
+                _check_bootstrap_mentions(read, root, target_dir, f"the procedural macro `{name}`")
             continue
         artifact = message.get("target") or {}
         profile = message.get("profile") or {}
@@ -765,7 +774,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         if macro:
             _check_bootstrap_mentions(
-                read["sources"], root, f"the procedural macro `{artifact.get('name')}`"
+                read, root, target_dir, f"the procedural macro `{artifact.get('name')}`"
             )
         if package.name not in analysed_names or {"custom-build", "proc-macro"} & set(kinds):
             continue
@@ -786,7 +795,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         entry = _unit(package, artifact, unit, run)
         depfile = Path(entry.pop("dependency_file"))
         read = _read_dependencies(depfile, shape.workspace, root, target_dir, package.name)
-        _check_bootstrap_mentions(read["sources"], root, f"`{package.name}`")
+        _check_bootstrap_mentions(read, root, target_dir, f"`{package.name}`")
         _check_bootstrap_read(package.name, crate, depfile)
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         entry["sources"] = sorted(read["sources"])
@@ -844,12 +853,29 @@ MAX_BUILD_OUTPUT = 16 * 1024 * 1024
 # What Cargo gives every build script in Peeky's build, whatever the package: its host
 # is the target, its profile a dev or test one (`debug`).
 _FIXED_FOR_SCRIPTS = ("TARGET", "HOST", "PROFILE")
-# Variables Cargo sets or changes for a build script whose value Peeky doesn't compute
-# (`OUT_DIR`, `CARGO_PKG_NAME`, `DEP_Z_INCLUDE`, the dynamic library path).
+# Variables Cargo sets or changes for a build script (_script_value computes the rest of
+# what it sets; any other is Cargo's own environment, passed on).
 _CARGO_SETS = re.compile(
-    r"(?:CARGO|CARGO_.*|DEP_.*|OUT_DIR|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|"
-    r"RUSTC_LINKER|LD_LIBRARY_PATH|DYLD_LIBRARY_PATH|DYLD_FALLBACK_LIBRARY_PATH)"
+    r"(?:CARGO|CARGO_MAKEFLAGS|CARGO_MANIFEST_DIR|CARGO_MANIFEST_PATH|CARGO_MANIFEST_LINKS|"
+    r"CARGO_ENCODED_RUSTFLAGS|CARGO_PKG_.*|CARGO_FEATURE_.*|CARGO_CFG_.*|DEP_.*|OUT_DIR|"
+    r"RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTC_LINKER|LD_LIBRARY_PATH|"
+    r"DYLD_LIBRARY_PATH|DYLD_FALLBACK_LIBRARY_PATH)"
 )
+# Cargo's `CARGO_PKG_*` of a manifest's `[package]` fields (as written, else empty).
+_PACKAGE_FIELDS = {
+    "AUTHORS": "authors",
+    "DESCRIPTION": "description",
+    "HOMEPAGE": "homepage",
+    "REPOSITORY": "repository",
+    "LICENSE": "license",
+    "LICENSE_FILE": "license-file",
+    "RUST_VERSION": "rust-version",
+}
+_SEMVER = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
+
+
+def _envify(name):
+    return name.upper().replace("-", "_")
 
 
 def jobs():
@@ -896,6 +922,48 @@ def _tree(top, skip=(), *, budget):
     return found
 
 
+def _root_identity(path):
+    """A watched directory's own identity, not followed: ["dir"], ["link", what it
+    names], ["missing"], ["unreadable"] or ["other"]."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return ["missing"]
+    except OSError:
+        return ["unreadable"]
+    if stat.S_ISLNK(info.st_mode):
+        return ["link", os.readlink(path)]
+    return ["dir"] if stat.S_ISDIR(info.st_mode) else ["other"]
+
+
+def _watched_directory(top, root, budget):
+    """A `rerun-if-changed` directory as the manifest keeps it: {"root": its own identity
+    (_root_identity), "entries": _exact_tree's, or "missing" or "unreadable" where it
+    can't be walked}."""
+    try:
+        entries = _exact_tree(top, root, budget=budget)
+    except FileNotFoundError:
+        entries = "missing"
+    except PermissionError:
+        entries = "unreadable"
+    return {"root": _root_identity(top), "entries": entries}
+
+
+def _entry_changed_during(path, before, started_ns):
+    """Whether ``path`` itself, not followed (a directory, a link, a file), changed while
+    Cargo ran: its lstat differs from the snapshot's (one gone, too), or, with none there,
+    it changed after the build started."""
+    try:
+        info = os.lstat(path)
+        now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    except FileNotFoundError:
+        now = None
+    key = "l:" + str(path)
+    if key in before:
+        return tuple(before[key] or ()) != tuple(now or ())
+    return now is not None and max(now[0], now[1]) >= started_ns - _SETTLE_NS
+
+
 def _exact_tree(top, root, *, budget):
     """{path relative to ``top``: what is there} of everything under the directory
     ``top``, as Cargo scans a `rerun-if-changed` directory: hidden, `target` and other
@@ -935,29 +1003,108 @@ def _exact_tree(top, root, *, budget):
     return found
 
 
+def _manifest_field(shape, directory, field):
+    """A `[package]` field of the manifest in ``directory`` as Cargo gives it to a build
+    script (a list's items joined by `:`; "" where absent; one inherited from the
+    workspace's `[workspace.package]`), or Ellipsis where Peeky can't tell."""
+    package = rust_workspace._read_toml(
+        Path(directory) / "Cargo.toml", rust_workspace.MAX_MANIFEST_BYTES
+    ).get("package")
+    value = package.get(field, "") if isinstance(package, dict) else ...
+    if isinstance(value, dict) and value == {"workspace": True}:
+        root = rust_workspace._read_toml(
+            shape.workspace / "Cargo.toml", rust_workspace.MAX_MANIFEST_BYTES
+        )
+        section = (root.get("workspace") or {}).get("package")
+        value = section.get(field, ...) if isinstance(section, dict) else ...
+    if isinstance(value, list) and all(isinstance(each, str) for each in value):
+        return ":".join(value)
+    return value if isinstance(value, str) else ...
+
+
+def _cfg_value(key, cfgs):
+    """`CARGO_CFG_<key>` as Cargo gives it from the build's `rustc --print cfg`: "" for a
+    name, a key's values joined by `,`, None where none."""
+    found = None
+    for line in cfgs:
+        name, _, value = line.partition("=")
+        if _envify(name) != key:
+            continue
+        if not value:
+            return ""
+        found = [*(found or []), value.strip('"')]
+    return None if found is None else ",".join(found)
+
+
 def _script_value(name, package_id, shape, env, jobs_):
     """The value Cargo gives a build script of ``package_id`` for the variable ``name``
     in Peeky's build (``env``: what Peeky runs Cargo with; ``jobs_``: its `-j`): Cargo's
-    own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, from the
-    unit graph; else what Peeky gives Cargo, which Cargo passes on. Refused for a variable
-    Cargo sets otherwise, whose value Peeky doesn't compute."""
+    own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, and
+    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph; the
+    build's `rustc --print cfg` for `CARGO_CFG_*`; the package's manifest and place for
+    `CARGO_PKG_*` and `CARGO_MANIFEST_*`; Peeky's own rustflags; else what Peeky gives
+    Cargo, which Cargo passes on. Refused for one Cargo sets otherwise, whose value Peeky
+    doesn't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`, `CARGO_PKG_README`, which a
+    file's presence decides, `CARGO_CFG_DEBUG_ASSERTIONS`)."""
+    source, directory, package, version = rust_workspace.package_id(package_id)
+    profiles = [each for each in shape.build_profiles if each[0] == package_id]
+    profile = profiles[0] if len(profiles) == 1 else None
+    if source is None:
+        place = Path(directory)
+    elif (copy := shape.vendored.get((package, version))) is not None:
+        place = shape.root / copy
+    else:
+        place = None
+    found = ...
     if name in ("TARGET", "HOST"):
-        return shape.host
-    if name == "PROFILE":
-        return "debug"
-    if name == "NUM_JOBS":
-        return str(jobs_)
-    if name in ("OPT_LEVEL", "DEBUG"):
-        found = [each for each in shape.build_profiles if each[0] == package_id]
-        if len(found) == 1:
-            return found[0][1] if name == "OPT_LEVEL" else found[0][2]
+        found = shape.host
+    elif name == "PROFILE":
+        found = "debug"
+    elif name == "NUM_JOBS":
+        found = str(jobs_)
+    elif name in ("OPT_LEVEL", "DEBUG") and profile is not None:
+        found = profile[1] if name == "OPT_LEVEL" else profile[2]
+    elif name.startswith("CARGO_FEATURE_"):
+        if profile is not None:
+            features = {_envify(each) for each in profile[3]}
+            found = "1" if name.removeprefix("CARGO_FEATURE_") in features else None
+    elif name == "CARGO_CFG_FEATURE":
+        if profile is not None:
+            found = ",".join(profile[3])
+    elif name.startswith("CARGO_CFG_") and name != "CARGO_CFG_DEBUG_ASSERTIONS":
+        found = _cfg_value(name.removeprefix("CARGO_CFG_"), shape.cfgs)
+    elif name == "CARGO_ENCODED_RUSTFLAGS":
+        found = env.get(name)
+    elif place is not None and name == "CARGO_MANIFEST_DIR":
+        found = str(place)
+    elif place is not None and name == "CARGO_MANIFEST_PATH":
+        found = str(place / "Cargo.toml")
+    elif name == "CARGO_PKG_NAME":
+        found = package
+    elif name.startswith("CARGO_PKG_VERSION"):
+        parts = _SEMVER.fullmatch(version)
+        if parts:
+            found = {
+                "CARGO_PKG_VERSION": version,
+                "CARGO_PKG_VERSION_MAJOR": parts[1],
+                "CARGO_PKG_VERSION_MINOR": parts[2],
+                "CARGO_PKG_VERSION_PATCH": parts[3],
+                "CARGO_PKG_VERSION_PRE": parts[4] or "",
+            }.get(name, ...)
+    elif place is not None and name.removeprefix("CARGO_PKG_") in _PACKAGE_FIELDS:
+        found = _manifest_field(shape, place, _PACKAGE_FIELDS[name.removeprefix("CARGO_PKG_")])
+    elif place is not None and name == "CARGO_MANIFEST_LINKS":
+        found = _manifest_field(shape, place, "links")
+        found = None if found == "" else found
     elif name == "RUSTC" or not _CARGO_SETS.fullmatch(name):
-        return env.get(name)
-    _, _, package, _ = rust_workspace.package_id(package_id)
-    raise ValueError(
-        f"Peeky can't tell the value Cargo gives `{package}`'s build script of {name}, which "
-        "it says it reads (`rerun-if-env-changed`), so not whether a later build would differ"
-    )
+        found = env.get(name)
+    if found is ...:
+        raise ValueError(
+            f"Peeky can't tell the value Cargo gives `{package}`'s build script of {name}, "
+            "which it says it reads (`rerun-if-env-changed`), so not whether a later build "
+            "would differ"
+        )
+    return found
 
 
 def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1):
@@ -975,7 +1122,10 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
     by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
 
     def unchanged(path):
-        if Path(path).is_file() and _changed_during(path, before, started_ns):
+        # The entry itself (a directory, a link, a file), and a file's contents.
+        if _entry_changed_during(path, before, started_ns) or (
+            Path(path).is_file() and _changed_during(path, before, started_ns)
+        ):
             raise RuntimeError(
                 f"Provenance: {_shown(path, root)} changed while Peeky built the "
                 "workspace, so the build may not be of it. Build again"
@@ -1032,8 +1182,9 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                             f"script says it reads, is a link to {path.resolve()}. Make it a "
                             "directory, or move what it names into the workspace"
                         )
-                    dirs[str(path)] = _exact_tree(path, root, budget=budget)
-                    for name, what in dirs[str(path)].items():
+                    dirs[str(path)] = _watched_directory(path, root, budget)
+                    unchanged(path)
+                    for name in dirs[str(path)]["entries"]:
                         unchanged(path / name)
             elif str(path) not in files:
                 _spend(budget, path)
@@ -1125,14 +1276,17 @@ def _unit(package, artifact, unit, run):
     }
 
 
-def _check_bootstrap_mentions(sources, root, whose):
-    """Refuse where a Rust source of ``sources`` (relative to ``root``) mentions
-    RUSTC_BOOTSTRAP: Peeky sets it for an analysed crate's own compile, which the crate's
-    code and the procedural macros running there (``whose``) could then tell from a
-    stable one. Otherwise they are taken not to change on it, as dependencies are taken
-    as sound."""
-    for path in sources:
-        if path.endswith(".rs") and b"RUSTC_BOOTSTRAP" in (Path(root) / path).read_bytes():
+def _check_bootstrap_mentions(read, root, target_dir, whose):
+    """Refuse where a Rust source a compile read (``read``: _read_dependencies's, its
+    sources relative to ``root`` and the files a build script generated relative to
+    ``target_dir``) mentions RUSTC_BOOTSTRAP: Peeky sets it for an analysed crate's own
+    compile, which the crate's code and the procedural macros running there (``whose``)
+    could then tell from a stable one. Otherwise they are taken not to change on it, as
+    dependencies are taken as sound."""
+    files = [(path, Path(root) / path) for path in read["sources"]]
+    files += [(f"{path} (generated)", Path(target_dir) / path) for path in read["generated"]]
+    for path, where in files:
+        if where.name.endswith(".rs") and b"RUSTC_BOOTSTRAP" in where.read_bytes():
             raise ValueError(
                 f"Peeky analyses only code built as stable Rust builds it: {whose}'s {path} "
                 "mentions RUSTC_BOOTSTRAP, which Peeky's build sets for an analysed crate's "
@@ -1414,14 +1568,17 @@ def _check_build_inputs(target, root, directory, manifest):
             raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
     for top, recorded in inputs["dirs"].items():
         try:
-            now = _exact_tree(Path(top), root, budget=[MAX_RECORDED])
+            now = _watched_directory(Path(top), root, [MAX_RECORDED])
         except (OSError, ValueError):
-            now = {}
+            now = None
         if now != recorded:
-            name = sorted(set(now) ^ set(recorded) or {k for k in now if now[k] != recorded[k]})[0]
-            raise _edited(
-                target, f"{_shown(Path(top) / name, root)}, which a build script reads, changed"
-            )
+            path = Path(top)
+            if now is not None and now["root"] == recorded["root"]:
+                entries, old = now["entries"], recorded["entries"]
+                if isinstance(entries, dict) and isinstance(old, dict):
+                    keys = set(entries) ^ set(old) or {k for k in entries if entries[k] != old[k]}
+                    path = path / sorted(keys)[0]
+            raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
     vendor = manifest["watch"].get("vendor_directory")
     for top, recorded in inputs["trees"].items():
         try:
