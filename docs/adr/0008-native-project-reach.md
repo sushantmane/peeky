@@ -64,14 +64,13 @@ Phase 1 debugs a binary the project built with clang at `-O0`, verified from its
   "compiler": "/usr/bin/clang-18",
   "adapter": "/usr/bin/lldb-dap-18",
   "dwarfdump": "/usr/bin/llvm-dwarfdump-18",
-  "compile_commands": "compile_commands.json",
   "optimized": false
 }
 ```
 
 - `binary` is relative to the target directory, the root for source paths.
 - `compiler` runs only `--version`, and the replay of a unit's `-E` and `-M`. Its `--version` must match the unit's `DW_AT_producer`. The replay passes only allowlisted flags (below), with `--no-default-config`. Its environment drops `CCC_*`, `CL`, `_CL_`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` and `SDKROOT`, unless the unit's recorded words hold them. It is never run on a unit's recorded words as they are, not even with `-###`: those can make it run another program or read other files.
-- `compile_commands` is optional. Its entries must agree with the recorded commands.
+- `compile_commands.json` is not read. The words each unit records are the truth of how it was built, and a second account could only disagree with them. A config naming `compile_commands` is refused, as any unknown key is.
 - Without a config: `peeky probe . --binary ./jq --at src/execute.c:<line> --capture <name> -- '.a.[]' input.json`.
 - `peeky describe . --binary ./jq` lists each unit as judged, or not and why: `modules/oniguruma/src/regcomp.c: built with -O2 (its recorded flags)`.
 
@@ -85,7 +84,7 @@ The `-O` level and LTO are read from the recorded words alone (`native_units.opt
 - **A unit's text** comes from its recorded command line, run with the config's `compiler`, and `-M` lists the headers whose macros count. Only allowlisted flags pass: those choosing what the preprocessor reads or defines (`-I`, `-D`, `-U`, `-include`, `-isystem`, `-isysroot`, `-std`, `-O`, `-x`, `--target`, and `-f` and `-m` options that change predefined macros). Options that define nothing are left out, each checked against clang's own `-dM -E`. Any other leaves the unit's text unread, naming it. Each file both the text and the line table name must match its MD5: every file the replay reads must be one the line table names.
 - **Where a unit's text can't be read,** its text rules withhold, saying why: "Peeky can't read src/acl.c as compiled: its command uses -fplugin=…". `NativeSession._resume` then proves nothing, as it needs every unit's `optimizes`.
 - **Frames in units not judged** are `not shown`: "this frame runs src/lvm.c, built with -O2 (its recorded flags)". Breakpoints there are refused. With `"optimized": true`, they read as Peeky's optimized builds do: with `optimized` and its warning, and no change.
-- **The program's own assembly** can return twice, as MicroPython's `nlr_push` (`py/nlraarch64.c`) does, but Peeky finds such calls by name (`_NONLOCAL_JUMPS`). So where a unit is assembly, or its text holds `asm` or can't be read, any call may return twice. Locals at or below the stop then carry today's setjmp note.
+- **The program's own assembly** can return twice, as MicroPython's `nlr_push` (`py/nlraarch64.c`) does, but Peeky finds such calls by name (`_NONLOCAL_JUMPS`). So where a unit is assembly, or its text holds `asm` or can't be read, any call may return twice. So it may where the binary's own code holds what no unit covers: an assembly file built without `-g` leaves no unit. Peeky reads the binary's symbol table (`native_binary.code_symbols`). A function symbol outside every unit's ranges, or code with no symbol between them, counts, named in the note: "nlr_push is code no unit's debug information covers (assembly built without -g?)". Only the toolchain's startup code is left out, each name checked on clang 18 and Apple's clang 21 builds: `_start`, `_init`, `_fini`, crt's `frame_dummy` and its kin, `__libc_csu_*`, AArch64's outline atomics, and the `.init`, `.fini`, `.plt` and stub sections. A binary with no symbol table counts too. Locals at or below the stop then carry today's setjmp note. A config's `returns_twice` replaces all of this with its trusted claim.
 - **C frames at an address several functions share** are withheld, as C++'s are. Identical code folding is a link option, which no debug information records.
 
 **Errors.**

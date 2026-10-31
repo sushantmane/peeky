@@ -109,9 +109,13 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - Any call may return twice (`any_call_returns_twice`) where a unit isn't read, or its text isn't,
   or holds `asm`: the program's own assembly can, as MicroPython's `nlr_push` does. Then every
   local at or below a stop carries the setjmp note, saying why. A config's `returns_twice` is a
-  trusted claim instead: those functions, and setjmp's, are found by name, as today. Only the
-  units the debug information holds count: an assembly file assembled without `-g` leaves none,
-  and Peeky can't see it.
+  trusted claim instead: those functions, and setjmp's, are found by name, as today.
+- An assembly file built without `-g` leaves no unit, so `uncovered_code` reads the binary's
+  symbol table (`code_symbols`: ELF's `.symtab`, Mach-O's nlist). A function symbol outside
+  every unit's ranges counts, and so does code with no symbol, outside those ranges, that isn't
+  padding (`_padding`). Then any call may return twice, the note naming each. The toolchain's
+  startup code is left out (`_STARTUP`, `_ATOMICS`, `_TOOLCHAIN_SECTIONS`), each name seen in
+  clang 18's and Apple's clang 21's builds. A binary with no symbol table counts as well.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 

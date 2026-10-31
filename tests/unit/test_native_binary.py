@@ -815,3 +815,78 @@ def test_the_setjmp_note_says_any_call_may_return_twice_and_why(root):
         "(py/nlraarch64.c is a unit Peeky doesn't read; a config's \"returns_twice\" can name "
         "the functions that do)"
     )
+
+
+def test_what_pads_the_space_between_functions_is_no_code():
+    from peeky.native_binary import _padding
+
+    assert _padding(b"\0" * 12)
+    assert _padding(b"\x1f\x20\x03\xd5" * 3 + b"\0" * 4)
+    assert _padding(b"\x66\x2e\x0f\x1f\x84\x00\x00\x00\x00\x00\x0f\x1f\x40\x00\x90\xcc")
+    # AArch64's `ret`, x86's `ret`: code.
+    assert not _padding(b"\xc0\x03\x5f\xd6")
+    assert not _padding(b"\x90\xc3")
+
+
+def test_the_note_names_the_configs_claim(root):
+    session = _session(())
+    session.any_call = None
+    session.target = SimpleNamespace(target=SimpleNamespace(returns_twice=("nlr_push",)))
+    note = session._setjmp_note(5, 4, "declared on line {}, at this stop")
+    assert note.refuses and note.startswith(
+        "declared on line 5, at this stop, and this function calls setjmp, or one the config's "
+        '"returns_twice" names (line 4), above the stop'
+    )
+
+
+def test_code_no_unit_covers_is_named(root, monkeypatch):
+    from peeky import native_binary
+    from peeky.native_binary import CodeSection, uncovered_code
+
+    ret = b"\xc0\x03\x5f\xd6"
+    text = bytearray(0x100)
+    text[0x60:0x64] = ret  # nlr_push
+    text[0xC4:0xC8] = ret  # no symbol
+    binary = root / "prog"
+    binary.write_bytes(bytes(text) + ret * 4)
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0), CodeSection(".plt", 0x1100, 0x1110, 0x100)]
+    symbols = [
+        ("main", 0x1000, 0x40),
+        ("_start", 0x1040, 0x10),
+        ("nlr_push", 0x1060, 0),
+        ("helper", 0x1080, 0x20),
+    ]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: (symbols, sections))
+    units = [SimpleNamespace(ranges=[(0x1000, 0x1040)]), SimpleNamespace(ranges=[(0x1080, 0x10A0)])]
+    assert uncovered_code(binary, units) == [
+        "nlr_push is code no unit's debug information covers (assembly built without -g?)",
+        "the code at 0x10c4 has no symbol, and no unit's debug information covers it",
+    ]
+    # Startup code, padding and the linker's own sections are no one's.
+    units.append(SimpleNamespace(ranges=[(0x1060, 0x1064), (0x10C4, 0x10C8)]))
+    assert uncovered_code(binary, units) == []
+
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: (None, sections))
+    assert uncovered_code(binary, units) == [
+        "the binary has no symbol table, so Peeky can't tell what code no unit covers"
+    ]
+
+    def unreadable(binary):
+        raise ValueError("truncated")
+
+    monkeypatch.setattr(native_binary, "code_symbols", unreadable)
+    assert uncovered_code(binary, units) == [
+        "Peeky can't read the binary's symbol table (truncated), so it can't tell what code no "
+        "unit covers"
+    ]
+
+
+def test_padding_longer_than_a_read_is_read_to_its_end(root):
+    from peeky.native_binary import CodeSection, _code_between
+
+    binary = root / "prog"
+    binary.write_bytes(b"\0" * (3 << 20) + b"\xc0\x03\x5f\xd6")
+    section = CodeSection(".text", 0x1000, 0x1000 + (3 << 20) + 4, 0)
+    with open(binary, "rb") as stream:
+        assert _code_between(stream, section, section.low, section.high) == 0x1000 + (3 << 20)
+        assert _code_between(stream, section, section.low, section.high - 4) is None

@@ -51,7 +51,8 @@
   since the build refuses the binary by name, and frames in units Peeky doesn't judge show
   nothing, with why. A unit's text is its preprocessing, replayed with its recorded `-I`, `-D`
   and the like, where every header it reads has an MD5 in its line table (`-fdebug-macro` on
-  Linux). A config's `returns_twice` names the functions that return twice.
+  Linux). Where a unit isn't read, holds `asm`, or the binary has code no unit covers (assembly
+  built without `-g`), any call may return twice; a config's `returns_twice` names those that do.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and

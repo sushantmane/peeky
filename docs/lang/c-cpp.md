@@ -255,8 +255,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   libc++'s headers without `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`, and inheriting constructors.
 - A unit's text is its preprocessing replayed, where each header it reads has an MD5 in its line
   table (on Linux, `-fdebug-macro`; rarely on macOS). Elsewhere text rules withhold, saying why.
-- Any call may return twice where a unit isn't read or holds `asm`, unless a config names those
-  that do (`"returns_twice": ["nlr_push"]`). Sessions and edits don't work on a binary yet.
+- Any call may return twice where a unit isn't read or holds `asm`, or no unit covers code,
+  unless a config names those that do (`"returns_twice": ["nlr_push"]`). Sessions and edits don't work on a binary yet.
 
 ## Builds
 

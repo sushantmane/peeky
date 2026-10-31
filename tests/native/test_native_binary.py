@@ -684,3 +684,69 @@ def test_system_headers_and_a_header_of_macros_alone_are_read_on_linux(project, 
         assert "Peeky can't read src/util.c as compiled: its preprocessing reads src/util.h" in (
             rows["doubled"].get("error") or ""
         ), rows
+
+
+ASM_CALLER = """int nlr_push(void);
+
+int main(void) {
+    int got = nlr_push();
+    int later = got + 1; // STOP
+    return later;
+}
+"""
+
+
+def _assembly(private=False):
+    """A function in hand-written assembly, returning 0, for this host; ``private``: one
+    the linker keeps out of the program's symbols (macOS's `.private_extern` and `-x`)."""
+    import platform
+
+    name = "_nlr_push" if sys.platform == "darwin" else "nlr_push"
+    body = "xor %eax, %eax" if platform.machine() in ("x86_64", "AMD64") else "mov w0, #0"
+    hidden = f"    .private_extern {name}\n" if private else ""
+    return f"    .text\n    .globl {name}\n{hidden}{name}:\n    {body}\n    ret\n"
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("stripped", [False, True], ids=["named", "symbol stripped"])
+def test_code_no_unit_covers_may_return_twice(project, capsys, stripped):
+    # Hand-written assembly built without -g has no unit: Peeky can't read it, and it may
+    # return twice (MicroPython's nlr_push, a setjmp of the project's own). Found by its
+    # symbol, or, where the symbol table lacks one, as code no symbol names.
+    compiler = _clang()
+    (project / "main.c").write_text(ASM_CALLER)
+    macos = sys.platform == "darwin"
+    (project / "nlr.s").write_text(_assembly(private=stripped and macos))
+    flags = (*TEXT_FLAGS, "-O0", *_sysroot())
+    subprocess.run([compiler, *flags, "-c", "main.c", "-o", "main.o"], cwd=project, check=True)
+    subprocess.run([compiler, *_sysroot(), "-c", "nlr.s", "-o", "nlr.o"], cwd=project, check=True)
+    # macOS's strip drops the debug map too: its linker's -x drops the private symbol alone.
+    link = ("-Wl,-x",) if stripped and macos else ()
+    subprocess.run(
+        [compiler, *_sysroot(), *link, "main.o", "nlr.o", "-o", "prog"], cwd=project, check=True
+    )
+    said = "nlr_push is code no unit's debug information covers (assembly built without -g?)"
+    if stripped:
+        if not macos:
+            subprocess.run(["objcopy", "--strip-symbol=nlr_push", "prog"], cwd=project, check=True)
+        said = "has no symbol, and no unit's debug information covers it"
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    twice = json.loads(capsys.readouterr().out)["returns_twice"]
+    assert twice["any"] is True and said in twice["why"], twice
+    line = next(n for n, text in enumerate(ASM_CALLER.splitlines(), 1) if "// STOP" in text)
+    notes = {}
+    for claim in (None, ("nlr_push",), ()):
+        result = run_probe(
+            project,
+            Probe("main.c", line, ("later",)),
+            adapter=_target(compiler, returns_twice=claim),
+        )
+        assert result["status"] == "completed", result.get("error")
+        (row,) = result["rows"]
+        notes[claim] = row.get("note") or row.get("error") or ""
+    assert "any call above the stop may return twice (" in notes[None] and said in notes[None]
+    # The config's claim: nlr_push, called on the line above, returns twice.
+    assert (
+        'calls setjmp, or one the config\'s "returns_twice" names (line 4)' in notes[("nlr_push",)]
+    ), notes
+    assert "return twice" not in notes[()] and notes[()].startswith("no value yet"), notes
