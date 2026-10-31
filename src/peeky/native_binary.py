@@ -482,6 +482,44 @@ def probes(text):
     return found
 
 
+_PROBE_NAMES = ("__has_include_next", "__has_include", "__has_embed")
+
+
+def _defined_probe(arguments):
+    """Why a macro the recorded command defines (`-D`) may ask whether a file exists, or
+    None: its value names a probe, may paste one together (`#`, `##`), or holds a piece
+    of a probe's name that another macro could paste to the rest."""
+    values = [
+        arguments[index + 1] if word == "-D" else word[2:]
+        for index, word in enumerate(arguments)
+        if (word == "-D" and index + 1 < len(arguments)) or (word.startswith("-D") and word != "-D")
+    ]
+    for value in values:
+        name, _, body = value.partition("=")
+        name = name.split("(", 1)[0]
+        said = f"its command defines {name} as {body[:80]}"
+        # A literal's inside is no token, and can't be pasted into one.
+        code = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'', " ", body)
+        if any(probe in code for probe in _PROBE_NAMES):
+            return (
+                f"{said}, which asks whether a file exists: the build may have answered otherwise"
+            )
+        if "#" in code:
+            return f"{said}, which may paste together a probe such as __has_include"
+        pieces = [
+            word
+            for word in re.findall(r"[A-Za-z_]\w*", code)
+            if len(word) >= 3
+            and any(
+                probe != word and (probe.startswith(word) or probe.endswith(word))
+                for probe in _PROBE_NAMES
+            )
+        ]
+        if pieces:
+            return f"{said}, which a macro may paste into a probe such as __has_include"
+    return None
+
+
 def _search_lists(said):
     """The header search lists clang's `-v` writes: (quoted, angled), each a list of
     (directory, whether Peeky can look in it: not a framework directory or header map),
@@ -727,6 +765,8 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         arguments = replay_arguments(list(judged.words), comp_dir, main)
     except NotRecorded as exc:
         return unread(str(exc))
+    if (defined := _defined_probe(arguments)) is not None:
+        return unread(defined)
     if unit.sysroot and not any(
         word in ("-isysroot", "--sysroot") or word.startswith("--sysroot=") for word in arguments
     ):
@@ -891,22 +931,25 @@ def _built_as(judged):
     )
 
 
-# The code the toolchain links into a program with no debug information of its own, by
-# its symbols: glibc's crt1.o, crti.o and crtn.o and GCC's crtbegin.o and crtend.o
-# (seen in clang 18's programs on Linux; glibc before 2.34 adds __libc_csu_*, a static
-# PIE _dl_relocate_static_pie), and the terminate handler clang emits in a C++ unit with
-# none (on Linux and in Apple clang 21's). Any other code no unit covers may return twice.
-_STARTUP = frozenset(
-    """_start _init _fini call_weak_fn deregister_tm_clones register_tm_clones
-    __do_global_dtors_aux frame_dummy __libc_csu_init __libc_csu_fini _dl_relocate_static_pie
-    __clang_call_terminate""".split()
+# The code the toolchain links into a program with no debug information of its own:
+# glibc's crt1.o, crti.o and crtn.o and GCC's crtbegin.o and crtend.o (seen in clang
+# 18's programs on Linux; glibc before 2.34 adds __libc_csu_*, a static PIE
+# _dl_relocate_static_pie), and the terminate handler clang emits in a C++ unit with none
+# (on Linux and in Apple clang 21's). By name alone only where C and C++ reserve the name
+# for the implementation (it begins with `_`): a program defining one is outside what
+# Peeky checks. Any other code no unit covers may return twice.
+_RESERVED_STARTUP = frozenset(
+    """_start _init _fini __do_global_dtors_aux __libc_csu_init __libc_csu_fini
+    _dl_relocate_static_pie __clang_call_terminate""".split()
 )
-# libgcc's AArch64 atomics, called out of line (-moutline-atomics, Linux's default there),
-# and the constructor choosing them.
+# libgcc's AArch64 atomics, called out of line (-moutline-atomics, Linux's default there).
 _ATOMICS = re.compile(
     r"__aarch64_(?:cas|swp|ldadd|ldclr|ldeor|ldset)(?:1|2|4|8|16)_(?:relax|acq|rel|acq_rel|sync)"
-    r"|init_have_lse_atomics"
 )
+# The toolchain's startup code whose names a program may use too: each counts as the
+# toolchain's only where its place proves it (``_proven_startup``).
+_CRTBEGIN = ("deregister_tm_clones", "register_tm_clones", "__do_global_dtors_aux", "frame_dummy")
+_CALLED_AT_START = frozenset({"frame_dummy", "init_have_lse_atomics"})
 
 
 @dataclass(frozen=True)
@@ -920,19 +963,44 @@ class CodeSection:
     offset: int
 
 
-# Sections of code the linker makes or the toolchain's startup fills: never the program's.
+@dataclass(frozen=True)
+class CodeSymbol:
+    """A symbol at code: its name (a Mach-O one without its leading `_`), its address,
+    its size (an ELF symbol's, else 0), and whether it is local to its object."""
+
+    name: str
+    address: int
+    size: int
+    local: bool
+
+
+@dataclass(frozen=True)
+class CodeMap:
+    """What code_symbols reads of an executable: its symbols at code (None where it has
+    no symbol table), its CodeSections, the addresses its `.init_array` and `.fini_array`
+    call (``started``), and those `.init`'s AArch64 `bl`s call (``init_calls``)."""
+
+    symbols: list | None
+    sections: list
+    started: frozenset = frozenset()
+    init_calls: frozenset = frozenset()
+
+
+# Sections of stubs the linker makes: never the program's code.
 _TOOLCHAIN_SECTIONS = frozenset(
-    {".init", ".fini", ".plt", ".plt.got", ".plt.sec", ".iplt", "__stubs", "__auth_stubs"}
-    | {"__stub_helper"}
+    {".plt", ".plt.got", ".plt.sec", ".iplt", "__stubs", "__auth_stubs", "__stub_helper"}
 )
+# Sections whose code crti.o begins and crtn.o ends, around what other objects add.
+_FRAMED_SECTIONS = {".init": "_init", ".fini": "_fini"}
+_EM_AARCH64 = 183
+# R_AARCH64_RELATIVE, R_X86_64_RELATIVE: a pointer the loader relocates by its addend.
+_RELATIVE = {183: 1027, 62: 8}
 
 
 def code_symbols(binary):
-    """(symbols, sections) of an ELF or 64-bit Mach-O executable: [(name, address, size)]
-    of each symbol at code in its own sections (an ELF symbol's size, else 0) (functions, and any symbol an assembler writes
-    without a type: a label of hand-written assembly), a Mach-O name without its leading
-    `_`; and its CodeSections. Symbols None where it has no symbol table. ValueError
-    where it can't be read."""
+    """The CodeMap of an ELF or 64-bit Mach-O executable: each symbol at code in its own
+    sections (functions, and any symbol an assembler writes without a type: a label of
+    hand-written assembly). ValueError where it can't be read."""
     with open(binary, "rb") as stream:
         data = stream.read(64)
         if data[:4] == b"\x7fELF":
@@ -944,6 +1012,7 @@ def _elf_symbols(stream, header):
     if len(header) < 64 or header[4:6] != b"\x02\x01":
         raise ValueError("Expected a 64-bit little-endian ELF executable")
     size = os.fstat(stream.fileno()).st_size
+    machine = struct.unpack_from("<H", header, 18)[0]
     offset = struct.unpack_from("<Q", header, 40)[0]
     entry, count, names_at = struct.unpack_from("<HHH", header, 58)
     if entry != 64 or not 0 < count <= 65535 or names_at >= count or offset + count * 64 > size:
@@ -967,9 +1036,39 @@ def _elf_symbols(stream, header):
         for name, kind, flags, address, at, length, *_ in sections
         if flags & 0x4 and kind == 1  # SHF_EXECINSTR, SHT_PROGBITS
     ]
+    started = set()
+    arrays = [section for section in sections if section[1] in (14, 15)]  # INIT/FINI_ARRAY
+    for _, kind, _, address, at, length, *_ in arrays:
+        if kind == 14 or kind == 15:
+            data = read(at, length, 1 << 20)
+            started |= {value for (value,) in struct.iter_unpack("<Q", data[: length - length % 8])}
+    # A position-independent executable's arrays are filled at load, by relative relocations.
+    relative = _RELATIVE.get(machine)
+    for _, kind, _, _, at, length, _, _, _, width in sections:
+        if kind != 4 or width != 24 or relative is None:  # SHT_RELA
+            continue
+        for place, info, addend in struct.iter_unpack(
+            "<QQq", read(at, length - length % 24, MAX_SYMBOLS * 24)
+        ):
+            if info & 0xFFFFFFFF == relative and any(
+                address <= place < address + length for _, _, _, address, _, length, *_ in arrays
+            ):
+                started.add(addend)
+    init_calls = set()
+    init = next((section for section in code if section.name == ".init"), None)
+    if machine == _EM_AARCH64 and init is not None:
+        data = read(init.offset, init.high - init.low, 1 << 20)
+        for index, (word,) in enumerate(
+            struct.iter_unpack("<I", data[: len(data) - len(data) % 4])
+        ):
+            if word & 0xFC000000 == 0x94000000:  # BL
+                step = word & 0x3FFFFFF
+                step -= 1 << 26 if step & 1 << 25 else 0
+                init_calls.add(init.low + index * 4 + step * 4)
+    started.discard(0)
     tables = [section for section in sections if section[1] == 2]  # SHT_SYMTAB
     if not tables:
-        return None, code
+        return CodeMap(None, code, frozenset(started), frozenset(init_calls))
     _, _, _, _, table, length, link, _, _, width = tables[0]
     if width != 24 or link >= count:
         raise ValueError("Invalid ELF symbol table")
@@ -985,8 +1084,8 @@ def _elf_symbols(stream, header):
         text = string(strings, name)
         # ARM's mapping symbols ($x, $d) and local labels mark no code of their own.
         if text and not text.startswith(("$", ".L")):
-            found.append((text, value, extent))
-    return found, code
+            found.append(CodeSymbol(text, value, extent, info >> 4 == 0))  # STB_LOCAL
+    return CodeMap(found, code, frozenset(started), frozenset(init_calls))
 
 
 def _macho_symbols(stream, header):
@@ -1023,7 +1122,7 @@ def _macho_symbols(stream, header):
         cursor += extent
     code = [section for section, is_code in sections if is_code]
     if table is None:
-        return None, code
+        return CodeMap(None, code)
     offset, symbols, strings, strings_size = table
     if symbols > MAX_SYMBOLS or offset + symbols * 16 > size or strings + strings_size > size:
         raise ValueError("Invalid Mach-O symbol table")
@@ -1043,8 +1142,99 @@ def _macho_symbols(stream, header):
         end = names.find(b"\0", start)
         text = os.fsdecode(names[start:end]) if end >= 0 else ""
         if text and not text.startswith(("ltmp", "l_", "L")):
-            found.append((text.removeprefix("_"), value, 0))
-    return found, code
+            found.append(CodeSymbol(text.removeprefix("_"), value, 0, not kind & 0x01))  # N_EXT
+    return CodeMap(found, code)
+
+
+def toolchain_frames(compiler, env, timeout=10):
+    """{".init": (head, tail), ".fini": ...}: the sizes of the code crti.o begins each
+    section with and crtn.o ends it with, of the files the config's ``compiler`` links,
+    each (size, alignment); or why Peeky can't tell."""
+    parts = {}
+    for name in ("crti.o", "crtn.o"):
+        try:
+            done = subprocess.run(
+                [compiler, "--no-default-config", f"-print-file-name={name}"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"{compiler} didn't say where its {name} is ({exc})"
+        path = done.stdout.strip()
+        if done.returncode or not os.path.isabs(path) or not os.path.isfile(path):
+            return f"{compiler} names no {name}"
+        try:
+            parts[name] = _object_sections(path, tuple(_FRAMED_SECTIONS))
+        except (OSError, ValueError, struct.error) as exc:
+            return f"Peeky can't read {path} ({exc})"
+    return {
+        section: (parts["crti.o"].get(section, (0, 1)), parts["crtn.o"].get(section, (0, 1)))
+        for section in _FRAMED_SECTIONS
+    }
+
+
+def _object_sections(path, wanted):
+    """{name: (size, alignment)} of a 64-bit little-endian ELF object's ``wanted`` sections."""
+    with open(path, "rb") as stream:
+        header = stream.read(64)
+        if header[:4] != b"\x7fELF" or header[4:6] != b"\x02\x01":
+            raise ValueError("not a 64-bit little-endian ELF object")
+        offset = struct.unpack_from("<Q", header, 40)[0]
+        entry, count, names_at = struct.unpack_from("<HHH", header, 58)
+        if entry != 64 or not 0 < count <= 4096 or names_at >= count:
+            raise ValueError("invalid section headers")
+        stream.seek(offset)
+        sections = [struct.unpack_from("<IIQQQQIIQQ", stream.read(64)) for _ in range(count)]
+        stream.seek(sections[names_at][4])
+        titles = stream.read(min(sections[names_at][5], 1 << 20))
+    found = {}
+    for name, _, _, _, _, length, _, _, align, _ in sections:
+        end = titles.find(b"\0", name)
+        title = titles[name:end].decode("latin-1") if end >= 0 else ""
+        if title in wanted:
+            found[title] = (length, max(align, 1))
+    return found
+
+
+def _proven_startup(code):
+    """The addresses of the symbols of startup code a program may also name, where their
+    place proves them the toolchain's: local to their object, and, for crtbegin.o's
+    frame_dummy and libgcc's init_have_lse_atomics, called by `.init_array` or
+    `.fini_array`; for crtbegin.o's tm_clones functions, in its block, before
+    __do_global_dtors_aux and frame_dummy, which those arrays call; for glibc's AArch64
+    call_weak_fn, called by `.init`."""
+    proven = set()
+    ordered = sorted(code.symbols, key=lambda symbol: symbol.address)
+    for index, symbol in enumerate(ordered):
+        if not symbol.local:
+            continue
+        if symbol.name in _CALLED_AT_START and symbol.address in code.started:
+            proven.add(symbol.address)
+        elif symbol.name == "call_weak_fn" and symbol.address in code.init_calls:
+            proven.add(symbol.address)
+        block = ordered[index : index + len(_CRTBEGIN)]
+        if (
+            tuple(each.name for each in block) == _CRTBEGIN
+            and all(each.local for each in block)
+            and block[2].address in code.started
+            and block[3].address in code.started
+        ):
+            proven |= {each.address for each in block}
+    return proven
+
+
+def _startup(symbol, proven):
+    """Whether ``symbol`` is the toolchain's startup code: by a name reserved to it, or by
+    its place (``proven``)."""
+    return (
+        symbol.name in _RESERVED_STARTUP
+        or bool(_ATOMICS.fullmatch(symbol.name))
+        or symbol.address in proven
+    )
 
 
 # What fills the space between functions: zeros, AArch64's `nop`, x86's `nop`s and `int3`.
@@ -1103,38 +1293,59 @@ def _code_between(stream, section, low, high):
     return None
 
 
-def uncovered_code(binary, units):
+def uncovered_code(binary, units, frames=None):
     """What of ``binary``'s code no unit of its debug information covers (``units``:
     native_units.Unit, each with its code ranges), but the toolchain's own: each symbol
     there (hand-written assembly built without -g, a library linked without debug
     information), and code at an address no symbol names (a symbol table stripped of
-    it), but what pads the space between functions. The toolchain's own is its sections
-    (``_TOOLCHAIN_SECTIONS``) and its startup code by name (``_STARTUP``, ``_ATOMICS``),
-    to the next symbol. Each as a phrase, for a note; where the binary has no symbol
-    table, or one Peeky can't read, that instead."""
+    it), but what pads the space between functions. The toolchain's own: the linker's
+    stubs (``_TOOLCHAIN_SECTIONS``), and its startup code (``_startup``), to its size, or
+    to the next symbol where it has none. `.init` and `.fini` are the toolchain's only as
+    far as crti.o and crtn.o fill them (``frames``: a callable giving toolchain_frames'):
+    what other objects add there is the program's. Each as a phrase, for a note; where
+    the binary has no symbol table, or one Peeky can't read, that instead."""
     import bisect
 
     try:
-        symbols, sections = code_symbols(binary)
+        code = code_symbols(binary)
     except (OSError, ValueError, struct.error) as exc:
         return [
             f"Peeky can't read the binary's symbol table ({exc}), so it can't tell what code "
             "no unit covers"
         ]
+    symbols, sections = code.symbols, code.sections
     if symbols is None:
         return ["the binary has no symbol table, so Peeky can't tell what code no unit covers"]
+    proven = _proven_startup(code)
     covered = sorted(span for unit in units for span in unit.ranges)
-    starts = sorted(address for _, address, _ in symbols)
-    for name, address, size in symbols:
-        if name not in _STARTUP and not _ATOMICS.fullmatch(name):
+    starts = sorted(symbol.address for symbol in symbols)
+    framed = {}
+    for section in sections:
+        if section.name in _FRAMED_SECTIONS and section.high > section.low:
+            framed[section.name] = section
+    known = frames() if framed and frames is not None else "Peeky has no compiler to ask"
+    unframed = {name: f"its {_FRAMED_SECTIONS[name]} symbol isn't at its start" for name in framed}
+    for symbol in symbols:
+        if not _startup(symbol, proven):
+            continue
+        section = next((each for each in sections if each.low <= symbol.address < each.high), None)
+        if section is not None and section.name in framed:
+            # crti.o's head and crtn.o's tail of the section, around what others add.
+            if _FRAMED_SECTIONS[section.name] != symbol.name or symbol.address != section.low:
+                continue
+            if isinstance(known, str):
+                unframed[section.name] = known
+                continue
+            (head, _), (tail, _) = known[section.name]
+            covered += [(section.low, section.low + head), (section.high - tail, section.high)]
+            unframed[section.name] = None
             continue
         # A startup symbol's code is its size, where its symbol gives one; else it runs to
         # the next symbol, or its section's end.
-        section = next((each for each in sections if each.low <= address < each.high), None)
-        at = bisect.bisect_right(starts, address)
-        end = starts[at] if at < len(starts) else section.high if section else address
-        end = address + size if size else end
-        covered.append((address, min(end, section.high) if section else end))
+        at = bisect.bisect_right(starts, symbol.address)
+        end = starts[at] if at < len(starts) else section.high if section else symbol.address
+        end = symbol.address + symbol.size if symbol.size else end
+        covered.append((symbol.address, min(end, section.high) if section else end))
     spans = []
     for low, high in sorted(covered):
         if spans and low <= spans[-1][1]:
@@ -1147,10 +1358,12 @@ def uncovered_code(binary, units):
         at = bisect.bisect_right(lows, address) - 1
         return at >= 0 and address < spans[at][1]
 
+    named = [
+        symbol for symbol in symbols if not _startup(symbol, proven) and not held(symbol.address)
+    ]
     found = [
-        f"{name} is code no unit's debug information covers (assembly built without -g?)"
-        for name, address, _ in symbols
-        if name not in _STARTUP and not _ATOMICS.fullmatch(name) and not held(address)
+        f"{symbol.name} is code no unit's debug information covers (assembly built without -g?)"
+        for symbol in named
     ]
     with open(binary, "rb") as stream:
         for section in sections:
@@ -1162,11 +1375,21 @@ def uncovered_code(binary, units):
                     continue
                 gap_end = min(low, section.high)
                 if cursor < gap_end:
-                    inside = [name for name, address, _ in symbols if cursor <= address < gap_end]
-                    code = None if inside else _code_between(stream, section, cursor, gap_end)
-                    if code is not None:
+                    inside = any(cursor <= symbol.address < gap_end for symbol in named)
+                    at = None if inside else _code_between(stream, section, cursor, gap_end)
+                    if at is not None and section.name in framed:
+                        why = unframed.get(section.name)
                         found.append(
-                            f"the code at 0x{code:x} has no symbol, and no unit's debug "
+                            f"the code at 0x{at:x}, in {section.name}, may be the program's: "
+                            + (
+                                f"Peeky can't tell crti.o's and crtn.o's code there ({why})"
+                                if why
+                                else "crti.o and crtn.o don't fill it"
+                            )
+                        )
+                    elif at is not None:
+                        found.append(
+                            f"the code at 0x{at:x} has no symbol, and no unit's debug "
                             "information covers it"
                         )
                 cursor = max(cursor, high)
@@ -1616,7 +1839,11 @@ class BinaryTarget:
         texts = replay_units(read, compiler, scratch, root, deadline)
         any_call = None
         if self.returns_twice is None:
-            any_call = any_call_returns_twice(judged, texts, uncovered_code(binary, units))
+            env = replay_environment(scratch)
+            uncovered = uncovered_code(
+                binary, units, lambda: toolchain_frames(compiler, env, _remaining(deadline, 10))
+            )
+            any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()
         if any_call is None:
             # Calls that return twice are found by name: setjmp's, a macro of a header

@@ -845,7 +845,7 @@ def test_the_note_names_the_configs_claim(root):
 
 def test_code_no_unit_covers_is_named(root, monkeypatch):
     from peeky import native_binary
-    from peeky.native_binary import CodeSection, uncovered_code
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
 
     ret = b"\xc0\x03\x5f\xd6"
     text = bytearray(0x100)
@@ -855,12 +855,12 @@ def test_code_no_unit_covers_is_named(root, monkeypatch):
     binary.write_bytes(bytes(text) + ret * 4)
     sections = [CodeSection(".text", 0x1000, 0x1100, 0), CodeSection(".plt", 0x1100, 0x1110, 0x100)]
     symbols = [
-        ("main", 0x1000, 0x40),
-        ("_start", 0x1040, 0x10),
-        ("nlr_push", 0x1060, 0),
-        ("helper", 0x1080, 0x20),
+        CodeSymbol("main", 0x1000, 0x40, False),
+        CodeSymbol("_start", 0x1040, 0x10, False),
+        CodeSymbol("nlr_push", 0x1060, 0, False),
+        CodeSymbol("helper", 0x1080, 0x20, False),
     ]
-    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: (symbols, sections))
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
     units = [SimpleNamespace(ranges=[(0x1000, 0x1040)]), SimpleNamespace(ranges=[(0x1080, 0x10A0)])]
     assert uncovered_code(binary, units) == [
         "nlr_push is code no unit's debug information covers (assembly built without -g?)",
@@ -870,7 +870,7 @@ def test_code_no_unit_covers_is_named(root, monkeypatch):
     units.append(SimpleNamespace(ranges=[(0x1060, 0x1064), (0x10C4, 0x10C8)]))
     assert uncovered_code(binary, units) == []
 
-    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: (None, sections))
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(None, sections))
     assert uncovered_code(binary, units) == [
         "the binary has no symbol table, so Peeky can't tell what code no unit covers"
     ]
@@ -1073,4 +1073,102 @@ def test_a_joined_sysroot_holds_the_sdk_settings_too(root, tmp_path):
     (sdk / "SDKSettings.json").write_text("{}")
     (root / "reads").write_text(str(sdk / "SDKSettings.json"))
     words = ["/usr/bin/clang", f"--sysroot={sdk}", "-O0", "-c", "src/main.c"]
+    assert isinstance(_replay(root, tmp_path, words=words), UnitText)
+
+
+def test_startup_names_a_program_may_use_count_unless_their_place_proves_them(root, monkeypatch):
+    # frame_dummy, init_have_lse_atomics and the like aren't reserved names: a program
+    # may define its own, without debug information.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    binary.write_bytes(bytes(0x100))
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+
+    def code(*symbols, started=(), init_calls=()):
+        return CodeMap(list(symbols), sections, frozenset(started), frozenset(init_calls))
+
+    def found(map_):
+        monkeypatch.setattr(native_binary, "code_symbols", lambda binary: map_)
+        return uncovered_code(binary, [])
+
+    said = "{} is code no unit's debug information covers (assembly built without -g?)"
+    # Reserved to the implementation: by name.
+    assert found(code(CodeSymbol("_start", 0x1000, 8, False))) == []
+    assert found(code(CodeSymbol("__aarch64_ldadd4_acq_rel", 0x1000, 8, False))) == []
+    # Local, and called by .init_array: the toolchain's. Else the program's.
+    dummy = CodeSymbol("frame_dummy", 0x1010, 0, True)
+    assert found(code(dummy, started={0x1010})) == []
+    assert found(code(dummy)) == [said.format("frame_dummy")]
+    own = CodeSymbol("frame_dummy", 0x1010, 0, False)
+    assert found(code(own, started={0x1010})) == [said.format("frame_dummy")]
+    atomics = CodeSymbol("init_have_lse_atomics", 0x1020, 44, True)
+    assert found(code(atomics, started={0x1020})) == []
+    assert found(code(atomics)) == [said.format("init_have_lse_atomics")]
+    # crtbegin.o's block, whose last two the arrays call.
+    block = [
+        CodeSymbol("deregister_tm_clones", 0x1040, 0, True),
+        CodeSymbol("register_tm_clones", 0x1050, 0, True),
+        CodeSymbol("__do_global_dtors_aux", 0x1060, 0, True),
+        CodeSymbol("frame_dummy", 0x1070, 0, True),
+    ]
+    assert found(code(*block, started={0x1060, 0x1070})) == []
+    assert found(code(*block, started={0x1060})) == [
+        said.format("deregister_tm_clones"),
+        said.format("register_tm_clones"),
+        said.format("frame_dummy"),
+    ]
+    # glibc's AArch64 call_weak_fn: called by .init's _init.
+    weak = CodeSymbol("call_weak_fn", 0x1080, 20, True)
+    assert found(code(weak, init_calls={0x1080})) == []
+    assert found(code(weak)) == [said.format("call_weak_fn")]
+
+
+def test_init_is_the_toolchain_s_only_as_far_as_crti_and_crtn_fill_it(root, monkeypatch):
+    # .init and .fini hold whatever objects put there, around crti.o's head and crtn.o's
+    # tail; their _init and _fini symbols have no size.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    word = b"\xe9\x03\x09\xaa"  # mov x9, x9
+    binary = root / "prog"
+    sections = [CodeSection(".init", 0x2000, 0x2018, 0)]
+    symbols = [CodeSymbol("_init", 0x2000, 0, False)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    frames = {".init": ((16, 4), (8, 4)), ".fini": ((0, 1), (0, 1))}
+    binary.write_bytes(word * 6)
+    assert uncovered_code(binary, [], lambda: frames) == []
+    # Four bytes more than crti.o and crtn.o hold: another object's.
+    sections[0] = CodeSection(".init", 0x2000, 0x201C, 0)
+    binary.write_bytes(word * 7)
+    assert uncovered_code(binary, [], lambda: frames) == [
+        "the code at 0x2010, in .init, may be the program's: crti.o and crtn.o don't fill it"
+    ]
+    assert uncovered_code(binary, [], lambda: "clang names no crti.o") == [
+        "the code at 0x2000, in .init, may be the program's: Peeky can't tell crti.o's and "
+        "crtn.o's code there (clang names no crti.o)"
+    ]
+
+
+@pytest.mark.parametrize(
+    "defined, said",
+    [
+        ('-DCHECK=__has_include("x.h")', 'defines CHECK as __has_include("x.h"), which asks'),
+        ("-DHAVE=__has_include_next", "defines HAVE as __has_include_next, which asks"),
+        ("-DP=__has_##include", "which may paste together a probe"),
+        ("-DCAT(a,b)=a##b", "defines CAT as a##b, which may paste together a probe"),
+        ("-DLEFT=__has_", "which a macro may paste into a probe"),
+    ],
+)
+def test_a_probe_a_recorded_define_may_hold_leaves_the_text_unread(root, tmp_path, defined, said):
+    # `-DCHECK=__has_include("x.h")` and `#if CHECK`: no file the replay reads names it.
+    words = ["/usr/bin/clang", defined, "-O0", "-c", "src/main.c"]
+    assert said in _replay(root, tmp_path, words=words)
+
+
+def test_a_define_s_literal_is_no_probe(root, tmp_path):
+    from peeky.native_binary import UnitText
+
+    words = ["/usr/bin/clang", '-DPREFIX="/usr/include"', '-DS="#x"', "-O0", "-c", "src/main.c"]
     assert isinstance(_replay(root, tmp_path, words=words), UnitText)

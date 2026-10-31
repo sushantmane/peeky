@@ -696,12 +696,12 @@ int main(void) {
 """
 
 
-def _assembly(private=False):
+def _assembly(private=False, function="nlr_push"):
     """A function in hand-written assembly, returning 0, for this host; ``private``: one
     the linker keeps out of the program's symbols (macOS's `.private_extern` and `-x`)."""
     import platform
 
-    name = "_nlr_push" if sys.platform == "darwin" else "nlr_push"
+    name = f"_{function}" if sys.platform == "darwin" else function
     body = "xor %eax, %eax" if platform.machine() in ("x86_64", "AMD64") else "mov w0, #0"
     hidden = f"    .private_extern {name}\n" if private else ""
     return f"    .text\n    .globl {name}\n{hidden}{name}:\n    {body}\n    ret\n"
@@ -849,3 +849,72 @@ def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(projec
             '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
             "have found one (its environment can add header paths, and a file may since be gone)"
         ), units
+
+
+ATOMIC_UTIL = """int scale(int x) {
+    static int calls;
+    __atomic_fetch_add(&calls, 1, __ATOMIC_SEQ_CST);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+def _describe_twice(project, capsys):
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    return json.loads(capsys.readouterr().out)["returns_twice"]
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("link", [(), ("-no-pie",)], ids=["default", "no-pie"])
+def test_a_normal_build_has_no_code_no_unit_covers(project, capsys, link):
+    # The toolchain's startup code (crt1.o, crti.o, crtn.o, crtbegin.o, libgcc's atomics)
+    # is proven its own, by name where the name is reserved and by its place elsewhere.
+    if link and sys.platform != "linux":
+        pytest.skip("-no-pie is a Linux link")
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ATOMIC_UTIL)
+    objects = ["main.o", "util.o", "fast.o"]
+    subprocess.run([compiler, *_sysroot(), *link, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] is False, twice
+
+
+@pytest.mark.timeout(300)
+def test_a_program_s_own_frame_dummy_without_debug_information_counts(project, capsys):
+    # frame_dummy isn't reserved: crtbegin.o's is local and called by .init_array; one
+    # the program defines is neither.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    (project / "dummy.s").write_text(_assembly(function="frame_dummy"))
+    subprocess.run(
+        [compiler, *_sysroot(), "-c", "dummy.s", "-o", "dummy.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "dummy.o"]
+    subprocess.run([compiler, *_sysroot(), *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] and twice["why"].startswith(
+        "frame_dummy is code no unit's debug information covers"
+    ), twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="Mach-O has no .init")
+def test_code_an_object_adds_to_init_counts(project, capsys):
+    # .init runs what every object puts there, between crti.o's head and crtn.o's tail.
+    import platform
+
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    x86 = platform.machine() in ("x86_64", "AMD64")
+    word = "mov %rax, %rax" if x86 else "mov x9, x9"
+    kind = "@progbits" if x86 else "%progbits"
+    (project / "hook.s").write_text(f'    .section .init,"ax",{kind}\n    {word}\n')
+    subprocess.run([compiler, "-c", "hook.s", "-o", "hook.o"], cwd=project, check=True)
+    objects = ["main.o", "util.o", "fast.o", "hook.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and "in .init, may be the program's: crti.o and crtn.o don't fill it" in (twice["why"])
+    ), twice
