@@ -28,7 +28,8 @@ from peeky.textlines import octal_string, split_lines
 class Unit:
     """One unit of `llvm-dwarfdump --debug-info --recurse-depth=0`, its strings as the
     compiler wrote them. ``kind``: the header's (`Compile`, `Skeleton`, `Type`,
-    `Partial`). ``stmt_list``: its line table's offset, or None."""
+    `Partial`). ``stmt_list``: its line table's offset, or None. ``ranges``: the
+    addresses of its code, [low, high) each, before any slide (``code_ranges``)."""
 
     offset: int
     die: int
@@ -42,6 +43,7 @@ class Unit:
     language: str | None
     stmt_list: int | None
     dwo_name: str | None
+    ranges: tuple = ()
 
 
 def _string(raw):
@@ -90,9 +92,36 @@ def read_units(text):
                 language=language[:-1] if language else None,
                 stmt_list=None if stmt_list is None else _hex(stmt_list),
                 dwo_name=string("DW_AT_dwo_name") or string("DW_AT_GNU_dwo_name"),
+                ranges=code_ranges(attributes, die.continued),
             )
         )
     return found
+
+
+_RANGE = re.compile(r"\[0x([0-9a-f]{1,16}), 0x([0-9a-f]{1,16})\)")
+# What a linker writes for code it discarded (a COMDAT copy, a folded function).
+_TOMBSTONE = 0xFFFF_FFFF_0000_0000
+
+
+def code_ranges(attributes, continued):
+    """The [low, high) addresses of a unit's code, from its entry's attributes and the
+    rows of a range list over several lines (``continued``): its `DW_AT_low_pc` and
+    `DW_AT_high_pc` (an address, or the size past the low one: dwarfdump writes either),
+    or its `DW_AT_ranges`. A range a linker left for discarded code (at 0, or a
+    tombstone) holds none. Unreadable values fail closed (ValueError)."""
+    found = []
+    if "DW_AT_ranges" in attributes:
+        rows = [attributes["DW_AT_ranges"], *continued.get("DW_AT_ranges", ())]
+        for row in rows:
+            found.extend((int(low, 16), int(high, 16)) for low, high in _RANGE.findall(row))
+        if len(rows) > 1 and not rows[-1].rstrip().endswith("))"):
+            raise ValueError("A unit's range list without its end")
+    elif "DW_AT_low_pc" in attributes and "DW_AT_high_pc" in attributes:
+        from peeky.rust_symbols import _hex
+
+        low, high = _hex(attributes["DW_AT_low_pc"]), _hex(attributes["DW_AT_high_pc"])
+        found.append((low, high if high > low else low + high))
+    return tuple((low, high) for low, high in found if 0 < low < high and low < _TOMBSTONE)
 
 
 def compiler_of(producer):
@@ -190,9 +219,10 @@ _COMPLETE_WORDS = frozenset(
     -MP -flto -fno-lto -nostdinc""".split()
 )
 # And by form, each a kind of option that joins its value (Options.td's Joined and
-# CommaJoined): an -O option, a warning (`-Wall`, `-Wl,-O1`), or an -f, -m or -std option
-# joining its value with `=`. The driver checks a word of each form too.
-_COMPLETE = re.compile(r"-O\w*|-W[\w,=+.-]*|-std=\S+|-[fm][\w-]+=\S*")
+# CommaJoined): an -O option, a warning (`-Wall`, `-Wl,-O1`), an -f, -m or -std option
+# joining its value with `=`, or the driver's mode, which clang++ records first
+# (`--driver-mode=g++`). The driver checks a word of each form too.
+_COMPLETE = re.compile(r"-O\w*|-W[\w,=+.-]*|-std=\S+|-[fm][\w-]+=\S*|--driver-mode=\S+")
 # What the driver's -O options mean (`-O` is -O1, `-O4` is -O3: clang's own aliases).
 _LEVELS = {"": "1", "0": "0", "1": "1", "2": "2", "3": "3", "4": "3", "s": "s", "z": "z"}
 _LEVELS |= {"g": "g", "fast": "fast"}

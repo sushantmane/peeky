@@ -241,6 +241,7 @@ def test_the_options_known_to_take_no_value_take_none(tmp_path):
     compiler = _clang()
     (tmp_path / "main.c").write_text("int main(void) { return 0; }\n")
     forms = ["-Wall", "-Wno-unused-parameter", "-Wl,-O1", "-std=gnu11", "-fvisibility=hidden"]
+    forms += ["--driver-mode=g++", "--driver-mode=gcc"]
     for word in [*sorted(_COMPLETE_WORDS), *forms, "-O0"]:
         words = [compiler, word, "-O3", "-c", "main.c", "-o", "main.o"]
         assert "-O3" in _compiled_at(compiler, words, tmp_path), word
@@ -358,6 +359,24 @@ def test_a_cpp_inheriting_constructor_names_a_file_without_an_md5(tmp_path):
     unit, table = _read(dwarfdump, _build(compiler, tmp_path, ["-x", "c++"]))
     assert [entry.name for entry in table.files.values()] == ["main.c", "<stdin>"]
     assert not table.checksummed() and table.files[1].checksum is None
+
+
+def test_clang_plus_plus_records_its_driver_mode_first(tmp_path):
+    # clang++ records `--driver-mode=g++` before the options it was given: an option of
+    # one word, as the driver reads it, so the `-O0` after it is read.
+    dwarfdump, compiler = _tools(), default_cxx()
+    if not compiler or is_gcc(compiler):
+        pytest.skip("needs clang as the C++ compiler (the clang lanes and macOS run it)")
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n")
+    unit, _ = _read(
+        dwarfdump, _build(compiler, tmp_path, ["-grecord-command-line"], source="main.cpp")
+    )
+    words = recorded_command(unit, _version(compiler))
+    if os.path.basename(compiler).startswith("clang++"):
+        assert words[1] == "--driver-mode=g++", words
+    assert optimization(words) == ("0", False)
+    asked = [compiler, "--driver-mode=g++", "-O3", "-c", "main.cpp", "-o", "other.o"]
+    assert "-O3" in _compiled_at(compiler, asked, tmp_path)
 
 
 @pytest.mark.parametrize("assembler", [[], ["-gno-as-loc-support"]], ids=["as", "no-as"])

@@ -45,6 +45,11 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **C and C++: a binary your project built** (ADR 0008, phase 1). `peeky probe . --binary ./jq
+  --at src/execute.c:120` and `describe` read a binary clang built at `-O0` with `-g -gdwarf-5
+  -grecord-command-line`. Each unit is judged from its own debug information. A file changed
+  since the build refuses the binary by name, and frames in units Peeky doesn't judge show
+  nothing, with why. A unit's text isn't read yet, so the rules that need it withhold.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and

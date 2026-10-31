@@ -33,6 +33,48 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   from only to word a refusal. Tests compare it with a slower reference scan on random text.
 - The worker turns off LLDB's init files with both the LLVM 18 key and the newer one.
 
+## A binary the project built
+
+`native_binary.BinaryTarget` reads a binary the project built, under the target directory
+([ADR 0008](adr/0008-native-project-reach.md)). Nothing is built or copied.
+
+- It refuses what isn't an ELF or Mach-O executable (`#!`: a libtool script), and a binary with
+  no build ID or UUID. On macOS, dsymutil writes the binary's dSYM into a directory of Peeky's
+  own. lldb-dap loads it with `target symbols add` before the launch, never one the project left.
+- `native_units.read_units` lists the units, from `--debug-info --recurse-depth=0`, with each
+  unit's code ranges. A skeleton, type or partial unit is refused (`ForeignUnits`).
+- `judge` takes each unit's main file, under the root, in C or C++. The unit must be clang's, at
+  DWARF 5, with its command line recorded. The `--version` of the config's `compiler` must be
+  the unit's producer.
+- It refuses the options that change what code computes (`SEMANTICS`, `-Ofast`), and sanitizers.
+  `-fwrapv` and `-fno-strict-overflow` stay: they define signed overflow, and no rule assumes
+  it undefined.
+- `optimization` must read `-O0` and no LTO. With `"optimized": true`, a unit at another level
+  is read as an optimized build. The session's `optimization` is then the highest of any unit
+  read.
+- Its line table must hold an MD5 of every file, and name the unit as file 0. Every path must be
+  absolute.
+- `check_files` hashes each file every unit read names, inside the root or not, once. One that
+  differs from its MD5 makes the binary stale (`BinaryChanged`). The SHA-256 of each is kept:
+  `BinarySession.assert_current` checks them, the binary, the dSYM and the tools before every
+  operation.
+- The line tables are read twice. `LineFiles` reads every table's header, for judging.
+  `read_line_table` with `only` then reads the rows of the units read alone: a header's lines
+  in a unit not read are no breakpoint lines.
+- `read_program_symbols` reads the whole binary's debug information, as for a build.
+- `BinarySession.frame_withheld` finds the unit whose code ranges hold a frame's address
+  (`_block_pc`). In a unit not read, or none, every row says `not shown`, and why. So does a frame
+  whose code several functions share (`_folded`): a linker's identical code folding leaves no
+  record of it, and LLDB lists one's locals at the other's line. C frames are placed among the
+  functions that may run them too (`placed_languages`).
+- `validate_stop` accepts a frame on a line of a unit not read: it shows nothing.
+  `unplaceable_line` refuses a breakpoint on a line no unit read has code on, before the launch.
+- A unit's text isn't read yet. `_source_text` is None and `_preprocessed` says why, so the rules
+  that need the text withhold. Any call may return twice (`returns_twice` empty): the program's
+  own assembly can, as MicroPython's `nlr_push` does.
+- The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
+  lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
+
 ## Reading a build's symbols
 
 Peeky reads a build's line tables and debug information as llvm-dwarfdump writes them

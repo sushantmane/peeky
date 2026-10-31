@@ -318,11 +318,12 @@ def _cargo_root(path):
     return None
 
 
-def resolve(target, at=None, config=None, *, tools=True):
+def resolve(target, at=None, config=None, *, tools=True, binary=None):
     """Return (root, program, line, language, trusted target config dict or None).
 
     ``tools=False`` for a run on a worker: its configuration names the tools, so this
-    host's are neither looked for nor named (the config has no tool paths then)."""
+    host's are neither looked for nor named (the config has no tool paths then).
+    ``binary``: `--binary`, a binary the project built under ``target`` (ADR 0008)."""
     path = Path(target).resolve(strict=True)
     program, line = None, None
     if at:
@@ -336,7 +337,10 @@ def resolve(target, at=None, config=None, *, tools=True):
             program, line = location, int(number)
         else:
             program = text
-    root, program, line, language, data = _resolve(path, program, line, config, tools)
+    if binary is not None:
+        root, language, data = _binary_target(path, binary, config, program, tools)
+    else:
+        root, program, line, language, data = _resolve(path, program, line, config, tools)
     program = _confined(root, program, language)
     if language == "python" and program:
         # A Python candidate runs a copy whose files keep their stored names, and the
@@ -370,11 +374,69 @@ def _stored_name(root, program):
     return Path(*parts).as_posix()
 
 
+# The keys a binary target's config may hold (native_binary.BinaryTarget).
+_BINARY_KEYS = frozenset(
+    {"binary", "language", "compiler", "adapter", "dwarfdump", "dsymutil", "arguments", "optimized"}
+)
+_CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx")
+
+
+def _binary_target(path, binary, config, program, tools):
+    """(root, language, data) of `--binary`: the binary, under the target directory, with
+    this host's tools. Its units say whether it is C or C++ (``language`` None in the
+    data); the language returned is the `--at` file's, for what the command prints."""
+    from peeky.errors import Refused
+
+    if config is not None:
+        raise Refused("INVALID_REQUEST", "Pass --binary or a config naming its binary, not both")
+    if not tools:
+        raise Refused(
+            "INVALID_REQUEST",
+            "A worker takes a binary only from its own configuration, which this version of "
+            "Peeky doesn't read yet: probe the binary on its own host",
+        )
+    if not path.is_dir():
+        raise Refused(
+            "INVALID_REQUEST",
+            "With --binary, the target is the directory the binary's sources are under",
+        )
+    found = Path(binary).resolve(strict=True)
+    if not found.is_relative_to(path):
+        raise Refused(
+            "INVALID_REQUEST",
+            f"The binary {binary} is outside the target directory, {path}: give the "
+            "directory its sources are under as the target",
+        )
+    language = "cpp" if str(program or "").endswith(_CPP_SUFFIXES) else "c"
+    found_tools = {key: value for key, value in native_tools(language).items() if key != "sysroot"}
+    data = {"binary": found.relative_to(path).as_posix(), "language": None, **found_tools}
+    return path, language, data
+
+
 def _resolve(path, program, line, config, tools=True):
     if config is not None:
         data = json.loads(Path(config).read_text())
         if not isinstance(data, dict):
             raise ValueError("Target configuration must be a JSON object")
+        if "binary" in data:
+            from peeky.errors import Refused
+
+            if unknown := sorted(set(data) - _BINARY_KEYS):
+                raise Refused(
+                    "INVALID_REQUEST",
+                    "A binary target's config takes "
+                    + ", ".join(sorted(_BINARY_KEYS))
+                    + f"; not {', '.join(unknown)}"
+                    + (
+                        ": its sources are the files its debug information names"
+                        if "sources" in unknown
+                        else ""
+                    ),
+                )
+            given = data.get("language")
+            language = given or ("cpp" if str(program or "").endswith(_CPP_SUFFIXES) else "c")
+            root = path if path.is_dir() else path.parent
+            return root, program, line, language, {**data, "language": given}
         from peeky.rust_workspace import is_workspace_config
 
         language = data.pop("language", None) or (
@@ -588,6 +650,10 @@ def adapter_for(language, data, *, build=None):
 
         return RustWorkspaceTarget.from_config(data, build)
     data = {key: tuple(value) if isinstance(value, list) else value for key, value in data.items()}
+    if "binary" in data:
+        from peeky.native_binary import BinaryTarget
+
+        return BinaryTarget(**data)
     if language == "rust":
         from peeky.rust import RustTarget
 
@@ -699,7 +765,12 @@ def _default_program(program, data, command):
 
 
 def describe(args):
-    root, program, _, language, data = resolve(args.target, args.at, args.config)
+    root, program, _, language, data = resolve(
+        args.target, args.at, args.config, binary=args.binary
+    )
+    if program is None and "binary" in (data or {}):
+        # Breakpoint lines cover every unit judged: the binary alone prepares the target.
+        program = data["binary"]
     program = _confined(root, _default_program(program, data, "describe"), language)
     _python_option(args, language)
     run = (
@@ -711,6 +782,8 @@ def describe(args):
     )
     # The commands repeat the --config this describe was given (Java, explicit targets).
     target = f"{args.target} --config {args.config}" if args.config else args.target
+    if args.binary is not None:
+        target += f" --binary {args.binary}"
     if args.python is not None:
         target += f" --python {args.python}"
     # A file target is the file to edit; a directory needs --at to name it, but where
@@ -775,6 +848,14 @@ def describe(args):
         "Rust, C and C++ only of a local the frame holds itself, never through a pointer); "
         "evidence about one run, never a verified fix",
     }
+    if "binary" in (data or {}):
+        # The project's own build: probed in any file of a unit Peeky judges; no edit or
+        # session (they need a build Peeky runs, or its worker).
+        commands = manifest["commands"]
+        commands["probe"] = commands["probe"].replace(f"--at {program}:", "--at <file>:")
+        for name in ("session", "verify", "candidate"):
+            commands.pop(name, None)
+        commands["background"] = "add --background to probe, then `peeky job wait <id>`"
     if language == "python":
         from peeky.python_interpreter import Readings, Unavailable, find
 
@@ -801,6 +882,13 @@ def describe(args):
         manifest["target_identity"] = target.target_identity
         runtime = target.prepare(root / program, root)
         try:
+            # As the build or binary read: a binary's units say its language and level.
+            manifest["target_identity"] = getattr(
+                runtime, "target_identity", manifest["target_identity"]
+            )
+            if (units := getattr(runtime, "units", None)) is not None:
+                language = manifest["language"] = runtime.target.language
+                manifest["units"] = units
             manifest["breakpoint_lines"] = runtime.lines
             manifest["artifact_manifest_id"] = runtime.manifest_id
             if scopes := getattr(runtime, "function_scopes", None):
@@ -873,6 +961,13 @@ def _describe_text(manifest):
     lines = [f"language: {manifest['language']}", f"root: {manifest['root']}"]
     if python := _python_line(manifest.get("python")):
         lines.append(python)
+    if (units := manifest.get("units")) is not None:
+        judged = sum(1 for unit in units if unit["judged"])
+        lines.append(f"units: {judged} of {len(units)} judged")
+        for unit in units:
+            if not unit["judged"]:
+                read = " (read as an optimized build)" if unit.get("read") else ""
+                lines.append(f"not judged{read}: {unit['unit']}: {unit['why']}")
     for source, numbers in manifest["breakpoint_lines"].items():
         lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):
@@ -1265,7 +1360,7 @@ def _probe_request(args):
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
     root, program, line, language, data = resolve(
-        args.target, args.at, args.config, tools=args.worker is None
+        args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
     )
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
@@ -3363,6 +3458,15 @@ def _start(args):
     )
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
+    if "binary" in (data or {}):
+        from peeky.errors import Refused
+
+        # A session runs in a worker, which reads no binary target's config yet.
+        raise Refused(
+            "INVALID_REQUEST",
+            "A binary target takes `peeky probe` and `peeky describe` in this version of "
+            "Peeky; sessions come with its worker support",
+        )
     _python_option(args, language)
     _seconds(args.timeout)
     max_pause = _max_pause(args.max_pause, language)
@@ -5584,9 +5688,18 @@ def _main(argv, _job, _edits):
         sub.add_argument("--limit", type=int, default=200, help="Most rows to return (max 10000)")
         evidence_store(sub)
 
+    def binary_option(sub):
+        sub.add_argument(
+            "--binary",
+            metavar="PATH",
+            help="C/C++: a binary the project built under the target directory, with clang "
+            "-O0 -g -gdwarf-5 -grecord-command-line (docs/lang/c-cpp.md)",
+        )
+
     sub = commands.add_parser("describe", help="Manifest: language, breakpoint lines, views")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
+    binary_option(sub)
     python_option(sub)
     # Accepted everywhere: describe prints no progress, so it changes nothing here.
     sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
@@ -5594,6 +5707,7 @@ def _main(argv, _job, _edits):
     probe_parser = sub
     common(sub)
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")
+    binary_option(sub)
     sub.add_argument(
         "--capture",
         default="",

@@ -338,6 +338,9 @@ def test_a_dwarf_5_table_must_name_its_unit_as_file_0():
         ),
         ("-O0 -Xclang -Wno-error=allocator-wrappers -mmacos-version-min=27.0", ("0", False)),
         ("-O2 -Wl,-O1 -Wall -fno-omit-frame-pointer -O0", ("0", False)),
+        # clang++ records its driver's mode first (Linux's clang 18, Apple's clang 21).
+        ("--driver-mode=g++ -g -gdwarf-5 -grecord-command-line -O0 -c a.cpp -o l.o", ("0", False)),
+        ("--driver-mode=g++ -O2 -c a.cpp", ("2", False)),
         # An unknown option after the last -O and LTO option changes neither.
         ("-O0 -c main.c -frobnicate a b", ("0", False)),
         # After `--`, every word is an input, whatever it looks like.
