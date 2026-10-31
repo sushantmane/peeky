@@ -173,7 +173,7 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
   - In tokio's own `Tail::notify_rx`, `self.rx_cnt` read 2 (what `send` returned as `n`), `self.pos` 1 and `self.closed` false. The code read there holds no container, so the unsafe-code note isn't exercised.
   - In `send_recv_bounded`, a change of `rx.next` after `task::spawn(rx.recv())` was refused, naming `tokio_test::task::spawn` (dependency `tokio_test`) on line 99.
   - A line of the generic `Sender::send2`, which only the test crate compiles, ends with `DEBUGGER_ERROR` here. Part 4 (#463) refuses it before launch, naming the function.
-  - Its `Cargo.lock` is version 2. `cargo update --workspace` keeps that version, so the check added `version = 3` by hand; with no git sources nothing else differs (#467).
+  - Its `Cargo.lock` is version 2. `cargo update --workspace` keeps that version, so the check added `version = 3` by hand; with no git sources nothing else differs. The refusal says so now (#472).
 - **axum-1934:** unit tests of a crate that forbids unsafe code, so memory reads are exercised.
 - **bat-3108:** a binary with `build.rs`; clap's types stay raw.
 - **ripgrep-2209:** `rg -U --replace`, with the path dependency `grep-printer` analysed. Both are edition 2018, and the root package makes the workspace resolver 1.
@@ -185,7 +185,7 @@ Each also checks refusals: an edit without a rebuild, by name; the default optim
   - With `added` given to `grep_matcher::Match::new` first, its change was refused, naming that call (dependency `grep_matcher`). rg printed the dependency's copy, `1 matches`.
   - The replacement code the bug is in (`Replacer::replace_all`) is generic, and only `rg`'s crate compiles it. A stop there ends with `DEBUGGER_ERROR` here; part 4 (#463) refuses it, naming the function.
   - `trim_line_terminator` and `trim_ascii_prefix` declare their parameters over several lines, as rustfmt writes a long signature. Such a function isn't matched to its MIR, so its changes are refused, saying Peeky can't tell (#466). That isn't an edition matter.
-  - Its `Cargo.lock` is version 2 too, marked `version = 3` by hand (#467).
+  - Its `Cargo.lock` is version 2 too, marked `version = 3` by hand (#472).
 - **coreutils-6690:** the multicall binary, with `uu_cp` analysed.
 
 Each also checks a change refused with a note naming a dependency call, and one allowed where only std is called. No value may contradict the program. Build times with a cold and a warm dependency cache, and analysed entries against `MAX_DIES`, are recorded.
@@ -280,11 +280,11 @@ Measured with Rust 1.96.0 on macOS and in the study's images (aarch64 Linux, 4 C
   - **Arrays' `IntoIterator`.** In 2018, `arr.into_iter()` calls `<&[T; N] as IntoIterator>::into_iter`, a `slice::Iter` that borrows `arr`; 2021 copies `arr`. A change of `arr` after the iterator is made is seen in 2018, and refused in 2021 as a copy. `for v in arr` is by value in both.
   - **`panic!`'s forms.** In 2018, `panic!(x)` calls `std::rt::begin_panic(x)`, `panic!("{}", x)` calls `panic_display`, and a lone literal is the message as written. Peeky's list of std's panic entry points already holds these, checked on rustc 1.96 at 2018 and 2024. A change before `panic!(x)` reaches the payload a caller catches.
   - **The prelude.** 2021 adds `TryFrom`, `TryInto` and `FromIterator`. A workspace's MIR roots the standard library's paths, so a bare name is the crate's own. The impl-header scan counts those three as the prelude's in every edition, which withholds more, never less. The expansion's `rust_2018` prelude is stripped as 2021's is.
-  - **Bare trait objects.** 2018 accepts `impl smallnum::Keep for Box<Sink>`, `Sink` a trait. The MIR and the debug information always print `dyn`. A bare name the crate defines as a trait is never placed as a type now, so such a call reads as one Peeky can't tell, never as the dependency's.
+  - **Bare trait objects.** 2018 accepts `impl smallnum::Keep for Box<Sink>`, `Sink` a trait, or a `use` or `type` alias of one. The MIR and the debug information always print `dyn`. Such a name is never placed as a type now. Without the debug information's types, a bare name counts only where the MIR's `self` confirms it. So such a call reads as one Peeky can't tell, never as the dependency's.
   - **Lexing.** Edition 2018 reads `cr"…"` as `cr` and an ordinary string, where 2021 reads a raw C string, as Peeky's lexer does. A 2018 crate whose sources or expansion hold one is refused, naming the line; `cr "…"`, with a space, reads alike in both. `c"…"` lexes alike, and `async`, `dyn` and `try` are keywords in both.
   - **Macros.** `$x:pat` and or-patterns change which arm of a `macro_rules!` rustc picks. Peeky reads rustc's expansion and MIR, never a macro's rules, so nothing changes.
   - **Cargo's resolver.** A 2018 root package, or a virtual workspace without `resolver`, resolves at 1, which unifies features across dev-, build- and target dependencies. Peeky reads each unit's features from Cargo's unit graph of the build's own command, so its record is the build's.
-  - Under resolver 1, a workspace whose root is a package gives `--features` to that package, and builds the one `-p` selects without them, saying nothing. Peeky refuses that now, naming `package/feature` and resolver 2.
+  - Under resolver 1, a workspace whose root is a package gives `--features` to that package, and builds the one `-p` selects without them, saying nothing. Peeky refuses that now, naming `package/feature` and resolver 2. It checks a plain feature in the run's own unit, and `package/feature` in that package's, by its package ID, or the dependency the run calls so.
   - Single crates (`rust_manifest`) still take 2021 and 2024 alone: their MIR prints trimmed paths. Qualifying 2018 there means running the whole Rust suite at 2018, as for 2024.
 - **Cargo configuration:** ripgrep's and coreutils' `.cargo/config.toml` set only other targets' flags and linkers, and clippy's lints. tokio-4867's `.cargo/config` is all comments. Peeky accepts these, and refuses what would change its build (`rust_workspace.check_cargo_config`).
 - **Git dependencies:** Cargo.lock records no checksum for one, so nothing ties a vendored copy to the commit it names. Phase 2 refuses every git dependency, vendored or not, and says so (owner's decision).
