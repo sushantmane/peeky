@@ -283,6 +283,13 @@ _RULES = (
         False,
     ),
     (
+        r"^A Java adapter on JDK 19 or later launches a program only on JDK 19 or later",
+        "UNSUPPORTED",
+        "Nothing was launched. Rebuild the bundle with JDK 17 first on PATH (`peeky setup-java`), "
+        "or set the config's java to the adapter's.",
+        False,
+    ),
+    (
         r"^Peeky launches a Java program on another java than the adapter's only from a JDK's "
         r"bin directory",
         "UNSUPPORTED",

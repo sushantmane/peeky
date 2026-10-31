@@ -26,6 +26,7 @@ through JDI, the JDK's debugger API. For these words and a few more, see
 - [7.3 Java (launched)](#73-java-launched)
   - [Set up a launched target](#set-up-a-launched-target)
   - [Build the adapter](#build-the-adapter)
+  - [Which JDK runs what](#which-jdk-runs-what)
   - [What Peeky checks about a Java build](#what-peeky-checks-about-a-java-build)
   - [What can be set](#what-can-be-set)
   - [Change a local](#change-a-local)
@@ -194,6 +195,8 @@ For example, `examples/java/pagination.json`:
 - `bundle` is optional. Without it, Peeky uses the adapter bundle that `peeky setup-java` built
   ([Build the adapter](#build-the-adapter)). With it, Peeky uses the bundle it names, relative to
   the config file.
+- `javac` and `java` are optional. They name the JDK that builds and runs the program, else the one
+  on `PATH`. A config's `java` runs the adapter too ([Which JDK runs what](#which-jdk-runs-what)).
 - `sources` are relative to the target's directory. Declare every `.java` file the program needs.
   Maven or Gradle projects, and external classpaths, aren't supported.
 - Use a standard package-relative layout. A source-root prefix works.
@@ -204,7 +207,9 @@ For example, `examples/java/pagination.json`:
 
 ### Build the adapter
 
-Build the adapter bundle once, with JDK 17 or later on `PATH`. It works from the wheel too:
+Build the adapter bundle once, with JDK 17 or later on `PATH`. The adapter always runs on that
+JDK's `java`. JDK 17 is the one to use if a project needs an older JDK
+([Which JDK runs what](#which-jdk-runs-what)). It works from the wheel too:
 
 ```sh
 peeky setup-java
@@ -266,7 +271,8 @@ is also the compiler flags, and javac's version text.
   contract with the JDK that runs it. An older JVM refuses the classes itself: the debugger fails
   to start, with `DEBUGGER_ERROR` and `Debugger adapter closed`.
 - Before it runs any bundle, one a config names too, Peeky checks the bundle's own content. That
-  is its files' hashes, and its recipe but for javac. It doesn't ask the JDK.
+  is its files' hashes, and its recipe but for javac. It asks the JDK only where it picks the
+  bundle's `java` itself ([Which JDK runs what](#which-jdk-runs-what)).
 - A bundle from another Peeky is refused before anything runs. That is `UNSUPPORTED`, with
   `… is not what this Peeky's setup builds (…)` and the rebuild command.
 - Setup asks javac its version each time it runs. It keeps a version only if the whole recipe is
@@ -279,6 +285,56 @@ is also the compiler flags, and javac's version text.
 - Peeky also checks each patch in the compiled classes: the patched `EventHub.class` calls
   `Logger.isLoggable`. A bundle without it is refused with `UNSUPPORTED`, as one that predates
   Peeky's java-debug fixes.
+
+### Which JDK runs what
+
+The adapter and the program may run on different JDKs.
+
+- The adapter runs on the `java` that `peeky setup-java` built its bundle with. The bundle's
+  `adapter.json` records it, as `command`'s first word, with what its `-version` printed.
+- The program builds with `javac` and runs on `java`. Without them in the config, both come from
+  `PATH`: the project's JDK.
+- So with JDK 11 first on `PATH`, the program builds and runs on JDK 11. The adapter runs on the
+  bundle's JDK.
+- An attached JVM runs on the JDK that started it. An attach config's `java` names only the
+  adapter's.
+
+An adapter on JDK 19 or later launches programs only on JDK 19 or later. Its debugger starts the
+JVM with an option, `includevirtualthreads`, that older JVMs refuse. Peeky refuses such a launch
+before it starts, with `UNSUPPORTED`.
+
+- So build the bundle with JDK 17 if a project needs an older JDK. A bundle built with JDK 17
+  launches programs on JDK 11, 17 and 21.
+- Setup takes `java` and `javac` from `PATH`, not from `JAVA_HOME`. Put the JDK you want first:
+
+```sh
+PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky setup-java
+```
+
+java-debug launches a program from a JDK's `bin` directory. A `java` elsewhere, such as a wrapper
+or a shim, would run on the adapter's JDK instead. So where `java` on `PATH` isn't the bundle's own,
+it must be in a `bin` directory. Otherwise Peeky refuses it, with `UNSUPPORTED`.
+
+Peeky runs the bundle's `java` without the config naming it. So it checks that `java` first:
+
+- It must still exist.
+- Where `java` on `PATH` is another one, the bundle's `java` must still print the version and
+  build lines that setup recorded. A JDK switched behind the same path, by `update-alternatives`
+  for example, is refused. Notes such as `Picked up JAVA_TOOL_OPTIONS` don't count.
+- Where `java` on `PATH` is the bundle's own, Peeky asks it nothing, as before.
+- The build's record lists each JDK's `-version` probe. Their files are checked again before every
+  step, as the program's are.
+
+A config's `java` runs both the adapter and the program. So it must be the bundle's own `java`.
+Another is refused before anything runs, with `UNSUPPORTED`:
+
+```text
+error [UNSUPPORTED]: The Java adapter runs only on the java that its bundle was built with: /usr/bin/java (openjdk version "21.0.12.1" 2026-08-18), for the bundle at /root/.peeky/java-adapter/2904f5de2ae5ff7c7986-fb91e4f2. The config's java is /usr/lib/jvm/java-17-openjdk-arm64/bin/java, another one. Drop java from the config: then the adapter runs on /usr/bin/java, and the program on the java on PATH. Or set the config's java to /usr/bin/java. Or rebuild the bundle with the JDK 17 or later you want: put its bin directory first on PATH, then run `peeky setup-java`
+hint: Nothing was launched or attached. Drop the config's java or set it to the one the message names, or rebuild with `peeky setup-java`.
+```
+
+The same message says when the bundle's `java` is gone, or prints another version now. Then
+rebuild the bundle.
 
 ### What Peeky checks about a Java build
 

@@ -30,6 +30,13 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([Java 7.3](java-cookbook.md#73-java-launched)).
 - A config without `bundle` uses the bundle `peeky setup-java` built. `bundle` names another one,
   relative to the config.
+- The adapter runs on the `java` that `peeky setup-java` built its bundle with. The program builds
+  and runs on `javac` and `java` from `PATH`, the project's JDK
+  ([Java 7.3](java-cookbook.md#which-jdk-runs-what)).
+- An adapter on JDK 19 or later launches programs only on JDK 19 or later. For a project on an
+  older JDK, build the bundle with JDK 17.
+- A config's `java` runs both, so it must be the bundle's own. Another is refused before anything
+  runs, with `UNSUPPORTED`. The message names the bundle's `java`, and what to do.
 - The commands that `describe` prints repeat the `--config`
   ([Java 7.3](java-cookbook.md#73-java-launched)).
 - `verify` edits the config's one source without `--at`. With several, pass `--at` with the source
@@ -40,8 +47,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   are one built before Peeky's java-debug patches, or by another Peeky. That is `UNSUPPORTED`,
   exit status 2, no table. Run `peeky setup-java` again. For a bundle a config names, build a new
   one with `--output`, and point `bundle` at it ([ERRORS](../ERRORS.md)).
-- The bundle is compiled with `--release 17`, so it runs on JDK 17 or later. Peeky doesn't check
-  the JDK that runs it ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- The bundle is compiled with `--release 17`, so it runs on JDK 17 or later
+  ([Java 7.3](java-cookbook.md#build-the-adapter)).
 - Setup keeps older versions of its bundle for sessions still using them.
   `peeky setup-java --prune` removes them. A session still using one fails its next step.
 - Starting the JVM takes most of a run's time. A session's commands after `session start` reuse

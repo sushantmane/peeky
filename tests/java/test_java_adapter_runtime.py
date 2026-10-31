@@ -172,32 +172,44 @@ def _other_jdks(java):
         yield bin_dir, printed
 
 
-@pytest.mark.timeout(180)
+def _feature(printed):
+    found = re.search(r' version "(\d+)(?:\.(\d+))?', printed)
+    return int(found[2]) if found[1] == "1" else int(found[1])
+
+
+@pytest.mark.timeout(300)
 def test_a_project_on_another_jdk_runs_on_it(tmp_path, bundle, monkeypatch, capsys):
     """The case that was refused: the project's JDK (say 11) first on PATH, the bundle built
-    with another. Needs a second JDK: `/usr/libexec/java_home -V` on macOS, /usr/lib/jvm on
-    Linux (the value study's image has 11, 17 and 21)."""
+    with another. Each other JDK found runs the program, but one before 19 where the adapter
+    is on 19 or later, which is refused before the launch. Needs a second JDK:
+    `/usr/libexec/java_home -V` on macOS, /usr/lib/jvm on Linux (the value study's image
+    has 11, 17 and 21)."""
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     _, java = recorded(bundle)
     adapter_version = json.loads((bundle / "adapter.json").read_text())["java_version"]
-    found = next(
-        (
-            (bin_dir, printed)
-            for bin_dir, printed in _other_jdks(java)
-            if re.search(r'version "([^"]+)"', printed)
-            and printed.strip() != adapter_version.strip()
-        ),
-        None,
-    )
-    if found is None:
+    adapter = _feature(adapter_version)
+    found = [
+        (bin_dir, printed)
+        for bin_dir, printed in _other_jdks(java)
+        if re.search(r' version "([^"]+)"', printed) and printed.strip() != adapter_version.strip()
+    ][:3]
+    if not found:
         pytest.skip("needs a second JDK, with javac, besides the one the bundle was built with")
-    bin_dir, printed = found
-    first_on_path(monkeypatch, bin_dir)
-    assert Path(shutil.which("java")).resolve() == (bin_dir / "java").resolve()
-    root, config = shop(tmp_path, bundle)
-    code, result = probe(capsys, root, config)
-    assert code == 0, result.get("error")
-    values = {row["selector"]: row.get("value") for row in result["rows"]}
-    expected = re.search(r'version "([^"]+)"', printed)[1]
-    assert values["runtime"] == f'"{expected}"', (values, printed)
-    assert values["via"] == '"null"'
+    path = os.environ["PATH"]
+    for index, (bin_dir, printed) in enumerate(found):
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{path}")
+        assert Path(shutil.which("java")).resolve() == (bin_dir / "java").resolve()
+        root, config = shop(tmp_path / str(index), bundle)
+        code, result = probe(capsys, root, config)
+        if adapter >= 19 > _feature(printed):
+            assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result.get("error")
+            assert result["error"]["message"].startswith(
+                "A Java adapter on JDK 19 or later launches a program only on JDK 19 or later"
+            )
+            assert f"is JDK {_feature(printed)}. Rebuild" in result["error"]["message"]
+            continue
+        assert code == 0, (printed, result.get("error"))
+        values = {row["selector"]: row.get("value") for row in result["rows"]}
+        expected = re.search(r' version "([^"]+)"', printed)[1]
+        assert values["runtime"] == f'"{expected}"', (values, printed)
+        assert values["via"] == '"null"'

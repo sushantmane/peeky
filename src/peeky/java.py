@@ -509,6 +509,35 @@ PROGRAM_JAVA = (
     "directory, where java-debug runs it. "
 )
 _PICKED_UP = re.compile(r"(?:NOTE: )?Picked up [A-Z_]+:")
+# JDK 19's debugger (JDI) starts a JVM with includevirtualthreads, which a JVM before 19 refuses.
+LAUNCHES_ONLY = (
+    "A Java adapter on JDK 19 or later launches a program only on JDK 19 or later: its "
+    "debugger starts the JVM with an option, includevirtualthreads, that older ones refuse. "
+    "This bundle's adapter runs on JDK {adapter} ({runner}), and the program's java, {java}, "
+    "is JDK {program}. Rebuild the bundle with JDK 17 or 18, which launch programs on older "
+    "JDKs too: put its bin directory first on PATH, then run {rebuild}. Or set the config's "
+    "java to {runner} to run the program on JDK {adapter}"
+)
+
+
+def _feature(text):
+    """The JDK feature release that `java -version` text names (8 for "1.8.0_402"), or None."""
+    found = re.search(r' version "(\d+)(?:\.(\d+))?', str(text or ""))
+    if found is None:
+        return None
+    major = int(found[1])
+    return int(found[2]) if major == 1 and found[2] else major
+
+
+def _rebuild(bundle):
+    """The `peeky setup-java` command that rebuilds ``bundle``: Peeky's own, or one a config
+    names, which `--output` builds anew."""
+    from peeky.java_setup import default_bundle
+
+    own = default_bundle().resolve()
+    if bundle == own or own in bundle.parents:
+        return "`peeky setup-java`"
+    return "`peeky setup-java --output <a new directory>`, and point the config's bundle at it"
 
 
 def _version_text(text):
@@ -543,19 +572,12 @@ def adapter_java_refusal(bundle, recorded, version, why, instead=""):
     """The refusal of a `java` for the adapter (ValueError): the rule, naming the recorded
     `java` and the JDK it was, then what is wrong (``why``), and what to do: ``instead``,
     or else rebuild the bundle with the JDK wanted."""
-    from peeky.java_setup import default_bundle
-
     first = _version_text(version or "").partition("\n")[0]
-    own = default_bundle().resolve()
-    rebuild = (
-        "`peeky setup-java`"
-        if bundle == own or own in bundle.parents
-        else "`peeky setup-java --output <a new directory>`, and point the config's bundle at it"
-    )
     return ValueError(
         f"{ADAPTER_JAVA}{recorded}{f' ({first})' if first else ''}, for the bundle at "
         f"{bundle}. {why}. {instead}{'Or rebuild' if instead else 'Rebuild'} the bundle with "
-        f"the JDK 17 or later you want: put its bin directory first on PATH, then run {rebuild}"
+        "the JDK 17 or later you want: put its bin directory first on PATH, then run "
+        f"{_rebuild(bundle)}"
     )
 
 
@@ -829,6 +851,20 @@ class JavaTarget:
         # above it (`../`).
         prepared = prepare(recipe, root, parent=private_base(), edit=edit, deadline=deadline)
         try:
+            if runner != java:
+                # Before the launch, from the versions the build's probes recorded.
+                printed = {p.argv[0]: p.stdout + p.stderr for p in prepared.manifest.probes}
+                adapter, launched = _feature(printed.get(runner)), _feature(printed.get(java))
+                if adapter is not None and launched is not None and adapter >= 19 > launched:
+                    raise ValueError(
+                        LAUNCHES_ONLY.format(
+                            adapter=adapter,
+                            runner=runner,
+                            java=java,
+                            program=launched,
+                            rebuild=_rebuild(bundle),
+                        )
+                    )
             source_paths = tuple(prepared.workspace / name for name in self.sources)
             mapping = generate_source_map(
                 prepared.workspace / "classes", source_paths, prepared.workspace

@@ -27,6 +27,11 @@
 
 ### Other changes
 
+- **Java on the project's JDK:** the adapter runs on the `java` its bundle was built with,
+  whatever `java` is on `PATH`, and the program builds and runs on the project's JDK. A config's
+  `java` must still be the bundle's. Another is refused with `UNSUPPORTED`, naming the bundle's
+  `java` and what to do. An adapter on JDK 19 or later launches programs only on JDK 19 or later,
+  so build the bundle with JDK 17 for older projects (#442).
 - **A study of Peeky's value on real bugs** (`experiments/value-study`, #441). A coding agent
   attempted 29 real bugs, 3 times each, with and without Peeky. The outcome was the same: 89%
   of bugs solved without Peeky and 86% with it, a paired difference of −2 points (95% interval

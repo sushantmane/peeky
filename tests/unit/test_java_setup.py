@@ -759,23 +759,29 @@ def jdk11_on_path(state, offline, monkeypatch):
     return SimpleNamespace(gone=gone, versions=offline.versions, commands=offline.commands)
 
 
-def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
-    state, jdk11_on_path, monkeypatch, tmp_path
-):
-    # The program builds and runs on the java on PATH (JDK 11); the adapter on the bundle's.
+def fake_build(monkeypatch, tmp_path, source, versions):
+    """JavaTarget.prepare's build, faked: it records each recipe, and its probes print
+    ``versions``; the session's source map holds the program's one class."""
     import peeky.java_metadata
 
-    source = program(tmp_path / "app")
     workspace = tmp_path / "workspace"
     (workspace / "demo").mkdir(parents=True)
     (workspace / "demo" / "Main.java").write_text(source.read_text())
-    built = []
+    build = SimpleNamespace(recipes=[], cleaned=0)
 
     def prepare(recipe, root, **kwargs):
-        built.append(recipe)
-        manifest = SimpleNamespace(manifest_id="build", effective_environment=())
+        build.recipes.append(recipe)
+        probes = tuple(
+            SimpleNamespace(argv=c.argv, stdout="", stderr=versions[c.argv[0]])
+            for c in recipe.toolchain_probes
+        )
+        manifest = SimpleNamespace(manifest_id="build", effective_environment=(), probes=probes)
+
+        def cleanup():
+            build.cleaned += 1
+
         return SimpleNamespace(
-            workspace=workspace, source_root=root, manifest=manifest, cleanup=lambda: None
+            workspace=workspace, source_root=root, manifest=manifest, cleanup=cleanup
         )
 
     entry = {"path": str(workspace / "demo" / "Main.java"), "lines": [2]}
@@ -784,6 +790,17 @@ def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
     monkeypatch.setattr(
         peeky.java_metadata, "generate_source_map", lambda *a: {"classes": {"demo.Main": entry}}
     )
+    return build
+
+
+def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
+    state, jdk11_on_path, monkeypatch, tmp_path
+):
+    # The program builds and runs on the java on PATH (JDK 11); the adapter on the bundle's.
+    source = program(tmp_path / "app")
+    build = fake_build(
+        monkeypatch, tmp_path, source, {**jdk11_on_path.versions, OLD_JAVAC: "javac 11.0.2"}
+    )
     target = peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main")
     session = target.prepare(source, tmp_path / "app")
     assert session.command[0] == JAVA and session.adapter_java == JAVA
@@ -791,7 +808,7 @@ def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
     assert session.launch_args(source, tmp_path / "app")["javaExec"] == OLD_JAVA
     assert session.verification_command[0] == OLD_JAVA
     # javac is PATH's too, and the build's record holds both JDKs' versions.
-    (recipe,) = built
+    (recipe,) = build.recipes
     assert recipe.build_commands[0].argv[0] == OLD_JAVAC
     assert [c.argv for c in recipe.toolchain_probes] == [
         (OLD_JAVA, "-version"),
@@ -801,6 +818,49 @@ def test_a_target_without_java_runs_the_adapter_on_its_bundles_java(
     # Peeky picked the bundle's java itself, so it asked that java its version first.
     assert jdk11_on_path.commands == [[JAVA, "-version"]]
     session.assert_current()
+
+
+def test_an_adapter_on_jdk_19_or_later_launches_no_program_on_an_older_jdk(
+    state, offline, monkeypatch, tmp_path
+):
+    # JDK 19's debugger starts the JVM with includevirtualthreads, which JDK 11's refuses.
+    offline.versions[JAVA] = 'openjdk version "21.0.4" 2024-07-16'
+    java_setup.install()
+    on_path = {"java": OLD_JAVA, "javac": OLD_JAVAC}
+    monkeypatch.setattr(peeky.java, "_tool", lambda value: on_path.get(value, value))
+    monkeypatch.setattr(peeky.java.shutil, "which", lambda name: on_path.get(name))
+    versions = {
+        JAVA: offline.versions[JAVA],
+        OLD_JAVA: 'openjdk version "11.0.2" 2019-01-15',
+        OLD_JAVAC: "javac 11.0.2",
+    }
+    source = program(tmp_path / "app")
+    build = fake_build(monkeypatch, tmp_path, source, versions)
+    target = peeky.java.JavaTarget(state / "java-adapter", ("demo/Main.java",), "demo.Main")
+    with pytest.raises(ValueError) as refused:
+        target.prepare(source, tmp_path / "app")
+    assert str(refused.value) == (
+        "A Java adapter on JDK 19 or later launches a program only on JDK 19 or later: its "
+        "debugger starts the JVM with an option, includevirtualthreads, that older ones refuse. "
+        f"This bundle's adapter runs on JDK 21 ({JAVA}), and the program's java, {OLD_JAVA}, is "
+        "JDK 11. Rebuild the bundle with JDK 17 or 18, which launch programs on older JDKs too: "
+        "put its bin directory first on PATH, then run `peeky setup-java`. Or set the config's "
+        f"java to {JAVA} to run the program on JDK 21"
+    )
+    error = classify(refused.value)
+    assert error["code"] == "UNSUPPORTED" and len(error["hint"]) <= 150
+    assert build.cleaned == 1
+    # JDK 19 or later, or 8 ("1.8.0_402"), as the program's: launched, or refused.
+    for printed, launched in (
+        ('openjdk version "19.0.2"', True),
+        ('java version "1.8.0_402"', False),
+    ):
+        versions[OLD_JAVA] = printed
+        if launched:
+            assert target.prepare(source, tmp_path / "app").java == OLD_JAVA
+        else:
+            with pytest.raises(ValueError, match="is JDK 8. Rebuild"):
+                target.prepare(source, tmp_path / "app")
 
 
 def test_an_attached_jvm_without_java_uses_the_bundles_java_too(state, jdk11_on_path):
