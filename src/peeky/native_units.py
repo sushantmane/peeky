@@ -212,31 +212,6 @@ def _optimizing(word):
     return word.startswith("-O") or word == "-fno-lto" or re.fullmatch(r"-flto(?:=.*)?", word)
 
 
-def _forwarded(words):
-    """Refuses (NotRecorded) an option the recorded ``words`` pass on with `-mllvm` or
-    `-Xarch_…`, or with `-Xclang` but neither inert nor an -O or LTO option."""
-    at = 1
-    while at < len(words):
-        word = words[at]
-        at += 1
-        if word in _SEPARATE:
-            if at >= len(words):
-                raise NotRecorded(f"records {word} without its value, which Peeky can't judge")
-            at += 1
-        elif word.startswith(("-Xarch_", "-Xclang=", "-mllvm=")):
-            raise NotRecorded(f"records {word}, which Peeky can't judge")
-        elif word in ("-Xclang", "-mllvm"):
-            forwarded = words[at] if at < len(words) else ""
-            at += 1
-            if word == "-mllvm" or not (
-                _INERT.fullmatch(forwarded)
-                or forwarded in _APPLE
-                or (forwarded.startswith("-O") and forwarded[2:] in _LEVELS)
-                or re.fullmatch(r"-flto(?:=(?:full|thin))?", forwarded)
-            ):
-                raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
-
-
 def optimization(words):
     """(level, lto) of the arguments ``recorded_command`` read: the last `-O` option's
     level (`"0"` without one: clang's default), and whether the last of `-flto`,
@@ -252,38 +227,50 @@ def optimization(words):
     `--config`), which the recorded words should hold expanded; an unknown `-O` level; a
     word like an `-O` or LTO option that is a known option's value (`-o -O0`); and any
     `-O` or LTO word after an option whose number of values isn't known
-    (`-fdepscan-prefix-map /old -O0`): it may take that word, and any between."""
-    _forwarded(words)
+    (`-fdepscan-prefix-map /old -O0`): it may take that word, and any between. Words
+    after `--` are inputs, read as none of these, unless such an option came before it:
+    it may take `--` too."""
     level, lto, at, unknown = "0", False, 1, None
+
+    def refuse(what):
+        raise NotRecorded(f"records {what}, which Peeky can't judge")
+
     while at < len(words):
         word = words[at]
         at += 1
         if word == "--" and not unknown:
             break  # Inputs only, after it. Not after an option that may take it.
-        if word.startswith("@") or word.startswith("--config"):
-            raise NotRecorded(f"records {word}, which Peeky can't judge")
-        if word in ("-Xclang", "-mllvm"):
-            forwarded = words[at] if at < len(words) else ""
+        if word.startswith(("@", "--config", "-Xarch_", "-Xclang=", "-mllvm=")):
+            refuse(word)
+        if word in ("-Xclang", "-mllvm", *_SEPARATE):
+            if at >= len(words):
+                refuse(f"{word} without its value")
+            value = words[at]
             at += 1
-            if _optimizing(forwarded) and unknown:
-                raise NotRecorded(f"records {forwarded} after {unknown}, which Peeky can't judge")
-            if forwarded.startswith("-O") and forwarded[2:] in _LEVELS:
-                level = _LEVELS[forwarded[2:]]
-            elif re.fullmatch(r"-flto(?:=(?:full|thin))?", forwarded):
+            if word in _SEPARATE:
+                if _optimizing(value):
+                    refuse(f"{word} {value}")
+                continue
+            if word == "-mllvm" or not (
+                _INERT.fullmatch(value)
+                or value in _APPLE
+                or (value.startswith("-O") and value[2:] in _LEVELS)
+                or re.fullmatch(r"-flto(?:=(?:full|thin))?", value)
+            ):
+                refuse(f"{word} {value}")
+            if _optimizing(value) and unknown:
+                refuse(f"{value} after {unknown}")
+            if value.startswith("-O"):
+                level = _LEVELS[value[2:]]
+            elif value.startswith("-flto"):
                 lto = True
-            continue
-        if word in _SEPARATE:
-            value = words[at] if at < len(words) else ""
-            at += 1
-            if _optimizing(value):
-                raise NotRecorded(f"records {word} {value}, which Peeky can't judge")
             continue
         if _optimizing(word):
             if unknown:
-                raise NotRecorded(f"records {word} after {unknown}, which Peeky can't judge")
+                refuse(f"{word} after {unknown}")
             if word.startswith("-O"):
                 if word[2:] not in _LEVELS:
-                    raise NotRecorded(f"records {word}, which Peeky can't judge")
+                    refuse(word)
                 level = _LEVELS[word[2:]]
             else:
                 lto = word != "-fno-lto"

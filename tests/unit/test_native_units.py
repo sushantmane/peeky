@@ -340,8 +340,13 @@ def test_a_dwarf_5_table_must_name_its_unit_as_file_0():
         ("-O2 -Wl,-O1 -Wall -fno-omit-frame-pointer -O0", ("0", False)),
         # An unknown option after the last -O and LTO option changes neither.
         ("-O0 -c main.c -frobnicate a b", ("0", False)),
-        # After `--`, every word is an input.
+        # After `--`, every word is an input, whatever it looks like.
         ("-O0 -c -- -O2", ("0", False)),
+        ("-O0 -c -- -mllvm foo", ("0", False)),
+        ("-O0 -c -- -Xclang -load", ("0", False)),
+        ("-O0 -c -- -Xarch_arm64=-O2", ("0", False)),
+        ("-O0 -c -- @args.rsp", ("0", False)),
+        ("-O0 -c -- -include", ("0", False)),
     ],
 )
 def test_optimization_is_the_last_option_s(arguments, found):
@@ -375,6 +380,8 @@ def test_optimization_is_the_last_option_s(arguments, found):
         ("-O2 -frobnicate -c main.c -Xclang -O0", "-O0 after -frobnicate"),
         # `--` ends the options only where no such option may take it.
         ("-O0 -fdepscan-prefix-map /old -- -O2 -nostdinc", "-O2 after -fdepscan-prefix-map"),
+        ("-O0 -fdepscan-prefix-map /old -- -mllvm foo", "-mllvm foo"),
+        ("-O0 -fdepscan-prefix-map /old -- -Xclang -O2", "-O2 after -fdepscan-prefix-map"),
         # Forwarded options joined to their forwarder, and an option without its value.
         ("-O0 -Xclang=-O2", "-Xclang=-O2"),
         ("-O0 -mllvm=-x", "-mllvm=-x"),
