@@ -84,11 +84,6 @@ class StartupPiece:
     symbols: dict
     unread: str | None = None
 
-    @property
-    def archived(self):
-        """Whether it is a static archive's member (`libgcc.a(extenddftf2.o)`)."""
-        return self.origin.endswith(")")
-
 
 def toolchain_startup(compiler, env, timeout=10, names=(), options=()):
     """(pieces, why, unsearched): the StartupPieces of the startup objects the config's

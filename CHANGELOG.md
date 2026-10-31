@@ -56,8 +56,9 @@
   linked from libgcc's archive and glibc's `libc_nonshared.a` (`atexit`, `__extenddftf2`) no
   longer make any call possibly return twice. Each is treated as equivalent to the archive
   member where its bytes are the member's, as linked, checked as startup code is. One reaching a
-  function of the program's own still counts, as does a function of the program's own by such a
-  name. Each note says why: other bytes, a relocation pointing elsewhere, or an archive Peeky
+  function of the program's own still counts, and so does startup code reaching a hook the
+  program defines (`__cxa_finalize`, `__gmon_start__`). So does a function of the program's own
+  by such a name. Each note says why: other bytes, a relocation pointing elsewhere, or an archive Peeky
   can't search. The returns-twice family, by its pattern (`_vfork`), always counts. jq now shows
   no code no unit covers, and MicroPython only its `nlr_push`.
 - **C and C++: a binary your project built** (ADR 0008, phase 1). `peeky probe . --binary ./jq

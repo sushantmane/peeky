@@ -1226,8 +1226,8 @@ def uncovered_code(binary, units, startup=None, unsure=None):
     archive member's (``startup``: a callable given the names to look for, giving
     toolchain_startup's), as other startup names, crti.o's and crtn.o's parts of `.init`
     and `.fini`, and functions linked from libgcc's archive or libc_nonshared.a
-    (`__extenddftf2`, `atexit`) must be. An archive member's code is the toolchain's only
-    where the code its relocations reach by the binary's symbols is too. Never a symbol of
+    (`__extenddftf2`, `atexit`) must be. Such code is the toolchain's only where the code
+    its relocations reach by the binary's symbols is too. Never a symbol of
     the returns-twice family. Each as a phrase, for a note; where the binary has no symbol
     table, or one Peeky can't read, that instead. ``unsure``: why the toolchain's archives
     Peeky reads may not be the ones linked, said with each phrase they bear on."""
@@ -1280,8 +1280,9 @@ def uncovered_code(binary, units, startup=None, unsure=None):
         except (OSError, ValueError, struct.error) as exc:
             pieces, why = [], f"Peeky can't read the binary's sections ({exc})"
             unsearched = why
-    # Each piece placed where a wanted symbol of it says: {(piece, base): Placed}.
-    placed, tried = {}, {}
+    # Each piece placed where a wanted symbol of it says: {(piece, base): Placed}; and
+    # each framed section's crti.o head and crtn.o tail.
+    placed, tried, ends = {}, {}, {}
     for symbol in wanted:
         for index, piece in enumerate(pieces):
             if symbol.name in piece.symbols:
@@ -1298,10 +1299,13 @@ def uncovered_code(binary, units, startup=None, unsure=None):
         if not head or not tail:
             unframed[name] = why or "Peeky found no crti.o or crtn.o"
             continue
-        for key in ((head[0], section.low), (tail[0], section.high - len(pieces[tail[0]].data))):
+        ends[name] = ((head[0], section.low), (tail[0], section.high - len(pieces[tail[0]].data)))
+        for key in ends[name]:
             placed[key] = native_startup.place(pieces[key[0]], key[1], image)
-    # An archive member's code is the toolchain's only where what it reaches is too:
-    # code the toolchain's by name or bytes, or the linker's stubs. Until none changes.
+    # Startup and archive code is the toolchain's only where what it reaches by the
+    # binary's symbols is too: code the toolchain's by name or bytes, or the linker's
+    # stubs. crtbegin.o's weak hooks (`__cxa_finalize`, `_ITM_registerTMCloneTable`) and
+    # libc's `__cxa_atexit` may be the program's own. Until none changes.
     alive = {key for key, outcome in placed.items() if outcome}
     named_by_toolchain = {symbol.address for symbol in symbols if reserved(symbol)}
     reaching = {}
@@ -1309,8 +1313,6 @@ def uncovered_code(binary, units, startup=None, unsure=None):
         holds = _holder([(base, base + len(pieces[at].data)) for at, base in alive])
         dead = {}
         for key in alive:
-            if not pieces[key[0]].archived:
-                continue
             for address, name in placed[key].reaches:
                 if address not in named_by_toolchain and not holds(address):
                     dead[key] = name
@@ -1401,11 +1403,19 @@ def uncovered_code(binary, units, startup=None, unsure=None):
                     at = None if inside else _code_between(stream, section, cursor, gap_end)
                     if at is not None and section.name in framed:
                         reason = unframed.get(section.name)
+                        reached = [
+                            f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
+                            f"{reaching[key]}, code that isn't the toolchain's"
+                            for key in ends.get(section.name, ())
+                            if key in reaching
+                        ]
                         found.append(
                             f"the code at 0x{at:x}, in {section.name}, may be the program's: "
                             + (
                                 f"Peeky can't compare it with crti.o's and crtn.o's ({reason})"
                                 if reason
+                                else reached[0]
+                                if reached
                                 else "it isn't crti.o's or crtn.o's"
                             )
                         )

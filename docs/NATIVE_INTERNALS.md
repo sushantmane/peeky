@@ -166,11 +166,13 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     `libc_nonshared.a` (`-print-file-name`: `atexit`, `pthread_atfork`). Each member defining
     it, by the archive's symbol index, is placed as above. One the program defines itself, by
     such a name but with other bytes, counts, naming the member.
-  - A member may call a function the program defines: libc's `atexit` calls `__cxa_atexit`,
-    which a program may define itself, and which may then return twice. So a member's code is
-    the toolchain's only where each function its relocations reach by the binary's symbols
-    is too: by name or bytes, recursively, or the linker's stubs. A call through the PLT or
-    the GOT reaches a shared library. Otherwise it counts, naming what it reaches.
+  - Startup and archive code may call a function the program defines, which may then return
+    twice. libc's `atexit` calls `__cxa_atexit`; crtbegin.o calls weak hooks such as
+    `__cxa_finalize`, `_ITM_deregisterTMCloneTable` and `__deregister_frame_info`; crti.o's
+    `call_weak_fn` calls `__gmon_start__`. So such code is the toolchain's only where each
+    function its relocations reach by the binary's symbols is too: by name or bytes,
+    recursively, or the linker's stubs. A call through the PLT or the GOT reaches a shared
+    library, and a weak hook nothing defines is 0. Otherwise it counts, naming what it reaches.
   - A symbol of the returns-twice family, by its pattern (`_vfork`, `__sigsetjmp`), is never
     looked for. It counts, whatever its bytes, even at an address matched code holds.
   - Each note says why the code isn't the toolchain's (`native_startup.Placed`): its bytes

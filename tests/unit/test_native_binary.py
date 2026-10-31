@@ -1146,7 +1146,7 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
     text = bytearray(0x100)
     text[0x40:0x48] = _bl(0x1040, 0x1700) + RET  # crtbeginS.o's block, as linked
     binary.write_bytes(bytes(text))
-    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1700})
+    _linked(monkeypatch, 0x1000, {0x1700: "__cxa_finalize"})  # libc's, through the PLT
     sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
     crtbegin = _piece(
         "crtbeginS.o",
@@ -1183,8 +1183,84 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
         + ", and Peeky found no toolchain startup object holding it (clang finds no crtbeginS.o)"
     ]
     # The same code calling another function: the program's.
-    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1800})
+    _linked(monkeypatch, 0x1000, {0x1800: "__cxa_finalize"})
     assert found(*block)[0].startswith(said.format("register_tm_clones"))
+
+
+def _b(place, target):
+    return (0x14000000 | ((target - place) >> 2) & 0x3FFFFFF).to_bytes(4, "little")
+
+
+def test_startup_code_reaching_a_hook_the_program_defines_isn_t_the_toolchain_s(root, monkeypatch):
+    # crtbegin.o calls weak hooks a program may define itself (__cxa_finalize,
+    # _ITM_deregisterTMCloneTable, __deregister_frame_info), and crti.o's call_weak_fn
+    # calls __gmon_start__: the program's own code, which may return twice. Its bytes are
+    # the toolchain's, but it runs the program's code; so does what calls it.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+    from peeky.native_startup import Relocation
+
+    binary = root / "prog"
+    said = "{} is code no unit's debug information covers"
+    reaches = ", and its bytes are {}'s, but it reaches {}, code that isn't the toolchain's"
+    text = bytearray(0x100)
+    text[0x40:0x48] = _bl(0x1040, 0x1080) + RET  # crtbeginS.o's block
+    text[0x80:0x88] = MOV + RET  # __cxa_finalize, the program's, with debug information
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1080})
+    crtbegin = _piece(
+        "crtbeginS.o",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__cxa_finalize"),
+        register_tm_clones=0,
+        frame_dummy=4,
+    )
+    symbols = [
+        CodeSymbol("register_tm_clones", 0x1040, 0, True),
+        CodeSymbol("frame_dummy", 0x1044, 0, True),
+        CodeSymbol("__cxa_finalize", 0x1080, 8, False),
+    ]
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    unit = SimpleNamespace(ranges=((0x1080, 0x1088),))
+    assert uncovered_code(binary, [unit], lambda names=(): ([crtbegin], None, None)) == [
+        said.format("register_tm_clones") + reaches.format("crtbeginS.o", "__cxa_finalize"),
+        said.format("frame_dummy") + reaches.format("crtbeginS.o", "__cxa_finalize"),
+    ]
+    # .init: crti.o's head calls its call_weak_fn, which calls the program's __gmon_start__.
+    text = bytearray(0x30)
+    text[0x00:0x0C] = MOV + _bl(0x2004, 0x2010) + RET  # crti.o's head, crtn.o's tail
+    text[0x10:0x18] = _b(0x2010, 0x2020) + RET  # call_weak_fn: b __gmon_start__
+    text[0x20:0x28] = MOV + RET  # __gmon_start__, the program's
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x2010}, __gmon_start__={0x2020})
+    gmon = Relocation(0, 282, 0, None, "__gmon_start__", 0, False, None, True)
+    pieces = [
+        _piece("crti.o", ".init", MOV + _bl(0, 0), _call(4, "call_weak_fn", ".text")),
+        _piece("crti.o", ".text", _b(0, 0) + RET, gmon, call_weak_fn=0),
+        _piece("crtn.o", ".init", RET),
+    ]
+    symbols = [
+        CodeSymbol("_init", 0x2000, 0, False),
+        CodeSymbol("call_weak_fn", 0x2010, 0, True),
+        CodeSymbol("__gmon_start__", 0x2020, 8, False),
+    ]
+    sections = [CodeSection(".init", 0x2000, 0x200C, 0), CodeSection(".text", 0x2010, 0x2030, 0x10)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    unit = SimpleNamespace(ranges=((0x2020, 0x2028),))
+    found = uncovered_code(binary, [unit], lambda names=(): (pieces, None, None))
+    assert found == [
+        said.format("call_weak_fn") + reaches.format("crti.o", "__gmon_start__"),
+        "the code at 0x2000, in .init, may be the program's: its bytes are crti.o's, but it "
+        "reaches call_weak_fn, code that isn't the toolchain's",
+    ]
+    # Where __gmon_start__ is nowhere (a weak hook nothing defines): the toolchain's.
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x2010})
+    text[0x10:0x14] = _b(0x2010, 0)
+    binary.write_bytes(bytes(text))
+    del symbols[2]
+    assert uncovered_code(binary, [unit], lambda names=(): (pieces, None, None)) == []
 
 
 def test_code_linked_from_the_toolchain_s_archives_counts_unless_its_bytes_are_theirs(
