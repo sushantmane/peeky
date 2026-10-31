@@ -103,7 +103,8 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   private target directory in the state directory. Peeky's rustc wrapper compiles the analysed
   crates with `RUSTC_BOOTSTRAP=<crate>`, `-Zmir-opt-level=0`, legacy mangling and
   `-Ztrim-diagnostic-paths=false`. It dumps their MIR, LLVM IR and expansion.
-- The build's manifest records what it read and made, hashed: the inputs, every local
+- The build's manifest (its `schema`, now 5: a record of another is `BUILD_REQUIRED` before any
+  of it is read) records what it read and made, hashed: the inputs, every local
   package's compiled files, each build script's inputs and variables, the artifacts. `current_build` checks it again
   before every probe: a source changed is `BUILD_REQUIRED`, and what identifies the build
   changed is `PROVENANCE_CHANGED`. A probe holds a lease on its build while it runs.
@@ -140,12 +141,14 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   or more than 40 links, is `LinkLoop`. Nothing through either is read. Every link followed,
   and its text, is part of the path's identity, a watched directory's entries' too.
 - A package Cargo watches whole is compared by the files `cargo package --list` gave at the build
-  (`lists` in the record, `_package_files`). Each is looked at by lstat first
-  (`_compared_file`): a link to nothing, not a file, out of the root, or missing is a typed
+  (`lists` in the record, `_package_files`), each line exactly as Cargo writes it, spaces too.
+  Each is looked at by lstat first (`_compared_file`): a link to nothing, not a file, out of the root, or missing is a typed
   refusal (`_UNLISTABLE`). Only `Cargo.toml.orig`, `.cargo_vcs_info.json` and a member's
   `Cargo.lock` may be missing.
 - One walker (`_tree`) reads a package whole, by lstat: hidden and `target` directories too,
-  links by their text, never followed. It leaves out `.git`, `OS_JUNK`, and `walk_skip`: other
+  each directory recorded (an empty one is named to a client), links by their text, never
+  followed. Every entry spends the record's budget as it is read, before any is sorted or
+  walked into. It leaves out `.git`, `OS_JUNK`, and `walk_skip`: other
   workspace packages, the vendored copies and Peeky's build directory. Its entries are what a
   client's are compared with where Cargo can't list a package, and for a procedural macro's
   package and the analysed ones; there a link out of the root refuses the build

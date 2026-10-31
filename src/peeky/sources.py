@@ -257,7 +257,8 @@ def _identity(root, name, content=None, side="the worker host"):
     """``name``'s identity: its content's SHA-256 for a regular file reached through no
     link (as every target's sources are compared); else the SHA-256 of every link followed
     on its way, and what each says (``_inside``), with its file's SHA-256, or "dir" for a
-    link to a directory. None where it is missing or not a file. ``content``: the content's
+    directory (one a package's walk names: an empty one). None where it is missing, or
+    neither. ``content``: the content's
     SHA-256 as a build recorded it, taken instead of the disk's. One a link leads out of
     ``root`` (resolved), or whose links loop, is refused, unread."""
     chain, real = _inside(Path(root), name, side)
@@ -265,7 +266,8 @@ def _identity(root, name, content=None, side="the worker host"):
         info = os.lstat(real)
     except OSError:
         return None
-    if stat.S_ISDIR(info.st_mode) and chain:
+    if stat.S_ISDIR(info.st_mode):
+        # A directory a package's walk names (an empty one), or a link to one: by its links.
         what = "dir"
     elif stat.S_ISREG(info.st_mode):
         try:
@@ -274,7 +276,7 @@ def _identity(root, name, content=None, side="the worker host"):
             return None
     else:
         return None
-    if not chain:
+    if not chain and what != "dir":
         return what
     entry = {"links": chain, "sha256": what}
     return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()

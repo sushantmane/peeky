@@ -353,20 +353,29 @@ def test_a_package_is_walked_whole_by_lstat_and_links_are_never_followed(tmp_pat
     (tmp_path / "to-dir").symlink_to("shared")
     (tmp_path / "dangling").symlink_to("gone")
     (tmp_path / "out").symlink_to("/etc")
+    # An empty directory a build script may look for (`Path::exists`).
+    (tmp_path / "feature-enabled").mkdir()
     skip = {str(tmp_path / "member"), str(tmp_path / "vendor")}
     found = rb._tree(tmp_path, skip, budget=[100])
     digest = hashlib.sha256
     assert found == {
         # Hidden and `target` directories too, and a crate that isn't a workspace package.
+        ".hidden": ["dir"],
         ".hidden/x": digest(b"x\n").hexdigest(),
         "build.rs": digest(b"fn main() {}\n").hexdigest(),
         "dangling": ["link", "gone"],
+        "feature-enabled": ["dir"],
+        "fixture": ["dir"],
         "fixture/Cargo.toml": digest(b"[package]\n").hexdigest(),
+        "fixture/src": ["dir"],
         "fixture/src/lib.rs": digest(b"").hexdigest(),
         # A link by its text: never followed, into a directory or out of the root.
         "out": ["link", "/etc"],
+        "shared": ["dir"],
         "shared/data.txt": digest(b"d\n").hexdigest(),
+        "src": ["dir"],
         "src/lib.rs": digest(b"").hexdigest(),
+        "target": ["dir"],
         "target/manual": digest(b"m\n").hexdigest(),
         "to-dir": ["link", "shared"],
         "to-file": ["link", "shared/data.txt"],
@@ -381,13 +390,42 @@ def test_a_package_is_walked_whole_by_lstat_and_links_are_never_followed(tmp_pat
     )
     assert classify(caught.value)["code"] == "UNSUPPORTED"
     rb._reachable(tmp_path / "to-dir", tmp_path)
-    # Past the budget, refused: never filtered.
+    # Past the budget, refused: never filtered. Directories spend it, empty ones too, as
+    # each is read: one of more entries than the budget is refused before they are held.
     with pytest.raises(ValueError) as caught:
         rb._tree(tmp_path, skip, budget=[2])
     assert str(caught.value).startswith(
         f"Peeky records at most {rb.MAX_RECORDED} files a build script or procedural macro may "
         f"read, and {tmp_path} holds more"
     )
+    many = tmp_path / "many"
+    for index in range(50):
+        (many / f"empty-{index}").mkdir(parents=True)
+    with pytest.raises(ValueError, match="Peeky records at most"):
+        rb._tree(many, budget=[40])
+    held = []
+    real = os.scandir
+
+    class Counting:
+        def __init__(self, path):
+            self.listing = real(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.listing.close()
+
+        def __iter__(self):
+            for entry in self.listing:
+                held.append(entry.name)
+                yield entry
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rb.os, "scandir", Counting)
+        with pytest.raises(ValueError, match="Peeky records at most"):
+            rb._tree(many, budget=[10])
+    assert len(held) == 11
 
 
 # A build that started after the test wrote its files: none changed while Cargo ran.
@@ -483,8 +521,10 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
     }
     assert set(found["trees"]) == {str(root / "app")}
     assert sorted(found["trees"][str(root / "app")]) == [
+        "assets",
         "assets/logo.txt",
         "build.rs",
+        "src",
         "src/main.rs",
     ]
     assert values(found) == {
@@ -531,9 +571,16 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
     (root / "app/escape.txt").symlink_to(tmp_path / "outside.txt")
     (root / "app/dangling.txt").symlink_to("gone.txt")
     (root / "app/assets").symlink_to("../shared")
+    (root / "app/feature-enabled").mkdir()
+    # Names Cargo writes as they are: a space begins or ends one.
+    (root / "app/ leading.txt").write_text("l\n")
+    (root / "app/trailing.txt ").write_text("t\n")
     messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
     asked = []
     listed = [
+        " leading.txt",
+        "trailing.txt ",
+        "",
         ".tracked",
         "Cargo.lock",
         "Cargo.toml.orig",
@@ -562,6 +609,8 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
     # Each looked at by lstat first. Cargo's own files that aren't there are left out; a
     # listed file that isn't there, a link to nothing or out of the root, is refused by type.
     assert record["files"] == {
+        " leading.txt": digest(b"l\n").hexdigest(),
+        "trailing.txt ": digest(b"t\n").hexdigest(),
         ".tracked": digest(b"t\n").hexdigest(),
         "assets/data.txt": digest(b"d\n").hexdigest(),
         "build.rs": digest(b"").hexdigest(),
@@ -610,15 +659,19 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
         "it failed: Peeky compares every file of app with a remote client's instead, but "
         ".DS_Store, Thumbs.db and desktop.ini"
     )
+    # An empty directory is named; one with entries is compared by them.
     assert sorted(record["files"]) == [
+        " leading.txt",
         ".tracked",
         "assets",
         "build.rs",
         "dangling.txt",
+        "feature-enabled",
         "ignored.log",
         "src/main.rs",
+        "trailing.txt ",
     ]
-    assert record["files"]["assets"] == "dir"
+    assert record["files"]["assets"] == record["files"]["feature-enabled"] == "dir"
     assert record["files"]["dangling.txt"] == {"refused": "dangling"}
     # The build's summary says so, once.
     summary = rb.summary(
@@ -649,6 +702,51 @@ def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
     found = rb._build_inputs(shape, root, [macro], {}, {}, LATER, None, 1, lister)
     assert sorted(found["lists"][str(root / "derive")]["files"]) == ["src/lib.rs"]
     assert asked == ["app@0.1.0", "app@0.1.0"]
+
+
+def test_a_record_of_an_earlier_schema_is_build_required_before_it_is_read(tmp_path, monkeypatch):
+    from tests.unit.test_rust_workspace_worker import toolchain
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "ws"
+    write(root, {"Cargo.toml": "[workspace]\n", "Cargo.lock": ""})
+    target = rb.RustWorkspaceTarget.from_config(
+        {"analyse": ["util"], "run": {"bin": "app"}, **toolchain(tmp_path)}, "peeky build"
+    )
+    directory = rb.build_directory(target, root)
+    # Schema 4's record: a package's `lists` hold None for a link out of the root, its
+    # `trees` no directories, and there is no `walk_skip`. Read as today's, each would fail.
+    assert rb.SCHEMA > 4
+    record = {
+        "schema": 4,
+        "identity": target.identity(root),
+        "root": str(root),
+        "nonce": "0" * 16,
+        "tools": [],
+        "sources": {},
+        "inputs": {},
+        "watch": {"workspace": str(root), "vendored": {}, "files": {}},
+        "build_inputs": {
+            "files": {},
+            "dirs": {},
+            "trees": {str(root / "app"): {"build.rs": "x"}},
+            "lists": {str(root / "app"): {"files": {"escape.txt": None}, "cargo": True}},
+            "env": [],
+        },
+    }
+    (directory / "manifest.json").write_text(json.dumps(record))
+    with pytest.raises(rb.BuildRequired) as caught:
+        rb.current_build(target, root)
+    assert str(caught.value).startswith(
+        "No current Peeky build of this workspace: the one recorded is for another "
+        "configuration or Peeky."
+    )
+    assert classify(caught.value)["code"] == "BUILD_REQUIRED"
+    # A worker names only the manifest and lockfile, and refuses nothing: the probe is then
+    # BUILD_REQUIRED.
+    assert rb.recorded_comparison(target, root) is None
+    assert target.compared_names(root) == ("Cargo.toml", "Cargo.lock")
+    assert target.remote_refusal(root) is None and target.compared_trees(root) == {}
 
 
 def test_a_listed_file_the_walk_leaves_out_keeps_the_build_current_until_it_changes(
@@ -722,6 +820,9 @@ def test_a_changed_build_input_is_build_required_naming_it(tmp_path, monkeypatch
         "ran. Run `peeky build . --config rust.json` again, or add --build"
     )
     (root / "app/assets/new.txt").unlink()
+    # An empty directory left behind is a change too: a build script may look for it.
+    assert refused().startswith("No current Peeky build of this workspace: app/assets changed")
+    (root / "app/assets").rmdir()
     (root / "util/schema.txt").write_text("two\n")
     assert refused().startswith(
         "No current Peeky build of this workspace: util/schema.txt, which a build script reads, "

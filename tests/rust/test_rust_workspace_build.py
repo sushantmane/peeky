@@ -598,6 +598,28 @@ def test_a_package_cargo_watches_whole_is_compared_as_cargo_lists_it(worker, cap
 
 
 @pytest.mark.timeout(600)
+def test_a_name_cargo_lists_is_compared_as_cargo_writes_it(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    # Cargo lists ` leading.txt` as it is: Peeky compares that file, not `leading.txt`.
+    for side in (host, local):
+        (side / "util/build.rs").write_text("fn main() {}\n")
+        (side / "util/ leading.txt").write_text("l\n")
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    assert summary["notes"] == [], summary
+    names = Client(url, TOKEN).call("version")["sources"]["names"]
+    assert "util/ leading.txt" in names and "util/leading.txt" not in names, names
+    read(*remote_probe(capsys, local, url))
+    (local / "util/ leading.txt").write_text("the client's\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "util/ leading.txt (the copy on the worker host differs" in result["error"]["message"]
+
+
+@pytest.mark.timeout(600)
 def test_a_link_out_of_the_root_is_never_followed_for_a_remote_client(worker, capsys, tmp_path):
     host, local, url, _ = worker
     code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")

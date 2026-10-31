@@ -239,7 +239,8 @@ set x: 5 -> 100
   under such a directory, or, with none, every file of its package as Cargo lists it. A schema it
   reads shapes the code it generates, which the program runs.
 - **A package with no `rerun-if-changed`** is compared by the files `cargo package --list` gave
-  on the worker's host. That honours `include`, `exclude` and, with git, what git ignores. Your
+  on the worker's host, each name exactly as Cargo writes it. That honours `include`, `exclude`
+  and, with git, what git ignores. Your
   own ignored files and a `.DS_Store` aren't compared; a listed file you lack is named.
 - **What Cargo lists is looked at first.** A listed path that is a link to nothing, not a file, a
   link out of the root, or missing refuses a remote run, saying which. Only what Cargo writes into
@@ -253,8 +254,8 @@ set x: 5 -> 100
   but hidden ones and `target`.
 - **With a local procedural macro,** its package and the analysed ones are compared file by
   file too. Cargo doesn't track what a macro reads, so Peeky doesn't narrow it to Cargo's list.
-- **Every file, there, is every entry:** hidden directories and `target` ones too, and links by
-  their text, never followed into. Left out: `.git`, `.DS_Store`, `Thumbs.db`, `desktop.ini`,
+- **Every file, there, is every entry:** hidden directories and `target` ones too, an empty
+  directory by its name, and links by their text, never followed into. Left out: `.git`, `.DS_Store`, `Thumbs.db`, `desktop.ini`,
   another workspace package's directory and the vendored copies, each compared as its own. A link
   out of the root refuses the build. So do more entries than the 65,536 Peeky records for a
   build.

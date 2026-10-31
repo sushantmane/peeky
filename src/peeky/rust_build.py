@@ -53,7 +53,7 @@ _SETTLE_NS = 1_000_000_000
 _MAX_SNAPSHOT = 200_000
 # 2: the build's crates (`crates`), its local procedural macros (`macros`), and analysed
 # MIR with full paths. 3: each analysed unit's generated files (`generated`).
-SCHEMA = 4
+SCHEMA = 5
 
 # Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
 # target's own compile, which it knows by crate name and source file (a build script's
@@ -1014,7 +1014,8 @@ def _build(target, root, *, deadline=None, progress=None):
                         f" ({error.strip()})" if error else ""
                     )
                     return None, why
-                return split_lines(listed["stdout"]), None
+                # One name a line, each as it is, spaces too.
+                return listed["stdout"].split("\n"), None
 
             manifest["build_inputs"] = _build_inputs(
                 shape, root, messages, env, before, started_ns, vendor, jobs_, lister, directory
@@ -1309,8 +1310,10 @@ def _reachable(path, root):
 
 def _tree(top, skip=(), *, budget):
     """{path relative to ``top``: what is there} of every entry of the package directory
-    ``top``, by lstat, never through a link: a file's SHA-256; ["link", its text] for a link;
-    ["other"] for what is neither. Hidden directories and `target` ones too. Left out:
+    ``top``, by lstat, never through a link: a file's SHA-256; ["dir"] for a directory, an
+    empty one too; ["link", its text] for a link; ["other"] for what is neither. Hidden
+    directories and `target` ones too. Each entry spends ``budget`` as it is read, before
+    any is sorted or walked into. Left out:
     `.git` (the checkout's metadata), OS junk (``OS_JUNK``), and ``skip``: each other
     workspace package's directory (compared as its own), the vendored copies (compared by
     their checksums) and Peeky's own build directory. ``budget``: a list holding the entries
@@ -1320,23 +1323,29 @@ def _tree(top, skip=(), *, budget):
     pending = [top]
     while pending:
         directory = pending.pop()
+        entries = []
         try:
-            entries = sorted(os.scandir(directory), key=lambda each: each.name)
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    if entry.name == ".git" or entry.name in OS_JUNK or entry.path in skip:
+                        continue
+                    # Spent as read: a directory of more entries than the budget is refused
+                    # before they are all held.
+                    _spend(budget, top)
+                    entries.append(entry)
         except OSError as exc:
             raise ValueError(
                 f"Peeky builds only files it can reach: it can't read {directory} "
                 f"({exc.strerror or exc}), and a build script or procedural macro may read every "
                 "file of its package. Make it readable"
             ) from None
-        for entry in entries:
+        for entry in sorted(entries, key=lambda each: each.name):
             path = Path(entry.path)
-            if entry.name == ".git" or entry.name in OS_JUNK or str(path) in skip:
-                continue
+            relative = path.relative_to(top).as_posix()
             if entry.is_dir(follow_symlinks=False):
+                found[relative] = ["dir"]
                 pending.append(path)
                 continue
-            _spend(budget, top)
-            relative = path.relative_to(top).as_posix()
             if entry.is_symlink():
                 found[relative] = ["link", os.readlink(path)]
             elif entry.is_file(follow_symlinks=False):
@@ -1552,8 +1561,8 @@ _SYNTHESIZED = frozenset({"Cargo.toml.orig", ".cargo_vcs_info.json"})
 
 def _compared_file(directory, name, root, walked):
     """What a client's ``name`` (a package's, in ``directory``) is compared with: its file's
-    SHA-256 (``walked``'s where the walk took it), "dir" for a link to a directory, or
-    {"refused": a key of ``_UNLISTABLE``}. Looked at by lstat first; a link is followed only
+    SHA-256 (``walked``'s where the walk took it), "dir" for a directory (an empty one the
+    walk names) or a link to one, or {"refused": a key of ``_UNLISTABLE``}. Looked at by lstat first; a link is followed only
     hop by hop inside ``root`` (sources._inside), never out of it."""
     from peeky.sources import LinkLoop, OutsideRoot, _inside
 
@@ -1575,7 +1584,7 @@ def _compared_file(directory, name, root, walked):
         if not chain and isinstance(walked.get(name), str):
             return walked[name]
         return _hash(reached)
-    if stat.S_ISDIR(target.st_mode) and chain:
+    if stat.S_ISDIR(target.st_mode):
         return "dir"
     return {"refused": "other"}
 
@@ -1587,9 +1596,9 @@ def _package_files(directory, names, walked, root, workspace):
     `.cargo_vcs_info.json`, and `Cargo.lock` but in the ``workspace``'s own directory.
     ``walked``: the hashes the package's walk already took."""
     found = {}
-    for line in names:
-        name = line.strip()
-        if not name:
+    for name in names:
+        # Exactly as Cargo writes it: a name may begin or end with a space.
+        if name == "":
             continue
         if PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts:
             raise ValueError(f"`cargo package --list` named {name}, a path Peeky doesn't read")
@@ -1668,6 +1677,9 @@ def _build_inputs(
                     "client's instead, but .DS_Store, Thumbs.db and desktop.ini"
                 )
             for name, what in trees[key].items():
+                if what == ["dir"] and any(other.startswith(f"{name}/") for other in trees[key]):
+                    # A directory with entries is compared by them.
+                    continue
                 if isinstance(what, list) and what[0] == "link":
                     _reachable(directory / name, root)
                 entry["files"][name] = _compared_file(directory, name, root, trees[key])
@@ -2227,7 +2239,11 @@ def _check_build_inputs(target, root, directory, manifest):
         except (OSError, ValueError):
             now = {}
         if now != recorded:
-            name = sorted(key for key in {*now, *recorded} if now.get(key) != recorded.get(key))[0]
+            # A file it holds, rather than a directory new or gone with it.
+            name = min(
+                (key for key in {*now, *recorded} if now.get(key) != recorded.get(key)),
+                key=lambda key: (["dir"] in (now.get(key), recorded.get(key)), key),
+            )
             raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
     # What a client's are compared with, looked at again as the build did: one under a
     # linked directory, or a link's target, isn't in the walk.

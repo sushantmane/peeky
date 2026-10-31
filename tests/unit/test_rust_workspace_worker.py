@@ -872,3 +872,21 @@ def test_a_builds_notes_are_said_beside_a_probes_own_output(tmp_path, monkeypatc
     args = SimpleNamespace(build=True, worker="http://127.0.0.1:1" if remote else None, quiet=True)
     assert cli._build_first(args, tmp_path, target) == built
     assert capsys.readouterr().err == f"peeky: note: {note}\n"
+
+
+def test_an_empty_directory_a_package_walk_names_is_compared(tmp_path):
+    # A build script may look for `feature-enabled/` (`Path::exists`): where a package's
+    # walk names it, the client's must be there, a directory too.
+    host, client = checkouts(tmp_path, WATCHED)
+    for side in (host, client):
+        (side / "util/feature-enabled").mkdir()
+    names = ("util/build.rs", "util/feature-enabled")
+    assert compared(host, client, names) is None
+    (client / "util/feature-enabled").rmdir()
+    with pytest.raises(RuntimeError, match=r"util/feature-enabled \(missing in your checkout\)"):
+        compared(host, client, names)
+    (client / "util/feature-enabled").write_text("a file, not a directory\n")
+    assert compared(host, client, names) == (
+        "util/feature-enabled (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    )
