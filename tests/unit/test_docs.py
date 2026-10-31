@@ -45,7 +45,7 @@ def test_the_guide_opens_with_when_to_use_peeky_and_the_first_command():
     first = " ".join(guide.split("## Your first command")[1].split("\n## ")[0].split())
     for text in (
         "--run peeky_pytest.py -- -q tests/test_x.py::test_y",
-        "a file in `site-packages` never stops",
+        "installed without `-e` runs its `site-packages` copy",
         "--python python",
         "-Dmaven.surefire.debug",
         "--debug-jvm",

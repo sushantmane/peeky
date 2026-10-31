@@ -236,6 +236,13 @@ _RULES = (
         False,
     ),
     (
+        r"debugpy counts that file as library code",
+        "INVALID_BREAKPOINT",
+        "Probe the code that calls it, or a copy in your project: Peeky stops in library code "
+        "only when --at names a file under site-packages.",
+        False,
+    ),
+    (
         r"has no code to stop at",
         "INVALID_BREAKPOINT",
         "Choose a line from `peeky describe` breakpoint_lines.",

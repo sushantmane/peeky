@@ -27,6 +27,10 @@
 
 ### Other changes
 
+- **Python: a breakpoint in an installed package stops there.** debugpy skipped library code, so
+  a probe at a file in the root's `.venv` said its breakpoint was pending, then ended `no-stop`.
+  Now debugpy stops there too, with the same rules: notes, readings, hashes, remote checks. A
+  file debugpy still skips is refused before the program runs, with why (#446).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

@@ -151,6 +151,39 @@ _IMPURE_NAMES = frozenset(
 )
 # The opening of the note on a candidate's copy, which `probe` shows once.
 COPY_NOTE = "This Python candidate ran from a copy of "
+# Where installed packages live: debugpy counts code there as library code, not the
+# program's own, and skips it unless told not to (`justMyCode`).
+INSTALLED_DIRS = frozenset({"site-packages", "dist-packages"})
+# debugpy's reply to a breakpoint in a file it skips as library code.
+_SKIPPED_FILE = "excluded by filters"
+
+
+def installed(path):
+    """Whether ``path`` is installed code: a file under a `site-packages` or
+    `dist-packages` directory, where debugpy finds library code."""
+    return bool(INSTALLED_DIRS & set(Path(path).parts[:-1]))
+
+
+def skipped_lines(reply):
+    """The lines of debugpy's `setBreakpoints` ``reply`` it will never stop at because it
+    skips their file as library code (its `justMyCode`)."""
+    return [
+        point.get("line")
+        for point in (reply or {}).get("breakpoints") or []
+        if isinstance(point, dict)
+        and point.get("verified") is not True
+        and _SKIPPED_FILE in str(point.get("message") or "")
+    ]
+
+
+def skipped_message(name):
+    """The refusal of breakpoints in ``name``, a file debugpy skips as library code."""
+    return (
+        f"A breakpoint in {name} would never stop: debugpy counts that file as library code, "
+        "and skips it. Peeky has debugpy stop in library code only where the session's --at "
+        "file is under site-packages or dist-packages. Probe the code that calls it, or a copy "
+        "of it in your project"
+    )
 
 
 def _shadowed(names, places):
@@ -299,6 +332,15 @@ class PythonCandidate:
         for parent in self.original.parents:
             if parent == root:
                 break
+            if parent.name in _LINKED_DIRS:
+                # Its copy is a link to the original, so the edit would reach the user's.
+                raise ValueError(
+                    f"A Python candidate cannot edit {relative.as_posix()}: it is in "
+                    f"{parent.relative_to(root).as_posix()}, an environment the copy links to "
+                    "yours rather than copies, so the edit would change your installed file. "
+                    "To try an edit of a package, install it editable from a checkout in the "
+                    "root (`pip install -e`), and edit the checkout's file"
+                )
             if _is_git_directory(parent):
                 # Copied whole as a private repository, never walked as files.
                 raise ValueError(
@@ -980,7 +1022,7 @@ class PythonCandidate:
     def source_path(self, original):
         return self.staged if Path(original).resolve() == self.original else original
 
-    def launch_args(self, program, root, args=()):
+    def launch_args(self, program, root, args=(), **options):
         if Path(program).resolve() != self.original:
             # `--run` would be the user's entry script, outside the copy.
             raise ValueError(
@@ -988,7 +1030,7 @@ class PythonCandidate:
                 "script would import the original module. Probe the edited file directly, "
                 "or check the edit with `peeky verify`"
             )
-        launch = self.adapter.launch_args(self.staged, self.root, args)
+        launch = self.adapter.launch_args(self.staged, self.root, args, **options)
         if self._pythonpath is not None:
             launch["env"] = {**launch.get("env", {}), "PYTHONPATH": self._pythonpath}
         return launch
@@ -1421,14 +1463,16 @@ class PythonAdapter:
             "columnsStartAt1": True,
         }
 
-    def launch_args(self, program, root, args=()):
+    def launch_args(self, program, root, args=(), *, library=False):
+        """debugpy's launch of ``program``. ``library``: the breakpoints are in installed
+        code (``installed``), which debugpy then stops in too, and lists in the stack."""
         return {
             "program": str(program),
             "args": list(args),
             "cwd": str(root),
             "console": "internalConsole",
             "redirectOutput": True,
-            "justMyCode": True,
+            "justMyCode": not library,
             "subProcess": False,
             # A debugged run writes no __pycache__ into the root (PROGRAM_ENV).
             "env": {"PYTHONDONTWRITEBYTECODE": "1"},

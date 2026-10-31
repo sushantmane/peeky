@@ -27,7 +27,7 @@ The last column is the `retryable` field.
 | `NOT_FOUND` | A name or selector isn't visible ([details](#not_found)). | Use a name from the message's `visible:` or `children:` list. | no |
 | `MUTATION_REJECTED` | Peeky can't make that change there. Nothing was written. | Follow the hint: it names the one way around the rule ([the rules](#when-a-change-is-refused-mutation_rejected)). | no |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached, or a probe's limit of signal stops in a row ([details](#budget_exhausted)). | Narrow the request. | no |
-| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
+| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. In Python, debugpy may skip the file as library code ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)). | Use a line that `peeky describe` lists, or probe the code that calls the library. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
@@ -188,6 +188,12 @@ file lists what it reads.
   ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
 - A Java target without an adapter bundle: `No Java adapter bundle at …`. Run the
   `peeky setup-java` command that the message gives.
+- `--at` or `--run` outside the target: `--at and --run must name a file inside the target, …`.
+  For installed code outside it, the message says to install your project editable
+  ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)).
+- A Python candidate edit of an installed file, such as one in the root's `.venv`: `A Python
+  candidate cannot edit …`. Its copy links the environment to yours. Edit a checkout of the
+  package, installed editable, instead.
 - `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
   reads no value there, and the session goes on. `session step` reaches your code's next line.
 

@@ -21,7 +21,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 
 from peeky import add_version
-from peeky.adapters import PythonAdapter, ViewBudgetExhausted
+from peeky.adapters import (
+    PythonAdapter,
+    ViewBudgetExhausted,
+    installed,
+    skipped_lines,
+    skipped_message,
+)
 from peeky.client import MAX_TOKEN_CHARS, MIN_TOKEN_CHARS, hello_proof
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import ERROR_CODES, PROTOCOL_VERSION, UnplacedStop, bound, classify, redact
@@ -340,6 +346,9 @@ class DebugWorker:
         # The sources a remote client compared at launch: their names mark its
         # results' locations.
         self.remote_names = None
+        # Of them, the --at and --run files in a virtual environment, compared by their
+        # own hashes: {name: sha256}.
+        self.installed_sources = {}
         # A stack frame in a file under the root that was not compared: it taints
         # the session until it is closed.
         self.foreign_frame = None
@@ -2014,10 +2023,13 @@ class DebugWorker:
             return
         if self.foreign_frame is not None:
             raise RuntimeError(self.foreign_message(self.foreign_frame))
-        from peeky.sources import Unhashable, drift, python_sources
+        from peeky.sources import Unhashable, drift, files, python_sources
 
         try:
             current = dict(python_sources(self.root))
+            # The installed --at and --run files compared at launch (in a virtual
+            # environment, so not among python_sources).
+            current.update(files(self.root, self.installed_sources))
         except Unhashable as exc:
             raise RuntimeError(
                 f"Worker source provenance can no longer be checked ({exc}): the session was "
@@ -2353,6 +2365,7 @@ class DebugWorker:
             # target names, or every .py file under the root for Python.
             inputs_checked = inputs_python = None
             self.accepted_sources = self.foreign_frame = self.remote_names = None
+            self.installed_sources = {}
             if (expected_inputs := args.get("expect_inputs")) is not None:
                 from peeky.sources import (
                     declared,
@@ -2366,20 +2379,39 @@ class DebugWorker:
                 own = worker_sources(self.adapter, self.root)
                 if what := difference(expected_inputs, own):
                     raise ValueError(refusal(what))
+                hashed = {}
                 if declared(self.adapter) is None:
-                    # Python: what runs first must be among the files compared.
-                    for role, path in (("program", program), ("entry script", entry)):
+                    from peeky.sources import in_environment
+
+                    # Python: what runs first must be among the files compared. One in a
+                    # virtual environment (installed code, not among them) is compared by
+                    # its own hash, checked above, and then checked as they are.
+                    for role, key, path in (
+                        ("program", "program", program),
+                        ("entry script", "entry", entry),
+                    ):
                         name = None if path is None else path.relative_to(self.root).as_posix()
-                        if name is not None and name not in own:
-                            raise ValueError(
-                                refusal(
-                                    f"the {role} {name} (not among the compared sources: it "
-                                    "is in a virtual environment)"
+                        if name is None or name in own:
+                            continue
+                        sent = (args.get("expect_sha256") or {}).get(key)
+                        if sent and in_environment(self.root, name):
+                            hashed[name] = sent
+                            continue
+                        raise ValueError(
+                            refusal(
+                                f"the {role} {name} (not among the compared sources: "
+                                + (
+                                    "it is in a virtual environment, and your client sent "
+                                    "no hash of it)"
+                                    if in_environment(self.root, name)
+                                    else "only .py files are compared)"
                                 )
                             )
+                        )
                     inputs_python = python_manifest_digest(own)
                 inputs_checked = digest(expected_inputs)
-                self.remote_names = frozenset(expected_inputs)
+                self.remote_names = frozenset(expected_inputs) | frozenset(hashed)
+                self.installed_sources = hashed
             edit, candidate_sha256 = self.candidate_edit(program, args.get("edit"))
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
@@ -2441,7 +2473,7 @@ class DebugWorker:
                     if what := difference(expected_inputs, built):
                         raise RuntimeError(refusal(what))
                 if inputs_python is not None:
-                    self.accepted_sources = own
+                    self.accepted_sources = {**own, **self.installed_sources}
                 staged = Path(runtime.source_path(program)) if edit else None
                 if edit and hashlib.sha256(staged.read_bytes()).hexdigest() != candidate_sha256:
                     raise RuntimeError(
@@ -2478,10 +2510,16 @@ class DebugWorker:
                     "initialize", runtime.initialize_args(), timeout=left()
                 )
                 self.capabilities = runtime.normalize_capabilities(capabilities)
+                # debugpy skips installed code: a breakpoint there needs it not to.
+                library = (
+                    {"library": True}
+                    if isinstance(self.adapter, PythonAdapter) and installed(program)
+                    else {}
+                )
                 launch_args = (
-                    runtime.launch_args(entry or program, self.root, args["args"])
+                    runtime.launch_args(entry or program, self.root, args["args"], **library)
                     if args.get("args")
-                    else runtime.launch_args(entry or program, self.root)
+                    else runtime.launch_args(entry or program, self.root, **library)
                 )
                 if self.accepted_sources is not None:
                     # A remote Python run reads no bytecode from the root (a stale .pyc is
@@ -2521,6 +2559,12 @@ class DebugWorker:
                     },
                     timeout=left(),
                 )
+                if isinstance(self.adapter, PythonAdapter) and skipped_lines(points):
+                    # Before configurationDone: the program's own code has not run.
+                    raise ValueError(
+                        skipped_message(program.relative_to(self.root).as_posix())
+                        + ". Refused before the program's code ran"
+                    )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
                 # Within the launch's deadline, as its other steps: a stall past a
@@ -3344,6 +3388,19 @@ class DebugWorker:
                     "breakpoints": args["breakpoints"],
                 },
             )
+            if isinstance(self.adapter, PythonAdapter) and skipped_lines(placed):
+                # Never in the launch's own file (refused at launch): none of these can stop.
+                self.dap.request(
+                    "setBreakpoints",
+                    {
+                        "source": {"path": str(runtime.source_path(self.path(args["program"])))},
+                        "breakpoints": [],
+                    },
+                )
+                self.breakpoint_counts[str(self.path(args["program"]))] = 0
+                raise ValueError(
+                    skipped_message(self.path(args["program"]).relative_to(self.root).as_posix())
+                )
             self.note_placed(
                 runtime.source_path(self.path(args["program"])), args["breakpoints"], placed
             )
@@ -6907,6 +6964,27 @@ def _public_placed(runtime, placed):
     return placed
 
 
+def _probe_names(args):
+    """The sources a remote probe's client compared: its `expect_inputs`, and the --at and
+    --run files it sent hashes of (one in a virtual environment is not among the
+    inputs). The worker refuses a probe whose hashes differ before it runs."""
+    names = args.get("expect_inputs")
+    if not isinstance(names, dict) or not names:
+        return names
+    from peeky.probe import parse_location
+
+    hashed = args.get("expect_sha256") if isinstance(args.get("expect_sha256"), dict) else {}
+    extra = set()
+    try:
+        if hashed.get("program"):
+            extra.add(PurePosixPath(parse_location(args.get("at"))[0]).as_posix())
+        if hashed.get("entry") and isinstance(args.get("entry"), str):
+            extra.add(PurePosixPath(args["entry"]).as_posix())
+    except (TypeError, ValueError):
+        pass
+    return frozenset(names) | extra
+
+
 def _source_names(value, root, names, parent=None):
     """A remote client's view of a result: each `location`, and each `source`'s
     `path`, that is one of the sources it compared becomes `source:NAME` (with its
@@ -7406,9 +7484,7 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
                     result = (
                         probe(args) if operation == "probe" else worker.dispatch(operation, args)
                     )
-                    names = (
-                        args.get("expect_inputs") if operation == "probe" else worker.remote_names
-                    )
+                    names = _probe_names(args) if operation == "probe" else worker.remote_names
                     if isinstance(names, (dict, frozenset)) and names:
                         result = _source_names(result, worker.root, frozenset(names))
                 self.reply(200, result)

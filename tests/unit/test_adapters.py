@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from peeky.adapters import PythonAdapter
+from peeky.adapters import PythonAdapter, installed, skipped_lines
 from peeky.dap import DAP
 
 
@@ -22,6 +22,30 @@ def test_python_launch_configuration_preserves_existing_behavior(tmp_path):
         # A debugged run writes no __pycache__ into the root.
         "env": {"PYTHONDONTWRITEBYTECODE": "1"},
     }
+
+
+def test_installed_code_is_launched_for_debugpy_to_stop_in(tmp_path):
+    # debugpy skips installed code (`justMyCode`): a breakpoint there never stopped.
+    library = tmp_path / ".venv" / "lib" / "python3.13" / "site-packages" / "pkg" / "mod.py"
+    assert installed(library)
+    assert installed("/usr/lib/python3/dist-packages/pkg/mod.py")
+    assert not installed(tmp_path / "src" / "pkg" / "mod.py")
+    assert not installed(tmp_path / "site-packages.py")
+    adapter = PythonAdapter()
+    assert adapter.launch_args(library, tmp_path, library=True)["justMyCode"] is False
+    assert adapter.launch_args(library, tmp_path)["justMyCode"] is True
+
+
+def test_debugpys_word_that_it_skips_a_file_is_recognized():
+    skipped = {
+        "verified": False,
+        "line": 4,
+        "message": "Breakpoint in file excluded by filters.\nNote: may be excluded because of "
+        '"justMyCode" option (default == true).',
+    }
+    assert skipped_lines({"breakpoints": [{"verified": True, "line": 2}, skipped]}) == [4]
+    assert skipped_lines({"breakpoints": [{"verified": False, "line": 3}]}) == []
+    assert skipped_lines(None) == []
 
 
 def test_scope_selection_is_python_specific():

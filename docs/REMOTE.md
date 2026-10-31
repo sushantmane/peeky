@@ -222,7 +222,8 @@ and sends the hashes with the request.
   may import any of them. A stray file on one side is refused too:
   `scratch.py (only in your checkout)`. Remove it, or copy it over.
 - **The Python program and its `--run` script** must be among the files compared. One in a
-  virtual environment is refused.
+  virtual environment, such as an installed package's file, is compared by its own hash. The
+  worker hashes it again while the program runs, as it does the others.
 - **Python refuses what it can't hash in full:** more than 4096 `.py` files or 16 MiB in all, a
   file that isn't a readable regular file, or a symlinked directory under the root. The side that
   can't hash refuses. Probe another directory, or start the worker with another `--root`.
@@ -260,7 +261,7 @@ peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session:
 **Not compared:**
 
 - installed packages, outside the root or in any directory holding a `pyvenv.cfg`, and the
-  standard library;
+  standard library. The `--at` file and the `--run` script are compared, even there;
 - compiled modules (`.so`), `.pyc` files, and data files the program reads;
 - the interpreter and the toolchain;
 - an attached JVM's class files. The worker checks them against its own sources instead

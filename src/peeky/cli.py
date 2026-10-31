@@ -120,7 +120,19 @@ def _confined(root, program):
     try:
         return path.relative_to(root.resolve()).as_posix()
     except ValueError:
-        raise ValueError("--at and --run must name a file inside the target") from None
+        from peeky.adapters import installed
+
+        if installed(path):
+            raise ValueError(
+                f"--at and --run must name a file inside the target, {root}, and {path} is "
+                "installed code outside it. Name your project's own file, and install the "
+                "project editable (`pip install -e .`), or install the package in the root's "
+                ".venv and name its file there"
+            ) from None
+        raise ValueError(
+            f"--at and --run must name a file inside the target, {root}, and {path} is not "
+            "inside it. Give a target directory that holds it"
+        ) from None
 
 
 def _which(*names):
