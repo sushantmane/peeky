@@ -70,14 +70,14 @@ Phase 1 debugs a binary the project built with clang at `-O0`, verified from its
 ```
 
 - `binary` is relative to the target directory, the root for source paths.
-- `compiler` runs only `-E` and `-M`. Its `--version` must match the unit's `DW_AT_producer`.
+- `compiler` runs only `--version`, and the replay of a unit's `-E` and `-M`. Its `--version` must match the unit's `DW_AT_producer`. The replay passes only allowlisted flags (below), with `--no-default-config`. Its environment drops `CCC_*`, `CL`, `_CL_`, `CPATH`, `C_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `OBJC_INCLUDE_PATH` and `SDKROOT`, unless the unit's recorded words hold them. It is never run on a unit's recorded words as they are, not even with `-###`: those can make it run another program or read other files.
 - `compile_commands` is optional. Its entries must agree with the recorded commands.
 - Without a config: `peeky probe . --binary ./jq --at src/execute.c:<line> --capture <name> -- '.a.[]' input.json`.
 - `peeky describe . --binary ./jq` lists each unit as judged, or not and why: `modules/oniguruma/src/regcomp.c: built with -O2 (its recorded flags)`.
 
 **Checks.** The binary must be an ELF or Mach-O executable with a build ID or UUID. On macOS, Peeky runs dsymutil into its own directory. A unit whose main file is under the root is judged when its producer is clang, its recorded flags give `-O0` and no `-flto`, and its DWARF 5 line table names the unit as file 0 and has an MD5 for every file. Each of those files must match its MD5 now. A unit whose table has no MD5s is refused with what the table shows: "its line table records no MD5s", and where it names `<stdin>`, "… and names `<stdin>`, which clang adds for an inheriting constructor". The likely remedies follow, as likely, not proven: `bison -l` and `flex -L` for a generator's `#line`, and `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER` for libc++'s headers. The table can't tell these causes apart; the phase 3 wrapper can. A function is judged by the unit whose code the binary keeps.
 
-The `-O` level and LTO are read from the driver's own `-###` answer for the recorded words, run with the config's `compiler` in the unit's compilation directory. Where it gives none, the words are read as the driver would, and refused where an `-O` or LTO word may be another option's value. That reading alone doesn't judge a unit: options that change what code computes (`-ffast-math`, `-ffinite-math-only`, `-fno-honor-nans`, `-fno-honor-infinities`, `-funsafe-math-optimizations`, `-fassociative-math`, `-freciprocal-math`, `-ffp-contract=fast`) are refused too, unless Peeky's proofs are shown to hold under them. Whether `-fwrapv` and `-fno-strict-overflow` may stay is decided with binary targets.
+The `-O` level and LTO are read from the recorded words alone (`native_units.optimization`). Where an `-O` or LTO word may be another option's value, after an option not known to take none, the unit isn't judged: clang builds `-O2 -resource-dir -O0` at -O2. So is one passing options with `-mllvm`, an unknown `-Xclang` or `-Xarch_…`, or naming a response or configuration file. That reading alone doesn't judge a unit: options that change what code computes (`-ffast-math`, `-ffinite-math-only`, `-fno-honor-nans`, `-fno-honor-infinities`, `-funsafe-math-optimizations`, `-fassociative-math`, `-freciprocal-math`, `-ffp-contract=fast`) are refused too, unless Peeky's proofs are shown to hold under them. Whether `-fwrapv` and `-fno-strict-overflow` may stay is decided with binary targets.
 
 **Read and withheld.**
 
@@ -179,7 +179,7 @@ Checked in October 2026. Each claim says how. **Tested**: `tests/native/test_nat
 - Linux clang appends the words to `DW_AT_producer`, after the line `--version` prints. Apple's writes them to `DW_AT_APPLE_flags` (tested), and adds its own `-Xclang -clang-vendor-feature=…` options. Each of Apple clang 21's is known by name (tested).
 - Response files, `--config` files and `CCC_OVERRIDE_OPTIONS` are recorded as the arguments they add. `CPATH` and `C_INCLUDE_PATH` are not recorded (tested).
 - `-Wp,-D…`, `-Xpreprocessor` and `-Xclang -D…` are recorded as written, so the allowlist refuses them (tested).
-- The driver records an alias as what it means: `--optimize=2` as `-O2`, `-O` as `-O1` (by hand, Apple clang 21). `native_units.optimization` takes the last `-O` and LTO option from the driver's own `-###` answer, which needs the unit's inputs where it was compiled (tested). Without it, an `-O` or LTO word after an option not known to take no value is refused: clang reads `-O2 -fmodules-user-build-path -O0` as `-O2` (tested). Both refuse any `-mllvm` option, and any `-Xclang` one but warnings, `-O`, LTO and the exact options Apple clang 21 adds.
+- The driver records an alias as what it means: `--optimize=2` as `-O2`, `-O` as `-O1` (by hand, Apple clang 21). `native_units.optimization` takes the last `-O` and LTO option from the words alone. An `-O` or LTO word after an option not in a fixed set, each checked against the driver, is refused: clang reads `-O2 -fmodules-user-build-path -O0` and `-O2 -resource-dir -O0` as `-O2` (tested). It refuses any `-mllvm` option, and any `-Xclang` one but warnings, `-O`, LTO and the exact options Apple clang 21 adds.
 - GCC 13 records only code generation options: no `-D`, `-I` or `-include` (tested).
 
 **Checksums.**
@@ -204,7 +204,7 @@ Checked in October 2026. Each claim says how. **Tested**: `tests/native/test_nat
 | fmt-3272 `xchar-test` | 3 of 6 | 3, `xchar-test.cc` among them: no MD5s, `<stdin>` named | 11.3 MB | 45.3 MB | 146,000 | 143 MB |
 | json-4237 `test-udt_cpp11` | 0 of 2 | both: no MD5s, `<stdin>` named | 5.5 MB | 36.8 MB | 93,000 | 93 MB |
 
-The driver's own `-###` read every recorded command's optimization. All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000 entries, 300 MiB kept. valkey keeps the most, 68% of `MAX_KEPT`. `-fdebug-macro` adds 2 MB to its line tables.
+All fit the bounds: 64 MiB of line tables, 256 MiB of debug information, 400,000 entries, 300 MiB kept. valkey keeps the most, 68% of `MAX_KEPT`. `-fdebug-macro` adds 2 MB to its line tables.
 
 **The owner's decisions on these findings.**
 

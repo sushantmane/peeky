@@ -7,6 +7,7 @@ only macros is named only with `-fdebug-macro`. A `#line` naming a file, or a
 the preprocessor's arguments nor any MD5."""
 
 import os
+import shlex
 import subprocess
 import sys
 
@@ -18,7 +19,6 @@ from peeky.native_units import (
     LineFiles,
     NotRecorded,
     compiler_of,
-    driver_jobs,
     md5_of,
     optimization,
     read_units,
@@ -149,9 +149,8 @@ def test_clang_records_each_preprocessor_argument_and_each_file_s_md5(tmp_path):
     assert words[words.index("-c") + 1] == "main.c"
     assert table.checksummed() and table.differs(unit) is None
     # Apple's driver adds options of its own (`-Xclang -clang-vendor-feature=…`): each is
-    # known, and the driver's own answer agrees with the words read as it reads them.
-    cc1 = driver_jobs(compiler, words, unit.comp_dir, _environment())
-    assert optimization(words, cc1) == optimization(words) == ("0", False)
+    # known by name.
+    assert optimization(words) == ("0", False)
     named = _named(unit, table)
     root = tmp_path.resolve()
     assert named[str(root / "main.c")] == md5_of(root / "main.c")
@@ -173,37 +172,46 @@ def test_without_the_flag_clang_records_no_command_line(tmp_path):
         recorded_command(unit, _version(compiler))
 
 
-def _environment():
-    # The recorded words hold what CCC_OVERRIDE_OPTIONS added: it is not added again.
-    return {key: value for key, value in os.environ.items() if not key.startswith("CCC_")}
+def _compiled_at(compiler, words, directory):
+    """The arguments clang's driver gives its compiler (`-cc1`) for ``words``, with its
+    own `-###`: for this test's own words only. Peeky never runs it on recorded ones."""
+    said = subprocess.run(
+        [compiler, "-###", "--no-default-config", *words[1:]],
+        cwd=directory,
+        env={key: value for key, value in os.environ.items() if not key.startswith("CCC_")},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    (job,) = [line for line in said.stderr.splitlines() if '"-cc1"' in line]
+    return shlex.split(job)
 
 
-def test_the_driver_s_own_answer_reads_an_option_s_value_as_one(tmp_path):
+def test_a_recorded_option_s_value_is_never_read_as_an_option(tmp_path):
     # clang takes the `-O0` after `-fmodules-user-build-path` as its value, and builds at
-    # -O2. Its own `-###` says so; the words alone can't, so they are refused.
+    # -O2. The recorded words can't say which: they are refused.
     dwarfdump, compiler = _tools(), _clang()
     _program(tmp_path)
     flags = ["-grecord-command-line", *ARGUMENTS, "-O2", "-fmodules-user-build-path", "-O0"]
     unit, _ = _read(dwarfdump, _build(compiler, tmp_path, flags))
     words = recorded_command(unit, _version(compiler))
     assert ("-fmodules-user-build-path", "-O0") in _pairs(words)
-    assert optimization(words, driver_jobs(compiler, words, unit.comp_dir, _environment())) == (
-        "2",
-        False,
-    )
+    assert "-O2" in _compiled_at(compiler, words, unit.comp_dir)
     with pytest.raises(NotRecorded, match="-fmodules-user-build-path -O0"):
         optimization(words)
-    # So with LTO: `-fno-lto` is the option's value, and thin LTO stays.
-    words = [words[0], "-O0", "-flto=thin", "-fmodules-user-build-path", "-fno-lto"]
-    words += ["-c", "main.c", "-o", "lto.o"]
-    assert optimization(words, driver_jobs(compiler, words, str(tmp_path), _environment())) == (
-        "0",
-        True,
-    )
-    with pytest.raises(NotRecorded, match="-fmodules-user-build-path -fno-lto"):
-        optimization(words)
-    # Without the inputs where it ran, the driver gives no answer.
-    assert driver_jobs(compiler, words, str(tmp_path / "inc"), _environment()) is None
+    # So for the resource directory, and for LTO: thin LTO stays.
+    for asked, compiled, why in (
+        (["-O2", "-nostdinc", "-resource-dir", "-O0"], "-O2", "-resource-dir -O0"),
+        (
+            ["-O0", "-flto=thin", "-fmodules-user-build-path", "-fno-lto"],
+            "-flto=thin",
+            "-fmodules-user-build-path -fno-lto",
+        ),
+    ):
+        words = [compiler, *asked, "-c", "main.c", "-o", "other.o"]
+        assert compiled in _compiled_at(compiler, words, tmp_path)
+        with pytest.raises(NotRecorded, match=why):
+            optimization(words)
 
 
 def test_the_options_known_to_take_no_value_take_none(tmp_path):
@@ -215,10 +223,8 @@ def test_the_options_known_to_take_no_value_take_none(tmp_path):
     forms = ["-Wall", "-Wno-unused-parameter", "-Wl,-O1", "-std=gnu11", "-fvisibility=hidden"]
     for word in [*sorted(_COMPLETE_WORDS), *forms, "-O0"]:
         words = [compiler, word, "-O3", "-c", "main.c", "-o", "main.o"]
-        cc1 = driver_jobs(compiler, words, str(tmp_path), _environment())
-        assert cc1 is not None and "-O3" in cc1, word
-        found = ("3", word == "-flto")
-        assert optimization(words, cc1) == optimization(words) == found, word
+        assert "-O3" in _compiled_at(compiler, words, tmp_path), word
+        assert optimization(words) == ("3", word == "-flto"), word
 
 
 def _pairs(words):

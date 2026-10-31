@@ -17,11 +17,8 @@ This module only reads: it judges nothing, and runs no tool.
 """
 
 import hashlib
-import os
 import posixpath
 import re
-import shlex
-import subprocess
 from dataclasses import dataclass
 
 from peeky.textlines import octal_string, split_lines
@@ -176,11 +173,11 @@ _SEPARATE = frozenset(
     -Xpreprocessor -Xanalyzer -Xopenmp-target -Xcuda-fatbinary -Xcuda-ptxas -arch -target
     -F -L -l -u -z -A -B -T -dependency-file -dependency-dot -serialize-diagnostics
     -install_name -framework -weak_framework -filelist -working-directory --sysroot
-    -index-store-path -fmodules-user-build-path""".split()
+    -index-store-path -fmodules-user-build-path -resource-dir""".split()
 )
 # Options known to take no separate value: the word after one is its own. Each is
-# checked against clang's driver itself (tests/native/test_native_units.py). Without the
-# driver's own answer, an -O or LTO word after any other option can't be read.
+# checked against clang's driver itself (tests/native/test_native_units.py). An -O or
+# LTO word after any other option can't be read.
 _COMPLETE_WORDS = frozenset(
     """-g -g0 -g1 -g2 -g3 -ggdb -gdwarf-4 -gdwarf-5 -grecord-command-line
     -gno-record-gcc-switches -gline-tables-only -gcolumn-info -fdebug-macro
@@ -190,10 +187,11 @@ _COMPLETE_WORDS = frozenset(
     -fno-stack-protector -ffunction-sections -fdata-sections -fcolor-diagnostics
     -fno-builtin -fsigned-char -funsigned-char -fno-delete-null-pointer-checks
     -fasynchronous-unwind-tables -pthread -pedantic -ansi -c -S -E -w -v -pipe -MD -MMD
-    -MP -flto -fno-lto""".split()
+    -MP -flto -fno-lto -nostdinc""".split()
 )
-# And by form: an -O option, a warning (`-Wall`, `-Wl,-O1`), or an -f, -m or -std
-# option joining its value with `=`.
+# And by form, each a kind of option that joins its value (Options.td's Joined and
+# CommaJoined): an -O option, a warning (`-Wall`, `-Wl,-O1`), or an -f, -m or -std option
+# joining its value with `=`. The driver checks a word of each form too.
 _COMPLETE = re.compile(r"-O\w*|-W[\w,=+.-]*|-std=\S+|-[fm][\w-]+=\S*")
 # What the driver's -O options mean (`-O` is -O1, `-O4` is -O3: clang's own aliases).
 _LEVELS = {"": "1", "0": "0", "1": "1", "2": "2", "3": "3", "4": "3", "s": "s", "z": "z"}
@@ -208,9 +206,6 @@ _APPLE = frozenset(
     -clang-vendor-feature=+thisNoNullAttr
     -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError""".split()
 )
-# clang's compiler's options (`-cc1`) whose value is the next word, a word of the
-# recorded command: a word after one is its value, whatever it looks like.
-_CC1_VALUED = _SEPARATE | {"-main-file-name", "-internal-isystem", "-internal-externc-isystem"}
 
 
 def _optimizing(word):
@@ -240,73 +235,27 @@ def _forwarded(words):
                 raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
 
 
-def driver_jobs(compiler, words, cwd, env, timeout=10):
-    """The arguments ``compiler``'s driver gives its compiler (`-cc1`) for the recorded
-    ``words``: its own `-###` answer, run in ``cwd`` (the unit's compilation directory,
-    where its inputs are). None where it gives none: no such directory, an input not
-    there, or not exactly one compile. `-###` runs nothing; ``env`` should hold no
-    CCC_OVERRIDE_OPTIONS, which the recorded words already hold the effect of."""
-    if not cwd or not posixpath.isabs(cwd) or not os.path.isdir(cwd):
-        return None
-    try:
-        said = subprocess.run(
-            [compiler, "-###", *words[1:]],
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if said.returncode:
-        return None
-    jobs = []
-    for line in said.stderr.splitlines():
-        if line.startswith(' "') and '"-cc1"' in line:
-            try:
-                jobs.append(shlex.split(line))
-            except ValueError:
-                return None
-    return jobs[0] if len(jobs) == 1 and jobs[0][1:2] == ["-cc1"] else None
-
-
-def optimization(words, cc1=None):
+def optimization(words):
     """(level, lto) of the arguments ``recorded_command`` read: the last `-O` option's
     level (`"0"` without one: clang's default), and whether the last of `-flto`,
     `-flto=…` and `-fno-lto` asks for LTO. An `-O` or LTO option passed to clang's
     compiler (`-Xclang -O2`) counts too. Only these: whether an option such as
     `-ffast-math` changes what the code computes is judged apart.
 
-    ``cc1``: the driver's own answer (``driver_jobs``), read where given. Without it,
-    the words are read as the driver would, where they can be. Either way, raises
-    NotRecorded naming an option that may change the level but can't be read: one
-    passed with `-mllvm` or `-Xarch_…`, or with `-Xclang` but not known; an unknown
-    `-O` level; or a word like an `-O` or LTO option where it may be another option's
-    value (`-o -O0`, `-fmodules-user-build-path -O0`, or after an option not known to
-    take none)."""
+    Read from the words alone, never by running the compiler on them. Raises
+    NotRecorded naming what can't be read, rather than guess: an option passed with
+    `-mllvm` or `-Xarch_…`, or with `-Xclang` but not known; a response file or
+    configuration file (`@file`, `--config`), which the recorded words should hold
+    expanded; an unknown `-O` level; or a word like an `-O` or LTO option where it may be
+    another option's value: after one taking a value (`-o -O0`), or after any option
+    not known to take none (`-resource-dir -O0`, `-fmodules-user-build-path -O0`)."""
     _forwarded(words)
-    if cc1 is not None:
-        level, lto = "0", False
-        for at in range(2, len(cc1)):
-            word = cc1[at]
-            if not _optimizing(word) and word != "-flto-unit":
-                continue
-            if cc1[at - 1] in _CC1_VALUED:
-                raise NotRecorded(f"records {cc1[at - 1]} {word}, which Peeky can't judge")
-            if word.startswith("-O"):
-                if word[2:] not in _LEVELS:
-                    raise NotRecorded(f"records {word}, which Peeky can't judge")
-                level = _LEVELS[word[2:]]
-            else:
-                lto = word != "-fno-lto"
-        return level, lto
     level, lto, at = "0", False, 1
     while at < len(words):
         word = words[at]
         at += 1
+        if word.startswith("@") or word.startswith("--config"):
+            raise NotRecorded(f"records {word}, which Peeky can't judge")
         if word in ("-Xclang", "-mllvm"):
             forwarded = words[at] if at < len(words) else ""
             at += 1

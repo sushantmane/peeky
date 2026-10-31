@@ -361,6 +361,12 @@ def test_optimization_is_the_last_option_s(arguments, found):
         ("-O2 -fmodules-user-build-path -O0", "-fmodules-user-build-path -O0"),
         ("-O0 -flto=thin -fmodules-user-build-path -fno-lto", "-fmodules-user-build-path -fno-lto"),
         ("-O0 -Xclang -clang-vendor-feature=+x", "-Xclang -clang-vendor-feature=+x"),
+        # clang takes `-O0` as the resource directory, and builds at -O2.
+        ("-O2 -nostdinc -resource-dir -O0", "-resource-dir -O0"),
+        ("-O2 -nostdinc -frobnicate -O0", "-O0 after -frobnicate"),
+        # What the recorded words should hold expanded can't be read from them.
+        ("-O0 @args.rsp", "@args.rsp"),
+        ("--config=x.cfg -O0", "--config=x.cfg"),
         ("-O5", "-O5"),
         ("-Xclang", "-Xclang "),
     ],
