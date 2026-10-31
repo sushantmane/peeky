@@ -415,40 +415,55 @@ def _digest(store):
 
 
 def _snapshot(shape, vendor):
-    """{path: (mtime, ctime, size)} of the files under the local packages' directories
-    (not a target directory, hidden directories or the vendored copies), and {"l:" path:
-    the same, not followed} of each entry there, a directory or a link too: to tell one
-    changed while Cargo ran from one changed before."""
-    skip = {str((shape.workspace / vendor).resolve())} if vendor else set()
-    seen, found = set(), {}
+    """What is there before Cargo runs, to tell what changed while it ran from what changed
+    before: {path: (mtime, ctime, size)} of each file, and {"l:" path: the same, not
+    followed} of every entry, directories and links too. Everything under the workspace,
+    hidden directories included, and under each local package outside it; not a `target`
+    directory at their tops. ":tops", ":skipped" and ":complete" (all of it recorded,
+    within _MAX_SNAPSHOT entries) say what an entry's absence proves (_absent_before)."""
+    tops = [shape.workspace.resolve()]
     for package in shape.local:
         top = (shape.root / package.directory).resolve()
+        if not any(top.is_relative_to(each) for each in tops):
+            tops.append(top)
+    skipped = [str(top / "target") for top in tops]
+    found = {":tops": [str(top) for top in tops], ":skipped": skipped, ":complete": False}
+    seen = set()
+    for top in tops:
         for base, folders, files in os.walk(top):
             if base in seen:
                 folders[:] = []
                 continue
             seen.add(base)
+            folders[:] = [name for name in folders if str(Path(base, name)) not in skipped]
             # Each entry itself, not followed ("l:"), a directory or link too.
             for name in (".", *folders, *files):
+                if len(found) >= _MAX_SNAPSHOT:
+                    return found
                 path = os.path.normpath(os.path.join(base, name))
                 with contextlib.suppress(OSError):
                     info = os.lstat(path)
                     found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-            folders[:] = [
-                name
-                for name in folders
-                if not name.startswith(".")
-                and name != "target"
-                and str(Path(base, name)) not in skip
-            ]
             for name in files:
-                if len(found) >= _MAX_SNAPSHOT:
-                    return found
                 path = os.path.join(base, name)
                 with contextlib.suppress(OSError):
                     info = os.stat(path)
                     found[path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    found[":complete"] = True
     return found
+
+
+def _absent_before(path, before):
+    """Whether ``before`` (_snapshot's) proves ``path`` wasn't there before Cargo ran: it
+    recorded everything, under one of its tops and outside what it skipped, and not
+    ``path``."""
+    path = os.path.normpath(path)
+    return bool(
+        before.get(":complete")
+        and any(Path(path).is_relative_to(top) for top in before.get(":tops", ()))
+        and not any(Path(path).is_relative_to(each) for each in before.get(":skipped", ()))
+        and "l:" + path not in before
+    )
 
 
 def _messages(stdout):
@@ -850,16 +865,18 @@ _RERUN = re.compile(r"cargo::?(rerun-if-changed|rerun-if-env-changed)=(.*)")
 _PER_BUILD = ("PEEKY_UNITS", "PEEKY_ANALYSED")
 # The most of a build script's output Peeky reads.
 MAX_BUILD_OUTPUT = 16 * 1024 * 1024
-# What Cargo gives every build script in Peeky's build, whatever the package: its host
-# is the target, its profile a dev or test one (`debug`).
-_FIXED_FOR_SCRIPTS = ("TARGET", "HOST", "PROFILE")
-# Variables Cargo sets or changes for a build script (_script_value computes the rest of
-# what it sets; any other is Cargo's own environment, passed on).
+# Variables Cargo sets or may set for a build script, besides those _script_value
+# computes: refused. Any `CARGO*` but those it computes and _CARGO_INHERITED is one.
 _CARGO_SETS = re.compile(
-    r"(?:CARGO|CARGO_MAKEFLAGS|CARGO_MANIFEST_DIR|CARGO_MANIFEST_PATH|CARGO_MANIFEST_LINKS|"
-    r"CARGO_ENCODED_RUSTFLAGS|CARGO_PKG_.*|CARGO_FEATURE_.*|CARGO_CFG_.*|DEP_.*|OUT_DIR|"
-    r"RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTC_LINKER|LD_LIBRARY_PATH|"
-    r"DYLD_LIBRARY_PATH|DYLD_FALLBACK_LIBRARY_PATH)"
+    r"(?:_*CARGO.*|DEP_.*|OUT_DIR|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTC_LINKER|"
+    r"LD_LIBRARY_PATH|DYLD_LIBRARY_PATH|DYLD_FALLBACK_LIBRARY_PATH)"
+)
+# Cargo's own environment's variables it passes on to a build script unchanged, as
+# rustc 1.96's Cargo was seen to: those Peeky sets (its home, target directory, profiles);
+# and two it sets for a crate's compile, never for a build script.
+_CARGO_INHERITED = re.compile(
+    r"CARGO_(?:HOME|TARGET_DIR|INCREMENTAL|NET_OFFLINE|TERM_COLOR|PROFILE_[A-Z0-9_]+|"
+    r"PRIMARY_PACKAGE|CRATE_NAME)"
 )
 # Cargo's `CARGO_PKG_*` of a manifest's `[package]` fields (as written, else empty).
 _PACKAGE_FIELDS = {
@@ -1037,7 +1054,8 @@ def _cfg_value(key, cfgs):
 
 
 def _script_value(name, package_id, shape, env, jobs_):
-    """The value Cargo gives a build script of ``package_id`` for the variable ``name``
+    """(the value Cargo gives a build script of ``package_id`` for the variable ``name``,
+    how Peeky knows it: "cargo", "jobs" or "launch")
     in Peeky's build (``env``: what Peeky runs Cargo with; ``jobs_``: its `-j`): Cargo's
     own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, and
     the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph; the
@@ -1047,6 +1065,10 @@ def _script_value(name, package_id, shape, env, jobs_):
     doesn't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`, `CARGO_PKG_README`, which a
     file's presence decides, `CARGO_CFG_DEBUG_ASSERTIONS`)."""
     source, directory, package, version = rust_workspace.package_id(package_id)
+    # "cargo": Cargo's, of the tools, the configuration and the manifests, which the
+    # build's other records hold; "jobs": the build's `-j`; "launch": Peeky's own
+    # environment's, which Cargo passes on.
+    how = "cargo"
     profiles = [each for each in shape.build_profiles if each[0] == package_id]
     profile = profiles[0] if len(profiles) == 1 else None
     if source is None:
@@ -1061,7 +1083,7 @@ def _script_value(name, package_id, shape, env, jobs_):
     elif name == "PROFILE":
         found = "debug"
     elif name == "NUM_JOBS":
-        found = str(jobs_)
+        found, how = str(jobs_), "jobs"
     elif name in ("OPT_LEVEL", "DEBUG") and profile is not None:
         found = profile[1] if name == "OPT_LEVEL" else profile[2]
     elif name.startswith("CARGO_FEATURE_"):
@@ -1096,15 +1118,15 @@ def _script_value(name, package_id, shape, env, jobs_):
     elif place is not None and name == "CARGO_MANIFEST_LINKS":
         found = _manifest_field(shape, place, "links")
         found = None if found == "" else found
-    elif name == "RUSTC" or not _CARGO_SETS.fullmatch(name):
-        found = env.get(name)
+    elif name == "RUSTC" or _CARGO_INHERITED.fullmatch(name) or not _CARGO_SETS.fullmatch(name):
+        found, how = env.get(name), "launch"
     if found is ...:
         raise ValueError(
             f"Peeky can't tell the value Cargo gives `{package}`'s build script of {name}, "
             "which it says it reads (`rerun-if-env-changed`), so not whether a later build "
             "would differ"
         )
-    return found
+    return found, how
 
 
 def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1):
@@ -1162,9 +1184,8 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
             if (rerun := _RERUN.fullmatch(line.strip())) is None:
                 continue
             if rerun[1] == "rerun-if-env-changed":
-                variables[rerun[2]] = _script_value(
-                    rerun[2], message["package_id"], shape, env, jobs_
-                )
+                value, how = _script_value(rerun[2], message["package_id"], shape, env, jobs_)
+                variables[message["package_id"], rerun[2]] = {"value": value, "from": how}
             elif source is None:
                 changed.append(rerun[2])
         if source is not None:
@@ -1173,7 +1194,12 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         if not changed:
             watch_tree(package_directory)
         for each in changed:
-            path = package_directory / each
+            # Its directory as found; its last segment not followed (a link is recorded).
+            joined = package_directory / each
+            if joined.name in ("", ".", ".."):
+                path = Path(os.path.realpath(joined))
+            else:
+                path = Path(os.path.realpath(joined.parent)) / joined.name
             if path.is_dir():
                 if str(path) not in dirs:
                     if path.is_symlink() and not path.resolve().is_relative_to(root):
@@ -1184,12 +1210,23 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
                         )
                     dirs[str(path)] = _watched_directory(path, root, budget)
                     unchanged(path)
-                    for name in dirs[str(path)]["entries"]:
-                        unchanged(path / name)
+                    entries = dirs[str(path)]["entries"]
+                    for entry in entries if isinstance(entries, dict) else ():
+                        unchanged(path / entry)
             elif str(path) not in files:
                 _spend(budget, path)
                 unchanged(path)
                 files[str(path)] = rust_workspace.identity(path)
+                if files[str(path)] == ["missing"] and not _absent_before(path, before):
+                    # Not there now, and nothing says it wasn't there while the build
+                    # script ran (deleted since, where Peeky recorded nothing before).
+                    raise ValueError(
+                        f"Peeky can't tell whether {_shown(path, root)} was there while "
+                        f"`{name}`'s build script ran: the script says it reads it, it is "
+                        "missing now, and it is outside what Peeky records before a build "
+                        "(the workspace, less a `target` directory at its top). Create it, "
+                        "or take the line out of the build script"
+                    )
     macros = {
         str(Path(str(message.get("manifest_path"))).resolve().parent)
         for message in messages
@@ -1205,7 +1242,10 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         "files": dict(sorted(files.items())),
         "dirs": dict(sorted(dirs.items())),
         "trees": dict(sorted(trees.items())),
-        "env": dict(sorted(variables.items())),
+        "env": [
+            {"package": package_id, "name": variable, **record}
+            for (package_id, variable), record in sorted(variables.items())
+        ],
     }
 
 
@@ -1597,14 +1637,16 @@ def _check_build_inputs(target, root, directory, manifest):
         "",
         manifest["rustflags"],
     )
-    for name, value in inputs["env"].items():
-        if name == "NUM_JOBS":
+    for record in inputs["env"]:
+        name, value = record["name"], record["value"]
+        if record["from"] == "jobs":
             now = str(jobs())
-        elif name in _FIXED_FOR_SCRIPTS or name in ("OPT_LEVEL", "DEBUG") or name in _PER_BUILD:
-            # From the tools and the profiles, which the build's other records hold.
-            continue
-        else:
+        elif record["from"] == "launch" and name not in _PER_BUILD:
             now = fresh.get(name)
+        else:
+            # Cargo's own, of the tools, the configuration and the manifests: the build's
+            # other records hold what decides it.
+            continue
         if now != value:
             raise _edited(
                 target, f"the build environment's {name}, which a build script reads, changed"

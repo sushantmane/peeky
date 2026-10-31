@@ -589,7 +589,30 @@ def test_a_build_scripts_jobs_are_the_builds_own(workspace, capsys):
     # What the build script was given, and what Peeky recorded, are the build's -j.
     assert shown.stdout == f"2 {rb.jobs()}\n"
     _, manifest = manifest_of(summary)
-    assert manifest["build_inputs"]["env"] == {"NUM_JOBS": str(rb.jobs())}
+    assert [
+        (each["name"], each["value"], each["from"]) for each in manifest["build_inputs"]["env"]
+    ] == [("NUM_JOBS", str(rb.jobs()), "jobs")]
+
+
+@pytest.mark.timeout(300)
+def test_cargos_own_variable_a_build_script_reads_leaves_the_build_current(workspace, capsys):
+    # Cargo gives the build script CARGO_PKG_NAME; Peeky's environment has none, and the
+    # probe doesn't compare it with that.
+    (workspace / "util/build.rs").write_text(
+        "fn main() {\n"
+        '    println!("cargo::rerun-if-env-changed=CARGO_PKG_NAME");\n'
+        '    println!("cargo::rustc-env=NAMED={}", std::env::var("CARGO_PKG_NAME").unwrap());\n'
+        "}\n"
+    )
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    _, manifest = manifest_of(summary)
+    assert [
+        (each["name"], each["value"], each["from"]) for each in manifest["build_inputs"]["env"]
+    ] == [("CARGO_PKG_NAME", "util", "cargo")]
+    code, result = probe(capsys, workspace, config)
+    assert result["error"]["message"].startswith(NOT_YET), result
 
 
 GENERATING_SCRIPT = """fn main() {

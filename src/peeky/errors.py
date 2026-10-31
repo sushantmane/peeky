@@ -467,7 +467,7 @@ _RULES = (
     (
         r"^Peeky (?:records at most [0-9]+ files a build script or procedural macro may read|"
         r"reads at most [0-9]+ MiB of a build script's output|can't tell the value Cargo gives "
-        r"`)",
+        r"`|can't tell whether .+ was there while `)",
         "UNSUPPORTED",
         "Nothing was recorded. Change the build script as the message says, or move large data "
         "out of the package, then build again.",

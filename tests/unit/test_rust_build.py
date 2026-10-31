@@ -335,6 +335,11 @@ def test_a_packages_files_are_listed_as_cargo_lists_them(tmp_path):
 LATER = 2**62
 
 
+def values(found):
+    """{variable: value} of build inputs' variables, all of one package."""
+    return {record["name"]: record["value"] for record in found["env"]}
+
+
 def build_script_run(tmp_path, package, output, *, registry=False):
     """Cargo's message for a build script's run, and the output it kept."""
     out_dir = tmp_path / "target/debug/build" / f"{package}-0123" / "out"
@@ -401,7 +406,8 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
         ),
     ]
     env = {"PATH": "/usr/bin:/bin", "PEEKY_UNITS": "/x"}
-    found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None)
+    before = rb._snapshot(fake_shape(tmp_path), None)
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, before, LATER, None)
     assert found["files"] == {
         str(root / "util/gone.txt"): ["missing"],
         str(root / "util/schema.txt"): [
@@ -422,11 +428,18 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
         "build.rs",
         "src/main.rs",
     ]
-    assert found["env"] == {
+    assert values(found) == {
         "PATH": "/usr/bin:/bin",
         "PROTOC": None,
         "ZSTD_SYS_USE_PKG_CONFIG": None,
     }
+    app, util = (f"path+file://{root / name}#0.1.0" for name in ("app", "util"))
+    zstd = "registry+https://github.com/rust-lang/crates.io-index#zstd-sys@1.0.0"
+    assert [(each["package"], each["name"], each["from"]) for each in found["env"]] == [
+        (app, "PATH", "launch"),
+        (util, "PROTOC", "launch"),
+        (zstd, "ZSTD_SYS_USE_PKG_CONFIG", "launch"),
+    ]
     # A local procedural macro: every file of its package and of the analysed ones.
     macro = {
         "reason": "compiler-artifact",
@@ -637,8 +650,9 @@ def test_explicit_files_count_against_the_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(rb, "MAX_RECORDED", 3)
     lines = "".join(f"cargo::rerun-if-changed=f{n}\n" for n in range(5))
     messages = [build_script_run(tmp_path, "util", lines)]
+    before = rb._snapshot(fake_shape(tmp_path), None)
     with pytest.raises(ValueError, match="Peeky records at most 3 files"):
-        rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None)
+        rb._build_inputs(fake_shape(tmp_path), root, messages, {}, before, LATER, None)
 
 
 def test_a_build_scripts_variables_are_recorded_as_cargo_gives_them(tmp_path, monkeypatch):
@@ -652,7 +666,7 @@ def test_a_build_scripts_variables_are_recorded_as_cargo_gives_them(tmp_path, mo
     messages = [build_script_run(tmp_path, "util", output)]
     env = {"PATH": "/usr/bin:/bin", "RUSTC": "/toolchain/bin/rustc"}
     found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
-    assert found["env"] == {
+    assert values(found) == {
         "CC": None,
         "DEBUG": "true",
         "HOST": "aarch64-unknown-linux-gnu",
@@ -744,7 +758,7 @@ def test_cargos_own_variables_for_a_build_script_are_computed(tmp_path):
     messages = [build_script_run(tmp_path, "util", output)]
     env = {"CARGO_ENCODED_RUSTFLAGS": "-C\x1fdwarf-version=4", "CARGO_HOME": "/home"}
     found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
-    assert found["env"] == {
+    assert values(found) == {
         "CARGO_CFG_FEATURE": "default,my-feat",
         "CARGO_CFG_TARGET_HAS_ATOMIC": "16,8",
         "CARGO_CFG_UNIX": "",
@@ -766,3 +780,115 @@ def test_cargos_own_variables_for_a_build_script_are_computed(tmp_path):
         "CARGO_PKG_VERSION_PRE": "",
         "CARGO_PRIMARY_PACKAGE": None,
     }
+
+
+def test_cargos_own_variables_are_not_rechecked_against_peekys_environment(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    # Two build scripts read CARGO_PKG_NAME, each its own: both are kept, and neither is
+    # compared at a probe with Peeky's environment, which has none.
+    root = tmp_path / "ws"
+    write(
+        root,
+        {
+            "util/Cargo.toml": '[package]\nname = "util"\nversion = "0.1.0"\n',
+            "util/build.rs": "",
+            "app/Cargo.toml": '[package]\nname = "app"\nversion = "0.1.0"\n',
+            "app/build.rs": "",
+        },
+    )
+    output = "cargo::rerun-if-env-changed=CARGO_PKG_NAME\ncargo::rerun-if-env-changed=CC\n"
+    output += "cargo::rerun-if-changed=build.rs\n"
+    messages = [
+        build_script_run(tmp_path, "util", output),
+        build_script_run(tmp_path, "app", output),
+    ]
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None, 6)
+    assert [(each["name"], each["value"], each["from"]) for each in found["env"]] == [
+        ("CARGO_PKG_NAME", "app", "cargo"),
+        ("CC", None, "launch"),
+        ("CARGO_PKG_NAME", "util", "cargo"),
+        ("CC", None, "launch"),
+    ]
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    fresh = {}
+    monkeypatch.setattr(rb, "_environment", lambda *args: fresh)
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    fresh["CC"] = "clang"
+    with pytest.raises(rb.BuildRequired, match="the build environment's CC"):
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+
+
+def test_an_unknown_cargo_variable_is_refused_and_a_known_inherited_one_kept(tmp_path):
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    env = {"CARGO_HOME": "/peeky/cargo-home", "CARGO_TARGET_DIR": "/peeky/target"}
+    output = (
+        "cargo::rerun-if-env-changed=CARGO_HOME\ncargo::rerun-if-env-changed=CARGO_TARGET_DIR\n"
+    )
+    output += "cargo::rerun-if-changed=build.rs\n"
+    messages = [build_script_run(tmp_path, "util", output)]
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
+    assert [(each["name"], each["value"], each["from"]) for each in found["env"]] == [
+        ("CARGO_HOME", "/peeky/cargo-home", "launch"),
+        ("CARGO_TARGET_DIR", "/peeky/target", "launch"),
+    ]
+    for name in ("CARGO_TRIM_PATHS_SCOPE", "CARGO_SOMETHING_NEW", "__CARGO_FIX_PLZ"):
+        messages = [
+            build_script_run(tmp_path / name, "util", f"cargo::rerun-if-env-changed={name}\n")
+        ]
+        with pytest.raises(
+            ValueError,
+            match=f"Peeky can't tell the value Cargo gives `util`'s build script of {name}",
+        ):
+            rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
+
+
+@pytest.mark.parametrize("each", ["../schema.txt", ".config/schema.txt"])
+def test_an_input_deleted_while_cargo_ran_is_refused(tmp_path, each):
+    import time
+
+    # A workspace-level file outside the package, and one in a hidden directory: the
+    # snapshot before the build has them, so their absence after it is a change.
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/src/lib.rs": "", "schema.txt": "1\n"})
+    write(root / "util", {".config/schema.txt": "1\n"})
+    shape = fake_shape(tmp_path, local=("util",))
+    before = rb._snapshot(shape, None)
+    started = time.time_ns()
+    (root / "util" / each).resolve().unlink()
+    messages = [build_script_run(tmp_path, "util", f"cargo::rerun-if-changed={each}\n")]
+    with pytest.raises(RuntimeError) as caught:
+        rb._build_inputs(shape, root, messages, {}, before, started, None)
+    shown = Path(os.path.normpath(Path("util") / each)).as_posix()
+    assert str(caught.value).startswith(f"Provenance: {shown} changed while Peeky built")
+    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+
+
+def test_a_missing_input_is_kept_only_where_its_absence_before_was_recorded(tmp_path):
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/src/lib.rs": ""})
+    shape = fake_shape(tmp_path, local=("util",))
+    before = rb._snapshot(shape, None)
+    # Never there, inside the workspace: recorded as missing.
+    messages = [build_script_run(tmp_path, "util", "cargo::rerun-if-changed=gone.txt\n")]
+    found = rb._build_inputs(shape, root, messages, {}, before, LATER, None)
+    assert found["files"] == {str((root / "util").resolve() / "gone.txt"): ["missing"]}
+    # Outside the workspace, Peeky recorded nothing before: it can't tell.
+    (Path(messages[0]["out_dir"]).parent / "output").write_text(
+        "cargo::rerun-if-changed=../../outside.txt\n"
+    )
+    with pytest.raises(ValueError) as caught:
+        rb._build_inputs(shape, root, messages, {}, before, LATER, None)
+    assert str(caught.value).startswith(
+        f"Peeky can't tell whether {(tmp_path / 'outside.txt').resolve()} was there while "
+        "`util`'s build script ran"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    # Nor where the snapshot was cut short.
+    (Path(messages[0]["out_dir"]).parent / "output").write_text(
+        "cargo::rerun-if-changed=gone.txt\n"
+    )
+    with pytest.raises(ValueError, match="Peeky can't tell whether"):
+        rb._build_inputs(shape, root, messages, {}, {**before, ":complete": False}, LATER, None)
