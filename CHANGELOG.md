@@ -27,11 +27,28 @@
 
 ### Other changes
 
+- **`verify --check-command` checks a Python edit with the project's own tests:** it runs the
+  command in a fresh copy of the project with the edit, on the program's interpreter, with its
+  directory first on `PATH` and no worker token. It runs no shell, and gets a checker's 20 s. The
+  result leads with `verdict: passed`, `failed` or `unknown`, and names the command, its exit code
+  and the end of its output. `--baseline` says the tests fail on the bug only when pytest's or
+  unittest's output shows failed tests. An edit is refused when a module the project supplies would
+  import from outside the copy, such as a stale install. A Python command runs through a bootstrap
+  of Peeky's, whose watch reports what it loaded and started (for pytest, a plugin adds the test
+  files). A run that may not be the copy's, that started a program other than one that starts none
+  (`echo`, `cp`), that Peeky stopped at its bound or an uncaught KeyboardInterrupt stopped, or that
+  isn't a Python Peeky starts, is `unknown`. The command is trusted, not sandboxed. Other languages
+  are refused for now. A build's output limit now counts both streams together, and a Cargo build
+  past it is `BUILD_FAILED` (#448).
 - **Python: a breakpoint in an installed package stops there.** debugpy skipped library code, so
   a probe at a file in the root's `.venv` said its breakpoint was pending, then ended `no-stop`.
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
+  reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
+  unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and
+  partial units are refused as `UNSUPPORTED`, naming the option to rebuild without.
 - **Phase 1 of ADR 0008 checked:** clang records every `-D`, `-I` and `-include` exactly, and
   GCC 13 writes no checksums. The study's C projects can be judged by their line tables'
   checksums. Few of its C++ units can: a `#pragma GCC system_header` or an inheriting

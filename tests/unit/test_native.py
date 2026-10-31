@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from peeky import native
 from peeky.native import NativeSession, NativeTarget, _type_name, elf_build_id, parse_lines
 
 
@@ -289,16 +290,28 @@ def test_native_prepare_rejects_header_edits_before_running_tools(tmp_path, monk
 
 
 @pytest.mark.parametrize("suffix", [".cpp", ".cc", ".cxx"])
-def test_cpp_target_has_explicit_language_and_fixed_driver_flags(suffix):
+@pytest.mark.parametrize("family, dwarf", [("clang", "-gdwarf-5"), ("gcc", "-gdwarf-4")])
+def test_cpp_target_has_explicit_language_and_fixed_driver_flags(
+    suffix, family, dwarf, monkeypatch
+):
+    # clang builds with DWARF 5, as projects do (ADR 0008); GCC with DWARF 4.
+    monkeypatch.setattr(native, "_tool", lambda name: name)
+    monkeypatch.setattr(native, "compiler_family", lambda path: family)
+    monkeypatch.delenv("PEEKY_NATIVE_DWARF", raising=False)
     target = NativeTarget(sources=("main" + suffix,), headers=("types.hpp",), language="cpp")
     assert target.compiler == "clang++"
     assert target.compiler_options == (
         "-std=c++17",
         "-g",
-        "-gdwarf-4",
+        dwarf,
         "-O0",
         "-fno-omit-frame-pointer",
     )
+    assert target.target_identity["compiler_options"][2] == dwarf
+    monkeypatch.setenv("PEEKY_NATIVE_DWARF", "4")
+    assert target.compiler_options[2] == "-gdwarf-4"
+    monkeypatch.setenv("PEEKY_NATIVE_DWARF", "5")
+    assert target.compiler_options[2] == dwarf
     assert target.target_identity["language"] == "cpp"
     assert target.verification_inputs == ("main" + suffix, "types.hpp")
     assert target.verification_sources == ("main" + suffix,)

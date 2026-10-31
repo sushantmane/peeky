@@ -135,6 +135,10 @@ export PEEKY_NATIVE_SYSROOT="$(xcrun --show-sdk-path)"
 pytest tests/native --durations=10
 ```
 
+Peeky builds with clang at DWARF 5. `PEEKY_NATIVE_DWARF=4` builds at DWARF 4 instead, for a run
+of the native or C++ tests that checks its reading. `tests/native/test_native_dwarf_versions.py`
+compares the two in every clang lane.
+
 C++ conformance on macOS uses the Command Line Tools too:
 
 ```sh

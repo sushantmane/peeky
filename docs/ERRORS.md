@@ -112,6 +112,8 @@ The last column is the `retryable` field.
 - A probe's failed build is a refusal before launch: exit 2, `refused_before_launch`, and no run
   saved.
 - `verify`'s failed build is a failed verify: exit 1.
+- A build command that runs past its time, or prints over 1 MiB, both streams together, is a
+  failed build too: `cargo wrote more output than Peeky keeps`.
 
 ### TIMEOUT
 
@@ -126,6 +128,13 @@ The last column is the `retryable` field.
   that stop was shown. Start again once the load has passed.
 - A debugger that refuses that read, as it may at a crash, doesn't end the session. The stop then
   has no location.
+- A `--check-command` that isn't a Python Peeky starts, such as `make` or a shell script, isn't
+  an error: it runs, and its `verdict` is `unknown`. Run the test command directly, as
+  `python -m pytest …` ([6.7](COOKBOOK.md#what-the-command-loaded)).
+- `verify ran past its --timeout while the check command was running` means that `--timeout` cut a
+  `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
+  that runs past its own 20 s isn't an error: the verify's `verdict` is `unknown`, and `reason`
+  says so ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
 
 ### DEBUGGER_ERROR
 
@@ -153,8 +162,10 @@ The last column is the `retryable` field.
 | `peeky setup-java` that failed: `Java adapter setup failed, and nothing was installed: …`, such as a download that failed | Fix what the message names, such as network access to GitHub and Maven Central, and run it again. Report a checksum mismatch |
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
+| Debug information Peeky can't read whole: `Peeky can't read split DWARF: …`, or type units, partial units, or a unit it can't read at all (`Peeky can't read a DWARF unit: …`, such as DWARF 6), refused before anything runs | Rebuild without the option the message names: `-gsplit-dwarf` or `-fdebug-types-section`. Or use the binary as linked, before dwz. Or rebuild with `-gdwarf-5` |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
 | A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information | Change what the message names, or analyse another package |
+| `verify --check-command` on a target that isn't Python: `--check-command supports Python targets for now …`, refused before building ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)) | Pass `--check` with a checker script ([6.5](COOKBOOK.md#65-writing-a-checker)) |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -171,6 +182,19 @@ file lists what it reads.
   lists them, and says which one to pass: `verify needs --at <source> (one of: a/One.java,
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
+- A `verify --check-command` that Peeky won't run as given. It may hold shell syntax (`|`, `>`,
+  `$`, `[` …), or start by setting a variable (`FOO=1 …`). Its program may not be on `PATH`, or be
+  outside the root. Or `--check` came with it. The message says which, and what to pass instead
+  ([6.7](COOKBOOK.md#what-it-runs)).
+- A `verify --check-command` that would read your files or run another Python: an argument, or a
+  `PYTEST_ADDOPTS` word, that names a path inside the root by its absolute path, another Python, or
+  a script that runs on one.
+  `tox` and `nox` are refused too: give the test command they run ([6.7](COOKBOOK.md#what-it-runs)).
+- A `verify --check-command` edit that a module the project supplies may not import from the copy:
+  `verify --check-command can't test this edit: …`. The message names where `import pkg` finds
+  it: an installed copy in `site-packages`, an outside `PYTHONPATH` entry, or an editable install
+  Peeky can't redirect. Uninstall it, or install the project editable, or check the edit with a
+  `--check` checker ([6.7](COOKBOOK.md#what-it-imports)).
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
   `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
@@ -518,7 +542,7 @@ The CLI's exit status is the same for `peeky probe` and the `peeky-probe` script
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass; a `session get` with a failed selector. |
+| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, its `verdict` `failed` or `unknown` ([6.7](COOKBOOK.md#what-it-reports)); a `session get` with a failed selector. |
 | 2 | An error, or a refusal: anything Peeky turned down. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for. |
 | 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`) in full. Its stop never came, an `@all` reached its cap, a restore was never made, or the debugger stopped at its line without reporting it. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. A `@before` restore whose hits never came, so that it made no restore for writes it owed, exits 4 too. Its `unapplied` entry has `unrestored_all`, each such write's `LINE@HIT`, `unrestored_kinds`, and `unrestored`, the latest one's. That says no restore was made, not that the value stayed. Where the debugger stopped at the change's line without reporting it (java-debug), the entry has `unreported_stop: true`, and `stops` counts only the stops it reported. An `@all` made at each of those stops has `made` too. Where Peeky can't match that stop to a line, every pending change is listed, without `unreported_stop`. |

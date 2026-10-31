@@ -71,19 +71,27 @@ def test_a_cpp_target_built_with_neither_clang_nor_gcc_is_refused_before_anythin
     assert not (tmp_path / "program").exists()
 
 
-def test_only_clang_gets_its_cpp_driver_and_gcc_builds_cpp_and_c(tmp_path):
+def test_only_clang_gets_its_cpp_driver_and_gcc_builds_cpp_and_c(tmp_path, monkeypatch):
+    monkeypatch.delenv("PEEKY_NATIVE_DWARF", raising=False)
     clang, _ = fake_compiler(tmp_path, "clang", CLANG)
     driver, flags, _, _ = target(clang)._compile_flags()
     assert driver == ("--driver-mode=g++",) and flags[0] == "--driver-mode=g++"
+    # clang builds with DWARF 5, as projects do (ADR 0008), and GCC with DWARF 4.
+    assert "-gdwarf-5" in flags and "-gdwarf-4" not in flags
     # GCC builds C++, without clang's option, which g++ does not know: before, it
     # was refused.
     gxx, count = fake_compiler(tmp_path, "g++", GCC)
     driver, flags, _, _ = target(gxx)._compile_flags()
     assert driver == () and "--driver-mode=g++" not in flags and runs(count) == 1
-    # C targets build with GCC as they did, and never ask the compiler what it is.
+    assert "-gdwarf-4" in flags
+    # C targets build with GCC as they did. Its version is asked once, for the DWARF
+    # version.
     gcc, count = fake_compiler(tmp_path, "gcc", GCC)
     driver, flags, _, _ = target(gcc, "c")._compile_flags()
-    assert driver == () and "--driver-mode=g++" not in flags and runs(count) == 0
+    assert driver == () and "--driver-mode=g++" not in flags and runs(count) == 1
+    assert "-gdwarf-4" in flags
+    clang_c, _ = fake_compiler(tmp_path, "cc", CLANG)
+    assert "-gdwarf-5" in target(clang_c, "c")._compile_flags()[1]
 
 
 def test_a_probe_with_an_unknown_compiler_for_cpp_keeps_no_run(tmp_path, monkeypatch, capsys):

@@ -121,6 +121,7 @@ def test_what_would_rewrite_asserts_is_refused_before_the_run(project, capsys, m
     code, out = run(capsys, *at, *old, "--run-module", "pytest", "--json", "--", *QUIET)
     error = json.loads(out.out)["error"]
     assert code == 2 and "with --run-module, the module would import" in error["message"], error
+    assert "`peeky verify --check-command 'python -m pytest ...'`" in error["message"], error
 
 
 def test_a_session_runs_a_module_and_the_evidence_names_it(project, capsys):

@@ -50,6 +50,14 @@ PROTOCOL_VERSION = 13
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        # native.ForeignUnits: refused before any value is read.
+        r"^Peeky can't read (split DWARF|DWARF type units|DWARF partial units|a DWARF( 5)? unit): ",
+        "UNSUPPORTED",
+        "Nothing was read. Rebuild as the message says: Peeky reads a unit's own entries "
+        "whole, or none of them.",
+        False,
+    ),
+    (
         # python_interpreter: refused before anything runs.
         r"^Peeky runs Python programs on CPython ",
         "UNSUPPORTED",
@@ -391,6 +399,12 @@ _RULES = (
         r"cannot verify edits|Attached JVMs cannot",
         "UNSUPPORTED",
         "Verify on a fresh-build target, not an attached JVM.",
+        False,
+    ),
+    (
+        r"^--check-command supports Python targets",
+        "UNSUPPORTED",
+        "Pass --check <checker.py>: a checker gets the fresh build's descriptor (COOKBOOK 6.5).",
         False,
     ),
     (

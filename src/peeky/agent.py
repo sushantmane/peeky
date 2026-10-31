@@ -108,10 +108,13 @@ def execute(
     retain=16000,
     stop=None,
     gate=None,
+    tail=False,
 ):
     """Bound output and kill the owned POSIX process group, including descendants.
 
-    The first ``retain`` bytes of each stream are kept; more than ``output_limit`` kills it.
+    The first ``retain`` bytes of each stream are kept (with ``tail``, the last ones, from
+    the first line that starts in them); more than ``output_limit`` bytes, both streams
+    together, kills it.
     Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code.
     ``gate()``, a context manager, is held while the process is started; it may raise
     to keep the process from starting.
@@ -131,14 +134,25 @@ def execute(
             start_new_session=os.name == "posix",
         )
     buffers = [bytearray(), bytearray()]
+    # With ``tail``: whether the kept bytes begin a line.
+    whole = [True, True]
     overflow = threading.Event()
+    # Both streams' bytes, counted together.
+    total, counting = [0], threading.Lock()
 
     def drain(stream, slot):
-        total = 0
         while chunk := stream.read(8192):
-            total += len(chunk)
-            buffers[slot].extend(chunk[: max(0, retain - len(buffers[slot]))])
-            if total > output_limit:
+            with counting:
+                total[0] += len(chunk)
+                over = total[0] > output_limit
+            if tail:
+                buffers[slot].extend(chunk)
+                if (drop := len(buffers[slot]) - retain) > 0:
+                    whole[slot] = buffers[slot][drop - 1] == ord("\n")
+                    del buffers[slot][:drop]
+            else:
+                buffers[slot].extend(chunk[: max(0, retain - len(buffers[slot]))])
+            if over:
                 overflow.set()
 
     readers = [
@@ -184,6 +198,10 @@ def execute(
             writer.join(timeout=5)
         process.stdout.close()
         process.stderr.close()
+    for slot, kept in enumerate(buffers):
+        if not whole[slot] and (start := kept.find(b"\n")) >= 0:
+            # The tail began part-way through a line.
+            del kept[: start + 1]
     return {
         "exit_code": None if timed_out or stopped or overflow.is_set() else process.returncode,
         "stdout": buffers[0].decode(errors="replace"),
@@ -193,11 +211,15 @@ def execute(
     }
 
 
+# How long a checker (or `verify --check-command`'s command) may run.
+CHECK_S = 20
+
+
 def verify(check, candidate, cwd, *, env=None, deadline=None, python=None):
     # Completion is written only after the trusted checker returns normally.
     # This detects premature exit; it is not isolation from hostile candidate code.
     # ``python``: the interpreter that runs the checker and the candidate (Peeky's own).
-    timeout, limited = 20, False
+    timeout, limited = CHECK_S, False
     if deadline is not None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:

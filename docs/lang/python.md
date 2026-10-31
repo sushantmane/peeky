@@ -140,5 +140,43 @@ Peeky debugs Python with debugpy, Python's debugger.
   target ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - A candidate with `--run` or `--run-module` is refused. Probe the edited file directly, or check
   the edit with `verify` ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
+  To run tests on the edit, use `verify --check-command` ([below](#verify-an-edit-with-your-tests)).
 - An edit with a syntax error fails with `NO_STOP`. The output shows the `SyntaxError`
   ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).
+
+## Verify an edit with your tests
+
+- `verify --check-command 'python -m pytest tests/test_x.py -q'` runs your test command in place
+  of a checker. It runs in a fresh copy of the root with the edit, and passes when the command exits
+  0. Run it with `--baseline` first: it should fail on the bug
+  ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- The command is trusted, not sandboxed. It runs with your permissions, and can write outside the
+  copy, such as into the `.venv` the copy links to
+  ([6.7](../COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- `python` is the program's interpreter. Other programs are found on `PATH`, with the interpreter's
+  directory first. Another Python, or a script that runs on one, is refused
+  ([6.7](../COOKBOOK.md#what-it-runs)).
+- No shell runs it, so shell syntax is refused. Put words such as a test id with `[` last, after
+  `--check-command --`. `tox` and `nox` are refused: give the command they run
+  ([6.7](../COOKBOOK.md#what-it-runs)).
+- It gets 20 seconds, as a checker does. Its output keeps each stream's end, where pytest's summary
+  is ([6.7](../COOKBOOK.md#what-it-reports)).
+- For a command other than pytest, an edit is refused when a module the project supplies imports
+  from outside the copy, as from a stale install in `site-packages`. Peeky looks it up as the
+  command's own Python starts. Uninstall it, or install the project editable
+  ([6.7](../COOKBOOK.md#what-it-imports)).
+- Only a Python command Peeky starts can pass: `python -m …`, `-c`, a script, or a console
+  script. Its report says what it loaded. A run that loaded your project's files or stale code, or
+  reported nothing, is no verdict. So is one that started another program, unless it starts none
+  itself, as `echo` or `cp`. Any other command, such as `make`, is no verdict
+  ([6.7](../COOKBOOK.md#what-the-command-loaded)).
+- A command Peeky stopped at its time or output bound is no verdict too
+  ([6.7](../COOKBOOK.md#what-it-reports)).
+- The result leads with `verdict: passed`, `failed` or `unknown`. `unknown` is no failure of the
+  edit: Peeky can't tell, and `reason: no verdict: …` says why
+  ([6.7](../COOKBOOK.md#what-it-reports)).
+- `baseline:` says the tests fail on the bug only for pytest or unittest output that shows failed
+  tests ([6.7](../COOKBOOK.md#what-it-reports)).
+- Nothing above the root is copied, and a warning says so unless the root is a project's. The
+  edited file being self-contained doesn't remove it: the tests may import anything
+  ([6.7](../COOKBOOK.md#what-it-imports)).
