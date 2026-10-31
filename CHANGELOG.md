@@ -45,6 +45,11 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **Phase 1 of ADR 0008 checked:** clang records every `-D`, `-I` and `-include` exactly, and
+  GCC 13 writes no checksums. The study's C projects can be judged by their line tables'
+  checksums. Few of its C++ units can: a `#pragma GCC system_header` or an inheriting
+  constructor drops every checksum of a unit. Phase 3 starts with a compiler wrapper for them.
+  `native_units` reads these facts, and `tests/projects` measures the projects.
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported
