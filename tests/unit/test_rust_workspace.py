@@ -532,6 +532,87 @@ def test_configuration_that_appears_before_peeky_rechecks_is_a_provenance_change
     )
 
 
+@pytest.mark.parametrize(
+    "change", ["Cargo.toml", "Cargo.lock", ".cargo/config.toml", "../.cargo/config.toml"]
+)
+def test_what_peeky_checked_is_the_baseline_not_a_later_read(workspace, monkeypatch, change):
+    # A file edited after Peeky parsed it, before the watch is taken, is noticed: the watch
+    # holds the identity of the bytes Peeky checked.
+    write(workspace, {".cargo/config.toml": "[net]\nretry = 2\n"})
+    write(workspace.parent, {".cargo/config.toml": "[net]\nretry = 3\n"})
+    path = (workspace / change).resolve()
+    original = rw.vendored
+
+    def edited_after_checks(*args, **kwargs):
+        found = original(*args, **kwargs)
+        path.write_text(path.read_text() + "\n# changed\n")
+        return found
+
+    monkeypatch.setattr(rw, "vendored", edited_after_checks)
+    found = checked(workspace)
+    assert rw.recheck(found.watch) == f"{path} changed"
+
+
+def test_configuration_that_appears_after_peeky_read_the_configuration_is_noticed(
+    workspace, monkeypatch
+):
+    original = rw.vendored
+
+    def appears(*args, **kwargs):
+        write(workspace, {".cargo/config.toml": '[env]\nX = "1"\n'})
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rw, "vendored", appears)
+    found = checked(workspace)
+    assert rw.recheck(found.watch) == (
+        f"Cargo's configuration {workspace / '.cargo/config.toml'} appeared"
+    )
+
+
+def test_a_vendored_checksum_file_is_recorded_as_parsed(workspace, monkeypatch):
+    sums = workspace / "vendor/smallnum/.cargo-checksum.json"
+    original = rw._copy_files
+
+    def edited(*args, **kwargs):
+        found = original(*args, **kwargs)
+        sums.write_text(sums.read_text() + "\n")
+        return found
+
+    monkeypatch.setattr(rw, "_copy_files", edited)
+    found = checked(workspace)
+    assert rw.recheck(found.watch) == ("vendored vendor/smallnum/.cargo-checksum.json changed")
+
+
+@pytest.mark.parametrize(
+    ("members", "exclude", "member"),
+    [
+        ('"crates/*"', '"crates/ignored"', False),
+        ('"crates/*"', '"crates/ignored/"', False),
+        ('"crates/*"', '"crates"', False),
+        # A member named as a path stays one, as Cargo has it.
+        ('"crates/*", "crates/ignored"', '"crates/ignored"', True),
+        # A prefix that isn't a whole path component excludes nothing.
+        ('"crates/*"', '"crates/ign"', True),
+    ],
+)
+def test_a_manifest_the_workspace_excludes_is_no_member_candidate(
+    workspace, members, exclude, member
+):
+    manifest = workspace / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text().replace('"util"]', f'"util", {members}]\nexclude = [{exclude}]')
+    )
+    write(workspace, {"crates/one/Cargo.toml": '[package]\nname = "one"\n'})
+    found = checked(workspace)
+    ignored = workspace / "crates/ignored/Cargo.toml"
+    write(workspace, {"crates/ignored/Cargo.toml": '[package]\nname = "ignored"\n'})
+    if member:
+        assert rw.recheck(found.watch) == f"the workspace's members changed ({ignored})"
+    else:
+        assert rw.recheck(found.watch) is None
+        assert str(ignored) not in rw.members_now(found.watch)
+
+
 # The project's rustflags.
 
 
@@ -575,6 +656,54 @@ def test_cfg_rustflags_that_change_which_tables_apply_are_refused(workspace):
         "rustflags of `cfg(not(special))`"
     )
     assert code(caught) == "UNSUPPORTED"
+
+
+def test_build_rustflags_are_ignored_and_unchecked_where_a_target_tables_apply(workspace):
+    # Cargo takes every applicable target table's rustflags, if any has some, and never
+    # build.rustflags then; so Peeky checks only those.
+    write(
+        workspace,
+        {
+            ".cargo/config.toml": '[build]\nrustflags = ["-C", "target-cpu=native"]\n'
+            '[target.\'cfg(unix)\']\nrustflags = ["--cfg", "unixy"]\n'
+            f'[target.{HOST}]\nrustflags = "--cfg=hosted"\n'
+            '[target.\'cfg(windows)\']\nrustflags = ["-C", "target-cpu=native"]\n'
+        },
+    )
+    found = checked(workspace)
+    assert sorted(found.rustflags) == sorted(("--cfg", "unixy", "--cfg=hosted"))
+    assert "unixy" in found.cfgs and "hosted" in found.cfgs
+    # Without them, build.rustflags apply, and are checked.
+    write(workspace, {".cargo/config.toml": '[build]\nrustflags = ["-C", "target-cpu=native"]\n'})
+    with pytest.raises(ValueError, match=r"`build.rustflags` in .*\(this has `-C`\)") as caught:
+        checked(workspace)
+    assert code(caught) == "UNSUPPORTED"
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["build", f"target.{HOST}", "target.'cfg(unix)'"],
+)
+def test_rustflags_cargo_would_merge_across_files_are_refused_naming_both(workspace, key):
+    # Cargo takes the deeper file's string, and joins arrays; Peeky models neither.
+    write(workspace.parent, {".cargo/config.toml": f'[{key}]\nrustflags = "--cfg parent"\n'})
+    write(workspace, {".cargo/config.toml": f'[{key}]\nrustflags = "--cfg child"\n'})
+    with pytest.raises(ValueError) as caught:
+        checked(workspace)
+    shown = key.replace("'", "")
+    assert str(caught.value) == (
+        f"Peeky doesn't build with `{shown}.rustflags` set in {workspace / '.cargo/config.toml'} "
+        f"and {workspace.parent / '.cargo/config.toml'}: Cargo merges rustflags across "
+        "configuration files, and Peeky doesn't. Set them in one file"
+    )
+    assert code(caught) == "UNSUPPORTED"
+
+
+def test_rustflags_set_in_one_file_and_ignored_in_another_are_accepted(workspace):
+    # The parent's build.rustflags are set, and ignored: the workspace's target table's apply.
+    write(workspace.parent, {".cargo/config.toml": '[build]\nrustflags = "--cfg parent"\n'})
+    write(workspace, {".cargo/config.toml": f'[target.{HOST}]\nrustflags = "--cfg child"\n'})
+    assert checked(workspace).rustflags == ("--cfg", "child")
 
 
 # The manifest, the lockfile and the vendored copies.
@@ -1029,6 +1158,8 @@ def test_a_unit_graph_peeky_doesnt_read_is_refused_naming_cargo(workspace, chang
         lambda m: m["packages"][0]["targets"][0].pop("kind"),
         lambda m: m.update(workspace_members=[1]),
         lambda m: m.pop("packages"),
+        lambda m: m["packages"][0].update(dependencies={}),
+        lambda m: m["packages"][0].update(dependencies=[{"name": "x", "path": 1}]),
     ],
 )
 def test_metadata_peeky_doesnt_read_is_refused_naming_cargo(workspace, change):
@@ -1047,3 +1178,97 @@ def test_metadata_peeky_doesnt_read_is_refused_naming_cargo(workspace, change):
         "Cargo's metadata is not one Peeky reads: cargo 1.99.0 wrote"
     )
     assert code(caught) == "UNSUPPORTED"
+
+
+# Reading a workspace: what Cargo said is taken twice, and what it named is watched.
+
+
+def fake_cargo(monkeypatch, root, graphs, data=None):
+    """Cargo and rustc as read() runs them: the fixture's metadata (``data``) and unit
+    graphs (``graphs``, one per run, the last repeated)."""
+    calls = []
+
+    def run(argv, workspace, env, timeout):
+        argv = [str(each) for each in argv]
+        calls.append(argv)
+        if argv[1] == "--version":
+            return "cargo 1.96.0 (test)\n"
+        if argv[1] == "-vV":
+            return f"host: {HOST}\n"
+        if argv[1:3] == ["--print", "cfg"]:
+            return "\n".join(print_cfg(argv[3:])) + "\n"
+        if argv[1] == "metadata":
+            return json.dumps(data or metadata(root))
+        return json.dumps(graphs.pop(0) if len(graphs) > 1 else graphs[0])
+
+    monkeypatch.setattr(rw, "_cargo", run)
+    return calls
+
+
+def read(tmp_path, workspace):
+    (tmp_path / "home").mkdir(exist_ok=True)
+    return rw.read(
+        workspace,
+        config(vendor="vendor"),
+        "cargo",
+        "/toolchain/bin/rustc",
+        tmp_path / "home",
+        tmp_path / "target",
+    )
+
+
+def test_reading_a_workspace_takes_the_unit_graph_again_and_needs_it_identical(
+    tmp_path, workspace, monkeypatch
+):
+    calls = fake_cargo(monkeypatch, workspace, [graph(workspace)])
+    found = read(tmp_path, workspace)
+    assert [argv[1] for argv in calls].count("metadata") == 2
+    assert sum("--unit-graph" in argv for argv in calls) == 2
+    assert rw.recheck(found.watch) is None
+    # A unit graph that differs the second time is a change while Peeky read it.
+    other = graph(workspace, util={"opt_level": "1"})
+    fake_cargo(monkeypatch, workspace, [graph(workspace), other])
+    with pytest.raises(ValueError) as caught:
+        read(tmp_path, workspace)
+    assert str(caught.value) == (
+        "Provenance: Cargo's unit graph of the build changed while Peeky read the workspace "
+        "and Cargo ran. Build again"
+    )
+    assert code(caught) == "PROVENANCE_CHANGED"
+
+
+def test_every_manifest_cargos_metadata_names_is_watched(tmp_path, workspace, monkeypatch):
+    # A path dependency the build doesn't compile (an optional one) is named by its member's
+    # metadata; Cargo reads its manifest, wherever it is.
+    data = metadata(workspace)
+    outside = tmp_path / "outside"
+    data["packages"][0]["dependencies"] = [
+        {"name": "smallnum", "source": rw.CRATES_IO},
+        {"name": "outside", "source": None, "path": str(outside)},
+    ]
+    fake_cargo(monkeypatch, workspace, [graph(workspace)], data)
+    found = read(tmp_path, workspace)
+    assert found.watch["files"][str(outside / "Cargo.toml")] == ["missing"]
+    write(outside, {"Cargo.toml": '[package]\nname = "outside"\n'})
+    assert rw.recheck(found.watch) == f"{outside / 'Cargo.toml'} changed"
+
+
+def test_a_file_changed_after_peeky_checked_it_is_refused_before_cargo_starts(
+    tmp_path, workspace, monkeypatch
+):
+    calls = fake_cargo(monkeypatch, workspace, [graph(workspace)])
+    original = rw.preflight
+
+    def edited(*args, **kwargs):
+        found = original(*args, **kwargs)
+        (workspace / "Cargo.lock").write_text(LOCK + "\n")
+        return found
+
+    monkeypatch.setattr(rw, "preflight", edited)
+    with pytest.raises(ValueError) as caught:
+        read(tmp_path, workspace)
+    assert str(caught.value) == (
+        f"Provenance: {workspace / 'Cargo.lock'} changed while Peeky checked the workspace. "
+        "Build again"
+    )
+    assert not any(argv[1] == "metadata" for argv in calls)

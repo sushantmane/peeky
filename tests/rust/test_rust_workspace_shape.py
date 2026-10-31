@@ -231,8 +231,8 @@ def test_an_optional_path_dependency_the_run_doesnt_build_is_read_as_the_build_r
 ):
     """Cargo's metadata (`--no-deps`) and unit graph are of the build's own selection: an
     optional path dependency outside the root that no configured feature enables is not
-    refused, nor watched. Where its manifest is missing, Peeky fails as the build itself
-    does, in Cargo's words."""
+    refused; its manifest, which Cargo reads, is watched. Where it is missing, Peeky fails
+    as the build itself does, in Cargo's words."""
     root, home, cargo, rustc = workspace
     far = root.parent / "far"
     (far / "src").mkdir(parents=True)
@@ -252,7 +252,7 @@ def test_an_optional_path_dependency_the_run_doesnt_build_is_read_as_the_build_r
     target = home.parent / "target"
     shape = rw.read(root, config(), cargo, rustc, home, target)
     assert [package.name for package in shape.local] == ["app", "util"]
-    assert str(far / "Cargo.toml") not in shape.watch["files"]
+    assert shape.watch["files"][str(far / "Cargo.toml")][0] == "file"
     (far / "Cargo.toml").rename(far / "Cargo.toml.gone")
     env = rw.build_environment(rustc, home, target)
     argv = [cargo, *shape.cargo_arguments(), "--offline", "--locked"]
@@ -322,3 +322,76 @@ def test_cfg_literals_and_a_split_debuginfo_override_are_read_as_cargo_reads_the
         pytest.skip("this platform's builds are unpacked")
     with pytest.raises(ValueError, match="`util`'s util has split-debuginfo unpacked"):
         rw.read(root, config(), cargo, rustc, home, home.parent / "target")
+
+
+def test_rustflags_are_chosen_as_cargo_chooses_them(workspace):
+    """Where a target table that applies has rustflags, Cargo ignores build.rustflags:
+    Peeky takes the same ones, and checks only those."""
+    root, home, cargo, rustc = workspace
+    library = root / "util/src/lib.rs"
+    library.write_text(
+        library.read_text() + "#[cfg(special)]\npub fn special() -> u32 {\n    7\n}\n"
+        "#[cfg(not(special))]\npub fn special() -> u32 {\n    0\n}\n"
+    )
+    main = root / "app/src/main.rs"
+    main.write_text(main.read_text().replace("util::double(", "util::special() + util::double("))
+    settings = root / ".cargo/config.toml"
+    settings.parent.mkdir()
+    settings.write_text(
+        '[build]\nrustflags = ["-C", "target-cpu=native", "--cfg", "wrong"]\n'
+        '[target.\'cfg(unix)\']\nrustflags = ["--cfg", "special"]\n'
+    )
+    target = home.parent / "target"
+    vendor = rw.vendor_arguments(root, "vendor")
+    # Cargo itself, with the configuration's rustflags.
+    plain = subprocess.run(
+        [cargo, "run", "-q", "-p", "app", "--offline", "--locked", *vendor],
+        cwd=root,
+        env={**rw.cargo_environment(rustc, home), "CARGO_TARGET_DIR": str(home.parent / "plain")},
+        capture_output=True,
+        text=True,
+    )
+    assert plain.returncode == 0 and plain.stdout == "9\n", plain.stderr
+    shape = rw.read(root, config(), cargo, rustc, home, target)
+    assert shape.rustflags == ("--cfg", "special") and "wrong" not in shape.cfgs
+    env = rw.build_environment(rustc, home, target, shape.rustflags)
+    argv = [cargo, *shape.cargo_arguments(), "--offline", "--locked", *vendor]
+    built = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    assert subprocess.run([target / "debug/app"], capture_output=True, text=True).stdout == "9\n"
+    # Set in two files, Cargo merges them; Peeky refuses, naming both.
+    above = root.parent / ".cargo/config.toml"
+    above.parent.mkdir()
+    above.write_text('[target.\'cfg(unix)\']\nrustflags = ["--cfg", "parent"]\n')
+    with pytest.raises(ValueError) as caught:
+        rw.read(root, config(), cargo, rustc, home, target)
+    assert str(caught.value).startswith(
+        f"Peeky doesn't build with `target.cfg(unix).rustflags` set in {settings} and {above}:"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+def test_a_manifest_the_workspace_excludes_is_not_a_member(workspace):
+    root, home, cargo, rustc = workspace
+    manifest = root / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text().replace('"util"]', '"util", "crates/*"]\nexclude = ["crates/ignored"]')
+    )
+    for name in ("one", "ignored"):
+        (root / f"crates/{name}/src").mkdir(parents=True)
+        (root / f"crates/{name}/src/lib.rs").write_text("")
+        (root / f"crates/{name}/Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n'
+        )
+    regenerate(root, home, cargo, rustc)
+    shape = rw.read(root, config(), cargo, rustc, home, home.parent / "target")
+    assert sorted(package.name for package in shape.local) == ["app", "one", "util"]
+    ignored = root / "crates/ignored/Cargo.toml"
+    assert str(ignored) not in shape.watch["candidates"]
+    ignored.write_text(ignored.read_text() + "# changed\n")
+    assert rw.recheck(shape.watch) is None
+    (root / "crates/two").mkdir()
+    (root / "crates/two/Cargo.toml").write_text('[package]\nname = "two"\n')
+    assert rw.recheck(shape.watch) == (
+        f"the workspace's members changed ({root / 'crates/two/Cargo.toml'})"
+    )

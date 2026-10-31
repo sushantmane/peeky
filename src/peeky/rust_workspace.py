@@ -374,16 +374,14 @@ def _checked_flags(path, key, value):
 
 def check_config_table(path, table, host, cfgs):
     """Refuse a configuration file's table where it sets what Peeky doesn't account for
-    (_CONFIG_ANY, _CONFIG_BUILD, _CONFIG_HOST_TARGET), or `rustflags` other than `--cfg`
-    and `--check-cfg` where they apply."""
+    (_CONFIG_ANY, _CONFIG_BUILD, _CONFIG_HOST_TARGET). Its `rustflags` are
+    project_rustflags's to choose and check, as Cargo chooses them."""
     refused = []
     for key, value in table.items():
         if key in _CONFIG_ANY or key == "target":
             continue
         if key == "build" and isinstance(value, dict):
             refused += [f"build.{name}" for name in value if name not in _CONFIG_BUILD]
-            if "rustflags" in value:
-                _checked_flags(path, "build.rustflags", value["rustflags"])
         else:
             refused.append(key)
     for key, value in _target_tables(table, host, cfgs, path):
@@ -391,8 +389,6 @@ def check_config_table(path, table, host, cfgs):
             refused.append(f"target.{key}")
             continue
         refused += [f"target.{key}.{name}" for name in value if name not in _CONFIG_HOST_TARGET]
-        if "rustflags" in value:
-            _checked_flags(path, f"target.{key}.rustflags", value["rustflags"])
     if refused:
         raise ValueError(
             f"Peeky doesn't build with {', '.join(f'`{each}`' for each in refused[:5])} in "
@@ -403,35 +399,54 @@ def check_config_table(path, table, host, cfgs):
 
 def check_cargo_config(path, host, cfgs, *, follow=False):
     """The SHA-256 of a `.cargo/config.toml` (or legacy `.cargo/config`) Cargo reads, the
-    workspace's own or one above it, refused as check_config_table refuses it. ``host``:
+    workspace's own or one above it, refused as check_config_table refuses it, and as
+    project_rustflags refuses the rustflags it would choose were it the only one. ``host``:
     this toolchain's host triple, and ``cfgs`` its `rustc --print cfg`, which say whether
     a target table applies. ``follow``: a link is read as Cargo reads it (a file above the
     root, such as a dotfile manager's `~/.cargo/config.toml`)."""
     table, digest = _read_toml(path, MAX_MANIFEST_BYTES, follow=follow, digest=True)
     check_config_table(path, table, host, cfgs)
+    project_rustflags([(path, table)], host, lambda flags: cfgs)
     return digest
 
 
 def project_rustflags(tables, host, print_cfg, own=()):
     """(the project's `--cfg` and `--check-cfg` rustflags, the host's cfgs with them): as
     Cargo chooses rustflags from ``tables`` ([(path, table)], every configuration file it
-    reads), every applicable target table's joined, else `build.rustflags`. Peeky builds
-    with its own flags (``own``) and these alone. ``print_cfg(flags)``: `rustc --print cfg`
-    with those flags. Refused: any other flag, and target tables whose own `--cfg` flags
-    change which of them apply."""
+    reads): every applicable target table's (`target.<triple>`, `target.'cfg(…)'`) joined,
+    where any has `rustflags`, else `build.rustflags`; only the chosen ones are checked.
+    Peeky builds with its own flags (``own``) and these alone. ``print_cfg(flags)``:
+    `rustc --print cfg` with those flags. Refused: any other flag; a chosen key set in
+    more than one file, which Cargo merges and Peeky doesn't; and target tables whose own
+    `--cfg` flags change which of them apply."""
+
+    def once(found, key):
+        if len(found) > 1:
+            raise ValueError(
+                f"Peeky doesn't build with `{key}` set in {found[0]} and {found[1]}: Cargo merges "
+                "rustflags across configuration files, and Peeky doesn't. Set them in one file"
+            )
 
     def collect(cfgs):
-        targets, applied, build, found = [], [], [], False
+        targets, build = {}, []
         for path, table in tables:
             for key, value in _target_tables(table, host, cfgs, path):
                 if isinstance(value, dict) and "rustflags" in value:
-                    found = True
-                    targets += _checked_flags(path, f"target.{key}.rustflags", value["rustflags"])
-                    applied.append((str(path), key))
+                    targets.setdefault(key, []).append((path, value["rustflags"]))
             section = table.get("build")
             if isinstance(section, dict) and "rustflags" in section:
-                build += _checked_flags(path, "build.rustflags", section["rustflags"])
-        return tuple(targets if found else build), applied
+                build.append((path, section["rustflags"]))
+        flags, applied = [], []
+        if targets:
+            for key, found in targets.items():
+                once([path for path, _ in found], f"target.{key}.rustflags")
+                path, value = found[0]
+                flags += _checked_flags(path, f"target.{key}.rustflags", value)
+                applied.append((str(path), key))
+        elif build:
+            once([path for path, _ in build], "build.rustflags")
+            flags = _checked_flags(build[0][0], "build.rustflags", build[0][1])
+        return tuple(flags), applied
 
     cfgs = tuple(print_cfg(tuple(own)))
     flags, applied = collect(cfgs)
@@ -468,14 +483,27 @@ def config_paths(workspace):
     ]
 
 
-def _read_toml(path, limit, *, follow=False, digest=False):
-    """A TOML file's table (and the SHA-256 of the bytes parsed, with ``digest``)."""
+def _read_bytes(path, limit, *, follow=False, seen=None):
+    """A regular file's bytes; with ``seen`` (a dict), its identity as those bytes are
+    (identity's form: kind and location as found before reading, and their SHA-256) goes
+    in it, so what Peeky checked is what it later compares."""
     path = Path(path)
-    if (path.is_symlink() and not follow) or not path.is_file() or path.stat().st_size > limit:
+    link = path.is_symlink()
+    if (link and not follow) or not path.is_file() or path.stat().st_size > limit:
         raise ValueError(f"{path} must be a regular file of at most {limit // 1024 // 1024} MiB")
+    resolved = str(path.resolve(strict=True))
     data = path.read_bytes()
     if len(data) > limit:
         raise ValueError(f"{path} must be a regular file of at most {limit // 1024 // 1024} MiB")
+    if seen is not None:
+        seen[str(path)] = ["link" if link else "file", resolved, hashlib.sha256(data).hexdigest()]
+    return data
+
+
+def _read_toml(path, limit, *, follow=False, digest=False, seen=None):
+    """A TOML file's table (and the SHA-256 of the bytes parsed, with ``digest``; their
+    identity in ``seen``, as _read_bytes)."""
+    data = _read_bytes(path, limit, follow=follow, seen=seen)
     try:
         table = tomllib.loads(data.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
@@ -494,10 +522,11 @@ class Locked:
     checksum: str | None
 
 
-def read_lock(path):
+def read_lock(path, seen=None):
     """Every package of a Cargo.lock (version 3 or 4). Refused: a git dependency, another
-    registry than crates.io, a registry package without a checksum, `[[patch.unused]]`."""
-    data = _read_toml(path, MAX_LOCK_BYTES)
+    registry than crates.io, a registry package without a checksum, `[[patch.unused]]`.
+    ``seen``: as _read_bytes."""
+    data = _read_toml(path, MAX_LOCK_BYTES, seen=seen)
     version = data.get("version")
     if type(version) is not int or version not in (3, 4):
         raise ValueError(
@@ -654,7 +683,8 @@ def vendored(workspace, vendor, locked, digest=None):
         if not entry.is_dir() or not manifest.is_file():
             # Cargo reads only directories with a manifest: `cargo vendor` writes no other.
             continue
-        package = _read_toml(manifest, MAX_MANIFEST_BYTES).get("package")
+        parsed = {}
+        package = _read_toml(manifest, MAX_MANIFEST_BYTES, seen=parsed).get("package")
         name = package.get("name") if isinstance(package, dict) else None
         version = package.get("version") if isinstance(package, dict) else None
         if (name, version) not in registry:
@@ -663,7 +693,8 @@ def vendored(workspace, vendor, locked, digest=None):
         if sums.is_symlink() or not sums.is_file() or sums.stat().st_size > MAX_CHECKSUMS_BYTES:
             raise _vendor_refusal(f"{label} has no .cargo-checksum.json", workspace, vendor)
         try:
-            checksums = json.loads(sums.read_text(encoding="utf-8"))
+            data = _read_bytes(sums, MAX_CHECKSUMS_BYTES, seen=parsed)
+            checksums = json.loads(data.decode("utf-8"))
         except (UnicodeError, ValueError, RecursionError):
             checksums = None
         if not isinstance(checksums, dict) or not isinstance(checksums.get("files"), dict):
@@ -680,8 +711,12 @@ def vendored(workspace, vendor, locked, digest=None):
         if (name, version) in copies:
             raise _vendor_refusal(f"{directory} holds `{name} {version}` twice", workspace, vendor)
         found = _copy_files(entry, label, workspace, vendor, checksums["files"], digest)
+        if found.get("Cargo.toml") != parsed[str(manifest)][2]:
+            raise ValueError(
+                f"Provenance: vendored {label} changed while Peeky checked it. Build again"
+            )
         copies[(name, version)] = f"{vendor}/{entry.name}"
-        files[f"{vendor}/{entry.name}/.cargo-checksum.json"] = digest(sums)
+        files[f"{vendor}/{entry.name}/.cargo-checksum.json"] = parsed[str(sums)][2]
         files.update({f"{vendor}/{entry.name}/{path}": value for path, value in found.items()})
     if missing := sorted(set(registry) - set(copies)):
         listed = ", ".join(f"`{name} {version}`" for name, version in missing[:3])
@@ -717,21 +752,9 @@ def manifest_above(workspace):
             )
 
 
-def configs_above(workspace, host, cfgs):
-    """((path, SHA-256), ...) of the Cargo configuration above the workspace, which Cargo
-    reads too (`~/.cargo/config.toml` above a workspace in the home directory), each
-    refused as check_cargo_config refuses it; and a manifest above it (manifest_above)."""
-    manifest_above(workspace)
-    return tuple(
-        (str(path), check_cargo_config(path, host, cfgs, follow=True))
-        for path in config_paths(workspace)
-        if path.parent.parent != Path(workspace)
-    )
-
-
 def check_configs_above(configs):
     """Refuse a build whose Cargo configuration above the workspace changed since it was
-    read (``configs``: configs_above's), by path."""
+    read (``configs``: Preflight.configs_above), by path."""
     for path, digest in configs:
         try:
             now = hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -766,10 +789,24 @@ def identity(path, digest=None):
 _GLOB = re.compile(r"[*?\[]")
 
 
-def member_candidates(workspace, patterns):
+def _excluded(workspace, manifest, members, exclude):
+    """Whether Cargo leaves ``manifest`` out of the workspace: it is under an `exclude`
+    path, and under no `members` entry taken as a path (as Cargo's `is_excluded`, which
+    compares path components and expands no glob)."""
+
+    parts = Path(os.path.normpath(manifest)).parts
+
+    def under(entry):
+        return parts[: len(Path(workspace, entry).parts)] == Path(workspace, entry).parts
+
+    return any(under(each) for each in exclude) and not any(under(each) for each in members)
+
+
+def member_candidates(workspace, patterns, exclude=()):
     """The manifests the root manifest's `[workspace] members` patterns can name (each
-    match's `Cargo.toml`, wherever it is, hidden and `target` directories included), as a
-    sorted list of paths: what Cargo could discover, rescanned after it ran."""
+    match's `Cargo.toml`, wherever it is, hidden and `target` directories included), less
+    those its `exclude` leaves out, as a sorted list of paths: what Cargo could discover,
+    rescanned after it ran."""
     found = set()
     for pattern in patterns:
         if not isinstance(pattern, str):
@@ -804,31 +841,49 @@ def member_candidates(workspace, patterns):
         found.update(
             str(path / "Cargo.toml")
             for path in current
-            if (path / "Cargo.toml").exists() or (path / "Cargo.toml").is_symlink()
+            if ((path / "Cargo.toml").exists() or (path / "Cargo.toml").is_symlink())
+            and not _excluded(workspace, path / "Cargo.toml", patterns, exclude)
         )
     return sorted(found)
 
 
-def watch(workspace, root, vendor, copies, files, digest=None):
-    """What Peeky checks again once Cargo has run (recheck): every configuration file Cargo
-    reads, the lockfile, the root manifest and every manifest its member patterns can
-    name, each by its identity (kind, resolved location, SHA-256), and the vendored
-    copies ({path relative to the workspace: SHA-256}, rechecked file by file)."""
+def _strings(section, key):
+    value = section.get(key, []) if isinstance(section, dict) else []
+    return [each for each in value if isinstance(each, str)] if isinstance(value, list) else []
+
+
+def members_now(state):
+    """The manifests the workspace's member patterns name now (member_candidates), for
+    ``state`` (watch's)."""
+    return member_candidates(state["workspace"], state["patterns"], state.get("exclude", ()))
+
+
+def watch(workspace, configs, manifest, vendor, copies, files, seen, digest=None):
+    """What Peeky checks again before and once Cargo has run (recheck): the configuration
+    files Cargo reads (``configs``, the paths Peeky read), the lockfile, the root
+    manifest (``manifest``, as parsed) and every manifest its member patterns can name,
+    each by its identity (kind, resolved location, SHA-256), and the vendored copies
+    ({path relative to the workspace: SHA-256}, rechecked file by file). What Peeky
+    checked has the identity of the bytes it parsed (``seen``, _read_bytes's); only the
+    member manifests Cargo reads first are read here."""
     workspace = Path(workspace)
-    manifest = _read_toml(workspace / "Cargo.toml", MAX_MANIFEST_BYTES)
     section = manifest.get("workspace") if isinstance(manifest.get("workspace"), dict) else {}
-    patterns = [each for each in section.get("members", []) if isinstance(each, str)]
-    candidates = member_candidates(workspace, patterns)
-    paths = [str(path) for path in config_paths(workspace)]
+    patterns, exclude = _strings(section, "members"), _strings(section, "exclude")
+    candidates = member_candidates(workspace, patterns, exclude)
+    paths = [str(path) for path in configs]
     tracked = [*paths, str(workspace / "Cargo.lock"), str(workspace / "Cargo.toml"), *candidates]
     return {
         "workspace": str(workspace),
         "configs": paths,
         "patterns": patterns,
+        "exclude": exclude,
         "candidates": candidates,
-        "files": {path: identity(path, digest) for path in dict.fromkeys(tracked)},
+        "files": {
+            path: seen[path] if path in seen else identity(path, digest)
+            for path in dict.fromkeys(tracked)
+        },
         "vendor": vendor if copies else None,
-        "vendor_directory": str((workspace / vendor).resolve()) if copies else None,
+        "vendor_directory": str(workspace / vendor) if copies else None,
         "vendored": dict(files),
     }
 
@@ -856,7 +911,7 @@ def recheck(state, digest=None):
     for path, recorded in state["files"].items():
         if identity(path, digest) != recorded:
             return f"{path} changed"
-    candidates = member_candidates(workspace, state["patterns"])
+    candidates = members_now(state)
     if candidates != state["candidates"]:
         added = sorted(set(candidates) - set(state["candidates"]))
         return f"the workspace's members changed ({', '.join(added) or 'one went'})"
@@ -921,10 +976,12 @@ def preflight(root, config, host, print_cfg, own=(), digest=None):
     manifest_above(workspace)
     if (workspace / ".cargo").is_symlink():
         raise ValueError(f"Cargo's configuration directory can't be a link: {workspace / '.cargo'}")
-    tables = []
-    for path in config_paths(workspace):
+    tables, seen, configs = [], {}, config_paths(workspace)
+    for path in configs:
         own_file = path.parent.parent == workspace
-        table, sha = _read_toml(path, MAX_MANIFEST_BYTES, follow=not own_file, digest=True)
+        table, sha = _read_toml(
+            path, MAX_MANIFEST_BYTES, follow=not own_file, digest=True, seen=seen
+        )
         tables.append((path, table, sha, own_file))
     rustflags, cfgs = project_rustflags(
         [(path, table) for path, table, _, _ in tables], host, print_cfg, own
@@ -936,7 +993,7 @@ def preflight(root, config, host, print_cfg, own=(), digest=None):
         (relative / ".cargo" / path.name).as_posix() for path, _, _, own_file in tables if own_file
     ]
     above = tuple((str(path), sha) for path, _, sha, own_file in tables if not own_file)
-    manifest = _read_toml(workspace / "Cargo.toml", MAX_MANIFEST_BYTES)
+    manifest = _read_toml(workspace / "Cargo.toml", MAX_MANIFEST_BYTES, seen=seen)
     if sections := [key for key in ("patch", "replace") if key in manifest]:
         raise ValueError(
             f"Peeky doesn't build a workspace with [{sections[0]}] (in "
@@ -949,9 +1006,9 @@ def preflight(root, config, host, print_cfg, own=(), digest=None):
             f"{workspace} has no Cargo.lock, and Peeky builds only from one: run "
             f"`cd {shlex.quote(str(workspace))} && cargo generate-lockfile` once"
         )
-    locked = read_lock(lock)
+    locked = read_lock(lock, seen)
     copies, vendored_files = vendored(workspace, config.vendor, locked, digest)
-    state = watch(workspace, root, config.vendor, copies, vendored_files, digest)
+    state = watch(workspace, configs, manifest, config.vendor, copies, vendored_files, seen, digest)
     return Preflight(
         workspace,
         locked,
@@ -1153,6 +1210,12 @@ def check_metadata(metadata, cargo_version):
             _fields(target, _TARGET, "targets.", refuse)
             if not all(isinstance(kind, str) for kind in target["kind"]):
                 raise refuse("an entry without `targets.kind` as Peeky reads it")
+        dependencies = package.get("dependencies", [])
+        if not isinstance(dependencies, list) or not all(
+            isinstance(each, dict) and isinstance(each.get("path", ""), str)
+            for each in dependencies
+        ):
+            raise refuse("an entry without `packages.dependencies` as Peeky reads it")
 
 
 def check_graph(graph, cargo_version):
@@ -1532,8 +1595,10 @@ def read(root, config, cargo, rustc, cargo_home, target_dir, timeout=60, rustfla
     Peeky's ``target_dir``): preflight; `cargo metadata --no-deps` (the members, which
     needs no dependency resolved); Cargo's unit graph of the exact command the build runs
     (`--unit-graph`, an unstable flag that RUSTC_BOOTSTRAP allows for that one command,
-    which compiles nothing); read_workspace. Then the manifests Cargo named join the
-    watch, the members are read again, and everything is checked again (recheck)."""
+    which compiles nothing); read_workspace. What preflight checked is checked again just
+    before Cargo starts. Then every manifest Cargo's metadata and unit graph name joins
+    the watch, both are taken again and must be identical, and everything is checked
+    again (recheck)."""
     digest = digest or sha256_file
     own = build_environment(rustc, cargo_home, target_dir, rustflags)
     host, version = host_triple(rustc, own), cargo_version(cargo, own)
@@ -1544,6 +1609,7 @@ def read(root, config, cargo, rustc, cargo_home, target_dir, timeout=60, rustfla
     extra = vendor_arguments(checked.workspace, config.vendor) if checked.vendored else ()
     common = ("--offline", "--locked", *extra)
     members = [str(cargo), "metadata", "--format-version", "1", "--no-deps", *common]
+    changed(checked.watch, digest, "while Peeky checked the workspace")
     first = _cargo(members, checked.workspace, env, timeout)
     metadata = _json(first, "metadata", version)
     check_metadata(metadata, version)
@@ -1556,20 +1622,28 @@ def read(root, config, cargo, rustc, cargo_home, target_dir, timeout=60, rustfla
         config.vendor,
     )
     selection = run_selection(chosen.run, config.features)
-    output = _cargo(
-        [str(cargo), *selection, *common, "--unit-graph", "-Z", "unstable-options"],
-        checked.workspace,
-        {**env, "RUSTC_BOOTSTRAP": "1"},
-        timeout,
-    )
+    units = [str(cargo), *selection, *common, "--unit-graph", "-Z", "unstable-options"]
+    output = _cargo(units, checked.workspace, {**env, "RUSTC_BOOTSTRAP": "1"}, timeout)
     shape = read_workspace(
         root, chosen, checked, metadata, _json(output, "unit graph", version), version
     )
-    state = watched(checked.watch, (shape.root / each.manifest for each in shape.local), digest)
-    if _cargo(members, checked.workspace, env, timeout) != first:
-        raise ValueError(
-            "Provenance: Cargo's metadata of the workspace's members changed while Peeky read "
-            "it and Cargo ran. Build again"
-        )
+    named = [shape.root / each.manifest for each in shape.local]
+    for package in metadata["packages"]:
+        named.append(Path(package["manifest_path"]))
+        named += [
+            Path(each["path"], "Cargo.toml")
+            for each in package.get("dependencies", ())
+            if "path" in each
+        ]
+    state = watched(checked.watch, named, digest)
+    for argv, before, what, bootstrap in (
+        (members, first, "metadata of the workspace's members", {}),
+        (units, output, "unit graph of the build", {"RUSTC_BOOTSTRAP": "1"}),
+    ):
+        if _cargo(argv, checked.workspace, {**env, **bootstrap}, timeout) != before:
+            raise ValueError(
+                f"Provenance: Cargo's {what} changed while Peeky read the workspace and Cargo "
+                "ran. Build again"
+            )
     changed(state, digest)
     return replace(shape, watch=state)
