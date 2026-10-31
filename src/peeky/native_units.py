@@ -164,6 +164,86 @@ def recorded_command(unit, version):
     return words
 
 
+# clang's driver options whose value it records as the next word (`-I inc`), as its
+# Options.td gives them (Separate and JoinedOrSeparate).
+_SEPARATE = frozenset(
+    """-o -I -D -U -include -imacros -isystem -iquote -idirafter -iprefix -iwithprefix
+    -iwithprefixbefore -isysroot -ivfsoverlay -iframework -iframeworkwithsysroot
+    -isystem-after -cxx-isystem -include-pch -MF -MT -MQ -MJ -x -Xlinker -Xassembler
+    -Xpreprocessor -Xanalyzer -Xopenmp-target -Xcuda-fatbinary -Xcuda-ptxas -arch -target
+    -F -L -l -u -z -A -B -T -dependency-file -dependency-dot -serialize-diagnostics
+    -install_name -framework -weak_framework -filelist -working-directory --sysroot
+    -index-store-path""".split()
+)
+# Options that take no value, or join theirs: the word after one is its own. Another
+# option (one this doesn't know) may take the next word as its value.
+_COMPLETE = re.compile(
+    r"-(?:[WfgOm].*|std=.*|stdlib=.*|[cSEvwPC]|pipe|pthreads?|M[DMPG]?|MMD|ansi"
+    r"|pedantic.*|shared|static.*|rdynamic|nostd.*|nodefaultlibs|integrated-as"
+    r"|no-integrated-as|save-temps.*|fsyntax-only|[DUILl].+|.*=.*)"
+)
+# What the driver's -O options mean (`-O` is -O1, `-O4` is -O3: clang's own aliases).
+_LEVELS = {"": "1", "0": "0", "1": "1", "2": "2", "3": "3", "4": "3", "s": "s", "z": "z"}
+_LEVELS |= {"g": "g", "fast": "fast"}
+# Options clang passes on to its compiler (`-Xclang`) that change no code it makes:
+# warnings, and those Apple's driver adds of its own.
+_INERT = re.compile(r"-W.*|-clang-vendor-feature=.*|-fno-odr-hash-protocols")
+
+
+def _optimizing(word):
+    return word.startswith("-O") or word == "-fno-lto" or re.fullmatch(r"-flto(?:=.*)?", word)
+
+
+def optimization(words):
+    """(level, lto) of the arguments ``recorded_command`` read: the last `-O` option's
+    level (`"0"` without one: clang's default), and whether the last of `-flto`,
+    `-flto=…` and `-fno-lto` asks for LTO. An `-O` or LTO option passed to clang's
+    compiler (`-Xclang -O2`) counts too.
+
+    Raises NotRecorded naming an option that may change either but can't be read: one
+    passed with `-mllvm` or `-Xarch_…`, or with `-Xclang` but not known; an unknown
+    `-O` level; or a word like an `-O` or LTO option where it may be another option's
+    value (`-o -O0`, or after an option this doesn't know)."""
+    level, lto, at = "0", False, 1
+    while at < len(words):
+        word = words[at]
+        at += 1
+        if word in ("-Xclang", "-mllvm"):
+            forwarded = words[at] if at < len(words) else ""
+            at += 1
+            if word == "-mllvm" or not (_INERT.fullmatch(forwarded) or _optimizing(forwarded)):
+                raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
+            if _INERT.fullmatch(forwarded):
+                continue
+            if forwarded.startswith("-O") and forwarded[2:] in _LEVELS:
+                level = _LEVELS[forwarded[2:]]
+            elif re.fullmatch(r"-flto(?:=(?:full|thin))?", forwarded):
+                lto = True
+            else:
+                raise NotRecorded(f"records {word} {forwarded}, which Peeky can't judge")
+            continue
+        if word.startswith("-Xarch_"):
+            raise NotRecorded(f"records {word}, which Peeky can't judge")
+        if word in _SEPARATE:
+            value = words[at] if at < len(words) else ""
+            at += 1
+            if _optimizing(value):
+                raise NotRecorded(f"records {word} {value}, which Peeky can't judge")
+            continue
+        if not _optimizing(word):
+            continue
+        before = words[at - 2]
+        if at > 2 and before.startswith("-") and not _COMPLETE.fullmatch(before):
+            raise NotRecorded(f"records {word} after {before}, which Peeky can't judge")
+        if word.startswith("-O"):
+            if word[2:] not in _LEVELS:
+                raise NotRecorded(f"records {word}, which Peeky can't judge")
+            level = _LEVELS[word[2:]]
+        else:
+            lto = word != "-fno-lto"
+    return level, lto
+
+
 @dataclass(frozen=True)
 class LineFile:
     """A file a line table names: its directory's index, its name, and the MD5 the
@@ -185,25 +265,50 @@ class LineHeader:
     files: dict
 
     def checksummed(self):
-        """Whether the table holds an MD5 of every file it names."""
-        return bool(self.files) and all(entry.checksum for entry in self.files.values())
+        """Whether the table holds an MD5 of every file it names. A DWARF 5 table must
+        name file 0, its unit's own (``describes``)."""
+        return (
+            bool(self.files)
+            and (self.version < 5 or 0 in self.files)
+            and all(entry.checksum for entry in self.files.values())
+        )
 
     def path(self, index, comp_dir):
         """The path of file ``index`` as the compiler named it: its name, under its
-        directory, under ``comp_dir`` (the unit's `DW_AT_comp_dir`) where relative.
+        directory. A DWARF 5 table's directory 0 is the unit's compilation directory,
+        and its other relative directories are under it. A DWARF 4 table's are under
+        ``comp_dir`` (the unit's `DW_AT_comp_dir`). None where that leaves the path
+        relative: nothing says where it is (`-fdebug-compilation-dir=rel`).
         Not resolved: the caller resolves it on this machine, if at all."""
         entry = self.files[index]
         if posixpath.isabs(entry.name):
             return entry.name
         if self.version >= 5:
             directory = self.directories[entry.directory]
-            base = self.directories[0]
-            if not posixpath.isabs(base):
-                base = posixpath.join(comp_dir or "", base)
+            if entry.directory != 0:
+                directory = posixpath.join(self.directories[0], directory)
         else:
-            directory = "" if entry.directory == 0 else self.directories[entry.directory]
-            base = comp_dir or ""
-        return posixpath.join(base, directory, entry.name)
+            directory = comp_dir or ""
+            if entry.directory != 0:
+                directory = posixpath.join(directory, self.directories[entry.directory])
+        found = posixpath.join(directory, entry.name)
+        return found if posixpath.isabs(found) else None
+
+    def describes(self, unit):
+        """Whether this DWARF 5 table's file 0 is ``unit``'s own: its directory 0 is the
+        unit's `DW_AT_comp_dir`, and its file 0 the unit's `DW_AT_name` there, both
+        absolute. False for a DWARF 4 table, which has no file 0."""
+        if self.version < 5 or 0 not in self.files or not unit.name or not unit.comp_dir:
+            return False
+        if self.directories.get(0) != unit.comp_dir or self.files[0].directory != 0:
+            return False
+        own = self.path(0, unit.comp_dir)
+        named = posixpath.join(unit.comp_dir, unit.name)
+        return (
+            own is not None
+            and posixpath.isabs(named)
+            and posixpath.normpath(own) == posixpath.normpath(named)
+        )
 
 
 _TABLE = re.compile(r"debug_line\[0x([0-9a-f]{8,16})\]")

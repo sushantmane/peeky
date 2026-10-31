@@ -3,6 +3,7 @@ phase 1). The texts are llvm-dwarfdump 18's, of a unit clang 18 and GCC 13 built
 and Apple clang 21 on macOS."""
 
 import hashlib
+import re
 
 import pytest
 
@@ -11,6 +12,7 @@ from peeky.native_units import (
     NotRecorded,
     compiler_of,
     md5_of,
+    optimization,
     read_units,
     recorded_command,
 )
@@ -241,6 +243,108 @@ def test_line_tables_name_their_files_with_md5s():
     # DWARF 4 counts files from 1; directory 0 is the unit's own.
     assert [gcc.path(index, "/w") for index in gcc.files] == ["/w/gcc.c", "/w/inc/a.h"]
     assert lined.path(1, "/w") == "/abs/gram.y"
+    units = read_units(LINUX_UNITS)
+    assert clang.describes(units[0]) and not gcc.describes(units[1])
+
+
+def _table(text):
+    files = LineFiles()
+    files.feed(text)
+    (table,) = files.close().values()
+    return table
+
+
+ONE = LINES.split("\n\ndebug_line[0x00000093]")[0]
+
+
+def test_a_relative_compilation_directory_leaves_paths_unresolved():
+    # `-fdebug-compilation-dir=rel`: DWARF 5's directory 0 is the compilation directory,
+    # never joined to itself; nothing says where `rel` is, so no path is given.
+    table = _table(
+        ONE.replace('include_directories[  0] = "/w"', 'include_directories[  0] = "rel"')
+    )
+    assert [table.path(index, "rel") for index in table.files] == [None, None]
+    assert table.path(0, "/w") is None
+    (unit,) = read_units(LINUX_UNITS.split("0x0000005e: Compile")[0].replace('("/w")', '("rel")'))
+    assert unit.comp_dir == "rel" and not table.describes(unit)
+    four = _table(
+        'debug_line[0x00000000]\n version: 4\nfile_names[  1]:\n name: "a.c"\n dir_index: 0\n'
+    )
+    assert four.path(1, None) is None and four.path(1, "rel") is None
+    assert four.path(1, "/w") == "/w/a.c"
+
+
+def test_a_dwarf_5_table_must_name_its_unit_as_file_0():
+    clang = read_units(LINUX_UNITS)[0]
+    table = _table(ONE)
+    assert table.checksummed() and table.describes(clang)
+    # Without file 0, a table names none of its unit's own lines: not judged.
+    lacking = _table(
+        ONE.replace(
+            'file_names[  0]:\n           name: "main.c"',
+            'file_names[  2]:\n           name: "main.c"',
+        )
+    )
+    assert 0 not in lacking.files and not lacking.checksummed() and not lacking.describes(clang)
+    for change in (
+        ('name: "main.c"', 'name: "other.c"'),
+        ('include_directories[  0] = "/w"', 'include_directories[  0] = "/w/."'),
+        ("dir_index: 0", "dir_index: 1"),
+    ):
+        assert not _table(ONE.replace(*change, 1)).describes(clang), change
+    assert not table.describes(read_units(LINUX_UNITS.replace('("main.c")', '("m.c")', 1))[0])
+
+
+@pytest.mark.parametrize(
+    "arguments, found",
+    [
+        ("-c a.c", ("0", False)),
+        ("-O2 -c a.c -O0", ("0", False)),
+        ("-O0 -O2 -c a.c", ("2", False)),
+        ("-O -c a.c", ("1", False)),
+        ("-O4 -Os -Oz", ("z", False)),
+        ("-Ofast", ("fast", False)),
+        ("-O0 -Xclang -O2", ("2", False)),
+        ("-Xclang -O2 -O0", ("0", False)),
+        ("-O0 -flto=thin", ("0", True)),
+        ("-flto=full -fno-lto", ("0", False)),
+        ("-fno-lto -flto", ("0", True)),
+        ("-flto-jobs=4 -O0", ("0", False)),
+        ("-O0 -Xclang -flto=thin", ("0", True)),
+        ("-O0 -o out -I inc -D X=1", ("0", False)),
+        # Apple's driver adds these of its own.
+        ("-O0 -Xclang -clang-vendor-feature=+x -Xclang -fno-odr-hash-protocols", ("0", False)),
+        ("-O0 -Xclang -Wno-error=allocator-wrappers -mmacos-version-min=27.0", ("0", False)),
+        ("-O2 -Wl,-O1 -Wall -fno-omit-frame-pointer -O0", ("0", False)),
+    ],
+)
+def test_optimization_is_the_last_option_s(arguments, found):
+    assert optimization(["/usr/bin/clang", *arguments.split()]) == found
+
+
+@pytest.mark.parametrize(
+    "arguments, why",
+    [
+        ("-O0 -mllvm -inline-threshold=0", "-mllvm -inline-threshold=0"),
+        ("-O0 -Xclang -disable-O0-optnone", "-Xclang -disable-O0-optnone"),
+        ("-O0 -Xclang -load -Xclang x.so", "-Xclang -load"),
+        ("-O0 -Xarch_arm64 -O2", "-Xarch_arm64"),
+        ("-O2 -o -O0", "-o -O0"),
+        ("-O2 -Xlinker -O0", "-Xlinker -O0"),
+        ("-O2 -frobnicate-next -O0", None),
+        ("-O2 --unknown -O0", "-O0 after --unknown"),
+        ("-O5", "-O5"),
+        ("-Xclang", "-Xclang "),
+    ],
+)
+def test_an_option_that_may_change_optimization_unread_is_refused(arguments, why):
+    words = ["/usr/bin/clang", *arguments.split()]
+    if why is None:
+        # `-f` options join their values: the next word is an option of its own.
+        assert optimization(words) == ("0", False)
+        return
+    with pytest.raises(NotRecorded, match=re.escape(why) + ".*which Peeky can't judge"):
+        optimization(words)
 
 
 def test_line_tables_fed_in_pieces_read_alike():

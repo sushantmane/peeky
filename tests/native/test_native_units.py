@@ -89,15 +89,17 @@ def _program(root):
     )
 
 
-def _build(compiler, root, flags, source="main.c"):
-    """The symbols of ``source`` built with ``flags``, linked as a program: on macOS
-    the dSYM dsymutil makes of it, as Peeky reads a program's symbols there."""
+def _build(compiler, root, flags, source="main.c", env=None):
+    """The symbols of ``source`` built with ``flags`` (and ``env`` added to the
+    environment), linked as a program: on macOS the dSYM dsymutil makes of it, as Peeky
+    reads a program's symbols there."""
     sysroot = os.environ.get("PEEKY_NATIVE_SYSROOT")
     driver = [compiler, *(("-isysroot", sysroot) if sysroot and sys.platform == "darwin" else ())]
     subprocess.run(
         [*driver, "-O0", "-g", "-gdwarf-5", *flags, "-c", source, "-o", "main.o"],
         cwd=root,
         check=True,
+        env={**os.environ, **(env or {})},
     )
     subprocess.run([*driver, "main.o", "-o", "program"], cwd=root, check=True)
     if sys.platform != "darwin":
@@ -142,7 +144,7 @@ def test_clang_records_each_preprocessor_argument_and_each_file_s_md5(tmp_path):
     start = words.index("-I")
     assert words[start : start + len(RECORDED)] == RECORDED
     assert words[words.index("-c") + 1] == "main.c"
-    assert table.checksummed()
+    assert table.checksummed() and table.describes(unit)
     named = _named(unit, table)
     root = tmp_path.resolve()
     assert named[str(root / "main.c")] == md5_of(root / "main.c")
@@ -162,6 +164,69 @@ def test_without_the_flag_clang_records_no_command_line(tmp_path):
     assert table.checksummed()
     with pytest.raises(NotRecorded, match="rebuild with -grecord-command-line"):
         recorded_command(unit, _version(compiler))
+
+
+def _pairs(words):
+    return list(zip(words, words[1:]))
+
+
+def test_clang_records_what_response_files_configurations_and_overrides_add(tmp_path):
+    dwarfdump, compiler = _tools(), _clang()
+    _program(tmp_path)
+    (tmp_path / "args.rsp").write_text("-DRSP=1 -Iinc\n")
+    (tmp_path / "my.cfg").write_text("-DCFG=1\n")
+    flags = ["-grecord-command-line", "@args.rsp", "--config=./my.cfg", "-Iinc sp", "-Isys"]
+    flags += ["-include", "pre.h"]
+    unit, _ = _read(
+        dwarfdump,
+        _build(compiler, tmp_path, flags, env={"CCC_OVERRIDE_OPTIONS": "+-DOVR=1"}),
+    )
+    words = recorded_command(unit, _version(compiler))
+    for pair in (("-D", "RSP=1"), ("-I", "inc"), ("-D", "CFG=1"), ("-D", "OVR=1")):
+        assert pair in _pairs(words), pair
+    assert not any(word.startswith(("@", "--config")) for word in words)
+
+
+def test_clang_records_no_include_path_from_the_environment(tmp_path):
+    dwarfdump, compiler = _tools(), _clang()
+    _program(tmp_path)
+    # <s.h> is found only through them: the build works, and records neither.
+    found = str(tmp_path / "sys")
+    unit, _ = _read(
+        dwarfdump,
+        _build(
+            compiler,
+            tmp_path,
+            ["-grecord-command-line", "-Iinc", "-Iinc sp", "-include", "pre.h"],
+            env={"CPATH": found, "C_INCLUDE_PATH": found},
+        ),
+    )
+    words = recorded_command(unit, _version(compiler))
+    assert not any(found in word for word in words)
+
+
+def test_clang_records_preprocessor_options_passed_on_as_written(tmp_path):
+    dwarfdump, compiler = _tools(), _clang()
+    _program(tmp_path)
+    passed = ["-Wp,-DWP=1", "-Xpreprocessor", "-DXP=1", "-Xclang", "-DXC=1"]
+    unit, _ = _read(
+        dwarfdump, _build(compiler, tmp_path, ["-grecord-command-line", *ARGUMENTS, *passed])
+    )
+    words = recorded_command(unit, _version(compiler))
+    assert "-Wp,-DWP=1" in words
+    assert ("-Xpreprocessor", "-DXP=1") in _pairs(words) and ("-Xclang", "-DXC=1") in _pairs(words)
+
+
+def test_a_relative_compilation_directory_names_no_path(tmp_path):
+    # `-fdebug-compilation-dir=rel`: the unit's directory says nowhere on this machine.
+    dwarfdump, compiler = _tools(), _clang()
+    _program(tmp_path)
+    unit, table = _read(
+        dwarfdump, _build(compiler, tmp_path, [*ARGUMENTS, "-fdebug-compilation-dir=rel"])
+    )
+    assert unit.comp_dir == "rel" and table.directories[0] == "rel"
+    assert table.checksummed() and not table.describes(unit)
+    assert {table.path(index, unit.comp_dir) for index in table.files} == {None}
 
 
 @pytest.mark.skipif(
@@ -214,13 +279,16 @@ def test_a_cpp_inheriting_constructor_names_a_file_without_an_md5(tmp_path):
     assert not table.checksummed() and table.files[1].checksum is None
 
 
-def test_gcc_records_no_md5_and_no_preprocessor_arguments(tmp_path):
+@pytest.mark.parametrize("assembler", [[], ["-gno-as-loc-support"]], ids=["as", "no-as"])
+def test_gcc_records_no_md5_and_no_preprocessor_arguments(tmp_path, assembler):
+    # With or without the assembler's line support.
     dwarfdump, compiler = _tools(), gcc()
     if compiler is None:
         pytest.skip("needs GCC")
     _program(tmp_path)
     unit, table = _read(
-        dwarfdump, _build(compiler, tmp_path, ["-grecord-gcc-switches", *ARGUMENTS])
+        dwarfdump,
+        _build(compiler, tmp_path, ["-grecord-gcc-switches", *assembler, *ARGUMENTS]),
     )
     assert compiler_of(unit.producer) == "gcc" and table.version == 5
     assert table.files and all(entry.checksum is None for entry in table.files.values())

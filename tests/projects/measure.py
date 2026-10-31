@@ -4,18 +4,26 @@ the ADR's "Verified for phase 1" table comes from it.
 
 Usage: measure.py <llvm-dwarfdump> <binary> <root> <compiler>
 
-A measurement, not Peeky's judging: it takes a unit's optimization from the last `-O`
-word of its recorded command, and reads every unit's debug information at once."""
+A measurement, not Peeky's judging: it reads every unit's debug information at once.
+Each unit is reported by its offset, as several may share a name (`<artificial>`)."""
 
 import collections
 import json
+import posixpath
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import peeky.native as native
-from peeky.native_units import LineFiles, NotRecorded, md5_of, read_units, recorded_command
+from peeky.native_units import (
+    LineFiles,
+    NotRecorded,
+    md5_of,
+    optimization,
+    read_units,
+    recorded_command,
+)
 
 
 def _lines(dwarfdump, arguments, total):
@@ -25,37 +33,24 @@ def _lines(dwarfdump, arguments, total):
         for line in process.stdout:
             total[0] += len(line.encode())
             yield line.rstrip("\n")
-
-
-def _optimization(words):
-    level, lto, value = "0", False, False
-    separate = {"-o", "-I", "-D", "-U", "-include", "-isystem", "-MF", "-MT", "-MQ", "-x"}
-    for word in words[1:]:
-        if value:
-            value = False
-        elif word in separate or word in ("-Xclang", "-mllvm"):
-            value = True
-        elif word.startswith("-O"):
-            level = word[2:] or "1"
-        elif word == "-flto" or word.startswith("-flto="):
-            lto = True
-        elif word == "-fno-lto":
-            lto = False
-    return level, lto
+    if process.returncode:
+        raise RuntimeError(f"{dwarfdump} {' '.join(arguments)} failed: {process.returncode}")
 
 
 def _why(unit, version, tables, root):
     """Why ``unit`` isn't judged, in a few words each; empty where it is."""
     why = []
-    main = Path(unit.comp_dir or "/", unit.name or "")
-    if not main.resolve().is_relative_to(root):
+    main = posixpath.join(unit.comp_dir or "", unit.name or "")
+    if not posixpath.isabs(main):
+        why.append("its main file has no absolute path")
+    elif not Path(main).resolve().is_relative_to(root):
         why.append("its main file is outside the root")
     if unit.dwo_name:
         why.append("split DWARF")
     if unit.version < 5:
         why.append(f"DWARF {unit.version}")
     try:
-        level, lto = _optimization(recorded_command(unit, version))
+        level, lto = optimization(recorded_command(unit, version))
         if level != "0":
             why.append(f"-O{level}")
         if lto:
@@ -68,8 +63,13 @@ def _why(unit, version, tables, root):
     if not table.checksummed():
         named = {entry.name for entry in table.files.values() if not entry.checksum}
         return [*why, "no MD5s" + (" (names <stdin>)" if "<stdin>" in named else "")]
+    if not table.describes(unit):
+        return [*why, "its line table's file 0 isn't the unit's own"]
     for index, entry in table.files.items():
         path = table.path(index, unit.comp_dir)
+        if path is None:
+            why.append(f"{entry.name} has no absolute path")
+            continue
         try:
             if md5_of(path) != entry.checksum:
                 why.append(f"{path} changed")
@@ -111,8 +111,16 @@ def main(dwarfdump, binary, root, compiler):
         "kept": 300 << 20,
     }
     units = [unit for unit in units if unit.kind == "Compile"]
-    found = {unit.name: _why(unit, version, tables, root) for unit in units}
-    report["units"] = {name: "; ".join(why) or "judged" for name, why in found.items()}
+    report["units"] = {
+        f"0x{unit.offset:08x} {unit.name}": "; ".join(_why(unit, version, tables, root)) or "judged"
+        for unit in units
+    }
+    names = collections.Counter(unit.name for unit in units)
+    report["count"] = {
+        "units": len(units),
+        "names": len(names),
+        "shared": {name: count for name, count in names.items() if count > 1},
+    }
     report["summary"] = dict(collections.Counter(report["units"].values()).most_common())
     json.dump(report, sys.stdout, indent=1)
     print()
