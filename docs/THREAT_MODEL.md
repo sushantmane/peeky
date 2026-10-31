@@ -176,13 +176,15 @@ A process running as the same user, or as root, isn't covered.
   and the adapter on the bundle's. Where `PATH` names the bundle's `java`, nothing more is
   checked, as for every tool on `PATH`.
 - Where `PATH`'s `java` is another, Peeky picks the bundle's itself. So it also requires the
-  bundle's `java` to be a JDK's own `bin/java`, whose JDK files setup recorded. Neither it nor a
-  directory above it may be writable by a user other than you or root. A JDK under
-  `/usr/lib/jvm`, owned by root and writable by no one else, passes.
-- A JDK's own `bin/java` is a native executable, ELF or Mach-O, not a script. It is in a JDK 9
-  or later: beside a `release` file naming `JAVA_VERSION`, `lib/modules` and a native
-  `lib/server/libjvm`. Someone who can write such files can make a fake JDK. That is the
-  trusted-code bar, as for every tool Peeky runs.
+  bundle's `java` to be a JDK's own `bin/java`, whose JDK files setup recorded, at the same paths
+  now. None of `bin/java`, `release`, `lib/server/libjvm` and `lib/modules`, nor a directory
+  above them, may be writable by a user other than you or root. So no one else can change a file
+  between Peeky's hash and the JVM's read. A JDK under `/usr/lib/jvm`, owned by root, passes.
+- A JDK's own `bin/java` is a native executable, not a script: an ELF executable or shared
+  object, or a Mach-O executable, universal or not. It is in a JDK 9 or later: beside a
+  `release` file naming `JAVA_VERSION`, `lib/modules` and a native `lib/server/libjvm`. Someone
+  who can write such files can make a fake JDK. That is the trusted-code bar, as for every tool
+  Peeky runs.
 - Peeky never decides which JDK a `java` is by running it. A wrapper or a launcher, such as
   macOS's `/usr/bin/java`, can print one JDK and run another, by `JAVA_HOME`. Where the two
   `java`s differ, both must be a JDK's own `bin/java`, and their `release` files give their

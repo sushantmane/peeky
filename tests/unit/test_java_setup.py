@@ -11,6 +11,7 @@ import io
 import json
 import os
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -23,12 +24,49 @@ from types import SimpleNamespace
 
 import pytest
 
+import peeky.build
 import peeky.java
 from peeky import cli, java_setup
 from peeky.errors import classify
 from peeky.java import _verify_bundle, bundle_directory
 
 ROOT = Path(__file__).resolve().parents[2]
+# The real checks, before a fixture fakes them.
+REAL = {
+    "jdk_of": peeky.java.jdk_of,
+    "_java_sha256": peeky.java._java_sha256,
+    "java_identity": java_setup.java_identity,
+}
+
+
+def elf(e_type, order="<", bits=2):
+    """An ELF header: class ``bits`` (2: 64 bit), byte ``order``, of e_type ``e_type``."""
+    data = 1 if order == "<" else 2
+    return (
+        b"\x7fELF"
+        + bytes((bits, data, 1))
+        + bytes(9)
+        + struct.pack(f"{order}H", e_type)
+        + bytes(46)
+    )
+
+
+# Mach-O's magic numbers as a file starts, with the byte order of its header's fields.
+MACHO_MAGIC = {b"\xfe\xed\xfa\xce": ">", b"\xfe\xed\xfa\xcf": ">"}
+MACHO_MAGIC.update({b"\xce\xfa\xed\xfe": "<", b"\xcf\xfa\xed\xfe": "<"})
+FAT_MAGIC = {b"\xca\xfe\xba\xbe": ">", b"\xca\xfe\xba\xbf": ">"}
+FAT_MAGIC.update({b"\xbe\xba\xfe\xca": "<", b"\xbf\xba\xfe\xca": "<"})
+
+
+def macho(magic, filetype):
+    order = MACHO_MAGIC[magic]
+    return magic + struct.pack(f"{order}III", 0x0100000C, 0, filetype) + bytes(48)
+
+
+def fat(magic, arches):
+    return magic + struct.pack(f"{FAT_MAGIC[magic]}I", arches) + bytes(56)
+
+
 EVENT_HUB_CLASS = "classes/com/microsoft/java/debug/core/EventHub.class"
 UPSTREAM_EVENT_HUB = """\
                 for (Event event : set) {
@@ -1098,22 +1136,91 @@ def test_a_bundles_java_that_is_gone_or_leads_elsewhere_is_refused(state, jdk11_
     assert jdk11_on_path.commands == []
 
 
-def test_peeky_picks_the_bundles_java_only_where_no_one_else_can_change_it(state, jdk11_on_path):
+@pytest.mark.parametrize(
+    "path, shared",
+    [
+        (JAVA, "/opt/jdk/bin"),
+        ("/opt/jdk/release", "/opt/jdk/release"),
+        ("/opt/jdk/lib/server/libjvm.so", "/opt/jdk/lib/server/libjvm.so"),
+        ("/opt/jdk/lib/modules", "/opt/jdk/lib"),
+    ],
+)
+def test_peeky_picks_the_bundles_java_only_where_no_one_else_can_change_it(
+    state, jdk11_on_path, path, shared
+):
+    # Each file that makes the JDK it is: another user could rewrite a writable libjvm
+    # between its hash and the JVM mapping it.
     bundle = bundle_directory(state / "java-adapter")
-    jdk11_on_path.shared[JAVA] = "/opt/jdk/bin"
-    with pytest.raises(ValueError) as shared:
+    jdk11_on_path.shared[path] = shared
+    with pytest.raises(ValueError) as refused:
         peeky.java.adapter_java(bundle, None, OLD_JAVA)
-    assert str(shared.value) == (
+    assert str(refused.value) == (
         f"{RULE}, for the bundle at {bundle}. Peeky runs it in place of the java on PATH only "
-        "where no other user can change it, and /opt/jdk/bin is writable by others. Set the "
+        "where no other user can change it or its JDK's files (bin/java, release, "
+        f"lib/server/libjvm, lib/modules), and {shared} is writable by others. Set the "
         f"config's java to {JAVA} to run the program on it too, if you trust it. Or, if "
-        "/opt/jdk/bin is yours, run `chmod go-w /opt/jdk/bin`. Or rebuild the bundle with the "
+        f"{shared} is yours, run `chmod go-w {shared}`. Or rebuild the bundle with the "
         f"JDK 17 or later you want: {REBUILD}"
     )
-    assert classify(shared.value)["code"] == "UNSUPPORTED"
+    assert classify(refused.value)["code"] == "UNSUPPORTED"
     # PATH or the config names it: as before, as for every tool on PATH.
     assert peeky.java.adapter_java(bundle, None, JAVA) == JAVA
     assert peeky.java.adapter_java(bundle, JAVA, OLD_JAVA) == JAVA
+
+
+def test_peeky_picks_the_bundles_java_only_with_the_jdk_files_setup_pinned(
+    state, jdk11_on_path, monkeypatch
+):
+    # The JDK the java is in now must name the files whose bytes were checked.
+    bundle = bundle_directory(state / "java-adapter")
+    elsewhere = SimpleNamespace(
+        home="/opt/jdk", version="17.0.1", release="/opt/jdk/release", libjvm="/opt/x/libjvm.so"
+    )
+    monkeypatch.setattr(peeky.java, "jdk_of", lambda java: (elsewhere, None))
+    with pytest.raises(ValueError) as moved:
+        peeky.java.adapter_java(bundle, None, OLD_JAVA)
+    assert (
+        "Its JDK's files are not the ones setup pinned: libjvm is /opt/x/libjvm.so now, not "
+        "/opt/jdk/lib/server/libjvm.so. Rebuild the bundle"
+    ) in str(moved.value)
+
+
+def test_a_writable_libjvm_is_refused_on_the_real_filesystem(state, offline, monkeypatch, tmp_path):
+    # The real checks, on a JDK of native-looking files that no other user can change.
+    if peeky.build.writable_by_others(tmp_path) is not None:
+        pytest.skip("the temporary directory is under one that other users can write")
+    for module, name in ((peeky.java, "jdk_of"), (peeky.java, "_java_sha256")):
+        monkeypatch.setattr(module, name, REAL[name])
+    monkeypatch.setattr(peeky.java, "writable_by_others", peeky.build.writable_by_others)
+    home = tmp_path / "jdk-17"
+    java, libjvm = home / "bin" / "java", home / "lib" / "server" / "libjvm.so"
+    libjvm.parent.mkdir(parents=True)
+    java.parent.mkdir()
+    java.write_bytes(elf(3))
+    libjvm.write_bytes(elf(3))
+    (home / "lib" / "modules").write_bytes(b"jimage")
+    (home / "release").write_text('JAVA_VERSION="17.0.1"\n')
+    for path in (home, *home.rglob("*")):
+        path.chmod(0o755 if path.is_dir() or path == java else 0o644)
+    java = str(java.resolve())
+    offline.versions[java] = 'openjdk version "17.0.1"'
+    tools = {
+        "java": java,
+        "java_version": offline.versions[java],
+        "javac": JAVAC,
+        "javac_version": offline.versions[JAVAC],
+        **REAL["java_identity"](java),
+    }
+    assert tools["java_jdk"]["libjvm"] == str(libjvm.resolve())
+    bundle = tmp_path / "adapter"
+    java_setup.setup(bundle, tools=tools)
+    assert peeky.java.adapter_java(bundle.resolve(), None, OLD_JAVA) == java
+    libjvm.chmod(0o664)
+    with pytest.raises(ValueError) as refused:
+        peeky.java.adapter_java(bundle.resolve(), None, OLD_JAVA)
+    assert f"and {libjvm.resolve()} is writable by others" in str(refused.value)
+    # PATH naming it: as for every tool on PATH.
+    assert peeky.java.adapter_java(bundle.resolve(), None, java) == java
 
 
 def test_peeky_picks_only_a_jdks_own_java(state, offline, monkeypatch):
@@ -1186,7 +1293,7 @@ def test_a_jdks_own_java_is_a_native_executable_in_a_jdk_layout(tmp_path):
     java.write_text('#!/bin/sh\nexec /opt/jdk21/bin/java "$@"\n')
     (home / "release").write_text('IMPLEMENTOR="x"\nJAVA_VERSION="11.0.2"\nOS_ARCH="aarch64"\n')
     assert jdk_of(str(java)) == (None, "it is not a native executable (a script?)")
-    java.write_bytes(b"\x7fELF\x02\x01\x01" + bytes(64))
+    java.write_bytes(elf(3))
     assert jdk_of(str(java)) == (
         None,
         f"{home} has no lib/modules or lib/server/libjvm, as a JDK 9 or later has",
@@ -1195,17 +1302,20 @@ def test_a_jdks_own_java_is_a_native_executable_in_a_jdk_layout(tmp_path):
     (home / "lib" / "modules").write_bytes(b"jimage")
     (home / "lib" / "server" / "libjvm.so").write_text("not a library")
     assert jdk_of(str(java))[0] is None
-    for magic, name in ((b"\x7fELF", "libjvm.so"), (b"\xcf\xfa\xed\xfe", "libjvm.dylib")):
+    for header, name in ((elf(3), "libjvm.so"), (macho(b"\xcf\xfa\xed\xfe", 6), "libjvm.dylib")):
         for old in (home / "lib" / "server").iterdir():
             old.unlink()
-        (home / "lib" / "server" / name).write_bytes(magic + bytes(64))
+        (home / "lib" / "server" / name).write_bytes(header)
         found, why = jdk_of(str(java))
         assert why is None and found == peeky.java.JDK(
             str(home), "11.0.2", str(home / "release"), str(home / "lib" / "server" / name)
         )
-    # Mach-O, universal too, is native.
-    java.write_bytes(b"\xca\xfe\xba\xbe" + bytes(64))
+    # Mach-O, universal too, is native; a Java class file, which starts as one, is not.
+    java.write_bytes(fat(b"\xca\xfe\xba\xbe", 2))
     assert jdk_of(str(java))[0] is not None
+    java.write_bytes(b"\xca\xfe\xba\xbe\x00\x00\x00\x3d" + bytes(56))
+    assert jdk_of(str(java)) == (None, "it is not a native executable (a script?)")
+    java.write_bytes(elf(3))
     (home / "release").write_text('JAVA_VERSION="1.8.0_402"\n')
     assert jdk_of(str(java)) == (None, "it is JDK 8 (1.8.0_402), and Peeky takes JDK 9 or later")
     (home / "release").write_text('IMPLEMENTOR="x"\n')
@@ -1221,6 +1331,49 @@ def test_a_jdks_own_java_is_a_native_executable_in_a_jdk_layout(tmp_path):
         22,
         None,
     ]
+
+
+NATIVE = [
+    (elf(2), "ELF executable"),
+    (elf(3), "ELF shared object or PIE"),
+    (elf(3, ">"), "ELF big-endian"),
+    (elf(3, "<", 1), "ELF 32 bit"),
+    *((macho(magic, 2), f"Mach-O {magic.hex()} executable") for magic in MACHO_MAGIC),
+    *((macho(magic, 6), f"Mach-O {magic.hex()} dylib") for magic in MACHO_MAGIC),
+    *((fat(magic, 2), f"universal {magic.hex()}") for magic in FAT_MAGIC),
+]
+NOT_NATIVE = [
+    (b"#!/bin/sh\nexec java\n", "a script"),
+    (elf(1), "an ELF relocatable object"),
+    (elf(4), "an ELF core file"),
+    (b"\x7fELF\x03\x01\x01" + bytes(61), "an ELF of no class"),
+    (b"\x7fELF\x02\x01", "a cut ELF header"),
+    (macho(b"\xcf\xfa\xed\xfe", 1), "a Mach-O object"),
+    (macho(b"\xfe\xed\xfa\xcf", 8)[:12], "a cut Mach-O header"),
+    (b"\xca\xfe\xba\xbe\x00\x00\x00\x3d" + bytes(56), "a Java 17 class file"),
+    (b"\xca\xfe\xba\xbe\x00\x00\x00\x2d" + bytes(56), "a Java 1.1 class file"),
+    (b"\xca\xfe\xba\xbe\xff\xff\x00\x41" + bytes(56), "a Java 21 preview class file"),
+    *((fat(magic, 0), f"universal {magic.hex()} of no architecture") for magic in FAT_MAGIC),
+    (b"PK\x03\x04" + bytes(60), "a jar"),
+    (b"", "an empty file"),
+]
+
+
+def test_every_magic_is_known():
+    assert peeky.java.NATIVE_MAGIC == {b"\x7fELF", *MACHO_MAGIC, *FAT_MAGIC}
+
+
+@pytest.mark.parametrize("head, what", NATIVE, ids=[what for _, what in NATIVE])
+def test_a_native_header_is_native(head, what, tmp_path):
+    (tmp_path / "f").write_bytes(head)
+    assert peeky.java._native(tmp_path / "f"), what
+
+
+@pytest.mark.parametrize("head, what", NOT_NATIVE, ids=[what for _, what in NOT_NATIVE])
+def test_anything_else_is_not_native(head, what, tmp_path):
+    (tmp_path / "f").write_bytes(head)
+    assert not peeky.java._native(tmp_path / "f"), what
+    assert not peeky.java._native(tmp_path)  # Not a regular file.
 
 
 def test_this_hosts_jdks_are_their_own(tmp_path):

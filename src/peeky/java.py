@@ -528,29 +528,59 @@ LAUNCHES_ONLY = (
     "java to {runner} to run the program on JDK {adapter}"
 )
 MAX_RELEASE_BYTES = 64 * 1024
-# How a native executable or library starts: ELF, and Mach-O (32 and 64 bit, either byte
-# order, and universal). A script starts `#!`.
-NATIVE_MAGIC = frozenset(
-    (
-        b"\x7fELF",
-        b"\xfe\xed\xfa\xce",
-        b"\xfe\xed\xfa\xcf",
-        b"\xce\xfa\xed\xfe",
-        b"\xcf\xfa\xed\xfe",
-        b"\xca\xfe\xba\xbe",
-        b"\xca\xfe\xba\xbf",
-        b"\xbe\xba\xfe\xca",
-    )
-)
+# How a native executable or library starts (_native): ELF, Mach-O (32 or 64 bit, either
+# byte order: the struct order of its header's fields), and Mach-O universal ("fat", 32 or
+# 64 bit, either order). A script starts `#!`; a Java class file starts as a fat one does.
+ELF_MAGIC = b"\x7fELF"
+MACHO_MAGIC = {
+    b"\xfe\xed\xfa\xce": ">",
+    b"\xfe\xed\xfa\xcf": ">",
+    b"\xce\xfa\xed\xfe": "<",
+    b"\xcf\xfa\xed\xfe": "<",
+}
+FAT_MAGIC = {
+    b"\xca\xfe\xba\xbe": ">",
+    b"\xca\xfe\xba\xbf": ">",
+    b"\xbe\xba\xfe\xca": "<",
+    b"\xbf\xba\xfe\xca": "<",
+}
+NATIVE_MAGIC = frozenset((ELF_MAGIC, *MACHO_MAGIC, *FAT_MAGIC))
+# ELF e_type: ET_EXEC, ET_DYN (a position-independent executable or a shared library).
+ELF_TYPES = (2, 3)
+# Mach-O filetype: MH_EXECUTE, MH_DYLIB.
+MACHO_TYPES = (2, 6)
+# A universal file's architecture count, nfat_arch: a few. A Java class file's same bytes
+# are its minor and major versions, which make 45 or more.
+MAX_FAT_ARCHES = 20
+
+
+def native_header(head):
+    """Whether ``head``, a file's first 20 bytes or more, is a native executable's or
+    library's header: ELF of e_type EXEC or DYN, of class 32 or 64 bit and a byte order;
+    Mach-O of filetype EXECUTE or DYLIB; or Mach-O universal, with 1 to 20 architectures."""
+    magic = head[:4]
+    if magic == ELF_MAGIC:
+        if len(head) < 18 or head[4] not in (1, 2) or head[5] not in (1, 2):
+            return False
+        return struct.unpack_from("<H" if head[5] == 1 else ">H", head, 16)[0] in ELF_TYPES
+    if magic in MACHO_MAGIC:
+        return len(head) >= 16 and struct.unpack_from(f"{MACHO_MAGIC[magic]}I", head, 12)[0] in (
+            MACHO_TYPES
+        )
+    if magic in FAT_MAGIC:
+        return len(head) >= 8 and (
+            1 <= struct.unpack_from(f"{FAT_MAGIC[magic]}I", head, 4)[0] <= MAX_FAT_ARCHES
+        )
+    return False
 
 
 def _native(path):
-    """Whether ``path`` is a regular file that starts as a native executable or library."""
+    """Whether ``path`` is a regular file with a native executable's or library's header."""
     try:
         with open(path, "rb") as opened:
             if not stat.S_ISREG(os.fstat(opened.fileno()).st_mode):
                 return False
-            return opened.read(4) in NATIVE_MAGIC
+            return native_header(opened.read(20))
     except OSError:
         return False
 
@@ -692,9 +722,10 @@ def adapter_java(bundle, named=None, program=None, *, launched=True):
     must be that one, as it always had to be. Without one, it runs the adapter whatever PATH
     holds. Where the program's `java` is it, nothing more is asked, as before: PATH names
     it. Otherwise Peeky picks it, not the config or PATH, so it must also be a JDK's own
-    bin/java (jdk_of), and neither it nor a directory above it may be writable by
-    another user (peeky.build.writable_by_others). It is never run to ask. A refusal
-    (ValueError) says what to do instead."""
+    bin/java (jdk_of) whose release file and JVM library are the ones setup pinned, and
+    none of those, nor its lib/modules, nor a directory above any of them, may be
+    writable by another user (peeky.build.writable_by_others). It is never run to ask. A
+    refusal (ValueError) says what to do instead."""
     found = _recorded_java(bundle)
     if found is None:
         # _bundle refuses such a bundle, saying why, before it compares any `java`.
@@ -731,20 +762,6 @@ def adapter_java(bundle, named=None, program=None, *, launched=True):
     if runner == program:
         return runner
     # Peeky picks this `java` itself.
-    try:
-        shared = writable_by_others(runner)
-    except OSError as exc:
-        shared = f"a directory above it, which can't be read ({exc.strerror or exc})"
-    if shared is not None:
-        raise adapter_java_refusal(
-            bundle,
-            recorded,
-            version,
-            f"Peeky runs it in place of the java on PATH only where no other user can change "
-            f"it, and {shared} is writable by others",
-            f"Set the config's java to {recorded} to run the program on it too, if you trust "
-            f"it. Or, if {shared} is yours, run `chmod go-w {shared}`. ",
-        )
     jdk, why = jdk_of(runner)
     if jdk is None or pinned is None:
         runs = f"; setup saw it run {home}" if home else ""
@@ -758,6 +775,33 @@ def adapter_java(bundle, named=None, program=None, *, launched=True):
             f"Set the config's java to {recorded} to run the program on it too. ",
             home,
         )
+    # The files that make the JDK it is must be the pinned ones (_same_java checked their
+    # bytes), and no one else may change any of them before the JVM reads it.
+    current = {"release": jdk.release, "libjvm": jdk.libjvm}
+    if moved := [name for name, path in current.items() if path != pinned.get(name)]:
+        raise adapter_java_refusal(
+            bundle,
+            recorded,
+            version,
+            "Its JDK's files are not the ones setup pinned: "
+            + "; ".join(f"{name} is {current[name]} now, not {pinned.get(name)}" for name in moved),
+        )
+    for path in (runner, jdk.release, jdk.libjvm, str(Path(jdk.home) / "lib" / "modules")):
+        try:
+            shared = writable_by_others(path)
+        except OSError as exc:
+            shared = f"a directory above {path}, which can't be read ({exc.strerror or exc})"
+        if shared is not None:
+            raise adapter_java_refusal(
+                bundle,
+                recorded,
+                version,
+                "Peeky runs it in place of the java on PATH only where no other user can change "
+                f"it or its JDK's files (bin/java, release, lib/server/libjvm, lib/modules), and "
+                f"{shared} is writable by others",
+                f"Set the config's java to {recorded} to run the program on it too, if you trust "
+                f"it. Or, if {shared} is yours, run `chmod go-w {shared}`. ",
+            )
     return runner
 
 

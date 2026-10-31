@@ -201,9 +201,9 @@ def _other_jdks(java):
 
 
 def native(path):
-    from peeky.java import NATIVE_MAGIC
+    from peeky.java import _native
 
-    return path.is_file() and path.read_bytes()[:4] in NATIVE_MAGIC
+    return _native(path)
 
 
 def jdk_release(java):

@@ -324,7 +324,8 @@ Before every operation, Peeky checks the bundle's `java`, whichever `java` runs 
 Where `java` on `PATH` is another one, Peeky picks the bundle's `java` itself. Then both `java`s
 must be a JDK's own `bin/java`:
 
-- a native executable (ELF or Mach-O), not a script;
+- a native executable, not a script: an ELF executable or shared object, or a Mach-O executable,
+  universal or not. A Java class file, which starts as a universal file does, isn't one;
 - in a JDK 9 or later, with its `release` file naming `JAVA_VERSION`, `lib/modules` and
   `lib/server/libjvm`. JDK 8 is refused there.
 
@@ -333,9 +334,11 @@ Peeky reads each JDK's version from its `release` file, and never from what a JV
 - A wrapper, a shim or macOS's `/usr/bin/java` can print one JDK and run another, by
   `JAVA_HOME`. Such a `java` is refused, with `UNSUPPORTED`, and the message says why. It names
   the JDK a wrapper says it runs: put that JDK's `bin` directory first on `PATH` instead.
-- The bundle's `java` must also be one whose JDK files setup recorded.
-- The bundle's `java`, and each directory above it, must not be writable by a user other than
-  you or root. A JDK under `/usr/lib/jvm`, owned by root, passes.
+- The bundle's `java` must also be one whose JDK files setup recorded. Its JDK must name the same
+  `release` and `lib/server/libjvm` files now.
+- The bundle's `java`, its JDK's `release`, `lib/server/libjvm` and `lib/modules`, and each
+  directory above them, must not be writable by a user other than you or root. Otherwise another
+  user could change one after Peeky hashed it. A JDK under `/usr/lib/jvm`, owned by root, passes.
 - The `version` shown comes from the `release` file. Where there is none, it is what the build's
   `java -version` printed, shown as `(says 17.0.19)`.
 
