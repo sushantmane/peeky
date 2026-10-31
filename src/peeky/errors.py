@@ -276,6 +276,28 @@ _RULES = (
         False,
     ),
     (
+        r"^The Java adapter runs only on the java that its bundle was built with: ",
+        "UNSUPPORTED",
+        "Nothing was launched or attached. Drop the config's java or set it to the one the "
+        "message names, or rebuild with `peeky setup-java`.",
+        False,
+    ),
+    (
+        r"^A Java adapter on JDK 19 or later launches a program only on JDK 19 or later",
+        "UNSUPPORTED",
+        "Nothing was launched. Rebuild the bundle with JDK 17 first on PATH (`peeky setup-java`), "
+        "or set the config's java to the adapter's.",
+        False,
+    ),
+    (
+        r"^Peeky runs a Java program on another JDK than the adapter's only from that JDK's "
+        r"own bin/java",
+        "UNSUPPORTED",
+        "Nothing was launched. Put the JDK's own bin directory first on PATH, or set the "
+        "config's java to the one the message names.",
+        False,
+    ),
+    (
         r"^No Java adapter bundle at ",
         "INVALID_REQUEST",
         "Build it with the `peeky setup-java` command the message gives; it needs JDK 17 or "

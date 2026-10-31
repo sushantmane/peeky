@@ -96,7 +96,15 @@ EVENT_HUB_CLASS = "classes/com/microsoft/java/debug/core/EventHub.class"
 
 
 def fake_tools(java):
-    return {"java": java, "java_version": "17", "javac": java, "javac_version": "17"}
+    from peeky.java_setup import java_identity
+
+    return {
+        "java": java,
+        "java_version": "17",
+        "javac": java,
+        "javac_version": "17",
+        **java_identity(java),
+    }
 
 
 def fake_bundle(root, event_hub, patches=None):

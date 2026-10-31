@@ -43,8 +43,8 @@ peeky probe . --at src/pkg/mod.py:LINE --capture a,b.c \
 - It runs on the root's `.venv` or `venv`, else the active virtual environment. For the `python`
   on `PATH`, such as conda's, add `--python python`. The `python:` line says which ran.
 
-**Java, a Maven or Gradle test.** Run `peeky setup-java` once, with the `java` your probes will
-have on `PATH`. Start the test waiting for a debugger, then attach:
+**Java, a Maven or Gradle test.** Run `peeky setup-java` once, with JDK 17 on `PATH`, so that it
+debugs older JDKs too (7.3). Start the test waiting for a debugger, then attach:
 
 ```sh
 mvn test -Dtest='FooTest#bar' -Dmaven.surefire.debug > test.log 2>&1 &
