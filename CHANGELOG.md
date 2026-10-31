@@ -32,6 +32,11 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **Phase 1 of ADR 0008 checked:** clang records every `-D`, `-I` and `-include` exactly, and
+  GCC 13 writes no checksums. The study's C projects can be judged by their line tables'
+  checksums. Few of its C++ units can: a `#pragma GCC system_header` or an inheriting
+  constructor drops every checksum of a unit. Phase 3 starts with a compiler wrapper for them.
+  `native_units` reads these facts, and `tests/projects` measures the projects.
 - **Python: probe a pytest test without a runner script (protocol 13).** `--run-module pytest --
   tests/test_x.py::test_y` runs pytest as `python -m pytest` does, and no other module; `probe`
   and `session start` take it. It must be the pytest installed for the program's interpreter.
