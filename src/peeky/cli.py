@@ -3873,8 +3873,8 @@ def _invocation(ran, candidate, environment, interpreter):
 _PYTEST_PLUGIN_TEXT = '''"""Peeky's report of what a pytest run loaded (`peeky verify --check-command`)."""
 
 import json
+import multiprocessing.process as _process
 import os
-import re
 import shlex
 import sys
 import threading
@@ -3883,23 +3883,22 @@ import pytest
 
 NONCE = {nonce!r}
 FOLDER = {folder!r}
-# The processes the tests started: "unknown" counts those not proven to be no Python.
+# The processes the tests started: "unknown" counts all but those of ``_LEAVES``.
 STARTED = {{"count": 0, "unknown": 0, "examples": []}}
 WORKERS = set()
 RAN = [0]
-# subprocess.Popen's own spawn (os.posix_spawn) is the same process: counted once.
+# A process start's own events (subprocess.Popen's os.posix_spawn, a multiprocessing
+# start's os.fork) are that one start: counted once.
 _SPAWNING = threading.local()
-# multiprocessing's spawn and forkserver start Python with no audit event: these modules,
-# imported as it starts a process, show it did.
-_MULTIPROCESSING = ("multiprocessing.popen_fork", "multiprocessing.popen_spawn_posix",
-                    "multiprocessing.popen_forkserver", "multiprocessing.popen_spawn_win32")
-_LOADED = {{name for name in _MULTIPROCESSING if name in sys.modules}}
-_PYTHON = re.compile(r"(?:python|pypy)[0-9.]*[tdm]*", re.IGNORECASE)
-# Programs that start whatever they are given, Python included.
-_LAUNCHERS = frozenset({{
-    "env", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "xargs", "nice",
-    "nohup", "timeout", "time", "stdbuf", "sudo", "doas", "arch", "xcrun", "exec", "uv",
-    "uvx", "pipx", "poetry", "hatch", "pdm", "nox", "tox", "conda", "mamba", "make",
+# Programs that start no others, by their file's real name: whatever they are given, they
+# run nothing (no `-exec`, `system()`, compress program or editor). Any other program the
+# tests start may start Python, which Peeky can't follow.
+_LEAVES = frozenset({{
+    "basename", "cat", "chmod", "cksum", "cmp", "comm", "cp", "cut", "date", "df", "diff",
+    "dirname", "du", "echo", "false", "grep", "head", "id", "ln", "ls", "md5", "md5sum",
+    "mkdir", "mv", "od", "paste", "printenv", "printf", "pwd", "readlink", "realpath", "rm",
+    "rmdir", "seq", "sha1sum", "sha256sum", "sleep", "stat", "tail", "tee", "touch", "tr",
+    "true", "uname", "uniq", "wc", "whoami", "yes",
 }})
 # A native executable's first bytes: ELF, Mach-O (both byte orders, 32 and 64 bits), and a
 # universal (fat) Mach-O.
@@ -3934,40 +3933,21 @@ def _resolve(program, cwd, env):
     return next((each for each in found if os.path.isfile(each) and os.access(each, os.X_OK)), None)
 
 
-def _kind(program, cwd, env, depth=0):
-    """("other", None) for a program proven not to start Python: a native executable
-    that isn't Python or a launcher (``_LAUNCHERS``), or a script whose `#!` names one;
-    else ("unknown", why)."""
+def _kind(program, cwd, env):
+    """("other", None) for a native program of ``_LEAVES``, found as the child finds it;
+    else ("unknown", why or None)."""
     path = _resolve(program, cwd, env)
     if path is None:
-        return "unknown", f"Peeky can't find {{program}}"
-    for name in (os.path.basename(path), os.path.basename(os.path.realpath(path))):
-        if _PYTHON.fullmatch(name):
-            return "unknown", "it is Python"
-        if name in _LAUNCHERS:
-            return "unknown", f"{{name}} starts what it is given, Python too"
+        return "unknown", "Peeky can't find it"
+    real = os.path.realpath(path)
+    if os.path.basename(real) not in _LEAVES:
+        return "unknown", None
     try:
-        with open(os.path.realpath(path), "rb") as stream:
-            head = stream.read(512)
+        with open(real, "rb") as stream:
+            native = stream.read(4).startswith(_NATIVE)
     except OSError:
-        return "unknown", "Peeky can't read it"
-    if head.startswith(_NATIVE):
-        return "other", None
-    if not head.startswith(b"#!") or depth:
-        return "unknown", "it isn't a native program, and has no `#!` naming one"
-    line = head[2:].split(b"\\n")[0].decode(errors="replace").strip().split(None, 1)
-    if not line:
-        return "unknown", "its `#!` names nothing"
-    interpreter, rest = line[0], (line[1] if len(line) > 1 else "")
-    if os.path.basename(interpreter) != "env":
-        return _kind(interpreter, cwd, env, depth + 1)
-    words, at = rest.split(), 0
-    while at < len(words) and (words[at].startswith("-") or "=" in words[at]):
-        # `env -u NAME`, `env -C DIR`, `env -P PATH` take a value; `-S` splits the rest.
-        at += 2 if words[at] in ("-u", "-C", "-P") else 1
-    if at >= len(words):
-        return "unknown", "its `#!/usr/bin/env` names no program"
-    return _kind(words[at], cwd, env, depth + 1)
+        native = False
+    return ("other", None) if native else ("unknown", None)
 
 
 def _started(words, kind, why):
@@ -3980,10 +3960,11 @@ def _started(words, kind, why):
 
 def _audit(event, args):
     try:
+        if getattr(_SPAWNING, "multiprocessing", False):
+            return
         cwd, env = os.getcwd(), None
         if event in ("os.fork", "os.forkpty"):
-            _started([event], "unknown",
-                     "a copy of the test process, which Peeky doesn't follow")
+            _started([event], "unknown", "a copy of the test process, which Peeky doesn't follow")
             return
         if event == "subprocess.Popen":
             program, words = os.fsdecode(args[0] or ""), _words(args[1])
@@ -4012,6 +3993,23 @@ def _audit(event, args):
 
 
 sys.addaudithook(_audit)
+# multiprocessing (and concurrent.futures.ProcessPoolExecutor, through it) starts its
+# processes in BaseProcess.start: each call is one, whatever its start method, some of
+# which (spawn, forkserver) raise no audit event.
+_starting = _process.BaseProcess.start
+
+
+def _start(self, *args, **kwargs):
+    method = getattr(self, "_start_method", None) or "default"
+    _started(["multiprocessing", str(method)], "unknown", "a multiprocessing process")
+    _SPAWNING.multiprocessing = True
+    try:
+        return _starting(self, *args, **kwargs)
+    finally:
+        _SPAWNING.multiprocessing = False
+
+
+_process.BaseProcess.start = _start
 
 
 def pytest_runtest_logreport(report):
@@ -4029,8 +4027,6 @@ def pytest_testnodeready(node):
 
 def pytest_sessionfinish(session):
     worker = getattr(session.config, "workerinput", None)
-    if started := [name for name in _MULTIPROCESSING if name in sys.modules and name not in _LOADED]:
-        _started(["multiprocessing"], "unknown", f"multiprocessing started a process ({{started[0]}})")
     tests = set()
     for item in getattr(session, "items", None) or ():
         path = getattr(item, "path", None) or getattr(item, "fspath", None)
@@ -4083,13 +4079,15 @@ def _with_pytest_plugin(ran, words, candidate, environment):
 
 
 def _example(started, kind):
-    """`python -c ...: it is Python`: one process the tests started of ``kind`` ("unknown":
-    not proven to be no Python, with why; "other"), as a short example; "" if none."""
+    """`/usr/bin/find . -exec ...`: one process the tests started of ``kind`` ("unknown":
+    not of a program that starts no other, with why if Peeky knows; "other"), as a short
+    example; "" if none."""
     examples = [each for each in started.get("examples") or () if each.get("kind") == kind]
     if not examples:
         return ""
     shown = shlex.join(str(word) for word in (examples[0].get("args") or [])[:6])
-    return f"{shown}: {examples[0]['why']}" if kind == "unknown" else shown
+    why = examples[0].get("why")
+    return f"{shown} ({why})" if kind == "unknown" and why else shown
 
 
 def _pytest_reports(reading, candidate, names):
@@ -4099,9 +4097,9 @@ def _pytest_reports(reading, candidate, names):
     one that isn't this run's plugin's (``reading``: folder, nonce, plugin file); a
     pytest-xdist worker the main process started with no report; no test file collected;
     a test file, conftest or module loaded from your project instead of the copy, or a
-    module of the project's (``names``) from outside the copy; a process the tests started
-    that the plugin couldn't prove isn't Python, whose imports Peeky didn't check. Other
-    processes they started are a note."""
+    module of the project's (``names``) from outside the copy; a process the tests started,
+    other than of a program that starts no other (the plugin's ``_LEAVES``), which Peeky
+    can't follow. Those are a note."""
     folder, nonce, plugin = reading
     copy = Path(os.path.realpath(candidate.root))
     reports, problems, notes = [], [], []
@@ -4142,15 +4140,17 @@ def _pytest_reports(reading, candidate, names):
     if unknown:
         example = next((found for each in started if (found := _example(each, "unknown"))), "")
         problems.append(
-            f"the tests started {unknown} process{'es' if unknown > 1 else ''} Peeky can't "
-            f"prove isn't Python ({example}), and Peeky didn't check what they imported"
+            f"the tests started {example}; Peeky can't check what it ran or loaded"
+            if unknown == 1
+            else f"the tests started {unknown} programs, such as {example}; Peeky can't check "
+            "what they ran or loaded"
         )
     if count > unknown:
         example = next((found for each in started if (found := _example(each, "other"))), "")
         others = count - unknown
         notes.append(
-            f"The tests started {others} other process{'es' if others > 1 else ''} "
-            f"({example}), and Peeky didn't check what they loaded"
+            f"The tests started {others} process{'es' if others > 1 else ''} of programs that "
+            f"start no other ({example})"
         )
     tests = {file for report in reports for file in report.get("tests") or ()}
     ran = sum(int(report.get("ran") or 0) for report in reports)

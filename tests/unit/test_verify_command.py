@@ -913,13 +913,10 @@ def test_a_python_process_the_tests_start_is_no_verdict(project, capsys):
     code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
     result = json.loads(out.out)
     assert code == 1 and result["exit_code"] == 0 and result["verdict"] == "unknown", result
-    assert result["no_verdict"].startswith(
-        "the tests started 1 process Peeky can't prove isn't Python ("
-    ), result
-    assert (
-        "-I -c 'print(1)': it is Python), and Peeky didn't check what they imported"
-        in (result["no_verdict"])
-    )
+    assert result["no_verdict"].startswith("the tests started "), result
+    assert result["no_verdict"].endswith(
+        "-I -c 'print(1)'; Peeky can't check what it ran or loaded"
+    ), result["no_verdict"]
 
 
 def test_another_process_the_tests_start_is_a_note(project, capsys):
@@ -929,8 +926,9 @@ def test_another_process_the_tests_start_is_a_note(project, capsys):
     result = json.loads(out.out)
     assert code == 0 and result["verdict"] == "passed" and result["passed"] is True, result
     assert (
-        "The tests started 1 other process (/bin/echo hi), and Peeky didn't check what they loaded"
-    ) in result["warnings"]
+        "The tests started 1 process of programs that start no other (/bin/echo hi)"
+        in result["warnings"]
+    )
 
 
 class _Candidate:
@@ -986,18 +984,22 @@ def test_a_report_counts_only_from_this_runs_plugin_and_every_xdist_worker(tmp_p
         f"pytest loaded {yours / 'conftest.py'} from your project, not the copy",
         f"`pkg` was loaded from {tmp_path / 'site/pkg/__init__.py'}, outside the copy",
     ]
-    # A process not proven to be no Python is a problem, another process a note.
+    # A process of a program that starts no other is a note; any other a problem.
     started = {"count": 3, "unknown": 1, "examples": [
-        {"args": ["git", "status"], "kind": "other", "why": None},
+        {"args": ["echo", "hi"], "kind": "other", "why": None},
         {"args": ["/v/bin/python", "-I", "-c", "import pkg"], "kind": "unknown",
-         "why": "it is Python"}]}  # fmt: skip
+         "why": None}]}  # fmt: skip
     _, _, _, problems, notes = read(report(started=started))
     assert problems == [
-        "the tests started 1 process Peeky can't prove isn't Python (/v/bin/python -I -c "
-        "'import pkg': it is Python), and Peeky didn't check what they imported"
+        "the tests started /v/bin/python -I -c 'import pkg'; Peeky can't check what it ran or "
+        "loaded"
     ]
-    assert notes == [
-        "The tests started 2 other processes (git status), and Peeky didn't check what they loaded"
+    assert notes == ["The tests started 2 processes of programs that start no other (echo hi)"]
+    started = {"count": 2, "unknown": 2, "examples": [
+        {"args": ["os.fork"], "kind": "unknown", "why": "a copy of the test process"}]}  # fmt: skip
+    assert read(report(started=started))[3] == [
+        "the tests started 2 programs, such as os.fork (a copy of the test process); Peeky "
+        "can't check what they ran or loaded"
     ]
 
 
@@ -1011,62 +1013,82 @@ def test_a_pass_that_ran_no_test_is_no_verdict(project, capsys):
     assert result["pytest_report"]["test_files"] == 1
 
 
-# Review round 4: a process the tests start is "other" only where proven no Python.
+# Review rounds 4 and 5: a process the tests start leaves the verdict only if it is of a
+# program that starts no other (an allowlist, by the file's real name); multiprocessing is
+# seen where it starts a process.
 
 FORK = """\
     pid = os.fork()
     if pid == 0:
         os._exit(0)
     os.waitpid(pid, 0)"""
-SPAWN = """\
+
+
+def start_process(method):
+    return f"""\
     import multiprocessing
 
-    process = multiprocessing.get_context("spawn").Process(target=os.getpid)
+    process = multiprocessing.get_context("{method}").Process(target=os.getpid)
     process.start()
     process.join()"""
+
+
+POOL = """\
+    import concurrent.futures
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(1, mp_context=context) as pool:
+        assert pool.submit(os.getpid).result()"""
+CANT = "; Peeky can't check what it ran or loaded"
 
 
 @pytest.mark.parametrize(
     ("body", "verdict", "said"),
     [
-        # Launchers and shells can start Python.
+        # Launchers, shells and other programs that run what they are given.
         ('subprocess.run(["/usr/bin/env", "python3", "-c", "pass"], check=True)', "unknown",
-         "(/usr/bin/env python3 -c pass: env starts what it is given, Python too)"),
+         "the tests started /usr/bin/env python3 -c pass" + CANT),
         ('subprocess.run("python3 -c pass", shell=True, check=True)', "unknown",
-         "(/bin/sh -c 'python3 -c pass': sh starts what it is given, Python too)"),
-        (FORK, "unknown", "(os.fork: a copy of the test process, which Peeky doesn't follow)"),
-        (SPAWN, "unknown", "(multiprocessing: multiprocessing started a process ("),
-        # Found on the child's own PATH, or from its own working directory: echo.
+         "the tests started /bin/sh -c 'python3 -c pass'" + CANT),
+        ('subprocess.run(["/usr/bin/find", ".", "-maxdepth", "0", "-exec", "/bin/echo", ";"],'
+         " check=True)", "unknown",
+         "the tests started /usr/bin/find . -maxdepth 0 -exec /bin/echo" + CANT),
+        (FORK, "unknown",
+         "the tests started os.fork (a copy of the test process, which Peeky doesn't follow)"
+         + CANT),
+        # multiprocessing, once for each process it starts, whatever the method.
+        (start_process("spawn"), "unknown",
+         "the tests started multiprocessing spawn (a multiprocessing process)" + CANT),
+        (start_process("fork"), "unknown",
+         "the tests started multiprocessing fork (a multiprocessing process)" + CANT),
+        (POOL, "unknown",
+         "the tests started multiprocessing spawn (a multiprocessing process)" + CANT),
+        # Importing what starts a process starts none.
+        ("    import multiprocessing.popen_spawn_posix", "passed", None),
+        # echo, found on the child's own PATH, or from its own working directory.
         ('subprocess.run(["mytool", "x"], env={"PATH": TOOLS}, check=True)', "passed",
          "(mytool x)"),
         ('subprocess.run(["./mytool", "x"], cwd=TOOLS, check=True)', "passed", "(./mytool x)"),
-        # A link to Python, by its target's name.
+        ('subprocess.run(["/usr/bin/true"], check=True)', "passed", "(/usr/bin/true)"),
+        # A link to Python, by its target's name; a script, whatever its `#!` names.
         ('subprocess.run(["pylink", "-c", "pass"], env={"PATH": TOOLS}, check=True)', "unknown",
-         "(pylink -c pass: it is Python)"),
-        # A script's first line only: `#!/bin/echo` is no Python, whatever comes next.
-        ('subprocess.run([TOOLS + "/echoscript"], check=True)', "passed", "echoscript)"),
-        ('subprocess.run([TOOLS + "/envscript"], check=True)', "passed", "envscript)"),
-        ('subprocess.run([TOOLS + "/shscript"], check=True)', "unknown",
-         "shscript: sh starts what it is given, Python too)"),
+         "the tests started pylink -c pass" + CANT),
+        ('subprocess.run([TOOLS + "/echoscript"], check=True)', "unknown", "/echoscript" + CANT),
         ('subprocess.run(["no-such-program-x"])', "unknown",
-         "(no-such-program-x: Peeky can't find no-such-program-x)"),
+         "the tests started no-such-program-x (Peeky can't find it)" + CANT),
     ],
 )  # fmt: skip
-def test_only_a_process_proven_not_python_leaves_the_verdict(
+def test_only_a_program_that_starts_no_other_leaves_the_verdict(
     project, capsys, tmp_path, body, verdict, said
 ):
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "mytool").symlink_to("/bin/echo")
     (tools / "pylink").symlink_to(os.path.realpath(sys.executable))
-    for name, text in (
-        ("echoscript", "#!/bin/echo\n# python\n"),
-        ("envscript", "#!/usr/bin/env -S echo hi\n# python\n"),
-        ("shscript", "#!/bin/sh\necho hi\n"),
-    ):
-        (tools / name).write_text(text)
-        (tools / name).chmod(0o755)
-    call = body if "\n" in body else f"    {body}"
+    (tools / "echoscript").write_text("#!/bin/echo\n")
+    (tools / "echoscript").chmod(0o755)
+    call = body if body.startswith("    ") else f"    {body}"
     if "no-such" in body:
         call = f"    try:\n    {call}\n    except FileNotFoundError:\n        pass"
     (project / "tests" / "test_child.py").write_text(
@@ -1078,12 +1100,34 @@ def test_only_a_process_proven_not_python_leaves_the_verdict(
     result = json.loads(out.out)
     assert result["exit_code"] == 0 and result["verdict"] == verdict, result
     if verdict == "unknown":
-        assert result["no_verdict"].startswith(
-            "the tests started 1 process Peeky can't prove isn't Python "
-        ), result["no_verdict"]
-        assert said in result["no_verdict"], result["no_verdict"]
+        # One start, counted once: the message names it, not a count.
+        assert result["no_verdict"].startswith("the tests started "), result["no_verdict"]
+        assert result["no_verdict"].endswith(said), result["no_verdict"]
+        assert " programs, such as " not in result["no_verdict"]
+    elif said:
+        assert any(said in warning for warning in result["warnings"]), result["warnings"]
     else:
-        assert any(said in warning and "other process" in warning for warning in result["warnings"])
+        assert not any("started" in warning for warning in result.get("warnings", ()))
+
+
+def test_multiprocessing_preloaded_at_start_up_still_counts(project, capsys, monkeypatch, tmp_path):
+    # A `.pth` or sitecustomize that imported multiprocessing's spawn module before the
+    # plugin loaded hid a spawn started later.
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text("import multiprocessing.popen_spawn_posix\n")
+    given = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(site), given])))
+    (project / "tests" / "test_child.py").write_text(
+        f"import os\n\n\ndef test_child():\n{start_process('spawn')}\n"
+    )
+    command = "python -m pytest -q -p no:cacheprovider tests"
+    code, out = verify(capsys, project, "--check-command", command, *FIX, "--json")
+    result = json.loads(out.out)
+    assert result["exit_code"] == 0 and result["verdict"] == "unknown", result
+    assert result["no_verdict"] == (
+        "the tests started multiprocessing spawn (a multiprocessing process)" + CANT
+    )
 
 
 def test_a_command_past_its_output_bound_is_no_verdict(project, capsys):
@@ -1094,3 +1138,15 @@ def test_a_command_past_its_output_bound_is_no_verdict(project, capsys):
     assert result["verdict"] == "unknown" and result["no_verdict"] == (
         "the check command printed over 1 MiB of output, both streams together, and was stopped"
     )
+
+
+def test_the_cookbook_lists_the_programs_that_start_no_other():
+    import ast
+
+    from peeky.cli import _PYTEST_PLUGIN_TEXT
+
+    text = _PYTEST_PLUGIN_TEXT.format(nonce="n", folder="f")
+    leaves = ast.literal_eval(re.search(r"_LEAVES = frozenset\((\{.*?\})\)", text, re.S)[1])
+    cookbook = (Path(__file__).resolve().parents[2] / "docs" / "COOKBOOK.md").read_text()
+    listed = cookbook.split("The programs that start no other, by their file's real name:")[1]
+    assert set(listed.split("```")[1].split()) == leaves

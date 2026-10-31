@@ -34,7 +34,8 @@
   fail on the bug only when pytest's or unittest's output shows failed tests. An edit is refused
   when a module the project supplies would import from outside the copy, such as a stale install,
   as the command's own Python starts. For pytest, a plugin of Peeky's reports what the run loaded,
-  and which processes its tests started: any not proven to be no Python leaves no verdict. A run
+  and which processes its tests started: any program but one that starts none (`echo`, `cp`) leaves
+  no verdict. A run
   that may not be the copy's, or that Peeky stopped at its bound, is `verdict: unknown`, whatever
   its status: the result leads with `passed`, `failed` or `unknown`. The command is trusted, not
   sandboxed.

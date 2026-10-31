@@ -4100,20 +4100,31 @@ command that installs or writes there changes your environment.
   - no report from the main process, or a worker's missing;
   - a test file, conftest or module loaded from your project instead of the copy;
   - a module of the project's loaded from outside the copy, such as a stale install;
-  - a process the tests started that Peeky can't prove isn't Python (below);
+  - a process the tests started, unless its program starts no other (below);
   - a pass with no test run, as with `--collect-only` or all tests skipped.
 - That holds whatever the exit status, and at `--baseline` too: a run on stale code says nothing
   about the edit, or the bug.
 - Peeky sees the processes started through `subprocess`, `os.exec*`, `os.spawn*`,
-  `os.posix_spawn`, `os.system` and `os.fork`. It sees multiprocessing by the modules it loads to
-  start a process.
-- A process is only a warning when Peeky proves it isn't Python. It must be a native program, ELF
-  or Mach-O, found as the process would find it: from its own working directory, or on its own
-  `PATH`. Neither its name nor its file's may be Python's, or a launcher's: `env`, a shell,
-  `xargs`, `nice`, `timeout`, `sudo`, `uv`, `pipx`, `poetry`, `hatch`, `nox`, `tox` and the like.
-  A script counts when the first line's `#!` names such a program, through `env -S` too.
-- Anything else is no verdict: `shell=True` and `os.system`, a launcher, a Python, a program Peeky
-  can't find or read, `os.fork`, and multiprocessing.
+  `os.posix_spawn`, `os.system` and `os.fork`. It sees each process multiprocessing starts,
+  `concurrent.futures.ProcessPoolExecutor`'s too, whatever its start method.
+- **Tests that start other programs get `verdict: unknown`.** Peeky can't check what those
+  programs ran or loaded. The message names the first one: `the tests started /usr/bin/find .
+  -exec …; Peeky can't check what it ran or loaded`.
+- The only exception is a native program, ELF or Mach-O, that starts no other. Peeky finds it as
+  the process would, from its own working directory or on its own `PATH`. Such a process is a
+  warning only.
+- Everything else is no verdict, such as a shell, `env`, `find`, `xargs`, `git`, `make`, a
+  Python, a script, `os.fork` or multiprocessing. So, for a verdict, select tests that start no
+  other program, with `-k` or a test path. Or read the tests' output yourself.
+
+The programs that start no other, by their file's real name:
+
+```
+basename cat chmod cksum cmp comm cp cut date df diff dirname du echo false grep head id ln ls
+md5 md5sum mkdir mv od paste printenv printf pwd readlink realpath rm rmdir seq sha1sum
+sha256sum sleep stat tail tee touch tr true uname uniq wc whoami yes
+```
+
 - `-I` and `-E` ignore `PYTHONPATH`, so pytest runs without the plugin, and there is no report.
 - `PYTEST_ADDOPTS` that names a path inside the root by its absolute path is refused.
 - The text has a `pytest report:` line, and JSON a `pytest_report`: `reports`, `test_files` and
