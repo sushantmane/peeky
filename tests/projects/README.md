@@ -32,6 +32,21 @@ is 1 if a check failed.
   after the build (not for json, whose binary is refused whole), the project's own optimized
   build (refused, then read with `"optimized": true`), and GCC's and DWARF 4's builds.
 
+## Prebuilt images
+
+`build.sh` needs nothing else of this checkout, so a Dockerfile can bake a project's
+Peeky-ready build into a study image (clang 18, `-O0 -g -gdwarf-5 -grecord-command-line
+-fdebug-macro`, a build ID; libc++ for C++):
+
+```
+FROM peeky-study/jqlang__jq-2650:control
+COPY tests/projects/build.sh /peeky/build.sh
+RUN bash /peeky/build.sh jq
+```
+
+It prints the binary's path, relative to the project (`/testbed`, or `$TESTBED`). A failed
+build exits 1 and prints its log's last lines. `accept.py` rebuilds anyway, for its variants.
+
 ## Builds and measurements
 
 ```

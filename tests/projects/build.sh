@@ -6,7 +6,9 @@
 # Usage: build.sh <jq|valkey|micropython|fmt3158|fmt3272|json> [variant]
 # Variants: nomacro (no -fdebug-macro), libstdcxx (C++ with libstdc++), lines (jq's grammar
 # and lexer with their `#line`), gcc (GCC 13), dwarf4 (-gdwarf-4), optimized (the project's own
-# -O level). Prints the binary's path, relative to /testbed.
+# -O level). Prints the binary's path, relative to the project ($TESTBED, /testbed by default).
+# Needs nothing else of Peeky's: a Dockerfile can prebuild an image with it (README.md). Runs
+# as root, as the images do: it may install libc++ (apt) and writes its log to /.
 set -u
 project=$1 variant=${2:-}
 flags="-g -gdwarf-5 -grecord-command-line"
@@ -38,7 +40,7 @@ esac
 opt=-O0
 [ "$variant" = optimized ] && opt=$level
 log=/build-$project${variant:+-$variant}.log
-cd /testbed || exit 1
+cd "${TESTBED:-/testbed}" || exit 1
 build() {
   case $project in
     jq)

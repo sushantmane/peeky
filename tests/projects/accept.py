@@ -680,7 +680,8 @@ def fmt(run, binary_test, judged, filtered):
         f"test/test-main.cc:{main}", ["argc", "argv[1]"], f"--gtest_filter={filtered}"
     )
     rows = _rows(result)
-    shown = str(rows.get((1, "argv[1]"), {}).get("value", ""))
+    argc = str(rows.get((1, "argc"), {}).get("value", ""))
+    refused = str(rows.get((1, "argv[1]"), {}).get("error", ""))
     unread = next(
         (
             unit.get("text")
@@ -689,9 +690,12 @@ def fmt(run, binary_test, judged, filtered):
         ),
         None,
     )
+    # argv is a pointer, which carries no length: Peeky reads no element past what it points
+    # at, and says where to index the array instead. The filter is gtest's own print.
     run.check(
-        "test-main.cc is read: argv[1] is the filter gtest prints",
-        f'"--gtest_filter={filtered}"' in shown
+        "test-main.cc is read: argc is 2, and argv[1] is refused as a pointer's element",
+        argc == "2"
+        and "argv is a pointer, which carries no length" in refused
         and f"Note: Google Test filter = {filtered}" in result.get("output", ""),
         {"rows": list(rows.values()), "text": unread, "output": result.get("output", "")[:300]},
         seconds,
