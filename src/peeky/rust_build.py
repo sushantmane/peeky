@@ -2195,46 +2195,55 @@ def _discard(directory, path):
 
 def _empty_trash(directory, budget):
     """Remove what the build ``directory``'s trash holds, ``budget`` removals this time (a
-    later build goes on). Depth first, with a scandir iterator open for each directory on
-    the way: a directory's entries are taken one at a time as they are read, a
-    subdirectory entered at once, and a directory removed when its iterator ends. So each
-    unit of the budget is a removal (a file, a link, an emptied directory), never a
-    listing a later call must read again. Entering a directory costs none, and is bounded
-    by the depth of the trash. The build's stop is checked at each entry (``check_stop``)."""
+    later build goes on). Depth first, holding only paths: a directory is read until its
+    first subdirectory, its files removed as they are read, and its listing closed before
+    that subdirectory is entered, so one directory is open at a time, however deep the
+    trash. Once a subdirectory is gone, its parent is read again, without what was removed.
+    A directory whose listing ends is removed. Only a removal that succeeds spends the
+    budget. One that fails, or a directory that can't be read, is recorded and passed over
+    for the rest of this call. The build's stop is checked at each entry (``check_stop``)."""
     trash = Path(directory) / "trash"
     if not trash.is_dir():
         return
-    left, stack = budget, []
-    try:
-        stack.append((trash, os.scandir(trash)))
-        while stack and left > 0:
-            folder, listing = stack[-1]
-            entry = next(listing, None)
-            if entry is None:
-                listing.close()
-                stack.pop()
-                if folder != trash:
+    left, stack, failed = budget, [trash], set()
+    while stack and left > 0:
+        folder, deeper = stack[-1], None
+        try:
+            with os.scandir(folder) as listing:
+                for entry in listing:
+                    check_stop()
+                    if entry.path in failed:
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        deeper = Path(entry.path)
+                        break
+                    try:
+                        os.unlink(entry.path)
+                    except OSError:
+                        failed.add(entry.path)
+                        continue
                     left -= 1
-                    with contextlib.suppress(OSError):
-                        os.rmdir(folder)
-                continue
-            check_stop()
-            if entry.is_dir(follow_symlinks=False):
-                try:
-                    stack.append((Path(entry.path), os.scandir(entry.path)))
-                except OSError:
-                    # Unreadable: left for whoever can read it.
-                    continue
-            else:
-                left -= 1
-                with contextlib.suppress(OSError):
-                    os.unlink(entry.path)
-    except OSError:
-        # What it can't read: the rest the next time.
-        return
-    finally:
-        for _, listing in stack:
-            listing.close()
+                    if left <= 0:
+                        return
+        except OSError:
+            # Unreadable: passed over for the rest of this call.
+            failed.add(str(folder))
+            stack.pop()
+            if not stack or folder == trash:
+                return
+            continue
+        if deeper is not None:
+            stack.append(deeper)
+            continue
+        stack.pop()
+        if folder == trash:
+            return
+        try:
+            os.rmdir(folder)
+        except OSError:
+            failed.add(str(folder))
+            continue
+        left -= 1
 
 
 def summary(manifest, directory):

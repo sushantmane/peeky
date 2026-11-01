@@ -928,6 +928,72 @@ def test_the_trash_empties_over_calls_each_making_progress(tmp_path, shape, budg
     assert trash.is_dir() and list(trash.iterdir()) == []
 
 
+def test_a_deep_trash_empties_with_few_file_descriptors(tmp_path):
+    # 100 directories in a chain, with 32 file descriptors: one directory is open at a
+    # time, so each call of 10 removes 10.
+    levels = [f"d{index}" for index in range(100)]
+    (tmp_path / "trash" / Path(*levels)).mkdir(parents=True)
+    script = """
+import resource, sys
+from pathlib import Path
+from peeky import rust_build
+directory = Path(sys.argv[1])
+_, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (32, hard))
+levels = [f"d{index}" for index in range(100)]
+def depth():
+    path, found = directory / "trash", 0
+    for level in levels:
+        path = path / level
+        if not path.is_dir():
+            break
+        found += 1
+    return found
+for _ in range(10):
+    rust_build._empty_trash(directory, 10)
+    print(depth())
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        env={**os.environ, "PYTHONPATH": str(Path(rb.__file__).parents[1])},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert [int(line) for line in done.stdout.split()] == list(range(90, -1, -10))
+    assert list((tmp_path / "trash").iterdir()) == []
+
+
+def test_a_removal_that_fails_is_passed_over_and_spends_no_budget(tmp_path, monkeypatch):
+    trash = tmp_path / "trash"
+    for name in ("a/stuck", "a/f1", "a/f2", "b/f3"):
+        (trash / name).parent.mkdir(parents=True, exist_ok=True)
+        (trash / name).write_text("")
+    real = os.unlink
+    tried = []
+
+    def unlink(path, *args, **kwargs):
+        tried.append(str(path))
+        if str(path).endswith("stuck"):
+            raise PermissionError(1, "Operation not permitted")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rb.os, "unlink", unlink)
+    # `stuck` fails once, and is passed over for the rest of the call (its directory `a`
+    # too, which can't be removed), though the trash is read again after `b` is gone.
+    rb._empty_trash(tmp_path, 100)
+    assert sorted(path.name for path in trash.rglob("*")) == ["a", "stuck"]
+    assert sum(path.endswith("stuck") for path in tried) == 1
+    # A failure spends none of the budget: five removals (f4, f5, c, f6, d) take five.
+    for name in ("c/f4", "c/f5", "d/f6"):
+        (trash / name).parent.mkdir(parents=True, exist_ok=True)
+        (trash / name).write_text("")
+    tried.clear()
+    rb._empty_trash(tmp_path, 5)
+    assert sorted(path.name for path in trash.rglob("*")) == ["a", "stuck"]
+
+
 def rb_stopping(stop):
     from peeky.stopping import stopping
 

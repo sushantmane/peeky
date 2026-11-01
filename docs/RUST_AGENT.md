@@ -176,8 +176,9 @@ what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decis
   as it is read, before any is sorted. A run the build leaves (failed, stopped, or pruned)
   is renamed into the build directory's trash (`_discard`), never removed in one step. Each
   later build removes a bounded part of the trash, its stop checked at each entry
-  (`_empty_trash`). It goes depth first with an open listing per directory, so every unit
-  of the budget removes something, and each call makes progress. The macOS symbols are copied the same way (`_copy_symbols`). A
+  (`_empty_trash`). It goes depth first holding only paths, one directory open at a time
+  however deep the trash. Only a removal that succeeds spends the budget, and one that
+  fails is passed over for the rest of the call, so each call makes progress. The macOS symbols are copied the same way (`_copy_symbols`). A
   running build is the worker's activity (`active`).
 - Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
   reaped, or that started nothing. A kill or reap that fails raises its own error, with the
