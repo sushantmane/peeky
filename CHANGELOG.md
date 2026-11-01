@@ -44,7 +44,8 @@
   span on such a function's `fn` line, so Peeky matched no MIR to it. Every change in it was
   refused, saying Peeky couldn't tell, and its rows lost their MIR types. rustfmt writes a long
   signature so, as in ripgrep's `grep_printer::util`. It is matched now by the lines its
-  signature spans in the source.
+  signature spans in the source. A visibility such as `pub(in crate::m)`, an ABI such as
+  `extern "C-unwind"`, and comments before `fn` are read token by token (#474).
 
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
