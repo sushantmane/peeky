@@ -1236,6 +1236,8 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
 - **bison and flex:** generate without `#line`: `bison -l` and `flex -L`. A `#line` naming the
   grammar leaves the generated file's unit with no MD5s, so it isn't judged. Probe the generated
   `parser.c`, not `parser.y`.
+  Where a Makefile runs them with its own flags, run them first, as jq's runs flex: `flex -L
+  -o src/lexer.c --header-file=src/lexer.h src/lexer.l`, then `make YFLAGS=-l`.
 - **C++:** build with libc++ and `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`
   (`-stdlib=libc++` on Linux). libstdc++'s headers, and libc++'s without it, leave every unit
   that includes them with no MD5s. So does an inheriting constructor (`using Base::Base;`).

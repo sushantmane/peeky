@@ -376,6 +376,51 @@ def test_the_refusals_name_the_units_and_why(root):
         assert classify(BinaryRefused(message))["code"] == "UNSUPPORTED", message
 
 
+def test_a_unit_not_judged_is_named_relative_to_the_root_as_a_judged_one_is(root):
+    # CMake compiles each file by its absolute path: a unit not judged is still named as
+    # `describe` and a probe's --at name it, so a probe in it is refused saying why.
+    absolute = _unit(root, name=str(root / "src" / "main.c"))
+    judged = judge(absolute, _tables(root, checksums=False), CLANG, root)
+    assert judged.status == NOT_JUDGED and judged.name == "src/main.c", judged
+    assert _unread_file("src/main.c", "prog", [judged], root).startswith(
+        "src/main.c is a unit Peeky doesn't judge: its line table records no MD5s"
+    )
+
+
+def test_a_header_only_units_peeky_doesnt_judge_name_is_refused_naming_them(root):
+    # Template code in a header is in the units that instantiate it: where none Peeky
+    # judges has code there, the refusal names those whose line tables name the header.
+    tables = _tables(root, checksums=False)
+    units = [
+        Judged(_unit(root), "src/main.c", NOT_JUDGED, "its line table records no MD5s"),
+        Judged(_unit(root, stmt_list=8), "src/b.c", NOT_JUDGED, "built with -O2"),
+    ]
+    assert _unread_file("src/a.h", "prog", units, root, tables) == (
+        "No unit of prog Peeky judges has code in src/a.h. Units Peeky doesn't judge name it "
+        "in their line tables: src/main.c: its line table records no MD5s"
+    )
+    assert _unread_file("src/z.h", "prog", units, root, tables).startswith(
+        "No unit of prog Peeky judges has code in src/z.h: `peeky describe` lists each unit"
+    )
+    # Several units name it, unjudged for different reasons: each under its own.
+    header = tables[0]
+    tables = {
+        0: header,
+        8: LineHeader(8, 5, header.directories, header.files),
+        16: LineHeader(16, 5, header.directories, header.files),
+    }
+    units = [
+        Judged(_unit(root), "src/main.c", NOT_JUDGED, "its line table records no MD5s"),
+        Judged(_unit(root, stmt_list=8), "src/b.c", NOT_JUDGED, "built with -O2"),
+        Judged(_unit(root, stmt_list=16), "src/c.c", NOT_JUDGED, "its line table records no MD5s"),
+    ]
+    assert _unread_file("src/a.h", "prog", units, root, tables) == (
+        "No unit of prog Peeky judges has code in src/a.h. Units Peeky doesn't judge name it "
+        "in their line tables: src/main.c and 1 more: its line table records no MD5s; "
+        "src/b.c: built with -O2"
+    )
+
+
 def test_a_binary_target_s_config(tmp_path):
     with pytest.raises(ValueError, match='"optimized" must be true or false'):
         BinaryTarget(binary="jq", optimized="yes")

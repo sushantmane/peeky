@@ -310,8 +310,9 @@ def judge(unit, tables, version, root, optimized=False):
     main = posixpath.join(unit.comp_dir or "", unit.name or "")
     name = unit.name or f"the unit at 0x{unit.offset:08x}"
 
-    def refused(why, shown=name):
-        return Judged(unit, shown, NOT_JUDGED, why)
+    def refused(why, shown=None):
+        # By its name relative to the root, once that is known, as a judged unit's is.
+        return Judged(unit, shown or name, NOT_JUDGED, why)
 
     if not unit.name or not posixpath.isabs(main):
         return refused(
@@ -2324,7 +2325,7 @@ class BinaryTarget:
         )
         lines = parse_lines(text, root, declared)
         if wanted is not None and not lines.get(wanted):
-            raise _refused("UNSUPPORTED", _unread_file(wanted, shown, judged, root))
+            raise _refused("UNSUPPORTED", _unread_file(wanted, shown, judged, root, found.tables))
         try:
             identity = module_identity(dwarfdump, binary, symbols, scratch, env, deadline=deadline)
         except ValueError as exc:
@@ -2695,11 +2696,36 @@ def _none_read(shown, judged):
     return f"Peeky judges no unit of {shown}: {listed}"
 
 
-def _unread_file(wanted, shown, judged, root):
-    """Why a breakpoint in ``wanted`` is refused: no unit Peeky reads has code there."""
+def _unread_file(wanted, shown, judged, root, tables=None):
+    """Why a breakpoint in ``wanted`` is refused: no unit Peeky reads has code there. For a
+    header (template code) that line tables of units Peeky doesn't judge name: those units,
+    and why (``tables``: the line tables' headers by offset)."""
     for each in judged:
         if each.status == NOT_JUDGED and each.name == wanted:
             return f"{wanted} is a unit Peeky doesn't judge: {each.why}"
+    path = os.path.realpath(Path(root) / wanted)
+    naming = []
+    for each in judged:
+        table = (tables or {}).get(each.unit.stmt_list)
+        if each.status != NOT_JUDGED or table is None:
+            continue
+        paths = (table.path(index, each.unit.comp_dir) for index in table.files)
+        if any(found and os.path.realpath(found) == path for found in paths):
+            naming.append(each)
+    if naming:
+        # Each reason with the units it holds for, the commonest first, as _none_read says.
+        reasons = {}
+        for each in naming:
+            reasons.setdefault(each.why, []).append(each.name)
+        ranked = sorted(reasons.items(), key=lambda item: -len(item[1]))
+        listed = "; ".join(
+            f"{names[0]}" + (f" and {len(names) - 1} more" if len(names) > 1 else "") + f": {why}"
+            for why, names in ranked[:LISTED_REASONS]
+        )
+        return (
+            f"No unit of {shown} Peeky judges has code in {wanted}. Units Peeky doesn't judge "
+            f"name it in their line tables: {listed}"
+        )
     return (
         f"No unit of {shown} Peeky judges has code in {wanted}: `peeky describe` lists each "
         "unit, judged or not and why"
