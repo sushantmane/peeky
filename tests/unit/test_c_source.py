@@ -127,8 +127,29 @@ def test_digraphs_are_brackets():
     )
     assert end(source, 1, "t") == 3
     assert end("long v = arr<: <:&:>() <% return 0; %>() :> + g(\n    1);\n", 1, "v") == 2
-    # C++11 reads `<::` as `<` and `::`, C as `<:` and `:`.
-    assert end("std::vector<::Item> items = make(\n    1);\n", 1, "items") is None
+    # C++11 reads `<::` as `<` and `::`, but `<::>` and `<:::` as `<:` first; C reads
+    # every `<::` as `<:` and `:`, which Peeky doesn't follow.
+    vector = "std::vector<::Item> items = make(\n    1);\n"
+    assert end(vector, 1, "items") == 2
+    assert Statements(vector, raw_strings=False).end(1, "items") is None
+    assert end("long v = arr<::> + g(\n    1);\n", 1, "v") == 2
+    assert end("long v = arr<:::x:> + g(\n    1);\n", 1, "v") == 2
+    assert end("long v = f<::x>(\n    1);\n", 1, "v") == 2
+
+
+def test_a_template_argument_after_lt_colon_colon_leaves_the_blocks_readable():
+    # gtest.h's `internal::PrintTo<::std::type_info>(value, os);`: C++11 reads `<` and `::`,
+    # so the blocks around a later stop still balance, and a parameter (declared on no line
+    # Peeky knows) is read past an `#include`.
+    source = (
+        "#include <typeinfo>\n"
+        "inline void at(const std::type_info *i) { show<::std::type_info>(i); }\n"
+        "int main(int argc, char **argv) {\n  try {\n    use(&argc, argv);\n"
+        "  } catch (...) {\n  }\n  return 0;\n}\n"
+    )
+    assert Statements(source).block_storage(5, "argc", None, True) is False
+    # C reads `<::` as `<:` and `:`: Peeky can't tell.
+    assert Statements(source, raw_strings=False).block_storage(5, "argc", None, True) is None
 
 
 def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():
@@ -156,6 +177,20 @@ def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():
     trigraph = ["#define Q(x) ??<x\n#define K 1\n"]
     assert macro_hazards(trigraph, raw_strings=False)["brackets"] == {"Q"}
     assert macro_hazards(trigraph)["brackets"] == set()
+
+
+def test_lt_colon_colon_in_a_macro_body_is_read_as_its_language_reads_it():
+    # C++ reads `show<::T>(x)` as `show`, `<`, `::T`, `>`: SHOW hides no bracket. `<::>` is
+    # `[]` and `<:::x:>` `[::x]` in both. C reads every `<::` as `<:` and `:`, which Peeky
+    # doesn't follow: each counts there.
+    header = ["#define SHOW(x) show<::T>(x)\n#define EMPTY arr<::>\n#define SCOPED arr<:::x:>\n"]
+    cxx, c = macro_hazards(header), macro_hazards(header, raw_strings=False)
+    assert not {"SHOW", "EMPTY", "SCOPED"} & (cxx["brackets"] | cxx["blocks"])
+    assert {"SHOW", "EMPTY", "SCOPED"} <= c["brackets"] & c["blocks"]
+    # So `n`'s declaration ends where it does.
+    source = "int n = SHOW(\n    argc);\n"
+    assert Statements(source, hazards=cxx).end(1, "n") == 2
+    assert Statements(source, raw_strings=False, hazards=c).end(1, "n") is None
 
 
 def test_c_has_no_raw_strings():
