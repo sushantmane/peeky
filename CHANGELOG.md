@@ -27,6 +27,14 @@
 
 ### Other changes
 
+- **Rust workspaces: what a dependency's build script reads of Cargo's configuration (#482).**
+  portable-atomic's build script (coreutils') watches `CARGO_BUILD_RUSTFLAGS` and
+  `CARGO_TARGET_<triple>_RUSTFLAGS`, which Peeky refused. Cargo 1.96 sets none of `CARGO_BUILD_*`
+  or `CARGO_TARGET_<triple>_RUSTFLAGS` for a build script, and passes on its own environment's:
+  Peeky's, which has none. And a build script that runs twice (bat's test builds `rustix` for its
+  build scripts and for the program) reads `CARGO_FEATURE_*`, `OPT_LEVEL` and `DEBUG` as every run
+  has them. Where the runs differ, it is refused as before.
+
 - **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
   closure or async block captures the places it uses. rustc's MIR prints one capture per
   variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
