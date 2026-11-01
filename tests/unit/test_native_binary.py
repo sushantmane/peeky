@@ -1113,6 +1113,13 @@ def test_a_probe_after_a_branch_finding_a_file_alone_never_runs(root, tmp_path):
     files = {**tables[0].files, 2: LineFile(0, str(include / "bits" / "x.h"), _md5(""))}
     tables = {0: LineHeader(0, 5, tables[0].directories, files)}
     assert isinstance(_replay(root, tmp_path, tables=tables), UnitText)
+    # In a file holding a trigraph that may make a directive, Peeky can't be sure of its
+    # groups: the probe counts.
+    (root / "src" / "a.h").write_text(
+        "#if defined(MUSL)\n#elif __has_include(<bits/x.h>)\n#include <bits/x.h>\n"
+        "#elif __has_include(<sys/y.h>)\n#include <sys/y.h> // ??/\n#endif\n"
+    )
+    assert "<sys/y.h> exists" in _replay(root, tmp_path, tables=tables).why
     # Asked with another condition, the earlier branch may not be taken.
     (root / "src" / "a.h").write_text(
         "#if __has_include(<bits/x.h>) && A\n#elif __has_include(<sys/y.h>)\n#endif\n"

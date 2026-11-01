@@ -17,7 +17,9 @@ past it), or a group within it every branch of which surely leaves one, with an 
 skipped. So where at most one branch may leave none, an absent `#else` counting as one,
 the build took the replay's branch. A probe whose branches differ in code or includes alone
 stays unproven, as does one whose group holds a `#line` or a line marker, under which two
-branches' records may be alike.
+branches' records may be alike. A directive may begin with `#`, the digraph `%:`, or the
+trigraph `??=`; a file holding `??=` or `??/`, which -trigraphs makes `#` and a line splice,
+is read conservatively: none of its probes is proven.
 """
 
 import os
@@ -31,7 +33,11 @@ END = ("end",)
 _HEADER = re.compile(r"macro header: .*\bdebug_line_offset = (0x[0-9a-fA-F]+)")
 _EVENT = re.compile(r"DW_MACRO_(\w+) - lineno: (\d+) (?:filenum: (\d+)|macro: ?(.*))$")
 _MARKER = re.compile(r'# (\d+) "((?:[^"\\]|\\.)*)"((?: \d)*)$')
-_DIRECTIVE = re.compile(r"[ \t]*#[ \t]*(\w*)")
+# A directive's introducer: `#`, the digraph `%:`, or the trigraph `??=` (under -trigraphs).
+_DIRECTIVE = re.compile(r"[ \t]*(?:#|%:|\?\?=)[ \t]*(\w*)")
+# Trigraphs that change which lines are directives: `??=` (`#`) and `??/` (`\`, which
+# splices lines). Whether they apply depends on -trigraphs and the standard.
+_TRIGRAPHS = ("??=", "??/")
 _LONE = re.compile(r"(__has_include_next|__has_include)[ \t]*\(")
 # Directives that always leave a record, or fail the build.
 _RECORDED = frozenset(("define", "undef", "error"))
@@ -172,16 +178,20 @@ class Branch:
 
 @dataclass
 class Group:
-    """A conditional group: its branches, and whether a `#line` or a line marker is within
-    it (``renumbered``), under which two branches' records may be alike."""
+    """A conditional group: its branches, whether a `#line` or a line marker is within it
+    (``renumbered``), under which two branches' records may be alike, and whether its file
+    holds a trigraph that may make a directive (``trigraphed``), where Peeky can't be sure
+    of its lines."""
 
     branches: list
     renumbered: bool = False
+    trigraphed: bool = False
 
 
 def conditionals(text):
     """{line: (group, index)}: for each line of an `#if` or `#elif` directive of ``text``,
-    its Group and which branch it begins. A group left unclosed is none."""
+    its Group and which branch it begins. A group left unclosed is none. A directive may
+    begin `#`, `%:` or `??=`; a file holding `??=` or `??/` has each group ``trigraphed``."""
     original = normalized(text)
     blanked = blank(original).split("\n")
     stack, groups, at = [], [], 0
@@ -210,8 +220,10 @@ def conditionals(text):
                 group.renumbered = True
         elif stack and name in _RECORDED:
             stack[-1].branches[-1].holds.append(name)
+    trigraphed = any(each in original for each in _TRIGRAPHS)
     where = {}
     for group in groups:
+        group.trigraphed = trigraphed
         for index, branch in enumerate(group.branches):
             if branch.kind in ("if", "elif"):
                 for line in range(branch.line, branch.end + 1):
@@ -234,11 +246,17 @@ def _sure(holds):
 def unsettled(group):
     """Why the build's record of its macros may not tell which branch of ``group`` the
     build took, or None: at most one of its branches, an absent `#else` counting as one,
-    may leave no record, and no `#line` or line marker is within it."""
+    may leave no record, no `#line` or line marker is within it, and its file holds no
+    trigraph that may make a directive."""
     if group.renumbered:
         return (
             "its group holds a #line or a line marker, under which two of its branches may "
             "leave the same record of macros"
+        )
+    if group.trigraphed:
+        return (
+            "its file holds a trigraph (??= or ??/) that may make or join a directive, so Peeky "
+            "can't be sure which lines are directives"
         )
     silent = sum(not _sure(branch.holds) for branch in group.branches)
     if silent + (group.branches[-1].kind != "else") > 1:

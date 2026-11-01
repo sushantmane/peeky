@@ -746,6 +746,8 @@ def _moot(probe, path, listed, lists, named, cache):
     if found is None:
         return False
     group, index = found
+    if group.trigraphed:
+        return False
     for branch in group.branches[:index]:
         kind = native_macros.lone(branch) if branch.kind in ("if", "elif") else None
         asking = [

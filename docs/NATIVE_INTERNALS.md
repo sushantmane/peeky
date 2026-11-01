@@ -129,6 +129,9 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   differ in code or includes alone stay unproven, as do probes in macros.
 - A group holding a `#line` or a line marker, at any depth, stays unproven: two branches may
   each say `#line 100` and define the same macro, the same record for different code.
+- A directive may begin `#`, the digraph `%:`, or the trigraph `??=`. Whether a trigraph
+  applies depends on `-trigraphs` and the standard, and `??/` splices lines: a file holding
+  `??=` or `??/` has no group read (`Group.trigraphed`), by the record or `_moot`.
 - So does a recorded `-D` (`_defined_probe`) whose value names a probe, holds `#` or `##`,
   which may paste one together, or holds any three characters of a probe's name. String
   literals don't count. A probe the source itself pastes together from pieces is outside what

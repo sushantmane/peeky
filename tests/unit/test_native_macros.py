@@ -187,3 +187,29 @@ def test_a_branch_asking_for_a_file_alone_is_known():
     assert first("__has_include(<a.h>) && A") is None
     assert first("__has_include(<a.h>) || __has_include(<b.h>)") is None
     assert first("!__has_include(<a.h>)") is None
+
+
+def test_directives_written_with_a_digraph_or_a_trigraph_are_read():
+    # `%:` is `#` (a digraph); `??=` is `#` under -trigraphs, which Peeky replays where a
+    # unit records it.
+    said = "its group holds a #line or a line marker"
+    for introducer in ("%:", "??=", "%: "):
+        for line in (f"{introducer}line 100", f'{introducer} 100 "a.h"'):
+            text = (
+                f'#if __has_include("gone.h")\n{line}\n#define M 1\nint x = 1;\n#else\n{line}\n'
+                "#define M 1\nint x = 2;\n#endif\n"
+            )
+            assert unsettled(conditionals(text)[1][0]).startswith(said), line
+    # A group whose directives are digraphs is read as any other.
+    digraphs = "%:if __has_include(<x.h>)\n%:  define X 1\n%:endif\n"
+    group, index = conditionals(digraphs)[1]
+    assert index == 0 and unsettled(group) is None
+    assert unsettled(conditionals(digraphs.replace("%:  define X 1\n", ""))[1][0]) is not None
+    # A trigraph may make a directive, or join one to the next line (`??/`): whether it
+    # does depends on -trigraphs, so Peeky proves no probe of that file.
+    trigraphed = "trigraph (??= or ??/)"
+    for text in (
+        "??=if __has_include(<x.h>)\n??=define X 1\n??=endif\n",
+        "#if __has_include(<x.h>)\n#define X 1 ??/\n#endif\n",
+    ):
+        assert trigraphed in unsettled(conditionals(text)[1][0]), text
