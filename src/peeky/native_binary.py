@@ -1288,10 +1288,12 @@ class CodeSymbol:
 @dataclass(frozen=True)
 class CodeMap:
     """What code_symbols reads of an executable: its symbols at code (None where it has
-    no symbol table) and its CodeSections."""
+    no symbol table), its CodeSections, and whether it is Mach-O, whose code Peeky
+    compares with no toolchain object or archive (they are ELF's alone)."""
 
     symbols: list | None
     sections: list
+    macho: bool = False
 
 
 # Sections of stubs the linker makes: never the program's code.
@@ -1396,7 +1398,7 @@ def _macho_symbols(stream, header):
         cursor += extent
     code = [section for section, is_code in sections if is_code]
     if table is None:
-        return CodeMap(None, code)
+        return CodeMap(None, code, macho=True)
     offset, symbols, strings, strings_size = table
     if symbols > MAX_SYMBOLS or offset + symbols * 16 > size or strings + strings_size > size:
         raise ValueError("Invalid Mach-O symbol table")
@@ -1417,7 +1419,7 @@ def _macho_symbols(stream, header):
         text = os.fsdecode(names[start:end]) if end >= 0 else ""
         if text and not text.startswith(("ltmp", "l_", "L")):
             found.append(CodeSymbol(text.removeprefix("_"), value, 0, not kind & 0x01))  # N_EXT
-    return CodeMap(found, code)
+    return CodeMap(found, code, macho=True)
 
 
 # What fills the space between functions: zeros, AArch64's `nop`, x86's `nop`s and `int3`.
@@ -1476,7 +1478,53 @@ def _code_between(stream, section, low, high):
     return None
 
 
-def uncovered_code(binary, units, startup=None):
+# What a unit's recorded words say of where the compiler finds the toolchain's startup
+# objects and archives, by the name clang's driver takes with `=`: a link may say more.
+_TOOLCHAIN_OPTIONS = {
+    "--target": "--target",
+    "-target": "--target",
+    "--sysroot": "--sysroot",
+    "-rtlib": "--rtlib",
+    "--rtlib": "--rtlib",
+    "--gcc-toolchain": "--gcc-toolchain",
+    "--gcc-install-dir": "--gcc-install-dir",
+}
+# Of those, the ones naming a directory, relative to the unit's.
+_TOOLCHAIN_PATHS = frozenset(("--sysroot", "--gcc-toolchain", "--gcc-install-dir"))
+
+
+def toolchain_options(read):
+    """(options, unsure): what every unit of ``read`` (Judged) records of where the
+    toolchain's startup objects and archives are (_TOOLCHAIN_OPTIONS), as `--name=value`
+    words for asking the compiler; or, where the units record different ones, none, and
+    why the archives Peeky reads may not be the ones linked."""
+    seen = {}
+    for each in read:
+        words, found = list(each.words[1:]), {}
+        for at, word in enumerate(words):
+            name, equals, value = word.partition("=")
+            if name not in _TOOLCHAIN_OPTIONS:
+                continue
+            if not equals:
+                if word not in ("-target", "--sysroot", "--rtlib") or at + 1 >= len(words):
+                    continue
+                value = words[at + 1]
+            name = _TOOLCHAIN_OPTIONS[name]
+            if name in _TOOLCHAIN_PATHS:
+                value = posixpath.normpath(posixpath.join(each.unit.comp_dir or "/", value))
+            found[name] = value
+        seen.setdefault(tuple(sorted(found.items())), each.name)
+    if len(seen) > 1:
+        differ = sorted({name for options in seen for name, _ in options})
+        return (), (
+            f"the units record different {', '.join(differ)}, so the toolchain's code Peeky "
+            "compared it with may not be what was linked"
+        )
+    options = next(iter(seen), ())
+    return tuple(f"{name}={value}" for name, value in options), None
+
+
+def uncovered_code(binary, units, startup=None, unsure=None):
     """What of ``binary``'s code no unit of its debug information covers (``units``:
     native_units.Unit, each with its code ranges), but the toolchain's own: each symbol
     there (hand-written assembly built without -g, a library linked without debug
@@ -1484,10 +1532,15 @@ def uncovered_code(binary, units, startup=None):
     it), but what pads the space between functions. The toolchain's own: the linker's
     stubs (``_TOOLCHAIN_SECTIONS``); startup code by a name reserved to the
     implementation (``_RESERVED_STARTUP``, ``_ATOMICS``), to its size, or to the next
-    symbol where it has none; and code whose bytes are a startup object's
-    (``startup``: a callable giving toolchain_startup's), as other startup names and
-    crti.o's and crtn.o's parts of `.init` and `.fini` must be. Each as a phrase, for a
-    note; where the binary has no symbol table, or one Peeky can't read, that instead."""
+    symbol where it has none; and code whose bytes are a startup object's or a toolchain
+    archive member's (``startup``: a callable given the names to look for, giving
+    toolchain_startup's), as other startup names, crti.o's and crtn.o's parts of `.init`
+    and `.fini`, and functions linked from libgcc's archive or libc_nonshared.a
+    (`__extenddftf2`, `atexit`) must be. Such code is the toolchain's only where the code
+    its relocations reach by the binary's symbols is too. Never a symbol of
+    the returns-twice family. Each as a phrase, for a note; where the binary has no symbol
+    table, or one Peeky can't read, that instead. ``unsure``: why the toolchain's archives
+    Peeky reads may not be the ones linked, said with each phrase they bear on."""
     import bisect
 
     try:
@@ -1506,41 +1559,84 @@ def uncovered_code(binary, units, startup=None):
         for section in sections
         if section.name in _FRAMED_SECTIONS and section.high > section.low
     }
-    matched, unframed, pieces, why = set(), {}, [], None
-    if framed or any(symbol.name in _MATCHED_STARTUP for symbol in symbols):
-        pieces, why = startup() if startup is not None else ([], "Peeky has no compiler to ask")
+
+    def reserved(symbol):
+        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
+
+    def family(symbol):
+        return bool(_RETURNS_TWICE.fullmatch(symbol.name))
+
+    units_hold = _holder(covered)
+    # Symbols whose code may be the toolchain's: startup names, and any other no unit
+    # covers, but the returns-twice family's, which are never taken for the toolchain's.
+    wanted = [
+        symbol
+        for symbol in symbols
+        if not reserved(symbol)
+        and not family(symbol)
+        and (symbol.name in _MATCHED_STARTUP or not units_hold(symbol.address))
+    ]
+    unframed, pieces, why, unsearched = {}, [], None, None
+    if code.macho:
+        wanted = []
+    if framed or wanted:
+        names = sorted({symbol.name for symbol in wanted} - _MATCHED_STARTUP)
+        if startup is None:
+            why = unsearched = "Peeky has no compiler to ask"
+        else:
+            pieces, why, unsearched = startup(names)
     image = None
     if pieces:
         try:
             image = native_startup.Image(binary)
         except (OSError, ValueError, struct.error) as exc:
             pieces, why = [], f"Peeky can't read the binary's sections ({exc})"
-    for symbol in symbols:
-        if symbol.name not in _MATCHED_STARTUP or symbol.address in matched:
-            continue
-        for piece in pieces:
-            if symbol.name not in piece.symbols:
-                continue
-            base = symbol.address - piece.symbols[symbol.name]
-            if native_startup.place(piece, base, image):
-                covered.append((base, base + len(piece.data)))
-                matched |= {base + at for at in piece.symbols.values()}
-                break
+            unsearched = why
+    # Each piece placed where a wanted symbol of it says: {(piece, base): Placed}; and
+    # each framed section's crti.o head and crtn.o tail.
+    placed, tried, ends = {}, {}, {}
+    for symbol in wanted:
+        for index, piece in enumerate(pieces):
+            if symbol.name in piece.symbols:
+                key = (index, symbol.address - piece.symbols[symbol.name])
+                if key not in placed:
+                    placed[key] = native_startup.place(piece, key[1], image)
+                tried.setdefault(symbol, []).append(key)
     for name, section in framed.items():
         # crti.o begins the section and crtn.o ends it; others add what lies between.
-        head = [piece for piece in pieces if piece.origin == "crti.o" and piece.section == name]
-        tail = [piece for piece in pieces if piece.origin == "crtn.o" and piece.section == name]
+        head = [at for at, piece in enumerate(pieces) if piece.origin == "crti.o"]
+        tail = [at for at, piece in enumerate(pieces) if piece.origin == "crtn.o"]
+        head = [at for at in head if pieces[at].section == name]
+        tail = [at for at in tail if pieces[at].section == name]
         if not head or not tail:
             unframed[name] = why or "Peeky found no crti.o or crtn.o"
             continue
-        start, end = len(head[0].data), len(tail[0].data)
-        if native_startup.place(head[0], section.low, image):
-            covered.append((section.low, section.low + start))
-        if native_startup.place(tail[0], section.high - end, image):
-            covered.append((section.high - end, section.high))
-
-    def reserved(symbol):
-        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
+        ends[name] = ((head[0], section.low), (tail[0], section.high - len(pieces[tail[0]].data)))
+        for key in ends[name]:
+            placed[key] = native_startup.place(pieces[key[0]], key[1], image)
+    # Startup and archive code is the toolchain's only where what it reaches by the
+    # binary's symbols is too: code the toolchain's by name or bytes, or the linker's
+    # stubs. crtbegin.o's weak hooks (`__cxa_finalize`, `_ITM_registerTMCloneTable`) and
+    # libc's `__cxa_atexit` may be the program's own. Until none changes.
+    alive = {key for key, outcome in placed.items() if outcome}
+    named_by_toolchain = {symbol.address for symbol in symbols if reserved(symbol)}
+    reaching = {}
+    while True:
+        holds = _holder([(base, base + len(pieces[at].data)) for at, base in alive])
+        dead = {}
+        for key in alive:
+            for address, name in placed[key].reaches:
+                if address not in named_by_toolchain and not holds(address):
+                    dead[key] = name
+                    break
+        if not dead:
+            break
+        alive -= dead.keys()
+        reaching.update(dead)
+    matched = set()
+    for at, base in alive:
+        covered.append((base, base + len(pieces[at].data)))
+        matched |= {base + offset for offset in pieces[at].symbols.values()}
 
     starts = sorted(symbol.address for symbol in symbols)
     for symbol in symbols:
@@ -1553,37 +1649,63 @@ def uncovered_code(binary, units, startup=None):
         end = starts[at] if at < len(starts) else section.high if section else symbol.address
         end = symbol.address + symbol.size if symbol.size else end
         covered.append((symbol.address, min(end, section.high) if section else end))
-    spans = []
-    for low, high in sorted(covered):
-        if spans and low <= spans[-1][1]:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], high))
-        else:
-            spans.append((low, high))
-    lows = [low for low, _ in spans]
-
-    def held(address):
-        at = bisect.bisect_right(lows, address) - 1
-        return at >= 0 and address < spans[at][1]
-
+    spans = _merged(covered)
+    held = _holder(covered)
+    doubt = f"; {unsure}" if unsure else ""
     named, found = [], []
     for symbol in symbols:
-        if reserved(symbol) or symbol.address in matched or held(symbol.address):
+        if reserved(symbol):
+            continue
+        said = f"{symbol.name} is code no unit's debug information covers"
+        if family(symbol):
+            # Whatever code holds it, the toolchain's or not.
+            if not units_hold(symbol.address):
+                named.append(symbol)
+                found.append(
+                    f"{said} (one of the returns-twice family, which Peeky never takes for "
+                    "the toolchain's code)"
+                )
+            continue
+        if symbol.address in matched or held(symbol.address):
             continue
         named.append(symbol)
-        said = f"{symbol.name} is code no unit's debug information covers"
-        if symbol.name not in _MATCHED_STARTUP:
-            found.append(f"{said} (assembly built without -g?)")
+        keys = tried.get(symbol, [])
+        if not keys:
+            if code.macho:
+                found.append(
+                    f"{said} (code built without debug information: the program's own, a "
+                    "library's or the toolchain's, which Peeky compares on Linux only)"
+                )
+            elif symbol.name in _MATCHED_STARTUP:
+                found.append(
+                    f"{said}, and Peeky found no toolchain startup object holding it "
+                    f"({why or 'none names it'}){doubt}"
+                )
+            elif unsearched:
+                found.append(
+                    f"{said}, and Peeky can't tell whether it is the toolchain's: it can't "
+                    f"search all the toolchain's archives ({unsearched}){doubt}"
+                )
+            else:
+                found.append(f"{said} (assembly built without -g?){doubt}")
             continue
-        origins = sorted({piece.origin for piece in pieces if symbol.name in piece.symbols})
-        if origins:
-            found.append(
-                f"{said}, and its bytes are none of the toolchain's ({', '.join(origins)})"
-            )
-        else:
-            found.append(
-                f"{said}, and Peeky found no toolchain startup object holding it "
-                f"({why or 'none names it'})"
-            )
+        differ = sorted(
+            {
+                pieces[at].origin
+                for at, base in keys
+                if placed[(at, base)].kind == native_startup.BYTES
+            }
+        )
+        parts = [f"its bytes are none of the toolchain's ({', '.join(differ)})"] if differ else []
+        for key in keys:
+            if key in reaching:
+                parts.append(
+                    f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
+                    f"{reaching[key]}, code that isn't the toolchain's"
+                )
+            elif placed[key].kind not in (None, native_startup.BYTES):
+                parts.append(placed[key].why)
+        found.append(f"{said}, and {'; '.join(dict.fromkeys(parts))}{doubt}")
     with open(binary, "rb") as stream:
         for section in sections:
             if section.name in _TOOLCHAIN_SECTIONS or section.high <= section.low:
@@ -1598,11 +1720,25 @@ def uncovered_code(binary, units, startup=None):
                     at = None if inside else _code_between(stream, section, cursor, gap_end)
                     if at is not None and section.name in framed:
                         reason = unframed.get(section.name)
+                        # Why crti.o's head or crtn.o's tail, where the gap holds it, isn't
+                        # the toolchain's.
+                        missed = [
+                            f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
+                            f"{reaching[key]}, code that isn't the toolchain's"
+                            if key in reaching
+                            else placed[key].why
+                            for key in ends.get(section.name, ())
+                            if key not in alive
+                            and key[1] < gap_end
+                            and cursor < key[1] + len(pieces[key[0]].data)
+                        ]
                         found.append(
                             f"the code at 0x{at:x}, in {section.name}, may be the program's: "
                             + (
                                 f"Peeky can't compare it with crti.o's and crtn.o's ({reason})"
                                 if reason
+                                else "; ".join(missed)
+                                if missed
                                 else "it isn't crti.o's or crtn.o's"
                             )
                         )
@@ -1615,6 +1751,31 @@ def uncovered_code(binary, units, startup=None):
                 if cursor >= section.high:
                     break
     return list(dict.fromkeys(found))
+
+
+def _merged(spans):
+    """``spans`` ([low, high) pairs) sorted, those that meet or overlap joined."""
+    joined = []
+    for low, high in sorted(spans):
+        if joined and low <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], high))
+        else:
+            joined.append((low, high))
+    return joined
+
+
+def _holder(spans):
+    """Whether an address is in one of ``spans``, as a function."""
+    import bisect
+
+    joined = _merged(spans)
+    lows = [low for low, _ in joined]
+
+    def holds(address):
+        at = bisect.bisect_right(lows, address) - 1
+        return at >= 0 and address < joined[at][1]
+
+    return holds
 
 
 def any_call_returns_twice(judged, texts, uncovered=()):
@@ -2198,10 +2359,14 @@ class BinaryTarget:
         if self.returns_twice is None:
             # The toolchain's own environment, never the program's (``env``).
             tools = replay_environment(scratch)
+            options, unsure = toolchain_options(read)
             uncovered = uncovered_code(
                 binary,
                 units,
-                lambda: native_startup.toolchain_startup(compiler, tools, _remaining(deadline, 10)),
+                lambda names: native_startup.toolchain_startup(
+                    compiler, tools, _remaining(deadline, 10), names, options
+                ),
+                unsure,
             )
             any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()

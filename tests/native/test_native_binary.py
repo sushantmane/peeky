@@ -771,6 +771,13 @@ def test_code_no_unit_covers_may_return_twice(project, capsys, stripped):
         [compiler, *_sysroot(), *link, "main.o", "nlr.o", "-o", "prog"], cwd=project, check=True
     )
     said = "nlr_push is code no unit's debug information covers (assembly built without -g?)"
+    if macos:
+        # Peeky compares code with the toolchain's objects and archives on Linux alone.
+        said = (
+            "nlr_push is code no unit's debug information covers (code built without debug "
+            "information: the program's own, a library's or the toolchain's, which Peeky "
+            "compares on Linux only)"
+        )
     if stripped:
         if not macos:
             subprocess.run(["objcopy", "--strip-symbol=nlr_push", "prog"], cwd=project, check=True)
@@ -971,6 +978,80 @@ def test_a_normal_build_has_no_code_no_unit_covers(project, capsys, link):
     subprocess.run([compiler, *_sysroot(), *link, *objects, "-o", "prog"], cwd=project, check=True)
     twice = _describe_twice(project, capsys)
     assert twice["any"] is False, twice
+
+
+# Calls into the toolchain's static archives: glibc's libc_nonshared.a (atexit) and, on
+# AArch64, libgcc's long double arithmetic (__extenddftf2, __gttf2).
+ARCHIVE_UTIL = """int atexit(void (*)(void));
+
+static void done(void) {}
+
+int scale(int x) {
+    long double wide = (double)x;
+    atexit(done);
+    int doubled = x * 2;
+    return doubled + (wide > 1e9L) + 1;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a and libgcc's archive")
+def test_code_linked_from_the_toolchain_s_archives_is_the_toolchain_s(project, capsys):
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] is False, twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a")
+def test_a_program_s_own_function_named_like_an_archive_member_counts(project, capsys):
+    # The program's own atexit, without debug information: libc_nonshared.a's isn't
+    # linked, and its bytes are other.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    (project / "own.c").write_text("int atexit(void (*f)(void)) { return f == 0; }\n")
+    subprocess.run([compiler, "-O0", "-c", "own.c", "-o", "own.o"], cwd=project, check=True)
+    objects = ["main.o", "util.o", "fast.o", "own.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and (
+            "atexit is code no unit's debug information covers, and its bytes are none of the "
+            "toolchain's (libc_nonshared.a(atexit.oS))"
+        )
+        in twice["why"]
+    ), twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a")
+def test_archive_code_calling_the_program_s_own_function_counts(project, capsys):
+    # libc_nonshared.a's atexit calls __cxa_atexit: here the program's own, with debug
+    # information, which may return twice. atexit's bytes are the member's, but it runs
+    # the program's code.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    (project / "src" / "own.c").write_text(
+        "int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { return f == 0; }\n"
+    )
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", "-c", "src/own.c", "-o", "own.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "own.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and (
+            "atexit is code no unit's debug information covers, and its bytes are "
+            "libc_nonshared.a(atexit.oS)'s, but it reaches __cxa_atexit, code that isn't the "
+            "toolchain's"
+        )
+        in twice["why"]
+    ), twice
 
 
 @pytest.mark.timeout(300)

@@ -160,13 +160,17 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   trusted claim instead: those functions, and setjmp's family, are found by name, as today.
 - The family is one set, used everywhere (`c_source.RETURNS_TWICE_NAMES`): setjmp's (any
   name holding `setjmp`), `savectx`, `vfork`, `getcontext` and `swapcontext`, with any `_`
-  before them. A binary target always looks for them by name, where any call can't.
+  before them (`c_source._RETURNS_TWICE`). A binary target always looks for them by name,
+  where any call can't.
 - An assembly file built without `-g` leaves no unit, so `uncovered_code` reads the binary's
   symbol table (`code_symbols`: ELF's `.symtab`, Mach-O's nlist). A function symbol outside
   every unit's ranges counts, and so does code with no symbol, outside those ranges, that isn't
   padding (`_padding`). Then any call may return twice, the note naming each. A binary with no
   symbol table counts as well. The linker's stubs (`_TOOLCHAIN_SECTIONS`) are left out, and so
-  is the toolchain's startup code, each seen in clang 18's and Apple's clang 21's builds:
+  is the toolchain's startup code, each seen in clang 18's and Apple's clang 21's builds.
+  Code matched by its bytes below is treated as equivalent to the object or archive member it
+  matches, and only on Linux: Peeky reads 64-bit ELF objects alone, checked against clang 18
+  with glibc 2.39 and GCC 13's libgcc on Ubuntu 24.04 (AArch64 and x86-64).
   - By name, only where C and C++ reserve it for the implementation, as it begins with `_`
     (`_RESERVED_STARTUP`, `_ATOMICS`): `_start`, `_init`, `__libc_csu_init`, `__aarch64_*`. A
     program defining such a name is outside what Peeky checks.
@@ -184,10 +188,39 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     relaxed to `lea` or `mov $imm`, still pointing there. A relocation kind not seen in the real objects
     (`_AARCH64`, `_X86_64`) never matches. A program's own `frame_dummy`, even a local
     constructor, counts.
+  - Functions linked from the toolchain's static archives, by their bytes, as startup code
+    is. Every symbol no unit covers is looked for among the members of libgcc's archive
+    (`-print-libgcc-file-name`: `__extenddftf2`, `__sfp_handle_exceptions`) and glibc's
+    `libc_nonshared.a` (`-print-file-name`: `atexit`, `pthread_atfork`). Each member defining
+    it, by the archive's symbol index, is placed as above. One the program defines itself, by
+    such a name but with other bytes, counts, naming the member.
+  - Startup and archive code may call a function the program defines, which may then return
+    twice. libc's `atexit` calls `__cxa_atexit`; crtbegin.o calls weak hooks such as
+    `__cxa_finalize`, `_ITM_deregisterTMCloneTable` and `__deregister_frame_info`; crti.o's
+    `call_weak_fn` calls `__gmon_start__`. So such code is the toolchain's only where each
+    function its relocations reach by the binary's symbols is too: by name or bytes,
+    recursively, or the linker's stubs. A call through the PLT or the GOT reaches a shared
+    library, and a weak hook nothing defines is 0. Otherwise it counts, naming what it reaches.
+  - A symbol of the returns-twice family, by its pattern (`_vfork`, `__sigsetjmp`), is never
+    looked for. It counts, whatever its bytes, even at an address matched code holds.
+  - Each note says why the code isn't the toolchain's (`native_startup.Placed`): its bytes
+    differ, a relocation points elsewhere, the member holds a relocation Peeky doesn't read or
+    is built for another machine, or an archive can't be searched (the compiler fails, or the
+    archive can't be read or exceeds 64 MiB). An archive the compiler finds none of isn't linked.
+  - The compiler is asked with the units' recorded `--target`, `--sysroot`, `-rtlib` and GCC
+    installation, where every unit records the same (`toolchain_options`). Where they differ,
+    each note says the code Peeky compared may not be what was linked. A link's own options
+    aren't recorded: a binary linked with another runtime library shows its functions as code
+    no unit covers.
   - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
-    tail, matched byte for byte, are the toolchain's. Anything else there counts.
+    tail, matched byte for byte, are the toolchain's. Anything else there counts. Where the
+    head or tail isn't matched, the note says why (`Placed.why`): other bytes, a relocation
+    pointing elsewhere or Peeky doesn't read, another machine, or what it reaches.
   - Peeky asks the compiler in its own environment (`replay_environment`), never the one the
     program launches with.
+  - A Mach-O binary's code is compared with nothing (`CodeMap.macho`): the objects and archives
+    Peeky reads are ELF's. A symbol no unit covers there is code built without debug
+    information: the program's own, a library's or the toolchain's.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 

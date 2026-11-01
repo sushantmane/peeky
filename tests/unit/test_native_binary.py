@@ -885,10 +885,36 @@ def test_code_no_unit_covers_is_named(root, monkeypatch):
     ]
     monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
     units = [SimpleNamespace(ranges=[(0x1000, 0x1040)]), SimpleNamespace(ranges=[(0x1080, 0x10A0)])]
-    assert uncovered_code(binary, units) == [
+    # A toolchain whose archives define none of them.
+    none = lambda names=(): ([], None, None)  # noqa: E731
+    assert uncovered_code(binary, units, none) == [
         "nlr_push is code no unit's debug information covers (assembly built without -g?)",
         "the code at 0x10c4 has no symbol, and no unit's debug information covers it",
     ]
+    # In a Mach-O binary, Peeky compares nothing with the toolchain's: it says so.
+    monkeypatch.setattr(
+        native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections, macho=True)
+    )
+    asked = []
+    # Not only assembly: `helper` is ordinary C, built without -g.
+    units.pop()
+    mach = (
+        "{} is code no unit's debug information covers (code built without debug information: "
+        "the program's own, a library's or the toolchain's, which Peeky compares on Linux only)"
+    )
+    assert uncovered_code(binary, units, lambda names=(): asked.append(names)) == [
+        mach.format("nlr_push"),
+        mach.format("helper"),
+    ]
+    assert asked == []
+    units.append(SimpleNamespace(ranges=[(0x1080, 0x10A0)]))
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    # Where Peeky can't search them, it can't tell.
+    assert uncovered_code(binary, units)[0] == (
+        "nlr_push is code no unit's debug information covers, and Peeky can't tell whether it "
+        "is the toolchain's: it can't search all the toolchain's archives (Peeky has no "
+        "compiler to ask)"
+    )
     # Startup code, padding and the linker's own sections are no one's.
     units.append(SimpleNamespace(ranges=[(0x1060, 0x1064), (0x10C4, 0x10C8)]))
     assert uncovered_code(binary, units) == []
@@ -1385,10 +1411,13 @@ def _call(offset, name, section=None):
     return Relocation(offset, 283, 0, None, name, 0, section is not None, section)
 
 
-def _linked(monkeypatch, base, **addresses):
-    """native_startup.Image of the binary's bytes, at ``base``, with ``addresses``."""
+def _linked(monkeypatch, base, stubs=None, **addresses):
+    """native_startup.Image of the binary's bytes, at ``base``, all code, with
+    ``addresses``, and ``stubs``: {PLT stub's address: the name its GOT slot holds}."""
     from peeky import native_startup
     from peeky.native_startup import EM_AARCH64
+
+    stubs = stubs or {}
 
     class Image:
         def __init__(self, binary):
@@ -1399,11 +1428,15 @@ def _linked(monkeypatch, base, **addresses):
             at = address - base
             return self.data[at : at + length] if 0 <= at <= len(self.data) - length else None
 
+        def runs(self, address):
+            return 0 <= address - base < len(self.data)
+
         def got(self, name, weak=False):
-            return set()
+            # Each stub's slot, by the stub's address.
+            return {stub for stub, held in stubs.items() if held == name}
 
         def stub(self, address):
-            return None
+            return address if address in stubs else None
 
     monkeypatch.setattr(native_startup, "Image", Image)
 
@@ -1426,7 +1459,7 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
     text = bytearray(0x100)
     text[0x40:0x48] = _bl(0x1040, 0x1700) + RET  # crtbeginS.o's block, as linked
     binary.write_bytes(bytes(text))
-    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1700})
+    _linked(monkeypatch, 0x1000, {0x1700: "__cxa_finalize"})  # libc's, through the PLT
     sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
     crtbegin = _piece(
         "crtbeginS.o",
@@ -1441,7 +1474,7 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
         monkeypatch.setattr(
             native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
         )
-        return uncovered_code(binary, [], lambda: (list(pieces), why))
+        return uncovered_code(binary, [], lambda names=(): (list(pieces), why, None))
 
     said = "{} is code no unit's debug information covers"
     # crtbeginS.o's code, its call relocated to its function: the toolchain's, whole.
@@ -1463,8 +1496,337 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
         + ", and Peeky found no toolchain startup object holding it (clang finds no crtbeginS.o)"
     ]
     # The same code calling another function: the program's.
-    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1800})
+    _linked(monkeypatch, 0x1000, {0x1800: "__cxa_finalize"})
     assert found(*block)[0].startswith(said.format("register_tm_clones"))
+
+
+def _b(place, target):
+    return (0x14000000 | ((target - place) >> 2) & 0x3FFFFFF).to_bytes(4, "little")
+
+
+def test_startup_code_reaching_a_hook_the_program_defines_isn_t_the_toolchain_s(root, monkeypatch):
+    # crtbegin.o calls weak hooks a program may define itself (__cxa_finalize,
+    # _ITM_deregisterTMCloneTable, __deregister_frame_info), and crti.o's call_weak_fn
+    # calls __gmon_start__: the program's own code, which may return twice. Its bytes are
+    # the toolchain's, but it runs the program's code; so does what calls it.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+    from peeky.native_startup import Relocation
+
+    binary = root / "prog"
+    said = "{} is code no unit's debug information covers"
+    reaches = ", and its bytes are {}'s, but it reaches {}, code that isn't the toolchain's"
+    text = bytearray(0x100)
+    text[0x40:0x48] = _bl(0x1040, 0x1080) + RET  # crtbeginS.o's block
+    text[0x80:0x88] = MOV + RET  # __cxa_finalize, the program's, with debug information
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1080})
+    crtbegin = _piece(
+        "crtbeginS.o",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__cxa_finalize"),
+        register_tm_clones=0,
+        frame_dummy=4,
+    )
+    symbols = [
+        CodeSymbol("register_tm_clones", 0x1040, 0, True),
+        CodeSymbol("frame_dummy", 0x1044, 0, True),
+        CodeSymbol("__cxa_finalize", 0x1080, 8, False),
+    ]
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    unit = SimpleNamespace(ranges=((0x1080, 0x1088),))
+    assert uncovered_code(binary, [unit], lambda names=(): ([crtbegin], None, None)) == [
+        said.format("register_tm_clones") + reaches.format("crtbeginS.o", "__cxa_finalize"),
+        said.format("frame_dummy") + reaches.format("crtbeginS.o", "__cxa_finalize"),
+    ]
+    # .init: crti.o's head calls its call_weak_fn, which calls the program's __gmon_start__.
+    text = bytearray(0x30)
+    text[0x00:0x0C] = MOV + _bl(0x2004, 0x2010) + RET  # crti.o's head, crtn.o's tail
+    text[0x10:0x18] = _b(0x2010, 0x2020) + RET  # call_weak_fn: b __gmon_start__
+    text[0x20:0x28] = MOV + RET  # __gmon_start__, the program's
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x2010}, __gmon_start__={0x2020})
+    gmon = Relocation(0, 282, 0, None, "__gmon_start__", 0, False, None, True)
+    pieces = [
+        _piece("crti.o", ".init", MOV + _bl(0, 0), _call(4, "call_weak_fn", ".text")),
+        _piece("crti.o", ".text", _b(0, 0) + RET, gmon, call_weak_fn=0),
+        _piece("crtn.o", ".init", RET),
+    ]
+    symbols = [
+        CodeSymbol("_init", 0x2000, 0, False),
+        CodeSymbol("call_weak_fn", 0x2010, 0, True),
+        CodeSymbol("__gmon_start__", 0x2020, 8, False),
+    ]
+    sections = [CodeSection(".init", 0x2000, 0x200C, 0), CodeSection(".text", 0x2010, 0x2030, 0x10)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    unit = SimpleNamespace(ranges=((0x2020, 0x2028),))
+    found = uncovered_code(binary, [unit], lambda names=(): (pieces, None, None))
+    assert found == [
+        said.format("call_weak_fn") + reaches.format("crti.o", "__gmon_start__"),
+        "the code at 0x2000, in .init, may be the program's: its bytes are crti.o's, but it "
+        "reaches call_weak_fn, code that isn't the toolchain's",
+    ]
+    # Where __gmon_start__ is nowhere (a weak hook nothing defines): the toolchain's.
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x2010})
+    text[0x10:0x14] = _b(0x2010, 0)
+    binary.write_bytes(bytes(text))
+    del symbols[2]
+    assert uncovered_code(binary, [unit], lambda names=(): (pieces, None, None)) == []
+
+
+def test_code_linked_from_the_toolchain_s_archives_counts_unless_its_bytes_are_theirs(
+    root, monkeypatch
+):
+    # atexit (libc_nonshared.a) and __extenddftf2 (libgcc.a) are linked without debug
+    # information. Each is the toolchain's only where its bytes are the archive member's,
+    # as linked: by its relocations' immediate fields, each pointing where it must.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x00:0x08] = _bl(0x1000, 0x1700) + RET  # atexit: b __cxa_atexit, its PLT stub
+    text[0x20:0x28] = _bl(0x1020, 0x1030) + RET  # __extenddftf2: bl __sfp_handle_exceptions
+    text[0x30:0x38] = MOV + RET  # __sfp_handle_exceptions
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, {0x1700: "__cxa_atexit"}, __sfp_handle_exceptions={0x1030})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    atexit = _piece(
+        "libc_nonshared.a(atexit.oS)", ".text", _bl(0, 0) + RET, _call(0, "__cxa_atexit"), atexit=0
+    )
+    extend = _piece(
+        "libgcc.a(extenddftf2.o)",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__sfp_handle_exceptions"),
+        __extenddftf2=0,
+    )
+    sfp = _piece("libgcc.a(sfp-exceptions.o)", ".text", MOV + RET, __sfp_handle_exceptions=0)
+    asked = []
+
+    def found(*symbols, pieces=(atexit, extend, sfp), units=(), unsearched=None, unsure=None):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
+        )
+
+        def startup(names=()):
+            asked.append(list(names))
+            return list(pieces), None, unsearched
+
+        return uncovered_code(binary, units, startup, unsure)
+
+    said = "{} is code no unit's debug information covers"
+    linked = (
+        CodeSymbol("atexit", 0x1000, 8, False),
+        CodeSymbol("__extenddftf2", 0x1020, 8, True),
+        CodeSymbol("__sfp_handle_exceptions", 0x1030, 8, True),
+    )
+    assert found(*linked) == []
+    # Peeky looks for the names no unit covers, and no other.
+    unit = SimpleNamespace(ranges=((0x1040, 0x1080),))
+    assert found(*linked, CodeSymbol("scale", 0x1040, 8, True), units=[unit]) == []
+    assert asked[-1] == ["__extenddftf2", "__sfp_handle_exceptions", "atexit"]
+    # A function of the program's own, by an archive member's name but with other bytes,
+    # or calling another function: the program's.
+    own = CodeSymbol("atexit", 0x1030, 8, False)
+    assert found(own) == [
+        said.format("atexit")
+        + ", and its bytes are none of the toolchain's (libc_nonshared.a(atexit.oS))"
+    ]
+    _linked(monkeypatch, 0x1000, {0x1800: "__cxa_atexit"}, __sfp_handle_exceptions={0x1030})
+    assert found(*linked) == [
+        said.format("atexit") + ", and its bytes are libc_nonshared.a(atexit.oS)'s, but its "
+        "relocation at +0x0, to __cxa_atexit, points elsewhere"
+    ]
+    # No archive member defines it: as before. Where Peeky can't search an archive, or the
+    # units' toolchain options differ, it says so.
+    nlr = CodeSymbol("nlr_push", 0x1030, 8, False)
+    assert found(nlr, pieces=()) == [said.format("nlr_push") + " (assembly built without -g?)"]
+    unreadable = "Peeky can't read /usr/lib/libc_nonshared.a (Permission denied)"
+    assert found(nlr, pieces=(), unsearched=unreadable) == [
+        said.format("nlr_push") + ", and Peeky can't tell whether it is the toolchain's: it "
+        f"can't search all the toolchain's archives ({unreadable})"
+    ]
+    assert found(nlr, pieces=(), unsure="the units record different --target")[0].endswith(
+        "(assembly built without -g?); the units record different --target"
+    )
+
+
+def test_archive_code_reaching_the_program_s_code_isn_t_the_toolchain_s(root, monkeypatch):
+    # libc_nonshared.a's atexit calls __cxa_atexit, which a program may define itself and
+    # which may then return twice: atexit's bytes are the member's, but it runs the
+    # program's code. So is what reaches it, the program's or the toolchain's.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x00:0x08] = _bl(0x1000, 0x1060) + RET  # atexit: b __cxa_atexit, the program's
+    text[0x20:0x28] = _bl(0x1020, 0x1030) + RET  # __extenddftf2: bl __sfp_handle_exceptions
+    text[0x30:0x38] = MOV + RET  # __sfp_handle_exceptions
+    text[0x60:0x68] = MOV + RET  # __cxa_atexit, the program's own, with debug information
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_atexit={0x1060}, __sfp_handle_exceptions={0x1030})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    atexit = _piece(
+        "libc_nonshared.a(atexit.oS)", ".text", _bl(0, 0) + RET, _call(0, "__cxa_atexit"), atexit=0
+    )
+    extend = _piece(
+        "libgcc.a(extenddftf2.o)",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__sfp_handle_exceptions"),
+        __extenddftf2=0,
+    )
+    sfp = _piece("libgcc.a(sfp-exceptions.o)", ".text", MOV + RET, __sfp_handle_exceptions=0)
+    symbols = [
+        CodeSymbol("atexit", 0x1000, 8, False),
+        CodeSymbol("__extenddftf2", 0x1020, 8, True),
+        CodeSymbol("__sfp_handle_exceptions", 0x1030, 8, True),
+        CodeSymbol("__cxa_atexit", 0x1060, 8, False),
+    ]
+
+    def found(pieces=(atexit, extend, sfp)):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections)
+        )
+        unit = SimpleNamespace(ranges=((0x1060, 0x1068),))
+        return uncovered_code(binary, [unit], lambda names=(): (list(pieces), None, None))
+
+    said = "{} is code no unit's debug information covers"
+    assert found() == [
+        said.format("atexit") + ", and its bytes are libc_nonshared.a(atexit.oS)'s, but it "
+        "reaches __cxa_atexit, code that isn't the toolchain's"
+    ]
+    # Through the toolchain's own code, matched in turn, or not.
+    other = _piece("libgcc.a(sfp-exceptions.o)", ".text", RET + RET, __sfp_handle_exceptions=0)
+    assert found((atexit, extend, other))[1:] == [
+        said.format("__extenddftf2") + ", and its bytes are libgcc.a(extenddftf2.o)'s, but it "
+        "reaches __sfp_handle_exceptions, code that isn't the toolchain's",
+        said.format("__sfp_handle_exceptions")
+        + ", and its bytes are none of the toolchain's (libgcc.a(sfp-exceptions.o))",
+    ]
+
+
+def test_the_returns_twice_family_is_never_the_toolchain_s(root, monkeypatch):
+    # By the family's pattern, prefixed or held in a longer name, and wherever it is: at
+    # an address matched toolchain code holds too (an alias), it still counts.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x20:0x28] = MOV + RET
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000)
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    asked = []
+
+    def found(*symbols, pieces=()):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
+        )
+
+        def startup(names=()):
+            asked.append(list(names))
+            return list(pieces), None, None
+
+        return uncovered_code(binary, [], startup)
+
+    said = (
+        "{} is code no unit's debug information covers (one of the returns-twice family, "
+        "which Peeky never takes for the toolchain's code)"
+    )
+    for name in ("vfork", "_vfork", "__sigsetjmp", "my_setjmp_wrapper", "__getcontext"):
+        family = _piece(f"libc_nonshared.a({name}.oS)", ".text", MOV + RET, **{name: 0})
+        del asked[:]
+        assert found(CodeSymbol(name, 0x1020, 8, False), pieces=(family,)) == [said.format(name)]
+        assert asked == []
+    # An alias of matched code: the member's own `helper`, and `_setjmp` at its address.
+    helper = _piece("libgcc.a(helper.o)", ".text", MOV + RET, helper=0, _setjmp=0)
+    assert found(
+        CodeSymbol("helper", 0x1020, 8, False),
+        CodeSymbol("_setjmp", 0x1020, 8, False),
+        pieces=(helper,),
+    ) == [said.format("_setjmp")]
+    assert asked[-1] == ["helper"]
+
+
+def test_why_code_isn_t_the_toolchain_s_is_the_true_one(root, monkeypatch):
+    # A relocation Peeky doesn't read, a member built for another machine, a relocation
+    # pointing elsewhere: each said as it is, never as other bytes.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+    from peeky.native_startup import EM_AARCH64, EM_X86_64, StartupPiece
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x20:0x28] = MOV + _bl(0x1024, 0x1080)
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __sfp_handle_exceptions={0x1090})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    symbol = CodeSymbol("__extenddftf2", 0x1020, 8, True)
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap([symbol], sections))
+
+    def found(piece):
+        return uncovered_code(binary, [], lambda names=(): ([piece], None, None))
+
+    said = "__extenddftf2 is code no unit's debug information covers, and "
+    origin = "libgcc.a(extenddftf2.o)"
+    unread = StartupPiece(
+        origin,
+        ".text",
+        MOV + RET,
+        EM_AARCH64,
+        (),
+        {"__extenddftf2": 0},
+        "a relocation of kind 257 at 0x0 of its .text",
+    )
+    assert found(unread) == [
+        said + f"Peeky can't compare it with {origin}, which holds a relocation of kind 257 at "
+        "0x0 of its .text, a kind Peeky doesn't read"
+    ]
+    other = StartupPiece(origin, ".text", MOV + RET, EM_X86_64, (), {"__extenddftf2": 0})
+    assert found(other) == [
+        said + f"Peeky can't compare it with {origin}, built for x86-64, not AArch64"
+    ]
+    elsewhere = _piece(
+        origin, ".text", MOV + _bl(4, 0), _call(4, "__sfp_handle_exceptions"), __extenddftf2=0
+    )
+    assert found(elsewhere) == [
+        said + f"its bytes are {origin}'s, but its relocation at +0x4, to "
+        "__sfp_handle_exceptions, points elsewhere"
+    ]
+    # Other bytes: only that.
+    assert found(_piece(origin, ".text", RET + RET, __extenddftf2=0)) == [
+        said + f"its bytes are none of the toolchain's ({origin})"
+    ]
+
+
+def test_the_toolchain_is_asked_as_the_units_record_it(root):
+    # The compiler finds the startup objects and archives by --target, --sysroot, -rtlib
+    # and the GCC installation: as every unit records them, or, where they differ, Peeky
+    # says the code it compared may not be what was linked.
+    from peeky.native_binary import toolchain_options
+
+    def unit(*words, name="a.c"):
+        return SimpleNamespace(
+            name=name, words=("clang", *words), unit=SimpleNamespace(comp_dir="/src/build")
+        )
+
+    assert toolchain_options([unit("-O0"), unit("-g")]) == ((), None)
+    recorded = ("-target", "aarch64-linux-gnu", "--sysroot", "../sysroot", "-rtlib=compiler-rt")
+    assert toolchain_options([unit(*recorded), unit("-g", *recorded)]) == (
+        ("--rtlib=compiler-rt", "--sysroot=/src/sysroot", "--target=aarch64-linux-gnu"),
+        None,
+    )
+    assert toolchain_options([unit("--target=x86_64-linux-gnu"), unit(name="b.c")]) == (
+        (),
+        "the units record different --target, so the toolchain's code Peeky compared it with "
+        "may not be what was linked",
+    )
 
 
 def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkeypatch):
@@ -1487,18 +1849,41 @@ def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkey
         monkeypatch.setattr(
             native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections)
         )
-        return uncovered_code(binary, [], lambda: (list(pieces), why))
+        return uncovered_code(binary, [], lambda names=(): (list(pieces), why, None))
 
     assert found(MOV + call + RET) == []
     # Another object's code between them.
     assert found(MOV + call + MOV + RET) == [
         "the code at 0x2008, in .init, may be the program's: it isn't crti.o's or crtn.o's"
     ]
-    # Not crti.o's head at all, or its call elsewhere.
-    for other in (RET + call, MOV + _bl(0x2004, 0x3100)):
-        assert found(other + RET) == [
-            "the code at 0x2000, in .init, may be the program's: it isn't crti.o's or crtn.o's"
-        ]
+    # Not crti.o's head, or its call elsewhere: each says which.
+    said = "the code at 0x2000, in .init, may be the program's: "
+    assert found(RET + call + RET) == [said + "its bytes are none of the toolchain's (crti.o)"]
+    assert found(MOV + _bl(0x2004, 0x3100) + RET) == [
+        said + "its bytes are crti.o's, but its relocation at +0x4, to call_weak_fn, points "
+        "elsewhere"
+    ]
+    # crti.o built for another machine, or holding a relocation Peeky doesn't read: Peeky
+    # can't compare them, and says so.
+    from peeky.native_startup import EM_X86_64, StartupPiece
+
+    x86 = StartupPiece("crti.o", ".init", head.data, EM_X86_64, head.relocations, {})
+    assert found(MOV + call + RET, pieces=(x86, tail)) == [
+        said + "Peeky can't compare it with crti.o, built for x86-64, not AArch64"
+    ]
+    unread = "a relocation of kind 257 at 0x4 of its .init"
+    odd = StartupPiece("crti.o", ".init", head.data, head.machine, (), {}, unread)
+    assert found(MOV + call + RET, pieces=(odd, tail)) == [
+        said + f"Peeky can't compare it with crti.o, which holds {unread}, a kind Peeky "
+        "doesn't read"
+    ]
+    # crtn.o's tail likewise, where the gap holds it.
+    odd_tail = StartupPiece("crtn.o", ".init", RET, head.machine, (), {}, unread.replace("4", "0"))
+    assert found(MOV + call + RET, pieces=(head, odd_tail)) == [
+        "the code at 0x2008, in .init, may be the program's: Peeky can't compare it with "
+        "crtn.o, which holds a relocation of kind 257 at 0x0 of its .init, a kind Peeky doesn't "
+        "read"
+    ]
     assert found(MOV + call + RET, pieces=(), why="clang finds no crti.o") == [
         "the code at 0x2000, in .init, may be the program's: Peeky can't compare it with "
         "crti.o's and crtn.o's (clang finds no crti.o)"
