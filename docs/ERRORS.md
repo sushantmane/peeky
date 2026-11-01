@@ -285,10 +285,9 @@ file lists what it reads.
 - What identifies the build is `PROVENANCE_CHANGED` instead: Cargo's configuration, the lockfile, a
   vendored copy, a tool or the build's own output. So is a change during a build or a run.
 - A git index the build read (`include_bytes!` of `.git/index`, as git-version's macro does) is
-  compared by its bytes. Where git only refreshed its cached file status, the message says so:
-  ``git refreshed .git/index's cached file status (its entries are unchanged) since `peeky build`
-  ran``. Where that refresh was the only change during a build, `peeky build` builds again once,
-  and notes it. A second refresh is `PROVENANCE_CHANGED`. Build again.
+  compared by its bytes. Where they changed and its entries didn't, the message says so: ``.git/index
+  changed since `peeky build` ran, but its entries are the same (git may have refreshed its cached
+  file status)``. During a build, that is `PROVENANCE_CHANGED`. Build again.
 
 ### PROVENANCE_CHANGED
 

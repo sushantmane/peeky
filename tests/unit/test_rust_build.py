@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from peeky import gitindex
 from peeky import rust_build as rb
 from peeky.errors import ERROR_CODES, classify
 
@@ -1828,15 +1829,16 @@ def test_an_input_through_a_link_to_nothing_is_refused(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_a_git_index_the_build_reads_is_compared_by_its_bytes_and_a_refresh_said_so(
+def test_a_git_index_the_build_reads_is_compared_by_its_bytes_saying_when_its_entries_are_same(
     tmp_path, monkeypatch
 ):
     # git-version's macro (bat's) `include_bytes!` `.git/index` and runs `git describe
-    # --dirty` while the crate compiles; a build script may watch the index too. git rewrites
-    # it with a file's cached status refreshed. The bytes are what the build read, and a
-    # crate may use them: still a change, but said for what it is.
+    # --dirty` while the crate compiles; a build script may watch the index too. A crate may
+    # use its bytes, so they are what is compared. Where they changed and the entries didn't,
+    # the refusal says so, and no more: git may have refreshed its cached file status.
     root = tmp_path / "ws"
     write(root, {"util/build.rs": "", "util/src/lib.rs": "", "notes.txt": "n\n"})
+    index = root / ".git/index"
     ago = iter(range(1000, 10**6, 100))
 
     def git(*args):
@@ -1851,86 +1853,83 @@ def test_a_git_index_the_build_reads_is_compared_by_its_bytes_and_a_refresh_said
         # A modification time the index doesn't cache (earlier, so not racily clean).
         earlier = time.time() - next(ago)
         os.utime(root / "notes.txt", (earlier, earlier))
-        before = (root / ".git/index").read_bytes()
+        written = index.read_bytes()
         git("describe", "--always", "--dirty")
-        assert (root / ".git/index").read_bytes() != before
+        assert index.read_bytes() != written
 
     git("init", "-q")
     git("add", "-A")
     git("commit", "-qm", "init")
     shape = fake_shape(tmp_path, local=("util",))
-    before = rb._snapshot(shape, None)
-    refreshed()
-    # A compile's source, refreshed while Cargo ran: kept for ``_build`` to refuse once
-    # nothing else changed, and hashed by its bytes.
-    sources, read = {}, {"sources": [".git/index"], "generated": []}
-    rb._record_read(read, root, tmp_path / "target", before, 0, sources, {})
-    assert before[":refreshed"] == [".git/index"]
-    assert sources[".git/index"] == rb.sha256_file(root / ".git/index")
-    # A build script's input, the same.
+    read = {"sources": [".git/index"], "generated": []}
     messages = [build_script_run(tmp_path, "util", "cargo:rerun-if-changed=../.git/index\n")]
-    found = rb._build_inputs(shape, root, messages, {}, before, 0, None)
-    assert before[":refreshed"] == [".git/index", ".git/index"]
-    # Without the snapshot's list (one taken otherwise), refused at once, saying why.
-    alone = {key: value for key, value in before.items() if key != ":refreshed"}
-    with pytest.raises(rb.IndexRefreshed) as caught:
-        rb._record_read(read, root, tmp_path / "target", alone, 0, {}, {})
-    assert str(caught.value) == (
-        "Provenance: git refreshed .git/index's cached file status while Peeky built the "
-        "workspace (its entries are unchanged), so the build may not be of it. Build again"
+    same = (
+        "Provenance: .git/index changed while Peeky built the workspace, but its entries are "
+        "the same (git may have refreshed its cached file status). Build again"
     )
-    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
-    # Refreshed since the build: stale by its bytes, and said so.
+    changed = (
+        "Provenance: .git/index changed while Peeky built the workspace, so the build may not "
+        "be of it. Build again"
+    )
+
+    def refused(before):
+        """What a compile's source and a build script's input are refused with."""
+        found = []
+        for check in (
+            lambda: rb._record_read(read, root, tmp_path / "target", before, 0, {}, {}),
+            lambda: rb._build_inputs(shape, root, messages, {}, before, 0, None),
+        ):
+            with pytest.raises(RuntimeError) as caught:
+                check()
+            assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+            found.append(str(caught.value))
+        assert found[0] == found[1]
+        return found[0]
+
+    # Refreshed by `git describe --dirty`: bytes changed, entries the same.
+    before = rb._snapshot(shape, None)
+    assert before["s:" + str(index)] == rb.sha256_file(index)
+    refreshed()
+    assert refused(before) == same
+    # Written in another version: bytes changed, entries the same. Said as it is.
+    before = rb._snapshot(shape, None)
+    git("update-index", "--index-version", "4")
+    assert refused(before) == same
+    # Touched only: its status changed, not its bytes. The change as any.
+    before = rb._snapshot(shape, None)
+    later = time.time() + 100
+    os.utime(index, (later, later))
+    assert refused(before) == changed
+    # A staged change: entries changed too.
+    before = rb._snapshot(shape, None)
+    (root / "notes.txt").write_text("staged\n")
+    git("add", "notes.txt")
+    assert refused(before) == changed
+    # At a probe: by its bytes, and the same said where its entries are as the build's.
+    before = rb._snapshot(shape, None)
+    sources = {}
+    rb._record_read(read, root, tmp_path / "target", before, 0, sources, {})
+    found = rb._build_inputs(shape, root, messages, {}, before, 0, None)
     manifest = {"build_inputs": found, "sources": sources, "watch": {}, "rustflags": []}
     manifest["index_entries"] = rb._index_entries(root, manifest)
+    assert manifest["index_entries"] == {
+        ".git/index": gitindex.digest(index),
+        str(index): gitindex.digest(index),
+    }
     target = SimpleNamespace(build_command="peeky build . --config rust.json")
     monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    os.utime(index, (later + 100, later + 100))
     rb._check_build_inputs(target, root, tmp_path, manifest)
     refreshed()
     with pytest.raises(rb.BuildRequired) as caught:
         rb._check_build_inputs(target, root, tmp_path, manifest)
-    assert str(caught.value).startswith(
-        "No current Peeky build of this workspace: git refreshed .git/index's cached file "
-        "status (its entries are unchanged) since `peeky build` ran."
+    assert str(caught.value) == (
+        "No current Peeky build of this workspace: .git/index, which a build script reads, "
+        "changed since `peeky build` ran, but its entries are the same (git may have refreshed "
+        "its cached file status). Run `peeky build . --config rust.json` again, or add --build"
     )
-    assert rb._index_change(root / ".git/index", ".git/index", ".git/index", manifest)
-    # A staged change changes what git reports: refused as any change.
-    (root / "notes.txt").write_text("staged\n")
+    (root / "notes.txt").write_text("staged again\n")
     git("add", "notes.txt")
-    with pytest.raises(RuntimeError, match=r"Provenance: \.git/index changed while Peeky built"):
-        rb._record_read(read, root, tmp_path / "target", before, 0, {}, {})
-    with pytest.raises(RuntimeError, match=r"Provenance: \.git/index changed while Peeky built"):
-        rb._build_inputs(shape, root, messages, {}, before, 0, None)
-    with pytest.raises(rb.BuildRequired, match=r"\.git/index, which a build script reads, changed"):
+    with pytest.raises(rb.BuildRequired) as caught:
         rb._check_build_inputs(target, root, tmp_path, manifest)
-    assert rb._index_change(root / ".git/index", ".git/index", ".git/index", manifest) is None
-
-
-def test_a_build_git_refreshed_its_index_during_is_built_again_once(tmp_path, monkeypatch):
-    # The only change while Cargo ran was git's refresh of its index: a full build again,
-    # saying so. Refreshed again: refused.
-    calls = []
-
-    def built(target, root, *, deadline=None, progress=None):
-        calls.append(deadline)
-        if len(calls) <= refreshes:
-            raise rb.IndexRefreshed(".git/index")
-        return {"status": "built", "notes": []}
-
-    monkeypatch.setattr(rb, "_build", built)
-    said = []
-    refreshes = 1
-    result = rb.build(None, tmp_path, progress=said.append)
-    refreshed = (
-        "git refreshed .git/index's cached file status while Peeky built the workspace (its "
-        "entries are unchanged)"
-    )
-    assert result["notes"] == [f"{refreshed}, so Peeky built again"]
-    assert said == [f"{refreshed}; building again"]
-    # Both builds within one deadline.
-    assert len(calls) == 2 and calls[0] == calls[1] is not None
-    calls.clear()
-    refreshes = 2
-    with pytest.raises(rb.IndexRefreshed):
-        rb.build(None, tmp_path)
-    assert len(calls) == 2
+    assert "changed since `peeky build` ran. Run" in str(caught.value)

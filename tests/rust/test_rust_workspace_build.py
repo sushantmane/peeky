@@ -1207,80 +1207,76 @@ def git_workspace(workspace):
     return git, stale_status
 
 
-REFRESHED = (
-    "git refreshed .git/index's cached file status while Peeky built the workspace (its "
-    "entries are unchanged)"
+SAME_ENTRIES = (
+    ".git/index changed while Peeky built the workspace, but its entries are the same (git may "
+    "have refreshed its cached file status)"
 )
 
 
 @pytest.mark.timeout(300)
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_a_build_git_refreshes_its_index_during_is_built_again_once(workspace, capsys):
-    # bat's first build in a fresh checkout: `git describe --dirty` refreshes the index while
-    # the crate compiles. Its bytes changed, its entries didn't: built again, once, saying so.
+def test_a_build_during_which_git_refreshes_its_index_is_refused_saying_so(workspace, capsys):
+    # bat's first build in a fresh checkout: `git describe --dirty` rewrites the index while
+    # the crate compiles, its entries the same. The crate read its bytes: refused, saying
+    # what is known. Built again, git has nothing to refresh.
     git, stale_status = git_workspace(workspace)
     stale_status()
     index = workspace / ".git/index"
     written = index.read_bytes()
     config = configure(workspace)
+    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert result["error"]["message"] == f"Provenance: {SAME_ENTRIES}. Build again"
+    assert index.read_bytes() != written
     code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
     assert code == 0, summary
-    assert index.read_bytes() != written
-    assert f"{REFRESHED}, so Peeky built again" in summary["notes"]
     _, manifest = manifest_of(summary)
     assert manifest["sources"][".git/index"] == hashlib.sha256(index.read_bytes()).hexdigest()
     read(*probe(capsys, workspace, config))
-    # A build script that makes git refresh it every time: refused after the second build.
-    script = DESCRIBE.replace(
-        "    let described",
-        "    let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(\n"
-        "        1000 + std::time::UNIX_EPOCH.elapsed().unwrap().subsec_nanos() as u64 % 9000,\n"
-        "    );\n"
-        '    let notes = std::fs::File::options().write(true).open("../notes.txt").unwrap();\n'
-        "    notes.set_modified(earlier).unwrap();\n"
-        "    let described",
-    )
-    (workspace / "util/build.rs").write_text(script)
-    git("commit", "-qam", "refresh every time")
-    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
-    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
-    assert result["error"]["message"] == (
-        f"Provenance: {REFRESHED}, so the build may not be of it. Build again"
-    )
 
 
 @pytest.mark.timeout(300)
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_a_build_that_used_the_index_bytes_is_stale_after_git_refreshes_it(workspace, capsys):
+def test_a_build_that_used_the_index_bytes_is_stale_when_they_change(workspace, capsys):
     # A crate that uses the index's bytes (here, their sum): after git refreshes the index's
-    # cached file status, its entries unchanged, a rebuild differs. So the build is stale,
-    # and the refusal says why.
+    # cached file status, its entries the same, a rebuild differs. So the build is stale, and
+    # the refusal says what is known.
     git, stale_status = git_workspace(workspace)
     config = configure(workspace)
     code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
     assert code == 0, summary
     first = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
     read(*probe(capsys, workspace, config))
-    stale_status()
-    git("describe", "--always", "--dirty")
-    code, result = probe(capsys, workspace, config)
-    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
-    assert result["error"]["message"].startswith(
-        "No current Peeky build of this workspace: git refreshed .git/index's cached file "
-        "status (its entries are unchanged) since `peeky build` ran."
-    )
-    # Built again, the program prints another sum: the old build was stale.
-    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
-    assert code == 0, summary
-    again = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
-    assert again.stdout.split()[0] == first.stdout.split()[0] == "2"
-    assert again.stdout != first.stdout
+    index = workspace / ".git/index"
+    # Touched: its status changed, not its bytes. Still current.
+    later = time.time() + 100
+    os.utime(index, (later, later))
     read(*probe(capsys, workspace, config))
-    # A staged change: the build is stale, as any change.
+    same = (
+        "No current Peeky build of this workspace: .git/index changed since `peeky build` ran, "
+        "but its entries are the same (git may have refreshed its cached file status). Run"
+    )
+    for change in (
+        lambda: (stale_status(), git("describe", "--always", "--dirty")),
+        lambda: git("update-index", "--index-version", "4"),
+    ):
+        change()
+        code, result = probe(capsys, workspace, config)
+        assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+        assert result["error"]["message"].startswith(same), result["error"]["message"]
+        # Built again, the program prints another sum: the old build was stale.
+        code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+        assert code == 0, summary
+        again = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
+        assert again.stdout.split()[0] == first.stdout.split()[0] == "2"
+        assert again.stdout != first.stdout
+        first = again
+        read(*probe(capsys, workspace, config))
+    # A staged change: entries changed too, said as any change.
     (workspace / "notes.txt").write_text("staged\n")
     git("add", "notes.txt")
     code, result = probe(capsys, workspace, config)
     assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
     assert result["error"]["message"].startswith(
-        "No current Peeky build of this workspace: .git/index changed since `peeky build` ran"
+        "No current Peeky build of this workspace: .git/index changed since `peeky build` ran. Run"
     )
