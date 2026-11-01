@@ -62,7 +62,7 @@ the full run, on the same images:
 | #480 | C++ `<::` read as C++11 does | fmt-3158, fmt-3272 (`test-main.cc` only) | None at fmt's gold or assertion points: those units stay unjudged. |
 | #469 | code linked from the toolchain's static archives judged by its bytes | jq-2650 (its harness), the other C binaries | jq's 3 withheld locals may be read. |
 | #473 | phase 1 acceptance, with changes to binary targets | all 7 C and C++ | Unknown until the rerun. |
-| #476 | Rust split signatures read token by token | the Rust bugs | None expected. |
+| #476 (merged after this run, `3892166b`) | Rust split signatures read token by token | the Rust bugs | None expected. |
 | none | | axum-1934, bat-3108, coreutils-6690, ripgrep-2209's test | These need fixes of their own: the budget, the build's dependency files and unit graph, and a build script's environment. |
 
 fmt's gold lines are template code in headers, which only the test units instantiate. They stay
