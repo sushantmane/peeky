@@ -628,10 +628,12 @@ def check_codegen(package, crate, args):
 
 def _dependency_file(filenames):
     """(the dependency file of a compile with these output files, its form): rustc's own,
-    beside an output in `deps` or a build script's directory; else the one Cargo writes
-    beside a binary it copies up (`target/debug/app.d`, make's form, which also lists the
-    local packages it uses); else rustc's own beside the output it copied up
-    (``_copied_from``), where Cargo writes none (a binary an integration test runs)."""
+    beside an output in `deps` or a build script's directory, or beside the output Cargo
+    copied up (``_copied_from``); else the one Cargo writes beside a binary it copies up
+    (`target/debug/app.d`, make's form, which also lists the local packages it uses and a
+    build script's `rerun-if-changed` paths). Cargo writes that one only for what the
+    command names (not for a binary an integration test runs), and may list a directory
+    in it (bat's `assets/completions/`), which make's form doesn't say unambiguously."""
     paths = [Path(filename) for filename in filenames]
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
@@ -647,22 +649,20 @@ def _dependency_file(filenames):
             if len(found) == 1:
                 return found[0], "rustc"
     for path in paths:
-        candidate = path.with_name(_stem(path.name) + ".d")
-        if candidate.is_file():
-            return candidate, "make"
-    for path in paths:
         copied = _copied_from(path)
         if copied is not None and (candidate := copied.with_name(copied.name + ".d")).is_file():
             return candidate, "rustc"
+    for path in paths:
+        candidate = path.with_name(_stem(path.name) + ".d")
+        if candidate.is_file():
+            return candidate, "make"
     return None, None
 
 
 def _copied_from(path):
     """rustc's own output in `deps` that Cargo copied up as ``path`` (`deps/rg-<hash>` as
     `target/debug/rg`), or None: the one `<crate>-<hash>` there of the same inode (a hard
-    link, as on Linux), else of the same bytes (a copy, as on macOS). Cargo writes a
-    dependency file beside the copy only for what the command names, not for a binary an
-    integration test runs (#481)."""
+    link, as on Linux), else of the same bytes (a copy, as on macOS) (#481)."""
     try:
         info = os.stat(path, follow_symlinks=False)
     except OSError:

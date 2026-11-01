@@ -701,15 +701,23 @@ def lock(root):
 
 @pytest.mark.timeout(300)
 def test_a_build_script_by_another_name_and_a_binary_a_test_runs_are_read(workspace, capsys):
-    # `build = "build/main.rs"` (bat): rustc names it `build_script_main-<hash>`, which Cargo
-    # links as `build-script-build`. An integration test that runs the package's binary
-    # (ripgrep's): Cargo links `deps/app-<hash>` up as `target/debug/app` and writes no
-    # dependency file beside it. Both were "Cargo wrote no dependency file" (#481).
+    # `build = "build/main.rs"` (bat): rustc names it `build_script_main-<hash>`, and Cargo
+    # its copy `build-script-main`. An integration test that runs the package's binary
+    # (ripgrep's): Cargo links or copies `deps/app-<hash>` up as `target/debug/app` and
+    # writes no dependency file beside it. Both were "Cargo wrote no dependency file"
+    # (#481). rustc's own file is read for the binary now, in both builds.
     manifest = workspace / "util/Cargo.toml"
     manifest.write_text(manifest.read_text() + 'build = "build/main.rs"\n')
     (workspace / "util/build").mkdir()
     (workspace / "util/build/main.rs").write_text(
         'fn main() {\n    println!("cargo::rerun-if-changed=build/main.rs");\n}\n'
+    )
+    # The program's build script watches a directory: Cargo's make-form file beside the
+    # binary lists it as `app/assets/`, which Peeky doesn't read unambiguously (bat's).
+    (workspace / "app/assets").mkdir()
+    (workspace / "app/assets/notes.txt").write_text("notes\n")
+    (workspace / "app/build.rs").write_text(
+        'fn main() {\n    println!("cargo::rerun-if-changed=assets/");\n}\n'
     )
     (workspace / "app/tests").mkdir()
     (workspace / "app/tests/cli.rs").write_text(
