@@ -130,7 +130,8 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - A group holding a `#line` or a line marker, at any depth, stays unproven: two branches may
   each say `#line 100` and define the same macro, the same record for different code.
 - A directive may begin `#`, the digraph `%:`, or the trigraph `??=`. Where the unit's command
-  may turn trigraphs on (`trigraphs_on`: `-trigraphs`, `-ansi`, an ISO standard before C++17),
+  may turn trigraphs on (`trigraphs_on`: the last of a standard, `-trigraphs` and
+  `-fno-trigraphs` decides; `-ansi` and ISO standards before C++17 have them),
   a file the replay reads holding any trigraph sequence (`_TRIGRAPH`) leaves its text unread,
   naming the file and line. `??/` splices lines: `#if __has_inclu??/` and `de("x.h")` are one
   probe that `probes` misses. clang's default standard is a GNU one, which has no trigraphs,

@@ -1074,6 +1074,12 @@ def test_a_file_holding_trigraph_sequences_leaves_the_text_unread(root, tmp_path
     )
     (root / "src" / "a.h").write_text("#define A 1 /* scale (??) */\n")
     assert "sequences (`??)` on line 1)" in _replay(root, tmp_path, words=words("-std=c11"))
+    # Lines end at `\r\n`, `\n` or a lone `\r`, as the compilers count them.
+    for end in (b"\r", b"\r\n", b"\n\r"):
+        (root / "src" / "a.h").write_bytes(end.join([b"#define A 1", b"", b"/* (??) */", b""]))
+        line = 4 if end == b"\n\r" else 3
+        found = _replay(root, tmp_path, words=words("-std=c11"))
+        assert f"sequences (`??)` on line {line})" in found, (end, found)
     # Off: clang's default standard (GNU), a GNU one, or -fno-trigraphs last.
     for options in ((), ("-std=gnu11",), ("-std=c11", "-fno-trigraphs")):
         assert isinstance(_replay(root, tmp_path, words=words(*options)), UnitText), options
@@ -1090,7 +1096,13 @@ def test_what_turns_trigraphs_on_is_read_from_the_recorded_words():
     assert on("-std=c++14", cpp=True) == "-std=c++14" and on("-std=c17") == "-std=c17"
     assert on("-std=c11", "-fno-trigraphs") is None and on("-fno-trigraphs", "-trigraphs")
     assert on("-Xclang", "-trigraphs") == "-trigraphs" and on("-Wno-trigraphs") is None
-    assert on("-std", "c99") == "-std c99" and on("-Wp,-trigraphs") == "-Wp,-trigraphs"
+    # The last of a standard, -trigraphs and -fno-trigraphs decides, as clang reads them.
+    assert on("-fno-trigraphs", "-std=c11") == "-std=c11" and on("-fno-trigraphs", "-ansi")
+    assert on("-trigraphs", "-std=gnu11") is None and on("-ansi", "-std=gnu99") is None
+    assert on("-std=gnu11", "-trigraphs") == "-trigraphs" and on("-ansi", "-fno-trigraphs") is None
+    # A form Peeky doesn't read may turn them on, wherever it is.
+    assert on("-std", "c99") == "-std" and on("-Wp,-trigraphs") == "-Wp,-trigraphs"
+    assert on("-Wp,-trigraphs", "-fno-trigraphs", "-std=gnu11") == "-Wp,-trigraphs"
 
 
 def test_a_probe_whose_group_holds_a_line_directive_stays_unproven(root, tmp_path):

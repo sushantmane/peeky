@@ -641,32 +641,30 @@ def _unread_named(real, root):
 
 # A trigraph sequence: `??` and one of the nine characters -trigraphs replaces.
 _TRIGRAPH = re.compile(rb"\?\?[=/'()!<>-]")
+_LINE_END = re.compile(rb"\r\n|\r|\n")
 
 
 def trigraphs_on(words, cpp):
     """What of a unit's recorded ``words`` may turn trigraphs on, or None where they are
-    surely off: `-trigraphs` last, a standard that has them (`-std=c11`, `-ansi`, `-std=c++14`),
-    or a form of the option Peeky doesn't read (`-Wp,-trigraphs`). clang's default
-    standard, a GNU one, and C++17 and later have none."""
-    std, chosen = None, None
-    for at, word in enumerate(words[1:], 1):
-        if word in ("-trigraphs", "-ftrigraphs", "--trigraphs", "-fno-trigraphs"):
-            chosen = word
-        elif "trigraphs" in word and word not in ("-Wtrigraphs", "-Wno-trigraphs"):
-            return word
-        elif word == "-ansi" or word.startswith(("-std=", "--std=")):
-            std = word
-        elif word in ("-std", "--std"):
-            std = f"{word} {words[at + 1] if at + 1 < len(words) else ''}"
-    if chosen is not None:
-        return None if chosen == "-fno-trigraphs" else chosen
-    if std is None:
-        return None
-    value = std.split("=", 1)[1] if "=" in std else ""
+    surely off. As clang reads them, the last of a standard (`-std=c11`, `-ansi`),
+    `-trigraphs` and `-fno-trigraphs` decides: `-fno-trigraphs -std=c11` has them. A
+    standard has them but clang's default, a GNU one, and C++17 and later. A form Peeky
+    doesn't read (`-Wp,-trigraphs`, `-std c99`) may turn them on, wherever it is."""
     later = ("c++17", "c++1z", "c++20", "c++2a", "c++23", "c++2b", "c++26", "c++2c")
-    if value.startswith("gnu") or (cpp and value in later):
-        return None
-    return std
+    last = None
+    for word in words[1:]:
+        if word in ("-trigraphs", "-ftrigraphs", "--trigraphs", "-ansi"):
+            last = word
+        elif word == "-fno-trigraphs":
+            last = None
+        elif word.startswith(("-std=", "--std=")):
+            value = word.split("=", 1)[1]
+            last = None if value.startswith("gnu") or (cpp and value in later) else word
+        elif word in ("-std", "--std") or (
+            "trigraphs" in word and word not in ("-Wtrigraphs", "-Wno-trigraphs")
+        ):
+            return word
+    return last
 
 
 def _unproven_probe(
@@ -715,7 +713,8 @@ def _unproven_probe(
         if trigraphs is not None and (trigraph := cache[key]) is not None:
             # -trigraphs may make a directive or splice lines (`__has_inclu??/`), which
             # Peeky's own reading of the file (probes, conditionals) doesn't follow.
-            line = data.count(b"\n", 0, trigraph.start()) + 1
+            # Lines end as the compilers count them (c_source.normalized): `\r\n`, `\n`, `\r`.
+            line = len(_LINE_END.findall(data, 0, trigraph.start())) + 1
             issues.append(
                 Unproven(
                     f"its preprocessing reads {_shown(path, root)}, which uses trigraph sequences "
