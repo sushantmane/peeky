@@ -27,13 +27,14 @@
 
 ### Other changes
 
-- **Rust workspaces: a git index the build reads is compared by its entries.** git-version's
-  macro (bat's) has rustc list `.git/index` among the crate's sources, and runs `git describe
+- **Rust workspaces: a build during which git refreshed its index is built again, once.**
+  git-version's macro (bat's) has rustc read `.git/index` as a source, and runs `git describe
   --dirty` while the crate compiles. git then rewrites the index with its cached file status
-  refreshed, so bat's first build in a fresh checkout was refused as changed while Cargo ran, and
-  any build went stale after a `git status`. The index is now compared by its entries and the
-  flags that change what git reports. A staged change still makes the build stale. And a probe
-  no longer fails on a crate's source that isn't UTF-8, such as this index.
+  refreshed, its entries unchanged, so bat's first build in a fresh checkout was refused. Peeky
+  still compares the index by its bytes, which a crate may use. Where that refresh is the only
+  change, it builds again, saying so, and refuses a second, saying git refreshed its index. A
+  probe says so too. A probe no longer fails on a crate's source that isn't UTF-8, such as this
+  index.
 
 - **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
   closure or async block captures the places it uses. rustc's MIR prints one capture per

@@ -620,17 +620,6 @@ def _hash(path, store=None):
     return sha256_file(path, store=store)
 
 
-def _content(path, digest=None):
-    """What a file a compile or build script read is compared by: a git index's entries
-    (gitindex.digest), which a `git status` or `git describe --dirty` while Cargo runs
-    rewrites unchanged; any other file's, or an index Peeky can't read so, its SHA-256
-    (``digest``, else ``_hash``)."""
-    if gitindex.is_index(path) and (found := gitindex.digest(path)) is not None:
-        check_stop()
-        return found
-    return (digest or _hash)(path)
-
-
 def _digest(store):
     """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules), and
     ends a stopped build first (``_hash``)."""
@@ -642,12 +631,13 @@ def _snapshot(shape, vendor):
     before: {"l:" path: (mtime, ctime, size), not followed} of every entry, directories
     and links too, and {"f:" path: the same, followed} of each link; {"d:" directory:
     True} of each directory listed whole; {"g:" path: its entries} of each git index
-    (gitindex.digest), where Peeky reads it so. Everything under the workspace, hidden
-    directories (`.git`) included, and under each local package outside it; not a
-    `target` directory at their tops. What its absence of an entry proves
-    (_absent_before) depends on ":tops", ":skipped", ":uncovered" (each path Peeky
-    couldn't list or read, and why) and ":limit" (where it stopped, at _MAX_SNAPSHOT
-    entries)."""
+    (gitindex.digest), to tell a refresh of its cached file status from a change
+    (_refreshed); ":refreshed", the indexes refreshed meanwhile (_index_refreshed).
+    Everything under the workspace, hidden directories (`.git`) included, and under each
+    local package outside it; not a `target` directory at their tops. What its absence of
+    an entry proves (_absent_before) depends on ":tops", ":skipped", ":uncovered" (each
+    path Peeky couldn't list or read, and why) and ":limit" (where it stopped, at
+    _MAX_SNAPSHOT entries)."""
     tops = [shape.workspace.resolve()]
     for package in shape.local:
         top = (shape.root / package.directory).resolve()
@@ -656,6 +646,7 @@ def _snapshot(shape, vendor):
     skipped = [str(top / "target") for top in tops]
     uncovered = []
     found = {":tops": [str(top) for top in tops], ":skipped": skipped, ":uncovered": uncovered}
+    found[":refreshed"] = []
     found[":limit"] = None
     count, seen = 0, set()
 
@@ -680,7 +671,6 @@ def _snapshot(shape, vendor):
         found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
         count += 1
         if stat.S_ISREG(info.st_mode) and gitindex.is_index(path):
-            # A git index by its entries too, which git may rewrite unchanged meanwhile.
             if (entries := gitindex.digest(path)) is not None:
                 found["g:" + path] = entries
         if stat.S_ISLNK(info.st_mode):
@@ -938,10 +928,7 @@ def _dependency_file(filenames):
 
 def _changed_during(path, before, started_ns):
     """Whether the file ``path`` (followed) changed while Cargo ran: its status differs
-    from _snapshot's, or, with none there, it changed after the build started. A git index
-    read by its entries before: whether they differ now."""
-    if (entries := before.get("g:" + os.path.normpath(path))) is not None:
-        return gitindex.digest(path) != entries
+    from _snapshot's, or, with none there, it changed after the build started."""
     info = os.stat(path)
     now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
     key = ("f:" if os.path.islink(path) else "l:") + os.path.normpath(path)
@@ -975,11 +962,75 @@ def build(target, root, *, deadline=None, progress=None, stop=None):
     a failed kill among them (with its ``process_group``), is raised as it is."""
     from peeky.stopping import Stopped, stopping
 
+    deadline = time.monotonic() + BUILD_TIMEOUT_S if deadline is None else deadline
     with stopping(stop):
         try:
-            return _build(target, root, deadline=deadline, progress=progress)
+            try:
+                return _build(target, root, deadline=deadline, progress=progress)
+            except IndexRefreshed as exc:
+                # The only change while Cargo ran: a full build again, with its own checks.
+                # Another refresh then is refused.
+                (progress or (lambda message: None))(f"{exc.refreshed}; building again")
+                result = _build(target, root, deadline=deadline, progress=progress)
+                result["notes"].append(f"{exc.refreshed}, so Peeky built again")
+                return result
         except Stopped as exc:
             raise BuildStopped(exc.started) from None
+
+
+class IndexRefreshed(RuntimeError):
+    """The only change while Cargo ran: git refreshed an index's cached file status, its
+    entries unchanged (`git describe --dirty`, which git-version's macro runs while bat
+    compiles). The build may differ from a rebuild all the same (a crate may `include_bytes!`
+    the index): ``build`` builds again, once."""
+
+    def __init__(self, path):
+        self.refreshed = (
+            f"git refreshed {path}'s cached file status while Peeky built the workspace (its "
+            "entries are unchanged)"
+        )
+        super().__init__(
+            f"Provenance: {self.refreshed}, so the build may not be of it. Build again"
+        )
+
+
+def _refreshed(path, before):
+    """Whether ``path``, which changed while Cargo ran, is a git index whose entries are
+    those _snapshot read (gitindex.digest): git refreshed only its cached file status."""
+    entries = before.get("g:" + os.path.normpath(path))
+    return entries is not None and gitindex.digest(path) == entries
+
+
+def _index_refreshed(shown, before):
+    """Keep ``shown`` (a git index _refreshed) in the snapshot's ":refreshed", which
+    ``_build`` refuses with once nothing else changed; IndexRefreshed where it has none."""
+    found = before.get(":refreshed")
+    if found is None:
+        raise IndexRefreshed(shown)
+    found.append(shown)
+
+
+def _index_entries(root, manifest):
+    """{key: entries (gitindex.digest)} of each git index the build recorded by its bytes:
+    a compile's source, by its name under the root, and a build script's input, by its
+    path. At a probe, a refresh of one's cached file status is said so (_index_change)."""
+    keys = [(name, Path(root) / name) for name in manifest["sources"]]
+    keys += [(each, Path(each)) for each in manifest.get("build_inputs", {}).get("files", {})]
+    return {
+        key: entries
+        for key, path in keys
+        if gitindex.is_index(path) and (entries := gitindex.digest(path)) is not None
+    }
+
+
+def _index_change(path, key, shown, manifest):
+    """``_edited``'s words for ``path`` (``key`` in the manifest's ``index_entries``, named
+    ``shown``), changed since the build, where it is a git index whose entries are as the
+    build recorded: git refreshed its cached file status. Else None."""
+    recorded = (manifest.get("index_entries") or {}).get(key)
+    if recorded is not None and gitindex.digest(path) == recorded:
+        return f"git refreshed {shown}'s cached file status (its entries are unchanged)"
+    return None
 
 
 def _build(target, root, *, deadline=None, progress=None):
@@ -1100,6 +1151,10 @@ def _build(target, root, *, deadline=None, progress=None):
             _watched_directories(manifest.pop("directories_read"), manifest, shape, vendor)
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
+            if refreshed := before[":refreshed"]:
+                # Nothing else changed: ``build`` builds again, once.
+                raise IndexRefreshed(refreshed[0])
+            manifest["index_entries"] = _index_entries(root, manifest)
         except BaseException:
             # Never removed here: a stopped build ends at once, however much its run holds.
             # A later build removes it, a bounded part at a time (``_empty_trash``).
@@ -1474,10 +1529,7 @@ def _watched_directory(top, root, budget):
 def _entry_changed_during(path, before, started_ns):
     """Whether ``path`` itself, not followed (a directory, a link, a file), changed while
     Cargo ran: its lstat differs from the snapshot's (one gone, too), or, with none there,
-    it changed after the build started. A git index read by its entries before: whether
-    it is no longer one with those entries (git writes a new file in its place)."""
-    if (entries := before.get("g:" + os.path.normpath(path))) is not None:
-        return os.path.islink(path) or gitindex.digest(path) != entries
+    it changed after the build started."""
     try:
         info = os.lstat(path)
         now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
@@ -1758,6 +1810,9 @@ def _build_inputs(
             and not Path(path).is_symlink()
             and _changed_during(path, before, started_ns)
         ):
+            if not Path(path).is_symlink() and _refreshed(path, before):
+                _index_refreshed(_shown(path, root), before)
+                return
             raise RuntimeError(
                 f"Provenance: {_shown(path, root)} changed while Peeky built the "
                 "workspace, so the build may not be of it. Build again"
@@ -1875,7 +1930,7 @@ def _build_inputs(
             elif str(path) not in files:
                 _spend(budget, path)
                 unchanged(path)
-                files[str(path)] = rust_workspace.identity(path, _content)
+                files[str(path)] = rust_workspace.identity(path)
                 missing = files[str(path)] == ["missing"]
                 unproven = missing and _absent_before(path, before)
                 if missing and not unproven and (moved := _changed_on_the_way(path, before)):
@@ -1929,11 +1984,14 @@ def _record_read(read, root, target_dir, before, started_ns, sources, generated)
     for path in read["sources"]:
         if path not in sources:
             if _changed_during(root / path, before, started_ns):
-                raise RuntimeError(
-                    f"Provenance: {path} changed while Peeky built the workspace, so the build "
-                    "may not be of it. Build again"
-                )
-            sources[path] = _content(root / path)
+                if _refreshed(root / path, before):
+                    _index_refreshed(path, before)
+                else:
+                    raise RuntimeError(
+                        f"Provenance: {path} changed while Peeky built the workspace, so the "
+                        "build may not be of it. Build again"
+                    )
+            sources[path] = _hash(root / path)
     for path in read["generated"]:
         if path not in generated:
             generated[path] = _hash(target_dir / path)
@@ -2413,11 +2471,13 @@ def verify(target, root, directory, manifest):
     # identifies the build (PROVENANCE_CHANGED).
     for name, recorded in manifest["sources"].items():
         try:
-            same = _content(root / name, sha256_file) == recorded
+            same = sha256_file(root / name) == recorded
         except OSError:
             same = False
         if not same:
-            raise _edited(target, f"{name} changed")
+            raise _edited(
+                target, _index_change(root / name, name, name, manifest) or f"{name} changed"
+            )
     state = manifest["watch"]
     for path, recorded in state["files"].items():
         if (
@@ -2456,8 +2516,13 @@ def _check_build_inputs(target, root, directory, manifest):
     would give it now."""
     inputs = manifest["build_inputs"]
     for path, recorded in inputs["files"].items():
-        if rust_workspace.identity(path, lambda each: _content(each, sha256_file)) != recorded:
-            raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
+        if rust_workspace.identity(path) != recorded:
+            shown = _shown(path, root)
+            raise _edited(
+                target,
+                _index_change(Path(path), path, shown, manifest)
+                or f"{shown}, which a build script reads, changed",
+            )
     for top, recorded in inputs["dirs"].items():
         try:
             now = _watched_directory(Path(top), root, [MAX_RECORDED])

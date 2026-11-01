@@ -1,16 +1,17 @@
-"""A git index (`.git/index`) as what git reports from it, not as its bytes.
+"""A git index's (`.git/index`) entries, to tell git's refresh of its cached file status
+from a change.
 
 git rewrites its index to refresh the file status it caches (`git status`, `git describe
---dirty`), with every entry as it was. A build that reads the index (git-version's
-`git_version!()` lists it in rustc's dependency file, and runs `git describe` while the
-crate compiles) would then be refused as changed while it ran, and stale after any `git
-status`. So the index is compared by its entries: each path, mode, object ID and stage,
-and the flags that change what git reports (assume-unchanged, skip-worktree,
-intent-to-add), with the resolve-undo and sparse-directory extensions. The cached file
-status, and the caches git rebuilds from the entries or the working tree (the cache tree,
-the untracked cache, the file system monitor's, the entry offsets), are left out. An
-index Peeky can't read so (another version, a split index, an extension it doesn't know,
-a checksum that doesn't match) is compared by its bytes."""
+--dirty`), every entry as it was. A build that reads the index (git-version's
+`git_version!()` `include_bytes!` it, and runs `git describe --dirty` while the crate
+compiles) still compares it by its bytes, since a crate may use them, and a rebuild would
+differ. These say why it changed: each entry's path, mode, object ID and stage, and the
+flags that change what git reports (assume-unchanged, skip-worktree, intent-to-add), with
+the resolve-undo and sparse-directory extensions. The cached file status, and the caches
+git rebuilds from the entries or the working tree (the cache tree, the untracked cache,
+the file system monitor's, the entry offsets), are left out. An index Peeky can't read
+so (another version, a split index, an extension it doesn't know, a checksum that doesn't
+match) has none."""
 
 import hashlib
 import struct
