@@ -1969,6 +1969,7 @@ class BinaryTarget:
             read=read,
             language=language,
             files=files,
+            tables=tables,
         )
 
     def remote_inputs(self, root):
@@ -2159,7 +2160,7 @@ class BinaryTarget:
             # Each pending unit's line table's files, resolved, by index.
             files = {}
             for each in pending:
-                table = tables[each.unit.stmt_list]
+                table = found.tables[each.unit.stmt_list]
                 paths = {index: table.path(index, each.unit.comp_dir) for index in table.files}
                 files[each.unit.stmt_list] = {
                     index: os.path.realpath(path) for index, path in paths.items() if path
