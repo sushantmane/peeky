@@ -393,7 +393,7 @@ _PREFIX = re.compile(f"{_NAME}|::|->|\\S")
 
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
     r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
-    text: ``brackets`` (a bracket it does not close, a `;` outside its brackets, a
+    text: ``brackets`` (a bracket it does not close, a `;` outside its brackets, a C
     `<::`, or a pasted token: `<` ## `%` is a brace), ``blocks`` (the same but for a
     `;`: a bracket it does not close), ``labels`` (a `case`, `default` or label a jump
     can reach, `x:`), ``gotos`` (a `goto`), ``setjmp`` (a call that may return twice, `setjmp`) and
@@ -401,6 +401,8 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
     macro counts too, and every macro of a source with a splice before `\n\r` counts
     for all of them. ``trigraphs``: C's (by default, without ``raw_strings``: C)."""
     trigraphs = not raw_strings if trigraphs is None else trigraphs
+    # C++ reads `<::` as C++11 does (`_CXX_TOKENS`); C as the digraph `<:` and `:`.
+    tokens = _CXX_TOKENS if raw_strings else _TOKENS
     uses = {}
     found = {
         "brackets": set(),
@@ -425,9 +427,9 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
                 body = body[close + 1 :]
             words = {word[0] for word in _IDENTIFIER.finditer(body)}
             uses.setdefault(name, set()).update(words)
-            if unknown or not _balanced(body):
+            if unknown or not _balanced(body, tokens):
                 found["brackets"].add(name)
-            if unknown or not _balanced(body.replace(";", " ")):
+            if unknown or not _balanced(body.replace(";", " "), tokens):
                 found["blocks"].add(name)
             if unknown or words & {"case", "default"} or _LABEL.search(body):
                 found["labels"].add(name)
@@ -553,12 +555,13 @@ def _parameters_follow(token):
     return bool(_WORD.fullmatch(token)) or token in (")", "]", ":>")
 
 
-def _balanced(body):
+def _balanced(body, tokens=_TOKENS):
     """Whether a macro's blanked body closes each bracket it opens and holds no `;`
-    outside them (a statement expression's `({ a; b; })` is fine), `<::` or token
-    paste."""
+    outside them (a statement expression's `({ a; b; })` is fine), C's `<::` or token
+    paste. ``tokens``: the language's (``_CXX_TOKENS`` for C++, where `<::x` is `<` and
+    `::x`)."""
     depth = 0
-    for token in _TOKENS.finditer(body):
+    for token in tokens.finditer(body):
         if token[0] in _OPEN:
             depth += 1
         elif token[0] in _CLOSE:

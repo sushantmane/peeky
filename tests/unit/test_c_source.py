@@ -179,6 +179,20 @@ def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():
     assert macro_hazards(trigraph)["brackets"] == set()
 
 
+def test_lt_colon_colon_in_a_macro_body_is_read_as_its_language_reads_it():
+    # C++ reads `show<::T>(x)` as `show`, `<`, `::T`, `>`: SHOW hides no bracket. `<::>` is
+    # `[]` and `<:::x:>` `[::x]` in both. C reads every `<::` as `<:` and `:`, which Peeky
+    # doesn't follow: each counts there.
+    header = ["#define SHOW(x) show<::T>(x)\n#define EMPTY arr<::>\n#define SCOPED arr<:::x:>\n"]
+    cxx, c = macro_hazards(header), macro_hazards(header, raw_strings=False)
+    assert not {"SHOW", "EMPTY", "SCOPED"} & (cxx["brackets"] | cxx["blocks"])
+    assert {"SHOW", "EMPTY", "SCOPED"} <= c["brackets"] & c["blocks"]
+    # So `n`'s declaration ends where it does.
+    source = "int n = SHOW(\n    argc);\n"
+    assert Statements(source, hazards=cxx).end(1, "n") == 2
+    assert Statements(source, raw_strings=False, hazards=c).end(1, "n") is None
+
+
 def test_c_has_no_raw_strings():
     source = 'char *s = R"(a";"b)" + f(\n    1);\n'
     assert end(source, 1, "s") == 2
