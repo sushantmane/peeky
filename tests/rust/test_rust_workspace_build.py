@@ -1195,6 +1195,12 @@ def git_workspace(workspace):
         earlier = time.time() - next(ago)
         os.utime(workspace / "notes.txt", (earlier, earlier))
 
+    # Files older than the index git writes: none racily clean, which git would check, and
+    # rewrite the index for, at every `git describe --dirty`.
+    earlier = time.time() - 100
+    for path in workspace.rglob("*"):
+        if path.is_file():
+            os.utime(path, (earlier, earlier))
     git("init", "-q")
     git("add", "-A")
     git("commit", "-qm", "init")
