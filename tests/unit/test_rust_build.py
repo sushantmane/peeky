@@ -994,6 +994,71 @@ def test_a_removal_that_fails_is_passed_over_and_spends_no_budget(tmp_path, monk
     assert sorted(path.name for path in trash.rglob("*")) == ["a", "stuck"]
 
 
+class FilesFirst:
+    """os.scandir, each listing's files (what can't be removed, here) before its
+    directories, counting the entries it yields (``read``)."""
+
+    def __init__(self):
+        self.read, self.real = 0, os.scandir
+
+    def __call__(self, path):
+        counter = self
+        with self.real(path) as listing:
+            entries = sorted(listing, key=lambda each: (each.is_dir(), each.name))
+
+        class Listing:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                for entry in entries:
+                    counter.read += 1
+                    yield entry
+
+        return Listing()
+
+
+def test_one_call_reads_at_most_its_cap_of_entries(tmp_path, monkeypatch):
+    # 300 entries that can't be removed before 300 subdirectories: each subdirectory gone,
+    # its parent is read again, the 300 passed over again. One call reads at most its cap.
+    trash = tmp_path / "trash/run"
+    trash.mkdir(parents=True)
+    for index in range(300):
+        (trash / f"stuck-{index}").write_text("")
+        (trash / f"z-{index}").mkdir()
+        (trash / f"z-{index}/f").write_text("")
+    real = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if Path(path).name.startswith("stuck-"):
+            raise PermissionError(1, "Operation not permitted")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rb.os, "unlink", unlink)
+    counting = FilesFirst()
+    monkeypatch.setattr(rb.os, "scandir", counting)
+    stuck = rb._empty_trash(tmp_path, 10**6, examine=1000)
+    assert counting.read <= 1001, counting.read
+    # Each entry it couldn't remove, once.
+    assert len(stuck) == len(set(stuck)) and len(stuck) <= 300
+    assert set(stuck.values()) == {"Operation not permitted"}
+    # Its default cap, 65,536 entries a call: the rest the next time, each call bounded.
+    assert rb.MAX_TRASH_EXAMINED == 65536
+    while any(name.startswith("z-") for name in os.listdir(trash)):
+        counting.read = 0
+        stuck = rb._empty_trash(tmp_path, 10**6, examine=1000)
+        assert counting.read <= 1001, counting.read
+    assert sorted(os.listdir(trash)) == sorted(f"stuck-{index}" for index in range(300))
+    assert rb._stuck_note(tmp_path, {str(trash / "stuck-0"): "Operation not permitted"}) == (
+        f"Peeky couldn't remove 1 entry of its earlier builds' files in {tmp_path / 'trash'}, "
+        f"such as {trash / 'stuck-0'} (Operation not permitted). Each build tries again; "
+        "remove them yourself to free the space"
+    )
+
+
 def rb_stopping(stop):
     from peeky.stopping import stopping
 

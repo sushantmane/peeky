@@ -975,7 +975,7 @@ def _build(target, root, *, deadline=None, progress=None):
     require_private(directory)
     with _locked(directory, exclusive=True):
         # What earlier builds left to remove, a bounded part of it each time.
-        _empty_trash(directory, MAX_RECORDED)
+        stuck = _empty_trash(directory, MAX_RECORDED)
         home = directory / "cargo-home"
         home.mkdir(mode=0o700, exist_ok=True)
         env = rust_workspace.cargo_environment(target.rustc, home)
@@ -1104,9 +1104,12 @@ def _build(target, root, *, deadline=None, progress=None):
         )
         manifest["build_id"] = _build_id(manifest)
         _write_manifest(directory, manifest)
-        _prune(directory, nonce)
+        stuck |= _prune(directory, nonce)
         say(f"built in {manifest['seconds']} s")
-        return summary(manifest, directory)
+        result = summary(manifest, directory)
+        if stuck:
+            result["notes"].append(_stuck_note(directory, stuck))
+        return result
 
 
 def _left(deadline):
@@ -2153,7 +2156,8 @@ def _held(lease):
 
 def _prune(directory, nonce):
     """Keep the newest KEEP_RUNS builds' files, and any a probe or session holds (Lease).
-    Called with the build directory's lock held alone."""
+    Called with the build directory's lock held alone. The trash's entries it couldn't
+    remove (``_empty_trash``)."""
     runs, leases = Path(directory) / "runs", Path(directory) / "leases"
     # Peeky's own directories, read lazily within a bound: its runs and leases. The build
     # is recorded by now, so it is never stopped here.
@@ -2175,10 +2179,10 @@ def _prune(directory, nonce):
             if not (runs / lease.name).is_dir():
                 _held(lease)
     try:
-        _empty_trash(directory, MAX_RECORDED)
+        return _empty_trash(directory, MAX_RECORDED)
     except Stopped:
         # The build is recorded: a stop ends only the cleaning, which a later build resumes.
-        pass
+        return {}
 
 
 def _discard(directory, path):
@@ -2193,25 +2197,36 @@ def _discard(directory, path):
         pass
 
 
-def _empty_trash(directory, budget):
+# The most entries one call of ``_empty_trash`` reads, every one counted (a failed one, and
+# each one read again), whatever it removes.
+MAX_TRASH_EXAMINED = 65536
+
+
+def _empty_trash(directory, budget, examine=MAX_TRASH_EXAMINED):
     """Remove what the build ``directory``'s trash holds, ``budget`` removals this time (a
-    later build goes on). Depth first, holding only paths: a directory is read until its
-    first subdirectory, its files removed as they are read, and its listing closed before
-    that subdirectory is entered, so one directory is open at a time, however deep the
-    trash. Once a subdirectory is gone, its parent is read again, without what was removed.
-    A directory whose listing ends is removed. Only a removal that succeeds spends the
-    budget. One that fails, or a directory that can't be read, is recorded and passed over
-    for the rest of this call. The build's stop is checked at each entry (``check_stop``)."""
+    later build goes on), reading at most ``examine`` entries. Depth first, holding only
+    paths: a directory is read until its first subdirectory, its files removed as they are
+    read, and its listing closed before that subdirectory is entered, so one directory is
+    open at a time, however deep the trash. Once a subdirectory is gone, its parent is read
+    again, without what was removed. A directory whose listing ends is removed. Only a
+    removal that succeeds spends the budget, but every entry read spends ``examine``,
+    failed ones and ones read again too: the call ends when either is spent. One that can't
+    be removed, or a directory that can't be read, is passed over for the rest of the call.
+    The build's stop is checked at each entry (``check_stop``). {path: why} of what it
+    couldn't remove, each once."""
     trash = Path(directory) / "trash"
     if not trash.is_dir():
-        return
-    left, stack, failed = budget, [trash], set()
+        return {}
+    left, examined, stack, failed = budget, 0, [trash], {}
     while stack and left > 0:
         folder, deeper = stack[-1], None
         try:
             with os.scandir(folder) as listing:
                 for entry in listing:
                     check_stop()
+                    examined += 1
+                    if examined > examine:
+                        return failed
                     if entry.path in failed:
                         continue
                     if entry.is_dir(follow_symlinks=False):
@@ -2219,31 +2234,44 @@ def _empty_trash(directory, budget):
                         break
                     try:
                         os.unlink(entry.path)
-                    except OSError:
-                        failed.add(entry.path)
+                    except OSError as error:
+                        failed[entry.path] = error.strerror or str(error)
                         continue
                     left -= 1
                     if left <= 0:
-                        return
-        except OSError:
+                        return failed
+        except OSError as error:
             # Unreadable: passed over for the rest of this call.
-            failed.add(str(folder))
+            failed[str(folder)] = error.strerror or str(error)
             stack.pop()
             if not stack or folder == trash:
-                return
+                return failed
             continue
         if deeper is not None:
             stack.append(deeper)
             continue
         stack.pop()
         if folder == trash:
-            return
+            return failed
         try:
             os.rmdir(folder)
-        except OSError:
-            failed.add(str(folder))
+        except OSError as error:
+            failed[str(folder)] = error.strerror or str(error)
             continue
         left -= 1
+    return failed
+
+
+def _stuck_note(directory, stuck):
+    """The build summary's note of what Peeky couldn't remove of its trash (``stuck``:
+    {path: why}), once."""
+    first = min(stuck)
+    count = len(stuck)
+    return (
+        f"Peeky couldn't remove {count} {'entry' if count == 1 else 'entries'} of its earlier "
+        f"builds' files in {Path(directory) / 'trash'}, such as {first} ({stuck[first]}). Each "
+        "build tries again; remove them yourself to free the space"
+    )
 
 
 def summary(manifest, directory):
