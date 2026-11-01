@@ -78,7 +78,7 @@ one `main` commit, recorded in the image's label and in every attempt's result.
 - **Rust:** the toolchain is the base image's Rust 1.96, which Peeky's Cargo checks expect.
   `cargo vendor --locked vendor` writes the dependencies to `/testbed/vendor`, so `peeky build`
   works with no network. Git ignores the directory, and the project's own Cargo builds don't
-  read it.
+  read it. The image also builds the workspace for Peeky once, as a later section says.
 - **Python:** nothing more. The project's virtual environment is active, and Peeky runs on it.
 
 ### C and C++: the image builds the project for Peeky
@@ -113,6 +113,44 @@ uses. prepare.sh doesn't call that script, for three reasons:
 - Grading is unaffected. Every C and C++ `eval.sh` configures or cleans, then rebuilds the
   project's own build from scratch, as in the control arm.
 
+### Rust: the image builds the workspace for Peeky
+
+Decision: yes, decided before any agent run (1 November). The image ships one Peeky config,
+`/opt/peeky/study/rust.json`, and runs `peeky build` with it once. The agent then starts with a
+current build, and with git's index of `/testbed` refreshed after it. As with C and C++, this is
+a difference from the control arm.
+
+A Peeky build serves one configuration: what it analyses, what it runs, and its features. A
+config that differs builds its dependencies again. So the image's config must not point at the
+fix. It is made by a fixed rule, from the test hint alone, which both arms' prompts hold:
+
+- **analyse:** the package whose tests the hint's first command runs;
+- **run:** the binary the hint names, else the test target that command names or gives as its
+  example, else its library's tests;
+- **features:** the package's `full` feature, where it has one.
+
+| Bug | analyse | run | features | The fix's package |
+| --- | --- | --- | --- | --- |
+| ripgrep-2209 | `ripgrep` | the `rg` binary | | `grep-printer` |
+| bat-3108 | `bat` | the `bat` binary | | `bat` |
+| axum-1934 | `axum` | its library's tests | | `axum` |
+| tokio-4867 | `tokio` | the `sync_mpsc` test (the hint's example) | `full` | `tokio` |
+| tokio-6752 | `tokio` | the `sync_mpsc` test (the hint's example) | `full` | `tokio-util` |
+| coreutils-6690 | `coreutils` | the `coreutils` binary | | `uu_cp` |
+
+- PROJECT.md shows the config and says the build is current. If the build fails at image time,
+  PROJECT.md says nothing of it, and `/opt/peeky/study/prebuild.status` records `failed`.
+- A refusal is followed as its message says, as the reach check follows it. "Build again" is
+  built again. tokio-4867's and ripgrep-2209's `Cargo.lock` are version 2, which Peeky refuses.
+  It asks for a `version = 3` first line, which changes nothing Cargo resolves, so the image
+  adds it. ripgrep's lockfile is tracked, so the line shows in `git diff`; tokio's is ignored.
+- After an edit, `peeky build` with the same config rebuilds the analysed packages alone. At
+  image time, on `e78bf440`, a first build took 10 to 45 s, dependencies included.
+- A first version of the rule ran tokio's library tests. That build compiles tokio twice, and
+  Peeky reads one compile per session, so the config couldn't probe tokio's own files. The rule
+  above replaced it before any agent run.
+- The reach check uses its own configs, with `--build`, as before.
+
 ### Grading in the Peeky image
 
 Grading was checked in all 29 Peeky images, with no agent, as round 1 checked its images. The
@@ -130,7 +168,9 @@ alone, grading regenerates the parser, and the attempt is solved.
   `#line`). They show in `git diff` and in the attempt's patch, but grading regenerates them.
 - MicroPython, fmt and json: a `build-peeky` directory, which git ignores.
 - fmt and json: libc++ installed.
-- Rust: `/testbed/vendor`, which git ignores.
+- Rust: `/testbed/vendor`, which git ignores; `/opt/peeky/study/rust.json` and its Peeky build,
+  in Peeky's state directory; git's index refreshed. tokio-4867's and ripgrep-2209's
+  `Cargo.lock` start with `version = 3`, which shows in ripgrep's `git diff`.
 
 ## Outcomes
 
@@ -273,8 +313,9 @@ All were decided before any round 2 run.
 
 - **A third arm,** `peeky-first`, and a rerun of the control arm rather than reuse of round 1's
   control data.
-- **A new Peeky image:** the C and C++ projects built for Peeky, the Rust dependencies vendored,
-  `setup-java` on JDK 17, libc++, and PROJECT.md with the guide's pointer line.
+- **A new Peeky image:** the C and C++ projects built for Peeky, the Rust dependencies vendored
+  and the workspace built for Peeky once, `setup-java` on JDK 17, libc++, and PROJECT.md with
+  the guide's pointer line. The Rust build was added on 1 November, before any agent run.
 - **Seed 20261101** instead of 441, so the order is new.
 - **A new measure:** program values Peeky printed per attempt.
 - **The reach check,** which round 1 didn't have.

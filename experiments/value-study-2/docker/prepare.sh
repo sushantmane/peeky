@@ -7,13 +7,17 @@
 #   project built" asks. Where the build system allows, it goes in a directory of its own and
 #   the project's own build is left as the control image has it (fmt, json, MicroPython). jq
 #   and valkey build only in the source tree, so there Peeky's build replaces the project's own.
-# - Rust: `cargo vendor --locked vendor`, which a workspace's Peeky build needs, offline.
+# - Rust: `cargo vendor --locked vendor`, which a workspace's Peeky build needs, offline. Then
+#   one Peeky build of /opt/peeky/study/rust.json, a config made by a fixed rule from the test
+#   hint alone (rust_config below), so the agent starts with a current build. Git's index of
+#   /testbed is refreshed after it.
 # - Every bug: /opt/peeky/docs/PROJECT.md says what was prepared, and the guide's copy points
 #   to it in one line under its title.
 #
 # Paths the build adds are listed in .git/info/exclude, so `git status` and the harness's
 # agent.patch leave them out. No tracked file changes, but jq's generated parser and lexer
-# (as the control image's own build regenerates them too).
+# (as the control image's own build regenerates them too), and ripgrep's Cargo.lock, which gets
+# the `version = 3` line Peeky asks for.
 set -euo pipefail
 id=${1:?usage: prepare.sh <bug_id>}
 FLAGS="-g -gdwarf-5 -grecord-command-line -fdebug-macro"
@@ -49,6 +53,64 @@ vendor() {
     CARGO_NET_OFFLINE=false cargo vendor --locked vendor >/dev/null
   fi
   exclude /vendor/
+}
+
+rust_config() {  # rust_config <bug_id>: the image's config's analyse, run and features fields.
+  # The rule (README, "Rust: the image builds the workspace for Peeky"): the package whose tests
+  # the test hint's first command runs; the binary the hint names, else the test target that
+  # command names or gives as its example, else its library's tests; and the package's `full`
+  # feature where it has one. So the fix's package is named only where the hint names it.
+  case $1 in
+    burntsushi__ripgrep-2209) echo '"analyse": ["ripgrep"], "run": {"bin": "rg"}' ;;
+    sharkdp__bat-3108) echo '"analyse": ["bat"], "run": {"bin": "bat"}' ;;
+    tokio-rs__axum-1934) echo '"analyse": ["axum"], "run": {"package": "axum", "lib": true}' ;;
+    tokio-rs__tokio-4867 | tokio-rs__tokio-6752)
+      echo '"analyse": ["tokio"], "run": {"package": "tokio", "test": "sync_mpsc"}, "features": ["full"]' ;;
+    uutils__coreutils-6690) echo '"analyse": ["coreutils"], "run": {"bin": "coreutils"}' ;;
+    *) echo "no Rust config for $1" >&2; return 1 ;;
+  esac
+}
+
+rust_prebuild() {  # rust_prebuild <bug_id>: Peeky's build of the image's config, and PROJECT.md
+  local config=/opt/peeky/study/rust.json status=failed
+  printf '{"workspace": ".", %s, "vendor": "vendor"}\n' "$(rust_config "$1")" > "$config"
+  # A failed build leaves the image without one, and PROJECT.md says nothing of it. A build
+  # refused with "Build again" is run once more, as its message says. So is one refused for a
+  # version 2 Cargo.lock, once the line its message asks for is added (tokio-4867, ripgrep-2209).
+  if peeky build . --config "$config" > /opt/peeky/study/prebuild.log 2>&1; then
+    status=built
+  elif grep -q 'add `version = 3` there' /opt/peeky/study/prebuild.log; then
+    sed -i '1i version = 3' Cargo.lock
+    echo "prepare.sh: added \`version = 3\` to Cargo.lock" >> /opt/peeky/study/prebuild.log
+    if peeky build . --config "$config" >> /opt/peeky/study/prebuild.log 2>&1; then status=built; fi
+  elif grep -qiE '\b(build|run) again\b' /opt/peeky/study/prebuild.log &&
+    peeky build . --config "$config" >> /opt/peeky/study/prebuild.log 2>&1; then
+    status=built
+  fi
+  echo "$status" > /opt/peeky/study/prebuild.status
+  echo "peeky build: $status"; tail -5 /opt/peeky/study/prebuild.log
+  git update-index -q --refresh || true
+  cat > "$DOCS/PROJECT.md" <<'NOTE'
+# This project in this container
+
+The workspace's dependencies are vendored in `/testbed/vendor`, as `cargo vendor --locked vendor`
+writes them. A Peeky build of a Rust workspace needs them, and there is no network. Git ignores
+the directory. The project's own `cargo build` and `cargo test` don't use it.
+NOTE
+  [ "$status" = built ] || return 0
+  cat >> "$DOCS/PROJECT.md" <<NOTE
+
+\`$config\` is a Peeky config for this workspace
+([Rust 7.2](lang/rust-cookbook.md#a-rust-workspace)):
+
+\`\`\`json
+$(cat "$config")
+\`\`\`
+
+Its Peeky build is current, so a probe with this \`--config\` runs at once. After an edit,
+\`peeky build . --config $config\` rebuilds the analysed packages alone. A config that
+analyses or runs something else builds the dependencies first, as any first build does.
+NOTE
 }
 
 native_note() {  # native_note <what> <binary> <rebuild> <probe example> [extra paragraph]
@@ -120,13 +182,7 @@ case $id in
     ;;
   burntsushi__ripgrep-2209 | sharkdp__bat-3108 | tokio-rs__* | uutils__coreutils-6690)
     vendor
-    cat > "$DOCS/PROJECT.md" <<'EOF'
-# This project in this container
-
-The workspace's dependencies are vendored in `/testbed/vendor`, as `cargo vendor --locked vendor`
-writes them. A Peeky build of a Rust workspace needs them, and there is no network. Git ignores
-the directory. The project's own `cargo build` and `cargo test` don't use it.
-EOF
+    rust_prebuild "$id"
     ;;
   *)
     if [ -d /opt/venv ]; then
