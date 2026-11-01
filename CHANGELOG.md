@@ -85,11 +85,12 @@
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
 - **ADR 0008 phase 1's acceptance** (`tests/projects/accept.sh`) runs Peeky on the study's jq,
-  valkey, MicroPython, fmt and json builds, each in its image. jq, MicroPython and json pass every
-  check; valkey and fmt pass all but reading values in units whose text waits on the `__has_include`
-  follow-up ([ADR 0008](docs/adr/0008-native-project-reach.md)). Found and fixed: a unit not judged
-  was named by its absolute path where CMake compiles by one, so a probe in it was refused without
-  why; a probe in a header only unjudged units name now names them, and why.
+  valkey, MicroPython, fmt and json builds, each in its image. All six pass every check
+  ([ADR 0008](docs/adr/0008-native-project-reach.md)): valkey's replica reads `c->user` as the null
+  pointer, and fmt's `test-main.cc` reads `argc`. Found and fixed: a unit not judged was named by
+  its absolute path where CMake compiles by one, so a probe in it was refused without why. A probe
+  in a header only unjudged units name now names them, and why. `tests/projects/build.sh` can
+  prebuild a study image from a Dockerfile.
 - **C and C++: a probe that finds no file, proven by the build's own record.** A binary target's
   unit whose preprocessing asks for a missing file (`__has_include`) had its text withheld. On
   Linux, with `-fdebug-macro`, Peeky now replays it with `-dD` and compares the build's record of
