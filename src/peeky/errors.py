@@ -52,7 +52,11 @@ from peeky.textlines import split_lines
 # so (`sources`: `{"kind": "binary", "binary": ...}`), and the `inputs` operation lists the
 # files its judged units name, once per binary. A client checks the binary is the one it
 # names, and a session keeps the names compared at its start.
-PROTOCOL_VERSION = 15
+# 16: a worker on a Rust workspace builds it for a remote client (`build`, from its own
+# `--rust-config`), compares every workspace file the build compiled and its build scripts
+# read (never `.git`), its manifests, Cargo configuration and vendored checksum files with
+# the client's, and probes it; a protocol 15 worker refuses a remote client's workspace probe.
+PROTOCOL_VERSION = 16
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -397,8 +401,8 @@ _RULES = (
         # A Rust workspace Peeky doesn't build (rust_workspace), refused before Cargo runs.
         r"^Peeky (?:doesn't build (?:git dependencies|a workspace with|a path dependency outside|"
         r"with `)|builds crates\.io dependencies only|analyses only (?:editions|code the program "
-        r"runs|code built at|code built as stable|the workspace's members)|builds only files inside |"
-        r"builds only with the features|reads only "
+        r"runs|code built at|code built as stable|the workspace's members)|builds only files "
+        r"(?:inside |it can reach: )|builds only with the features|reads only "
         r"Cargo\.lock versions|builds a Rust workspace only where Cargo reads no manifest|can't "
         r"tell (?:whether `target|which of Cargo's))",
         "UNSUPPORTED",
@@ -418,12 +422,6 @@ _RULES = (
         "UNSUPPORTED",
         "Nothing was built. Build with Rust 1.96, whose Cargo output Peeky reads, as the "
         "message says.",
-        False,
-    ),
-    (
-        r"^A worker doesn't probe a Rust workspace for a remote client yet",
-        "UNSUPPORTED",
-        "Nothing ran. Run Peeky on the workspace's own host: `peeky build`, then the probe.",
         False,
     ),
     (
@@ -525,6 +523,57 @@ _RULES = (
         r"[Pp]rovenance|changed during|changed; re-attach|identity changed|differ from",
         "PROVENANCE_CHANGED",
         "Sources, build outputs or tools changed; start a new session on a fresh build.",
+        False,
+    ),
+    (
+        # A `shutdown` while the worker's build still runs, past the wait (worker._RemoteBuilds).
+        r"^The worker didn't shut down: ",
+        "BUSY",
+        "The worker keeps running, and so does its build. Retry the shutdown once the build ends.",
+        True,
+    ),
+    (
+        # A worker's shutdown stopped its build, or refused to start one (worker._RemoteBuilds).
+        r"^The worker is shutting down, so ",
+        "UNREACHABLE",
+        "The worker stopped, and its build with it. Start the worker again, then build.",
+        True,
+    ),
+    (
+        # A Rust workspace's build on a worker (`peeky build --worker`, `--build`).
+        r"^The worker's build is still running",
+        "TIMEOUT",
+        "The build goes on on the worker: run the same `peeky build --worker` command again to "
+        "wait for it.",
+        False,
+    ),
+    (
+        # sources.LinkLoop: a compared path whose links loop, or are too many.
+        r"^Peeky compares only files it can reach: ",
+        "UNSUPPORTED",
+        "Nothing ran, and nothing through the link was read. Fix the link, as the message says.",
+        False,
+    ),
+    (
+        # sources.OutsideRoot: a compared path a link leads out of the root.
+        r"^Peeky compares only files inside the root: ",
+        "UNSUPPORTED",
+        "Nothing ran, and nothing outside the root was read. Point the link inside the root, as "
+        "the message says.",
+        False,
+    ),
+    (
+        r"^A remote client can't compare what this build read with its own files",
+        "UNSUPPORTED",
+        "Nothing ran. Run Peeky on the worker's host, or change what the build script reads, as "
+        "the message says.",
+        False,
+    ),
+    (
+        r"^The worker's target reads \d+ files, more than",
+        "INVALID_REQUEST",
+        "Nothing ran. Run Peeky on the worker's host, or give the worker a smaller target (fewer "
+        "packages in analyse).",
         False,
     ),
     (

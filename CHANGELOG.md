@@ -32,8 +32,9 @@
   graph Peeky reads twice was refused as changed about half the time (bat, coreutils, ripgrep's
   test). It is now compared in a form that doesn't depend on that order. A build script at
   `build/main.rs`, and a binary an integration test runs, had no dependency file Peeky found.
-  Peeky now reads rustc's own, beside the output Cargo copied up. Cargo's file beside the run's
-  binary could list a directory, which refused every bat build.
+  Peeky now reads rustc's own, beside the output Cargo copied up. Cargo's own file beside the
+  run's binary may name a build script's directory with its `/` (bat's), which refused every
+  bat build. It is read as that directory now.
 
 - **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
   closure or async block captures the places it uses. rustc's MIR prints one capture per
@@ -128,6 +129,21 @@
   code is unknown code, taken as sound: a change it may keep a copy of is refused, naming the
   call, its line and its crate. So is one the crate's own code may hand on to it. A dependency's
   frame is read as a library's. The source scans read the crate as rustc expands it.
+- **A Rust workspace through a worker (protocol 16; ADR 0008, phase 2):** a worker started with a
+  workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
+  from its own configuration only. It compares every workspace file the build compiled, the
+  binary's included, what local build scripts read, its manifests, lockfile, Cargo configuration
+  and vendored checksum files with the client's; never `.git`. Each is compared by its links too,
+  never through one out of the root, and each watched directory entry by entry. A package Cargo
+  watches whole is compared by the files `cargo package --list` gives, so a client's git-ignored
+  files and `.DS_Store` are no difference; where Cargo can't list it, every entry, links by their
+  text, and the build says why. A worker's end stops its build, Cargo's processes too, and a build
+  that doesn't end is never called stopped. Its `BUILD_REQUIRED` names the client's own command. A
+  line of a generic function only another crate uses is refused before launch, naming it, where it
+  was a `DEBUGGER_ERROR`. A stop in another crate's copy of the crate's code reads no value, and
+  says why: it was read as the crate's own, with none of the checks of that copy. So does one Peeky
+  can't tell is the crate's own. A build script watching a directory no longer fails the build with
+  `Expected a regular file`. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
 - **A Rust workspace's analysed packages may be edition 2018 (ADR 0008, phase 2):** rustc lowers
   2018's closure captures, arrays' `into_iter` and `panic!` forms into the MIR Peeky reads, so
   its proofs hold. Edition 2015 is still refused. A 2018 crate whose text holds a raw C string

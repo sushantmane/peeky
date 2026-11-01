@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -212,7 +213,7 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
     assert rb._dependency_file([str(tmp_path / "debug/app")]) == (deps / "app-4567.d", "rustc")
     assert rb._dependency_file([str(tmp_path / "debug/other")]) == (
         tmp_path / "debug/other.d",
-        "make",
+        "cargo",
     )
     assert rb._dependency_file([str(tmp_path / "debug/none")]) == (None, None)
     # A build script: Cargo names its copy, beside rustc's output and dependency file.
@@ -265,7 +266,36 @@ def test_an_output_cargo_linked_or_copied_up_leads_to_rustcs_dependency_file(tmp
     assert rb._dependency_file([str(tmp_path / "debug/twice")]) == (None, None)
     # rustc's output without its dependency file: Cargo's own.
     (deps / "rg-4567.d").unlink()
-    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (tmp_path / "debug/rg.d", "make")
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (tmp_path / "debug/rg.d", "cargo")
+
+
+def test_a_watched_directory_cargo_lists_is_recorded_by_its_entries_not_hashed(tmp_path):
+    # Cargo's own dependency file lists a build script's `rerun-if-changed` paths: a
+    # directory too, which isn't a file to hash (a build watching one failed, "Expected a
+    # regular file").
+    root, target = tmp_path / "ws", tmp_path / "target"
+    (root / "util/proto").mkdir(parents=True)
+    (root / "util/src").mkdir()
+    (root / "util/src/lib.rs").write_text("")
+    target.mkdir()
+    depfile = tmp_path / "app.d"
+    depfile.write_text(f"{target}/debug/app: {root}/util/src/lib.rs {root}/util/proto\n")
+    read = rb._read_dependencies(depfile, root, root, target, "app", "cargo")
+    assert read["sources"] == ["util/src/lib.rs"]
+    assert read["directories"] == [root / "util/proto"]
+    # Recorded entry by entry where a local build script watches it, or a vendored copy's
+    # checksums cover it; else refused, naming it.
+    shape = SimpleNamespace(watch={"vendor_directory": str(root / "vendor")})
+    manifest = {"root": str(root), "build_inputs": {"dirs": {str(root / "util/proto"): {}}}}
+    rb._watched_directories([root / "util/proto"], manifest, shape, "vendor")
+    rb._watched_directories([root / "vendor/x/data"], manifest, shape, "vendor")
+    with pytest.raises(ValueError) as refused:
+        rb._watched_directories([root / "util/other"], manifest, shape, None)
+    assert str(refused.value) == (
+        "Cargo says the build read the directory util/other, which no local build script's "
+        "`rerun-if-changed` names: Peeky can't tell what of it was read. Name it in the build "
+        "script that reads it"
+    )
 
 
 def test_the_build_refusals_have_their_codes():
@@ -343,29 +373,103 @@ def write(root, files):
         path.write_text(text)
 
 
-def test_a_packages_files_are_listed_as_cargo_lists_them(tmp_path):
+def test_a_package_is_walked_whole_by_lstat_and_links_are_never_followed(tmp_path):
     write(
         tmp_path,
         {
             "build.rs": "fn main() {}\n",
             "src/lib.rs": "",
-            "data/schema.txt": "a\n",
-            ".git/HEAD": "x",
-            "target/debug/out": "x",
-            "nested/Cargo.toml": "[package]\n",
-            "nested/src/lib.rs": "",
+            ".hidden/x": "x\n",
+            "target/manual": "m\n",
+            "fixture/Cargo.toml": "[package]\n",
+            "fixture/src/lib.rs": "",
+            "member/Cargo.toml": "[package]\n",
+            "member/src/lib.rs": "",
             "vendor/smallnum/src/lib.rs": "",
+            ".git/HEAD": "x",
+            ".DS_Store": "junk",
+            "src/Thumbs.db": "junk",
+            "src/desktop.ini": "junk",
+            "shared/data.txt": "d\n",
         },
     )
-    found = rb._tree(tmp_path, {str(tmp_path / "vendor")}, budget=[100])
-    assert sorted(found) == ["build.rs", "data/schema.txt", "src/lib.rs"]
+    (tmp_path / "to-file").symlink_to("shared/data.txt")
+    (tmp_path / "to-dir").symlink_to("shared")
+    (tmp_path / "dangling").symlink_to("gone")
+    (tmp_path / "out").symlink_to("/etc")
+    # An empty directory a build script may look for (`Path::exists`).
+    (tmp_path / "feature-enabled").mkdir()
+    skip = {str(tmp_path / "member"), str(tmp_path / "vendor")}
+    found = rb._tree(tmp_path, skip, budget=[100])
+    digest = hashlib.sha256
+    assert found == {
+        # Hidden and `target` directories too, and a crate that isn't a workspace package.
+        ".hidden": ["dir"],
+        ".hidden/x": digest(b"x\n").hexdigest(),
+        "build.rs": digest(b"fn main() {}\n").hexdigest(),
+        "dangling": ["link", "gone"],
+        "feature-enabled": ["dir"],
+        "fixture": ["dir"],
+        "fixture/Cargo.toml": digest(b"[package]\n").hexdigest(),
+        "fixture/src": ["dir"],
+        "fixture/src/lib.rs": digest(b"").hexdigest(),
+        # A link by its text: never followed, into a directory or out of the root.
+        "out": ["link", "/etc"],
+        "shared": ["dir"],
+        "shared/data.txt": digest(b"d\n").hexdigest(),
+        "src": ["dir"],
+        "src/lib.rs": digest(b"").hexdigest(),
+        "target": ["dir"],
+        "target/manual": digest(b"m\n").hexdigest(),
+        "to-dir": ["link", "shared"],
+        "to-file": ["link", "shared/data.txt"],
+    }
+    # Where every entry is what a build may read, a link out of the root is refused.
     with pytest.raises(ValueError) as caught:
-        rb._tree(tmp_path, budget=[2])
+        rb._reachable(tmp_path / "out", tmp_path)
+    assert str(caught.value) == (
+        f"Peeky builds only files inside {tmp_path}: out leads out of it through out, a link to "
+        "/etc, and a build script or procedural macro may read every file of its package. "
+        "Point the link inside the workspace, or make it a file there"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    rb._reachable(tmp_path / "to-dir", tmp_path)
+    # Past the budget, refused: never filtered. Directories spend it, empty ones too, as
+    # each is read: one of more entries than the budget is refused before they are held.
+    with pytest.raises(ValueError) as caught:
+        rb._tree(tmp_path, skip, budget=[2])
     assert str(caught.value).startswith(
         f"Peeky records at most {rb.MAX_RECORDED} files a build script or procedural macro may "
         f"read, and {tmp_path} holds more"
     )
-    assert classify(caught.value)["code"] == "UNSUPPORTED"
+    many = tmp_path / "many"
+    for index in range(50):
+        (many / f"empty-{index}").mkdir(parents=True)
+    with pytest.raises(ValueError, match="Peeky records at most"):
+        rb._tree(many, budget=[40])
+    held = []
+    real = os.scandir
+
+    class Counting:
+        def __init__(self, path):
+            self.listing = real(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.listing.close()
+
+        def __iter__(self):
+            for entry in self.listing:
+                held.append(entry.name)
+                yield entry
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rb.os, "scandir", Counting)
+        with pytest.raises(ValueError, match="Peeky records at most"):
+            rb._tree(many, budget=[10])
+    assert len(held) == 11
 
 
 # A build that started after the test wrote its files: none changed while Cargo ran.
@@ -461,8 +565,10 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
     }
     assert set(found["trees"]) == {str(root / "app")}
     assert sorted(found["trees"][str(root / "app")]) == [
+        "assets",
         "assets/logo.txt",
         "build.rs",
+        "src",
         "src/main.rs",
     ]
     assert values(found) == {
@@ -486,6 +592,668 @@ def test_build_scripts_and_procedural_macros_inputs_are_recorded(tmp_path):
     shape = fake_shape(tmp_path, local=("util", "app", "derive"))
     found = rb._build_inputs(shape, root, [macro], env, {}, LATER, None)
     assert set(found["trees"]) == {str(root / "derive"), str(root / "util")}
+
+
+def test_a_package_compared_whole_is_listed_as_cargo_package_lists_it(tmp_path):
+    root = tmp_path / "ws"
+    write(
+        root,
+        {
+            "app/build.rs": "",
+            "app/src/main.rs": "",
+            "app/.tracked": "t\n",
+            "app/ignored.log": "i\n",
+            "app/.DS_Store": "junk\n",
+            "app/Thumbs.db": "junk\n",
+            "shared/data.txt": "d\n",
+            "util/src/lib.rs": "",
+            "derive/src/lib.rs": "",
+            "derive/.DS_Store": "junk\n",
+        },
+    )
+    (tmp_path / "outside.txt").write_text("o\n")
+    (root / "app/escape.txt").symlink_to(tmp_path / "outside.txt")
+    (root / "app/dangling.txt").symlink_to("gone.txt")
+    (root / "app/assets").symlink_to("../shared")
+    (root / "app/feature-enabled").mkdir()
+    # Names Cargo writes as they are: a space begins or ends one.
+    (root / "app/ leading.txt").write_text("l\n")
+    (root / "app/trailing.txt ").write_text("t\n")
+    messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
+    asked = []
+    listed = [
+        " leading.txt",
+        "trailing.txt ",
+        "",
+        ".tracked",
+        "Cargo.lock",
+        "Cargo.toml.orig",
+        ".cargo_vcs_info.json",
+        "assets/data.txt",
+        "build.rs",
+        "dangling.txt",
+        "deleted.txt",
+        "escape.txt",
+        "src/main.rs",
+    ]
+
+    def lister(package):
+        # `cargo package --list`, with git: tracked and untracked files git doesn't ignore,
+        # hidden ones too, through a linked directory, and the files Cargo writes into a
+        # package.
+        asked.append(package)
+        return listed, None
+
+    shape = fake_shape(tmp_path)
+    found = rb._build_inputs(shape, root, messages, {"CC": None}, {}, LATER, None, 1, lister)
+    assert asked == ["app@0.1.0"]
+    record = found["lists"][str(root / "app")]
+    assert record["cargo"] is True and record["note"] is None
+    digest = hashlib.sha256
+    # Each looked at by lstat first. Cargo's own files that aren't there are left out; a
+    # listed file that isn't there, a link to nothing or out of the root, is refused by type.
+    assert record["files"] == {
+        " leading.txt": digest(b"l\n").hexdigest(),
+        "trailing.txt ": digest(b"t\n").hexdigest(),
+        ".tracked": digest(b"t\n").hexdigest(),
+        "assets/data.txt": digest(b"d\n").hexdigest(),
+        "build.rs": digest(b"").hexdigest(),
+        "dangling.txt": {"refused": "dangling"},
+        "deleted.txt": {"refused": "missing"},
+        "escape.txt": {"refused": "outside"},
+        "src/main.rs": digest(b"").hexdigest(),
+    }
+    # The walk, for the build's freshness, has what Cargo ignores too, and links by text.
+    walked = found["trees"][str(root / "app")]
+    assert "ignored.log" in walked and walked["escape.txt"] == [
+        "link",
+        str(tmp_path / "outside.txt"),
+    ]
+    manifest, files = {"root": str(root), "build_inputs": found, "watch": {}}, dict(record["files"])
+    for name, what in (
+        ("dangling.txt", "a link to nothing"),
+        ("deleted.txt", "missing, though Cargo lists it"),
+        ("escape.txt", "a link that leads out of the root"),
+    ):
+        found["lists"][str(root / "app")]["files"] = {name: files[name]}
+        assert rb._watched_inputs(manifest)[1] == (
+            "A remote client can't compare what this build read with its own files: "
+            f"app/{name} is {what} on the worker's host, among the files of a package a build "
+            "may read whole. Run Peeky on the worker's host, or "
+            + rb._UNLISTABLE[files[name]["refused"]][1]
+        )
+    # A member's Cargo.lock that is there is its own.
+    (root / "app/Cargo.lock").write_text("lock\n")
+    found = rb._build_inputs(shape, root, messages, {"CC": None}, {}, LATER, None, 1, lister)
+    assert "Cargo.lock" in found["lists"][str(root / "app")]["files"]
+    (root / "app/Cargo.lock").unlink()
+    # Cargo can't list it: every entry Peeky walks, and the record says why. A link out of
+    # the root is then refused, as a build may read it.
+    with pytest.raises(ValueError, match="app/escape.txt leads out of it through app/escape.txt"):
+        rb._build_inputs(
+            shape, root, messages, {"CC": None}, {}, LATER, None, 1, lambda p: (None, "it failed")
+        )
+    (root / "app/escape.txt").unlink()
+    found = rb._build_inputs(
+        shape, root, messages, {"CC": None}, {}, LATER, None, 1, lambda p: (None, "it failed")
+    )
+    record = found["lists"][str(root / "app")]
+    assert record["cargo"] is False
+    assert record["note"] == (
+        "it failed: Peeky compares every file of app with a remote client's instead, but "
+        ".DS_Store, Thumbs.db and desktop.ini"
+    )
+    # An empty directory is named; one with entries is compared by them.
+    assert sorted(record["files"]) == [
+        " leading.txt",
+        ".tracked",
+        "assets",
+        "build.rs",
+        "dangling.txt",
+        "feature-enabled",
+        "ignored.log",
+        "src/main.rs",
+        "trailing.txt ",
+    ]
+    assert record["files"]["assets"] == record["files"]["feature-enabled"] == "dir"
+    assert record["files"]["dangling.txt"] == {"refused": "dangling"}
+    # The build's summary says so, once.
+    summary = rb.summary(
+        {
+            "workspace": str(root),
+            "analysed": ["util"],
+            "run": {"package": "app", "target": "app", "kinds": ["bin"], "executable": "app"},
+            "build_id": "b",
+            "seconds": 1.0,
+            "dependencies": 0,
+            "sources": {},
+            "units": [],
+            "build_inputs": {"lists": {"a": record, "b": dict(record), "c": {"note": None}}},
+        },
+        tmp_path,
+    )
+    assert summary["notes"] == [record["note"]]
+    from peeky.cli import _build_text
+
+    assert _build_text(summary).splitlines()[-1] == f"note: {record['note']}"
+    # A procedural macro's package, and the analysed ones: every entry Peeky walks.
+    macro = {
+        "reason": "compiler-artifact",
+        "manifest_path": str(root / "derive/Cargo.toml"),
+        "target": {"name": "derive", "kind": ["proc-macro"]},
+    }
+    shape = fake_shape(tmp_path, local=("util", "app", "derive"))
+    found = rb._build_inputs(shape, root, [macro], {}, {}, LATER, None, 1, lister)
+    assert sorted(found["lists"][str(root / "derive")]["files"]) == ["src/lib.rs"]
+    assert asked == ["app@0.1.0", "app@0.1.0"]
+
+
+def test_many_empty_directories_are_listed_in_one_pass(tmp_path):
+    # 32,000 empty directories in a package Cargo can't list: each is named (a build script
+    # may look for it), each by one membership test, not a scan of the walk per directory
+    # (~5e8 prefix checks, minutes, with no stop checked).
+    import time
+
+    root = tmp_path / "ws"
+    write(root, {"app/build.rs": "", "app/src/main.rs": "", "app/a/b/c.txt": "c\n"})
+    for index in range(32000):
+        os.mkdir(root / "app" / f"empty-{index}")
+    (root / "app/a/empty").mkdir()
+    messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
+    started = time.monotonic()
+    found = rb._build_inputs(
+        fake_shape(tmp_path),
+        root,
+        messages,
+        {"CC": None},
+        {},
+        LATER,
+        None,
+        1,
+        lambda package: (None, "it failed"),
+    )
+    assert time.monotonic() - started < 20
+    files = found["lists"][str(root / "app")]["files"]
+    assert sum(1 for name in files if name.startswith("empty-")) == 32000
+    # A directory that holds an entry is compared by it; an empty one by its name.
+    assert "a" not in files and "a/b" not in files and "src" not in files
+    assert files["a/empty"] == "dir" and "a/b/c.txt" in files
+
+
+def test_a_stopped_builds_own_work_ends_at_its_next_entry(tmp_path, monkeypatch):
+    import threading
+
+    from peeky.agent import Stopped, stopping
+
+    for index in range(200):
+        (tmp_path / "pkg" / f"d{index}").mkdir(parents=True)
+    (tmp_path / "pkg/file.txt").write_text("f\n")
+    stop = threading.Event()
+    stop.set()
+    # A walk, a hash, a listed file: each checks the stop first.
+    with stopping(stop):
+        for work in (
+            lambda: rb._tree(tmp_path / "pkg", budget=[1000]),
+            lambda: rb._hash(tmp_path / "pkg/file.txt"),
+            lambda: rb._compared_file(tmp_path / "pkg", "file.txt", tmp_path, {}),
+        ):
+            with pytest.raises(Stopped) as caught:
+                work()
+            assert caught.value.started is False
+    # Outside a stopped build, nothing is checked.
+    assert len(rb._tree(tmp_path / "pkg", budget=[1000])) == 201
+    # A build stopped in its own work ends as stopped, its next process never started.
+    monkeypatch.setattr(
+        rb, "_build", lambda *args, **kwargs: rb._tree(tmp_path / "pkg", budget=[1000])
+    )
+    with pytest.raises(rb.BuildStopped) as caught:
+        rb.build(None, tmp_path, stop=stop)
+    assert "its next process never started" in str(caught.value)
+
+
+# Every directory any code opens to list (the interpreter's audit events: os.scandir,
+# os.listdir), whatever reads it, while ``_OPENED`` is a list.
+_OPENED = None
+
+
+def _audit(event, args):
+    if _OPENED is not None and event in ("os.scandir", "os.listdir"):
+        _OPENED.append(str(args[0]))
+
+
+sys.addaudithook(_audit)
+
+
+def opened(work):
+    """The directories ``work()`` opens to list, and what it raised (or None)."""
+    global _OPENED
+    _OPENED, raised = [], None
+    try:
+        work()
+    except Exception as exc:  # noqa: BLE001 - the caller checks it
+        raised = exc
+    finally:
+        found, _OPENED = _OPENED, None
+    return found, raised
+
+
+def test_a_large_artifact_tree_is_read_lazily_and_stops_promptly(tmp_path, monkeypatch):
+    import threading
+
+    from peeky.stopping import Stopped, stopping
+
+    run = tmp_path / "runs/0123"
+    for unit in range(20):
+        (run / f"units/u{unit}").mkdir(parents=True)
+        for index in range(500):
+            (run / f"units/u{unit}/f{index}.mir").write_text("")
+    stop = threading.Event()
+    stop.set()
+    # A set stop ends it at the first entry read, never once the whole tree is listed.
+    with stopping(stop):
+        listed, raised = opened(lambda: rb._artifacts(tmp_path, run, None))
+    assert isinstance(raised, Stopped) and len(listed) <= 1, (raised, len(listed))
+    # Past the bound, refused as read: the 22 directories aren't all listed first.
+    monkeypatch.setattr(rb, "MAX_RECORDED", 100)
+    listed, raised = opened(lambda: rb._artifacts(tmp_path, run, None))
+    assert isinstance(raised, ValueError) and len(listed) <= 3, (raised, len(listed))
+    assert str(raised).startswith("The build wrote more than")
+    # Unstopped and within the bound, every file, sorted.
+    monkeypatch.setattr(rb, "MAX_RECORDED", 20000)
+    found = rb._artifacts(tmp_path, run, None)
+    assert len(found) == 10000 and list(found) == sorted(found)
+    # The snapshot before Cargo runs, and the MIR left behind, too.
+    shape = SimpleNamespace(workspace=run, local=(), root=run)
+    with stopping(stop):
+        listed, raised = opened(lambda: rb._snapshot(shape, None))
+        assert isinstance(raised, Stopped) and listed == [], (raised, listed)
+        listed, raised = opened(lambda: list(rb._walked(run / "units", [10**6], "too many")))
+        assert isinstance(raised, Stopped) and len(listed) <= 1, (raised, len(listed))
+
+
+def a_build_stopped_in_cargo(tmp_path, monkeypatch, files):
+    """(``build``'s stop, the build's directory, the time ``build`` took): a build whose
+    Cargo leaves ``files`` files in the run's units and is then stopped, every step before
+    Cargo stood in for."""
+    import threading
+    import time
+
+    from peeky import build as peeky_build
+    from peeky.stopping import Stopped
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = SimpleNamespace(
+        identity=lambda root: {"test": "stopped"},
+        rustc="rustc",
+        cargo="cargo",
+        rustflags=lambda: (),
+        config=SimpleNamespace(vendor=None, analyse=["util"]),
+    )
+    shape = SimpleNamespace(workspace=root, analysed=(), vendored={}, rustflags=())
+    monkeypatch.setattr(peeky_build, "require_private", lambda path: None)
+    monkeypatch.setattr(rb, "_tools", lambda target, env: ([], {}))
+    monkeypatch.setattr(rb.rust_workspace, "read", lambda *args, **kwargs: shape)
+    monkeypatch.setattr(rb, "_write_wrapper", lambda directory: (directory / "wrapper", ""))
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    monkeypatch.setattr(rb, "_snapshot", lambda shape, vendor: {})
+    stop = threading.Event()
+
+    def cargo(argv, cwd, env, deadline, what):
+        units = next((rb.build_directory(target, root) / "runs").iterdir()) / "units"
+        for index in range(files):
+            (units / f"f{index}.mir").write_text("")
+        stop.set()
+        raise Stopped(["cargo"], started=True)
+
+    monkeypatch.setattr(rb, "_run", cargo)
+    started = time.monotonic()
+    with pytest.raises(rb.BuildStopped):
+        rb.build(target, root, stop=stop)
+    return stop, rb.build_directory(target, root), time.monotonic() - started, target, root
+
+
+def test_a_stopped_build_leaves_its_run_to_the_trash_and_ends_at_once(tmp_path, monkeypatch):
+    stop, directory, _, target, root = a_build_stopped_in_cargo(tmp_path, monkeypatch, 20000)
+    # Not removed while the stopped build ends: one rename into the trash.
+    assert list((directory / "runs").iterdir()) == []
+    (left,) = (directory / "trash").iterdir()
+    assert len(list((left / "units").iterdir())) == 20000
+    # A later build empties the trash, a bounded part at a time, its stop checked at each.
+    with rb_stopping(stop):
+        with pytest.raises(Exception) as caught:
+            rb._empty_trash(directory, 10**6)
+    assert type(caught.value).__name__ == "Stopped"
+    assert len(list((left / "units").iterdir())) == 20000
+    rb._empty_trash(directory, 1000)
+    assert 18000 < len(list((left / "units").iterdir())) < 20000
+    while (left / "units").exists():
+        rb._empty_trash(directory, 5000)
+    assert list((directory / "trash").iterdir()) == []
+
+
+def entries_under(path):
+    """How many entries ``path`` holds, at any depth."""
+    return sum(len(folders) + len(files) for _, folders, files in os.walk(path))
+
+
+@pytest.mark.parametrize(
+    ("shape", "budget"),
+    [
+        # More children than the budget, each empty: unchanged forever, once.
+        ({f"run/c{index}/": None for index in range(3)}, 2),
+        # Wide: 40 runs of 3 files each.
+        ({f"r{run}/f{index}": "" for run in range(40) for index in range(3)}, 7),
+        # Deeper than the budget: a chain of 30 directories, a file at its end.
+        ({"/".join(f"d{level}" for level in range(30)) + "/end": ""}, 2),
+        # Both: wide directories inside a deep one.
+        ({f"a/b/c/w{index}/f": "" for index in range(25)}, 1),
+    ],
+    ids=["children-past-the-budget", "wide", "deep", "deep-and-wide"],
+)
+def test_the_trash_empties_over_calls_each_making_progress(tmp_path, shape, budget):
+    trash = tmp_path / "trash"
+    for name, text in shape.items():
+        path = trash / name
+        if name.endswith("/"):
+            path.mkdir(parents=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+    calls, before = 0, entries_under(trash)
+    while (now := entries_under(trash)) > 0:
+        rb._empty_trash(tmp_path, budget)
+        calls += 1
+        after = entries_under(trash)
+        # Each call removes something, and at most its budget.
+        assert now - budget <= after < now, (calls, now, after)
+        assert calls <= before, "the trash isn't emptying"
+    assert trash.is_dir() and list(trash.iterdir()) == []
+
+
+def test_a_deep_trash_empties_with_few_file_descriptors(tmp_path):
+    # 100 directories in a chain, with 32 file descriptors: one directory is open at a
+    # time, so each call of 10 removes 10.
+    levels = [f"d{index}" for index in range(100)]
+    (tmp_path / "trash" / Path(*levels)).mkdir(parents=True)
+    script = """
+import resource, sys
+from pathlib import Path
+from peeky import rust_build
+directory = Path(sys.argv[1])
+_, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (32, hard))
+levels = [f"d{index}" for index in range(100)]
+def depth():
+    path, found = directory / "trash", 0
+    for level in levels:
+        path = path / level
+        if not path.is_dir():
+            break
+        found += 1
+    return found
+for _ in range(10):
+    rust_build._empty_trash(directory, 10)
+    print(depth())
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        env={**os.environ, "PYTHONPATH": str(Path(rb.__file__).parents[1])},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert [int(line) for line in done.stdout.split()] == list(range(90, -1, -10))
+    assert list((tmp_path / "trash").iterdir()) == []
+
+
+def test_a_removal_that_fails_is_passed_over_and_spends_no_budget(tmp_path, monkeypatch):
+    trash = tmp_path / "trash"
+    for name in ("a/stuck", "a/f1", "a/f2", "b/f3"):
+        (trash / name).parent.mkdir(parents=True, exist_ok=True)
+        (trash / name).write_text("")
+    real = os.unlink
+    tried = []
+
+    def unlink(path, *args, **kwargs):
+        tried.append(str(path))
+        if str(path).endswith("stuck"):
+            raise PermissionError(1, "Operation not permitted")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rb.os, "unlink", unlink)
+    # `stuck` fails once, and is passed over for the rest of the call (its directory `a`
+    # too, which can't be removed), though the trash is read again after `b` is gone.
+    rb._empty_trash(tmp_path, 100)
+    assert sorted(path.name for path in trash.rglob("*")) == ["a", "stuck"]
+    assert sum(path.endswith("stuck") for path in tried) == 1
+    # A failure spends none of the budget: five removals (f4, f5, c, f6, d) take five.
+    for name in ("c/f4", "c/f5", "d/f6"):
+        (trash / name).parent.mkdir(parents=True, exist_ok=True)
+        (trash / name).write_text("")
+    tried.clear()
+    rb._empty_trash(tmp_path, 5)
+    assert sorted(path.name for path in trash.rglob("*")) == ["a", "stuck"]
+
+
+class FilesFirst:
+    """os.scandir, each listing's files (what can't be removed, here) before its
+    directories, counting the entries it yields (``read``)."""
+
+    def __init__(self):
+        self.read, self.real = 0, os.scandir
+
+    def __call__(self, path):
+        counter = self
+        with self.real(path) as listing:
+            entries = sorted(listing, key=lambda each: (each.is_dir(), each.name))
+
+        class Listing:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                for entry in entries:
+                    counter.read += 1
+                    yield entry
+
+        return Listing()
+
+
+def test_one_call_reads_at_most_its_cap_of_entries(tmp_path, monkeypatch):
+    # 300 entries that can't be removed before 300 subdirectories: each subdirectory gone,
+    # its parent is read again, the 300 passed over again. One call reads at most its cap.
+    trash = tmp_path / "trash/run"
+    trash.mkdir(parents=True)
+    for index in range(300):
+        (trash / f"stuck-{index}").write_text("")
+        (trash / f"z-{index}").mkdir()
+        (trash / f"z-{index}/f").write_text("")
+    real = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if Path(path).name.startswith("stuck-"):
+            raise PermissionError(1, "Operation not permitted")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rb.os, "unlink", unlink)
+    counting = FilesFirst()
+    monkeypatch.setattr(rb.os, "scandir", counting)
+    stuck = rb._empty_trash(tmp_path, 10**6, examine=1000)
+    assert counting.read <= 1001, counting.read
+    # Each entry it couldn't remove, once.
+    assert len(stuck) == len(set(stuck)) and len(stuck) <= 300
+    assert set(stuck.values()) == {"Operation not permitted"}
+    # Its default cap, 65,536 entries a call: the rest the next time, each call bounded.
+    assert rb.MAX_TRASH_EXAMINED == 65536
+    while any(name.startswith("z-") for name in os.listdir(trash)):
+        counting.read = 0
+        stuck = rb._empty_trash(tmp_path, 10**6, examine=1000)
+        assert counting.read <= 1001, counting.read
+    assert sorted(os.listdir(trash)) == sorted(f"stuck-{index}" for index in range(300))
+    assert rb._stuck_note(tmp_path, {str(trash / "stuck-0"): "Operation not permitted"}) == (
+        f"Peeky couldn't remove 1 entry of its earlier builds' files in {tmp_path / 'trash'}, "
+        f"such as {trash / 'stuck-0'} (Operation not permitted). Each build tries again; "
+        "remove them yourself to free the space"
+    )
+
+
+def test_only_what_is_still_there_is_noted_as_stuck(tmp_path, monkeypatch):
+    # The build's first cleaning can't remove `a`; its last one, after the build is
+    # recorded, can. The note names only what is still there.
+    trash = tmp_path / "trash"
+    for name in ("a", "b"):
+        (trash / "run" / name).parent.mkdir(parents=True, exist_ok=True)
+        (trash / "run" / name).write_text("")
+    real = os.unlink
+    refusing = {"a", "b"}
+
+    def unlink(path, *args, **kwargs):
+        if Path(path).name in refusing:
+            raise PermissionError(1, "Operation not permitted")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rb.os, "unlink", unlink)
+    stuck = rb._empty_trash(tmp_path, 100)
+    assert sorted(Path(path).name for path in stuck) == ["a", "b", "run"]
+    refusing.discard("a")
+    stuck |= rb._empty_trash(tmp_path, 100)
+    assert rb._stuck_note(tmp_path, stuck) == (
+        f"Peeky couldn't remove 2 entries of its earlier builds' files in {trash}, such as "
+        f"{trash / 'run'} (Directory not empty). Each build tries again; remove them yourself "
+        "to free the space"
+    )
+    refusing.clear()
+    stuck |= rb._empty_trash(tmp_path, 100)
+    assert rb._stuck_note(tmp_path, stuck) is None
+
+
+def rb_stopping(stop):
+    from peeky.stopping import stopping
+
+    return stopping(stop)
+
+
+def test_debug_symbols_are_copied_lazily_and_bounded(tmp_path, monkeypatch):
+    import threading
+
+    from peeky.stopping import Stopped
+
+    monkeypatch.setattr(rb.sys, "platform", "darwin")
+    executable = tmp_path / "target/debug/app"
+    symbols = executable.with_name("app.dSYM")
+    (symbols / "Contents/Resources/DWARF").mkdir(parents=True)
+    executable.write_text("binary\n")
+    (symbols / "Contents/Info.plist").write_text("plist\n")
+    (symbols / "Contents/Resources/DWARF/app").write_text("dwarf\n")
+
+    def copied(name):
+        run = tmp_path / "runs" / name
+        run.mkdir(parents=True)
+        return run, lambda: rb._copy_executable(executable, run)
+
+    run, copy = copied("whole")
+    assert copy() == "runs/whole/bin/app"
+    assert (run / "bin/app.dSYM/Contents/Resources/DWARF/app").read_text() == "dwarf\n"
+    # A stop ends it at the bundle's first entry, not once it is all copied.
+    stop = threading.Event()
+    stop.set()
+    run, copy = copied("stopped")
+    with rb_stopping(stop):
+        with pytest.raises(Stopped):
+            copy()
+    assert list((run / "bin/app.dSYM").iterdir()) == []
+    # More entries than a bundle holds: refused as read; a link: refused.
+    monkeypatch.setattr(rb, "MAX_SYMBOL_ENTRIES", 3)
+    run, copy = copied("bounded")
+    with pytest.raises(ValueError, match="holds more than 3 entries"):
+        copy()
+    monkeypatch.setattr(rb, "MAX_SYMBOL_ENTRIES", 4096)
+    (symbols / "Contents/Resources/link").symlink_to("DWARF/app")
+    run, copy = copied("linked")
+    with pytest.raises(ValueError, match="Peeky's build holds a link"):
+        copy()
+
+
+def test_a_record_of_an_earlier_schema_is_build_required_before_it_is_read(tmp_path, monkeypatch):
+    from tests.unit.test_rust_workspace_worker import toolchain
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "ws"
+    write(root, {"Cargo.toml": "[workspace]\n", "Cargo.lock": ""})
+    target = rb.RustWorkspaceTarget.from_config(
+        {"analyse": ["util"], "run": {"bin": "app"}, **toolchain(tmp_path)}, "peeky build"
+    )
+    directory = rb.build_directory(target, root)
+    # Schema 4's record: a package's `lists` hold None for a link out of the root, its
+    # `trees` no directories, and there is no `walk_skip`. Read as today's, each would fail.
+    assert rb.SCHEMA > 4
+    record = {
+        "schema": 4,
+        "identity": target.identity(root),
+        "root": str(root),
+        "nonce": "0" * 16,
+        "tools": [],
+        "sources": {},
+        "inputs": {},
+        "watch": {"workspace": str(root), "vendored": {}, "files": {}},
+        "build_inputs": {
+            "files": {},
+            "dirs": {},
+            "trees": {str(root / "app"): {"build.rs": "x"}},
+            "lists": {str(root / "app"): {"files": {"escape.txt": None}, "cargo": True}},
+            "env": [],
+        },
+    }
+    (directory / "manifest.json").write_text(json.dumps(record))
+    with pytest.raises(rb.BuildRequired) as caught:
+        rb.current_build(target, root)
+    assert str(caught.value).startswith(
+        "No current Peeky build of this workspace: the one recorded is for another "
+        "configuration or Peeky."
+    )
+    assert classify(caught.value)["code"] == "BUILD_REQUIRED"
+    # A worker names only the manifest and lockfile, and refuses nothing: the probe is then
+    # BUILD_REQUIRED.
+    assert rb.recorded_comparison(target, root) is None
+    assert target.compared_names(root) == ("Cargo.toml", "Cargo.lock")
+    assert target.remote_refusal(root) is None and target.compared_trees(root) == {}
+
+
+def test_a_listed_file_the_walk_leaves_out_keeps_the_build_current_until_it_changes(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    root = tmp_path / "ws"
+    write(root, {"app/build.rs": "", "app/.hidden/h.txt": "h\n", "app/ignored.log": "i\n"})
+    messages = [build_script_run(tmp_path, "app", "cargo:rerun-if-env-changed=CC\n")]
+    found = rb._build_inputs(
+        fake_shape(tmp_path),
+        root,
+        messages,
+        {"CC": None},
+        {},
+        LATER,
+        None,
+        1,
+        lambda package: ([".hidden/h.txt", "build.rs"], None),
+    )
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    (root / "app/.hidden/h.txt").write_text("changed\n")
+    with pytest.raises(rb.BuildRequired) as caught:
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    assert str(caught.value).startswith(
+        "No current Peeky build of this workspace: app/.hidden/h.txt changed since"
+    )
 
 
 def test_a_build_input_changed_while_cargo_ran_is_refused(tmp_path):
@@ -528,6 +1296,9 @@ def test_a_changed_build_input_is_build_required_naming_it(tmp_path, monkeypatch
         "ran. Run `peeky build . --config rust.json` again, or add --build"
     )
     (root / "app/assets/new.txt").unlink()
+    # An empty directory left behind is a change too: a build script may look for it.
+    assert refused().startswith("No current Peeky build of this workspace: app/assets changed")
+    (root / "app/assets").rmdir()
     (root / "util/schema.txt").write_text("two\n")
     assert refused().startswith(
         "No current Peeky build of this workspace: util/schema.txt, which a build script reads, "
