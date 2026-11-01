@@ -35,11 +35,14 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
-from peeky import native_startup
+from peeky import native_macros, native_startup
 from peeky.adapters import PythonAdapter
 from peeky.assembler import _C_KEYWORD
 from peeky.build import (
@@ -66,9 +69,11 @@ from peeky.digest import sha256_file
 from peeky.errors import Refused
 from peeky.native import (
     _FOREIGN_TAGS,
+    MAX_DEBUG_INFO,
     MAX_LINE_TEXT,
     MAX_STATEMENT_SOURCE,
     MAX_UNIT,
+    SYMBOL_FAILURES,
     VERSION_TIMEOUT,
     CodeIndex,
     NativeSession,
@@ -80,6 +85,7 @@ from peeky.native import (
     _remaining,
     _symbol_text,
     _tool,
+    elf_executable_ranges,
     has_nonlocal_jumps,
     mentions_nonlocal_jumps,
     module_identity,
@@ -183,6 +189,13 @@ REPLAY_MARGIN = 2.0
 MAX_REPLAY_ERRORS = 16000
 # How many names a config's `returns_twice` may give.
 MAX_RETURNS_TWICE = 100
+# How long a worker takes, at most, to list a binary's inputs for a remote client; and how
+# long another client's request waits for that listing before it is BUSY.
+REMOTE_INPUTS_SECONDS = 40
+# The last binary listed so: {(binary, root, size, time, inode, target): its inputs}.
+_REMOTE_INPUTS = {}
+# One listing at a time: it runs dsymutil and llvm-dwarfdump over the whole binary.
+_LISTING = threading.Lock()
 
 
 class BinaryChanged(RuntimeError):
@@ -205,6 +218,38 @@ def _refused(code, message):
     refused = Refused(code, message)
     refused.before_launch = True
     return refused
+
+
+# The keys a binary target's config may hold (BinaryTarget's fields).
+BINARY_KEYS = frozenset(
+    {
+        "binary",
+        "language",
+        "compiler",
+        "adapter",
+        "dwarfdump",
+        "dsymutil",
+        "arguments",
+        "optimized",
+        "returns_twice",
+    }
+)
+
+
+def binary_name(root, binary):
+    """``binary``, a config's or `--binary`'s, by its name relative to ``root``, as it is
+    written: no link is followed, and the file needn't exist on this host (a remote
+    client's). INVALID_REQUEST where the name is outside ``root``."""
+    root = Path(root).resolve(strict=True)
+    given = Path(binary)
+    path = Path(os.path.normpath(given if given.is_absolute() else root / given))
+    if not path.is_relative_to(root) or path == root:
+        raise _refused(
+            "INVALID_REQUEST",
+            f"The binary {binary} is outside the target directory, {root}: give the "
+            "directory its sources are under as the target",
+        )
+    return path.relative_to(root).as_posix()
 
 
 @dataclass(frozen=True)
@@ -571,9 +616,67 @@ def _found(probe, includer, lists):
     return None
 
 
-def _unproven_probe(read, lists, root, cache):
-    """Why a probe the replay's inputs (``read``: their paths as the compiler opened them)
-    hold may have been answered otherwise when the program was built, or None.
+@dataclass(frozen=True)
+class Unproven:
+    """Why a probe of the replay's inputs may have been answered otherwise when the
+    program was built (``why``, a phrase), or a file it reads its line table doesn't name:
+    the file holding the probe (``path``, as the compiler opened it) and the Probe, or
+    None; whether the build's record of its macros may prove it (``provable``); and
+    whether the file holding it is one the line table doesn't name (``hidden``), whose
+    probes ran only where the replay entered it."""
+
+    why: str
+    path: str | None = None
+    probe: Probe | None = None
+    provable: bool = False
+    hidden: bool = False
+
+
+def _unread_named(real, root):
+    return (
+        f"its preprocessing reads {_shown(real, root)}, which its line table doesn't name "
+        "(-fdebug-macro names each header, on Linux)"
+    )
+
+
+# A trigraph sequence: `??` and one of the nine characters -trigraphs replaces.
+_TRIGRAPH = re.compile(rb"\?\?[=/'()!<>-]")
+_LINE_END = re.compile(rb"\r\n|\r|\n")
+
+
+def trigraphs_on(words, cpp):
+    """What of a unit's recorded ``words`` may turn trigraphs on, or None where they are
+    surely off. As clang reads them, the last of a standard (`-std=c11`, `-ansi`),
+    `-trigraphs` and `-fno-trigraphs` decides: `-fno-trigraphs -std=c11` has them. A
+    standard has them but clang's default, a GNU one, and C++17 and later. A form Peeky
+    doesn't read (`-Wp,-trigraphs`, `-std c99`) may turn them on, wherever it is."""
+    later = ("c++17", "c++1z", "c++20", "c++2a", "c++23", "c++2b", "c++26", "c++2c")
+    last = None
+    for word in words[1:]:
+        if word in ("-trigraphs", "-ftrigraphs", "--trigraphs", "-ansi"):
+            last = word
+        elif word == "-fno-trigraphs":
+            last = None
+        elif word.startswith(("-std=", "--std=")):
+            value = word.split("=", 1)[1]
+            last = None if value.startswith("gnu") or (cpp and value in later) else word
+        elif word in ("-std", "--std") or (
+            "trigraphs" in word and word not in ("-Wtrigraphs", "-Wno-trigraphs")
+        ):
+            return word
+    return last
+
+
+def _unproven_probe(
+    read, lists, root, cache, unnamed=frozenset(), named=frozenset(), entered=None, trigraphs=None
+):
+    """Each Unproven of the replay's inputs (``read``: their paths as the compiler opened
+    them): a probe that may have been answered otherwise when the program was built, or a
+    file it reads that its line table doesn't name (``unnamed``: resolved).
+
+    Where the unit's command may turn trigraphs on (``trigraphs``: trigraphs_on's), a file
+    holding a trigraph sequence (``_TRIGRAPH``) counts whole: a trigraph may make a
+    directive or splice lines, hiding a probe from ``probes``.
 
     A probe that finds a file now (``_found``, never further than clang's own search)
     is proven, or never ran: where it runs, clang lists the file it finds among the
@@ -582,8 +685,13 @@ def _unproven_probe(read, lists, root, cache):
     environment only adds directories), so the build found it too. A probe that finds
     none may have been answered otherwise: the build's environment may have added a
     directory holding the file, or the file may since be gone. Peeky can't tell whether
-    it ran (its group may have been skipped), so it counts. A probe in a macro counts
-    where any input names the macro."""
+    it ran (its group may have been skipped), so it counts, unless an earlier branch of
+    its group asks for a file alone and finds one the line table names (``named``). That
+    branch is taken where reached: a later one never runs. A probe that finds a file of
+    ``unnamed`` counts too. Each of those two may be proven by the build's record of its
+    macros (``provable``). A probe in a macro counts where any input names the macro.
+    ``entered``: the files the replay entered, where known: the probes of others never
+    ran."""
     contents = {}
     for path in read:
         real = os.path.realpath(path)
@@ -594,8 +702,36 @@ def _unproven_probe(read, lists, root, cache):
                 listed = probes(data.decode("utf-8", "replace"))
             cache[real] = (data, listed)
         contents[str(path)] = cache[real]
+    found_by, issues = {}, []
     for path, (data, listed) in contents.items():
+        if entered is not None and not {path, os.path.realpath(path)} & entered:
+            continue
+        hidden = entered is None and os.path.realpath(path) in unnamed
+        key = ("trigraph", os.path.realpath(path))
+        if key not in cache:
+            cache[key] = _TRIGRAPH.search(data)
+        if trigraphs is not None and (trigraph := cache[key]) is not None:
+            # -trigraphs may make a directive or splice lines (`__has_inclu??/`), which
+            # Peeky's own reading of the file (probes, conditionals) doesn't follow.
+            # Lines end as the compilers count them (c_source.normalized): `\r\n`, `\n`, `\r`.
+            line = len(_LINE_END.findall(data, 0, trigraph.start())) + 1
+            issues.append(
+                Unproven(
+                    f"its preprocessing reads {_shown(path, root)}, which uses trigraph sequences "
+                    f"(`{trigraph[0].decode()}` on line {line}), and its command may turn them "
+                    f"on ({trigraphs}): Peeky doesn't read text that -trigraphs could change",
+                    path,
+                    None,
+                    False,
+                    hidden,
+                )
+            )
+            continue
         for probe in listed:
+
+            def add(why, provable=False, probe=probe, path=path, hidden=hidden):
+                issues.append(Unproven(why, path, probe, provable, hidden))
+
             where = f"{probe.kind}, in {_shown(path, root)}:{probe.line}"
             if probe.macro:
                 token = probe.macro.encode()
@@ -604,33 +740,79 @@ def _unproven_probe(read, lists, root, cache):
                 ):
                     continue
             if probe.kind in ("#embed", "__has_embed"):
-                return (
-                    f"its preprocessing reads a file to embed ({where}), which no line table names"
-                )
+                add(f"its preprocessing reads a file to embed ({where}), which no line table names")
+                continue
             if probe.header is None:
-                return (
+                add(
                     f"its preprocessing asks whether a file exists ({where}), naming it in a "
                     "way Peeky doesn't read"
                 )
+                continue
             asked = f"<{probe.header}>" if probe.angled else f'"{probe.header}"'
             if probe.macro is not None and (not probe.angled or probe.kind != "__has_include"):
                 # Where a macro's probe searches from depends on where it is expanded.
-                return (
+                add(
                     f"its preprocessing asks whether {asked} exists ({where}), in a macro, "
                     "whose search Peeky can't follow"
                 )
+                continue
             if lists is None:
-                return (
+                add(
                     f"its preprocessing asks whether {asked} exists ({where}), and Peeky "
                     "can't read the compiler's search path"
                 )
-            if _found(probe, path, lists) is None:
-                return (
-                    f"its preprocessing asks whether {asked} exists ({where}), and finds "
-                    "none: the build may have found one (its environment can add header "
-                    "paths, and a file may since be gone)"
-                )
-    return None
+                continue
+            found = _found(probe, path, lists)
+            if found is not None:
+                real = os.path.realpath(found)
+                if real in unnamed:
+                    found_by.setdefault(
+                        real, Unproven(_unread_named(real, root), path, probe, True, hidden)
+                    )
+                continue
+            if probe.macro is None and _moot(probe, path, listed, lists, named, cache):
+                continue
+            add(
+                f"its preprocessing asks whether {asked} exists ({where}), and finds none: "
+                "the build may have found one (its environment can add header paths, and a "
+                "file may since be gone)",
+                probe.macro is None,
+            )
+    first = [found_by.get(real) or Unproven(_unread_named(real, root)) for real in unnamed]
+    return first + [each for each in found_by.values() if each not in first] + issues
+
+
+def _groups(path, cache):
+    """native_macros.conditionals of the file at ``path``, kept in ``cache``."""
+    real = os.path.realpath(path)
+    if ("groups", real) not in cache:
+        data = cache[real][0] if real in cache else Path(real).read_bytes()
+        cache[("groups", real)] = native_macros.conditionals(data.decode("utf-8", "replace"))
+    return cache[("groups", real)]
+
+
+def _moot(probe, path, listed, lists, named, cache):
+    """Whether ``probe`` (of ``path``, whose probes are ``listed``) is in a branch of its
+    group after one whose condition is a probe alone that finds a file now that the line
+    table names (``named``): a probe the build answered so too, so that branch is taken
+    where reached, and the probe never runs."""
+    found = _groups(path, cache).get(probe.line)
+    if found is None:
+        return False
+    group, index = found
+    if group.trigraphed:
+        return False
+    for branch in group.branches[:index]:
+        kind = native_macros.lone(branch) if branch.kind in ("if", "elif") else None
+        asking = [
+            each for each in listed if branch.line <= each.line <= branch.end and each.kind == kind
+        ]
+        if len(asking) != 1 or asking[0].header is None or asking[0].macro is not None:
+            continue
+        found = _found(asking[0], path, lists)
+        if found is not None and os.path.realpath(found) in named:
+            return True
+    return False
 
 
 _ASM_QUALIFIERS = frozenset(
@@ -724,6 +906,18 @@ def _declares(blanked, at):
     return bool(_WORD.fullmatch(token)) and token not in _STATEMENT_WORDS
 
 
+def _before_cxx11(words):
+    """The option of a C++ unit's recorded ``words`` choosing a standard before C++11
+    (`-std=c++03`, `-ansi`), where it is the last to choose one; else None. clang's default
+    is later."""
+    chosen = None
+    for word in words[1:]:
+        if word == "-ansi" or word.startswith(("-std=", "--std=")):
+            chosen = word
+    value = chosen.split("=", 1)[1] if chosen and "=" in chosen else chosen
+    return chosen if value in ("-ansi", "c++98", "c++03", "gnu++98", "gnu++03") else None
+
+
 def replay_environment(scratch):
     """The environment of a unit's replay: Peeky's own. None of what may add options or
     header paths (CCC_*, CL, _CL_, CPATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH,
@@ -747,13 +941,27 @@ def _marked(text, at, root):
     return f"line {line}"
 
 
-def replay(judged, compiler, env, scratch, root, timeout, probed=None):
+@dataclass(frozen=True)
+class Pending:
+    """A unit whose text the build's record of its macros may prove readable: ``why`` it
+    can't be read otherwise (TEXT_UNREAD's)."""
+
+    why: str
+
+
+def replay(judged, compiler, env, scratch, root, timeout, probed=None, record=None):
     """The UnitText of ``judged`` (a read unit), or why it can't be read: its
     preprocessing replayed (`-E`, with its dependencies) by ``compiler``, in its
     compilation directory, with the options replay_arguments passes and
     `--no-default-config`. Every file it reads must be one the unit's line table names
     (and so checked against its MD5): a header of macros alone is named only with
-    `-fdebug-macro`."""
+    `-fdebug-macro`. Its probes must be proven (``_unproven_probe``).
+
+    Where all that isn't so is what the build's record of its macros may prove, a
+    Pending, unless ``record`` is that record (native_macros.build_records'). Then the
+    preprocessing is replayed with `-dD` too, and must leave the same record; the line
+    table must name only files it read; and each probe's group must be settled
+    (native_macros.unsettled)."""
     unit, name = judged.unit, judged.name
 
     def unread(why):
@@ -767,6 +975,11 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         return unread(str(exc))
     if (defined := _defined_probe(arguments)) is not None:
         return unread(defined)
+    if judged.language == "cpp" and (older := _before_cxx11(judged.words)) is not None:
+        return unread(
+            f"its command uses {older}: Peeky reads C++ as C++11 and later do (raw strings, "
+            "`<::` as `<` and `::`)"
+        )
     if unit.sysroot and not any(
         word in ("-isysroot", "--sysroot") or word.startswith("--sysroot=") for word in arguments
     ):
@@ -779,27 +992,13 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         output, depends, errors = work / "unit.i", work / "unit.d", work / "errors.txt"
         argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-v", "-MD", "-MF"]
         argv += [str(depends), arguments[-1], "-o", str(output)]
-        with errors.open("wb") as stderr:
-            process = subprocess.Popen(
-                argv,
-                cwd=comp_dir,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=stderr,
-                stderr=stderr,
-                start_new_session=True,
-            )
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=5)
-                return unread(f"its preprocessing took over {timeout:.0f} s")
+        started = time.monotonic()
+        status = _preprocess(argv, comp_dir, env, timeout, errors)
+        if status is None:
+            return unread(f"its preprocessing took over {timeout:.0f} s")
         with errors.open("rb") as diagnostics:
             said = diagnostics.read(MAX_REPLAY_ERRORS).decode("utf-8", "replace")
-        if process.returncode:
+        if status:
             first = next((line for line in said.split("\n") if "error" in line), said)
             return unread(f"its preprocessing failed: {' '.join(first.split())[:200]}")
         if not output.is_file() or output.stat().st_size > MAX_UNIT:
@@ -820,24 +1019,33 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         settings = {
             os.path.realpath(posixpath.join(comp_dir, value, "SDKSettings.json")) for value in roots
         }
-        reads = []
+        reads, unnamed = [], []
         for path in read:
             real = os.path.realpath(path)
             if real in settings:
                 continue
             if real not in named:
-                return unread(
-                    f"its preprocessing reads {_shown(real, root)}, which its line table "
-                    "doesn't name (-fdebug-macro names each header, on Linux)"
-                )
-            if Path(real).is_relative_to(root):
+                unnamed.append(real)
+            elif Path(real).is_relative_to(root):
                 reads.append(Path(real).relative_to(root).as_posix())
         inputs = [path for path in read if os.path.realpath(path) not in settings]
-        unproven = _unproven_probe(
-            inputs, _search_lists(said), root, {} if probed is None else probed
-        )
-        if unproven is not None:
-            return unread(unproven)
+        lists = _search_lists(said)
+        probed = {} if probed is None else probed
+        trigraphs = trigraphs_on(judged.words, judged.language == "cpp")
+        issues = _unproven_probe(inputs, lists, root, probed, unnamed, named, None, trigraphs)
+        if issues and not all(issue.provable or issue.hidden for issue in issues):
+            return unread(next(each for each in issues if not (each.provable or each.hidden)).why)
+        if issues and record is None:
+            return Pending(unread(issues[0].why))
+        if issues:
+            argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-dD"]
+            argv += [arguments[-1], "-o", str(work / "unit.dd")]
+            left = timeout - (time.monotonic() - started)
+            reals = {os.path.realpath(each) for each in read}
+            facts = (inputs, lists, probed, unnamed, named, reals, trigraphs)
+            why = _proven(issues[0].why, record, argv, env, comp_dir, left, root, facts)
+            if why is not None:
+                return unread(why)
         own = set(reads)
 
         def program(path):
@@ -874,21 +1082,91 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def replay_units(read, compiler, scratch, root, deadline):
+def _preprocess(argv, cwd, env, timeout, errors):
+    """The exit status of ``argv``, run in ``cwd`` with ``env``, its output and diagnostics
+    to the file ``errors``; None where it took over ``timeout`` seconds, killed."""
+    with errors.open("wb") as stderr:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stderr,
+            stderr=stderr,
+            start_new_session=True,
+        )
+        try:
+            return process.wait(timeout=max(timeout, 0.1))
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            return None
+
+
+def _proven(why, record, argv, env, comp_dir, timeout, root, facts):
+    """None where the build's record of its macros (``record``) proves the replay's
+    probes; else why not, after ``why``: the preprocessing replayed with `-dD` (``argv``,
+    in ``comp_dir``) must leave the same record, the line table must name only files the
+    replay read, and each probe left (``_unproven_probe`` of ``facts``, given the files the
+    replay entered) must be settled."""
+    inputs, lists, probed, unnamed, named, reals, trigraphs = facts
+    dumped = Path(argv[-1])
+    errors = dumped.with_suffix(".errors")
+    status = _preprocess(argv, comp_dir, env, timeout, errors)
+    if status is None:
+        return f"{why}; its preprocessing with -dD, to check the build's record, took too long"
+    if status or not dumped.is_file():
+        return f"{why}; its preprocessing with -dD, to check the build's record, failed"
+    if dumped.stat().st_size > 4 * MAX_UNIT:
+        return f"{why}; its preprocessing with -dD is over {4 * MAX_UNIT >> 20} MiB"
+    with dumped.open(encoding="utf-8", errors="replace") as lines:
+        replayed, entered = native_macros.replay_record(lines, comp_dir)
+    if replayed is None:
+        return f"{why}; Peeky can't follow the line markers of its preprocessing with -dD"
+    differs = native_macros.difference(record, replayed, lambda path: _shown(path, root))
+    if differs is not None:
+        return (
+            f"{why}; the build's record of its macros (-fdebug-macro) isn't the replay's: {differs}"
+        )
+    if missing := sorted(named - reals):
+        return (
+            f"{why}; its line table names {_shown(missing[0], root)}, which the replay doesn't read"
+        )
+    for issue in _unproven_probe(inputs, lists, root, probed, unnamed, named, entered, trigraphs):
+        if not issue.provable:
+            return issue.why
+        found = _groups(issue.path, probed).get(issue.probe.line)
+        if found is None:
+            return f"{issue.why}; Peeky finds no #if group the probe chooses a branch of"
+        if (why := native_macros.unsettled(found[0])) is not None:
+            return f"{issue.why}; {why}"
+    return None
+
+
+# What a unit whose probes the build's record of its macros may prove says without one.
+_RECORD_HINT = (
+    "; build it with -fdebug-macro, and Peeky checks it against the build's own record of "
+    "its macros"
+)
+
+
+def replay_units(read, compiler, scratch, root, deadline, records=None):
     """{unit name: UnitText, or why its text can't be read} of each unit read, replayed
     at most MAX_REPLAYS at once, while the launch's deadline leaves REPLAY_MARGIN
-    seconds."""
-    import time
-
+    seconds. A unit whose replay is Pending is replayed again with its record of macros:
+    ``records``, given the Pending units (Judged), gives {line table offset: record, or
+    why it can't be read} (native_macros.build_records)."""
     env = replay_environment(scratch)
 
-    def one(judged, probed):
+    def one(judged, probed, record=None):
         left = 15 if deadline is None else deadline - time.monotonic() - REPLAY_MARGIN
         if left <= 0:
             return TEXT_UNREAD.format(
                 unit=judged.name, why="there was no time left for it before the launch"
             )
-        return replay(judged, compiler, env, scratch, root, min(15, left), probed)
+        return replay(judged, compiler, env, scratch, root, min(15, left), probed, record)
 
     # Peeky reads a unit's text by its file's name: units built from one file with other
     # commands (`-D`s) would have one's text stand for all.
@@ -912,6 +1190,36 @@ def replay_units(read, compiler, scratch, root, deadline):
         texts.update(
             zip(
                 (each.name for each in replayed), pool.map(lambda each: one(each, probed), replayed)
+            )
+        )
+        pending = [each for each in replayed if isinstance(texts[each.name], Pending)]
+        found = {}
+        if pending and records is not None:
+            try:
+                found = records(pending)
+            except (*SYMBOL_FAILURES, OSError, ValueError) as exc:
+                said = f"; Peeky can't read the build's record of its macros ({exc})"
+                found = {each.unit.stmt_list: said for each in pending}
+        again = []
+        for each in pending:
+            record = found.get(each.unit.stmt_list)
+            if isinstance(record, list):
+                again.append((each, record))
+                continue
+            why = texts[each.name].why
+            if record is None:
+                asked = [word for word in each.words if word.endswith("debug-macro")]
+                if asked and asked[-1] == "-fdebug-macro":
+                    why += "; Peeky finds no record of its macros in the binary"
+                elif sys.platform == "linux":
+                    why += _RECORD_HINT
+            else:
+                why += record if record.startswith(";") else f"; {record}"
+            texts[each.name] = why
+        texts.update(
+            zip(
+                (each.name for each, _ in again),
+                pool.map(lambda pair: one(pair[0], probed, pair[1]), again),
             )
         )
     return texts
@@ -1729,6 +2037,208 @@ class BinaryTarget:
             raise _refused("INVALID_REQUEST", f"No binary {self.binary} in {root}")
         return path
 
+    def _judge(
+        self, root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, hashed=True
+    ):
+        """The binary's units, each judged, and the files those Peeky reads name, each
+        checked against its MD5 ({absolute path: SHA-256}); on macOS, through the dSYM
+        Peeky makes in ``scratch``. Unless ``hashed`` (a listing), no file is hashed: the
+        files are None, and the debug map's objects are checked by their stat identities,
+        and the dSYM's files not at all."""
+        version = _version_line(compiler)
+        symbols, dsym = binary, ()
+        if sys.platform == "darwin":
+            bundle = scratch / f"{binary.name}.dSYM"
+            # dsymutil reads the debug information from the objects the binary's debug map
+            # names, as they are now: each must be the one linked, before and after.
+            try:
+                entries = debug_map(binary)
+            except ValueError as exc:
+                raise _refused(
+                    "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
+                ) from None
+            objects = check_debug_map(entries, root, binary, hashed, deadline)
+            said = _run(
+                [tools[-1], str(binary), "-o", str(bundle)],
+                scratch,
+                env,
+                _remaining(deadline, 40),
+                "dsymutil",
+            )
+            if warned := next(
+                (line.strip() for line in said.split("\n") if "warning" in line.lower()), None
+            ):
+                raise BinaryChanged(
+                    "Provenance: the binary's objects may not be what it was linked from: "
+                    f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
+                    "again"
+                )
+            if check_debug_map(debug_map(binary), root, binary, hashed, deadline) != objects:
+                raise BinaryChanged(
+                    "Provenance: an object the binary's debug map names changed while "
+                    "dsymutil read it"
+                )
+            symbols = bundle / "Contents/Resources/DWARF" / binary.name
+            if not symbols.is_file():
+                raise _refused(
+                    "UNSUPPORTED",
+                    f"{shown} has no debug information (dsymutil found none): rebuild with -g",
+                )
+            # A listing keeps no dSYM: nothing of it is hashed.
+            dsym = (
+                tuple(
+                    FileIdentity(item.relative_to(scratch).as_posix(), sha256_file(item), 0)
+                    for item in sorted(bundle.rglob("*"))
+                    if item.is_file()
+                )
+                if hashed
+                else ()
+            )
+        index = _metadata(
+            dwarfdump,
+            ["--debug-info", "--recurse-depth=0", str(symbols)],
+            scratch,
+            env,
+            max_bytes=16 * 1024 * 1024,
+            timeout=_remaining(deadline),
+        )
+        units = read_units(index)
+        if not units:
+            raise _refused(
+                "UNSUPPORTED", f"{shown} has no debug information: rebuild with -g -gdwarf-5"
+            )
+        for unit in units:
+            if unit.tag != "DW_TAG_compile_unit" or unit.dwo_name:
+                # As the whole read refuses them (native.ForeignUnits), and before it.
+                kind = "DW_UT_skeleton" if unit.dwo_name else _FOREIGN_TAGS.get(unit.tag, unit.tag)
+                raise _foreign(kind, unit.offset, unit.dwo_name)
+        headers = LineFiles()
+        with _symbol_text(
+            dwarfdump,
+            [["--debug-line", str(symbols)]],
+            scratch,
+            env,
+            limit=MAX_LINE_TEXT,
+            timeout=_remaining(deadline),
+            what="line tables",
+        ) as lines:
+            headers.feed(lines)
+        tables = headers.close()
+        judged = tuple(judge(unit, tables, version, root, self.optimized) for unit in units)
+        read = [each for each in judged if each.read]
+        if not read:
+            raise _refused("UNSUPPORTED", _none_read(shown, judged))
+        languages = {each.language for each in read}
+        language = self.language or ("cpp" if "cpp" in languages else "c")
+        if language == "c" and "cpp" in languages:
+            raise _refused(
+                "INVALID_REQUEST",
+                f"{shown}'s units include C++ ones ("
+                + ", ".join(each.name for each in read if each.language == "cpp")[:200]
+                + '): set "language": "cpp"',
+            )
+        files = check_files(read, root) if hashed else None
+        return SimpleNamespace(
+            version=version,
+            symbols=symbols,
+            dsym=dsym,
+            units=units,
+            judged=judged,
+            read=read,
+            language=language,
+            files=files,
+            tables=tables,
+        )
+
+    def remote_inputs(self, root):
+        """The files under ``root`` a remote client's copies are compared with: those the
+        units Peeky reads name, by their relative names, as the binary is now. Listed once
+        per binary (cached by its size, time and inode), one listing at a time: another
+        caller waits for it, or is BUSY. Within REMOTE_INPUTS_SECONDS, and Python's bounds
+        (sources.MAX_PYTHON_INPUTS files, MAX_PYTHON_BYTES in all), checked before any file
+        is read: no file is hashed (preparation checks each against its MD5). UNSUPPORTED
+        past them, as for a binary Peeky doesn't read."""
+        root = Path(root).resolve(strict=True)
+        binary = self.located(root)
+        shown = binary.relative_to(root).as_posix()
+        _executable(binary, shown)
+        info = binary.stat()
+        key = (str(binary), str(root), info.st_size, info.st_mtime_ns, info.st_ino, self)
+        if key in _REMOTE_INPUTS:
+            return _REMOTE_INPUTS[key]
+        if not _LISTING.acquire(timeout=REMOTE_INPUTS_SECONDS):
+            raise Refused(
+                "BUSY",
+                f"The worker is still listing {shown}'s files for another client: nothing ran",
+                "Retry in a moment: the worker lists a binary's files once, then answers at once.",
+            )
+        try:
+            if key not in _REMOTE_INPUTS:
+                names = self._list_inputs(root, binary, shown)
+                _REMOTE_INPUTS.clear()
+                _REMOTE_INPUTS[key] = names
+            return _REMOTE_INPUTS[key]
+        finally:
+            _LISTING.release()
+
+    def _list_inputs(self, root, binary, shown):
+        from peeky.sources import MAX_PYTHON_BYTES, MAX_PYTHON_INPUTS
+
+        compiler, dwarfdump = _tool(self.compiler), _tool(self.dwarfdump)
+        tools = [compiler, dwarfdump]
+        if sys.platform == "darwin":
+            tools.append(_tool(self.dsymutil or "dsymutil"))
+        elif sys.platform != "linux":
+            raise ValueError("Native targets support Linux and macOS hosts only")
+        env = without_credentials(
+            {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+        )
+        deadline = time.monotonic() + REMOTE_INPUTS_SECONDS
+        scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
+        try:
+            found = self._judge(
+                root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, False
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        names = sorted(
+            {
+                Path(path).relative_to(root).as_posix()
+                for each in found.read
+                for path, _ in each.files
+                if Path(path).is_relative_to(root)
+            }
+        )
+
+        def refused(size):
+            return Refused(
+                "UNSUPPORTED",
+                f"{shown}'s units name {len(names):,} files under the target directory"
+                + (f" ({size / (1 << 20):.1f} MiB or more)" if size is not None else "")
+                + f". A worker compares at most {MAX_PYTHON_INPUTS:,} files, "
+                f"{MAX_PYTHON_BYTES >> 20} MiB in all, with a remote client's copies: run Peeky "
+                "on the binary's own host",
+                "Nothing ran. Run Peeky on the binary's own host, where no file is compared "
+                "with a client's.",
+            )
+
+        if len(names) > MAX_PYTHON_INPUTS:
+            raise refused(None)
+        size = 0
+        for name in names:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Listing {shown}'s files took over {REMOTE_INPUTS_SECONDS} s: nothing ran"
+                )
+            try:
+                size += (root / name).stat().st_size
+            except OSError:
+                # Preparation refuses it, by name, as gone.
+                continue
+            if size > MAX_PYTHON_BYTES:
+                raise refused(size)
+        return tuple(names)
+
     def prepare(self, program, root, *, edit=None, deadline=None):
         if edit is not None:
             raise _refused(
@@ -1789,94 +2299,9 @@ class BinaryTarget:
     ):
         identity_before = sha256_file(binary)
         tool_ids = tuple(ToolIdentity(tool, sha256_file(tool)) for tool in sorted(set(tools)))
-        version = _version_line(compiler)
-        symbols, dsym = binary, ()
-        if sys.platform == "darwin":
-            bundle = scratch / f"{binary.name}.dSYM"
-            # dsymutil reads the debug information from the objects the binary's debug map
-            # names, as they are now: each must be the one linked, before and after.
-            try:
-                entries = debug_map(binary)
-            except ValueError as exc:
-                raise _refused(
-                    "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
-                ) from None
-            objects = check_debug_map(entries, root, binary)
-            said = _run(
-                [tools[-1], str(binary), "-o", str(bundle)],
-                scratch,
-                env,
-                _remaining(deadline, 40),
-                "dsymutil",
-            )
-            if warned := next(
-                (line.strip() for line in said.split("\n") if "warning" in line.lower()), None
-            ):
-                raise BinaryChanged(
-                    "Provenance: the binary's objects may not be what it was linked from: "
-                    f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
-                    "again"
-                )
-            if check_debug_map(debug_map(binary), root, binary) != objects:
-                raise BinaryChanged(
-                    "Provenance: an object the binary's debug map names changed while "
-                    "dsymutil read it"
-                )
-            symbols = bundle / "Contents/Resources/DWARF" / binary.name
-            if not symbols.is_file():
-                raise _refused(
-                    "UNSUPPORTED",
-                    f"{shown} has no debug information (dsymutil found none): rebuild with -g",
-                )
-            dsym = tuple(
-                FileIdentity(item.relative_to(scratch).as_posix(), sha256_file(item), 0)
-                for item in sorted(bundle.rglob("*"))
-                if item.is_file()
-            )
-        index = _metadata(
-            dwarfdump,
-            ["--debug-info", "--recurse-depth=0", str(symbols)],
-            scratch,
-            env,
-            max_bytes=16 * 1024 * 1024,
-            timeout=_remaining(deadline),
-        )
-        units = read_units(index)
-        if not units:
-            raise _refused(
-                "UNSUPPORTED", f"{shown} has no debug information: rebuild with -g -gdwarf-5"
-            )
-        for unit in units:
-            if unit.tag != "DW_TAG_compile_unit" or unit.dwo_name:
-                # As the whole read refuses them (native.ForeignUnits), and before it.
-                kind = "DW_UT_skeleton" if unit.dwo_name else _FOREIGN_TAGS.get(unit.tag, unit.tag)
-                raise _foreign(kind, unit.offset, unit.dwo_name)
-        headers = LineFiles()
-        with _symbol_text(
-            dwarfdump,
-            [["--debug-line", str(symbols)]],
-            scratch,
-            env,
-            limit=MAX_LINE_TEXT,
-            timeout=_remaining(deadline),
-            what="line tables",
-        ) as lines:
-            headers.feed(lines)
-        tables = headers.close()
-        judged = tuple(judge(unit, tables, version, root, self.optimized) for unit in units)
-        read = [each for each in judged if each.read]
-        if not read:
-            raise _refused("UNSUPPORTED", _none_read(shown, judged))
-        languages = {each.language for each in read}
-        language = self.language or ("cpp" if "cpp" in languages else "c")
-        if language == "c" and "cpp" in languages:
-            raise _refused(
-                "INVALID_REQUEST",
-                f"{shown}'s units include C++ ones ("
-                + ", ".join(each.name for each in read if each.language == "cpp")[:200]
-                + '): set "language": "cpp"',
-            )
-        files = check_files(read, root)
+        found = self._judge(root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline)
+        symbols, dsym, units = found.symbols, found.dsym, found.units
+        judged, read, language, files = found.judged, found.read, found.language, found.files
         declared = tuple(
             sorted(
                 {
@@ -1908,7 +2333,28 @@ class BinaryTarget:
                 "UNSUPPORTED",
                 f"{shown} has no build ID Peeky can read ({exc}): link it with {flag}",
             ) from None
-        texts = replay_units(read, compiler, scratch, root, deadline)
+
+        def records(pending):
+            # Each pending unit's line table's files, resolved, by index.
+            files = {}
+            for each in pending:
+                table = found.tables[each.unit.stmt_list]
+                paths = {index: table.path(index, each.unit.comp_dir) for index in table.files}
+                files[each.unit.stmt_list] = {
+                    index: os.path.realpath(path) for index, path in paths.items() if path
+                }
+            with _symbol_text(
+                dwarfdump,
+                [["--debug-macro", str(symbols)]],
+                scratch,
+                env,
+                limit=MAX_DEBUG_INFO,
+                timeout=_remaining(deadline),
+                what="records of macros",
+            ) as lines:
+                return native_macros.build_records(lines, files)
+
+        texts = replay_units(read, compiler, scratch, root, deadline, records)
         any_call = None
         if self.returns_twice is None:
             # The toolchain's own environment, never the program's (``env``).
@@ -2019,6 +2465,31 @@ class BinaryTarget:
         return session
 
 
+# How many of the debugger's modules a frame's library is looked for among.
+MAX_MODULES = 1024
+
+
+def _segments_hold(module, address):
+    """Whether the debugger's ``module``, an ELF file loaded where its `addressRange`
+    says (its header's address: decimal from LLVM 18's lldb-dap, hex from later ones),
+    holds ``address`` in an executable segment of its file as it is now."""
+    path, loaded = module.get("path"), module.get("addressRange")
+    if not isinstance(path, str) or not isinstance(loaded, str):
+        return False
+    if re.fullmatch(r"0x[0-9a-fA-F]{1,16}", loaded):
+        base = int(loaded, 16)
+    elif re.fullmatch(r"[0-9]{1,20}", loaded):
+        base = int(loaded)
+    else:
+        return False
+    try:
+        header, ranges = elf_executable_ranges(path)
+    except (OSError, ValueError, struct.error):
+        return False
+    bias = base - header
+    return bias >= 0 and any(start + bias <= address < end + bias for start, end in ranges)
+
+
 def _run(argv, cwd, env, timeout, what):
     """Runs ``argv``; what it wrote (its output and diagnostics), or RuntimeError."""
     try:
@@ -2092,17 +2563,20 @@ def debug_map(binary):
     return found
 
 
-def _members(archive):
-    """{member name: [its modification times]} of a BSD or System V `ar` archive."""
+def _members(archive, deadline=None):
+    """{member name: [its modification times]} of a BSD or System V `ar` archive; read
+    within ``deadline`` (time.monotonic()), where one is given: TimeoutError past it."""
     found = {}
     with open(archive, "rb") as stream:
         if stream.read(8) != b"!<arch>\n":
             raise ValueError("not an ar archive")
         size = os.fstat(stream.fileno()).st_size
         at = 8
-        for _ in range(MAX_MEMBERS):
+        for count in range(MAX_MEMBERS):
             if at >= size:
                 return found
+            if deadline is not None and count % 4096 == 0 and time.monotonic() > deadline:
+                raise TimeoutError(f"Reading {archive}'s members ran past Peeky's deadline")
             stream.seek(at)
             header = stream.read(60)
             if len(header) != 60 or header[58:60] != b"`\n":
@@ -2117,9 +2591,12 @@ def _members(archive):
     raise ValueError("too many members")
 
 
-def check_debug_map(entries, root, binary):
-    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name, each
-    checked by the linker's timestamps, as LLDB and dsymutil check them: there, with the
+def check_debug_map(entries, root, binary, hashed=True, deadline=None):
+    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name (where not
+    ``hashed``, its size, modification time and inode: nothing is read of it but an
+    archive's member headers), within ``deadline`` (time.monotonic(), where given:
+    TimeoutError past it). Each is checked by the linker's timestamps, as LLDB and
+    dsymutil check them: there, with the
     modification time the linker recorded, in seconds (an archive's member by its
     header's), and the file itself no newer than ``binary``, to the nanosecond: the linker
     wrote the binary after reading it. One rebuilt after the link, gone, or changed makes
@@ -2128,9 +2605,13 @@ def check_debug_map(entries, root, binary):
     refused (UNSUPPORTED). So is a file written in the binary's second where either time
     has no part of a second, as a filesystem keeping whole seconds gives: which came
     first can't be told."""
-    hashes, stale, unordered = {}, [], None
+    hashes, stale, unordered, archives = {}, [], None, {}
     linked = os.stat(binary).st_mtime_ns
     for name, moment in entries:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(
+                "Checking the objects the binary's debug map names ran past Peeky's deadline"
+            )
         member = re.fullmatch(r"(.+)\(([^()]+)\)", name)
         path = member[1] if member else name
         shown = _shown(os.path.realpath(path), Path(root))
@@ -2143,14 +2624,17 @@ def check_debug_map(entries, root, binary):
             )
         try:
             if member:
-                times = _members(path).get(member[2])
+                if path not in archives:
+                    archives[path] = _members(path, deadline)
+                times = archives[path].get(member[2])
                 if not times:
                     stale.append(f"{shown} is gone")
                     continue
                 current = moment if moment in times else times[0]
             else:
                 current = int(os.stat(path).st_mtime)
-            written = os.stat(path).st_mtime_ns
+            info = os.stat(path)
+            written = info.st_mtime_ns
             # In one second, where either time has no part of a second (it may be rounded
             # down), neither order is proven: refused as such, never as newer or older.
             ambiguous = written // 10**9 == linked // 10**9 and (
@@ -2159,7 +2643,12 @@ def check_debug_map(entries, root, binary):
             newer = not ambiguous and written > linked
             if ambiguous:
                 unordered = unordered or _shown(os.path.realpath(path), Path(root))
-            hashes[path] = sha256_file(path)
+            hashes[path] = (
+                sha256_file(path) if hashed else (info.st_size, info.st_mtime_ns, info.st_ino)
+            )
+        except TimeoutError:
+            # An OSError too, but the deadline's: nothing is known of the file.
+            raise
         except (OSError, ValueError):
             stale.append(f"{shown} is gone or unreadable")
             continue
@@ -2266,6 +2755,57 @@ class BinarySession(NativeSession):
             "family": list(RETURNS_TWICE_NAMES),
             "named": sorted(getattr(self, "returns_twice", None) or ()),
         }
+
+    def library_frame(self, dap, frame):
+        """Why nothing of ``frame`` is read where it runs a shared library, never the
+        binary (library_path): `this frame runs <library>; Peeky reads only <binary>'s own
+        units`. None where it runs the binary's code, or which module it runs can't be told."""
+        shown = self.library_path(dap, frame)
+        if shown is None:
+            return None
+        binary = self.prepared.manifest.binary.path
+        return f"this frame runs {shown}; Peeky reads only {binary}'s own units"
+
+    def library_path(self, dap, frame):
+        """The shared library ``frame`` runs, where the debugger's modules prove it runs
+        one, never the binary: its path, relative to the root where it is under it. Its
+        module is the frame's moduleId where the debugger gives one (macOS); else, on Linux
+        (LLVM 18's lldb-dap gives none), the one module whose loaded executable segments
+        hold the frame's address. None where the frame runs the binary's code, or which
+        module it runs can't be told."""
+        try:
+            listed = dap.request("modules", {"startModule": 0, "moduleCount": MAX_MODULES})
+        except (RuntimeError, TimeoutError, ValueError, OSError):
+            return None
+        modules = [each for each in (listed or {}).get("modules") or () if isinstance(each, dict)]
+        if "moduleId" in frame:
+            found = [each for each in modules if each.get("id") == frame["moduleId"]]
+        elif sys.platform == "linux":
+            address = (frame or {}).get("instructionPointerReference")
+            if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", address):
+                return None
+            found = [each for each in modules if _segments_hold(each, int(address, 16))]
+        else:
+            return None
+        if len(found) != 1 or self._own_module(found[0]):
+            return None
+        path = found[0].get("path")
+        if not isinstance(path, str) or not path or "\n" in path:
+            return None
+        root = self.prepared.source_root
+        shown = Path(path).relative_to(root).as_posix() if Path(path).is_relative_to(root) else path
+        return shown[:500]
+
+    def _own_module(self, module):
+        """Whether the debugger's ``module`` is the binary: by its build ID or UUID, or by
+        its path."""
+        identity = module.get("id")
+        if isinstance(identity, str) and identity.replace("-", "").upper() == self.module_identity:
+            return True
+        try:
+            return Path(module["path"]).resolve(strict=True) == self.binary
+        except (OSError, KeyError, TypeError, ValueError, RuntimeError):
+            return False
 
     def _holding(self, address):
         return [

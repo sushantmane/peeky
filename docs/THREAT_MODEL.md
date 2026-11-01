@@ -49,6 +49,27 @@ Peeky is not:
   only to report where they lead.
 - A request to a worker can't name an interpreter. Only the worker's `--python` and its root do.
 
+**A Rust workspace's build (ADR 0008, phase 2)**
+
+- Build scripts and procedural macros, the workspace's and its dependencies', are the project's
+  code, as the program is. `peeky build` runs them as `cargo build` does, with your permissions,
+  in no sandbox. Build only workspaces you trust.
+- Dependencies are taken as sound, as the standard library is. Their code isn't read, and unsafe
+  code their macros write counts as theirs. A dependency that breaks Rust's rules can defeat
+  Peeky's proofs.
+- Each vendored copy must hold exactly the files its `.cargo-checksum.json` lists, with those
+  hashes, and give `Cargo.lock`'s checksum. That proves what `cargo vendor` wrote, unless the
+  checksum file was edited to match. It authenticates nothing beyond `Cargo.lock`.
+- `RUSTC_BOOTSTRAP` is set for the analysed crates' compiles alone. A procedural macro runs in
+  that rustc, and could read it. So the build refuses an analysed crate, or a local procedural
+  macro, whose sources mention it, or whose compile records a read of it.
+- Cargo configuration in the workspace and above it, `~/.cargo/config.toml` included, is accepted
+  only under an allowlist. Each file is recorded by path and SHA-256: a change is
+  `PROVENANCE_CHANGED`.
+- A worker builds only from its own `--rust-config`. A client's `build` names no tool, path, flag
+  or configuration. Still, anyone with the worker's token can make it build, and so run the
+  project's build scripts on its host.
+
 **The worker proves it holds the token (protocol 11)**
 
 - A client sends a worker nothing, and not the token, before the worker answers its `hello`.
@@ -114,6 +135,33 @@ directory such as `/tmp`. Peeky defends against them:
 
 A process running as the same user, or as root, isn't covered.
 
+**A binary your project built** ([ADR 0008](adr/0008-native-project-reach.md#phase-1-a-binary-the-project-built-c-and-c))
+
+- It is the project's own code, as its sources are, and runs as the program does. So do the shared
+  libraries it loads. Peeky reads no frame of theirs, even one built from sources under the root.
+- A worker takes it only from its own `--native-config`. A request names no binary, tool, path or
+  flag. Anyone holding the worker's token can run that binary, with the arguments a request gives,
+  as for any target.
+- The worker runs only the config's tools. The compiler runs only for its `--version` and the
+  replay of a unit's preprocessing, with allowlisted flags. The worker builds nothing.
+- Each file a judged unit names is checked against its recorded MD5 before launch, and its SHA-256
+  before every operation, with the binary's. These catch accidental change, not a collision made on
+  purpose by someone who can write the project's files.
+- A remote client's copies are compared with the files under the root, at most 4096 files and
+  16 MiB in all. Headers outside the root aren't compared with a client's: the worker checks them
+  against their MD5s.
+- To list those files (`inputs`), the worker reads the binary's debug information with
+  llvm-dwarfdump, and on macOS makes a dSYM with dsymutil. Any client holding the token can make
+  it do so. One listing runs at a time: another request waits for it, or is `BUSY`. The list is
+  kept until the binary's size, time or inode changes. `version` reads nothing of the binary.
+- A listing hashes no file. On macOS, the objects the debug map names are checked by their
+  timestamps and stat identities, an archive by its members' headers, and the dSYM not at all.
+  The 4096 files and 16 MiB are counted from the line tables, by `stat`, before any of those
+  files is read. Preparing a run then hashes each, and checks it against its MD5.
+- Each step of a listing stops at its 40 s deadline: the tools, the debug map's objects and
+  archives, and the count. The debug map itself is read whole first, as the binary's symbol table
+  holds it, at most 16 Mi symbols.
+
 **Target memory and source**
 
 - They can contain secrets.
@@ -165,7 +213,8 @@ A process running as the same user, or as root, isn't covered.
     operation.
 - Cargo's own configuration isn't a file the compiler reads. Before each Cargo command, Peeky
   refuses a `.cargo/config.toml`, `.cargo/config` or `Cargo.toml` in any directory above the
-  build. It also refuses any of those directories that another user can write.
+  build. It also refuses any of those directories that another user can write. A workspace's
+  build instead records each such configuration file, under its allowlist (above).
 - Cargo runs with `RUSTC_WRAPPER` set empty, so no configured `build.rustc-wrapper` runs. A file
   that the same user adds between that check and Cargo's read isn't caught.
 - A Java adapter bundle's `adapter.json` lists its files' hashes, so it vouches only for itself.

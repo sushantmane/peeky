@@ -61,6 +61,7 @@ MAX_HISTORY_ENTRY_BYTES = 256_000
 
 OPERATIONS = frozenset(
     {
+        "build",
         "launch",
         "wait",
         "inspect",
@@ -75,6 +76,7 @@ OPERATIONS = frozenset(
         "probe",
         "shutdown",
         "version",
+        "inputs",
         "hello",
     }
 )
@@ -1068,14 +1070,22 @@ class DebugWorker:
             return crash, crashed
         if not frames:
             return crash, crashed
-        crash["outside_program"] = not _inside_program(runtime, frames[0])
+        crash["outside_program"] = (
+            not _inside_program(runtime, frames[0])
+            or self.library_refusal(runtime, frames[0], 0) is not None
+        )
         names = [str(frame.get("name") or "") for frame in frames]
         thrown = next((i for i, name in enumerate(names) if "__cxa_throw" in name), None)
         if thrown is not None and any("terminate" in name for name in names[:thrown]):
             # A `noexcept` function's terminate leaves no `__cxa_throw` on the stack.
             crash["uncaught_exception"] = True
         for index, frame in enumerate(frames[:MAX_FRAMES]):
-            if _inside_program(runtime, frame):
+            # A shared library's frame is no code of a binary target's own, even where
+            # its sources are under the root.
+            if (
+                _inside_program(runtime, frame)
+                and self.library_refusal(runtime, frame, index) is None
+            ):
                 runtime.validate_stop(frame)
                 if validate_debugger := getattr(runtime, "validate_debugger", None):
                     validate_debugger(self.dap, frame)
@@ -1105,6 +1115,32 @@ class DebugWorker:
             return None
         caught, ignored = masks
         return not any((caught | ignored) >> (int(number) - 1) & 1 for number in numbers)
+
+    def library_of(self, runtime, frame):
+        """The shared library ``frame`` runs, by its path, where the runtime reads only its
+        binary's own units (native_binary.BinarySession.library_path); else None."""
+        check = getattr(runtime, "library_path", None)
+        return None if check is None or self.dap is None else check(self.dap, frame)
+
+    def library_refusal(self, runtime, frame, index):
+        """The UNSUPPORTED refusal of ``frame`` (frame ``index`` of the stop) where it runs
+        a shared library, and the runtime reads only its binary's own units
+        (native_binary.BinarySession.library_frame); else None."""
+        check = getattr(runtime, "library_frame", None)
+        if check is None or self.dap is None:
+            return None
+        why = check(self.dap, frame)
+        if why is None:
+            return None
+        from peeky.errors import Refused
+
+        name = str(frame.get("name") or "?")[:200]
+        return Refused(
+            "UNSUPPORTED",
+            f"Nothing in frame {index} ({name}) is read: {why}",
+            "Nothing of that frame is read, and the session is kept. Read a frame of the "
+            "binary's own code (`session inspect` lists the stack), or step out to one.",
+        )
 
     def crash_refusal(self, frame, index):
         """Why nothing of ``frame``, outside the program's sources, is read at an
@@ -2387,7 +2423,7 @@ class DebugWorker:
                     )
             # And every other source the target reads: what this worker's trusted
             # target names, or every .py file under the root for Python.
-            inputs_checked = inputs_python = None
+            inputs_checked = inputs_python = remote_inputs = deferred = None
             self.accepted_sources = self.foreign_frame = self.remote_names = None
             self.installed_sources = {}
             if (expected_inputs := args.get("expect_inputs")) is not None:
@@ -2400,17 +2436,19 @@ class DebugWorker:
                     worker_sources,
                 )
 
-                if not getattr(self.adapter, "compares_remote_sources", True):
-                    raise ValueError(
-                        "A worker doesn't probe a Rust workspace for a remote client yet: it "
-                        "would compare none of the workspace's files with yours. Run Peeky on the "
-                        "workspace's own host"
-                    )
-                own = worker_sources(self.adapter, self.root)
-                if what := difference(expected_inputs, own):
-                    raise ValueError(refusal(what))
+                # A binary target's are the files its judged units name: compared once
+                # its preparation has judged them (below), before anything runs.
+                deferred = getattr(self.adapter, "remote_inputs", None) is not None
+                if deferred:
+                    own = {}
+                else:
+                    own = worker_sources(self.adapter, self.root)
+                    # A Rust workspace's are compared by their links and entries too.
+                    kinds = getattr(self.adapter, "compared_trees", None) is not None
+                    if what := difference(expected_inputs, own, structured=kinds):
+                        raise ValueError(refusal(what))
                 hashed = {}
-                if declared(self.adapter) is None:
+                if not deferred and declared(self.adapter, self.root) is None:
                     from peeky.sources import in_environment
 
                     # Python: what runs first must be among the files compared. One in a
@@ -2500,8 +2538,22 @@ class DebugWorker:
                     # request: a source changed after the check above is refused.
                     from peeky.sources import difference, refusal
 
-                    if what := difference(expected_inputs, built):
+                    if (uncompared := getattr(runtime, "remote_refusal", None)) and (
+                        why := uncompared()
+                    ):
+                        raise ValueError(why)
+                    # A Rust workspace's: each file's contents as the build recorded them,
+                    # in the shape the disk has, and each watched directory's entries.
+                    kinds = (identities := getattr(runtime, "remote_identities", None)) is not None
+                    if kinds:
+                        built = remote_inputs = identities()
+                    if what := difference(expected_inputs, built, structured=kinds):
                         raise RuntimeError(refusal(what))
+                elif expected_inputs is not None and deferred:
+                    raise RuntimeError(
+                        "Worker source provenance is unconfirmed: the binary's run named no "
+                        "files to compare with yours; the debugger's launch request was not sent"
+                    )
                 if inputs_python is not None:
                     self.accepted_sources = {**own, **self.installed_sources}
                 staged = Path(runtime.source_path(program)) if edit else None
@@ -2658,11 +2710,17 @@ class DebugWorker:
                         if isinstance(build := getattr(runtime, "build_id", None), str)
                         else {}
                     ),
-                    "source_manifest": getattr(runtime, "source_manifest", None),
+                    "source_manifest": remote_inputs
+                    if remote_inputs is not None
+                    else getattr(runtime, "source_manifest", None),
                     **({"inputs_checked": inputs_checked} if inputs_checked else {}),
                     **(
                         {"inputs_sha256": inputs_sha256}
-                        if (inputs_sha256 := inputs_python or self.built_digest(runtime))
+                        if (
+                            inputs_sha256 := inputs_python
+                            or (digest(remote_inputs) if remote_inputs is not None else None)
+                            or self.built_digest(runtime)
+                        )
                         else {}
                     ),
                     "target_identity": identity,
@@ -2912,6 +2970,23 @@ class DebugWorker:
                     "cannot be read"
                 )
             selected_frame = frames[index]
+            # A step's or a crash's stop outside the program's sources says so its own way
+            # (what the step's function returned; the nearest frame of your code).
+            stop_outside = index == 0 and (
+                (
+                    self.stop_reason in STEP_STOPS
+                    and not _in_program_sources(runtime, selected_frame, self.root)
+                )
+                or (
+                    self.stop_reason in CRASH_STOPS and not _inside_program(runtime, selected_frame)
+                )
+            )
+            if not stop_outside and (
+                refused := self.library_refusal(runtime, selected_frame, index)
+            ):
+                # A shared library a binary target doesn't read: nothing of it is read, and
+                # the session is kept.
+                raise refused
             if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
@@ -2927,6 +3002,8 @@ class DebugWorker:
                     return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
                 # The user's own step left the program (into a library, or out of main):
                 # nothing there is read or changed, and the session stays usable.
+                # A binary target names the shared library the step went into.
+                library = self.library_of(runtime, frames[0])
                 raise ValueError(
                     (
                         "Another thread's stop interrupted the step"
@@ -2934,6 +3011,7 @@ class DebugWorker:
                         else "The step stopped"
                     )
                     + f" outside the program's sources (in {frames[0].get('name')}"
+                    + (f", in the shared library {library}" if library else "")
                     + (
                         f"), and frame {index} ({selected_frame.get('name')}) is outside them too"
                         if index
@@ -4831,6 +4909,10 @@ class DebugWorker:
                 if getattr(own, "pointer_free", False):
                     # Its type holds no pointer: its note says so.
                     output["pointer_free"] = True
+                if isinstance(reason := getattr(own, "reason", None), str):
+                    # Why, where the runtime tells it (a Rust closure's capture the MIR
+                    # leaves out).
+                    output["stale_reason"] = reason[:500]
             if isinstance(raw_reason, str) and not output.get("unavailable"):
                 output["raw_reason"] = raw_reason[:500]
             if (
@@ -7227,12 +7309,159 @@ def _inside_program(runtime, frame, *roots):
     return False
 
 
+# How long a remote `build` request waits for the build before it answers that it is still
+# running: within the client's 45 s timeout.
+BUILD_WAIT_S = 30.0
+
+
+def _left_running(error):
+    """The process group a build's ``error`` may have left running, or None: a kill or reap
+    that failed carries it (agent.execute's ``process_group``), on the error or one it
+    came from."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if (group := getattr(error, "process_group", None)) is not None:
+            return group
+        error = error.__cause__ or error.__context__
+    return None
+
+
+class _RemoteBuilds:
+    """A worker's builds of its Rust workspace for remote clients (`build`): from its own
+    `--rust-config` only, one at a time, each in a thread, so a request answers within the
+    client's timeout. A request waits up to ``wait`` seconds (at most ``BUILD_WAIT_S``):
+    then the build's summary, or its error, or `{"status": "building", "request": id}`,
+    which a later request naming that id waits on again. A request naming none starts a
+    build unless one is running, which it joins."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.current = None  # (id, thread, {"result" or "error": ...})
+        # Set by ``close``: the running build's processes are killed, and none starts.
+        self.stopping = threading.Event()
+        self.stopped = None  # the build ``close`` stopped, as ``current``
+        # Each build's error that may have left processes running (``_left_running``).
+        self.risks = []
+
+    def active(self):
+        """Whether a build runs: the worker's activity, as a request is."""
+        current = self.current
+        return current is not None and current[1].is_alive()
+
+    def close(self, timeout=30):
+        """Stop the running build, its processes killed (Cargo's process group, its build
+        scripts and rustc among it), and wait for it; no build starts after. Every way the
+        worker ends calls it: `shutdown`, SIGTERM, an idle exit, `main`'s end. None once no
+        build runs, none was stopped but as rust_build.BuildStopped says (its processes
+        killed, or none started), and no build's processes may have been left running; else
+        why not: the build still runs, or it ended otherwise, or any build's kill failed."""
+        from peeky.rust_build import BuildStopped
+
+        problems = []
+
+        with self.lock:
+            current = self.current
+            if self.stopped is None and current is not None and current[1].is_alive():
+                # The build this worker stopped: what a later call answers for too.
+                self.stopped = current
+            self.stopping.set()
+            stopped = self.stopped
+        if stopped is not None:
+            identifier, thread, outcome = stopped
+            thread.join(timeout)
+            error = outcome.get("error")
+            if thread.is_alive():
+                problems.append(
+                    f"its build is still running {timeout:g} s after the worker stopped it, and "
+                    "so may the processes it runs"
+                )
+            elif error is not None and not isinstance(error, BuildStopped):
+                if _left_running(error) is None:
+                    problems.append(
+                        "its build, stopped, ended with an error instead "
+                        f"({type(error).__name__}: {error}), so its processes may still run"
+                    )
+        with self.lock:
+            risks = list(self.risks)
+        for error, group in risks:
+            problems.append(
+                f"a build ended with {type(error).__name__}: {error}, so the processes it ran "
+                f"may still run. End them yourself: kill -KILL -- -{group}"
+            )
+        return "; ".join(problems) or None
+
+    def request(self, worker, args):
+        from peeky.rust_build import BUILD_TIMEOUT_S
+
+        worker.last_used = time.monotonic()
+        if getattr(worker.adapter, "compared_names", None) is None:
+            raise ValueError(
+                "This worker's target isn't a Rust workspace (a --rust-config naming analyse "
+                "and run): nothing to build. Its probes build what they run"
+            )
+        if set(args) - {"request", "wait"}:
+            raise ValueError("build takes only `request` (a running build's id) and `wait`")
+        wait = args.get("wait", BUILD_WAIT_S)
+        if type(wait) not in (int, float) or not 0 <= wait <= BUILD_WAIT_S:
+            raise ValueError(f"wait must be a number of seconds within [0, {BUILD_WAIT_S:g}]")
+        named = args.get("request")
+        if named is not None and not (
+            isinstance(named, str) and re.fullmatch(r"[0-9a-f]{32}", named)
+        ):
+            raise ValueError("request names a build by its 32 hex digits")
+        with self.lock:
+            current = self.current
+            if named is None and self.stopping.is_set():
+                raise RuntimeError(
+                    "The worker is shutting down, so no build starts. Start the worker again, "
+                    "then build"
+                )
+            if named is not None and (current is None or current[0] != named):
+                raise ValueError(
+                    "No such build on this worker: it ended and another started, or the "
+                    "worker restarted. Request a new build"
+                )
+            if named is None and (current is None or not current[1].is_alive()):
+                outcome = {}
+
+                def run():
+                    try:
+                        outcome["result"] = worker.adapter.build(
+                            worker.root,
+                            deadline=time.monotonic() + BUILD_TIMEOUT_S,
+                            stop=self.stopping,
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - the request reports it
+                        outcome["error"] = exc
+                        if (group := _left_running(exc)) is not None:
+                            # Whoever stopped it, or none: its processes may still run.
+                            with self.lock:
+                                self.risks.append((exc, group))
+                    finally:
+                        # Its end is activity too: the client asks for its outcome next.
+                        worker.last_used = time.monotonic()
+
+                thread = threading.Thread(target=run, name="peeky-build", daemon=True)
+                current = self.current = (uuid.uuid4().hex, thread, outcome)
+                thread.start()
+        identifier, thread, outcome = current
+        thread.join(wait)
+        worker.last_used = time.monotonic()
+        if thread.is_alive():
+            return {"status": "building", "request": identifier}
+        if "error" in outcome:
+            raise outcome["error"]
+        return dict(outcome["result"])
+
+
 def make_server(root, token, port=8765, *, adapter=None, python=None):
     """``python``: a Python worker's `--python` (python_interpreter), for its sessions
     and its probes."""
     if not isinstance(token, str) or not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
         raise ValueError(f"Token must contain {MIN_TOKEN_CHARS} to {MAX_TOKEN_CHARS} characters")
     worker = DebugWorker(root, adapter=adapter, python=python)
+    builds = _RemoteBuilds()
     probes = threading.Semaphore(1)
 
     def probe(args):
@@ -7519,19 +7748,35 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
 
                     result = {
                         "protocol": PROTOCOL_VERSION,
-                        # Which sources a client hashes for expect_inputs.
-                        "sources": describe(worker.adapter),
+                        # Which sources a client hashes for expect_inputs (a binary target's:
+                        # ask `inputs`).
+                        "sources": describe(worker.adapter, worker.root),
                         # Where its paths start: a remote client shows them as its own.
                         "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(ERROR_CODES),
                     }
+                elif operation == "build":
+                    # From the worker's own configuration only: a request names no tool,
+                    # path or flag.
+                    result = builds.request(worker, args)
+                elif operation == "inputs":
+                    from peeky.sources import listed
+
+                    # A binary target's files, which reading its debug information lists:
+                    # once per binary, one listing at a time, never under the session's lock.
+                    result = listed(worker.adapter, worker.root)
                 elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
+                    problem = builds.close()
+                    if builds.active():
+                        # It keeps running, so it still owns the build and its processes.
+                        raise RuntimeError(f"The worker didn't shut down: {problem}")
                     with worker.lock:
                         worker.close()
                     threading.Thread(target=server.shutdown, daemon=True).start()
-                    result = {"state": "shutdown"}
+                    # A build that ended otherwise than stopped may have left processes.
+                    result = {"state": "shutdown", **({"warning": problem} if problem else {})}
                 else:
                     result = (
                         probe(args) if operation == "probe" else worker.dispatch(operation, args)
@@ -7564,7 +7809,7 @@ def make_server(root, token, port=8765, *, adapter=None, python=None):
             self.wfile.write(encoded)
 
     server = _Server(("127.0.0.1", port), Handler)
-    server.worker = worker
+    server.worker, server.builds = worker, builds
     return server
 
 
@@ -7679,7 +7924,10 @@ def _run_probe_process(root, request, adapter, cap, *, secret=None, python=None)
             command += ["--expect-inputs-file", str(expected)]
         if adapter is not None:
             config = Path(scratch) / "target.json"
-            config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
+            # A Rust workspace's is its configuration as written, which nests no dataclass.
+            trusted = getattr(adapter, "trusted_config", None)
+            data = trusted() if trusted is not None else dataclasses.asdict(adapter)
+            config.write_text(json.dumps(data, default=str))
             config.chmod(0o600)
             command += ["--config", str(config)]
         # A remote Python run's bytecode cache, removed with the scratch whatever ends the
@@ -7780,12 +8028,28 @@ def load_java_target(path):
 
 
 def load_native_target(path):
-    """Load trusted native tools and inputs; HTTP clients cannot choose executables."""
+    """Load trusted native tools and inputs; HTTP clients cannot choose executables. A
+    config naming `binary` is a binary the project built (native_binary.BinaryTarget)."""
     from peeky.native import NativeTarget
 
     config = json.loads(Path(path).read_text())
     if not isinstance(config, dict):
         raise ValueError("Native configuration must be an object")
+    if "binary" in config:
+        from peeky.native_binary import BINARY_KEYS, BinaryTarget
+
+        if unknown := sorted(set(config) - BINARY_KEYS):
+            raise ValueError(
+                "A binary target's configuration takes "
+                + ", ".join(sorted(BINARY_KEYS))
+                + f"; not {', '.join(unknown)}"
+            )
+        for key in ("arguments", "returns_twice"):
+            if isinstance(config.get(key), list):
+                config[key] = tuple(config[key])
+        if not isinstance(config.get("arguments", ()), tuple):
+            raise ValueError("Native arguments must be a JSON array")
+        return BinaryTarget(**config)
     if set(config) - {
         "sources",
         "language",
@@ -7962,6 +8226,9 @@ def main():
                     # The close counts as activity; a private worker exits right away.
                     if args.exit_when_idle:
                         idle = args.idle_timeout + 1
+                if server.builds.active():
+                    # A build runs: activity, as a request is.
+                    continue
                 if args.exit_when_idle and not server.worker.dap and idle > args.idle_timeout:
                     threading.Thread(target=server.shutdown, daemon=True).start()
                     return
@@ -7983,13 +8250,19 @@ def main():
         f"Debugger worker: http://127.0.0.1:{server.server_port}; root={Path(args.root).resolve()}",
         flush=True,
     )
+    problem = None
     try:
         server.serve_forever()
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        # A build's processes go with the worker: none outlives it, or its deadline.
+        problem = server.builds.close()
         server.worker.close()
         server.server_close()
+    if problem:
+        print(f"peeky-worker: exiting, but {problem}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

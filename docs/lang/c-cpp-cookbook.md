@@ -609,7 +609,7 @@ The local is also withheld wherever the source doesn't show where the declaratio
 - brackets that don't balance;
 - between the declaration and its end, text the compiler may read differently from Peeky's scan:
   - a directive such as `#include`;
-  - a line splice, or `<::`;
+  - a line splice, or, in C, `<::`;
   - a macro of the program's sources and headers that leaves a bracket open, or holds a `;` outside
     its brackets;
 - anywhere in the file, a `#line` directive.
@@ -617,7 +617,9 @@ The local is also withheld wherever the source doesn't show where the declaratio
 How Peeky reads the source:
 
 - C's trigraphs are read as `-std=c11` reads them: `??/` is a backslash. C++17 has no trigraphs.
-- Digraphs (`<% %> <: :>`) are brackets.
+- Digraphs (`<% %> <: :>`) are brackets. C++ reads `f<::std::size_t>` as `<` and `::`, as C++11
+  does; `<::>` stays `<:` `:>`. A binary target's C++ unit built before C++11 (`-std=c++03`) has
+  its text unread.
 - Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
   lone `\n` each end a line; `\n\r` is two line ends.
 
@@ -1246,7 +1248,12 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
   `describe` lists each unit whose text it can't read, and why: `text not read: Peeky can't read
   src/util.c as compiled: …`. The rules that need the text withhold there, saying so. So they do
   where its preprocessing asks for a file it doesn't find (`__has_include`): the build may have
-  found one. Or where its command has `-march=native`, which names the build host's CPU.
+  found one. On Linux, `-fdebug-macro` lets Peeky check the build's own record of its macros
+  instead, where the probe's branches define or undefine macros: a build that found the file
+  would have left another record. A probe whose branches differ in code or includes alone stays
+  unproven. Or where a file it reads holds a trigraph sequence (`??/`) and its command may turn
+  trigraphs on (`-std=c11`, `-trigraphs`), or where its command has
+  `-march=native`, which names the build host's CPU.
 - **Calls that return twice:** setjmp's family, `vfork`, `getcontext`, `swapcontext` and
   `savectx`, by name. Where a unit isn't read, or holds `asm` (its headers too), any call may. So may any
   where the binary holds code no unit covers, such as assembly built without `-g`: the note names
@@ -1258,6 +1265,46 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
   left out of it can show a local's old value as its own.
 
 Rebuild after every edit. A source changed since the build refuses the binary, naming the file.
+
+#### A session, a worker, and shared libraries
+
+A session takes `--binary` as a probe does:
+
+```
+$ peeky session start . --binary prog --at src/util.c:3
+$ peeky session get doubled
+doubled: int = 4  [settable]
+```
+
+A worker on the build host debugs the binary for a client on another host. Its `--native-config`
+names the binary, and it builds nothing ([WORKER](../WORKER.md#start-a-worker-on-a-binary-your-project-built)).
+The client names the same binary, from a checkout of the sources:
+
+```
+$ peeky probe . --binary prog --at src/util.c:3 --capture doubled,x --worker http://127.0.0.1:18799 --no-save
+hit  phase     line  function  selector  type  value
+1    observed  3     scale     doubled   int   4  [settable]
+1    observed  3     scale     x         int   2  [settable]
+status: completed  hits: 1  seconds: 0.955  max pause: 23.0 ms
+output:
+  2 5 30
+```
+
+- The worker compares the files under the root that the judged units name with your copies: at
+  most 4096 files and 16 MiB in all ([REMOTE](../REMOTE.md#a-binary-your-project-built)). System
+  headers are the worker's, checked against their MD5s, and may differ from yours.
+- A frame in a shared library is never read, even one built from sources under the root. A
+  probe's row for it, and `session get --frame N`, are refused with `UNSUPPORTED`, naming the
+  library. The session goes on:
+
+  ```
+  $ peeky session get doubled --frame 1
+  peeky: [UNSUPPORTED] Nothing in frame 1 (apply) is read: this frame runs build/libfoo.dylib; Peeky reads only prog's own units
+    hint: Nothing of that frame is read, and the session is kept. Read a frame of the binary's own code (`session inspect` lists the stack), or step out to one.
+  ```
+
+- A crash in a shared library names the binary's nearest frame, as one in libc does.
+- To read a library's code, link it into the binary: a static library, or `--disable-shared`.
 
 ### Which C++ builds Peeky supports
 

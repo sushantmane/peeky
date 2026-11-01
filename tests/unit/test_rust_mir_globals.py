@@ -220,6 +220,11 @@ fn local(_1: u32) -> u32 {
         _13 = &(*_18);                   // scope 2 at src/main.rs:40:5: 40:9
         StorageLive(_15);                // scope 2 at src/main.rs:40:15: 40:26
         _15 = {closure@src/main.rs:40:15: 40:18}; // scope 2 at src/main.rs:40:15: 40:26
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (),
+                                         // ]
         _12 = LocalKey::<Cell<u32>>::with::<{closure@src/main.rs:40:15: 40:18}, u32>(move _13, move _15) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:40:5: 40:27
     }
     bb5: {
@@ -259,6 +264,11 @@ fn local_set(_1: &LocalKey<Cell<u32>>, _2: u32) -> () {
         StorageLive(_6);                 // scope 0 at src/main.rs:20:12: 20:24
         _6 = &_2;                        // scope 0 at src/main.rs:20:12: 20:24
         _5 = {closure@src/main.rs:20:12: 20:15} { v: move _6 }; // scope 0 at src/main.rs:20:12: 20:24
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (u32,),
+                                         // ]
         StorageDead(_6);                 // scope 0 at src/main.rs:20:14: 20:15
         _3 = LocalKey::<Cell<u32>>::with::<{closure@src/main.rs:20:12: 20:15}, ()>(move _4, move _5) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:20:5: 20:25
     }
@@ -1404,6 +1414,11 @@ fn registry() -> &std::sync::Mutex<Vec<u32>> {
         _2 = &(*_3);                     // scope 0 at src/main.rs:46:5: 46:8
         StorageLive(_4);                 // scope 0 at src/main.rs:46:21: 46:46
         _4 = {closure@src/main.rs:46:21: 46:23}; // scope 0 at src/main.rs:46:21: 46:46
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (),
+                                         // ]
         _1 = OnceLock::<std::sync::Mutex<Vec<u32>>>::get_or_init::<{closure@src/main.rs:46:21: 46:23}>(move _2, move _4) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:46:5: 46:47
     }
     bb1: {
@@ -1981,6 +1996,11 @@ fn captured(_1: u32) -> u32 {
         _4 = &(*_5);                     // scope 1 at src/main.rs:87:13: 87:15
         StorageLive(_6);                 // scope 2 at src/main.rs:88:9: 88:12
         _6 = {closure@src/main.rs:88:15: 88:22} { a: copy _4, x: copy _2 }; // scope 2 at src/main.rs:88:15: 88:52
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (u32, u32),
+                                         // ]
         StorageLive(_7);                 // scope 3 at src/main.rs:89:5: 89:10
         StorageLive(_8);                 // scope 3 at src/main.rs:89:5: 89:8
         _8 = &_6;                        // scope 3 at src/main.rs:89:5: 89:8
@@ -5159,6 +5179,11 @@ fn later(_1: &std::sync::Mutex<u32>) -> () {
         StorageLive(_2);                 // scope 0 at src/main.rs:21:5: 24:7
         StorageLive(_3);                 // scope 0 at src/main.rs:21:24: 24:6
         _3 = {closure@src/main.rs:21:24: 21:31} { m: copy _1 }; // scope 0 at src/main.rs:21:24: 24:6
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (u32,),
+                                         // ]
         _2 = spawn::<{closure@src/main.rs:21:24: 21:31}, ()>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:21:5: 24:7
     }
     bb1: {
@@ -5350,6 +5375,11 @@ fn spawned(_1: u32) -> u32 {
         StorageLive(_8);                 // scope 2 at src/main.rs:31:5: 34:7
         StorageLive(_9);                 // scope 2 at src/main.rs:31:24: 34:6
         _9 = {closure@src/main.rs:31:24: 31:31} { r: copy _4 }; // scope 2 at src/main.rs:31:24: 34:6
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (u32,),
+                                         // ]
         _8 = spawn::<{closure@src/main.rs:31:24: 31:31}, ()>(move _9) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:31:5: 34:7
     }
     bb4: {
@@ -6078,6 +6108,11 @@ fn std_spawn(_1: u32) -> u32 {
         StorageLive(_8);                 // scope 2 at src/main.rs:38:5: 41:7
         StorageLive(_9);                 // scope 2 at src/main.rs:38:24: 41:6
         _9 = {closure@src/main.rs:38:24: 38:31} { r: copy _4 }; // scope 2 at src/main.rs:38:24: 41:6
+                                         // closure
+                                         // + args: [
+                                         //     i8,
+                                         //     (u32,),
+                                         // ]
         _8 = std::thread::spawn::<{closure@src/main.rs:38:24: 38:31}, ()>(move _9) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:38:5: 41:7
     }
     bb4: {

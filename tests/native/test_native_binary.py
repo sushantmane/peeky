@@ -6,8 +6,10 @@ with what to rebuild with. Peeky writes nothing in the project's directory."""
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -193,7 +195,11 @@ def test_describe_lists_each_unit_judged_or_not_and_why(project, capsys, monkeyp
     assert set(manifest["breakpoint_lines"]) == {"src/main.c", "src/util.c"}
     assert manifest["language"] == "c" and manifest["target_identity"]["binary"] == "prog"
     assert "--at <file>:<line>" in manifest["commands"]["probe"]
-    assert "session" not in manifest["commands"] and "verify" not in manifest["commands"]
+    # A session takes the binary as a probe does; an edit needs a rebuild.
+    assert manifest["commands"]["session"].startswith(
+        f"peeky session start {project} --config {config} --at <file>:<line>"
+    )
+    assert "verify" not in manifest["commands"] and "candidate" not in manifest["commands"]
 
 
 @pytest.mark.timeout(300)
@@ -466,23 +472,62 @@ def test_cpp_units_are_judged_by_their_md5s_and_refused_with_what_the_table_show
     ), error
 
 
+CPP_LT_COLON = """struct Item { long v; };
+static int argc = 2;
+
+template <class T> int size_of() { return sizeof(T); }
+int width = size_of<::Item>() + argc;
+
+int scale(int argc) {
+    int doubled = argc * 2;
+    return doubled; // STOP
+}
+
+int main(int argc, char **) {
+    return scale(argc) == 2 ? 0 : 1;
+}
+"""
+
+
+@pytest.mark.cpp
+@pytest.mark.timeout(300)
+def test_a_cpp_unit_with_lt_colon_colon_reads_its_parameters(project):
+    # gtest.h's `PrintTo<::std::type_info>(value, os)`: C++11 reads `<` and `::`. Peeky
+    # read `<::` as C does, could tell no block in the unit, and withheld a parameter
+    # wherever the unit may declare its name elsewhere (here a file's `static int argc`).
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    compiler = default_cxx()
+    if not compiler or is_gcc(compiler):
+        pytest.skip("needs clang++")
+    (project / "main.cpp").write_text(CPP_LT_COLON)
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", *_sysroot(), "-c", "main.cpp"], cwd=project, check=True
+    )
+    subprocess.run(
+        [compiler, "--driver-mode=g++", *_sysroot(), "main.o", "-o", "prog"],
+        cwd=project,
+        check=True,
+    )
+    line = next(n for n, text in enumerate(CPP_LT_COLON.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("main.cpp", line, ("argc",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert row.get("value") == "1", json.dumps(row)
+
+
 @pytest.mark.timeout(120)
-def test_a_binary_config_with_sources_or_a_session_is_refused(project, capsys):
+def test_a_binary_config_with_sources_is_refused(project, capsys):
     config = project / "binary.json"
     config.write_text(json.dumps({"binary": "prog", "sources": ["src/main.c"]}))
-    assert main(["probe", str(project), "--config", str(config), "--at", "src/main.c:5"]) != 0
-    said = capsys.readouterr()
-    assert "INVALID_REQUEST" in said.out + said.err
-    assert "not sources: its sources are the files its debug information names" in (
-        said.out + said.err
-    )
-    config.write_text(json.dumps({"binary": "prog"}))
-    assert (
-        main(["session", "start", str(project), "--config", str(config), "--at", "src/main.c:5"])
-        != 0
-    )
-    said = capsys.readouterr()
-    assert "INVALID_REQUEST" in said.out + said.err and "sessions come with" in said.out + said.err
+    for command in ("probe", "session start"):
+        argv = [*command.split(), str(project), "--config", str(config), "--at", "src/main.c:5"]
+        assert main(argv) != 0
+        said = capsys.readouterr()
+        assert "INVALID_REQUEST" in said.out + said.err
+        assert "not sources: its sources are the files its debug information names" in (
+            said.out + said.err
+        )
 
 
 # A program whose units include nothing: Apple's clang can't name a header of declarations
@@ -818,6 +863,7 @@ def test_asm_in_a_header_outside_the_program_may_return_twice(project, capsys):
 PROBED_UTIL = """#if __has_include("count.h")
 #include "count.h"
 #else
+#define COUNT_T_DEFAULT 1
 typedef int count_t;
 #endif
 
@@ -829,33 +875,80 @@ int scale(int x) {
 
 
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("present", [True, False], ids=["found", "not found"])
-def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, present):
+@pytest.mark.parametrize("case", ["found", "not found", "code alone", "include alone", "no record"])
+def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, case):
     # `__has_include` may have found a file when the program was built (a header path
-    # from its environment, a file since gone) that the replay doesn't.
+    # from its environment, a file since gone) that the replay doesn't. With
+    # -fdebug-macro (Linux), the build's record of its macros proves it found none: it
+    # wouldn't have defined COUNT_T_DEFAULT. Unless the branches differ in code or an
+    # include alone, which may leave no record.
     (project / "src").mkdir()
-    if present:
+    if case == "found":
         (project / "src" / "count.h").write_text("typedef int count_t;\n")
+    util = PROBED_UTIL
+    if case in ("code alone", "include alone"):
+        util = util.replace("#define COUNT_T_DEFAULT 1\n", "")
+    if case == "code alone":
+        util = util.replace('#include "count.h"', "typedef long count_t;")
     compiler = _clang()
-    _build_text(project, compiler, {}, util=PROBED_UTIL)
-    stop = next(n for n, text in enumerate(PROBED_UTIL.splitlines(), 1) if "// STOP" in text)
+    extra = {"util": ("-fno-debug-macro",)} if case == "no record" else None
+    _build_text(project, compiler, {}, extra=extra, util=util)
+    stop = next(n for n, text in enumerate(util.splitlines(), 1) if "// STOP" in text)
     result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
     assert result["status"] == "completed", result.get("error")
     (row,) = result["rows"]
-    if present:
+    linux = sys.platform == "linux"
+    if case == "found" or (case == "not found" and linux):
         assert row.get("value") == "4", row
-    else:
-        assert (
-            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
-            '"count.h" exists'
-        ) in (row.get("error") or ""), row
-        assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
-        units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
-        assert units["src/util.c"]["text"] == (
-            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
-            '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
-            "have found one (its environment can add header paths, and a file may since be gone)"
-        ), units
+        return
+    said = (
+        "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+        '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
+        "have found one (its environment can add header paths, and a file may since be gone)"
+    )
+    if linux and case in ("code alone", "include alone"):
+        said += (
+            "; two of its group's branches may leave no record of macros (only a #define or an "
+            "#undef surely does: an #include may be skipped), so the build's record can't tell "
+            "them apart"
+        )
+    elif linux:
+        said += (
+            "; build it with -fdebug-macro, and Peeky checks it against the build's own record "
+            "of its macros"
+        )
+    # A row's error shows the start; describe, all of it.
+    assert said[:90] in (row.get("error") or ""), row
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+    assert units["src/util.c"]["text"] == said, units
+
+
+STDATOMIC_UTIL = """#include <stdatomic.h>
+
+int scale(int x) {
+    static atomic_int calls;
+    atomic_fetch_add(&calls, 1);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="-fdebug-macro, on Linux")
+def test_clang_s_stdatomic_h_is_read_by_the_build_s_record_of_its_macros(project):
+    # clang's stdatomic.h asks for the system's (`__has_include_next(<stdatomic.h>)`),
+    # which glibc lacks. Had the build found one, it would have included it and defined
+    # none of clang's ATOMIC_* macros: its record of macros proves it didn't.
+    (project / "src").mkdir()
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=STDATOMIC_UTIL)
+    stop = next(n for n, text in enumerate(STDATOMIC_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert row.get("value") == "4", row
 
 
 ATOMIC_UTIL = """int scale(int x) {
@@ -1035,3 +1128,272 @@ def test_the_program_s_environment_is_the_same_with_or_without_returns_twice(pro
         finally:
             session.prepared.cleanup()
     assert launched[None] == launched[()], launched
+
+
+TOKEN = "native-binary-worker-token-123-0123456789abcdef"
+
+
+@pytest.fixture
+def worker_on(monkeypatch):
+    """Starts a worker on a binary target in a directory; yields the starter, which gives
+    the worker's URL."""
+    from peeky.cli import WORKER_TOKEN_ENV
+    from peeky.worker import make_server
+
+    monkeypatch.setenv(WORKER_TOKEN_ENV, TOKEN)
+    servers = []
+
+    def start(root, target):
+        server = make_server(root, TOKEN, 0, adapter=target)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        servers.append((server, thread))
+        return f"http://127.0.0.1:{server.server_port}"
+
+    yield start
+    for server, thread in servers:
+        server.worker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _json(capsys, argv):
+    code = main([*argv, "--json"])
+    return code, json.loads(capsys.readouterr().out)
+
+
+def _values(capsys, argv):
+    """(exit code, {selector: value or error}) of a `session get`."""
+    code, shown = _json(capsys, argv)
+    rows = shown.get("rows", [shown]) if isinstance(shown, dict) else shown
+    return code, {row.get("selector"): row.get("value", row.get("error")) for row in rows}
+
+
+@pytest.mark.timeout(300)
+def test_a_worker_debugs_a_binary_for_a_remote_client(project, tmp_path, capsys, worker_on):
+    from peeky.client import Client
+
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    # The client's checkout: the sources, without the binary, which is the worker host's.
+    local = tmp_path / "local"
+    shutil.copytree(project / "src", local / "src")
+    url = worker_on(project, _target(compiler, returns_twice=()))
+    names = ["src/fast.c", "src/main.c", "src/util.c"]
+    client = Client(url, TOKEN)
+    # `version` names the binary; `inputs` lists the files its judged units name.
+    assert client.call("version")["sources"] == {"kind": "binary", "binary": "prog"}
+    assert client.call("inputs") == {"kind": "declared", "names": names, "binary": "prog"}
+    probe = ["probe", str(local), "--binary", "./prog", "--worker", url, "--no-save", "--quiet"]
+    probe += ["--at", f"src/util.c:{SELF_STOP}", "--capture", "doubled,x,1:base"]
+    code, result = _json(capsys, probe)
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert [rows[name].get("value") for name in ("doubled", "x", "1:base")] == ["4", "2", "2"]
+    assert result["output"].strip() == "2 5 30"
+    # Compared and read: the worker read the files the client has.
+    assert result["inputs_checked"] == result["inputs_sha256"]
+    # The worker debugs only the binary its configuration names.
+    code, result = _json(capsys, [*probe[:2], "--binary", "other", *probe[4:]])
+    assert code == 2 and result["error"]["code"] == "INVALID_REQUEST", result
+    assert result["error"]["message"] == (
+        "The worker debugs the binary prog, which its configuration names, not other: pass "
+        "--binary prog"
+    )
+    # A file the units name, changed in the client's checkout only: refused before launch.
+    (local / "src" / "fast.c").write_text(SELF_FAST.replace("x * 3", "x * 4"))
+    code, result = _json(capsys, probe)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "src/fast.c (the copy on the worker host differs from your checkout)"
+        in (result["error"]["message"])
+    )
+    assert result["refused_before_launch"] is True and result["rows"] == []
+    (local / "src" / "fast.c").write_text(SELF_FAST)
+    # A session through the worker.
+    start = ["session", "start", str(local), "--binary", "prog", "--worker", url, "--name", "b"]
+    code, state = _json(capsys, [*start, "--at", f"src/util.c:{SELF_STOP}"])
+    assert code == 0, state
+    try:
+        code, shown = _values(capsys, ["session", "get", "doubled", "--name", "b"])
+        assert code == 0 and shown == {"doubled": "4"}, shown
+        code, shown = _values(capsys, ["session", "get", "base", "--frame", "1", "--name", "b"])
+        assert code == 0 and shown == {"base": "2"}, shown
+    finally:
+        assert main(["session", "close", "--name", "b"]) == 0
+
+
+@pytest.mark.timeout(300)
+def test_a_session_on_a_binary_runs_where_it_is(project, capsys):
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    before = _listing(project)
+    start = ["session", "start", str(project), "--binary", "prog", "--name", "here"]
+    code, state = _json(capsys, [*start, "--at", f"src/util.c:{SELF_STOP}"])
+    assert code == 0, state
+    try:
+        code, shown = _values(capsys, ["session", "get", "doubled", "x", "--name", "here"])
+        assert code == 0 and shown == {"doubled": "4", "x": "2"}, shown
+        code, shown = _json(capsys, ["session", "continue", "--to-exit", "--name", "here"])
+        assert code == 0 and shown["state"] in ("exited", "terminated"), shown
+    finally:
+        main(["session", "close", "--name", "here"])
+        capsys.readouterr()
+    assert _listing(project) == before
+
+
+LIBRARY = """int apply(int (*f)(int), int v) {
+    int doubled = v * 2;
+    return f(doubled) + 1;
+}
+
+int poke(int *p) {
+    int read = *p;
+    return read;
+}
+"""
+CALLER = """int apply(int (*f)(int), int v);
+int poke(int *p);
+int printf(const char *, ...);
+
+static int callback(int x) {
+    int y = x + 1;
+    return y; // STOP
+}
+
+int main(int argc, char **argv) {
+    int base = argc + 1;
+    int got = apply(callback, base);
+    if (argc > 1)
+        got += poke((int *)0);
+    printf("%d\\n", got);
+    return 0;
+}
+"""
+CALLER_STOP = next(n for n, text in enumerate(CALLER.splitlines(), 1) if "// STOP" in text)
+
+
+def _build_with_library(root, compiler, library_dir):
+    """Builds src/main.c into `prog`, linked with libfoo, a shared library built from
+    ``library_dir``/foo.c with the same flags, found by its absolute path at run time."""
+    library_dir.mkdir(parents=True, exist_ok=True)
+    (library_dir / "foo.c").write_text(LIBRARY)
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "main.c").write_text(CALLER)
+    name = "libfoo.dylib" if sys.platform == "darwin" else "libfoo.so"
+    shared = ["-dynamiclib", "-install_name", str(library_dir / name)]
+    if sys.platform != "darwin":
+        shared = ["-shared", "-fPIC"]
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", *_sysroot(), *shared, "foo.c", "-o", name],
+        cwd=library_dir,
+        check=True,
+    )
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", *_sysroot(), "-c", "src/main.c", "-o", "main.o"],
+        cwd=root,
+        check=True,
+    )
+    rpath = () if sys.platform == "darwin" else (f"-Wl,-rpath,{library_dir}",)
+    subprocess.run(
+        [compiler, *_sysroot(), "main.o", f"-L{library_dir}", "-lfoo", *rpath, "-o", "prog"],
+        cwd=root,
+        check=True,
+    )
+    return library_dir / name
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("inside", [True, False], ids=["under the root", "outside it"])
+def test_a_frame_in_a_shared_library_is_unsupported_naming_it(project, tmp_path, capsys, inside):
+    compiler = _clang()
+    library = _build_with_library(
+        project, compiler, project / "build" if inside else tmp_path / "outside"
+    )
+    shown_library = library.relative_to(project).as_posix() if inside else str(library)
+    why = (
+        f"Nothing in frame 1 (apply) is read: this frame runs {shown_library}; Peeky reads only "
+        "prog's own units"
+    )
+    result = run_probe(
+        project,
+        Probe("src/main.c", CALLER_STOP, ("y", "1:doubled", "2:base")),
+        adapter=_target(compiler, returns_twice=()),
+    )
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["y"].get("value") == "5" and rows["2:base"].get("value") == "2", rows
+    row = rows["1:doubled"]
+    assert row["error"] == why and row["code"] == "UNSUPPORTED" and "value" not in row, row
+    assert result["output"].strip() == "6"
+    # In a session, the frame is refused the same way, and the session goes on.
+    start = ["session", "start", str(project), "--binary", "prog", "--name", "lib"]
+    code, state = _json(capsys, [*start, "--at", f"src/main.c:{CALLER_STOP}"])
+    assert code == 0, state
+    try:
+        code, shown = _json(capsys, ["session", "get", "doubled", "--frame", "1", "--name", "lib"])
+        assert code == 2 and shown["error"]["code"] == "UNSUPPORTED", shown
+        assert shown["error"]["message"] == why and shown["error"]["session_closed"] is False
+        code, shown = _values(capsys, ["session", "get", "y", "--name", "lib"])
+        assert code == 0 and shown == {"y": "5"}, shown
+    finally:
+        main(["session", "close", "--name", "lib"])
+        capsys.readouterr()
+    # A step into the library names it.
+    calls = next(n for n, text in enumerate(CALLER.splitlines(), 1) if "apply(callback" in text)
+    code, state = _json(capsys, [*start, "--at", f"src/main.c:{calls}"])
+    assert code == 0, state
+    try:
+        code, state = _json(capsys, ["session", "step", "--into", "--name", "lib"])
+        assert code == 0 and state["state"] == "stopped", state
+        code, shown = _json(capsys, ["session", "get", "doubled", "--name", "lib"])
+        assert code == 2, shown
+        assert shown["error"]["message"].startswith(
+            f"The step stopped outside the program's sources (in apply, in the shared library "
+            f"{shown_library}); `session step --out` returns to your code"
+        ), shown
+    finally:
+        main(["session", "close", "--name", "lib"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_a_crash_in_a_shared_library_reads_only_the_binarys_frames(project, capsys):
+    compiler = _clang()
+    library = _build_with_library(project, compiler, project / "build")
+    # A probe: the program's crash, its nearest frame of the binary's own code named.
+    result = run_probe(
+        project,
+        Probe("src/main.c", CALLER_STOP, ("y",), args=("crash",)),
+        adapter=_target(compiler, returns_twice=()),
+    )
+    assert result["status"] == "failed", result
+    assert result["error"]["code"] == "PROGRAM_CRASHED", result["error"]
+    assert result["crash"]["outside_program"] is True, result["crash"]
+    assert result["crash"]["function"] == "main", result["crash"]
+    poked = next(n for n, text in enumerate(CALLER.splitlines(), 1) if "poke((int" in text)
+    assert result["crash"]["location"].endswith(f"src/main.c:{poked}"), result["crash"]
+    start = ["session", "start", str(project), "--binary", "prog", "--name", "crash"]
+    code, state = _json(capsys, [*start, "--at", f"src/main.c:{CALLER_STOP}", "--arg", "crash"])
+    assert code == 0, state
+    try:
+        code, state = _json(capsys, ["session", "continue", "--name", "crash"])
+        assert code == 0 and state["state"] == "stopped", state
+        # The crash is outside the binary's code, though libfoo's sources are under the
+        # root: its nearest frame is main's.
+        crash = state["crash"]
+        assert crash["outside_program"] is True and crash["function"] == "main", crash
+        code, shown = _json(capsys, ["session", "inspect", "--name", "crash"])
+        assert code == 2 and shown["error"]["code"] == "UNSUPPORTED", shown
+        assert shown["error"]["message"] == (
+            f"Nothing in frame 0 (poke) is read: this frame runs build/{library.name}; Peeky "
+            "reads only prog's own units"
+        )
+        assert shown["error"]["session_closed"] is False
+        get = ["session", "get", "base", "--frame", str(crash["frame"]), "--name", "crash"]
+        code, shown = _values(capsys, get)
+        assert code == 0 and shown == {"base": "3"}, shown
+    finally:
+        main(["session", "close", "--name", "crash"])
+        capsys.readouterr()

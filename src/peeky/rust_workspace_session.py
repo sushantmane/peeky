@@ -91,7 +91,9 @@ class _UnitTarget:
 
 
 def _session_class():
-    from peeky.rust import RustSession
+    from peeky.names import display_function
+    from peeky.rust import RustSession, _frame_hash
+    from peeky.rust_symbols import UNREAD_UNIT
 
     class WorkspaceSession(RustSession):
         """rust.RustSession on a workspace's build: its record checked again before
@@ -111,6 +113,29 @@ def _session_class():
                     "that build. Run `peeky build` again, then start a new session"
                 ) from None
 
+        @property
+        def source_manifest(self):
+            """What a remote client's files were compared with, as the build recorded
+            them (rust_build.compared_sources): the run's inputs_sha256."""
+            return rust_build.compared_sources(self.build)
+
+        def remote_identities(self):
+            """The build's compared files and watched directories as a remote client's are
+            compared with them (`sources.structured`): each file's contents as the build
+            recorded them, in the shape the disk has (its kind, the links on its way), and
+            each watched directory's entries, read once ``assert_current`` held the disk to
+            the build's record."""
+            from peeky.sources import structured
+
+            trees = rust_build.compared_trees(self.build)
+            recorded = rust_build.compared_sources(self.build)
+            return structured(self.root, recorded, trees, contents=recorded)
+
+        def remote_refusal(self):
+            """Why a remote client can't compare this build's files with its own, or None
+            (rust_build.remote_refusal)."""
+            return rust_build.remote_refusal(self.build)
+
         def owns_source(self, path):
             """Whether ``path`` (resolved) is one of the analysed compile's files: the
             program a stop is read in. A dependency's file, or another member's, is read
@@ -124,6 +149,122 @@ def _session_class():
         def launch_args(self, program, root, args=None):
             launch = super().launch_args(program, root, args)
             return {**launch, "cwd": str(self.cwd)}
+
+        def unplaceable_line(self, program, line):
+            """RustSession's, and a line of a function the analysed crate's build has no
+            code of (no line of its body has a row): a generic or inlined one only other
+            crates use, which their builds compile for their own types. The debugger places
+            the breakpoint in that code, of a crate Peeky reads none of."""
+            if why := super().unplaceable_line(program, line):
+                return why
+            try:
+                source = Path(program).resolve().relative_to(self.prepared.source_root)
+            except (AttributeError, OSError, ValueError):
+                return None
+            source = source.as_posix()
+            if source not in self.lines or line in self.lines[source]:
+                return None
+            rows = frozenset(self.lines[source])
+            covering = [
+                body for body in self.owned.bodies if body.file == source and line in body.lines
+            ]
+            # A line with no row of its own in a function the build has code of is one LLDB
+            # moves to the next line that has one, which the stop reports.
+            if not covering or any(rows & body.lines for body in covering):
+                return None
+            functions = sorted({body.path for body in covering if "{closure" not in body.path})
+            if not functions:
+                return None
+            named = " or ".join(f"`{self.crate_name}::{each}`" for each in functions)
+            return (
+                f"Line {line} has no code to stop at in `{self.crate_name}`'s build: it is in "
+                f"{named}, a generic or inlined function whose code only the crates that use "
+                "it compile, for their own types, and Peeky reads none of theirs. Stop where "
+                f"`{self.crate_name}`'s own code calls it, or choose a line from `peeky "
+                "describe`"
+            )
+
+        def _ownership(self, frame, final=True, index=0):
+            """Whose build's code ``frame`` (frame ``index`` of the stop) is stopped in, on a
+            line of the analysed crate's files: ("own", None), the crate's; ("other", None),
+            another crate's build of a generic or inlined function of the crate's (a function
+            whose symbol none of its units defines, at an address outside each of their
+            functions); ("unknown", why) where Peeky can't tell (no address; a unit whose
+            functions weren't read), never taken for the crate's. Before the address is
+            known (not ``final``), ("pending", None) where it is needed."""
+            place = self._place(frame)
+            if place is None or place[0] not in self.lines:
+                return "own", None
+            hashed = _frame_hash(frame)
+            if hashed and hashed[1] in self.code_blocks:
+                return "own", None
+            pc = self._unslid(frame)
+            if pc is None:
+                if not final:
+                    return "pending", None
+                return "unknown", "The debugger gives no address for the frame"
+            if index:
+                # A caller's address is where its call returns to, which may be just past
+                # its function's end: its call instruction is the one before.
+                pc -= 1
+            # An inlined call's frame is named for the function inlined: its address is in
+            # the function it was inlined into.
+            if any(
+                low <= pc < high
+                for blocks in self.code_blocks.values()
+                if blocks
+                for low, high in blocks[0].ranges
+            ):
+                return "own", None
+            if UNREAD_UNIT in self.code_blocks:
+                return "unknown", (
+                    f"Peeky couldn't read the debug information of one of `{self.crate_name}`'s "
+                    "units, so it doesn't know where all of their code is"
+                )
+            return "other", None
+
+        def _ownership_note(self, frame, index, state, why):
+            source, line = self._place(frame)
+            function = display_function(str(frame.get("name") or "")) or "this function"
+            crate = self.crate_name
+            lead = (
+                f"Peeky reads no value of frame {index} ({function}) here: the debugger shows "
+                f"the stop on line {line} of {source}"
+            )
+            if state == "other":
+                return (
+                    f"{lead}, in code another crate's build compiled (a generic or inlined "
+                    f"function of `{crate}`'s, for that crate's types). Peeky reads only "
+                    f"`{crate}`'s own build, which holds none of it. A stop where `{crate}`'s own "
+                    "code runs it is read"
+                )
+            return (
+                f"{lead}. Peeky can't tell whether that is `{crate}`'s own build of the code, or "
+                f"another crate's copy of a generic or inlined function. {why}. A stop in a "
+                f"function Peeky finds among `{crate}`'s is read: try a line where `{crate}`'s "
+                "own code calls this one"
+            )
+
+        def macro_stop_state(self, dap, frame):
+            """RustSession's, and a stop in another crate's build of the analysed crate's
+            code, or one Peeky can't tell is the crate's own (``_ownership``): never read."""
+            state, why = self._ownership(frame, final=False)
+            if state == "pending":
+                try:
+                    self.validate_debugger(dap, frame)
+                except Exception:
+                    # A stop that doesn't match the build: `inspect` says so, and closes.
+                    return None
+                state, why = self._ownership(frame)
+            if state != "own":
+                return self._ownership_note(frame, 0, state, why)
+            return super().macro_stop_state(dap, frame)
+
+        def macro_stop_note(self, frame, index=0):
+            state, why = self._ownership(frame, index=index)
+            if state != "own":
+                return self._ownership_note(frame, index, state, why)
+            return super().macro_stop_note(frame, index)
 
     return WorkspaceSession
 
@@ -179,6 +320,33 @@ def expanded_code(path):
     if found is None:
         return text
     return rest[: found.start()] + rest[found.end() :]
+
+
+def _edition(files):
+    """The edition the analysed compile in ``files`` (its unit's directory) was built at,
+    from its recorded rustc command (`--edition=2018`), or None."""
+    try:
+        args = json.loads((Path(files) / "command.json").read_text()).get("args") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    found = [each.split("=", 1)[1] for each in args if str(each).startswith("--edition=")]
+    return found[-1] if found else None
+
+
+def _check_lexed_as_2018(unit, texts):
+    """Refuse an edition 2018 compile whose ``texts`` ({name: text}, the sources and the
+    expansion) hold what Peeky's lexer reads as Rust 2021 does and edition 2018 otherwise: a
+    raw C string (`cr"…"`). The scans of its text could then hide code from Peeky."""
+    from peeky.rust_lexer import raw_c_string
+
+    for name, text in texts.items():
+        if (line := raw_c_string(text)) is not None:
+            raise ValueError(
+                f"Peeky can't read `{unit['package']}`'s text as edition 2018 does: {name} has "
+                f'a raw C string (`cr"…"`) on line {line}. Peeky reads one as Rust 2021 does, '
+                "and edition 2018 reads `cr` and an ordinary string. Analyse another package, "
+                "or put a space after `cr`, as edition 2018 reads it"
+            )
 
 
 def prepare_session(target, program, root, *, deadline=None):
@@ -264,6 +432,9 @@ def prepare_session(target, program, root, *, deadline=None):
             raise ValueError(
                 f"Peeky can't read rustc's expansion of `{unit['package']}`'s {crate}: build again"
             )
+        edition = _edition(files)
+        if edition == "2018":
+            _check_lexed_as_2018(unit, {**texts, f"`{crate}` as rustc expands it": expanded})
         defined = set()
         # The other crates of the build, whose code these proofs read none of: the
         # dependencies, and the other analysed crates, proven apart.
@@ -278,6 +449,7 @@ def prepare_session(target, program, root, *, deadline=None):
             defined=defined,
             foreign=foreign,
         )
+        owned.edition = edition
         dwarfdump = _absolute_tool(target.dwarfdump, "dwarfdump")
         budget = SYMBOL_BUDGET_S
         if deadline is not None:
@@ -322,6 +494,7 @@ def prepare_session(target, program, root, *, deadline=None):
         )
         session.units = tuple(debug_units)
         session.code_blocks = blocks
+        session.crate_name = crate
         session.declarations_ir = declarations
         # A dependency's macros write its own code, taken as sound as std's are; a local
         # procedural macro writes the project's, which only the expansion shows. What the

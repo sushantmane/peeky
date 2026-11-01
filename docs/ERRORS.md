@@ -1,4 +1,4 @@
-# Error codes (protocol 14)
+# Error codes (protocol 16)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -27,7 +27,7 @@ The last column is the `retryable` field.
 | `NOT_FOUND` | A name or selector isn't visible ([details](#not_found)). | Use a name from the message's `visible:` or `children:` list. | no |
 | `MUTATION_REJECTED` | Peeky can't make that change there. Nothing was written. | Follow the hint: it names the one way around the rule ([the rules](#when-a-change-is-refused-mutation_rejected)). | no |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached, or a probe's limit of signal stops in a row ([details](#budget_exhausted)). | Narrow the request. | no |
-| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. In Python, debugpy may skip the file as library code ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)). | Use a line that `peeky describe` lists, or probe the code that calls the library. | no |
+| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. In Python, debugpy may skip the file as library code ([Python 0](lang/python-cookbook.md#stop-in-an-installed-package)). In a Rust workspace, the line is in a generic or inlined function only another crate's build has code of ([Rust 7.2](lang/rust-cookbook.md#what-peeky-reads-in-a-workspace)). | Use a line that `peeky describe` lists, or probe the code that calls the library. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
@@ -37,13 +37,13 @@ The last column is the `retryable` field.
 | `DEBUGGER_ERROR` | The adapter, the debugger or llvm-dwarfdump failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
 | `SESSION_ACTIVE` | A session was misused: one is already open. | Close the session. | no |
 | `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
-| `BUSY` | Another probe is running on this worker, or it is serving its most connections (HTTP 503). Nothing was run. | Retry later. | yes |
+| `BUSY` | Another probe is running on this worker, it is still listing its binary's files for another client ([REMOTE.md](REMOTE.md#a-binary-your-project-built)), or it is serving its most connections (HTTP 503). Nothing was run. A `shutdown` whose Rust workspace build still runs after it was stopped is refused too, and the worker keeps running. | Retry later. | yes |
 | `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
 | `UNAUTHORIZED` | The bearer token is missing or wrong, or the process at the worker's URL didn't prove it holds yours. | Set `PEEKY_WORKER_TOKEN` to the worker's `DEBUG_TOKEN`. If it is, check which process holds the port. | no |
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
 | `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
-| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. | Restore the tunnel or the worker, and retry. | yes |
+| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. A worker shutting down stopped its Rust workspace's build, its processes killed, or starts none ([REMOTE.md](REMOTE.md#a-rust-workspace)). | Restore the tunnel or the worker, and retry. | yes |
 | `TRANSPORT_LOST` | The connection broke mid-request. The outcome is unknown. | Reconnect, then `inspect` or `wait`. Never repeat a change blindly. | no |
 | `JOB_LOST` | A `--background` job's process died before it finished. | Rerun the command. | no |
 
@@ -136,6 +136,9 @@ The last column is the `retryable` field.
   `--check-command` short. That says nothing about the edit: give a longer `--timeout`. A command
   that runs past its own 20 s isn't an error: the verify's `verdict` is `unknown`, and `reason`
   says so ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)).
+- `The worker's build is still running past the deadline` means that a Rust workspace's build on a
+  worker outlived the client's wait. It goes on there: run the same command again to wait for it
+  ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 
 ### DEBUGGER_ERROR
 
@@ -164,11 +167,19 @@ The last column is the `retryable` field.
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 | A binary the project built that Peeky can't read: a libtool script, no debug information or build ID, no unit Peeky judges (GCC, DWARF 4, no recorded command line, `-O2` without `"optimized": true`, no MD5s), or a probe in a file no judged unit has code in. Each message names the unit and why ([C and C++](lang/c-cpp.md#a-binary-your-project-built)) | Rebuild as the message says: clang `-O0 -g -gdwarf-5 -grecord-command-line`. Or probe a unit `peeky describe --binary` lists as judged |
+| A frame in a shared library a binary target loads, built from sources under the root or not: `Nothing in frame 1 (apply) is read: this frame runs build/libfoo.so; Peeky reads only prog's own units`. A probe's row says so, with `"code": "UNSUPPORTED"`, and the session is kept ([C and C++ 7.1](lang/c-cpp-cookbook.md#debug-a-binary-your-project-built)) | Read a frame of the binary's own code. To read the library's, link it into the binary: a static library, or `--disable-shared` |
+| A binary a worker refuses, as a client sees it: `The worker refuses its binary: …`, with the worker's own code. Its units may name more files than a client may send: `prog's units name 5,000 files under the target directory (21.3 MiB). A worker compares at most 4,096 files, 16 MiB in all, with a remote client's copies: …` ([REMOTE.md](REMOTE.md#a-binary-your-project-built)) | Do what the worker's reason says. For too many files, run Peeky on the binary's own host |
 | Debug information Peeky can't read whole: `Peeky can't read split DWARF: …`, or type units, partial units, or a unit it can't read at all (`Peeky can't read a DWARF unit: …`, such as DWARF 6), refused before anything runs | Rebuild without the option the message names: `-gsplit-dwarf` or `-fdebug-types-section`. Or use the binary as linked, before dwz. Or rebuild with `-gdwarf-5` |
 | A Python program's interpreter that isn't CPython 3.11 or later: `Peeky runs Python programs on CPython 3.11 or later, and … is CPython 3.9.6: …`, refused before anything runs ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)) | Pass `--python` with CPython 3.11 or later, such as the project's own. Or pass `--python peeky` for Peeky's own |
-| A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of another edition than 2021 or 2024, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information. So is one whose sources, or a procedural macro's, mention `RUSTC_BOOTSTRAP`, which Peeky's build sets | Change what the message names, or analyse another package |
+| A Rust workspace Peeky doesn't build, refused before anything is built: a git dependency, a registry other than crates.io, `[patch]` or `[replace]`, a Cargo.lock version other than 3 or 4, a manifest above the workspace, or a path package outside the root. Also Cargo configuration Peeky doesn't account for, named by file and key (`rustflags` other than `--cfg` and `--check-cfg`, or set in two files, among it), Cargo output that isn't what Cargo 1.96 writes, and an analysed package of edition 2015, a procedural macro, not a member, or built otherwise than at opt-level 0 with full debug information. So is one whose sources, or a procedural macro's, mention `RUSTC_BOOTSTRAP`, which Peeky's build sets. So is a feature in `features` that Cargo would build without: under resolver 1, Cargo gives `--features` to the root's package | Change what the message names, or analyse another package. Name a feature as `package/feature`, or set resolver = "2" |
+| An analysed package of edition 2018 whose sources or expansion hold a raw C string: `Peeky can't read …'s text as edition 2018 does: …`, refused before the program runs. Edition 2018 reads `cr"…"` as `cr` and an ordinary string, and Peeky reads a raw C string, as Rust 2021 does | Put a space after `cr`, as edition 2018 reads it, and build again. Or analyse another package |
 | `verify --check-command` on a target that isn't Python: `--check-command supports Python targets for now …`, refused before building ([6.7](COOKBOOK.md#67-check-an-edit-with-the-projects-tests)) | Pass `--check` with a checker script ([6.5](COOKBOOK.md#65-writing-a-checker)) |
 | A Rust workspace build script Peeky can't record: `Peeky records at most … files a build script or procedural macro may read, …`, `Peeky reads at most 16 MiB of a build script's output, …`, `Peeky can't tell the value Cargo gives …`, for a `rerun-if-env-changed` variable Cargo sets whose value Peeky can't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`), or `Peeky can't tell whether … was there while …`, for a missing `rerun-if-changed` file Peeky has no record of from before the build (outside the workspace, unreadable, or past the record's 200,000 entries), or `… build script watches …, a link to … that doesn't exist`, for one that is or passes through a link to nothing | Give the build script narrower `cargo::rerun-if-changed` lines, make it print less, or move large data out of the package |
+| A Rust workspace's remote run whose build read what a client can't compare: `A remote client can't compare what this build read with its own files: a build script says it reads …`, a file missing, unreadable or not a file on the worker's host. `.git` is never compared ([REMOTE.md](REMOTE.md#a-rust-workspace)) | Run Peeky on the worker's host, or change what the build script reads, as the message says |
+| A Rust workspace build that read a file outside the root: `Peeky builds only files inside …: … read …`, an `include!`, a `#[path]` or a build script's `rerun-if-changed`. No remote client could compare it either | Move it into the workspace, or drop what names it |
+| A compared file that a link leads out of the root, on the worker's host or in your checkout: `Peeky compares only files inside the root: on your checkout, app/src/main.rs leads out of it through app/src, a link to …`. Nothing through the link was read ([REMOTE.md](REMOTE.md#a-rust-workspace)) | Point the link inside the root, or make it a file or directory there |
+| A compared file whose links loop, or are more than 40 in a row: `Peeky compares only files it can reach: on …, … leads into a link loop at …` | Break the loop, or shorten the chain |
+| A Rust workspace package a build may read whole, with a link out of the root: `Peeky builds only files inside …: … leads out of it through …` | Point the link inside the workspace, or make it a file there |
 | A Python whose `sqlite3` module has SQLite older than 3.30, or one without the JSON functions, `json_each`, `json_tree` or window functions: `Evidence store needs SQLite 3.30 or newer …`, refused before the store is opened. The message names what is missing | Run Peeky with a Python built with a newer SQLite |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -202,10 +213,14 @@ file lists what it reads.
 - A Rust workspace's registry dependencies without `cargo vendor`'s copy, or with a copy whose
   `.cargo-checksum.json` doesn't list every file. The message gives the `cargo vendor` command.
 - A binary target's config with `sources`, or a key it doesn't take; `--binary` with a config
-  naming one; a binary outside the target directory; or a session of one, which Peeky doesn't run
-  yet ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
-- A client and a remote worker of different protocols: `Worker speaks protocol 13, this client 14`,
-  or, from the worker, `Client speaks protocol 13, this worker 14`. Install the same Peeky version
+  naming one; or a binary outside the target directory
+  ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
+- A run on a worker that debugs another binary than the one you name: `The worker debugs the
+  binary prog, which its configuration names, not build/prog: pass --binary prog`. So is
+  `--binary` on a worker that names no binary, and a run without it on one that does
+  ([REMOTE.md](REMOTE.md#a-binary-your-project-built)).
+- A client and a remote worker of different protocols: `Worker speaks protocol 15, this client 16`,
+  or, from the worker, `Client speaks protocol 15, this worker 16`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -213,6 +228,11 @@ file lists what it reads.
   16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
   directory, or start the worker with another `--root`.
 - A remote session started by an older Peeky, without source provenance. Start it again.
+- A remote run whose worker's target reads more files than a client may send: `The worker's
+  target reads 5000 files, more than the 4096 Peeky compares with a remote client's`. Run Peeky on
+  the worker's host, or analyse fewer packages ([REMOTE.md](REMOTE.md#a-rust-workspace)).
+- `peeky build --worker` with `--config`: the worker builds from its own `--rust-config`. A
+  `build` request to a worker whose target isn't a Rust workspace is refused too.
 - A `--python` that names no executable file, or an interpreter that can't say its version:
   `--python …: no executable file there`, or `Peeky could not run the Python interpreter …`. Pass
   the program's interpreter, or `--python peeky` for Peeky's own. A `--python` with `--worker`, or
@@ -252,12 +272,16 @@ file lists what it reads.
   a manifest changed since the build, or a new member appeared: the normal edit cycle.
 - So is a change to what a build script or procedural macro may read. That is each
   `rerun-if-changed` path of a local build script, or, with none, every file of its package. A
-  local procedural macro adds every file of its package and of the analysed ones.
+  local procedural macro adds every file of its package and of the analysed ones. Through a
+  worker, a package with no `rerun-if-changed` is compared by the files `cargo package --list`
+  gives ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - The message names the file and gives the command: `No current Peeky build of this workspace:
   util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again,
   or add --build`.
 - `--build` on the probe or `session start` builds first, under the build's own deadline
   (900 s). Without it, nothing is built.
+- Through a worker, the message names your own command: `peeky build . --worker URL`, which
+  builds on the worker's host ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - What identifies the build is `PROVENANCE_CHANGED` instead: Cargo's configuration, the lockfile, a
   vendored copy, a tool or the build's own output. So is a change during a build or a run.
 
@@ -273,6 +297,10 @@ file lists what it reads.
   `Worker source provenance differs for helper.py (the copy on the worker host differs from your
   checkout)`. Copy the file over, or remove it, then run again
   ([REMOTE.md](REMOTE.md#source-identity)).
+- A Rust workspace's file is compared by its links too: `… (the copy on the worker host differs
+  from your checkout, in its contents or in where a link is or points)`. A directory a build
+  script watches is compared entry by entry: `util/proto/ (its entries on the worker host differ
+  from your checkout's: …)` ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - A remote Python session whose sources changed on the worker host after launch is closed, and
   no values come back: `helper.py changed on the worker host after launch`.
 - A remote Python session with a stack frame whose code names a file under the root that wasn't
@@ -602,7 +630,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes: every
-code in the table above. Every HTTP response carries `X-Peeky-Protocol: 14`, and so does every
+code in the table above. Every HTTP response carries `X-Peeky-Protocol: 16`, and so does every
 request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
@@ -648,6 +676,15 @@ request a client sends.
 - **Protocol 14** adds `BUILD_REQUIRED`. A probe or session on a Rust workspace without a
   current Peeky build is refused with it, and its message names the `peeky build` command. A
   protocol 13 client would take the code for another failure ([details](#build_required)).
+- **Protocol 15** debugs a binary your project built from another host. A worker's
+  `--native-config` may name `binary`. `version`'s `sources` then names the binary, and the
+  `inputs` operation lists the files its judged units name. A client checks the binary is the one
+  it names ([REMOTE.md](REMOTE.md#a-binary-your-project-built)). A protocol 14 worker doesn't start with
+  a binary config.
+- **Protocol 16** probes a Rust workspace from another host. A worker started with a workspace's
+  `--rust-config` builds it on request (`build`: `peeky build --worker`, or `--build`). It
+  compares every workspace file the build compiled, and its manifests, with the client's. A
+  protocol 15 worker refuses such a probe ([REMOTE.md](REMOTE.md#a-rust-workspace)).
 - Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
   refuses any request but `version` and `hello` that names another protocol, or none, before it
   runs it.

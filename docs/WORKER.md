@@ -69,7 +69,9 @@ print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
 A native worker runs a fixed C or C++ target through lldb-dap:
 
 - It builds the declared sources in a fresh workspace, with debug information
-  ([what it checks](lang/c-cpp-cookbook.md#what-peeky-checks-about-a-build)).
+  ([what it checks](lang/c-cpp-cookbook.md#what-peeky-checks-about-a-build)). Or, where its
+  config names `binary`, it runs a binary the project built, where it is, and builds nothing
+  ([below](#start-a-worker-on-a-binary-your-project-built)).
 - It checks the source's, the binary's and the symbols' identity, and verifies the loaded
   executable and each stopped location.
 - It changes integers and texts, within Peeky's rules
@@ -89,7 +91,12 @@ A client on another host must show that its sources are the worker's.
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
      directory holding `pyvenv.cfg`);
-   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
+   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root;
+   - `{"kind": "binary", "binary": "prog"}`: a binary target, by its name under the root. Call
+     `inputs` for its files: `{"kind": "declared", "names": [...], "binary": "prog"}`, those its
+     judged units name. Listing them reads the binary's debug information, so the worker lists
+     them once per binary, one listing at a time. Another `inputs` waits for it, then answers
+     from it, or gets `BUSY` after 40 s. A binary the worker refuses is refused, with its code.
 
    Its `root` is the worker's `--root`.
 2. With `launch` or `probe`, send `protocol`, the protocol your client speaks. It must be the
@@ -99,6 +106,7 @@ A client on another host must show that its sources are the worker's.
    side only:
    - before launching;
    - for a compiled target, again after the build, before the debugger starts;
+   - for a binary target, once its units are judged, before the debugger starts;
    - for Python, before and after each later operation that resumes the program or returns a
      stop or values, `wait` included;
    - for Python, at a stack frame whose code names a file under the root that isn't a compared
@@ -126,8 +134,8 @@ A client on another host must show that its sources are the worker's.
 
 `peeky probe --worker` and `peeky session start --worker` do all of this. On every later
 `session` command, they also check the worker's protocol again. They hash your sources before
-each request except `close`, and again after each one that succeeds
-([REMOTE.md](REMOTE.md#source-identity)).
+each request except `close`, and again after each one that succeeds: the files the worker named
+at the session's start ([REMOTE.md](REMOTE.md#source-identity)).
 
 ## Start a C or C++ worker
 
@@ -148,7 +156,68 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD/examples/c" \
   configuration of its own.
 - `--java-config`, `--java-attach-config`, `--native-config`, `--rust-config` and `--python` are
   mutually exclusive: a worker serves one target. Without a config, it serves Python.
-- A config field that Peeky doesn't know is refused, and `sources` is required.
+- A config field that Peeky doesn't know is refused, and `sources` is required, unless the
+  config names a `binary` ([below](#start-a-worker-on-a-binary-your-project-built)).
+
+## Start a worker on a binary your project built
+
+A config naming `binary` instead of `sources` debugs a binary built on the worker's host, with
+clang `-O0 -g -gdwarf-5 -grecord-command-line` ([C and C++](lang/c-cpp.md#a-binary-your-project-built)).
+It takes the CLI's binary config: `binary`, relative to `--root`, and the tools.
+
+```json
+{
+  "binary": "prog",
+  "compiler": "/usr/bin/clang-18",
+  "adapter": "/usr/bin/lldb-dap-18",
+  "dwarfdump": "/usr/bin/llvm-dwarfdump-18",
+  "arguments": [],
+  "optimized": false
+}
+```
+
+```sh
+DEBUG_TOKEN="$token" peeky-worker --root "$PWD" --native-config "$PWD/work/binary.json"
+```
+
+- The worker builds nothing. It runs the binary where it is, and writes nothing beside it.
+- `compiler` runs only for its `--version` and the replay of each unit's preprocessing, as the
+  CLI's does. A request names no tool, path or flag: the binary and the tools are the config's.
+- A client names the same binary with `--binary` ([REMOTE.md](REMOTE.md#a-binary-your-project-built)).
+  The files compared with its copies are those under the root that the judged units name: at
+  most 4096 files and 16 MiB in all.
+- A frame in a shared library is never read, even one built from sources under the root. An
+  `inspect` of it is refused with `UNSUPPORTED`, naming the library, and the session is kept.
+
+## Start a Rust workspace's worker
+
+A workspace's `--rust-config` is its configuration ([Rust 7.2](lang/rust-cookbook.md#set-up-the-workspace)),
+with every tool named: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump`, and `dsymutil` on
+macOS. Its paths are relative to `--root`.
+
+- The worker builds only from that configuration. A `peeky build` on its host builds the same
+  build, which the worker's probes then use.
+- The `build` operation builds it for a client: no field names a tool, path or flag. It takes
+  only `wait`, at most 30 s, and `request`, a running build's id. It answers with the build's
+  summary, its error, or `{"status": "building", "request": ID}`. Ask again with that `request`
+  until it ends. One build runs at a time; a second request joins it.
+- A running build keeps the worker from its idle exit. Every way the worker ends stops the build
+  first: `shutdown`, SIGTERM, the idle timeout. Cargo and every process it ran are killed, and no
+  build starts after.
+- A build still running 30 s after it was stopped refuses `shutdown` with `BUSY`: the worker
+  keeps running, and owns the build. A build that ended otherwise, such as a kill that failed,
+  is named in `shutdown`'s `warning`, and on SIGTERM the worker exits with status 1, saying so.
+- `version` names the files to compare: the recorded build's manifests, lockfile and Cargo
+  configuration, every workspace file it compiled (the binary's too), what local build scripts
+  read, and each vendored copy's `.cargo-checksum.json`. Nothing under `.git` is named. Before
+  any build, the workspace's `Cargo.toml` and `Cargo.lock`. After `launch`, the build's own
+  record is compared again.
+- `version` also sets `structured`: each file is compared by the links on its path too. Its
+  `trees` names the directories compared entry by entry: each a build script watches. A package
+  Cargo watches whole is compared by the files `cargo package --list` gave at the build.
+- A launch on no current build is refused with `BUILD_REQUIRED`
+  ([ERRORS](ERRORS.md#build_required)). The worker's message names the build command on its
+  host. `peeky probe --worker` shows the client's own instead: `peeky build . --worker URL`.
 
 ## Inspect and change a C value
 

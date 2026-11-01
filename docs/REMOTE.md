@@ -154,7 +154,9 @@ the same keys as `--config`. Its paths are relative to `--root`.
 | Target | Worker flag | The config names |
 | --- | --- | --- |
 | C or C++ | `--native-config` | `sources`, `headers`, `compiler`, `adapter`, `dwarfdump`; `"language": "cpp"` for C++ |
+| A binary your project built | `--native-config` | `binary`, `compiler`, `adapter`, `dwarfdump`, and on macOS `dsymutil` ([below](#a-binary-your-project-built)) |
 | A Cargo crate | `--rust-config` | `sources`, `tests`, and every tool: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump` |
+| A Rust workspace | `--rust-config` | `analyse`, `run`, `vendor` and the rest of [its configuration](lang/rust-cookbook.md#set-up-the-workspace), and every tool |
 
 - The host needs the toolchain: a C or C++ compiler (clang or GCC), lldb-dap and llvm-dwarfdump,
   and for Rust, cargo, rustc and a linker ([WORKER.md](WORKER.md#start-a-c-or-c-worker)).
@@ -196,6 +198,126 @@ not in that copy. Other paths are marked `worker:` ([Paths in results](#paths-in
 seccomp profile refuses that call (`personality set failed`). So run the container with
 `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`.
 
+### A binary your project built
+
+A worker whose `--native-config` names `binary` debugs a binary built on its host, where it is
+([C and C++](lang/c-cpp.md#a-binary-your-project-built)). It builds nothing. On your machine, name
+the same binary with `--binary`, from a checkout of the sources. You don't need the binary there.
+
+```
+$ peeky probe . --binary prog --at src/util.c:3 --capture doubled,x --worker http://127.0.0.1:18799 --no-save
+hit  phase     line  function  selector  type  value
+1    observed  3     scale     doubled   int   4  [settable]
+1    observed  3     scale     x         int   2  [settable]
+status: completed  hits: 1  seconds: 0.955  max pause: 23.0 ms
+output:
+  2 5 30
+$ peeky session start . --binary prog --at src/util.c:3 --worker http://127.0.0.1:18799
+session default (c, remote): state: stopped at src/util.c:3 in scale, hit 1 (paused 0.0 s)
+```
+
+- **The files compared** are those under the root that the binary's judged units name, as its
+  debug information records them. The worker lists them when a client asks (`inputs`), once per
+  binary, and compares them once it has judged the units, before the debugger starts. Headers outside the root aren't compared with
+  yours: the worker checks each against its MD5. So values reflect the worker's system headers,
+  as the binary was built with them, and those may differ from yours.
+- **A binary the worker refuses,** such as one without debug information, is refused before the
+  probe or session is sent: `The worker refuses its binary: …`, with the worker's code and reason.
+- **At most 4096 files and 16 MiB in all,** counted before any of them is read. A binary whose units
+  name more is refused, with `UNSUPPORTED`: `The worker refuses its binary: prog's units name 5,000 files under the target
+  directory. A worker compares at most 4,096 files, 16 MiB in all, with a remote client's
+  copies: run Peeky on the binary's own host`.
+- **One listing at a time.** While the worker lists the files for one client, another waits for
+  that listing, or is `BUSY` after 40 s: `The worker is still listing prog's files for another
+  client: nothing ran`. Retry it.
+- **Another binary is refused:** `The worker debugs the binary prog, which its configuration
+  names, not build/prog: pass --binary prog`. So is `--binary` on a worker that names no binary.
+- A request names no tool, path or flag. The worker runs only what its own configuration names.
+
+### A Rust workspace
+
+A workspace's worker builds it only from its own `--rust-config`, as `peeky build` does on its
+host ([Rust 7.2](lang/rust-cookbook.md#a-rust-workspace)). A probe never builds. From your
+checkout, `peeky build . --worker URL` asks the worker to build, and so does `--build` on a probe
+or `session start`. A request names no tool, path or flag. Leave out `--config`: the worker's
+configuration decides.
+
+```
+$ peeky probe . --at util/src/lib.rs:26 --capture x --worker http://127.0.0.1:8765
+error [BUILD_REQUIRED]: No current Peeky build of this workspace: none has been made for this configuration. Run `peeky build . --worker http://127.0.0.1:8765` first, or add --build
+$ peeky build . --worker http://127.0.0.1:8765
+built worker:/srv/ws in 0.94 s: analysed util; runs bin app
+executable: worker:/var/lib/peeky/rust-builds/fe20a816526c85b41756de90/runs/8aef58a9c40281ee/bin/app
+build: 4f867190f755e3b750befa87e5d366eca94d09113a6514ad3ae5bc6597a4a34f
+$ peeky probe . --at util/src/lib.rs:26 --capture x --set x=100 --worker http://127.0.0.1:8765
+hit  phase      line  function        selector  type  value
+1    observed   26    util::std_only  x         u32   5  [settable]
+1    after-set  26    util::std_only  x         u32   100  [settable]
+set x: 5 -> 100
+```
+
+- **A refusal names your command.** `BUILD_REQUIRED` from the worker says `peeky build .
+  --worker URL`, not the command on its host.
+- **The build runs on the worker,** one at a time. The client asks again every 30 s until it
+  ends, within the build's deadline of 900 s. A build that outlives the client goes on there:
+  run the same command again to wait for it.
+- **A build ends with its worker.** A `shutdown`, SIGTERM or the idle timeout stops it first, and
+  kills Cargo and every process Cargo ran, build scripts too. Peeky's own walking and hashing
+  stops at its next entry. A running build is activity, so
+  the idle timeout waits for it.
+- **A build that doesn't end is never called stopped.** If the build still runs 30 s after the
+  worker stopped it, `shutdown` is refused with `BUSY`, and the worker keeps running. If any
+  build's kill failed, stopped or not, the worker says so when it ends, naming the process group
+  to end, and exits with status 1.
+- **The files compared** are the build's: every `Cargo.toml` of its packages, `Cargo.lock`, the
+  workspace's own Cargo configuration, and every file of the workspace it compiled, from rustc's
+  dependency files ([Source identity](#source-identity)). That includes the binary's own code,
+  which decides what reaches the analysed packages: `app/src/main.rs` that differs is refused.
+- **What a local build script reads** is compared too: each `rerun-if-changed` file, each file
+  under such a directory, or, with none, every file of its package as Cargo lists it. A schema it
+  reads shapes the code it generates, which the program runs.
+- **A package with no `rerun-if-changed`** is compared by the files `cargo package --list` gave
+  on the worker's host, each name exactly as Cargo writes it. That honours `include`, `exclude`
+  and, with git, what git ignores. Your
+  own ignored files and a `.DS_Store` aren't compared; a listed file you lack is named.
+- **What Cargo lists is looked at first.** A listed path that is a link to nothing, not a file, a
+  link out of the root, or missing refuses a remote run, saying which. Only what Cargo writes into
+  a package itself may be missing: `Cargo.toml.orig`, `.cargo_vcs_info.json`, a member's
+  `Cargo.lock`.
+- **With git, Cargo lists untracked files git doesn't ignore,** on the worker's host too. So a
+  `.DS_Store` there that `.gitignore` doesn't name must be in your checkout as well. Ignore it,
+  or delete it on the worker's host.
+- **If Cargo can't list a package,** the worker compares every file of it instead, and `peeky
+  build` says why, in its own output and through a worker. Without git, Cargo lists every file
+  but hidden ones and `target`.
+- **With a local procedural macro,** its package and the analysed ones are compared file by
+  file too. Cargo doesn't track what a macro reads, so Peeky doesn't narrow it to Cargo's list.
+- **Every file, there, is every entry:** hidden directories and `target` ones too, an empty
+  directory by its name, and links by their text, never followed into. Left out: `.git`, `.DS_Store`, `Thumbs.db`, `desktop.ini`,
+  another workspace package's directory and the vendored copies, each compared as its own. A link
+  out of the root refuses the build. So do more entries than the 65,536 Peeky records for a
+  build.
+- **Each file is compared by its links too,** not only its bytes. A link on one side only, the
+  file or a directory on its path, is refused though the bytes are the same. So is a link that
+  points elsewhere, anywhere on the chain of links it leads through.
+- **A watched directory is compared entry by entry.** An entry only in your checkout is refused,
+  even an empty directory: Cargo would rerun the build script, which may read it.
+- **A link that leads out of the root is refused,** on either side: the file itself, a directory
+  on its way, or an entry of a watched directory. A link out and back in is refused too. Nothing
+  through it is read, and the message names the link. So are links in a loop, or more than 40 in
+  a row, each with its own reason.
+- **Not `.git`:** nothing under a `.git` directory is compared. It is the checkout's metadata,
+  not the project's source, and differs between two checkouts of the same sources: a build
+  script watching `.git/HEAD` for its version would refuse every client.
+- **Outside the root,** no client has a copy. Peeky builds only files inside the root, so `peeky
+  build` already refuses a build script's input there. One a client can't send a hash of, such
+  as a watched file missing on the worker's host, refuses a remote run with `UNSUPPORTED`.
+- **Of a vendored copy,** only its `.cargo-checksum.json` is compared. The build checked each of
+  its files against that list, and the list against `Cargo.lock`. Before any build, only the
+  workspace's `Cargo.toml` and `Cargo.lock` are compared.
+- **More than 4096 such files** can't all be compared, and a remote run is refused. Analyse fewer
+  packages, or run Peeky on the worker's host.
+
 ### Source identity
 
 Before anything launches, the worker compares its copy of each source in the table below with
@@ -216,7 +338,9 @@ and sends the hashes with the request.
 | Python | every `.py` file under the root, except in virtual environments (a directory holding `pyvenv.cfg`) |
 | Java, launched or attached | the config's `sources` |
 | C and C++ | the config's `sources` and `headers` |
+| A binary your project built | the files under the root that its judged units name, at most 4096 and 16 MiB in all ([details](#a-binary-your-project-built)) |
 | Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
+| A Rust workspace | the build's manifests, `Cargo.lock` and Cargo configuration, every workspace file it compiled, and each vendored copy's `.cargo-checksum.json` ([A Rust workspace](#a-rust-workspace)) |
 
 - **Python counts every `.py` file,** in hidden directories and `.git` too, because the program
   may import any of them. A stray file on one side is refused too:
@@ -234,6 +358,8 @@ and sends the hashes with the request.
 
 - **C, C++, Rust and launched Java:** the build's own copies are compared again, after the build
   and before the debugger starts. So a source changed in between is refused, and doesn't run.
+- **A binary your project built:** its files are compared once the worker has judged its units,
+  before the debugger starts. The worker hashes them again, with the binary, before every operation.
 - **Python:** the worker hashes its `.py` files again before and after every operation that
   resumes the program or returns a stop or values: `wait` (and so `session start`), `continue`,
   `step`, `inspect` (and so `get`), `expand`, `preview`, `set` and `report`. A change closes the
@@ -291,7 +417,7 @@ as compared, and says the rest of that directory isn't.
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 14.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
+**Protocol 16.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
 Protocol 4 adds restores (`@before`). Protocol 5 withholds what a C or C++ pointer one past an
 array's end points at, which a protocol 4 worker reads as a value. Protocol 6 marks what is read
 through a C or C++ pointer `unproven` where Peeky can't show it points at a live object. A
@@ -302,17 +428,21 @@ reads a key of a GCC build's unordered container past its first 256 entries. Pro
 `hello`: a client sends nothing else, and not the token, before the worker proves it holds the
 token. Protocol 12 runs a Python program on the worker root's virtual environment, or the
 worker's `--python`, and names it. Protocol 13 runs pytest, as `python -m pytest` does
-(`--run-module pytest`). Protocol 14 adds `BUILD_REQUIRED`, for a Rust workspace without a current Peeky build. Both hosts need the same protocol. A client and a worker of different protocols refuse
+(`--run-module pytest`). Protocol 14 adds `BUILD_REQUIRED`, for a Rust workspace without a
+current Peeky build. Protocol 15 debugs a [binary your project built](#a-binary-your-project-built)
+from another host. Protocol 16 probes a [Rust workspace](#a-rust-workspace) from another host.
+Both hosts need the same protocol. A client and a worker of different protocols refuse
 each other:
 
 - A client refuses a worker of another protocol before sending anything but a `hello`, which
-  carries no token: `Worker speaks protocol 13, this client 14: install the same Peeky version on
+  carries no token: `Worker speaks protocol 15, this client 16: install the same Peeky version on
   both hosts`. That holds for a probe and a `session start`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 14: `Client
-  speaks protocol 13, this worker 14: install the same Peeky version on both hosts`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 16: `Client
+  speaks protocol 15, this worker 16: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
-- A remote session keeps its protocol and its sources' digest. Every later `session` command checks
-  the worker's protocol again. A session started with another protocol is refused: start it again.
+- A remote session keeps its protocol, its sources' digest, and the names of the files compared.
+  Every later `session` command checks the worker's protocol again, and hashes those files. A
+  session started with another protocol is refused: start it again.
 
 
 ### Why `ExitOnForwardFailure=yes`

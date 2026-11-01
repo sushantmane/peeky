@@ -23,9 +23,33 @@
   - In a caller's frame, a struct or array whose declaration's lines have run, in an unoptimized
     build (#366).
   - C++ structured bindings by reference, where Peeky proves what they refer to is alive (#368).
+  - C++ parameters, and locals with an `#include` between their declaration and the stop, in a
+    unit holding `<::` (gtest's `PrintTo<::std::type_info>`). C++11 reads it as `<` and `::`, but
+    Peeky read it as C's digraph `<:` and could tell no block in the unit. A binary target's C++
+    unit built before C++11 (`-std=c++03`) has its text unread.
 - **Rust:** a `NonNull<T>` local's address, as a raw pointer's. It is never followed (#420).
 
 ### Other changes
+
+- **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
+  closure or async block captures the places it uses. rustc's MIR prints one capture per
+  variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
+  value, from memory the closure had freed after growing its `String`. Now, where the MIR leaves
+  captures out and they may move something, the variables it names read as stale, saying so.
+  Where only shared references or `Copy` values are left out, they read as before. A change of a
+  named variable is refused either way, since Peeky can't tell what the closure holds.
+
+- **A version 2 Cargo.lock's refusal says what works (#467).** It said to run `cargo update
+  --workspace`, which keeps a lockfile's version, so tokio-4867's and ripgrep-2209's stayed
+  version 2. It now says to add `version = 3` as the first line: without git sources, the two
+  versions differ only by it. A version 1 lockfile is told to be written again with `cargo
+  generate-lockfile`.
+- **Rust: a function whose signature spans several lines is read (#466).** rustc puts no MIR
+  span on such a function's `fn` line, so Peeky matched no MIR to it. Every change in it was
+  refused, saying Peeky couldn't tell, and its rows lost their MIR types. rustfmt writes a long
+  signature so, as in ripgrep's `grep_printer::util`. It is matched now by the lines its
+  signature spans in the source. A visibility such as `pub(in crate::m)`, an ABI such as
+  `extern "C-unwind"`, and comments before `fn` are read token by token (#474).
 
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
@@ -52,6 +76,14 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **C and C++: a probe that finds no file, proven by the build's own record.** A binary target's
+  unit whose preprocessing asks for a missing file (`__has_include`) had its text withheld. On
+  Linux, with `-fdebug-macro`, Peeky now replays it with `-dD` and compares the build's record of
+  its macros. Where the probe's branches define or undefine macros, a build that found the file
+  would have left another record. So clang's `stdatomic.h` and `float.h`, which ask for the
+  system's, and gtest's `<any>` probe are read. A probe after a branch that finds its file never
+  runs: libc++'s Darwin probe. A probe whose branches differ in code or includes alone, or whose
+  group holds a `#line`, stays withheld, saying why.
 - **C and C++: the toolchain's archive code is its own.** On Linux, a binary target's functions
   linked from libgcc's archive and glibc's `libc_nonshared.a` (`atexit`, `__extenddftf2`) no
   longer make any call possibly return twice. Each is treated as equivalent to the archive
@@ -73,6 +105,14 @@
   `-march=native`, for a `-D` that names a probe or may paste one, and where one file is built
   twice with different commands. `vfork` returns twice, as setjmp does. Startup code whose name
   a program may use counts as the program's unless its bytes are the toolchain's.
+- **C and C++: a binary your project built, in a session and on a worker (protocol 15).**
+  `peeky session start . --binary ./prog --at src/x.c:LINE` runs a session on it. A worker's
+  `--native-config` may name `binary`: it builds nothing, and a request names no tool, path or
+  flag. A client names the same binary with `--binary`, and its copies of the files the judged
+  units name are compared, at most 4096 files and 16 MiB in all. A remote session keeps the names
+  compared at its start. A frame in a shared library, built from sources under the root or not, is
+  `UNSUPPORTED`, naming the library, and the session goes on. It was `DEBUGGER_ERROR`, or a stop
+  in the library failed.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and
@@ -101,6 +141,29 @@
   code is unknown code, taken as sound: a change it may keep a copy of is refused, naming the
   call, its line and its crate. So is one the crate's own code may hand on to it. A dependency's
   frame is read as a library's. The source scans read the crate as rustc expands it.
+- **A Rust workspace through a worker (protocol 16; ADR 0008, phase 2):** a worker started with a
+  workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
+  from its own configuration only. It compares every workspace file the build compiled, the
+  binary's included, what local build scripts read, its manifests, lockfile, Cargo configuration
+  and vendored checksum files with the client's; never `.git`. Each is compared by its links too,
+  never through one out of the root, and each watched directory entry by entry. A package Cargo
+  watches whole is compared by the files `cargo package --list` gives, so a client's git-ignored
+  files and `.DS_Store` are no difference; where Cargo can't list it, every entry, links by their
+  text, and the build says why. A worker's end stops its build, Cargo's processes too, and a build
+  that doesn't end is never called stopped. Its `BUILD_REQUIRED` names the client's own command. A
+  line of a generic function only another crate uses is refused before launch, naming it, where it
+  was a `DEBUGGER_ERROR`. A stop in another crate's copy of the crate's code reads no value, and
+  says why: it was read as the crate's own, with none of the checks of that copy. So does one Peeky
+  can't tell is the crate's own. A build script watching a directory no longer fails the build with
+  `Expected a regular file`. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
+- **A Rust workspace's analysed packages may be edition 2018 (ADR 0008, phase 2):** rustc lowers
+  2018's closure captures, arrays' `into_iter` and `panic!` forms into the MIR Peeky reads, so
+  its proofs hold. Edition 2015 is still refused. A 2018 crate whose text holds a raw C string
+  (`cr"…"`), which 2018 lexes otherwise, is refused, naming the line. An `impl` for a trait
+  object written bare or through an alias (`impl Keep for Box<Sink>`) is never read as one for
+  a type: its call is one Peeky can't tell, never the dependency's. Under resolver 1, a
+  configured feature Cargo would build without is refused, naming `package/feature`. tokio-4867
+  and ripgrep-2209 now build and probe, once their version 2 lockfiles say `version = 3` (#467).
 - **The agent guide starts with when to use Peeky, and the first command:** when a probe beats a
   print, and a copy-paste command for a Python test or script in a repository, a Maven or Gradle
   test, a Java class, C and C++ sources and a Rust crate. It says plainly what isn't supported

@@ -28,6 +28,20 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - A plain `cargo new` binary crate works: edition 2021 or 2024, with no dependencies. It can't
   have `src/lib.rs`, `src/bin` or `build.rs`, and has at most one integration test
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
+- Anything else is a workspace: a crate with dependencies, a library, `build.rs`, several
+  members. Vendor its dependencies, name what Peeky analyses and what runs in a JSON file, then
+  run `peeky build . --config rust.json` ([Rust 7.2](rust-cookbook.md#a-rust-workspace)).
+- A workspace's analysed packages may be edition 2018 too
+  ([ADR 0008](../adr/0008-native-project-reach.md#verified-for-phase-2)).
+- A probe of a workspace never builds it. Without a current build it is refused with
+  `BUILD_REQUIRED`, which names the exact `peeky build` command. `--build` builds first
+  ([Rust 7.2](rust-cookbook.md#build-it-then-probe-it)).
+- In a workspace, Peeky stops only in the analysed packages' files. A dependency's frame, or
+  another member's, reads as a library's
+  ([Rust 7.2](rust-cookbook.md#what-peeky-reads-in-a-workspace)).
+- A call into a dependency is code Peeky reads none of. A change the dependency may keep a copy
+  of is refused, naming the call, its line and its crate
+  ([Rust 7.2](rust-cookbook.md#calls-into-dependencies)).
 - If `Cargo.lock` is missing, run `cargo generate-lockfile` once
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
 - Name the line with `--at src/main.rs:LINE`. Pass program arguments after `--`, or with repeated
@@ -43,7 +57,9 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - `verify` also runs the crate's integration test, if it has one
   ([6.5](../COOKBOOK.md#65-writing-a-checker)).
 - To debug a crate on another host, run a worker there with `--rust-config`. Then add
-  `--worker URL` ([REMOTE](../REMOTE.md#c-c-and-rust-on-the-worker-host)).
+  `--worker URL` ([REMOTE](../REMOTE.md#c-c-and-rust-on-the-worker-host)). A workspace's worker
+  builds it with `peeky build . --worker URL`, or `--build`
+  ([REMOTE](../REMOTE.md#a-rust-workspace)).
 - Through a worker, `Cargo.toml`, `Cargo.lock` and every file in the config's `sources` and `tests`
   are compared with yours before the build. One that differs is refused by name
   ([REMOTE](../REMOTE.md#source-identity)).

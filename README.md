@@ -94,8 +94,10 @@ On your own project, the first command depends on its kind ([first command][firs
   installed without `-e` runs its `site-packages` copy, not its source.
 - **Java:** attach to a Maven or Gradle test started waiting for a debugger, or launch a class
   with no Maven or Gradle dependencies.
-- **C and C++:** a directory of sources, which Peeky builds itself. A project with its own build,
-  such as Make or CMake, isn't supported yet.
+- **C and C++:** a directory of sources, which Peeky builds itself. Or a binary your project's own
+  build (Make, CMake, autotools) made with clang `-O0 -g -gdwarf-5 -grecord-command-line`:
+  `peeky probe . --binary ./prog --at src/x.c:LINE`, a session, or a worker on another host
+  ([C and C++](https://github.com/sushantmane/peeky/blob/main/docs/lang/c-cpp.md#a-binary-your-project-built)).
 - **Rust:** a binary crate with no dependencies. A crate with dependencies isn't supported yet.
 
 `examples/pagination_bug.py` has a bug: page 1 starts at the second page. Stop at line 8, read two
