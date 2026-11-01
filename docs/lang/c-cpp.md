@@ -252,8 +252,7 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - A `#line` naming another file leaves a unit with no MD5s (use `bison -l`, `flex -L`), as do
   libc++'s headers without `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`, and inheriting constructors.
 - A unit's text is its preprocessing replayed, where each header it reads has an MD5 in its line
-  table (on Linux, `-fdebug-macro`, which can prove a `__has_include` finding none; rarely
-  on macOS). Else text rules withhold, saying so.
+  table (on Linux, `-fdebug-macro`; rarely on macOS). Elsewhere text rules withhold, saying why.
 - Any call may return twice where a unit isn't read or holds `asm`, or no unit covers code,
   unless a config names those that do (`"returns_twice": ["nlr_push"]`).
 - `session start` and a worker take `--binary` too
