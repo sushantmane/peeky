@@ -54,7 +54,7 @@ def wrapped(tmp_path):
     units.mkdir()
     log = tmp_path / "log"
 
-    def run(*args, crate="util", cwd=tmp_path / "ws", refuse=False, failed=False):
+    def run(*args, crate="util", cwd=tmp_path / "ws", refuse=False, failed=False, extra=None):
         # Cargo's jobserver: a pipe whose descriptors every rustc it runs inherits.
         read_end, write_end = os.pipe()
         env = {
@@ -66,6 +66,7 @@ def wrapped(tmp_path):
             "CARGO_MAKEFLAGS": f"-j --jobserver-fds={read_end},{write_end}",
             "CARGO_PKG_NAME": "util",
             **({"FAKE_STABLE_REFUSES": "1"} if refuse else {}),
+            **(extra or {}),
         }
         argv = [str(wrapper), str(rustc), "--crate-name", crate, *args]
         try:
@@ -86,6 +87,56 @@ def wrapped(tmp_path):
         return (runs, done) if failed else runs
 
     return run, units
+
+
+def test_the_wrapper_gives_an_integration_test_the_runs_own_binaries(wrapped, tmp_path):
+    # Cargo gives an integration test's compile `target/debug/app`, which `env!` bakes in and
+    # a later build replaces (#489's review): rustc is given the run's copy instead, named in
+    # the run's `bin-env`. The run is the units directory's parent.
+    run, units = wrapped
+    cargo = {"CARGO_BIN_EXE_app": "/target/debug/app", "CARGO_BIN_EXE_app-cli": "/t/app-cli"}
+    (compile_,) = run(
+        "tests/cli.rs", "-C", "extra-filename=-0123456789abcdef", crate="cli", extra=cargo
+    )
+    planned = {
+        "CARGO_BIN_EXE_app": str(tmp_path / "bin/app"),
+        "CARGO_BIN_EXE_app-cli": str(tmp_path / "bin/app-cli"),
+    }
+    assert {name: compile_["env"][name] for name in planned} == planned
+    assert json.loads((tmp_path / "bin-env/cli-0123456789abcdef.json").read_text()) == planned
+    assert not list(units.iterdir())
+    # Any other compile is given none, and named nowhere.
+    (other,) = run("src/main.rs", "-C", "extra-filename=-fedcba9876543210", crate="app")
+    assert not any(name.startswith("CARGO_BIN_EXE_") for name in other["env"])
+    assert [each.name for each in (tmp_path / "bin-env").iterdir()] == ["cli-0123456789abcdef.json"]
+
+
+def test_an_integration_test_is_refused_where_its_binaries_may_be_another_builds(tmp_path):
+    run = tmp_path / "runs/0123456789abcdef"
+    (run / "bin-env").mkdir(parents=True)
+    copies = {"app": "runs/0123456789abcdef/bin/app"}
+    message = {"fresh": False, "filenames": ["/target/debug/deps/cli-0123456789abcdef"]}
+    name = "`app`'s test cli"
+    # Without binaries, nothing to name.
+    rb._check_binaries(run, message, {}, name)
+    # Cargo's fresh test was compiled in an earlier build, naming that run's copies.
+    with pytest.raises(ValueError, match="didn't compile `app`'s test cli again"):
+        rb._check_binaries(run, {**message, "fresh": True}, copies, name)
+    # Binaries, but the wrapper saw none in the test's compile.
+    with pytest.raises(ValueError, match="saw no `CARGO_BIN_EXE_<name>` in `app`'s test cli"):
+        rb._check_binaries(run, message, copies, name)
+    marker = run / "bin-env/cli-0123456789abcdef.json"
+    marker.write_text(json.dumps({"CARGO_BIN_EXE_app": str(run / "bin/app")}))
+    rb._check_binaries(run, message, copies, name)
+    # A name Peeky didn't copy.
+    marker.write_text(json.dumps({"CARGO_BIN_EXE_tool": str(run / "bin/tool")}))
+    with pytest.raises(ValueError, match="names CARGO_BIN_EXE_tool, which Peeky didn't copy"):
+        rb._check_binaries(run, message, copies, name)
+    # Another run's copy.
+    other = tmp_path / "runs/fedcba9876543210/bin/app"
+    marker.write_text(json.dumps({"CARGO_BIN_EXE_app": str(other)}))
+    with pytest.raises(ValueError, match="names CARGO_BIN_EXE_app, which Peeky didn't copy"):
+        rb._check_binaries(run, message, copies, name)
 
 
 def test_the_wrapper_records_expands_and_dumps_an_analysed_compile(wrapped):
@@ -894,7 +945,8 @@ def a_build_stopped_in_cargo(tmp_path, monkeypatch, files):
         rustflags=lambda: (),
         config=SimpleNamespace(vendor=None, analyse=["util"]),
     )
-    shape = SimpleNamespace(workspace=root, analysed=(), vendored={}, rustflags=())
+    run = (SimpleNamespace(name="app"), SimpleNamespace(kinds=["bin"]))
+    shape = SimpleNamespace(workspace=root, analysed=(), vendored={}, rustflags=(), run=run)
     monkeypatch.setattr(peeky_build, "require_private", lambda path: None)
     monkeypatch.setattr(rb, "_tools", lambda target, env: ([], {}))
     monkeypatch.setattr(rb.rust_workspace, "read", lambda *args, **kwargs: shape)

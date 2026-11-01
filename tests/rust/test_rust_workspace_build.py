@@ -1525,3 +1525,57 @@ def test_an_integration_test_finds_its_packages_binary_as_cargo_test_gives_it(wo
     (directory / copy).write_bytes(b"not the binary")
     code, result = probe(capsys, workspace, config, "app/tests/cli.rs:1")
     assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+
+
+# An integration test that runs its package's binary by the path Cargo gives it while it
+# compiles (`env!`), and says which path that was.
+BAKED_BINARY = """#[test]
+fn baked() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_app")).output().unwrap();
+    print!("RAN {}", String::from_utf8_lossy(&out.stdout));
+    println!("AT {}", env!("CARGO_BIN_EXE_app"));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_binary_an_integration_test_names_while_it_compiles_is_its_runs_own(workspace, capsys):
+    # `env!("CARGO_BIN_EXE_app")` named Cargo's `target/debug/app`, which a later build of
+    # the same configuration replaces: a probe leasing the older build ran the later build's
+    # binary (#489's review). Now it names the run's own copy, and the test is compiled again
+    # every build, so it never names an earlier run's.
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(BAKED_BINARY)
+    config = configure(workspace, run={"package": "app", "test": "cli"})
+    main_rs = workspace / "app/src/main.rs"
+
+    def built():
+        code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+        assert code == 0, summary
+        return Path(summary["executable"])
+
+    def ran(test):
+        # As a probe on that build runs it, without `CARGO_BIN_EXE_app` at run time.
+        shown = subprocess.run(
+            [test, "--exact", "baked", "--nocapture"],
+            capture_output=True,
+            text=True,
+            cwd=workspace / "app",
+            env={"PATH": os.environ["PATH"]},
+        )
+        assert "test result: ok" in shown.stdout, shown.stdout + shown.stderr
+        lines = shown.stdout.splitlines()
+        printed = next(line for line in lines if line.startswith("RAN "))[4:]
+        named = next(line for line in lines if line.startswith("AT "))[3:]
+        return printed, Path(named)
+
+    older = built()
+    main_rs.write_text(main_rs.read_text().replace("let x =", "let x = 1 +"))
+    newer = built()
+    # The older build, kept as a lease keeps it, runs its own `app`, not the later one's.
+    assert ran(older) == ("2", older.with_name("app"))
+    assert ran(newer) == ("3", newer.with_name("app"))
+    # Built again with nothing changed: the test names that build's copy, not the last.
+    again = built()
+    assert again.parent != newer.parent
+    assert ran(again) == ("3", again.with_name("app"))

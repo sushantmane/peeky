@@ -2188,6 +2188,8 @@ job`.
 An integration test finds its package's binaries as `cargo test` gives them: each is copied
 beside the test's own executable, and named in `CARGO_BIN_EXE_<name>`. So assert_cmd's
 `Command::cargo_bin("bat")` works under Peeky too. The copies are part of the build's record.
+`env!("CARGO_BIN_EXE_bat")` names that build's own copy too, not Cargo's `target/debug/bat`,
+which a later build replaces. So the test's package is compiled again every build.
 
 Then probe with the same `--config`:
 

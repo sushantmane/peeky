@@ -72,8 +72,12 @@ SCHEMA = 5
 #    program must be built from it: no MIR optimizations, legacy mangling. Those flags
 #    are nightly ones, which RUSTC_BOOTSTRAP set to the crate's name allows for that
 #    crate alone, in that process's environment (the wrapper's own is never changed).
-# Every other compile runs unchanged. Python, not a shell: dash drops variables like
-# CARGO_BIN_EXE_<bin-with-dashes>.
+# Every other compile runs unchanged, but for one thing. An integration test's compile is
+# given each of its package's binaries as CARGO_BIN_EXE_<name> (`target/debug/app`), which
+# `env!` bakes into the test. Each is replaced with the run's own copy of that binary
+# (`runs/<nonce>/bin/app`, made once Cargo is done: _copy_binaries), and the names kept in
+# the run's `bin-env` (_check_binaries). A later build replaces Cargo's, never the run's.
+# Python, not a shell: dash drops variables like CARGO_BIN_EXE_<bin-with-dashes>.
 WRAPPER = r"""import json
 import os
 import shutil
@@ -92,13 +96,23 @@ source = None
 for arg in args[1:]:
     if not arg.startswith("-") and os.path.realpath(os.path.join(cwd, arg)) in wanted:
         source = os.path.realpath(os.path.join(cwd, arg))
+options = [b for a, b in zip(args, args[1:]) if a == "-C"]
+options += [a[2:] for a in args if a.startswith("-C") and len(a) > 2]
+extra = ""
+for option in options:
+    if option.startswith("extra-filename="):
+        extra = option.split("=", 1)[1]
+binaries = sorted(name for name in os.environ if name.startswith("CARGO_BIN_EXE_"))
+if binaries:
+    run = os.path.dirname(os.environ["PEEKY_UNITS"])
+    planned = {}
+    for name in binaries:
+        planned[name] = os.path.join(run, "bin", os.path.basename(os.environ[name]))
+        os.environ[name] = planned[name]
+    os.makedirs(os.path.join(run, "bin-env"), exist_ok=True)
+    with open(os.path.join(run, "bin-env", (crate or "") + extra + ".json"), "w") as out:
+        json.dump(planned, out)
 if source is not None:
-    options = [b for a, b in zip(args, args[1:]) if a == "-C"]
-    options += [a[2:] for a in args if a.startswith("-C") and len(a) > 2]
-    extra = ""
-    for option in options:
-        if option.startswith("extra-filename="):
-            extra = option.split("=", 1)[1]
     unit = os.path.join(os.environ["PEEKY_UNITS"], crate + extra)
     os.makedirs(unit)
     names = ("CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_MANIFEST_DIR", "CARGO_CRATE_NAME",
@@ -1127,6 +1141,11 @@ def _build(target, root, *, deadline=None, progress=None):
                 else ()
             )
             selected = [arg for package in shape.analysed for arg in ("-p", package.name)]
+            run_package, run_target = shape.run
+            if "test" in run_target.kinds and run_package not in shape.analysed:
+                # Its integration test is given the run's own binaries (WRAPPER): compiled
+                # again every build, so it never names an earlier run's.
+                selected += ["-p", run_package.name]
             say(f"building {shape.workspace} (analysed: {', '.join(target.config.analyse)})")
             _run(
                 [target.cargo, "clean", "--offline", "--locked", *selected, *extra],
@@ -1270,7 +1289,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     by_manifest = {str((root / package.manifest).resolve()): package for package in shape.local}
     analysed_names = {package.name for package in shape.analysed}
     run_package, run_target = shape.run
-    executable, binaries = None, {}
+    executable, binaries, ran = None, {}, None
     sources, generated, units, macros = {}, {}, [], set()
     seen_units, directories = set(), set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
@@ -1309,7 +1328,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             and kinds == run_target.kinds
             and message.get("executable")
         ):
-            executable = message["executable"]
+            executable, ran = message["executable"], message
         elif (
             package.name == run_package.name
             and "bin" in kinds
@@ -1389,6 +1408,8 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     # An integration test finds its package's binaries as `cargo test` gives them
     # (``_copy_binaries``); no other run is given them.
     binaries = _copy_binaries(binaries, run) if "test" in run_target.kinds else {}
+    if "test" in run_target.kinds:
+        _check_binaries(run, ran, binaries, f"`{run_package.name}`'s test {run_target.name}")
     # Only the bodies after rustc's last MIR pass are read; a body's before and after, and
     # each unit's few other files, within twice what is recorded.
     for entry in _walked(run / "units", [2 * MAX_RECORDED + 4096], _TOO_MANY_FILES):
@@ -2178,8 +2199,9 @@ def _copy_binaries(binaries, run):
     (``binaries``: {name: Cargo's copy, `target/debug/bat`}), copied beside the run's own
     executable. `cargo test` runs an integration test from `target/debug/deps`, beside
     `target/debug/bat`, and gives it `CARGO_BIN_EXE_bat` (rust_workspace_session). So
-    assert_cmd's `Command::cargo_bin("bat")` finds it either way (bat's tests, #488).
-    They are the build's own output, recorded and checked as the executable is."""
+    assert_cmd's `Command::cargo_bin("bat")` finds it either way (bat's tests, #488), and
+    `env!("CARGO_BIN_EXE_bat")` names it too (WRAPPER). They are the build's own output,
+    recorded and checked as the executable is."""
     folder, found = run / "bin", {}
     for name, executable in sorted(binaries.items()):
         copy = folder / Path(executable).name
@@ -2188,6 +2210,36 @@ def _copy_binaries(binaries, run):
         shutil.copy2(executable, copy)
         found[name] = copy.relative_to(run.parent.parent).as_posix()
     return found
+
+
+def _check_binaries(run, message, binaries, name):
+    """Refuse an integration test (``name``; ``message``, Cargo's of its compile) whose
+    `CARGO_BIN_EXE_<name>`, which `env!` bakes in, may name what a later build replaces:
+    one Cargo didn't compile in this build (an earlier run's copies), one whose compile
+    Peeky's wrapper didn't give the run's copies, or one that names a binary Peeky didn't
+    copy (``binaries``: _copy_binaries's)."""
+    if message.get("fresh"):
+        raise ValueError(
+            f"Cargo didn't compile {name} again in this build, so the binaries it names "
+            "(`CARGO_BIN_EXE_<name>`) may be an earlier build's. Build again"
+        )
+    planned = {}
+    for stem in sorted({_stem(Path(each).name) for each in message.get("filenames") or ()}):
+        path = run / "bin-env" / f"{stem}.json"
+        if path.is_file():
+            planned.update(json.loads(path.read_text()))
+    if binaries and not planned:
+        raise ValueError(
+            f"Peeky's wrapper saw no `CARGO_BIN_EXE_<name>` in {name}'s compile, though Cargo "
+            "built its package's binaries, so Peeky can't tell which binaries the test names. "
+            "Run another target"
+        )
+    copies = {os.path.realpath(run.parent.parent / each) for each in binaries.values()}
+    for variable, path in sorted(planned.items()):
+        if os.path.realpath(path) not in copies:
+            raise ValueError(
+                f"{name} names {variable}, which Peeky didn't copy from Cargo's build. Build again"
+            )
 
 
 def _copy_executable(executable, run):
