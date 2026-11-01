@@ -812,6 +812,7 @@ def test_asm_in_a_header_outside_the_program_may_return_twice(project, capsys):
 PROBED_UTIL = """#if __has_include("count.h")
 #include "count.h"
 #else
+#define COUNT_T_DEFAULT 1
 typedef int count_t;
 #endif
 
@@ -823,33 +824,80 @@ int scale(int x) {
 
 
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("present", [True, False], ids=["found", "not found"])
-def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, present):
+@pytest.mark.parametrize("case", ["found", "not found", "code alone", "include alone", "no record"])
+def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, case):
     # `__has_include` may have found a file when the program was built (a header path
-    # from its environment, a file since gone) that the replay doesn't.
+    # from its environment, a file since gone) that the replay doesn't. With
+    # -fdebug-macro (Linux), the build's record of its macros proves it found none: it
+    # wouldn't have defined COUNT_T_DEFAULT. Unless the branches differ in code or an
+    # include alone, which may leave no record.
     (project / "src").mkdir()
-    if present:
+    if case == "found":
         (project / "src" / "count.h").write_text("typedef int count_t;\n")
+    util = PROBED_UTIL
+    if case in ("code alone", "include alone"):
+        util = util.replace("#define COUNT_T_DEFAULT 1\n", "")
+    if case == "code alone":
+        util = util.replace('#include "count.h"', "typedef long count_t;")
     compiler = _clang()
-    _build_text(project, compiler, {}, util=PROBED_UTIL)
-    stop = next(n for n, text in enumerate(PROBED_UTIL.splitlines(), 1) if "// STOP" in text)
+    extra = {"util": ("-fno-debug-macro",)} if case == "no record" else None
+    _build_text(project, compiler, {}, extra=extra, util=util)
+    stop = next(n for n, text in enumerate(util.splitlines(), 1) if "// STOP" in text)
     result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
     assert result["status"] == "completed", result.get("error")
     (row,) = result["rows"]
-    if present:
+    linux = sys.platform == "linux"
+    if case == "found" or (case == "not found" and linux):
         assert row.get("value") == "4", row
-    else:
-        assert (
-            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
-            '"count.h" exists'
-        ) in (row.get("error") or ""), row
-        assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
-        units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
-        assert units["src/util.c"]["text"] == (
-            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
-            '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
-            "have found one (its environment can add header paths, and a file may since be gone)"
-        ), units
+        return
+    said = (
+        "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+        '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
+        "have found one (its environment can add header paths, and a file may since be gone)"
+    )
+    if linux and case in ("code alone", "include alone"):
+        said += (
+            "; two of its group's branches may leave no record of macros (only a #define or an "
+            "#undef surely does: an #include may be skipped), so the build's record can't tell "
+            "them apart"
+        )
+    elif linux:
+        said += (
+            "; build it with -fdebug-macro, and Peeky checks it against the build's own record "
+            "of its macros"
+        )
+    # A row's error shows the start; describe, all of it.
+    assert said[:90] in (row.get("error") or ""), row
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+    assert units["src/util.c"]["text"] == said, units
+
+
+STDATOMIC_UTIL = """#include <stdatomic.h>
+
+int scale(int x) {
+    static atomic_int calls;
+    atomic_fetch_add(&calls, 1);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="-fdebug-macro, on Linux")
+def test_clang_s_stdatomic_h_is_read_by_the_build_s_record_of_its_macros(project):
+    # clang's stdatomic.h asks for the system's (`__has_include_next(<stdatomic.h>)`),
+    # which glibc lacks. Had the build found one, it would have included it and defined
+    # none of clang's ATOMIC_* macros: its record of macros proves it didn't.
+    (project / "src").mkdir()
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=STDATOMIC_UTIL)
+    stop = next(n for n, text in enumerate(STDATOMIC_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert row.get("value") == "4", row
 
 
 ATOMIC_UTIL = """int scale(int x) {

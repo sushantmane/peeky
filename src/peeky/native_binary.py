@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from peeky import native_startup
+from peeky import native_macros, native_startup
 from peeky.adapters import PythonAdapter
 from peeky.assembler import _C_KEYWORD
 from peeky.build import (
@@ -69,9 +69,11 @@ from peeky.digest import sha256_file
 from peeky.errors import Refused
 from peeky.native import (
     _FOREIGN_TAGS,
+    MAX_DEBUG_INFO,
     MAX_LINE_TEXT,
     MAX_STATEMENT_SOURCE,
     MAX_UNIT,
+    SYMBOL_FAILURES,
     VERSION_TIMEOUT,
     CodeIndex,
     NativeSession,
@@ -614,9 +616,67 @@ def _found(probe, includer, lists):
     return None
 
 
-def _unproven_probe(read, lists, root, cache):
-    """Why a probe the replay's inputs (``read``: their paths as the compiler opened them)
-    hold may have been answered otherwise when the program was built, or None.
+@dataclass(frozen=True)
+class Unproven:
+    """Why a probe of the replay's inputs may have been answered otherwise when the
+    program was built (``why``, a phrase), or a file it reads its line table doesn't name:
+    the file holding the probe (``path``, as the compiler opened it) and the Probe, or
+    None; whether the build's record of its macros may prove it (``provable``); and
+    whether the file holding it is one the line table doesn't name (``hidden``), whose
+    probes ran only where the replay entered it."""
+
+    why: str
+    path: str | None = None
+    probe: Probe | None = None
+    provable: bool = False
+    hidden: bool = False
+
+
+def _unread_named(real, root):
+    return (
+        f"its preprocessing reads {_shown(real, root)}, which its line table doesn't name "
+        "(-fdebug-macro names each header, on Linux)"
+    )
+
+
+# A trigraph sequence: `??` and one of the nine characters -trigraphs replaces.
+_TRIGRAPH = re.compile(rb"\?\?[=/'()!<>-]")
+_LINE_END = re.compile(rb"\r\n|\r|\n")
+
+
+def trigraphs_on(words, cpp):
+    """What of a unit's recorded ``words`` may turn trigraphs on, or None where they are
+    surely off. As clang reads them, the last of a standard (`-std=c11`, `-ansi`),
+    `-trigraphs` and `-fno-trigraphs` decides: `-fno-trigraphs -std=c11` has them. A
+    standard has them but clang's default, a GNU one, and C++17 and later. A form Peeky
+    doesn't read (`-Wp,-trigraphs`, `-std c99`) may turn them on, wherever it is."""
+    later = ("c++17", "c++1z", "c++20", "c++2a", "c++23", "c++2b", "c++26", "c++2c")
+    last = None
+    for word in words[1:]:
+        if word in ("-trigraphs", "-ftrigraphs", "--trigraphs", "-ansi"):
+            last = word
+        elif word == "-fno-trigraphs":
+            last = None
+        elif word.startswith(("-std=", "--std=")):
+            value = word.split("=", 1)[1]
+            last = None if value.startswith("gnu") or (cpp and value in later) else word
+        elif word in ("-std", "--std") or (
+            "trigraphs" in word and word not in ("-Wtrigraphs", "-Wno-trigraphs")
+        ):
+            return word
+    return last
+
+
+def _unproven_probe(
+    read, lists, root, cache, unnamed=frozenset(), named=frozenset(), entered=None, trigraphs=None
+):
+    """Each Unproven of the replay's inputs (``read``: their paths as the compiler opened
+    them): a probe that may have been answered otherwise when the program was built, or a
+    file it reads that its line table doesn't name (``unnamed``: resolved).
+
+    Where the unit's command may turn trigraphs on (``trigraphs``: trigraphs_on's), a file
+    holding a trigraph sequence (``_TRIGRAPH``) counts whole: a trigraph may make a
+    directive or splice lines, hiding a probe from ``probes``.
 
     A probe that finds a file now (``_found``, never further than clang's own search)
     is proven, or never ran: where it runs, clang lists the file it finds among the
@@ -625,8 +685,13 @@ def _unproven_probe(read, lists, root, cache):
     environment only adds directories), so the build found it too. A probe that finds
     none may have been answered otherwise: the build's environment may have added a
     directory holding the file, or the file may since be gone. Peeky can't tell whether
-    it ran (its group may have been skipped), so it counts. A probe in a macro counts
-    where any input names the macro."""
+    it ran (its group may have been skipped), so it counts, unless an earlier branch of
+    its group asks for a file alone and finds one the line table names (``named``). That
+    branch is taken where reached: a later one never runs. A probe that finds a file of
+    ``unnamed`` counts too. Each of those two may be proven by the build's record of its
+    macros (``provable``). A probe in a macro counts where any input names the macro.
+    ``entered``: the files the replay entered, where known: the probes of others never
+    ran."""
     contents = {}
     for path in read:
         real = os.path.realpath(path)
@@ -637,8 +702,36 @@ def _unproven_probe(read, lists, root, cache):
                 listed = probes(data.decode("utf-8", "replace"))
             cache[real] = (data, listed)
         contents[str(path)] = cache[real]
+    found_by, issues = {}, []
     for path, (data, listed) in contents.items():
+        if entered is not None and not {path, os.path.realpath(path)} & entered:
+            continue
+        hidden = entered is None and os.path.realpath(path) in unnamed
+        key = ("trigraph", os.path.realpath(path))
+        if key not in cache:
+            cache[key] = _TRIGRAPH.search(data)
+        if trigraphs is not None and (trigraph := cache[key]) is not None:
+            # -trigraphs may make a directive or splice lines (`__has_inclu??/`), which
+            # Peeky's own reading of the file (probes, conditionals) doesn't follow.
+            # Lines end as the compilers count them (c_source.normalized): `\r\n`, `\n`, `\r`.
+            line = len(_LINE_END.findall(data, 0, trigraph.start())) + 1
+            issues.append(
+                Unproven(
+                    f"its preprocessing reads {_shown(path, root)}, which uses trigraph sequences "
+                    f"(`{trigraph[0].decode()}` on line {line}), and its command may turn them "
+                    f"on ({trigraphs}): Peeky doesn't read text that -trigraphs could change",
+                    path,
+                    None,
+                    False,
+                    hidden,
+                )
+            )
+            continue
         for probe in listed:
+
+            def add(why, provable=False, probe=probe, path=path, hidden=hidden):
+                issues.append(Unproven(why, path, probe, provable, hidden))
+
             where = f"{probe.kind}, in {_shown(path, root)}:{probe.line}"
             if probe.macro:
                 token = probe.macro.encode()
@@ -647,33 +740,79 @@ def _unproven_probe(read, lists, root, cache):
                 ):
                     continue
             if probe.kind in ("#embed", "__has_embed"):
-                return (
-                    f"its preprocessing reads a file to embed ({where}), which no line table names"
-                )
+                add(f"its preprocessing reads a file to embed ({where}), which no line table names")
+                continue
             if probe.header is None:
-                return (
+                add(
                     f"its preprocessing asks whether a file exists ({where}), naming it in a "
                     "way Peeky doesn't read"
                 )
+                continue
             asked = f"<{probe.header}>" if probe.angled else f'"{probe.header}"'
             if probe.macro is not None and (not probe.angled or probe.kind != "__has_include"):
                 # Where a macro's probe searches from depends on where it is expanded.
-                return (
+                add(
                     f"its preprocessing asks whether {asked} exists ({where}), in a macro, "
                     "whose search Peeky can't follow"
                 )
+                continue
             if lists is None:
-                return (
+                add(
                     f"its preprocessing asks whether {asked} exists ({where}), and Peeky "
                     "can't read the compiler's search path"
                 )
-            if _found(probe, path, lists) is None:
-                return (
-                    f"its preprocessing asks whether {asked} exists ({where}), and finds "
-                    "none: the build may have found one (its environment can add header "
-                    "paths, and a file may since be gone)"
-                )
-    return None
+                continue
+            found = _found(probe, path, lists)
+            if found is not None:
+                real = os.path.realpath(found)
+                if real in unnamed:
+                    found_by.setdefault(
+                        real, Unproven(_unread_named(real, root), path, probe, True, hidden)
+                    )
+                continue
+            if probe.macro is None and _moot(probe, path, listed, lists, named, cache):
+                continue
+            add(
+                f"its preprocessing asks whether {asked} exists ({where}), and finds none: "
+                "the build may have found one (its environment can add header paths, and a "
+                "file may since be gone)",
+                probe.macro is None,
+            )
+    first = [found_by.get(real) or Unproven(_unread_named(real, root)) for real in unnamed]
+    return first + [each for each in found_by.values() if each not in first] + issues
+
+
+def _groups(path, cache):
+    """native_macros.conditionals of the file at ``path``, kept in ``cache``."""
+    real = os.path.realpath(path)
+    if ("groups", real) not in cache:
+        data = cache[real][0] if real in cache else Path(real).read_bytes()
+        cache[("groups", real)] = native_macros.conditionals(data.decode("utf-8", "replace"))
+    return cache[("groups", real)]
+
+
+def _moot(probe, path, listed, lists, named, cache):
+    """Whether ``probe`` (of ``path``, whose probes are ``listed``) is in a branch of its
+    group after one whose condition is a probe alone that finds a file now that the line
+    table names (``named``): a probe the build answered so too, so that branch is taken
+    where reached, and the probe never runs."""
+    found = _groups(path, cache).get(probe.line)
+    if found is None:
+        return False
+    group, index = found
+    if group.trigraphed:
+        return False
+    for branch in group.branches[:index]:
+        kind = native_macros.lone(branch) if branch.kind in ("if", "elif") else None
+        asking = [
+            each for each in listed if branch.line <= each.line <= branch.end and each.kind == kind
+        ]
+        if len(asking) != 1 or asking[0].header is None or asking[0].macro is not None:
+            continue
+        found = _found(asking[0], path, lists)
+        if found is not None and os.path.realpath(found) in named:
+            return True
+    return False
 
 
 _ASM_QUALIFIERS = frozenset(
@@ -790,13 +929,27 @@ def _marked(text, at, root):
     return f"line {line}"
 
 
-def replay(judged, compiler, env, scratch, root, timeout, probed=None):
+@dataclass(frozen=True)
+class Pending:
+    """A unit whose text the build's record of its macros may prove readable: ``why`` it
+    can't be read otherwise (TEXT_UNREAD's)."""
+
+    why: str
+
+
+def replay(judged, compiler, env, scratch, root, timeout, probed=None, record=None):
     """The UnitText of ``judged`` (a read unit), or why it can't be read: its
     preprocessing replayed (`-E`, with its dependencies) by ``compiler``, in its
     compilation directory, with the options replay_arguments passes and
     `--no-default-config`. Every file it reads must be one the unit's line table names
     (and so checked against its MD5): a header of macros alone is named only with
-    `-fdebug-macro`."""
+    `-fdebug-macro`. Its probes must be proven (``_unproven_probe``).
+
+    Where all that isn't so is what the build's record of its macros may prove, a
+    Pending, unless ``record`` is that record (native_macros.build_records'). Then the
+    preprocessing is replayed with `-dD` too, and must leave the same record; the line
+    table must name only files it read; and each probe's group must be settled
+    (native_macros.unsettled)."""
     unit, name = judged.unit, judged.name
 
     def unread(why):
@@ -822,27 +975,13 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         output, depends, errors = work / "unit.i", work / "unit.d", work / "errors.txt"
         argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-v", "-MD", "-MF"]
         argv += [str(depends), arguments[-1], "-o", str(output)]
-        with errors.open("wb") as stderr:
-            process = subprocess.Popen(
-                argv,
-                cwd=comp_dir,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=stderr,
-                stderr=stderr,
-                start_new_session=True,
-            )
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=5)
-                return unread(f"its preprocessing took over {timeout:.0f} s")
+        started = time.monotonic()
+        status = _preprocess(argv, comp_dir, env, timeout, errors)
+        if status is None:
+            return unread(f"its preprocessing took over {timeout:.0f} s")
         with errors.open("rb") as diagnostics:
             said = diagnostics.read(MAX_REPLAY_ERRORS).decode("utf-8", "replace")
-        if process.returncode:
+        if status:
             first = next((line for line in said.split("\n") if "error" in line), said)
             return unread(f"its preprocessing failed: {' '.join(first.split())[:200]}")
         if not output.is_file() or output.stat().st_size > MAX_UNIT:
@@ -863,24 +1002,33 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         settings = {
             os.path.realpath(posixpath.join(comp_dir, value, "SDKSettings.json")) for value in roots
         }
-        reads = []
+        reads, unnamed = [], []
         for path in read:
             real = os.path.realpath(path)
             if real in settings:
                 continue
             if real not in named:
-                return unread(
-                    f"its preprocessing reads {_shown(real, root)}, which its line table "
-                    "doesn't name (-fdebug-macro names each header, on Linux)"
-                )
-            if Path(real).is_relative_to(root):
+                unnamed.append(real)
+            elif Path(real).is_relative_to(root):
                 reads.append(Path(real).relative_to(root).as_posix())
         inputs = [path for path in read if os.path.realpath(path) not in settings]
-        unproven = _unproven_probe(
-            inputs, _search_lists(said), root, {} if probed is None else probed
-        )
-        if unproven is not None:
-            return unread(unproven)
+        lists = _search_lists(said)
+        probed = {} if probed is None else probed
+        trigraphs = trigraphs_on(judged.words, judged.language == "cpp")
+        issues = _unproven_probe(inputs, lists, root, probed, unnamed, named, None, trigraphs)
+        if issues and not all(issue.provable or issue.hidden for issue in issues):
+            return unread(next(each for each in issues if not (each.provable or each.hidden)).why)
+        if issues and record is None:
+            return Pending(unread(issues[0].why))
+        if issues:
+            argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-dD"]
+            argv += [arguments[-1], "-o", str(work / "unit.dd")]
+            left = timeout - (time.monotonic() - started)
+            reals = {os.path.realpath(each) for each in read}
+            facts = (inputs, lists, probed, unnamed, named, reals, trigraphs)
+            why = _proven(issues[0].why, record, argv, env, comp_dir, left, root, facts)
+            if why is not None:
+                return unread(why)
         own = set(reads)
 
         def program(path):
@@ -917,21 +1065,91 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def replay_units(read, compiler, scratch, root, deadline):
+def _preprocess(argv, cwd, env, timeout, errors):
+    """The exit status of ``argv``, run in ``cwd`` with ``env``, its output and diagnostics
+    to the file ``errors``; None where it took over ``timeout`` seconds, killed."""
+    with errors.open("wb") as stderr:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stderr,
+            stderr=stderr,
+            start_new_session=True,
+        )
+        try:
+            return process.wait(timeout=max(timeout, 0.1))
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            return None
+
+
+def _proven(why, record, argv, env, comp_dir, timeout, root, facts):
+    """None where the build's record of its macros (``record``) proves the replay's
+    probes; else why not, after ``why``: the preprocessing replayed with `-dD` (``argv``,
+    in ``comp_dir``) must leave the same record, the line table must name only files the
+    replay read, and each probe left (``_unproven_probe`` of ``facts``, given the files the
+    replay entered) must be settled."""
+    inputs, lists, probed, unnamed, named, reals, trigraphs = facts
+    dumped = Path(argv[-1])
+    errors = dumped.with_suffix(".errors")
+    status = _preprocess(argv, comp_dir, env, timeout, errors)
+    if status is None:
+        return f"{why}; its preprocessing with -dD, to check the build's record, took too long"
+    if status or not dumped.is_file():
+        return f"{why}; its preprocessing with -dD, to check the build's record, failed"
+    if dumped.stat().st_size > 4 * MAX_UNIT:
+        return f"{why}; its preprocessing with -dD is over {4 * MAX_UNIT >> 20} MiB"
+    with dumped.open(encoding="utf-8", errors="replace") as lines:
+        replayed, entered = native_macros.replay_record(lines, comp_dir)
+    if replayed is None:
+        return f"{why}; Peeky can't follow the line markers of its preprocessing with -dD"
+    differs = native_macros.difference(record, replayed, lambda path: _shown(path, root))
+    if differs is not None:
+        return (
+            f"{why}; the build's record of its macros (-fdebug-macro) isn't the replay's: {differs}"
+        )
+    if missing := sorted(named - reals):
+        return (
+            f"{why}; its line table names {_shown(missing[0], root)}, which the replay doesn't read"
+        )
+    for issue in _unproven_probe(inputs, lists, root, probed, unnamed, named, entered, trigraphs):
+        if not issue.provable:
+            return issue.why
+        found = _groups(issue.path, probed).get(issue.probe.line)
+        if found is None:
+            return f"{issue.why}; Peeky finds no #if group the probe chooses a branch of"
+        if (why := native_macros.unsettled(found[0])) is not None:
+            return f"{issue.why}; {why}"
+    return None
+
+
+# What a unit whose probes the build's record of its macros may prove says without one.
+_RECORD_HINT = (
+    "; build it with -fdebug-macro, and Peeky checks it against the build's own record of "
+    "its macros"
+)
+
+
+def replay_units(read, compiler, scratch, root, deadline, records=None):
     """{unit name: UnitText, or why its text can't be read} of each unit read, replayed
     at most MAX_REPLAYS at once, while the launch's deadline leaves REPLAY_MARGIN
-    seconds."""
-    import time
-
+    seconds. A unit whose replay is Pending is replayed again with its record of macros:
+    ``records``, given the Pending units (Judged), gives {line table offset: record, or
+    why it can't be read} (native_macros.build_records)."""
     env = replay_environment(scratch)
 
-    def one(judged, probed):
+    def one(judged, probed, record=None):
         left = 15 if deadline is None else deadline - time.monotonic() - REPLAY_MARGIN
         if left <= 0:
             return TEXT_UNREAD.format(
                 unit=judged.name, why="there was no time left for it before the launch"
             )
-        return replay(judged, compiler, env, scratch, root, min(15, left), probed)
+        return replay(judged, compiler, env, scratch, root, min(15, left), probed, record)
 
     # Peeky reads a unit's text by its file's name: units built from one file with other
     # commands (`-D`s) would have one's text stand for all.
@@ -955,6 +1173,36 @@ def replay_units(read, compiler, scratch, root, deadline):
         texts.update(
             zip(
                 (each.name for each in replayed), pool.map(lambda each: one(each, probed), replayed)
+            )
+        )
+        pending = [each for each in replayed if isinstance(texts[each.name], Pending)]
+        found = {}
+        if pending and records is not None:
+            try:
+                found = records(pending)
+            except (*SYMBOL_FAILURES, OSError, ValueError) as exc:
+                said = f"; Peeky can't read the build's record of its macros ({exc})"
+                found = {each.unit.stmt_list: said for each in pending}
+        again = []
+        for each in pending:
+            record = found.get(each.unit.stmt_list)
+            if isinstance(record, list):
+                again.append((each, record))
+                continue
+            why = texts[each.name].why
+            if record is None:
+                asked = [word for word in each.words if word.endswith("debug-macro")]
+                if asked and asked[-1] == "-fdebug-macro":
+                    why += "; Peeky finds no record of its macros in the binary"
+                elif sys.platform == "linux":
+                    why += _RECORD_HINT
+            else:
+                why += record if record.startswith(";") else f"; {record}"
+            texts[each.name] = why
+        texts.update(
+            zip(
+                (each.name for each, _ in again),
+                pool.map(lambda pair: one(pair[0], probed, pair[1]), again),
             )
         )
     return texts
@@ -1721,6 +1969,7 @@ class BinaryTarget:
             read=read,
             language=language,
             files=files,
+            tables=tables,
         )
 
     def remote_inputs(self, root):
@@ -1906,7 +2155,28 @@ class BinaryTarget:
                 "UNSUPPORTED",
                 f"{shown} has no build ID Peeky can read ({exc}): link it with {flag}",
             ) from None
-        texts = replay_units(read, compiler, scratch, root, deadline)
+
+        def records(pending):
+            # Each pending unit's line table's files, resolved, by index.
+            files = {}
+            for each in pending:
+                table = found.tables[each.unit.stmt_list]
+                paths = {index: table.path(index, each.unit.comp_dir) for index in table.files}
+                files[each.unit.stmt_list] = {
+                    index: os.path.realpath(path) for index, path in paths.items() if path
+                }
+            with _symbol_text(
+                dwarfdump,
+                [["--debug-macro", str(symbols)]],
+                scratch,
+                env,
+                limit=MAX_DEBUG_INFO,
+                timeout=_remaining(deadline),
+                what="records of macros",
+            ) as lines:
+                return native_macros.build_records(lines, files)
+
+        texts = replay_units(read, compiler, scratch, root, deadline, records)
         any_call = None
         if self.returns_twice is None:
             # The toolchain's own environment, never the program's (``env``).

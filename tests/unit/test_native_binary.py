@@ -690,6 +690,7 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
 FAKE_CC = """#!/bin/sh
 # Writes what a preprocessor would: the text (-o) and its dependencies (-MF).
 echo "$@" > argv
+all=" $* "
 out= deps= input=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -700,6 +701,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+case "$all" in *" -dD "*) if [ -f dumped ]; then cat dumped > "$out"; exit 0; fi; exit 1;; esac
 if [ -f fail ]; then echo "src/main.c:1:10: fatal error: 'gone.h' file not found" >&2; exit 1; fi
 if [ -f search ]; then cat search >&2; fi
 if [ -f output ]; then cat output > "$out"; else
@@ -708,7 +710,7 @@ printf 'x.o: %s %s\\n' "$input" "$(cat reads 2>/dev/null)" > "$deps"
 """
 
 
-def _replay(root, tmp_path, judged=None, words=None):
+def _replay(root, tmp_path, judged=None, words=None, record=None, tables=None):
     from peeky.native_binary import replay, replay_environment
 
     compiler = tmp_path / "fake-cc"
@@ -716,10 +718,11 @@ def _replay(root, tmp_path, judged=None, words=None):
     compiler.chmod(0o755)
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
-    judged = judged or judge(_unit(root), _tables(root), CLANG, root)
+    judged = judged or judge(_unit(root), tables or _tables(root), CLANG, root)
     if words is not None:
         judged = Judged(**{**judged.__dict__, "words": tuple(words)})
-    return replay(judged, str(compiler), replay_environment(scratch), scratch, root, 10)
+    environment = replay_environment(scratch)
+    return replay(judged, str(compiler), environment, scratch, root, 10, None, record)
 
 
 def test_a_unit_s_text_is_its_replayed_preprocessing(root, tmp_path):
@@ -941,13 +944,14 @@ const char *s = "__has_include(<str.h>)";
 
 
 def test_a_probe_the_replay_answers_no_leaves_the_text_unread(root, tmp_path):
-    from peeky.native_binary import UnitText
+    from peeky.native_binary import Pending, UnitText
 
     (root / "src" / "a.h").write_text("#if __has_include(<extra/config.h>)\n#endif\n")
     (root / "reads").write_text("src/a.h")
     include = tmp_path / "include"
     _search(root, include)
-    assert _replay(root, tmp_path) == (
+    # Unless the build's record of its macros proves it (Pending).
+    assert _replay(root, tmp_path) == Pending(
         "Peeky can't read src/main.c as compiled: its preprocessing asks whether "
         "<extra/config.h> exists (__has_include, in src/a.h:1), and finds none: the build may "
         "have found one (its environment can add header paths, and a file may since be gone)"
@@ -960,6 +964,277 @@ def test_a_probe_the_replay_answers_no_leaves_the_text_unread(root, tmp_path):
     # Without the compiler's search path, Peeky can't tell.
     (root / "search").unlink()
     assert "can't read the compiler's search path" in _replay(root, tmp_path)
+
+
+# The replay with -dD of a unit whose main file includes src/a.h on line 1, which
+# defines HAVE_X on line 4.
+DUMPED = """# 1 "src/main.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+#define __clang__ 1
+# 1 "<built-in>" 2
+# 1 "src/main.c" 2
+# 1 "src/a.h" 1
+
+
+
+#define HAVE_X 0
+
+# 2 "src/main.c" 2
+int main(void) { return 0; }
+"""
+PROBED = """#if __has_include(<extra/config.h>)
+#include <extra/config.h>
+#else
+#define HAVE_X 0
+#endif
+"""
+
+
+def _record(root, line=4):
+    """The build's record of macros DUMPED leaves, with HAVE_X defined on ``line``."""
+    main, header = str(root / "src" / "main.c"), str(root / "src" / "a.h")
+    end = ("end",)
+    return [
+        ("start", 0, main),
+        ("start", 1, header),
+        ("define", line, "HAVE_X 0"),
+        end,
+        end,
+        ("define", 0, "__clang__ 1"),
+    ]
+
+
+def test_a_probe_finding_none_is_proven_by_the_build_s_record_of_its_macros(root, tmp_path):
+    # Had the build found <extra/config.h>, it would have entered it and not defined
+    # HAVE_X: its record of macros would differ. It doesn't, so it found none.
+    from peeky.native_binary import Pending, UnitText
+
+    (root / "src" / "a.h").write_text(PROBED)
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+    assert isinstance(_replay(root, tmp_path), Pending)
+    assert isinstance(_replay(root, tmp_path, record=_record(root)), UnitText)
+    said = (
+        "Peeky can't read src/main.c as compiled: its preprocessing asks whether "
+        "<extra/config.h> exists (__has_include, in src/a.h:1), and finds none: the build may "
+        "have found one (its environment can add header paths, and a file may since be gone)"
+    )
+    # Another record: not proven.
+    assert _replay(root, tmp_path, record=_record(root, line=3)) == (
+        f"{said}; the build's record of its macros (-fdebug-macro) isn't the replay's: at "
+        "src/a.h, the build recorded #define HAVE_X on line 3, the replay #define HAVE_X on line 4"
+    )
+    # A group whose branches differ in code alone: the record can't tell.
+    silent = (
+        "; two of its group's branches may leave no record of macros (only a #define or an "
+        "#undef surely does: an #include may be skipped), so the build's record can't tell "
+        "them apart"
+    )
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<extra/config.h>)\nint x = 1;\n#else\nint x = 2;\n#endif\n"
+    )
+    assert _replay(root, tmp_path, record=_record(root)) == said + silent
+    # Nor where one includes a file: one under `#pragma once` or a guard, already included
+    # by another name (a link), leaves no record.
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<extra/config.h>)\n#include <extra/config.h>\n#else\nint x = 2;\n"
+        "#endif\n"
+    )
+    assert _replay(root, tmp_path, record=_record(root)) == said + silent
+
+
+def test_a_file_holding_trigraph_sequences_leaves_the_text_unread(root, tmp_path):
+    # Under -trigraphs `??/` is a backslash: `#if __has_inclu??/` and `de("optional.h")`
+    # are one probe, which Peeky's own reading of the file doesn't see.
+    from peeky.native_binary import UnitText
+
+    (root / "src" / "a.h").write_text('#if __has_inclu??/\nde("optional.h")\n#endif\n')
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+
+    def words(*options):
+        return ["/usr/bin/clang", *options, "-O0", "-c", "src/main.c"]
+
+    def said(option):
+        return (
+            "Peeky can't read src/main.c as compiled: its preprocessing reads src/a.h, which "
+            f"uses trigraph sequences (`??/` on line 1), and its command may turn them on "
+            f"({option}): Peeky doesn't read text that -trigraphs could change"
+        )
+
+    for option in ("-trigraphs", "-std=c11", "-ansi"):
+        assert _replay(root, tmp_path, words=words(option)) == said(option), option
+    # Whatever the build's record says, and wherever the sequence is: a comment too
+    # (linux/pci_regs.h's `(??)`).
+    assert _replay(root, tmp_path, words=words("-std=c99"), record=_record(root)) == said(
+        "-std=c99"
+    )
+    (root / "src" / "a.h").write_text("#define A 1 /* scale (??) */\n")
+    assert "sequences (`??)` on line 1)" in _replay(root, tmp_path, words=words("-std=c11"))
+    # Lines end at `\r\n`, `\n` or a lone `\r`, as the compilers count them.
+    for end in (b"\r", b"\r\n", b"\n\r"):
+        (root / "src" / "a.h").write_bytes(end.join([b"#define A 1", b"", b"/* (??) */", b""]))
+        line = 4 if end == b"\n\r" else 3
+        found = _replay(root, tmp_path, words=words("-std=c11"))
+        assert f"sequences (`??)` on line {line})" in found, (end, found)
+    # Off: clang's default standard (GNU), a GNU one, or -fno-trigraphs last.
+    for options in ((), ("-std=gnu11",), ("-std=c11", "-fno-trigraphs")):
+        assert isinstance(_replay(root, tmp_path, words=words(*options)), UnitText), options
+
+
+def test_what_turns_trigraphs_on_is_read_from_the_recorded_words():
+    from peeky.native_binary import trigraphs_on
+
+    def on(*options, cpp=False):
+        return trigraphs_on(["clang", *options, "-c", "a.c"], cpp)
+
+    assert on() is None and on("-std=gnu17") is None and on("-std=gnu++14", cpp=True) is None
+    assert on("-std=c++17", cpp=True) is None and on("-std=c++20", cpp=True) is None
+    assert on("-std=c++14", cpp=True) == "-std=c++14" and on("-std=c17") == "-std=c17"
+    assert on("-std=c11", "-fno-trigraphs") is None and on("-fno-trigraphs", "-trigraphs")
+    assert on("-Xclang", "-trigraphs") == "-trigraphs" and on("-Wno-trigraphs") is None
+    # The last of a standard, -trigraphs and -fno-trigraphs decides, as clang reads them.
+    assert on("-fno-trigraphs", "-std=c11") == "-std=c11" and on("-fno-trigraphs", "-ansi")
+    assert on("-trigraphs", "-std=gnu11") is None and on("-ansi", "-std=gnu99") is None
+    assert on("-std=gnu11", "-trigraphs") == "-trigraphs" and on("-ansi", "-fno-trigraphs") is None
+    # A form Peeky doesn't read may turn them on, wherever it is.
+    assert on("-std", "c99") == "-std" and on("-Wp,-trigraphs") == "-Wp,-trigraphs"
+    assert on("-Wp,-trigraphs", "-fno-trigraphs", "-std=gnu11") == "-Wp,-trigraphs"
+
+
+def test_a_probe_whose_group_holds_a_line_directive_stays_unproven(root, tmp_path):
+    # A header since removed: had the build found it, each branch defines M "on line 100",
+    # the same record, but their code differs.
+    from peeky.native_binary import Pending
+
+    (root / "src" / "a.h").write_text(
+        '#if __has_include("gone.h")\n#line 100\n#define M 1\nint x = 1;\n#else\n#line 100\n'
+        "#define M 1\nint x = 2;\n#endif\n"
+    )
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(
+        DUMPED.replace("\n\n\n#define HAVE_X 0\n", '# 100 "src/a.h"\n#define M 1\nint x = 2;\n')
+    )
+    _search(root, tmp_path / "include")
+    first = _replay(root, tmp_path)
+    assert isinstance(first, Pending)
+    record = [
+        ("define", 100, "M 1") if event[0] == "define" and event[1] == 4 else event
+        for event in _record(root)
+    ]
+    assert _replay(root, tmp_path, record=record) == (
+        f"{first.why}; its group holds a #line or a line marker, under which two of its "
+        "branches may leave the same record of macros"
+    )
+
+
+def test_a_file_a_probe_finds_but_the_line_table_doesn_t_name_is_proven_so_too(root, tmp_path):
+    # gtest's `__has_include(<any>) && C++17`, before C++17: clang lists <any> among the
+    # replay's dependencies, which the build never entered, so its line table doesn't
+    # name it. Had the build answered otherwise, it would have defined HAS_ANY.
+    from peeky.native_binary import Pending, UnitText
+
+    include = tmp_path / "include"
+    include.mkdir()
+    (include / "any").write_text("#if __has_include(<nothing.h>)\n#endif\n")
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<any>) && CPP17\n#define HAS_ANY 1\n#endif\n#define HAVE_X 0\n"
+    )
+    (root / "reads").write_text(f"src/a.h {include / 'any'}")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, include)
+    first = _replay(root, tmp_path)
+    assert first == Pending(
+        "Peeky can't read src/main.c as compiled: its preprocessing reads include/any, which "
+        "its line table doesn't name (-fdebug-macro names each header, on Linux)"
+    )
+    # Its own probes never ran: the replay never entered it.
+    assert isinstance(_replay(root, tmp_path, record=_record(root)), UnitText)
+
+
+def test_a_probe_after_a_branch_finding_a_file_alone_never_runs(root, tmp_path):
+    # libc++'s __mbstate_t.h: `#elif __has_include(<bits/types/mbstate_t.h>)`, found, then
+    # `#elif __has_include(<sys/_types/_mbstate_t.h>)` (Darwin's), never reached.
+    from peeky.native_binary import UnitText
+
+    include = tmp_path / "include"
+    (include / "bits").mkdir(parents=True)
+    (include / "bits" / "x.h").write_text("")
+    (root / "src" / "a.h").write_text(
+        "#if defined(MUSL)\n#elif __has_include(<bits/x.h>)\n#include <bits/x.h>\n"
+        "#elif __has_include(<sys/y.h>)\n#include <sys/y.h>\n#endif\n"
+    )
+    (root / "reads").write_text(f"src/a.h {include / 'bits' / 'x.h'}")
+    _search(root, include)
+    tables = _tables(root)
+    files = {**tables[0].files, 2: LineFile(0, str(include / "bits" / "x.h"), _md5(""))}
+    tables = {0: LineHeader(0, 5, tables[0].directories, files)}
+    assert isinstance(_replay(root, tmp_path, tables=tables), UnitText)
+    # In a file holding `??/` or `??=`, Peeky isn't sure of its groups: the probe counts.
+    (root / "src" / "a.h").write_text(
+        "#if defined(MUSL)\n#elif __has_include(<bits/x.h>)\n#include <bits/x.h>\n"
+        "#elif __has_include(<sys/y.h>)\n#include <sys/y.h> // ??/\n#endif\n"
+    )
+    assert "<sys/y.h> exists" in _replay(root, tmp_path, tables=tables).why
+    # Asked with another condition, the earlier branch may not be taken.
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<bits/x.h>) && A\n#elif __has_include(<sys/y.h>)\n#endif\n"
+    )
+    assert "<sys/y.h> exists" in _replay(root, tmp_path, tables=tables).why
+
+
+def test_units_a_record_of_macros_may_prove_are_replayed_again_with_it(root, tmp_path, monkeypatch):
+    from peeky.native_binary import UnitText, replay_units
+
+    compiler = tmp_path / "fake-cc"
+    compiler.write_text(FAKE_CC)
+    compiler.chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (root / "src" / "a.h").write_text(PROBED)
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+    unit = judge(_unit(root), _tables(root), CLANG, root)
+    asked = []
+
+    def records(pending):
+        asked.append([each.name for each in pending])
+        return {0: _record(root)}
+
+    texts = replay_units([unit], str(compiler), scratch, root, None, records)
+    assert isinstance(texts["src/main.c"], UnitText) and asked == [["src/main.c"]]
+    # No record: on Linux, the note says how to have one.
+    monkeypatch.setattr(sys, "platform", "linux")
+    texts = replay_units([unit], str(compiler), scratch, root, None, lambda pending: {})
+    assert texts["src/main.c"].endswith(
+        "a file may since be gone); build it with -fdebug-macro, and Peeky checks it against "
+        "the build's own record of its macros"
+    )
+
+    def broken(pending):
+        raise TimeoutError("it took over 15.0 s")
+
+    texts = replay_units([unit], str(compiler), scratch, root, None, broken)
+    assert texts["src/main.c"].endswith(
+        "; Peeky can't read the build's record of its macros (it took over 15.0 s)"
+    )
+    # Without a provider: no record.
+    assert replay_units([unit], str(compiler), scratch, root, None)["src/main.c"].endswith(
+        "a file may since be gone); build it with -fdebug-macro, and Peeky checks it against "
+        "the build's own record of its macros"
+    )
+    # Built with -fdebug-macro, yet no record: Peeky says so.
+    macros = Judged(
+        **{**unit.__dict__, "words": (*unit.words[:-1], "-fdebug-macro", unit.words[-1])}
+    )
+    texts = replay_units([macros], str(compiler), scratch, root, None, lambda pending: {})
+    assert texts["src/main.c"].endswith(
+        "a file may since be gone); Peeky finds no record of its macros in the binary"
+    )
 
 
 @pytest.mark.parametrize(

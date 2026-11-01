@@ -72,6 +72,14 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **C and C++: a probe that finds no file, proven by the build's own record.** A binary target's
+  unit whose preprocessing asks for a missing file (`__has_include`) had its text withheld. On
+  Linux, with `-fdebug-macro`, Peeky now replays it with `-dD` and compares the build's record of
+  its macros. Where the probe's branches define or undefine macros, a build that found the file
+  would have left another record. So clang's `stdatomic.h` and `float.h`, which ask for the
+  system's, and gtest's `<any>` probe are read. A probe after a branch that finds its file never
+  runs: libc++'s Darwin probe. A probe whose branches differ in code or includes alone, or whose
+  group holds a `#line`, stays withheld, saying why.
 - **C and C++: a binary your project built** (ADR 0008, phase 1). `peeky probe . --binary ./jq
   --at src/execute.c:120` and `describe` read a binary clang built at `-O0` with `-g -gdwarf-5
   -grecord-command-line`. Each unit is judged from its own debug information. A file changed
