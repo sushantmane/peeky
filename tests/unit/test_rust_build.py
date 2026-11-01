@@ -868,6 +868,35 @@ def test_cargos_configuration_in_its_environment_is_what_peeky_gives_cargo(tmp_p
             rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None, 6)
 
 
+def test_a_build_script_run_more_than_once_has_the_value_every_run_has(tmp_path):
+    # bat's test builds `rustix` for the build scripts and for the program: its build script
+    # runs twice, with other features, and reads CARGO_FEATURE_USE_LIBC. Where every run's
+    # value is the same, that is the value; else Peeky can't tell which run said so.
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    shape = fake_shape(tmp_path)
+    util = shape.build_profiles[0][0]
+    shape.build_profiles = (
+        (util, "0", "true", ("default", "my-feat")),
+        (util, "0", "false", ("default", "std")),
+    )
+    names = ("CARGO_FEATURE_USE_LIBC", "CARGO_FEATURE_DEFAULT", "OPT_LEVEL")
+    output = "".join(f"cargo::rerun-if-env-changed={name}\n" for name in names)
+    messages = [build_script_run(tmp_path, "util", output + "cargo::rerun-if-changed=build.rs\n")]
+    found = rb._build_inputs(shape, root, messages, {}, {}, LATER, None, 6)
+    assert values(found) == {
+        "CARGO_FEATURE_DEFAULT": "1",
+        "CARGO_FEATURE_USE_LIBC": None,
+        "OPT_LEVEL": "0",
+    }
+    for name in ("CARGO_FEATURE_STD", "DEBUG", "CARGO_CFG_FEATURE"):
+        messages = [
+            build_script_run(tmp_path / name, "util", f"cargo::rerun-if-env-changed={name}\n")
+        ]
+        with pytest.raises(ValueError, match=f"of {name}, which it says it reads"):
+            rb._build_inputs(shape, root, messages, {}, {}, LATER, None, 6)
+
+
 @pytest.mark.parametrize("each", ["../schema.txt", ".config/schema.txt"])
 def test_an_input_deleted_while_cargo_ran_is_refused(tmp_path, each):
     import time
