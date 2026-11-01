@@ -23,9 +23,38 @@
   - In a caller's frame, a struct or array whose declaration's lines have run, in an unoptimized
     build (#366).
   - C++ structured bindings by reference, where Peeky proves what they refer to is alive (#368).
+  - C++ parameters, and locals with an `#include` between their declaration and the stop, in a
+    unit holding `<::` (gtest's `PrintTo<::std::type_info>`). C++11 reads it as `<` and `::`, but
+    Peeky read it as C's digraph `<:` and could tell no block in the unit. A binary target's C++
+    unit built before C++11 (`-std=c++03`) has its text unread.
 - **Rust:** a `NonNull<T>` local's address, as a raw pointer's. It is never followed (#420).
 
 ### Other changes
+
+- **Rust workspaces: a change of `.git/index` whose entries are the same is said so.**
+  git-version's macro (bat's) has rustc read `.git/index` as a source, and runs `git describe
+  --dirty` while the crate compiles. git may then rewrite the index with its cached file status
+  refreshed, its entries the same, so bat's first build in a fresh checkout is refused. Peeky
+  still compares the index by its bytes, which a crate may use. The refusal, and a probe's, now
+  says its entries are the same: `peeky build` again builds it. A probe no longer fails on a
+  crate's source that isn't UTF-8, such as this index.
+
+- **Rust workspaces: the unit graph in another order, and dependency files Peeky missed
+  (#481).** Cargo lists units alike but for their dependencies in no fixed order. So the unit
+  graph Peeky reads twice was refused as changed about half the time (bat, coreutils, ripgrep's
+  test). It is now compared in a form that doesn't depend on that order. A build script at
+  `build/main.rs`, and a binary an integration test runs, had no dependency file Peeky found.
+  Peeky now reads rustc's own, beside the output Cargo copied up. Cargo's own file beside the
+  run's binary may name a build script's directory with its `/` (bat's), which refused every
+  bat build. It is read as that directory now.
+
+- **Rust workspaces: what a dependency's build script reads of Cargo's configuration (#482).**
+  portable-atomic's build script (coreutils') watches `CARGO_BUILD_RUSTFLAGS` and
+  `CARGO_TARGET_<triple>_RUSTFLAGS`, which Peeky refused. Cargo 1.96 sets none of `CARGO_BUILD_*`
+  or `CARGO_TARGET_<triple>_RUSTFLAGS` for a build script, and passes on its own environment's:
+  Peeky's, which has none. And a build script that runs twice (bat's test builds `rustix` for its
+  build scripts and for the program) reads `CARGO_FEATURE_*`, `OPT_LEVEL` and `DEBUG` as every run
+  has them. Where the runs differ, it is refused as before.
 
 - **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
   closure or async block captures the places it uses. rustc's MIR prints one capture per
@@ -72,6 +101,30 @@
   Now debugpy stops there too, where the program's interpreter says the file is installed, with
   the same rules: notes, readings, hashes, remote checks. A file debugpy still skips is refused
   before debugpy starts your script, with why (#446).
+- **ADR 0008 phase 1's acceptance** (`tests/projects/accept.sh`) runs Peeky on the study's jq,
+  valkey, MicroPython, fmt and json builds, each in its image. All six pass every check
+  ([ADR 0008](docs/adr/0008-native-project-reach.md)): valkey's replica reads `c->user` as the null
+  pointer, and fmt's `test-main.cc` reads `argc`. Found and fixed: a unit not judged was named by
+  its absolute path where CMake compiles by one, so a probe in it was refused without why. A probe
+  in a header only unjudged units name now names them, and why. `tests/projects/build.sh` can
+  prebuild a study image from a Dockerfile.
+- **C and C++: a probe that finds no file, proven by the build's own record.** A binary target's
+  unit whose preprocessing asks for a missing file (`__has_include`) had its text withheld. On
+  Linux, with `-fdebug-macro`, Peeky now replays it with `-dD` and compares the build's record of
+  its macros. Where the probe's branches define or undefine macros, a build that found the file
+  would have left another record. So clang's `stdatomic.h` and `float.h`, which ask for the
+  system's, and gtest's `<any>` probe are read. A probe after a branch that finds its file never
+  runs: libc++'s Darwin probe. A probe whose branches differ in code or includes alone, or whose
+  group holds a `#line`, stays withheld, saying why.
+- **C and C++: the toolchain's archive code is its own.** On Linux, a binary target's functions
+  linked from libgcc's archive and glibc's `libc_nonshared.a` (`atexit`, `__extenddftf2`) no
+  longer make any call possibly return twice. Each is treated as equivalent to the archive
+  member where its bytes are the member's, as linked, checked as startup code is. One reaching a
+  function of the program's own still counts, and so does startup code reaching a hook the
+  program defines (`__cxa_finalize`, `__gmon_start__`). So does a function of the program's own
+  by such a name. Each note says why: other bytes, a relocation pointing elsewhere, or an archive Peeky
+  can't search. The returns-twice family, by its pattern (`_vfork`), always counts. jq now shows
+  no code no unit covers, and MicroPython only its `nlr_push`.
 - **C and C++: a binary your project built** (ADR 0008, phase 1). `peeky probe . --binary ./jq
   --at src/execute.c:120` and `describe` read a binary clang built at `-O0` with `-g -gdwarf-5
   -grecord-command-line`. Each unit is judged from its own debug information. A file changed
@@ -120,6 +173,21 @@
   code is unknown code, taken as sound: a change it may keep a copy of is refused, naming the
   call, its line and its crate. So is one the crate's own code may hand on to it. A dependency's
   frame is read as a library's. The source scans read the crate as rustc expands it.
+- **A Rust workspace through a worker (protocol 16; ADR 0008, phase 2):** a worker started with a
+  workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
+  from its own configuration only. It compares every workspace file the build compiled, the
+  binary's included, what local build scripts read, its manifests, lockfile, Cargo configuration
+  and vendored checksum files with the client's; never `.git`. Each is compared by its links too,
+  never through one out of the root, and each watched directory entry by entry. A package Cargo
+  watches whole is compared by the files `cargo package --list` gives, so a client's git-ignored
+  files and `.DS_Store` are no difference; where Cargo can't list it, every entry, links by their
+  text, and the build says why. A worker's end stops its build, Cargo's processes too, and a build
+  that doesn't end is never called stopped. Its `BUILD_REQUIRED` names the client's own command. A
+  line of a generic function only another crate uses is refused before launch, naming it, where it
+  was a `DEBUGGER_ERROR`. A stop in another crate's copy of the crate's code reads no value, and
+  says why: it was read as the crate's own, with none of the checks of that copy. So does one Peeky
+  can't tell is the crate's own. A build script watching a directory no longer fails the build with
+  `Expected a regular file`. The docs cover workspaces: Rust 7.2, REMOTE and WORKER.
 - **A Rust workspace's analysed packages may be edition 2018 (ADR 0008, phase 2):** rustc lowers
   2018's closure captures, arrays' `into_iter` and `panic!` forms into the MIR Peeky reads, so
   its proofs hold. Edition 2015 is still refused. A 2018 crate whose text holds a raw C string

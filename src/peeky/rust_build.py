@@ -20,6 +20,8 @@ the program runs. Not a sandbox.
 
 import contextlib
 import fcntl
+import filecmp
+import fnmatch
 import hashlib
 import json
 import os
@@ -31,11 +33,14 @@ import stat
 import sys
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from peeky import rust_workspace
+from peeky import gitindex, rust_workspace
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
 from peeky.digest import sha256_file
+from peeky.stopping import Stopped, check_stop
+from peeky.stopping import listed as _listed
+from peeky.stopping import walked as _walked
 from peeky.textlines import split_lines
 
 # The longest a build may take, a cold one included (`peeky build --timeout`).
@@ -53,7 +58,7 @@ _SETTLE_NS = 1_000_000_000
 _MAX_SNAPSHOT = 200_000
 # 2: the build's crates (`crates`), its local procedural macros (`macros`), and analysed
 # MIR with full paths. 3: each analysed unit's generated files (`generated`).
-SCHEMA = 3
+SCHEMA = 5
 
 # Cargo runs this for the workspace's members (RUSTC_WORKSPACE_WRAPPER). For an analysed
 # target's own compile, which it knows by crate name and source file (a build script's
@@ -181,9 +186,6 @@ class RustWorkspaceTarget:
     supports_deadline = True
     # Candidate edits in a workspace come later (ADR 0008, phase 3).
     supports_edits = False
-    # A remote client's files aren't compared with a workspace's yet: such a launch is
-    # refused, and the worker declares no sources (never Python's .py files).
-    compares_remote_sources = False
     verification_inputs = ()
 
     def __post_init__(self):
@@ -266,13 +268,61 @@ class RustWorkspaceTarget:
             flags += ["-C", "link-arg=-Wl,--build-id=sha1"]
         return flags
 
-    def build(self, root, *, deadline=None, progress=None):
-        """Build the workspace (`peeky build`): a summary of the build."""
-        return build(self, root, deadline=deadline, progress=progress)
+    def build(self, root, *, deadline=None, progress=None, stop=None):
+        """Build the workspace (`peeky build`): a summary of the build. ``stop``: see
+        ``build``."""
+        return build(self, root, deadline=deadline, progress=progress, stop=stop)
 
     def current(self, root):
         """The current build's manifest (current_build)."""
         return current_build(self, root)
+
+    def compared_names(self, root):
+        """The files under ``root`` a remote client's are compared with
+        (`sources.declared`): the recorded build's (``compared_sources``). Where none is
+        recorded, the workspace's manifest and lockfile: a probe is refused for that once
+        they compare (BUILD_REQUIRED)."""
+        found = recorded_comparison(self, root or ".")
+        if found is not None:
+            return found[0]
+        workspace = Path(self.config.workspace)
+        return tuple(
+            (workspace / name).as_posix().removeprefix("./")
+            for name in ("Cargo.toml", "Cargo.lock")
+        )
+
+    def remote_refusal(self, root):
+        """Why a remote client can't compare the recorded build with its own files
+        (``remote_refusal``), or None."""
+        found = recorded_comparison(self, root or ".")
+        return None if found is None else found[1]
+
+    def compared_trees(self, root):
+        """{directory: "exact"} of the recorded build (``compared_trees``), compared with a
+        client's entry by entry; {} where none is recorded."""
+        found = recorded_comparison(self, root or ".")
+        return {} if found is None else found[2]
+
+    def trusted_config(self):
+        """The trusted configuration this target is (``from_config`` reads it back as the
+        same target): what a worker's probe process is given."""
+        config, run = self.config, self.config.run
+        data = {
+            "language": "rust",
+            "workspace": config.workspace,
+            "analyse": list(config.analyse),
+            "run": {run.kind: True if run.kind == "lib" else run.name}
+            | ({} if run.package is None else {"package": run.package}),
+            "features": list(config.features),
+            "arguments": list(self.arguments),
+            "rust_version": self.rust_version,
+        }
+        if config.vendor is not None:
+            data["vendor"] = config.vendor
+        for name in ("cargo", "rustc", "adapter", "dwarfdump", "linker", "dsymutil", "sysroot"):
+            if (value := getattr(self, name)) is not None:
+                data[name] = value
+        return data
 
     def prepare(self, program, root, *, edit=None, deadline=None):
         if edit is not None:
@@ -283,6 +333,175 @@ class RustWorkspaceTarget:
         from peeky.rust_workspace_session import prepare_session
 
         return prepare_session(self, program, root, deadline=deadline)
+
+
+# {a build's manifest's path: (its status when read, ``compared_sources``' names, and
+# ``remote_refusal``'s)}: a worker asks at every `version` and launch.
+_RECORDED = {}
+
+
+def recorded_comparison(target, root):
+    """(the names of ``compared_sources``, ``remote_refusal``, ``compared_trees``) of
+    ``target``'s build under ``root`` as recorded, unchecked (a probe checks the build:
+    ``current_build``); None where none is recorded, or it is another configuration's or
+    Peeky's."""
+    path = build_directory(target, root, create=False) / "manifest.json"
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    key = (status.st_ino, status.st_mtime_ns, status.st_size)
+    if (cached := _RECORDED.get(path)) is not None and cached[0] == key:
+        return cached[1]
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema") != SCHEMA
+        or manifest.get("identity") != target.identity(root)
+    ):
+        return None
+    found = (
+        tuple(compared_sources(manifest)),
+        remote_refusal(manifest),
+        compared_trees(manifest),
+    )
+    _RECORDED[path] = (key, found)
+    return found
+
+
+def compared_sources(manifest):
+    """{name under the root: SHA-256 the build recorded} of what a remote client's files are
+    compared with: what Cargo read that identifies the build (every manifest, the lockfile,
+    the workspace's own Cargo configuration: ``inputs``), every file of the workspace the
+    build compiled (each local package's compiles, the program's own included, from rustc's
+    dependency files: ``sources``), each vendored copy's `.cargo-checksum.json`, which
+    lists its files' hashes (not every vendored file), and what local build scripts and
+    procedural macros may read (``_watched_inputs``); none of the checkout's metadata
+    (``_checkout_metadata``)."""
+    found = {**manifest["inputs"], **manifest["sources"]}
+    state = manifest["watch"]
+    prefix = Path(state["workspace"]).resolve().relative_to(Path(manifest["root"]).resolve())
+    for name, digest in state["vendored"].items():
+        if PurePosixPath(name).name == ".cargo-checksum.json":
+            found[(prefix / name).as_posix()] = digest
+    found.update(_watched_inputs(manifest)[0])
+    # Cargo's dependency file of the binary lists its build scripts' inputs too.
+    return {name: found[name] for name in sorted(found) if not _checkout_metadata(name)}
+
+
+def _checkout_metadata(path):
+    """Whether ``path`` is under a `.git` directory, or is a `.git` file: the checkout's
+    metadata, not the project's source, which differs between two checkouts of the same
+    sources (a build script watching `.git/HEAD` for its version). Never compared with a
+    remote client's."""
+    return ".git" in PurePosixPath(Path(path).as_posix()).parts
+
+
+def compared_trees(manifest):
+    """{directory under the root: "exact"} of what a client's checkout is compared with
+    entry by entry (`sources.structured`): each directory a local build script's
+    `rerun-if-changed` names, as Cargo scans it. A package compared whole is compared by
+    the files its record lists (``_package_files``), not entry by entry: a client's file
+    Cargo leaves out, such as a git-ignored one, is no difference. None under `.git`, or
+    outside the root (``remote_refusal`` refuses that)."""
+    root = Path(manifest["root"]).resolve()
+    trees = {}
+    for top in (manifest.get("build_inputs") or {}).get("dirs") or {}:
+        try:
+            name = Path(top).relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if not _checkout_metadata(name):
+            trees[name] = "exact"
+    return dict(sorted(trees.items()))
+
+
+def remote_refusal(manifest):
+    """Why a remote client can't compare the build's files with its own, or None: a local
+    build script's input that is outside the root, or that a client can't send a hash of
+    (missing, unreadable, not a file) (``_watched_inputs``)."""
+    return _watched_inputs(manifest)[1]
+
+
+_UNCOMPARED = (
+    "A remote client can't compare what this build read with its own files: a build script "
+    "says it reads {what}. Run Peeky on the worker's host, or {remedy}"
+)
+
+
+def _watched_inputs(manifest):
+    """({name under the root: SHA-256} of what local build scripts and procedural macros may
+    read, as the build recorded it (``_build_inputs``): each `rerun-if-changed` file, each
+    file under a `rerun-if-changed` directory, followed through links, and each file of a
+    package compared whole, as its record lists them (``_package_files``); the refusal of the
+    first a client can't compare, or None). Anything under a `.git` directory is left out: it is the checkout's metadata, not
+    the project's source, and differs between two checkouts of the same sources (a build
+    script watching `.git/HEAD` for its version). A directory is compared by its files."""
+    root = Path(manifest["root"]).resolve()
+    inputs = manifest.get("build_inputs") or {}
+    found, refusals = {}, []
+
+    def add(path, digest, why=None):
+        path = Path(path)
+        if _checkout_metadata(path):
+            return
+        try:
+            name = path.relative_to(root).as_posix()
+        except ValueError:
+            refusals.append(
+                _UNCOMPARED.format(
+                    what=f"{path}, outside the worker's root {root}, which no client has a copy of",
+                    remedy="move it into the workspace",
+                )
+            )
+            return
+        if digest is None:
+            refusals.append(
+                _UNCOMPARED.format(
+                    what=f"{name}, {why} on the worker's host, and a client sends only the "
+                    "hashes of files it has",
+                    remedy="make it a file, or take the line out of the build script",
+                )
+            )
+            return
+        found[name] = digest
+
+    for path, identity in (inputs.get("files") or {}).items():
+        if identity and identity[0] in ("file", "link") and len(identity) == 3:
+            add(path, identity[2])
+        else:
+            add(path, None, "missing" if identity == ["missing"] else "not a file")
+    for top, recorded in (inputs.get("dirs") or {}).items():
+        entries = recorded.get("entries")
+        if not isinstance(entries, dict):
+            add(top, None, f"a directory that is {entries}")
+            continue
+        for relative, entry in entries.items():
+            path = Path(top) / relative
+            if entry == "dir" or (isinstance(entry, list) and entry[2:3] == ["dir"]):
+                continue
+            if isinstance(entry, str) and entry != "other":
+                add(path, entry)
+            elif isinstance(entry, list) and isinstance(entry[2], str):
+                add(path, entry[2])
+            else:
+                add(path, None, "not a file")
+    for top, listed in (inputs.get("lists") or {}).items():
+        for relative, digest in listed["files"].items():
+            if isinstance(digest, str):
+                add(Path(top) / relative, digest)
+            elif not _checkout_metadata(relative):
+                what, remedy = _UNLISTABLE[digest["refused"]]
+                refusals.append(
+                    "A remote client can't compare what this build read with its own files: "
+                    f"{_shown(Path(top) / relative, root)} is {what} on the worker's host, "
+                    "among the files of a package a build may read whole. Run Peeky on the "
+                    f"worker's host, or {remedy}"
+                )
+    return found, (sorted(refusals)[0] if refusals else None)
 
 
 def build_directory(target, root, *, create=True):
@@ -396,24 +615,29 @@ def _environment(target, home, directory, wrapper, analysed, units, project=()):
 
 
 def _hash(path, store=None):
+    """``path``'s SHA-256; first, a stopped build ends here (agent.check_stop): every file
+    the build hashes is a step it checks its stop at."""
+    check_stop()
     return sha256_file(path, store=store)
 
 
 def _digest(store):
-    """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules)."""
-    return lambda path: sha256_file(path, store=store)
+    """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules), and
+    ends a stopped build first (``_hash``)."""
+    return lambda path: _hash(path, store=store)
 
 
 def _snapshot(shape, vendor):
     """What is there before Cargo runs, to tell what changed while it ran from what changed
     before: {"l:" path: (mtime, ctime, size), not followed} of every entry, directories
     and links too, and {"f:" path: the same, followed} of each link; {"d:" directory:
-    True} of each directory listed whole. Everything under the workspace, hidden
-    directories (`.git`) included, and under each local package outside it; not a
-    `target` directory at their tops. What its absence of an entry proves
-    (_absent_before) depends on ":tops", ":skipped", ":uncovered" (each path Peeky
-    couldn't list or read, and why) and ":limit" (where it stopped, at _MAX_SNAPSHOT
-    entries)."""
+    True} of each directory listed whole; {"s:" path: its SHA-256} and {"g:" path: its
+    entries (gitindex.digest)} of each git index, to say a change of it for what it is
+    (_same_entries). Everything under the workspace, hidden directories (`.git`) included,
+    and under each local package outside it; not a `target` directory at their tops. What
+    its absence of an entry proves (_absent_before) depends on ":tops", ":skipped",
+    ":uncovered" (each path Peeky couldn't list or read, and why) and ":limit" (where it
+    stopped, at _MAX_SNAPSHOT entries)."""
     tops = [shape.workspace.resolve()]
     for package in shape.local:
         top = (shape.root / package.directory).resolve()
@@ -428,39 +652,63 @@ def _snapshot(shape, vendor):
     def failed(error):
         uncovered.append([str(error.filename or "?"), error.strerror or str(error)])
 
+    def record(path):
+        """Record ``path`` (lstat, and a link's target); False once the limit is reached."""
+        nonlocal count
+        check_stop()
+        if "l:" + path in found:
+            # A directory, recorded as its parent's entry.
+            return True
+        if count >= _MAX_SNAPSHOT:
+            found[":limit"] = [count, os.path.dirname(path)]
+            return False
+        try:
+            info = os.lstat(path)
+        except OSError as error:
+            failed(error)
+            return True
+        found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+        count += 1
+        if stat.S_ISREG(info.st_mode) and gitindex.is_index(path):
+            try:
+                found["s:" + path] = sha256_file(path)
+            except OSError as error:
+                failed(error)
+            found["g:" + path] = gitindex.digest(path)
+        if stat.S_ISLNK(info.st_mode):
+            try:
+                info = os.stat(path)
+                found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+            except FileNotFoundError:
+                # A dangling link, as such.
+                found["f:" + path] = None
+            except OSError as error:
+                failed(error)
+        return True
+
     for top in tops:
-        for base, folders, files in os.walk(top, onerror=failed):
+        pending = [os.path.normpath(top)]
+        while pending:
+            base = pending.pop()
             if base in seen:
-                folders[:] = []
                 continue
             seen.add(base)
-            folders[:] = [name for name in folders if str(Path(base, name)) not in skipped]
-            for name in (".", *folders, *files):
-                path = os.path.normpath(os.path.join(base, name))
-                if "l:" + path in found:
-                    # A directory, recorded as its parent's entry.
-                    continue
-                if count >= _MAX_SNAPSHOT:
-                    found[":limit"] = [count, base]
-                    return found
-                try:
-                    info = os.lstat(path)
-                except OSError as error:
-                    failed(error)
-                    continue
-                found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-                count += 1
-                if stat.S_ISLNK(info.st_mode):
-                    try:
-                        info = os.stat(path)
-                        found["f:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-                    except FileNotFoundError:
-                        # A dangling link, as such.
-                        found["f:" + path] = None
-                    except OSError as error:
-                        failed(error)
+            if not record(base):
+                return found
+            # Read lazily, each entry recorded (and the limit checked) as scandir yields it.
+            try:
+                with os.scandir(base) as listing:
+                    for entry in listing:
+                        path = os.path.normpath(entry.path)
+                        if not record(path):
+                            return found
+                        if entry.is_dir(follow_symlinks=False) and path not in skipped:
+                            pending.append(path)
+            except OSError as error:
+                failed(error)
+                continue
             # Listed whole: an entry it doesn't name wasn't there.
-            found["d:" + os.path.normpath(base)] = True
+            found["d:" + base] = True
     return found
 
 
@@ -496,9 +744,9 @@ def _absent_before(path, before):
             "it is outside what Peeky records before a build (the workspace, less a `target` "
             "directory at its top)",
         )
-    for failing, why in before.get(":uncovered", ()):
-        if path.is_relative_to(failing) or Path(failing).is_relative_to(path):
-            return ("unread", f"Peeky couldn't read {failing} before the build ({why})")
+    if (found := _uncovered_on(path, before)) is not None:
+        failing, why = found
+        return ("unread", f"Peeky couldn't read {failing} before the build ({why})")
     # The deepest directory on the way that was listed whole: the next step down from it
     # wasn't among its entries, so nothing under it was there.
     if (ancestor := _listed_ancestor(path, before)) is not None:
@@ -507,6 +755,30 @@ def _absent_before(path, before):
             return ("there", f"{step} was there before the build")
         return None
     return ("outside", "it is outside what Peeky records before a build")
+
+
+def _uncovered_on(path, before):
+    """(a path _snapshot couldn't read, why) that is ``path``, on its way, or under it; or
+    None. Looked up by ``path`` and its directories in an index of the uncovered paths and
+    every directory on their way, made once per snapshot: never a scan per path."""
+    index = before.get(":uncovered-index")
+    if index is None:
+        index = {}
+        for failing, why in before.get(":uncovered", ()):
+            for each in (Path(failing), *Path(failing).parents):
+                index.setdefault(str(each), (failing, why))
+        before[":uncovered-index"] = index
+        before[":uncovered-paths"] = {
+            str(Path(failing)) for failing, _ in before.get(":uncovered", ())
+        }
+    if (found := index.get(str(path))) is not None:
+        # ``path`` is uncovered, or on the way to one: under it.
+        return found
+    paths = before[":uncovered-paths"]
+    for each in path.parents:
+        if str(each) in paths:
+            return index[str(each)]
+    return None
 
 
 def _dangling_on_the_way(path, before):
@@ -627,9 +899,10 @@ def check_codegen(package, crate, args):
 
 def _dependency_file(filenames):
     """(the dependency file of a compile with these output files, its form): rustc's own,
-    beside an output in `deps` or a build script's directory; else the one Cargo writes
-    beside a binary it copies up (`target/debug/app.d`, make's form, which also lists the
-    local packages it uses)."""
+    beside an output in `deps` or a build script's directory, or beside the output Cargo
+    copied up (``_copied_from``); else the one Cargo writes beside a binary it copies up
+    (``_cargo_dependency_file``), "cargo". Cargo writes that one only for what the command
+    names, not for a binary an integration test runs (#481)."""
     paths = [Path(filename) for filename in filenames]
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
@@ -637,17 +910,122 @@ def _dependency_file(filenames):
             candidate.is_file()
         ):
             return candidate, "rustc"
-        if path.parent.parent.name == "build" and path.name == "build-script-build":
-            # A build script, which Cargo names `build-script-build` beside rustc's own
-            # `build_script_build-<hash>` and its dependency file.
-            found = sorted(path.parent.glob("build_script_build-*.d"))
+        if path.parent.parent.name == "build" and path.name.startswith("build-script-"):
+            # A build script, which Cargo names `build-script-build` (`build-script-main`
+            # for `build = "build/main.rs"`) beside rustc's own `build_script_main-<hash>`
+            # and its dependency file, alone in the compile's directory.
+            found = [
+                Path(entry.path)
+                for entry in _listed(
+                    path.parent, [4096], f"Cargo's {path.parent} holds more than 4096 entries"
+                )
+                if fnmatch.fnmatchcase(entry.name, "build_script_*-*.d")
+            ]
             if len(found) == 1:
                 return found[0], "rustc"
     for path in paths:
+        copied = _copied_from(path)
+        if copied is not None and (candidate := copied.with_name(copied.name + ".d")).is_file():
+            return candidate, "rustc"
+    if (candidate := _cargo_dependency_file(filenames)) is not None:
+        return candidate, "cargo"
+    return None, None
+
+
+def _cargo_dependency_file(filenames):
+    """The dependency file Cargo writes, in make's form, beside a binary it copies up
+    (`target/debug/app.d`), or None. It lists its build scripts' `rerun-if-changed`
+    paths too, which rustc's doesn't."""
+    for path in (Path(filename) for filename in filenames):
+        if path.parent.name == "deps" or path.parent.parent.name == "build":
+            continue
         candidate = path.with_name(_stem(path.name) + ".d")
         if candidate.is_file():
-            return candidate, "make"
-    return None, None
+            return candidate
+    return None
+
+
+def _copied_from(path):
+    """rustc's own output in `deps` that Cargo copied up as ``path`` (`deps/rg-<hash>` as
+    `target/debug/rg`), or None: the one `<crate>-<hash>` there of the same inode (a hard
+    link, as on Linux), else of the same bytes (a copy, as on macOS) (#481)."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or path.parent.name == "deps":
+        return None
+    named = re.compile(re.escape(path.name.replace("-", "_")) + r"-[0-9a-f]+")
+    deps = path.parent / "deps"
+    try:
+        candidates = [
+            entry
+            for entry in _listed(
+                deps, [MAX_RECORDED], f"Cargo's {deps} holds more than {MAX_RECORDED:,} entries"
+            )
+            if named.fullmatch(entry.name) and entry.is_file(follow_symlinks=False)
+        ]
+    except OSError:
+        return None
+    linked = [entry for entry in candidates if entry.inode() == info.st_ino]
+    if len(linked) == 1 and linked[0].stat(follow_symlinks=False).st_dev == info.st_dev:
+        return Path(linked[0].path)
+    same = []
+    for entry in candidates:
+        check_stop()
+        if entry.stat(follow_symlinks=False).st_size == info.st_size and filecmp.cmp(
+            entry.path, path, shallow=False
+        ):
+            same.append(entry)
+    return Path(same[0].path) if len(same) == 1 else None
+
+
+# What is known of a git index whose bytes changed, its entries as they were. It is
+# compared by its bytes all the same, which a crate may use (`include_bytes!`).
+_SAME_ENTRIES = ", but its entries are the same (git may have refreshed its cached file status)"
+
+
+def _same_entries(path, raw, entries):
+    """Whether ``path`` is a git index whose bytes differ from ``raw`` (a SHA-256; None:
+    known to differ) and whose entries (gitindex.digest) are ``entries``."""
+    if entries is None or not gitindex.is_index(path):
+        return False
+    try:
+        if raw is not None and sha256_file(path) == raw:
+            return False
+    except OSError:
+        return False
+    return gitindex.digest(path) == entries
+
+
+def _changed_while_built(shown, path, before):
+    """The refusal of ``path`` (named ``shown``), which changed while Cargo ran."""
+    key = os.path.normpath(path)
+    if before.get("s:" + key) is not None and _same_entries(
+        path, before["s:" + key], before.get("g:" + key)
+    ):
+        return RuntimeError(
+            f"Provenance: {shown} changed while Peeky built the workspace{_SAME_ENTRIES}. "
+            "Build again"
+        )
+    return RuntimeError(
+        f"Provenance: {shown} changed while Peeky built the workspace, so the build may not "
+        "be of it. Build again"
+    )
+
+
+def _index_entries(root, manifest):
+    """{key: entries (gitindex.digest)} of each git index the build recorded by its bytes:
+    a compile's source, by its name under the root, and a build script's input, by its
+    path. At a probe, one whose bytes changed and entries didn't is said so
+    (_SAME_ENTRIES)."""
+    keys = [(name, Path(root) / name) for name in manifest["sources"]]
+    keys += [(each, Path(each)) for each in manifest.get("build_inputs", {}).get("files", {})]
+    return {
+        key: entries
+        for key, path in keys
+        if gitindex.is_index(path) and (entries := gitindex.digest(path)) is not None
+    }
 
 
 def _changed_during(path, before, started_ns):
@@ -661,8 +1039,40 @@ def _changed_during(path, before, started_ns):
     return max(info.st_mtime_ns, info.st_ctime_ns) >= started_ns - _SETTLE_NS
 
 
-def build(target, root, *, deadline=None, progress=None):
-    """`peeky build`: build ``target``'s workspace under ``root`` and write its manifest."""
+class BuildStopped(RuntimeError):
+    """A build its ``stop`` ended (agent.Stopped): the process group it ran was killed and
+    its leader reaped, or its next process never started."""
+
+    def __init__(self, started):
+        super().__init__(
+            "The worker is shutting down, so it stopped its build: "
+            + (
+                "it killed Cargo and the processes Cargo ran. "
+                if started
+                else "its next process never started. "
+            )
+            + "Start the worker again, then build"
+        )
+
+
+def build(target, root, *, deadline=None, progress=None, stop=None):
+    """`peeky build`: build ``target``'s workspace under ``root`` and write its manifest.
+    ``stop`` (a threading.Event), once set, kills each process the build runs (Cargo, its
+    build scripts and rustc) and starts none: a worker's shutdown. Every process the build
+    runs is an ``execute`` in this thread (``_run``, ``_tools``, ``rust_workspace.read``),
+    which takes it from ``stopping``. Only such an end is BuildStopped: any other error,
+    a failed kill among them (with its ``process_group``), is raised as it is."""
+    from peeky.stopping import Stopped, stopping
+
+    with stopping(stop):
+        try:
+            return _build(target, root, deadline=deadline, progress=progress)
+        except Stopped as exc:
+            raise BuildStopped(exc.started) from None
+
+
+def _build(target, root, *, deadline=None, progress=None):
+    """``build``'s work."""
     say = progress or (lambda message: None)
     root = Path(root).resolve(strict=True)
     deadline = time.monotonic() + BUILD_TIMEOUT_S if deadline is None else deadline
@@ -672,6 +1082,8 @@ def build(target, root, *, deadline=None, progress=None):
 
     require_private(directory)
     with _locked(directory, exclusive=True):
+        # What earlier builds left to remove, a bounded part of it each time.
+        stuck = _empty_trash(directory, MAX_RECORDED)
         home = directory / "cargo-home"
         home.mkdir(mode=0o700, exist_ok=True)
         env = rust_workspace.cargo_environment(target.rustc, home)
@@ -748,13 +1160,40 @@ def build(target, root, *, deadline=None, progress=None):
             manifest = _record(
                 target, root, shape, directory, run, messages, before, started_ns, store
             )
+
+            def lister(package):
+                # `cargo package --list`: the files Cargo's default watch of a build script
+                # covers (`include`, `exclude`, and with git, what it ignores).
+                try:
+                    listed = _run(
+                        [target.cargo, "package", "--list", "--allow-dirty", "--offline"]
+                        + ["--locked", "-p", package, *extra],
+                        shape.workspace,
+                        env,
+                        deadline,
+                        "`cargo package --list`",
+                    )
+                except BuildCommandError as exc:
+                    lines = split_lines(exc.result.get("stderr") or "")
+                    error = next((line for line in lines if line.startswith("error")), "")
+                    why = f"`cargo package --list -p {package}` failed" + (
+                        f" ({error.strip()})" if error else ""
+                    )
+                    return None, why
+                # One name a line, each as it is, spaces too.
+                return listed["stdout"].split("\n"), None
+
             manifest["build_inputs"] = _build_inputs(
-                shape, root, messages, env, before, started_ns, vendor, jobs_
+                shape, root, messages, env, before, started_ns, vendor, jobs_, lister, directory
             )
+            _watched_directories(manifest.pop("directories_read"), manifest, shape, vendor)
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
+            manifest["index_entries"] = _index_entries(root, manifest)
         except BaseException:
-            shutil.rmtree(run, ignore_errors=True)
+            # Never removed here: a stopped build ends at once, however much its run holds.
+            # A later build removes it, a bounded part at a time (``_empty_trash``).
+            _discard(directory, run)
             raise
         files = shape.watch["files"]
         manifest.update(
@@ -774,9 +1213,12 @@ def build(target, root, *, deadline=None, progress=None):
         )
         manifest["build_id"] = _build_id(manifest)
         _write_manifest(directory, manifest)
-        _prune(directory, nonce)
+        stuck |= _prune(directory, nonce)
         say(f"built in {manifest['seconds']} s")
-        return summary(manifest, directory)
+        result = summary(manifest, directory)
+        if note := _stuck_note(directory, stuck):
+            result["notes"].append(note)
+        return result
 
 
 def _left(deadline):
@@ -830,10 +1272,11 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     run_package, run_target = shape.run
     executable = None
     sources, generated, units, macros = {}, {}, [], set()
-    seen_units = set()
+    seen_units, directories = set(), set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
     compiled = {}
-    for unit in sorted((run / "units").iterdir()):
+    units_read = _listed(run / "units", [MAX_RECORDED], _TOO_MANY_UNITS)
+    for unit in (Path(entry.path) for entry in units_read):
         command = json.loads((unit / "command.json").read_text())
         args = command.get("args") or []
         crate = next((b for a, b in zip(args, args[1:]) if a == "--crate-name"), None)
@@ -876,6 +1319,15 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             depfile, shape.workspace, root, target_dir, package.name, producer
         )
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
+        directories.update(read["directories"])
+        if (cargo := _cargo_dependency_file(filenames)) not in (None, depfile):
+            # Cargo's own too, beside the binary it copied up: its build scripts'
+            # `rerun-if-changed` paths, directories among them (``_watched_directories``).
+            also = _read_dependencies(
+                cargo, shape.workspace, root, target_dir, package.name, "cargo"
+            )
+            _record_read(also, root, target_dir, before, started_ns, sources, generated)
+            directories.update(also["directories"])
         if macro:
             _check_bootstrap_mentions(
                 read, root, target_dir, f"the procedural macro `{artifact.get('name')}`"
@@ -920,15 +1372,17 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             f"What runs ({run_target.name}) uses none of the analysed packages "
             f"({', '.join(sorted(analysed_names))}): analyse a package it uses"
         )
-    if strays := {path.name for path in (run / "units").iterdir()} - seen_units:
+    if strays := {entry.name for entry in units_read} - seen_units:
         raise ValueError(
             f"Peeky's wrapper compiled {', '.join(sorted(strays))}, which Cargo's messages "
             "don't name"
         )
     copied = _copy_executable(Path(executable), run)
-    for each in (run / "units").rglob("*.PreCodegen.before.mir"):
-        # Only the bodies after rustc's last MIR pass are read.
-        each.unlink()
+    # Only the bodies after rustc's last MIR pass are read; a body's before and after, and
+    # each unit's few other files, within twice what is recorded.
+    for entry in _walked(run / "units", [2 * MAX_RECORDED + 4096], _TOO_MANY_FILES):
+        if entry.name.endswith(".PreCodegen.before.mir") and entry.is_file(follow_symlinks=False):
+            os.unlink(entry.path)
     artifacts = _artifacts(directory, run, store)
     return {
         "root": str(root),
@@ -953,6 +1407,8 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         "units": units,
         "sources": dict(sorted(sources.items())),
         "generated": dict(sorted(generated.items())),
+        # Checked against what build scripts watch (``_watched_directories``), not kept.
+        "directories_read": sorted(directories),
         "artifacts": artifacts,
     }
 
@@ -974,6 +1430,13 @@ _CARGO_SETS = re.compile(
 _CARGO_INHERITED = re.compile(
     r"CARGO_(?:HOME|TARGET_DIR|INCREMENTAL|NET_OFFLINE|TERM_COLOR|PROFILE_[A-Z0-9_]+|"
     r"PRIMARY_PACKAGE|CRATE_NAME)"
+)
+# Cargo's configuration given in its environment (`CARGO_BUILD_RUSTFLAGS`,
+# `CARGO_TARGET_<triple>_RUSTFLAGS`, which portable-atomic's build script watches): Cargo
+# 1.96 sets none of them for a build script, whatever its configuration files say, and
+# passes on its own environment's unchanged. So each is what Peeky gives Cargo (#482).
+_CARGO_PASSED = re.compile(
+    r"CARGO_BUILD_[A-Z0-9_]+|CARGO_TARGET_[A-Z0-9_]+_(?:RUSTFLAGS|RUSTDOCFLAGS|RUNNER)"
 )
 # Cargo's `CARGO_PKG_*` of a manifest's `[package]` fields (as written, else empty).
 _PACKAGE_FIELDS = {
@@ -1002,38 +1465,88 @@ def jobs():
 
 
 def _spend(budget, where):
+    """Spend one of ``budget``'s entries (a list of one count) on what ``where`` holds;
+    past it, refused. A stopped build ends here first (agent.check_stop): every entry a
+    walk records is a step it checks its stop at."""
+    check_stop()
+    _spend_one(budget, where)
+
+
+def _spend_one(budget, where):
     budget[0] -= 1
     if budget[0] < 0:
+        raise ValueError(_too_many(where))
+
+
+def _reachable(path, root):
+    """Refuse ``path`` (under the resolved ``root``) where a link on it leads out of
+    ``root``, or its links loop: a build script or procedural macro may read every file of
+    its package, and Peeky builds only files inside the root."""
+    from peeky.sources import LinkLoop, OutsideRoot, _inside
+
+    root = Path(os.path.realpath(root))
+    try:
+        _inside(root, Path(path).relative_to(root).as_posix(), "the worker host")
+    except OutsideRoot as exc:
         raise ValueError(
-            f"Peeky records at most {MAX_RECORDED} files a build script or procedural "
-            f"macro may read, and {where} holds more. Build fewer packages' files, or "
-            "give the build script `cargo::rerun-if-changed` lines"
-        )
+            f"Peeky builds only files inside {root}: {_shown(path, root)} leads out of it "
+            f"through {exc.link}, a link to {exc.target}, and a build script or procedural "
+            "macro may read every file of its package. Point the link inside the workspace, or "
+            "make it a file there"
+        ) from None
+    except LinkLoop as exc:
+        raise ValueError(
+            f"Peeky builds only files it can reach: {_shown(path, root)} {exc.what}, and a "
+            "build script or procedural macro may read every file of its package. Fix the "
+            "link, or make it a file there"
+        ) from None
 
 
 def _tree(top, skip=(), *, budget):
-    """{path relative to ``top``: SHA-256} of every file under ``top``, as Cargo lists a
-    package's files: no hidden directory, no `target` directory, no other package's
-    directory (one with a Cargo.toml) and none of ``skip``. ``budget``: a list holding the
-    files left to record, spent here."""
-    top = Path(top)
-    found = {}
-    for base, folders, files in os.walk(top):
-        folders[:] = sorted(
-            name
-            for name in folders
-            if not name.startswith(".")
-            and name != "target"
-            and str(Path(base, name)) not in skip
-            and not (Path(base, name) / "Cargo.toml").exists()
-        )
-        for name in sorted(files):
-            path = Path(base, name)
-            if path.is_symlink() or not path.is_file():
+    """{path relative to ``top``: what is there} of every entry of the package directory
+    ``top``, by lstat, never through a link: a file's SHA-256; ["dir"] for a directory, an
+    empty one too; ["link", its text] for a link; ["other"] for what is neither. Hidden
+    directories and `target` ones too. Each entry spends ``budget`` as it is read, before
+    any is sorted or walked into. Left out:
+    `.git` (the checkout's metadata), OS junk (``OS_JUNK``), and ``skip``: each other
+    workspace package's directory (compared as its own), the vendored copies (compared by
+    their checksums) and Peeky's own build directory. ``budget``: a list holding the entries
+    left to record, spent here; past it, refused. Where every entry is what a build may read,
+    a link whose target leaves ``root``, or whose links loop, is refused (``_reachable``)."""
+    top, found = Path(top), {}
+    pending = [top]
+    while pending:
+        directory = pending.pop()
+        entries = []
+        try:
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    if entry.name == ".git" or entry.name in OS_JUNK or entry.path in skip:
+                        continue
+                    # Spent as read: a directory of more entries than the budget is refused
+                    # before they are all held.
+                    _spend(budget, top)
+                    entries.append(entry)
+        except OSError as exc:
+            raise ValueError(
+                f"Peeky builds only files it can reach: it can't read {directory} "
+                f"({exc.strerror or exc}), and a build script or procedural macro may read every "
+                "file of its package. Make it readable"
+            ) from None
+        for entry in sorted(entries, key=lambda each: each.name):
+            path = Path(entry.path)
+            relative = path.relative_to(top).as_posix()
+            if entry.is_dir(follow_symlinks=False):
+                found[relative] = ["dir"]
+                pending.append(path)
                 continue
-            _spend(budget, top)
-            found[path.relative_to(top).as_posix()] = _hash(path)
-    return found
+            if entry.is_symlink():
+                found[relative] = ["link", os.readlink(path)]
+            elif entry.is_file(follow_symlinks=False):
+                found[relative] = _hash(path)
+            else:
+                found[relative] = ["other"]
+    return dict(sorted(found.items()))
 
 
 def _root_identity(path):
@@ -1092,9 +1605,8 @@ def _exact_tree(top, root, *, budget):
         if real in seen:
             continue
         seen.add(real)
-        for entry in sorted(os.scandir(directory), key=lambda each: each.name):
+        for entry in _listed(directory, budget, _too_many(top)):
             relative, path = prefix + entry.name, Path(entry.path)
-            _spend(budget, top)
             if entry.is_symlink():
                 target = path.resolve()
                 if not target.is_relative_to(root):
@@ -1155,10 +1667,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     how Peeky knows it: "cargo", "jobs" or "launch")
     in Peeky's build (``env``: what Peeky runs Cargo with; ``jobs_``: its `-j`): Cargo's
     own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, and
-    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph; the
+    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph
+    (where the script runs more than once, the value every run has); the
     build's `rustc --print cfg` for `CARGO_CFG_*`; the package's manifest and place for
     `CARGO_PKG_*` and `CARGO_MANIFEST_*`; Peeky's own rustflags; else what Peeky gives
-    Cargo, which Cargo passes on. Refused for one Cargo sets otherwise, whose value Peeky
+    Cargo, which Cargo passes on (Cargo's configuration in its environment too:
+    _CARGO_PASSED). Refused for one Cargo sets otherwise, whose value Peeky
     doesn't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`, `CARGO_PKG_README`, which a
     file's presence decides, `CARGO_CFG_DEBUG_ASSERTIONS`)."""
     source, directory, package, version = rust_workspace.package_id(package_id)
@@ -1167,7 +1681,13 @@ def _script_value(name, package_id, shape, env, jobs_):
     # environment's, which Cargo passes on.
     how = "cargo"
     profiles = [each for each in shape.build_profiles if each[0] == package_id]
-    profile = profiles[0] if len(profiles) == 1 else None
+
+    def agreed(value_of):
+        # A package's build script may run more than once (rustix's, for the build
+        # scripts and for the program): the value where every run's is the same.
+        values = {value_of(each) for each in profiles}
+        return values.pop() if len(values) == 1 else ...
+
     if source is None:
         place = Path(directory)
     elif (copy := shape.vendored.get((package, version))) is not None:
@@ -1181,15 +1701,13 @@ def _script_value(name, package_id, shape, env, jobs_):
         found = "debug"
     elif name == "NUM_JOBS":
         found, how = str(jobs_), "jobs"
-    elif name in ("OPT_LEVEL", "DEBUG") and profile is not None:
-        found = profile[1] if name == "OPT_LEVEL" else profile[2]
+    elif name in ("OPT_LEVEL", "DEBUG"):
+        found = agreed(lambda each: each[1] if name == "OPT_LEVEL" else each[2])
     elif name.startswith("CARGO_FEATURE_"):
-        if profile is not None:
-            features = {_envify(each) for each in profile[3]}
-            found = "1" if name.removeprefix("CARGO_FEATURE_") in features else None
+        feature = name.removeprefix("CARGO_FEATURE_")
+        found = agreed(lambda each: "1" if feature in {_envify(f) for f in each[3]} else None)
     elif name == "CARGO_CFG_FEATURE":
-        if profile is not None:
-            found = ",".join(profile[3])
+        found = agreed(lambda each: ",".join(each[3]))
     elif name.startswith("CARGO_CFG_") and name != "CARGO_CFG_DEBUG_ASSERTIONS":
         found = _cfg_value(name.removeprefix("CARGO_CFG_"), shape.cfgs)
     elif name == "CARGO_ENCODED_RUSTFLAGS":
@@ -1215,7 +1733,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     elif place is not None and name == "CARGO_MANIFEST_LINKS":
         found = _manifest_field(shape, place, "links")
         found = None if found == "" else found
-    elif name == "RUSTC" or _CARGO_INHERITED.fullmatch(name) or not _CARGO_SETS.fullmatch(name):
+    elif (
+        name == "RUSTC"
+        or _CARGO_INHERITED.fullmatch(name)
+        or _CARGO_PASSED.fullmatch(name)
+        or not _CARGO_SETS.fullmatch(name)
+    ):
         found, how = env.get(name), "launch"
     if found is ...:
         raise ValueError(
@@ -1226,7 +1749,97 @@ def _script_value(name, package_id, shape, env, jobs_):
     return found, how
 
 
-def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=1):
+# Why a package's file can't be compared with a remote client's (`lists`' {"refused": key}):
+# (what it is on the worker's host, what to do).
+_UNLISTABLE = {
+    "outside": ("a link that leads out of the root", "point the link inside the root"),
+    "loop": ("a link in a loop", "break the loop"),
+    "hops": ("behind more than 40 links", "shorten the chain of links"),
+    "dangling": ("a link to nothing", "point the link at a file, or remove it"),
+    "other": ("not a file", "make it a file, or remove it"),
+    "missing": ("missing, though Cargo lists it", "restore it, or stop git tracking it"),
+}
+# What `cargo package --list` names that it writes into a package, not the package's own.
+_SYNTHESIZED = frozenset({"Cargo.toml.orig", ".cargo_vcs_info.json"})
+
+
+def _compared_file(directory, name, root, walked):
+    """What a client's ``name`` (a package's, in ``directory``) is compared with: its file's
+    SHA-256 (``walked``'s where the walk took it), "dir" for a directory (an empty one the
+    walk names) or a link to one, or {"refused": a key of ``_UNLISTABLE``}. Looked at by lstat first; a link is followed only
+    hop by hop inside ``root`` (sources._inside), never out of it."""
+    from peeky.sources import LinkLoop, OutsideRoot, _inside
+
+    check_stop()
+    root = Path(os.path.realpath(root))
+    path = Path(directory) / name
+    if not os.path.lexists(path):
+        return {"refused": "missing"}
+    try:
+        chain, reached = _inside(root, path.relative_to(root).as_posix(), "the worker host")
+    except OutsideRoot:
+        return {"refused": "outside"}
+    except LinkLoop as exc:
+        return {"refused": "loop" if exc.loop else "hops"}
+    try:
+        target = os.lstat(reached)
+    except FileNotFoundError:
+        return {"refused": "dangling" if chain else "missing"}
+    if stat.S_ISREG(target.st_mode):
+        if not chain and isinstance(walked.get(name), str):
+            return walked[name]
+        return _hash(reached)
+    if stat.S_ISDIR(target.st_mode):
+        return "dir"
+    return {"refused": "other"}
+
+
+def _package_files(directory, names, walked, root, workspace):
+    """{path relative to ``directory``: ``_compared_file``} of a package's files as Cargo
+    lists them (``names``, `cargo package --list`'s lines), none under `.git`. One absent
+    is left out only where Cargo writes it into a package: `Cargo.toml.orig`,
+    `.cargo_vcs_info.json`, and `Cargo.lock` but in the ``workspace``'s own directory.
+    ``walked``: the hashes the package's walk already took."""
+    found = {}
+    for name in names:
+        # Exactly as Cargo writes it: a name may begin or end with a space.
+        if name == "":
+            continue
+        if PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts:
+            raise ValueError(f"`cargo package --list` named {name}, a path Peeky doesn't read")
+        if _checkout_metadata(name):
+            continue
+        synthesized = name in _SYNTHESIZED or (
+            name == "Cargo.lock" and Path(directory).resolve() != Path(workspace).resolve()
+        )
+        if synthesized and not os.path.lexists(Path(directory) / name):
+            continue
+        found[name] = _compared_file(directory, name, root, walked)
+    return found
+
+
+# The refusals of a build that wrote more than Peeky records.
+_TOO_MANY_FILES = f"The build wrote more than {MAX_RECORDED} files Peeky records"
+_TOO_MANY_UNITS = f"Peeky's wrapper recorded more than {MAX_RECORDED} compiles"
+
+
+def _too_many(where):
+    """``_spend``'s refusal, for what ``where`` holds."""
+    return (
+        f"Peeky records at most {MAX_RECORDED} files a build script or procedural macro may "
+        f"read, and {where} holds more. Build fewer packages' files, or give the build script "
+        "`cargo::rerun-if-changed` lines"
+    )
+
+
+# Files an operating system's file manager leaves in any directory, which no build reads:
+# never compared where Peeky lists a package's files itself.
+OS_JUNK = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
+
+def _build_inputs(
+    shape, root, messages, env, before, started_ns, vendor, jobs_=1, lister=None, private=None
+):
     """What build scripts and procedural macros may read, beyond what rustc's dependency
     files list, as the manifest keeps it: {"files": {path: identity}, "dirs": {directory:
     _exact_tree}, "trees": {directory: _tree}, "env": {variable: value or None}}. That
@@ -1235,27 +1848,67 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
     script's `rerun-if-env-changed` variables (dependencies' too), as Cargo gives them
     (_script_value); and with a local procedural macro, every file of its package and of
     each analysed one (a macro reading files elsewhere isn't followed). Refused where one
-    changed while Cargo ran, or where Peeky can't record it."""
-    skip = {shape.watch["vendor_directory"]} if vendor else set()
-    files, dirs, trees, variables, budget = {}, {}, {}, {}, [MAX_RECORDED]
+    changed while Cargo ran, or where Peeky can't record it.
+
+    A package compared whole is walked (``trees``: every file, for the build's freshness), and
+    its files a client's are compared with are listed (``lists``, ``_package_files``): as
+    Cargo lists them (``lister(package)``: its `cargo package --list`) for a build script's
+    package, every walked entry for a procedural macro's and the analysed ones, and where
+    Cargo can't list it (``_tree``, which ``walk_skip`` records what it leaves out of).
+    ``private``: Peeky's build directory, never walked."""
     by_directory = {str((root / package.directory).resolve()): package for package in shape.local}
+    skip = {*by_directory, *([shape.watch["vendor_directory"]] if vendor else [])}
+    skip |= {str(Path(private).resolve())} if private is not None else set()
+    files, dirs, trees, variables, budget = {}, {}, {}, {}, [MAX_RECORDED]
+    lists = {}
 
     def unchanged(path):
-        # The entry itself (a directory, a link, a file), and a file's contents.
+        # The entry itself (a directory, a link, a file), and a file's contents; never
+        # through a link.
+        check_stop()
         if _entry_changed_during(path, before, started_ns) or (
-            Path(path).is_file() and _changed_during(path, before, started_ns)
+            Path(path).is_file()
+            and not Path(path).is_symlink()
+            and _changed_during(path, before, started_ns)
         ):
-            raise RuntimeError(
-                f"Provenance: {_shown(path, root)} changed while Peeky built the "
-                "workspace, so the build may not be of it. Build again"
-            )
+            raise _changed_while_built(_shown(path, root), path, before)
 
-    def watch_tree(directory):
+    def watch_tree(directory, package=None):
+        """Walk ``directory`` (a package's), and list its files a client's are compared
+        with: as Cargo lists them, given ``package`` (`name@version`); else every walked
+        file but OS junk."""
         key = str(directory)
         if key not in trees:
-            trees[key] = _tree(directory, skip, budget=budget)
+            trees[key] = _tree(directory, skip - {key}, budget=budget)
             for name in trees[key]:
                 unchanged(directory / name)
+        entry = lists.setdefault(key, {"files": {}, "cargo": False, "note": None})
+        names, why = (None, None)
+        if package is not None:
+            names, why = lister(package) if lister else (None, "Peeky didn't ask Cargo")
+        if names is None:
+            if package is not None:
+                # Said in the build's summary (``summary``'s `notes`).
+                entry["note"] = (
+                    f"{why}: Peeky compares every file of {_shown(directory, root)} with a remote "
+                    "client's instead, but .DS_Store, Thumbs.db and desktop.ini"
+                )
+            # Each directory that holds an entry, in one pass: compared by its entries.
+            holding = {name.rpartition("/")[0] for name in trees[key]}
+            for name, what in trees[key].items():
+                if what == ["dir"] and name in holding:
+                    continue
+                if isinstance(what, list) and what[0] == "link":
+                    _reachable(directory / name, root)
+                entry["files"][name] = _compared_file(directory, name, root, trees[key])
+            return
+        entry["cargo"] = True
+        listed = _package_files(directory, names, trees[key], root, shape.workspace)
+        for name, digest in listed.items():
+            if isinstance(digest, str) and digest != "dir" and name not in trees[key]:
+                _spend(budget, directory)
+                unchanged(directory / name)
+            entry["files"][name] = digest
 
     for message in messages:
         if message.get("reason") != "build-script-executed":
@@ -1289,7 +1942,8 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
             continue
         package_directory = Path(directory).resolve()
         if not changed:
-            watch_tree(package_directory)
+            # Cargo's default: any file of the package, as Cargo lists it.
+            watch_tree(package_directory, f"{name}@{found[3]}")
         for each in changed:
             # Its directory as found; its last segment not followed (a link is recorded).
             joined = package_directory / each
@@ -1366,6 +2020,12 @@ def _build_inputs(shape, root, messages, env, before, started_ns, vendor, jobs_=
         "files": dict(sorted(files.items())),
         "dirs": dict(sorted(dirs.items())),
         "trees": dict(sorted(trees.items())),
+        # What each package's walk leaves out (``_tree``'s ``skip``), as `verify` walks again.
+        "walk_skip": sorted(skip),
+        "lists": {
+            key: {**entry, "files": dict(sorted(entry["files"].items()))}
+            for key, entry in sorted(lists.items())
+        },
         "env": [
             {"package": package_id, "name": variable, **record}
             for (package_id, variable), record in sorted(variables.items())
@@ -1379,14 +2039,29 @@ def _record_read(read, root, target_dir, before, started_ns, sources, generated)
     for path in read["sources"]:
         if path not in sources:
             if _changed_during(root / path, before, started_ns):
-                raise RuntimeError(
-                    f"Provenance: {path} changed while Peeky built the workspace, so the build "
-                    "may not be of it. Build again"
-                )
+                raise _changed_while_built(path, root / path, before)
             sources[path] = _hash(root / path)
     for path in read["generated"]:
         if path not in generated:
             generated[path] = _hash(target_dir / path)
+
+
+def _watched_directories(directories, manifest, shape, vendor):
+    """Refuse a directory Cargo says the build read (its own dependency file lists build
+    scripts' `rerun-if-changed` paths) whose entries Peeky didn't record: one no local build
+    script watches (``_build_inputs``), outside the vendored copies, which their checksums
+    cover."""
+    root = Path(manifest["root"])
+    watched = {Path(each).resolve() for each in manifest["build_inputs"]["dirs"]}
+    copies = Path(shape.watch["vendor_directory"]).resolve() if vendor else None
+    for each in directories:
+        if each in watched or (copies is not None and each.is_relative_to(copies)):
+            continue
+        raise ValueError(
+            f"Cargo says the build read the directory {_shown(each, root)}, which no local "
+            "build script's `rerun-if-changed` names: Peeky can't tell what of it was read. "
+            "Name it in the build script that reads it"
+        )
 
 
 def _read_dependencies(depfile, workspace, root, target_dir, package, producer="rustc"):
@@ -1394,13 +2069,25 @@ def _read_dependencies(depfile, workspace, root, target_dir, package, producer="
         paths = dependency_paths(depfile.read_text(errors="surrogateescape"), workspace, producer)
     except UnreadDependencies as exc:
         raise ValueError(f"{exc} ({depfile.name}, of `{package}`)") from None
-    found = {"sources": [], "generated": []}
+    found = {"sources": [], "generated": [], "directories": []}
     for path in paths:
         resolved = path.resolve()
         if resolved.is_relative_to(target_dir):
             found["generated"].append(resolved.relative_to(target_dir).as_posix())
+        elif producer == "cargo" and resolved.is_relative_to(root) and resolved.is_dir():
+            # A build script's `rerun-if-changed` directory, which Cargo lists too: what it
+            # holds is recorded entry by entry (``_build_inputs``), not hashed as a file.
+            found["directories"].append(resolved)
         elif resolved.is_relative_to(root):
             found["sources"].append(resolved.relative_to(root).as_posix())
+        elif producer == "cargo":
+            # Cargo's own dependency file lists its build scripts' `rerun-if-changed` paths too.
+            raise ValueError(
+                f"Peeky builds only files inside {root}: `{package}`'s build read "
+                f"{os.path.normpath(path)}, which no remote client could compare either. Move it "
+                "into the workspace, or drop what names it: an `include!`, a `#[path]`, or a "
+                "build script's `rerun-if-changed`"
+            )
         else:
             raise ValueError(
                 f"Peeky builds only files inside {root}: `{package}`'s build read {path}. Move it "
@@ -1450,6 +2137,7 @@ def _check_bootstrap_mentions(read, root, target_dir, whose):
     files = [(path, Path(root) / path) for path in read["sources"]]
     files += [(f"{path} (generated)", Path(target_dir) / path) for path in read["generated"]]
     for path, where in files:
+        check_stop()
         if where.name.endswith(".rs") and b"RUSTC_BOOTSTRAP" in where.read_bytes():
             raise ValueError(
                 f"Peeky analyses only code built as stable Rust builds it: {whose}'s {path} "
@@ -1484,20 +2172,44 @@ def _copy_executable(executable, run):
     if sys.platform == "darwin":
         if not symbols.is_dir():
             raise ValueError(f"Cargo wrote no debug symbols for {executable.name}")
-        shutil.copytree(symbols, folder / symbols.name, symlinks=True)
+        _copy_symbols(symbols, folder / symbols.name)
     return copy.relative_to(run.parent.parent).as_posix()
 
 
-def _artifacts(directory, run, store):
-    found = {}
-    for path in sorted(run.rglob("*")):
-        if path.is_symlink():
+# The most entries Peeky copies of a macOS debug symbols bundle (a handful in dsymutil's).
+MAX_SYMBOL_ENTRIES = 4096
+
+
+def _copy_symbols(symbols, destination):
+    """Copy the macOS debug symbols bundle ``symbols`` to ``destination``, read lazily
+    (``_walked``): at most ``MAX_SYMBOL_ENTRIES`` entries, the build's stop checked at each.
+    A link, or what is neither a file nor a directory, is refused."""
+    destination.mkdir(mode=0o700)
+    refusal = f"Cargo's {symbols.name} holds more than {MAX_SYMBOL_ENTRIES} entries"
+    for entry in _walked(symbols, [MAX_SYMBOL_ENTRIES], refusal):
+        path = Path(entry.path)
+        target = destination / path.relative_to(symbols)
+        if entry.is_symlink():
             raise ValueError(f"Peeky's build holds a link: {path}")
-        if path.is_file():
-            found[path.relative_to(directory).as_posix()] = sha256_file(path, store=store)
-            if len(found) > MAX_RECORDED:
-                raise ValueError(f"The build wrote more than {MAX_RECORDED} files Peeky records")
-    return found
+        if entry.is_dir(follow_symlinks=False):
+            target.mkdir(mode=0o700)
+        elif entry.is_file(follow_symlinks=False):
+            shutil.copy2(path, target)
+        else:
+            raise ValueError(f"Cargo's {symbols.name} holds {path}, which is not a file")
+
+
+def _artifacts(directory, run, store):
+    """{path relative to ``directory``: SHA-256} of every file of the build's ``run``, read
+    lazily (``_walked``): at most MAX_RECORDED entries, the build's stop checked at each."""
+    found = {}
+    for entry in _walked(run, [MAX_RECORDED], _TOO_MANY_FILES):
+        path = Path(entry.path)
+        if entry.is_symlink():
+            raise ValueError(f"Peeky's build holds a link: {path}")
+        if entry.is_file(follow_symlinks=False):
+            found[path.relative_to(directory).as_posix()] = _hash(path, store=store)
+    return dict(sorted(found.items()))
 
 
 def _build_id(manifest):
@@ -1573,20 +2285,126 @@ def _held(lease):
 
 def _prune(directory, nonce):
     """Keep the newest KEEP_RUNS builds' files, and any a probe or session holds (Lease).
-    Called with the build directory's lock held alone."""
+    Called with the build directory's lock held alone. The trash's entries it couldn't
+    remove (``_empty_trash``)."""
     runs, leases = Path(directory) / "runs", Path(directory) / "leases"
+    # Peeky's own directories, read lazily within a bound: its runs and leases. The build
+    # is recorded by now, so it is never stopped here.
+    listing = _listed(
+        runs, [MAX_RECORDED], f"{runs} holds more than {MAX_RECORDED} runs", stoppable=False
+    )
     kept = sorted(
-        (path for path in runs.iterdir() if path.is_dir()),
+        (Path(entry.path) for entry in listing if entry.is_dir(follow_symlinks=False)),
         key=lambda path: (path.name == nonce, path.stat().st_mtime_ns),
         reverse=True,
     )
     for path in kept[KEEP_RUNS:]:
         if not _held(leases / path.name):
-            shutil.rmtree(path, ignore_errors=True)
+            _discard(directory, path)
     if leases.is_dir():
-        for lease in leases.iterdir():
+        refusal = f"{leases} holds more than {MAX_RECORDED} leases"
+        listing = _listed(leases, [MAX_RECORDED], refusal, stoppable=False)
+        for lease in (Path(entry.path) for entry in listing):
             if not (runs / lease.name).is_dir():
                 _held(lease)
+    try:
+        return _empty_trash(directory, MAX_RECORDED)
+    except Stopped:
+        # The build is recorded: a stop ends only the cleaning, which a later build resumes.
+        return {}
+
+
+def _discard(directory, path):
+    """Move ``path`` (a run, in the build ``directory``) into its trash: one rename, nothing
+    under it read. A later build empties the trash within a bound (``_empty_trash``). Where
+    the rename fails, ``path`` stays where it is, for a later ``_prune``."""
+    trash = Path(directory) / "trash"
+    try:
+        trash.mkdir(mode=0o700, exist_ok=True)
+        os.rename(path, trash / f"{Path(path).name}-{secrets.token_hex(4)}")
+    except OSError:
+        pass
+
+
+# The most entries one call of ``_empty_trash`` reads, every one counted (a failed one, and
+# each one read again), whatever it removes.
+MAX_TRASH_EXAMINED = 65536
+
+
+def _empty_trash(directory, budget, examine=MAX_TRASH_EXAMINED):
+    """Remove what the build ``directory``'s trash holds, ``budget`` removals this time (a
+    later build goes on), reading at most ``examine`` entries. Depth first, holding only
+    paths: a directory is read until its first subdirectory, its files removed as they are
+    read, and its listing closed before that subdirectory is entered, so one directory is
+    open at a time, however deep the trash. Once a subdirectory is gone, its parent is read
+    again, without what was removed. A directory whose listing ends is removed. Only a
+    removal that succeeds spends the budget, but every entry read spends ``examine``,
+    failed ones and ones read again too: the call ends when either is spent. One that can't
+    be removed, or a directory that can't be read, is passed over for the rest of the call.
+    The build's stop is checked at each entry (``check_stop``). {path: why} of what it
+    couldn't remove, each once."""
+    trash = Path(directory) / "trash"
+    if not trash.is_dir():
+        return {}
+    left, examined, stack, failed = budget, 0, [trash], {}
+    while stack and left > 0:
+        folder, deeper = stack[-1], None
+        try:
+            with os.scandir(folder) as listing:
+                for entry in listing:
+                    check_stop()
+                    examined += 1
+                    if examined > examine:
+                        return failed
+                    if entry.path in failed:
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        deeper = Path(entry.path)
+                        break
+                    try:
+                        os.unlink(entry.path)
+                    except OSError as error:
+                        failed[entry.path] = error.strerror or str(error)
+                        continue
+                    left -= 1
+                    if left <= 0:
+                        return failed
+        except OSError as error:
+            # Unreadable: passed over for the rest of this call.
+            failed[str(folder)] = error.strerror or str(error)
+            stack.pop()
+            if not stack or folder == trash:
+                return failed
+            continue
+        if deeper is not None:
+            stack.append(deeper)
+            continue
+        stack.pop()
+        if folder == trash:
+            return failed
+        try:
+            os.rmdir(folder)
+        except OSError as error:
+            failed[str(folder)] = error.strerror or str(error)
+            continue
+        left -= 1
+    return failed
+
+
+def _stuck_note(directory, stuck):
+    """The build summary's note of what Peeky couldn't remove of its trash (``stuck``:
+    {path: why}, of each cleaning this build did), once; None where none of it is still
+    there (a later cleaning in the same build removed it)."""
+    stuck = {path: why for path, why in stuck.items() if os.path.lexists(path)}
+    if not stuck:
+        return None
+    first = min(stuck)
+    count = len(stuck)
+    return (
+        f"Peeky couldn't remove {count} {'entry' if count == 1 else 'entries'} of its earlier "
+        f"builds' files in {Path(directory) / 'trash'}, such as {first} ({stuck[first]}). Each "
+        "build tries again; remove them yourself to free the space"
+    )
 
 
 def summary(manifest, directory):
@@ -1610,6 +2428,14 @@ def summary(manifest, directory):
             {key: unit[key] for key in ("package", "crate", "test", "expanded")}
             for unit in manifest["units"]
         ],
+        # Why a package isn't compared with a remote client's as Cargo lists it.
+        "notes": list(
+            dict.fromkeys(
+                listed["note"]
+                for listed in ((manifest.get("build_inputs") or {}).get("lists") or {}).values()
+                if listed.get("note")
+            )
+        ),
     }
 
 
@@ -1620,11 +2446,12 @@ def _required(target, why):
     )
 
 
-def _edited(target, what):
-    """A source or manifest edited since the build: the normal edit cycle, BUILD_REQUIRED."""
+def _edited(target, what, aside=""):
+    """A source or manifest edited since the build: the normal edit cycle, BUILD_REQUIRED.
+    ``aside``: what more is known of it (_SAME_ENTRIES)."""
     return BuildRequired(
-        f"No current Peeky build of this workspace: {what} since `peeky build` ran. Run "
-        f"`{target.build_command}` again, or add --build"
+        f"No current Peeky build of this workspace: {what} since `peeky build` ran{aside}. "
+        f"Run `{target.build_command}` again, or add --build"
     )
 
 
@@ -1698,7 +2525,9 @@ def verify(target, root, directory, manifest):
         except OSError:
             same = False
         if not same:
-            raise _edited(target, f"{name} changed")
+            entries = (manifest.get("index_entries") or {}).get(name)
+            aside = _SAME_ENTRIES if _same_entries(root / name, None, entries) else ""
+            raise _edited(target, f"{name} changed", aside)
     state = manifest["watch"]
     for path, recorded in state["files"].items():
         if (
@@ -1737,8 +2566,14 @@ def _check_build_inputs(target, root, directory, manifest):
     would give it now."""
     inputs = manifest["build_inputs"]
     for path, recorded in inputs["files"].items():
-        if rust_workspace.identity(path) != recorded:
-            raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
+        if (now := rust_workspace.identity(path)) != recorded:
+            entries = (manifest.get("index_entries") or {}).get(path)
+            same = now[:2] == recorded[:2] and _same_entries(Path(path), None, entries)
+            raise _edited(
+                target,
+                f"{_shown(path, root)}, which a build script reads, changed",
+                _SAME_ENTRIES if same else "",
+            )
     for top, recorded in inputs["dirs"].items():
         try:
             now = _watched_directory(Path(top), root, [MAX_RECORDED])
@@ -1752,15 +2587,29 @@ def _check_build_inputs(target, root, directory, manifest):
                     keys = set(entries) ^ set(old) or {k for k in entries if entries[k] != old[k]}
                     path = path / sorted(keys)[0]
             raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
-    vendor = manifest["watch"].get("vendor_directory")
+    skip = set(inputs["walk_skip"])
     for top, recorded in inputs["trees"].items():
         try:
-            now = _tree(Path(top), {vendor} if vendor else set(), budget=[MAX_RECORDED])
+            now = _tree(Path(top), skip - {top}, budget=[MAX_RECORDED])
         except (OSError, ValueError):
             now = {}
         if now != recorded:
-            name = sorted(set(now.items()) ^ set(recorded.items()))[0][0]
+            # A file it holds, rather than a directory new or gone with it.
+            name = min(
+                (key for key in {*now, *recorded} if now.get(key) != recorded.get(key)),
+                key=lambda key: (["dir"] in (now.get(key), recorded.get(key)), key),
+            )
             raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
+    # What a client's are compared with, looked at again as the build did: one under a
+    # linked directory, or a link's target, isn't in the walk.
+    for top, listed in (inputs.get("lists") or {}).items():
+        for name, recorded in listed["files"].items():
+            try:
+                same = _compared_file(Path(top), name, root, {}) == recorded
+            except (OSError, ValueError):
+                same = False
+            if not same:
+                raise _edited(target, f"{_shown(Path(top) / name, root)} changed")
     fresh = _environment(
         target,
         directory / "cargo-home",

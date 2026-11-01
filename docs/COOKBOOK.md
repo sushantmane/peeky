@@ -106,7 +106,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
    - [6.7 Check an Edit With the Project's Tests](#67-check-an-edit-with-the-projects-tests): `--check-command`, Python's own test command
 7. [C, C++, Rust and Java](#7-c-c-rust-and-java): what each language reads and changes
    - [7.1 C and C++](#71-c-and-c): read, set, withheld locals, strings and changing their text, maps, what `set` checks
-   - [7.2 Rust (a Cargo crate)](#72-rust-a-cargo-crate): values read from memory, settable locals and texts, crate shape
+   - [7.2 Rust (a Cargo crate)](#72-rust-a-cargo-crate): values read from memory, settable locals and texts, crate shape, workspaces with dependencies
    - [7.3 Java (launched)](#73-java-launched): configs, previews, fields and Strings that can be set
    - [7.4 Java Tests Already Running (Gradle `--debug-jvm`, e.g. Venice)](#74-java-tests-already-running-gradle---debug-jvm-eg-venice): attach to a `--debug-jvm` JVM
    - [7.5 Optimized Builds](#75-optimized-builds): `optimization`/`opt_level`: what changes
@@ -4193,7 +4193,7 @@ In [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c): read, set, withheld local
 
 ### 7.2 Rust (a Cargo crate)
 
-In [Rust 7.2](lang/rust-cookbook.md#72-rust-a-cargo-crate): values read from memory, settable locals and texts, crate shape.
+In [Rust 7.2](lang/rust-cookbook.md#72-rust-a-cargo-crate): values read from memory, settable locals and texts, crate shape, workspaces with dependencies.
 
 ### 7.3 Java (launched)
 

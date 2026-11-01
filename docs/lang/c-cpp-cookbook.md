@@ -609,7 +609,7 @@ The local is also withheld wherever the source doesn't show where the declaratio
 - brackets that don't balance;
 - between the declaration and its end, text the compiler may read differently from Peeky's scan:
   - a directive such as `#include`;
-  - a line splice, or `<::`;
+  - a line splice, or, in C, `<::`;
   - a macro of the program's sources and headers that leaves a bracket open, or holds a `;` outside
     its brackets;
 - anywhere in the file, a `#line` directive.
@@ -617,7 +617,9 @@ The local is also withheld wherever the source doesn't show where the declaratio
 How Peeky reads the source:
 
 - C's trigraphs are read as `-std=c11` reads them: `??/` is a backslash. C++17 has no trigraphs.
-- Digraphs (`<% %> <: :>`) are brackets.
+- Digraphs (`<% %> <: :>`) are brackets. C++ reads `f<::std::size_t>` as `<` and `::`, as C++11
+  does; `<::>` stays `<:` `:>`. A binary target's C++ unit built before C++11 (`-std=c++03`) has
+  its text unread.
 - Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
   lone `\n` each end a line; `\n\r` is two line ends.
 
@@ -1234,6 +1236,8 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
 - **bison and flex:** generate without `#line`: `bison -l` and `flex -L`. A `#line` naming the
   grammar leaves the generated file's unit with no MD5s, so it isn't judged. Probe the generated
   `parser.c`, not `parser.y`.
+  Where a Makefile runs them with its own flags, run them first, as jq's runs flex: `flex -L
+  -o src/lexer.c --header-file=src/lexer.h src/lexer.l`, then `make YFLAGS=-l`.
 - **C++:** build with libc++ and `-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER`
   (`-stdlib=libc++` on Linux). libstdc++'s headers, and libc++'s without it, leave every unit
   that includes them with no MD5s. So does an inheriting constructor (`using Base::Base;`).
@@ -1246,11 +1250,19 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
   `describe` lists each unit whose text it can't read, and why: `text not read: Peeky can't read
   src/util.c as compiled: …`. The rules that need the text withhold there, saying so. So they do
   where its preprocessing asks for a file it doesn't find (`__has_include`): the build may have
-  found one. Or where its command has `-march=native`, which names the build host's CPU.
+  found one. On Linux, `-fdebug-macro` lets Peeky check the build's own record of its macros
+  instead, where the probe's branches define or undefine macros: a build that found the file
+  would have left another record. A probe whose branches differ in code or includes alone stays
+  unproven. Or where a file it reads holds a trigraph sequence (`??/`) and its command may turn
+  trigraphs on (`-std=c11`, `-trigraphs`), or where its command has
+  `-march=native`, which names the build host's CPU.
 - **Calls that return twice:** setjmp's family, `vfork`, `getcontext`, `swapcontext` and
   `savectx`, by name. Where a unit isn't read, or holds `asm` (its headers too), any call may. So may any
   where the binary holds code no unit covers, such as assembly built without `-g`: the note names
-  its symbol. Locals at or below a stop then carry the setjmp note. If you know which functions do, name them, as
+  its symbol. On Linux, the toolchain's own code isn't counted where its bytes are the
+  toolchain's: its startup objects', and what it links from libgcc's archive and glibc's
+  `libc_nonshared.a` (`atexit`, `__extenddftf2`). Such code is treated as equivalent to the
+  archive member, unless it reaches a function of your own. Locals at or below a stop then carry the setjmp note. If you know which functions do, name them, as
   MicroPython's `nlr_push`: `"returns_twice": ["nlr_push"]`. Peeky trusts that claim: a function
   left out of it can show a local's old value as its own.
 

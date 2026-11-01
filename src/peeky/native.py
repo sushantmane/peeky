@@ -431,9 +431,13 @@ class _LineParser:
         self.workspace = workspace
         self.inputs = {str((workspace / name).resolve()): name for name in declared}
         # As the compiler counts lines (``rust``: rustc, at `\n` alone; else clang, at a
-        # lone `\r` too), told by the caller: a Rust module may have any name.
+        # lone `\r` too), told by the caller: a Rust module may have any name. rustc reads
+        # only UTF-8 source; a file a crate `include_bytes!` (git-version's `.git/index`)
+        # has no rows, and is counted by its bytes.
+        errors = "surrogateescape" if rust else "strict"
         self.counts = {
-            name: len(source_lines(read_source(workspace / name), rust)) for name in declared
+            name: len(source_lines(read_source(workspace / name, errors), rust))
+            for name in declared
         }
         self.directories, self.files, self.current = {0: str(workspace)}, {}, None
         # {file id: declared name or None} for this table: one resolve per file, not per row.

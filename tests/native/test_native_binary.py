@@ -472,6 +472,50 @@ def test_cpp_units_are_judged_by_their_md5s_and_refused_with_what_the_table_show
     ), error
 
 
+CPP_LT_COLON = """struct Item { long v; };
+static int argc = 2;
+
+template <class T> int size_of() { return sizeof(T); }
+int width = size_of<::Item>() + argc;
+
+int scale(int argc) {
+    int doubled = argc * 2;
+    return doubled; // STOP
+}
+
+int main(int argc, char **) {
+    return scale(argc) == 2 ? 0 : 1;
+}
+"""
+
+
+@pytest.mark.cpp
+@pytest.mark.timeout(300)
+def test_a_cpp_unit_with_lt_colon_colon_reads_its_parameters(project):
+    # gtest.h's `PrintTo<::std::type_info>(value, os)`: C++11 reads `<` and `::`. Peeky
+    # read `<::` as C does, could tell no block in the unit, and withheld a parameter
+    # wherever the unit may declare its name elsewhere (here a file's `static int argc`).
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    compiler = default_cxx()
+    if not compiler or is_gcc(compiler):
+        pytest.skip("needs clang++")
+    (project / "main.cpp").write_text(CPP_LT_COLON)
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", *_sysroot(), "-c", "main.cpp"], cwd=project, check=True
+    )
+    subprocess.run(
+        [compiler, "--driver-mode=g++", *_sysroot(), "main.o", "-o", "prog"],
+        cwd=project,
+        check=True,
+    )
+    line = next(n for n, text in enumerate(CPP_LT_COLON.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("main.cpp", line, ("argc",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert row.get("value") == "1", json.dumps(row)
+
+
 @pytest.mark.timeout(120)
 def test_a_binary_config_with_sources_is_refused(project, capsys):
     config = project / "binary.json"
@@ -727,6 +771,13 @@ def test_code_no_unit_covers_may_return_twice(project, capsys, stripped):
         [compiler, *_sysroot(), *link, "main.o", "nlr.o", "-o", "prog"], cwd=project, check=True
     )
     said = "nlr_push is code no unit's debug information covers (assembly built without -g?)"
+    if macos:
+        # Peeky compares code with the toolchain's objects and archives on Linux alone.
+        said = (
+            "nlr_push is code no unit's debug information covers (code built without debug "
+            "information: the program's own, a library's or the toolchain's, which Peeky "
+            "compares on Linux only)"
+        )
     if stripped:
         if not macos:
             subprocess.run(["objcopy", "--strip-symbol=nlr_push", "prog"], cwd=project, check=True)
@@ -812,6 +863,7 @@ def test_asm_in_a_header_outside_the_program_may_return_twice(project, capsys):
 PROBED_UTIL = """#if __has_include("count.h")
 #include "count.h"
 #else
+#define COUNT_T_DEFAULT 1
 typedef int count_t;
 #endif
 
@@ -823,33 +875,80 @@ int scale(int x) {
 
 
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("present", [True, False], ids=["found", "not found"])
-def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, present):
+@pytest.mark.parametrize("case", ["found", "not found", "code alone", "include alone", "no record"])
+def test_a_probe_the_build_may_have_answered_otherwise_withholds_the_text(project, capsys, case):
     # `__has_include` may have found a file when the program was built (a header path
-    # from its environment, a file since gone) that the replay doesn't.
+    # from its environment, a file since gone) that the replay doesn't. With
+    # -fdebug-macro (Linux), the build's record of its macros proves it found none: it
+    # wouldn't have defined COUNT_T_DEFAULT. Unless the branches differ in code or an
+    # include alone, which may leave no record.
     (project / "src").mkdir()
-    if present:
+    if case == "found":
         (project / "src" / "count.h").write_text("typedef int count_t;\n")
+    util = PROBED_UTIL
+    if case in ("code alone", "include alone"):
+        util = util.replace("#define COUNT_T_DEFAULT 1\n", "")
+    if case == "code alone":
+        util = util.replace('#include "count.h"', "typedef long count_t;")
     compiler = _clang()
-    _build_text(project, compiler, {}, util=PROBED_UTIL)
-    stop = next(n for n, text in enumerate(PROBED_UTIL.splitlines(), 1) if "// STOP" in text)
+    extra = {"util": ("-fno-debug-macro",)} if case == "no record" else None
+    _build_text(project, compiler, {}, extra=extra, util=util)
+    stop = next(n for n, text in enumerate(util.splitlines(), 1) if "// STOP" in text)
     result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
     assert result["status"] == "completed", result.get("error")
     (row,) = result["rows"]
-    if present:
+    linux = sys.platform == "linux"
+    if case == "found" or (case == "not found" and linux):
         assert row.get("value") == "4", row
-    else:
-        assert (
-            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
-            '"count.h" exists'
-        ) in (row.get("error") or ""), row
-        assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
-        units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
-        assert units["src/util.c"]["text"] == (
-            "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
-            '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
-            "have found one (its environment can add header paths, and a file may since be gone)"
-        ), units
+        return
+    said = (
+        "Peeky can't read src/util.c as compiled: its preprocessing asks whether "
+        '"count.h" exists (__has_include, in src/util.c:1), and finds none: the build may '
+        "have found one (its environment can add header paths, and a file may since be gone)"
+    )
+    if linux and case in ("code alone", "include alone"):
+        said += (
+            "; two of its group's branches may leave no record of macros (only a #define or an "
+            "#undef surely does: an #include may be skipped), so the build's record can't tell "
+            "them apart"
+        )
+    elif linux:
+        said += (
+            "; build it with -fdebug-macro, and Peeky checks it against the build's own record "
+            "of its macros"
+        )
+    # A row's error shows the start; describe, all of it.
+    assert said[:90] in (row.get("error") or ""), row
+    assert main(["describe", str(project), "--binary", "prog", "--json"]) == 0
+    units = {unit["unit"]: unit for unit in json.loads(capsys.readouterr().out)["units"]}
+    assert units["src/util.c"]["text"] == said, units
+
+
+STDATOMIC_UTIL = """#include <stdatomic.h>
+
+int scale(int x) {
+    static atomic_int calls;
+    atomic_fetch_add(&calls, 1);
+    int doubled = x * 2;
+    return doubled + 1; // STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="-fdebug-macro, on Linux")
+def test_clang_s_stdatomic_h_is_read_by_the_build_s_record_of_its_macros(project):
+    # clang's stdatomic.h asks for the system's (`__has_include_next(<stdatomic.h>)`),
+    # which glibc lacks. Had the build found one, it would have included it and defined
+    # none of clang's ATOMIC_* macros: its record of macros proves it didn't.
+    (project / "src").mkdir()
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=STDATOMIC_UTIL)
+    stop = next(n for n, text in enumerate(STDATOMIC_UTIL.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("src/util.c", stop, ("doubled",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert row.get("value") == "4", row
 
 
 ATOMIC_UTIL = """int scale(int x) {
@@ -879,6 +978,80 @@ def test_a_normal_build_has_no_code_no_unit_covers(project, capsys, link):
     subprocess.run([compiler, *_sysroot(), *link, *objects, "-o", "prog"], cwd=project, check=True)
     twice = _describe_twice(project, capsys)
     assert twice["any"] is False, twice
+
+
+# Calls into the toolchain's static archives: glibc's libc_nonshared.a (atexit) and, on
+# AArch64, libgcc's long double arithmetic (__extenddftf2, __gttf2).
+ARCHIVE_UTIL = """int atexit(void (*)(void));
+
+static void done(void) {}
+
+int scale(int x) {
+    long double wide = (double)x;
+    atexit(done);
+    int doubled = x * 2;
+    return doubled + (wide > 1e9L) + 1;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a and libgcc's archive")
+def test_code_linked_from_the_toolchain_s_archives_is_the_toolchain_s(project, capsys):
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    twice = _describe_twice(project, capsys)
+    assert twice["any"] is False, twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a")
+def test_a_program_s_own_function_named_like_an_archive_member_counts(project, capsys):
+    # The program's own atexit, without debug information: libc_nonshared.a's isn't
+    # linked, and its bytes are other.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    (project / "own.c").write_text("int atexit(void (*f)(void)) { return f == 0; }\n")
+    subprocess.run([compiler, "-O0", "-c", "own.c", "-o", "own.o"], cwd=project, check=True)
+    objects = ["main.o", "util.o", "fast.o", "own.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and (
+            "atexit is code no unit's debug information covers, and its bytes are none of the "
+            "toolchain's (libc_nonshared.a(atexit.oS))"
+        )
+        in twice["why"]
+    ), twice
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc's libc_nonshared.a")
+def test_archive_code_calling_the_program_s_own_function_counts(project, capsys):
+    # libc_nonshared.a's atexit calls __cxa_atexit: here the program's own, with debug
+    # information, which may return twice. atexit's bytes are the member's, but it runs
+    # the program's code.
+    compiler = _clang()
+    _build_text(project, compiler, {}, util=ARCHIVE_UTIL)
+    (project / "src" / "own.c").write_text(
+        "int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { return f == 0; }\n"
+    )
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", "-c", "src/own.c", "-o", "own.o"], cwd=project, check=True
+    )
+    objects = ["main.o", "util.o", "fast.o", "own.o"]
+    subprocess.run([compiler, *objects, "-o", "prog"], cwd=project, check=True)
+    twice = _describe_twice(project, capsys)
+    assert (
+        twice["any"]
+        and (
+            "atexit is code no unit's debug information covers, and its bytes are "
+            "libc_nonshared.a(atexit.oS)'s, but it reaches __cxa_atexit, code that isn't the "
+            "toolchain's"
+        )
+        in twice["why"]
+    ), twice
 
 
 @pytest.mark.timeout(300)

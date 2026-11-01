@@ -210,11 +210,19 @@ where
     b.sink(&x); // SINK_BOXED
     let k = std::hint::black_box(1); // BOXED
     std::hint::black_box(&x);
-    k + smallnum::kept()
+    k + x + smallnum::kept()
 }
 
 pub fn via_boxed(arg: u32) -> u32 {
     boxed(&Box::new(Plain), arg)
+}
+
+/// A generic function only the binary instantiates: `util`'s build has no code of it.
+pub fn only_app<T: Sink>(t: &T, arg: u32) -> u32 {
+    let x = std::hint::black_box(arg);
+    t.sink(&x);
+    let k = std::hint::black_box(1); // ONLY_APP
+    k + x
 }
 
 pub fn dynamic(t: &dyn Sink, arg: u32) -> u32 {
@@ -300,6 +308,7 @@ fn main() {
     println!("PROJECTED {}", util::via_projected(&Src(Keeper), 35));
     println!("BOXED {}", util::via_boxed(37));
     println!("APP_BOXED {}", util::boxed(&Box::new(AppType), 39));
+    println!("ONLY_APP {}", util::only_app(&Keeper, 41));
 }
 """
 SMALLNUM = """use std::sync::atomic::{AtomicU32, Ordering};
@@ -805,3 +814,73 @@ def test_a_pointer_another_crates_impl_returns_may_point_into_the_crates_static(
     code, result = probe(capsys, (root, config), "SLOTTED", "--capture", "x", text=text)
     assert code == 0, result
     assert printed(result, "SLOTTED") == ["38"], result["output"]
+
+
+@pytest.mark.timeout(600)
+def test_a_stop_in_another_crates_build_of_the_crates_code_reads_nothing(built, capsys):
+    # `only_app` is generic and only the binary instantiates it: `util`'s build has no code
+    # of it, so the debugger would stop in the binary's, which Peeky reads none of.
+    code, result = probe(capsys, built, "ONLY_APP", "--capture", "x")
+    assert code == 2 and result["error"]["code"] == "INVALID_BREAKPOINT", result
+    assert result["error"]["message"] == (
+        f"Line {line_of('ONLY_APP')} has no code to stop at in `util`'s build: it is in "
+        "`util::only_app`, a generic or inlined function whose code only the crates that use "
+        "it compile, for their own types, and Peeky reads none of theirs. Stop where `util`'s "
+        "own code calls it, or choose a line from `peeky describe`"
+    )
+    assert result["refused_before_launch"] is True
+    # `boxed` has `util`'s own instance (`via_boxed`, first) and the binary's (`APP_BOXED`):
+    # the first stop is read, the second is not, and says why.
+    code, result = probe(capsys, built, "BOXED", "--capture", "x", "--hits", "2")
+    assert code == 0, result
+    first, second = [row for row in result["rows"] if row["selector"] == "x"]
+    assert first["value"] == "37", first
+    assert second["unavailable"] is True and "value" not in second, second
+    assert second["error"] == (
+        "withheld: Peeky reads no value of frame 0 (util::boxed) here: the debugger shows the "
+        f"stop on line {line_of('BOXED')} of util/src/lib.rs, in code another crate's build "
+        "compiled (a generic or inlined function of `util`'s, for that crate's types). Peeky "
+        "reads only `util`'s own build, which holds none of it. A stop where `util`'s own code "
+        "runs it is read"
+    ), second
+    # The program's own print: 1 + `x` + what `smallnum` kept (35 from `PROJECTED`, then 39
+    # from the binary's `impl`).
+    assert printed(result, "BOXED") == ["73"] and printed(result, "APP_BOXED") == ["79"]
+
+
+@pytest.mark.timeout(600)
+def test_a_stop_peeky_cant_tell_is_the_crates_own_reads_nothing(built, capsys):
+    from peeky import rust_symbols
+    from peeky.native import NativeSession
+
+    # No address for a frame: `util`'s own copy is still known by its symbol, and read; the
+    # binary's copy, whose symbol `util`'s units don't define, can't be placed.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(NativeSession, "_unslid", lambda self, frame: None)
+        code, result = probe(capsys, built, "BOXED", "--capture", "x", "--hits", "2")
+    assert code == 0, result
+    first, second = [row for row in result["rows"] if row["selector"] == "x"]
+    assert first["value"] == "37", first
+    assert second["unavailable"] is True and "value" not in second, second
+    assert second["error"].endswith(
+        "Peeky can't tell whether that is `util`'s own build of the code, or another crate's "
+        "copy of a generic or inlined function. The debugger gives no address for the frame. A "
+        "stop in a function Peeky finds among `util`'s is read: try a line where `util`'s own "
+        "code calls this one"
+    ), second
+
+    # A unit whose functions Peeky couldn't read: no stop is taken for the crate's own.
+    def unread(root, unit):
+        raise ValueError("unreadable")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(rust_symbols, "code_blocks", unread)
+        code, result = probe(capsys, built, "STD", "--capture", "x")
+    assert code == 0, result
+    (row,) = [row for row in result["rows"] if row["selector"] == "x"]
+    assert row["unavailable"] is True and "value" not in row, row
+    assert (
+        "Peeky couldn't read the debug information of one of `util`'s units, so it doesn't know "
+        "where all of their code is." in row["error"]
+    ), row
+    assert printed(result, "STD") == ["6"]

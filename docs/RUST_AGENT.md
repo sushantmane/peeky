@@ -90,6 +90,108 @@ Every message is read before deciding. These are fatal instead:
 - A compile failure, and `close`, remove the workspace and its parent. A removal that fails is
   raised, or attached to the original error, never ignored.
 
+## A workspace's build
+
+`peeky.rust_build.RustWorkspaceTarget` is a workspace's configuration (`analyse`, `run`,
+`vendor`): `peeky build` builds it, and a probe or session reads that build. The decisions, and
+what each check proves, are in [ADR 0008](adr/0008-native-project-reach.md#decision).
+
+- `rust_workspace` reads the workspace's shape before any build: its manifests, `Cargo.lock`,
+  the vendored copies and their checksums, Cargo's configuration under an allowlist, and Cargo's
+  unit graph.
+- `rust_build.build` runs `cargo build` (or `cargo test --no-run`) offline and locked, into a
+  private target directory in the state directory. Peeky's rustc wrapper compiles the analysed
+  crates with `RUSTC_BOOTSTRAP=<crate>`, `-Zmir-opt-level=0`, legacy mangling and
+  `-Ztrim-diagnostic-paths=false`. It dumps their MIR, LLVM IR and expansion.
+- The build's manifest (its `schema`, now 5: a record of another is `BUILD_REQUIRED` before any
+  of it is read) records what it read and made, hashed: the inputs, every local
+  package's compiled files, each build script's inputs and variables, the artifacts. `current_build` checks it again
+  before every probe: a source changed is `BUILD_REQUIRED`, and what identifies the build
+  changed is `PROVENANCE_CHANGED`. A probe holds a lease on its build while it runs.
+- `rust_workspace_session.prepare_session` makes a `RustSession` of one analysed crate's
+  compile: the crate whose files hold the breakpoint. It reads only that crate's units of the
+  executable's debug information (`application_symbols`), and proves values with its MIR alone.
+- A stop in a file of the crate, in code its units don't define, is another crate's build of
+  the crate's generic or inlined function. Its frame's symbol hash isn't one of the units'
+  functions, and its address is in none of them (`_ownership`). Such a stop reads no value, and
+  says why (`macro_stop_note`), and the session goes on.
+- Where Peeky can't tell, the stop reads no value either, and says why. The debugger gave no
+  address, even after `validate_debugger`, or a unit's functions couldn't be read
+  (`UNREAD_UNIT`). A caller's address is taken one byte back, inside its call.
+- A breakpoint on a line of a function none of whose lines has a row in the crate's units is
+  refused before launch (`unplaceable_line`): only other crates' builds have code of it.
+
+**On a worker.** The worker's target is the workspace's `--rust-config`.
+
+- `compared_names` gives the files a client's are compared with: `compared_sources` of the
+  recorded build. That is every manifest, the lockfile and the workspace's Cargo configuration;
+  every workspace file the build compiled, from each local package's dependency files, the
+  binary's too; what local build scripts and procedural macros may read (`_watched_inputs`);
+  and each vendored copy's `.cargo-checksum.json`. The binary decides what reaches the analysed
+  code, so a run on other code isn't the client's. Nothing under `.git` is compared
+  (`_checkout_metadata`). Before any build, the workspace's `Cargo.toml` and `Cargo.lock`.
+- `remote_refusal` refuses a remote run where a build script's input can't be compared: outside
+  the root, or missing, unreadable or not a file on the worker's host.
+  The names are read again only once the record changes (`recorded_names`).
+- Both sides compare them as `sources.structured` gives them: a file's bytes and the links on
+  its path, with what they say. Each directory a build script watches is compared entry by entry
+  (`compared_trees`, and `sources._tree`).
+- Each path is followed one link at a time, as the kernel does, every step held inside the
+  resolved root (`sources._inside`). A link out, even out and back in, is `OutsideRoot`; a loop,
+  or more than 40 links, is `LinkLoop`. Nothing through either is read. Every link followed,
+  and its text, is part of the path's identity, a watched directory's entries' too.
+- A package Cargo watches whole is compared by the files `cargo package --list` gave at the build
+  (`lists` in the record, `_package_files`), each line exactly as Cargo writes it, spaces too.
+  Each is looked at by lstat first (`_compared_file`): a link to nothing, not a file, out of the root, or missing is a typed
+  refusal (`_UNLISTABLE`). Only `Cargo.toml.orig`, `.cargo_vcs_info.json` and a member's
+  `Cargo.lock` may be missing.
+- One walker (`_tree`) reads a package whole, by lstat: hidden and `target` directories too,
+  each directory recorded (an empty one is named to a client), links by their text, never
+  followed. Every entry spends the record's budget as it is read, before any is sorted or
+  walked into. It leaves out `.git`, `OS_JUNK`, and `walk_skip`: other
+  workspace packages, the vendored copies and Peeky's build directory. Its entries are what a
+  client's are compared with where Cargo can't list a package, and for a procedural macro's
+  package and the analysed ones; there a link out of the root refuses the build
+  (`_reachable`). The walk also decides the build's freshness on the worker's host.
+- Where Cargo can't list a package, the record's `note` says why; `peeky build` shows each, once
+  (`summary`'s `notes`), and so does `--build` beside a probe's output.
+- After the launch's `assert_current`, the build's own record of those files is compared with
+  the client's again, in the shape the disk has (`remote_identities`).
+- A directory Cargo's own dependency file lists is a build script's `rerun-if-changed` one. It
+  is recorded entry by entry, not hashed, and refused where no local build script watches it
+  (`_watched_directories`).
+- A probe's process gets the target as its configuration (`trusted_config`), which
+  `RustWorkspaceTarget.from_config` reads back as the same target, so the same build.
+- `build` (`_RemoteBuilds`) runs `RustWorkspaceTarget.build` in a thread, one at a time. A
+  request waits at most 30 s, within the client's 45 s timeout. The client (`_remote_build`)
+  asks again with the build's `request` id until it ends.
+- `_RemoteBuilds.close` sets the build's `stop` and joins it, before every way the worker
+  ends. Each process the build runs is an `execute` in its thread, which takes that `stop`
+  from `agent.stopping`: once set, it kills Cargo's process group and starts nothing.
+  Peeky's own work in the build checks it at every entry it walks, hashes or lists
+  (`stopping.check_stop`, in `_spend`, `_hash` and `_compared_file`), and each such loop is
+  linear. Every directory the build reads (the snapshot, its artifacts, the MIR left
+  behind, Cargo's build directories, the vendored copies, member patterns) is read lazily
+  by `stopping.listed` and `stopping.walked`: each entry checks the stop and spends a bound
+  as it is read, before any is sorted. A run the build leaves (failed, stopped, or pruned)
+  is renamed into the build directory's trash (`_discard`), never removed in one step. Each
+  later build removes a bounded part of the trash, its stop checked at each entry
+  (`_empty_trash`). It goes depth first holding only paths, one directory open at a time
+  however deep the trash. Only a removal that succeeds spends the budget, and one that
+  fails is passed over for the rest of the call, so each call makes progress. Every entry
+  read spends a second cap, 65,536 a call (`MAX_TRASH_EXAMINED`), failed and reread ones
+  too. What it couldn't remove is named once in the build's `notes`. The macOS symbols are copied the same way (`_copy_symbols`). A
+  running build is the worker's activity (`active`).
+- Only `agent.Stopped` becomes `BuildStopped`: an `execute` whose group was killed and leader
+  reaped, or that started nothing. A kill or reap that fails raises its own error, with the
+  group in its `process_group`, and is never hidden. A build's error that carries one, on it or
+  one it came from, is recorded as the build ends, whoever stopped it (`_left_running`).
+  `close` returns each, with `kill -KILL -- -GROUP`, and why the build it stopped didn't end as
+  stopped: `shutdown` then refuses (still running) or warns, and `main` exits 1.
+- The client rewrites a worker's `BUILD_REQUIRED` to name its own command (`_remote_build_required`).
+  A client resolves the target without a `--config`: a manifest Peeky doesn't build itself is the
+  worker's to read (`resolve`, `tools=False`).
+
 ## The MIR build
 
 Every build compiles the binary crate through a small rustc wrapper, set as

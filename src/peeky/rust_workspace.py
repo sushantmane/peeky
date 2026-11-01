@@ -25,6 +25,7 @@ import urllib.parse
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from peeky import stopping as _stopping
 from peeky.build import _inside, _relative
 from peeky.digest import sha256_file
 from peeky.textlines import split_lines
@@ -602,25 +603,26 @@ def _copy_files(entry, label, workspace, vendor, listed, digest):
     """{path in the copy: SHA-256} of a vendored copy's files, each of which its
     `.cargo-checksum.json` must list (``listed``) with the digest Peeky computes."""
     found = {}
-    for base, folders, files in os.walk(entry):
-        for name in (*folders, *files):
-            path = Path(base, name)
-            if path.is_symlink():
-                raise _vendor_refusal(
-                    f"{label} holds a link ({path.relative_to(entry)})", workspace, vendor
-                )
-        for name in files:
-            path = Path(base, name)
-            relative = path.relative_to(entry).as_posix()
-            if relative == ".cargo-checksum.json":
-                continue
-            if not path.is_file():
-                raise _vendor_refusal(
-                    f"{label} holds {relative}, which is not a regular file", workspace, vendor
-                )
-            found[relative] = digest(path)
-            if len(found) > MAX_VENDORED_FILES:
-                raise ValueError(f"The vendored copies hold more than {MAX_VENDORED_FILES} files")
+    # Read lazily, the build's stop checked at each entry, within a bound of entries.
+    too_many = f"The vendored copies hold more than {MAX_VENDORED_FILES} files"
+    for item in _stopping.walked(entry, [2 * MAX_VENDORED_FILES], too_many):
+        path = Path(item.path)
+        if item.is_symlink():
+            raise _vendor_refusal(
+                f"{label} holds a link ({path.relative_to(entry)})", workspace, vendor
+            )
+        if item.is_dir(follow_symlinks=False):
+            continue
+        relative = path.relative_to(entry).as_posix()
+        if relative == ".cargo-checksum.json":
+            continue
+        if not item.is_file(follow_symlinks=False):
+            raise _vendor_refusal(
+                f"{label} holds {relative}, which is not a regular file", workspace, vendor
+            )
+        found[relative] = digest(path)
+        if len(found) > MAX_VENDORED_FILES:
+            raise ValueError(too_many)
     if not listed:
         raise _vendor_refusal(
             f"{label}'s .cargo-checksum.json lists no files to check it against",
@@ -681,9 +683,12 @@ def vendored(workspace, vendor, locked, digest=None):
             f"`{vendor_command(workspace, vendor)}`"
         )
     copies, files = {}, {}
-    entries = sorted(directory.iterdir())
-    if len(entries) > MAX_PACKAGES:
-        raise ValueError(f"{directory} holds more than {MAX_PACKAGES} entries")
+    entries = [
+        Path(each.path)
+        for each in _stopping.listed(
+            directory, [MAX_PACKAGES], f"{directory} holds more than {MAX_PACKAGES} entries"
+        )
+    ]
     for entry in entries:
         if entry.is_symlink():
             raise _vendor_refusal(f"{vendor}/{entry.name} is a link", workspace, vendor)
@@ -826,24 +831,31 @@ def member_candidates(workspace, patterns, exclude=()):
         for part in pattern.replace("\\", "/").split("/"):
             if part in ("", "."):
                 continue
+            # Each directory read lazily, within a bound of entries, the build's stop checked
+            # at each (stopping.listed).
+            too_many = (
+                f"Workspace member pattern `{pattern}` matches more directories than Peeky checks"
+            )
             if part == "**":
-                deeper = []
+                deeper, limit = [], [MAX_PACKAGES * 256]
                 for base in current:
-                    for directory, folders, _ in os.walk(base):
-                        deeper.append(Path(directory))
+                    if not base.is_dir():
+                        continue
+                    deeper.append(base)
+                    for entry in _stopping.walked(base, limit, too_many):
+                        if entry.is_dir(follow_symlinks=False):
+                            deeper.append(Path(entry.path))
                         if len(deeper) > MAX_PACKAGES * 16:
-                            raise ValueError(
-                                f"Workspace member pattern `{pattern}` matches more directories "
-                                "than Peeky checks"
-                            )
+                            raise ValueError(too_many)
                 current = deeper
             elif _GLOB.search(part):
+                limit = [MAX_PACKAGES * 256]
                 current = [
-                    base / name
+                    base / entry.name
                     for base in current
                     if base.is_dir()
-                    for name in sorted(os.listdir(base))
-                    if fnmatch.fnmatchcase(name, part)
+                    for entry in _stopping.listed(base, limit, too_many)
+                    if fnmatch.fnmatchcase(entry.name, part)
                 ]
             else:
                 current = [base / part for base in current]
@@ -1295,6 +1307,44 @@ def check_graph(graph, cargo_version):
             raise refuse("a unit whose dependencies aren't units' indices")
 
 
+def canonical_graph(graph, cargo_version=""):
+    """Cargo's unit graph ``graph`` (as check_graph accepts it) in a form that doesn't
+    depend on the order Cargo lists its units in: (its version, each unit's digest, sorted,
+    its roots' digests, in order). A unit's digest covers its own fields (package, target,
+    profile, mode, features, platform) and each dependency's fields with that dependency's
+    digest. So two graphs are equal only with the same units, depending on the same units
+    the same way. Cargo lists units that differ only in what they depend on in no fixed
+    order (bat's two `regex` units), so one command's graph may number them apart from
+    run to run (#481). A graph with a cycle is not one Peeky reads."""
+    units = graph["units"]
+    waiting = [len(unit["dependencies"]) for unit in units]
+    users = [[] for _ in units]
+    for index, unit in enumerate(units):
+        for each in unit["dependencies"]:
+            users[each["index"]].append(index)
+    ready = [index for index, count in enumerate(waiting) if count == 0]
+    digests = [None] * len(units)
+    while ready:
+        index = ready.pop()
+        own = {key: value for key, value in units[index].items() if key != "dependencies"}
+        edges = sorted(
+            json.dumps(
+                [{k: v for k, v in each.items() if k != "index"}, digests[each["index"]]],
+                sort_keys=True,
+            )
+            for each in units[index]["dependencies"]
+        )
+        text = json.dumps([own, edges], sort_keys=True)
+        digests[index] = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        for user in users[index]:
+            waiting[user] -= 1
+            if waiting[user] == 0:
+                ready.append(user)
+    if None in digests:
+        raise _not_read("units that depend on each other in a cycle", cargo_version)
+    return graph["version"], sorted(digests), [digests[each] for each in graph["roots"]]
+
+
 def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
     """The WorkspaceShape of ``config``'s workspace from Cargo's ``metadata`` (`cargo
     metadata --no-deps --format-version 1`, as parsed JSON: the members) and ``graph``:
@@ -1701,8 +1751,8 @@ def read(root, config, cargo, rustc, cargo_home, target_dir, timeout=60, rustfla
     (`--unit-graph`, an unstable flag that RUSTC_BOOTSTRAP allows for that one command,
     which compiles nothing); read_workspace. What preflight checked is checked again just
     before Cargo starts. Then every manifest Cargo's metadata and unit graph name joins
-    the watch, both are taken again and must be identical, and everything is checked
-    again (recheck)."""
+    the watch, both are taken again and must be identical (the unit graph as
+    canonical_graph gives it), and everything is checked again (recheck)."""
     digest = digest or sha256_file
     own = build_environment(rustc, cargo_home, target_dir, rustflags)
     host, version = host_triple(rustc, own), cargo_version(cargo, own)
@@ -1744,11 +1794,18 @@ def read(root, config, cargo, rustc, cargo_home, target_dir, timeout=60, rustfla
             if "path" in each
         ]
     state = watched(checked.watch, named, digest)
-    for argv, before, what, bootstrap in (
-        (members, first, "metadata of the workspace's members", {}),
-        (units, output, "unit graph of the build", {"RUSTC_BOOTSTRAP": "1"}),
+
+    def graphed(text):
+        graph = _json(text, "unit graph", version)
+        check_graph(graph, version)
+        return canonical_graph(graph, version)
+
+    for argv, before, what, bootstrap, form in (
+        (members, first, "metadata of the workspace's members", {}, None),
+        (units, output, "unit graph of the build", {"RUSTC_BOOTSTRAP": "1"}, graphed),
     ):
-        if _cargo(argv, checked.workspace, {**env, **bootstrap}, timeout) != before:
+        again = _cargo(argv, checked.workspace, {**env, **bootstrap}, timeout)
+        if (form(again) != form(before)) if form else again != before:
             raise ValueError(
                 f"Provenance: Cargo's {what} changed while Peeky read the workspace and Cargo "
                 "ran. Build again"

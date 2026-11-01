@@ -376,6 +376,51 @@ def test_the_refusals_name_the_units_and_why(root):
         assert classify(BinaryRefused(message))["code"] == "UNSUPPORTED", message
 
 
+def test_a_unit_not_judged_is_named_relative_to_the_root_as_a_judged_one_is(root):
+    # CMake compiles each file by its absolute path: a unit not judged is still named as
+    # `describe` and a probe's --at name it, so a probe in it is refused saying why.
+    absolute = _unit(root, name=str(root / "src" / "main.c"))
+    judged = judge(absolute, _tables(root, checksums=False), CLANG, root)
+    assert judged.status == NOT_JUDGED and judged.name == "src/main.c", judged
+    assert _unread_file("src/main.c", "prog", [judged], root).startswith(
+        "src/main.c is a unit Peeky doesn't judge: its line table records no MD5s"
+    )
+
+
+def test_a_header_only_units_peeky_doesnt_judge_name_is_refused_naming_them(root):
+    # Template code in a header is in the units that instantiate it: where none Peeky
+    # judges has code there, the refusal names those whose line tables name the header.
+    tables = _tables(root, checksums=False)
+    units = [
+        Judged(_unit(root), "src/main.c", NOT_JUDGED, "its line table records no MD5s"),
+        Judged(_unit(root, stmt_list=8), "src/b.c", NOT_JUDGED, "built with -O2"),
+    ]
+    assert _unread_file("src/a.h", "prog", units, root, tables) == (
+        "No unit of prog Peeky judges has code in src/a.h. Units Peeky doesn't judge name it "
+        "in their line tables: src/main.c: its line table records no MD5s"
+    )
+    assert _unread_file("src/z.h", "prog", units, root, tables).startswith(
+        "No unit of prog Peeky judges has code in src/z.h: `peeky describe` lists each unit"
+    )
+    # Several units name it, unjudged for different reasons: each under its own.
+    header = tables[0]
+    tables = {
+        0: header,
+        8: LineHeader(8, 5, header.directories, header.files),
+        16: LineHeader(16, 5, header.directories, header.files),
+    }
+    units = [
+        Judged(_unit(root), "src/main.c", NOT_JUDGED, "its line table records no MD5s"),
+        Judged(_unit(root, stmt_list=8), "src/b.c", NOT_JUDGED, "built with -O2"),
+        Judged(_unit(root, stmt_list=16), "src/c.c", NOT_JUDGED, "its line table records no MD5s"),
+    ]
+    assert _unread_file("src/a.h", "prog", units, root, tables) == (
+        "No unit of prog Peeky judges has code in src/a.h. Units Peeky doesn't judge name it "
+        "in their line tables: src/main.c and 1 more: its line table records no MD5s; "
+        "src/b.c: built with -O2"
+    )
+
+
 def test_a_binary_target_s_config(tmp_path):
     with pytest.raises(ValueError, match='"optimized" must be true or false'):
         BinaryTarget(binary="jq", optimized="yes")
@@ -690,6 +735,7 @@ def test_the_debug_map_names_each_object_and_when_the_linker_read_it(tmp_path):
 FAKE_CC = """#!/bin/sh
 # Writes what a preprocessor would: the text (-o) and its dependencies (-MF).
 echo "$@" > argv
+all=" $* "
 out= deps= input=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -700,6 +746,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+case "$all" in *" -dD "*) if [ -f dumped ]; then cat dumped > "$out"; exit 0; fi; exit 1;; esac
 if [ -f fail ]; then echo "src/main.c:1:10: fatal error: 'gone.h' file not found" >&2; exit 1; fi
 if [ -f search ]; then cat search >&2; fi
 if [ -f output ]; then cat output > "$out"; else
@@ -708,7 +755,7 @@ printf 'x.o: %s %s\\n' "$input" "$(cat reads 2>/dev/null)" > "$deps"
 """
 
 
-def _replay(root, tmp_path, judged=None, words=None):
+def _replay(root, tmp_path, judged=None, words=None, record=None, tables=None):
     from peeky.native_binary import replay, replay_environment
 
     compiler = tmp_path / "fake-cc"
@@ -716,10 +763,11 @@ def _replay(root, tmp_path, judged=None, words=None):
     compiler.chmod(0o755)
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
-    judged = judged or judge(_unit(root), _tables(root), CLANG, root)
+    judged = judged or judge(_unit(root), tables or _tables(root), CLANG, root)
     if words is not None:
         judged = Judged(**{**judged.__dict__, "words": tuple(words)})
-    return replay(judged, str(compiler), replay_environment(scratch), scratch, root, 10)
+    environment = replay_environment(scratch)
+    return replay(judged, str(compiler), environment, scratch, root, 10, None, record)
 
 
 def test_a_unit_s_text_is_its_replayed_preprocessing(root, tmp_path):
@@ -752,6 +800,22 @@ def test_what_a_replay_reads_must_be_what_the_line_table_names(root, tmp_path):
     from peeky.native_binary import UnitText
 
     assert isinstance(_replay(root, tmp_path, words=words), UnitText)
+
+
+def test_a_cpp_unit_built_before_cpp11_leaves_its_text_unread(root, tmp_path):
+    # Peeky reads C++ as C++11 and later do: raw strings, and `<::` as `<` and `::`.
+    from peeky.native_binary import UnitText
+
+    cpp = judge(_unit(root, language="DW_LANG_C_plus_plus_14"), _tables(root), CLANG, root)
+    for std in ("-std=c++03", "-std=gnu++98", "-ansi"):
+        words = ["/usr/bin/clang++", std, "-O0", "-c", "src/main.c"]
+        assert _replay(root, tmp_path, judged=cpp, words=words) == (
+            f"Peeky can't read src/main.c as compiled: its command uses {std}: Peeky reads C++ "
+            "as C++11 and later do (raw strings, `<::` as `<` and `::`)"
+        ), std
+    for std in ((), ("-std=c++03", "-std=c++11"), ("-std=gnu++17",)):
+        words = ["/usr/bin/clang++", *std, "-O0", "-c", "src/main.c"]
+        assert isinstance(_replay(root, tmp_path, judged=cpp, words=words), UnitText), std
 
 
 def test_a_replay_that_cant_run_says_why(root, tmp_path):
@@ -866,10 +930,36 @@ def test_code_no_unit_covers_is_named(root, monkeypatch):
     ]
     monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
     units = [SimpleNamespace(ranges=[(0x1000, 0x1040)]), SimpleNamespace(ranges=[(0x1080, 0x10A0)])]
-    assert uncovered_code(binary, units) == [
+    # A toolchain whose archives define none of them.
+    none = lambda names=(): ([], None, None)  # noqa: E731
+    assert uncovered_code(binary, units, none) == [
         "nlr_push is code no unit's debug information covers (assembly built without -g?)",
         "the code at 0x10c4 has no symbol, and no unit's debug information covers it",
     ]
+    # In a Mach-O binary, Peeky compares nothing with the toolchain's: it says so.
+    monkeypatch.setattr(
+        native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections, macho=True)
+    )
+    asked = []
+    # Not only assembly: `helper` is ordinary C, built without -g.
+    units.pop()
+    mach = (
+        "{} is code no unit's debug information covers (code built without debug information: "
+        "the program's own, a library's or the toolchain's, which Peeky compares on Linux only)"
+    )
+    assert uncovered_code(binary, units, lambda names=(): asked.append(names)) == [
+        mach.format("nlr_push"),
+        mach.format("helper"),
+    ]
+    assert asked == []
+    units.append(SimpleNamespace(ranges=[(0x1080, 0x10A0)]))
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    # Where Peeky can't search them, it can't tell.
+    assert uncovered_code(binary, units)[0] == (
+        "nlr_push is code no unit's debug information covers, and Peeky can't tell whether it "
+        "is the toolchain's: it can't search all the toolchain's archives (Peeky has no "
+        "compiler to ask)"
+    )
     # Startup code, padding and the linker's own sections are no one's.
     units.append(SimpleNamespace(ranges=[(0x1060, 0x1064), (0x10C4, 0x10C8)]))
     assert uncovered_code(binary, units) == []
@@ -941,13 +1031,14 @@ const char *s = "__has_include(<str.h>)";
 
 
 def test_a_probe_the_replay_answers_no_leaves_the_text_unread(root, tmp_path):
-    from peeky.native_binary import UnitText
+    from peeky.native_binary import Pending, UnitText
 
     (root / "src" / "a.h").write_text("#if __has_include(<extra/config.h>)\n#endif\n")
     (root / "reads").write_text("src/a.h")
     include = tmp_path / "include"
     _search(root, include)
-    assert _replay(root, tmp_path) == (
+    # Unless the build's record of its macros proves it (Pending).
+    assert _replay(root, tmp_path) == Pending(
         "Peeky can't read src/main.c as compiled: its preprocessing asks whether "
         "<extra/config.h> exists (__has_include, in src/a.h:1), and finds none: the build may "
         "have found one (its environment can add header paths, and a file may since be gone)"
@@ -960,6 +1051,277 @@ def test_a_probe_the_replay_answers_no_leaves_the_text_unread(root, tmp_path):
     # Without the compiler's search path, Peeky can't tell.
     (root / "search").unlink()
     assert "can't read the compiler's search path" in _replay(root, tmp_path)
+
+
+# The replay with -dD of a unit whose main file includes src/a.h on line 1, which
+# defines HAVE_X on line 4.
+DUMPED = """# 1 "src/main.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+#define __clang__ 1
+# 1 "<built-in>" 2
+# 1 "src/main.c" 2
+# 1 "src/a.h" 1
+
+
+
+#define HAVE_X 0
+
+# 2 "src/main.c" 2
+int main(void) { return 0; }
+"""
+PROBED = """#if __has_include(<extra/config.h>)
+#include <extra/config.h>
+#else
+#define HAVE_X 0
+#endif
+"""
+
+
+def _record(root, line=4):
+    """The build's record of macros DUMPED leaves, with HAVE_X defined on ``line``."""
+    main, header = str(root / "src" / "main.c"), str(root / "src" / "a.h")
+    end = ("end",)
+    return [
+        ("start", 0, main),
+        ("start", 1, header),
+        ("define", line, "HAVE_X 0"),
+        end,
+        end,
+        ("define", 0, "__clang__ 1"),
+    ]
+
+
+def test_a_probe_finding_none_is_proven_by_the_build_s_record_of_its_macros(root, tmp_path):
+    # Had the build found <extra/config.h>, it would have entered it and not defined
+    # HAVE_X: its record of macros would differ. It doesn't, so it found none.
+    from peeky.native_binary import Pending, UnitText
+
+    (root / "src" / "a.h").write_text(PROBED)
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+    assert isinstance(_replay(root, tmp_path), Pending)
+    assert isinstance(_replay(root, tmp_path, record=_record(root)), UnitText)
+    said = (
+        "Peeky can't read src/main.c as compiled: its preprocessing asks whether "
+        "<extra/config.h> exists (__has_include, in src/a.h:1), and finds none: the build may "
+        "have found one (its environment can add header paths, and a file may since be gone)"
+    )
+    # Another record: not proven.
+    assert _replay(root, tmp_path, record=_record(root, line=3)) == (
+        f"{said}; the build's record of its macros (-fdebug-macro) isn't the replay's: at "
+        "src/a.h, the build recorded #define HAVE_X on line 3, the replay #define HAVE_X on line 4"
+    )
+    # A group whose branches differ in code alone: the record can't tell.
+    silent = (
+        "; two of its group's branches may leave no record of macros (only a #define or an "
+        "#undef surely does: an #include may be skipped), so the build's record can't tell "
+        "them apart"
+    )
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<extra/config.h>)\nint x = 1;\n#else\nint x = 2;\n#endif\n"
+    )
+    assert _replay(root, tmp_path, record=_record(root)) == said + silent
+    # Nor where one includes a file: one under `#pragma once` or a guard, already included
+    # by another name (a link), leaves no record.
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<extra/config.h>)\n#include <extra/config.h>\n#else\nint x = 2;\n"
+        "#endif\n"
+    )
+    assert _replay(root, tmp_path, record=_record(root)) == said + silent
+
+
+def test_a_file_holding_trigraph_sequences_leaves_the_text_unread(root, tmp_path):
+    # Under -trigraphs `??/` is a backslash: `#if __has_inclu??/` and `de("optional.h")`
+    # are one probe, which Peeky's own reading of the file doesn't see.
+    from peeky.native_binary import UnitText
+
+    (root / "src" / "a.h").write_text('#if __has_inclu??/\nde("optional.h")\n#endif\n')
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+
+    def words(*options):
+        return ["/usr/bin/clang", *options, "-O0", "-c", "src/main.c"]
+
+    def said(option):
+        return (
+            "Peeky can't read src/main.c as compiled: its preprocessing reads src/a.h, which "
+            f"uses trigraph sequences (`??/` on line 1), and its command may turn them on "
+            f"({option}): Peeky doesn't read text that -trigraphs could change"
+        )
+
+    for option in ("-trigraphs", "-std=c11", "-ansi"):
+        assert _replay(root, tmp_path, words=words(option)) == said(option), option
+    # Whatever the build's record says, and wherever the sequence is: a comment too
+    # (linux/pci_regs.h's `(??)`).
+    assert _replay(root, tmp_path, words=words("-std=c99"), record=_record(root)) == said(
+        "-std=c99"
+    )
+    (root / "src" / "a.h").write_text("#define A 1 /* scale (??) */\n")
+    assert "sequences (`??)` on line 1)" in _replay(root, tmp_path, words=words("-std=c11"))
+    # Lines end at `\r\n`, `\n` or a lone `\r`, as the compilers count them.
+    for end in (b"\r", b"\r\n", b"\n\r"):
+        (root / "src" / "a.h").write_bytes(end.join([b"#define A 1", b"", b"/* (??) */", b""]))
+        line = 4 if end == b"\n\r" else 3
+        found = _replay(root, tmp_path, words=words("-std=c11"))
+        assert f"sequences (`??)` on line {line})" in found, (end, found)
+    # Off: clang's default standard (GNU), a GNU one, or -fno-trigraphs last.
+    for options in ((), ("-std=gnu11",), ("-std=c11", "-fno-trigraphs")):
+        assert isinstance(_replay(root, tmp_path, words=words(*options)), UnitText), options
+
+
+def test_what_turns_trigraphs_on_is_read_from_the_recorded_words():
+    from peeky.native_binary import trigraphs_on
+
+    def on(*options, cpp=False):
+        return trigraphs_on(["clang", *options, "-c", "a.c"], cpp)
+
+    assert on() is None and on("-std=gnu17") is None and on("-std=gnu++14", cpp=True) is None
+    assert on("-std=c++17", cpp=True) is None and on("-std=c++20", cpp=True) is None
+    assert on("-std=c++14", cpp=True) == "-std=c++14" and on("-std=c17") == "-std=c17"
+    assert on("-std=c11", "-fno-trigraphs") is None and on("-fno-trigraphs", "-trigraphs")
+    assert on("-Xclang", "-trigraphs") == "-trigraphs" and on("-Wno-trigraphs") is None
+    # The last of a standard, -trigraphs and -fno-trigraphs decides, as clang reads them.
+    assert on("-fno-trigraphs", "-std=c11") == "-std=c11" and on("-fno-trigraphs", "-ansi")
+    assert on("-trigraphs", "-std=gnu11") is None and on("-ansi", "-std=gnu99") is None
+    assert on("-std=gnu11", "-trigraphs") == "-trigraphs" and on("-ansi", "-fno-trigraphs") is None
+    # A form Peeky doesn't read may turn them on, wherever it is.
+    assert on("-std", "c99") == "-std" and on("-Wp,-trigraphs") == "-Wp,-trigraphs"
+    assert on("-Wp,-trigraphs", "-fno-trigraphs", "-std=gnu11") == "-Wp,-trigraphs"
+
+
+def test_a_probe_whose_group_holds_a_line_directive_stays_unproven(root, tmp_path):
+    # A header since removed: had the build found it, each branch defines M "on line 100",
+    # the same record, but their code differs.
+    from peeky.native_binary import Pending
+
+    (root / "src" / "a.h").write_text(
+        '#if __has_include("gone.h")\n#line 100\n#define M 1\nint x = 1;\n#else\n#line 100\n'
+        "#define M 1\nint x = 2;\n#endif\n"
+    )
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(
+        DUMPED.replace("\n\n\n#define HAVE_X 0\n", '# 100 "src/a.h"\n#define M 1\nint x = 2;\n')
+    )
+    _search(root, tmp_path / "include")
+    first = _replay(root, tmp_path)
+    assert isinstance(first, Pending)
+    record = [
+        ("define", 100, "M 1") if event[0] == "define" and event[1] == 4 else event
+        for event in _record(root)
+    ]
+    assert _replay(root, tmp_path, record=record) == (
+        f"{first.why}; its group holds a #line or a line marker, under which two of its "
+        "branches may leave the same record of macros"
+    )
+
+
+def test_a_file_a_probe_finds_but_the_line_table_doesn_t_name_is_proven_so_too(root, tmp_path):
+    # gtest's `__has_include(<any>) && C++17`, before C++17: clang lists <any> among the
+    # replay's dependencies, which the build never entered, so its line table doesn't
+    # name it. Had the build answered otherwise, it would have defined HAS_ANY.
+    from peeky.native_binary import Pending, UnitText
+
+    include = tmp_path / "include"
+    include.mkdir()
+    (include / "any").write_text("#if __has_include(<nothing.h>)\n#endif\n")
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<any>) && CPP17\n#define HAS_ANY 1\n#endif\n#define HAVE_X 0\n"
+    )
+    (root / "reads").write_text(f"src/a.h {include / 'any'}")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, include)
+    first = _replay(root, tmp_path)
+    assert first == Pending(
+        "Peeky can't read src/main.c as compiled: its preprocessing reads include/any, which "
+        "its line table doesn't name (-fdebug-macro names each header, on Linux)"
+    )
+    # Its own probes never ran: the replay never entered it.
+    assert isinstance(_replay(root, tmp_path, record=_record(root)), UnitText)
+
+
+def test_a_probe_after_a_branch_finding_a_file_alone_never_runs(root, tmp_path):
+    # libc++'s __mbstate_t.h: `#elif __has_include(<bits/types/mbstate_t.h>)`, found, then
+    # `#elif __has_include(<sys/_types/_mbstate_t.h>)` (Darwin's), never reached.
+    from peeky.native_binary import UnitText
+
+    include = tmp_path / "include"
+    (include / "bits").mkdir(parents=True)
+    (include / "bits" / "x.h").write_text("")
+    (root / "src" / "a.h").write_text(
+        "#if defined(MUSL)\n#elif __has_include(<bits/x.h>)\n#include <bits/x.h>\n"
+        "#elif __has_include(<sys/y.h>)\n#include <sys/y.h>\n#endif\n"
+    )
+    (root / "reads").write_text(f"src/a.h {include / 'bits' / 'x.h'}")
+    _search(root, include)
+    tables = _tables(root)
+    files = {**tables[0].files, 2: LineFile(0, str(include / "bits" / "x.h"), _md5(""))}
+    tables = {0: LineHeader(0, 5, tables[0].directories, files)}
+    assert isinstance(_replay(root, tmp_path, tables=tables), UnitText)
+    # In a file holding `??/` or `??=`, Peeky isn't sure of its groups: the probe counts.
+    (root / "src" / "a.h").write_text(
+        "#if defined(MUSL)\n#elif __has_include(<bits/x.h>)\n#include <bits/x.h>\n"
+        "#elif __has_include(<sys/y.h>)\n#include <sys/y.h> // ??/\n#endif\n"
+    )
+    assert "<sys/y.h> exists" in _replay(root, tmp_path, tables=tables).why
+    # Asked with another condition, the earlier branch may not be taken.
+    (root / "src" / "a.h").write_text(
+        "#if __has_include(<bits/x.h>) && A\n#elif __has_include(<sys/y.h>)\n#endif\n"
+    )
+    assert "<sys/y.h> exists" in _replay(root, tmp_path, tables=tables).why
+
+
+def test_units_a_record_of_macros_may_prove_are_replayed_again_with_it(root, tmp_path, monkeypatch):
+    from peeky.native_binary import UnitText, replay_units
+
+    compiler = tmp_path / "fake-cc"
+    compiler.write_text(FAKE_CC)
+    compiler.chmod(0o755)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (root / "src" / "a.h").write_text(PROBED)
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+    unit = judge(_unit(root), _tables(root), CLANG, root)
+    asked = []
+
+    def records(pending):
+        asked.append([each.name for each in pending])
+        return {0: _record(root)}
+
+    texts = replay_units([unit], str(compiler), scratch, root, None, records)
+    assert isinstance(texts["src/main.c"], UnitText) and asked == [["src/main.c"]]
+    # No record: on Linux, the note says how to have one.
+    monkeypatch.setattr(sys, "platform", "linux")
+    texts = replay_units([unit], str(compiler), scratch, root, None, lambda pending: {})
+    assert texts["src/main.c"].endswith(
+        "a file may since be gone); build it with -fdebug-macro, and Peeky checks it against "
+        "the build's own record of its macros"
+    )
+
+    def broken(pending):
+        raise TimeoutError("it took over 15.0 s")
+
+    texts = replay_units([unit], str(compiler), scratch, root, None, broken)
+    assert texts["src/main.c"].endswith(
+        "; Peeky can't read the build's record of its macros (it took over 15.0 s)"
+    )
+    # Without a provider: no record.
+    assert replay_units([unit], str(compiler), scratch, root, None)["src/main.c"].endswith(
+        "a file may since be gone); build it with -fdebug-macro, and Peeky checks it against "
+        "the build's own record of its macros"
+    )
+    # Built with -fdebug-macro, yet no record: Peeky says so.
+    macros = Judged(
+        **{**unit.__dict__, "words": (*unit.words[:-1], "-fdebug-macro", unit.words[-1])}
+    )
+    texts = replay_units([macros], str(compiler), scratch, root, None, lambda pending: {})
+    assert texts["src/main.c"].endswith(
+        "a file may since be gone); Peeky finds no record of its macros in the binary"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1094,10 +1456,13 @@ def _call(offset, name, section=None):
     return Relocation(offset, 283, 0, None, name, 0, section is not None, section)
 
 
-def _linked(monkeypatch, base, **addresses):
-    """native_startup.Image of the binary's bytes, at ``base``, with ``addresses``."""
+def _linked(monkeypatch, base, stubs=None, **addresses):
+    """native_startup.Image of the binary's bytes, at ``base``, all code, with
+    ``addresses``, and ``stubs``: {PLT stub's address: the name its GOT slot holds}."""
     from peeky import native_startup
     from peeky.native_startup import EM_AARCH64
+
+    stubs = stubs or {}
 
     class Image:
         def __init__(self, binary):
@@ -1108,11 +1473,15 @@ def _linked(monkeypatch, base, **addresses):
             at = address - base
             return self.data[at : at + length] if 0 <= at <= len(self.data) - length else None
 
+        def runs(self, address):
+            return 0 <= address - base < len(self.data)
+
         def got(self, name, weak=False):
-            return set()
+            # Each stub's slot, by the stub's address.
+            return {stub for stub, held in stubs.items() if held == name}
 
         def stub(self, address):
-            return None
+            return address if address in stubs else None
 
     monkeypatch.setattr(native_startup, "Image", Image)
 
@@ -1135,7 +1504,7 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
     text = bytearray(0x100)
     text[0x40:0x48] = _bl(0x1040, 0x1700) + RET  # crtbeginS.o's block, as linked
     binary.write_bytes(bytes(text))
-    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1700})
+    _linked(monkeypatch, 0x1000, {0x1700: "__cxa_finalize"})  # libc's, through the PLT
     sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
     crtbegin = _piece(
         "crtbeginS.o",
@@ -1150,7 +1519,7 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
         monkeypatch.setattr(
             native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
         )
-        return uncovered_code(binary, [], lambda: (list(pieces), why))
+        return uncovered_code(binary, [], lambda names=(): (list(pieces), why, None))
 
     said = "{} is code no unit's debug information covers"
     # crtbeginS.o's code, its call relocated to its function: the toolchain's, whole.
@@ -1172,8 +1541,337 @@ def test_startup_names_count_unless_their_code_is_the_toolchain_s(root, monkeypa
         + ", and Peeky found no toolchain startup object holding it (clang finds no crtbeginS.o)"
     ]
     # The same code calling another function: the program's.
-    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1800})
+    _linked(monkeypatch, 0x1000, {0x1800: "__cxa_finalize"})
     assert found(*block)[0].startswith(said.format("register_tm_clones"))
+
+
+def _b(place, target):
+    return (0x14000000 | ((target - place) >> 2) & 0x3FFFFFF).to_bytes(4, "little")
+
+
+def test_startup_code_reaching_a_hook_the_program_defines_isn_t_the_toolchain_s(root, monkeypatch):
+    # crtbegin.o calls weak hooks a program may define itself (__cxa_finalize,
+    # _ITM_deregisterTMCloneTable, __deregister_frame_info), and crti.o's call_weak_fn
+    # calls __gmon_start__: the program's own code, which may return twice. Its bytes are
+    # the toolchain's, but it runs the program's code; so does what calls it.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+    from peeky.native_startup import Relocation
+
+    binary = root / "prog"
+    said = "{} is code no unit's debug information covers"
+    reaches = ", and its bytes are {}'s, but it reaches {}, code that isn't the toolchain's"
+    text = bytearray(0x100)
+    text[0x40:0x48] = _bl(0x1040, 0x1080) + RET  # crtbeginS.o's block
+    text[0x80:0x88] = MOV + RET  # __cxa_finalize, the program's, with debug information
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_finalize={0x1080})
+    crtbegin = _piece(
+        "crtbeginS.o",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__cxa_finalize"),
+        register_tm_clones=0,
+        frame_dummy=4,
+    )
+    symbols = [
+        CodeSymbol("register_tm_clones", 0x1040, 0, True),
+        CodeSymbol("frame_dummy", 0x1044, 0, True),
+        CodeSymbol("__cxa_finalize", 0x1080, 8, False),
+    ]
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    unit = SimpleNamespace(ranges=((0x1080, 0x1088),))
+    assert uncovered_code(binary, [unit], lambda names=(): ([crtbegin], None, None)) == [
+        said.format("register_tm_clones") + reaches.format("crtbeginS.o", "__cxa_finalize"),
+        said.format("frame_dummy") + reaches.format("crtbeginS.o", "__cxa_finalize"),
+    ]
+    # .init: crti.o's head calls its call_weak_fn, which calls the program's __gmon_start__.
+    text = bytearray(0x30)
+    text[0x00:0x0C] = MOV + _bl(0x2004, 0x2010) + RET  # crti.o's head, crtn.o's tail
+    text[0x10:0x18] = _b(0x2010, 0x2020) + RET  # call_weak_fn: b __gmon_start__
+    text[0x20:0x28] = MOV + RET  # __gmon_start__, the program's
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x2010}, __gmon_start__={0x2020})
+    gmon = Relocation(0, 282, 0, None, "__gmon_start__", 0, False, None, True)
+    pieces = [
+        _piece("crti.o", ".init", MOV + _bl(0, 0), _call(4, "call_weak_fn", ".text")),
+        _piece("crti.o", ".text", _b(0, 0) + RET, gmon, call_weak_fn=0),
+        _piece("crtn.o", ".init", RET),
+    ]
+    symbols = [
+        CodeSymbol("_init", 0x2000, 0, False),
+        CodeSymbol("call_weak_fn", 0x2010, 0, True),
+        CodeSymbol("__gmon_start__", 0x2020, 8, False),
+    ]
+    sections = [CodeSection(".init", 0x2000, 0x200C, 0), CodeSection(".text", 0x2010, 0x2030, 0x10)]
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
+    unit = SimpleNamespace(ranges=((0x2020, 0x2028),))
+    found = uncovered_code(binary, [unit], lambda names=(): (pieces, None, None))
+    assert found == [
+        said.format("call_weak_fn") + reaches.format("crti.o", "__gmon_start__"),
+        "the code at 0x2000, in .init, may be the program's: its bytes are crti.o's, but it "
+        "reaches call_weak_fn, code that isn't the toolchain's",
+    ]
+    # Where __gmon_start__ is nowhere (a weak hook nothing defines): the toolchain's.
+    _linked(monkeypatch, 0x2000, call_weak_fn={0x2010})
+    text[0x10:0x14] = _b(0x2010, 0)
+    binary.write_bytes(bytes(text))
+    del symbols[2]
+    assert uncovered_code(binary, [unit], lambda names=(): (pieces, None, None)) == []
+
+
+def test_code_linked_from_the_toolchain_s_archives_counts_unless_its_bytes_are_theirs(
+    root, monkeypatch
+):
+    # atexit (libc_nonshared.a) and __extenddftf2 (libgcc.a) are linked without debug
+    # information. Each is the toolchain's only where its bytes are the archive member's,
+    # as linked: by its relocations' immediate fields, each pointing where it must.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x00:0x08] = _bl(0x1000, 0x1700) + RET  # atexit: b __cxa_atexit, its PLT stub
+    text[0x20:0x28] = _bl(0x1020, 0x1030) + RET  # __extenddftf2: bl __sfp_handle_exceptions
+    text[0x30:0x38] = MOV + RET  # __sfp_handle_exceptions
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, {0x1700: "__cxa_atexit"}, __sfp_handle_exceptions={0x1030})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    atexit = _piece(
+        "libc_nonshared.a(atexit.oS)", ".text", _bl(0, 0) + RET, _call(0, "__cxa_atexit"), atexit=0
+    )
+    extend = _piece(
+        "libgcc.a(extenddftf2.o)",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__sfp_handle_exceptions"),
+        __extenddftf2=0,
+    )
+    sfp = _piece("libgcc.a(sfp-exceptions.o)", ".text", MOV + RET, __sfp_handle_exceptions=0)
+    asked = []
+
+    def found(*symbols, pieces=(atexit, extend, sfp), units=(), unsearched=None, unsure=None):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
+        )
+
+        def startup(names=()):
+            asked.append(list(names))
+            return list(pieces), None, unsearched
+
+        return uncovered_code(binary, units, startup, unsure)
+
+    said = "{} is code no unit's debug information covers"
+    linked = (
+        CodeSymbol("atexit", 0x1000, 8, False),
+        CodeSymbol("__extenddftf2", 0x1020, 8, True),
+        CodeSymbol("__sfp_handle_exceptions", 0x1030, 8, True),
+    )
+    assert found(*linked) == []
+    # Peeky looks for the names no unit covers, and no other.
+    unit = SimpleNamespace(ranges=((0x1040, 0x1080),))
+    assert found(*linked, CodeSymbol("scale", 0x1040, 8, True), units=[unit]) == []
+    assert asked[-1] == ["__extenddftf2", "__sfp_handle_exceptions", "atexit"]
+    # A function of the program's own, by an archive member's name but with other bytes,
+    # or calling another function: the program's.
+    own = CodeSymbol("atexit", 0x1030, 8, False)
+    assert found(own) == [
+        said.format("atexit")
+        + ", and its bytes are none of the toolchain's (libc_nonshared.a(atexit.oS))"
+    ]
+    _linked(monkeypatch, 0x1000, {0x1800: "__cxa_atexit"}, __sfp_handle_exceptions={0x1030})
+    assert found(*linked) == [
+        said.format("atexit") + ", and its bytes are libc_nonshared.a(atexit.oS)'s, but its "
+        "relocation at +0x0, to __cxa_atexit, points elsewhere"
+    ]
+    # No archive member defines it: as before. Where Peeky can't search an archive, or the
+    # units' toolchain options differ, it says so.
+    nlr = CodeSymbol("nlr_push", 0x1030, 8, False)
+    assert found(nlr, pieces=()) == [said.format("nlr_push") + " (assembly built without -g?)"]
+    unreadable = "Peeky can't read /usr/lib/libc_nonshared.a (Permission denied)"
+    assert found(nlr, pieces=(), unsearched=unreadable) == [
+        said.format("nlr_push") + ", and Peeky can't tell whether it is the toolchain's: it "
+        f"can't search all the toolchain's archives ({unreadable})"
+    ]
+    assert found(nlr, pieces=(), unsure="the units record different --target")[0].endswith(
+        "(assembly built without -g?); the units record different --target"
+    )
+
+
+def test_archive_code_reaching_the_program_s_code_isn_t_the_toolchain_s(root, monkeypatch):
+    # libc_nonshared.a's atexit calls __cxa_atexit, which a program may define itself and
+    # which may then return twice: atexit's bytes are the member's, but it runs the
+    # program's code. So is what reaches it, the program's or the toolchain's.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x00:0x08] = _bl(0x1000, 0x1060) + RET  # atexit: b __cxa_atexit, the program's
+    text[0x20:0x28] = _bl(0x1020, 0x1030) + RET  # __extenddftf2: bl __sfp_handle_exceptions
+    text[0x30:0x38] = MOV + RET  # __sfp_handle_exceptions
+    text[0x60:0x68] = MOV + RET  # __cxa_atexit, the program's own, with debug information
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __cxa_atexit={0x1060}, __sfp_handle_exceptions={0x1030})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    atexit = _piece(
+        "libc_nonshared.a(atexit.oS)", ".text", _bl(0, 0) + RET, _call(0, "__cxa_atexit"), atexit=0
+    )
+    extend = _piece(
+        "libgcc.a(extenddftf2.o)",
+        ".text",
+        _bl(0, 0) + RET,
+        _call(0, "__sfp_handle_exceptions"),
+        __extenddftf2=0,
+    )
+    sfp = _piece("libgcc.a(sfp-exceptions.o)", ".text", MOV + RET, __sfp_handle_exceptions=0)
+    symbols = [
+        CodeSymbol("atexit", 0x1000, 8, False),
+        CodeSymbol("__extenddftf2", 0x1020, 8, True),
+        CodeSymbol("__sfp_handle_exceptions", 0x1030, 8, True),
+        CodeSymbol("__cxa_atexit", 0x1060, 8, False),
+    ]
+
+    def found(pieces=(atexit, extend, sfp)):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections)
+        )
+        unit = SimpleNamespace(ranges=((0x1060, 0x1068),))
+        return uncovered_code(binary, [unit], lambda names=(): (list(pieces), None, None))
+
+    said = "{} is code no unit's debug information covers"
+    assert found() == [
+        said.format("atexit") + ", and its bytes are libc_nonshared.a(atexit.oS)'s, but it "
+        "reaches __cxa_atexit, code that isn't the toolchain's"
+    ]
+    # Through the toolchain's own code, matched in turn, or not.
+    other = _piece("libgcc.a(sfp-exceptions.o)", ".text", RET + RET, __sfp_handle_exceptions=0)
+    assert found((atexit, extend, other))[1:] == [
+        said.format("__extenddftf2") + ", and its bytes are libgcc.a(extenddftf2.o)'s, but it "
+        "reaches __sfp_handle_exceptions, code that isn't the toolchain's",
+        said.format("__sfp_handle_exceptions")
+        + ", and its bytes are none of the toolchain's (libgcc.a(sfp-exceptions.o))",
+    ]
+
+
+def test_the_returns_twice_family_is_never_the_toolchain_s(root, monkeypatch):
+    # By the family's pattern, prefixed or held in a longer name, and wherever it is: at
+    # an address matched toolchain code holds too (an alias), it still counts.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x20:0x28] = MOV + RET
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000)
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    asked = []
+
+    def found(*symbols, pieces=()):
+        monkeypatch.setattr(
+            native_binary, "code_symbols", lambda binary: CodeMap(list(symbols), sections)
+        )
+
+        def startup(names=()):
+            asked.append(list(names))
+            return list(pieces), None, None
+
+        return uncovered_code(binary, [], startup)
+
+    said = (
+        "{} is code no unit's debug information covers (one of the returns-twice family, "
+        "which Peeky never takes for the toolchain's code)"
+    )
+    for name in ("vfork", "_vfork", "__sigsetjmp", "my_setjmp_wrapper", "__getcontext"):
+        family = _piece(f"libc_nonshared.a({name}.oS)", ".text", MOV + RET, **{name: 0})
+        del asked[:]
+        assert found(CodeSymbol(name, 0x1020, 8, False), pieces=(family,)) == [said.format(name)]
+        assert asked == []
+    # An alias of matched code: the member's own `helper`, and `_setjmp` at its address.
+    helper = _piece("libgcc.a(helper.o)", ".text", MOV + RET, helper=0, _setjmp=0)
+    assert found(
+        CodeSymbol("helper", 0x1020, 8, False),
+        CodeSymbol("_setjmp", 0x1020, 8, False),
+        pieces=(helper,),
+    ) == [said.format("_setjmp")]
+    assert asked[-1] == ["helper"]
+
+
+def test_why_code_isn_t_the_toolchain_s_is_the_true_one(root, monkeypatch):
+    # A relocation Peeky doesn't read, a member built for another machine, a relocation
+    # pointing elsewhere: each said as it is, never as other bytes.
+    from peeky import native_binary
+    from peeky.native_binary import CodeMap, CodeSection, CodeSymbol, uncovered_code
+    from peeky.native_startup import EM_AARCH64, EM_X86_64, StartupPiece
+
+    binary = root / "prog"
+    text = bytearray(0x100)
+    text[0x20:0x28] = MOV + _bl(0x1024, 0x1080)
+    binary.write_bytes(bytes(text))
+    _linked(monkeypatch, 0x1000, __sfp_handle_exceptions={0x1090})
+    sections = [CodeSection(".text", 0x1000, 0x1100, 0)]
+    symbol = CodeSymbol("__extenddftf2", 0x1020, 8, True)
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap([symbol], sections))
+
+    def found(piece):
+        return uncovered_code(binary, [], lambda names=(): ([piece], None, None))
+
+    said = "__extenddftf2 is code no unit's debug information covers, and "
+    origin = "libgcc.a(extenddftf2.o)"
+    unread = StartupPiece(
+        origin,
+        ".text",
+        MOV + RET,
+        EM_AARCH64,
+        (),
+        {"__extenddftf2": 0},
+        "a relocation of kind 257 at 0x0 of its .text",
+    )
+    assert found(unread) == [
+        said + f"Peeky can't compare it with {origin}, which holds a relocation of kind 257 at "
+        "0x0 of its .text, a kind Peeky doesn't read"
+    ]
+    other = StartupPiece(origin, ".text", MOV + RET, EM_X86_64, (), {"__extenddftf2": 0})
+    assert found(other) == [
+        said + f"Peeky can't compare it with {origin}, built for x86-64, not AArch64"
+    ]
+    elsewhere = _piece(
+        origin, ".text", MOV + _bl(4, 0), _call(4, "__sfp_handle_exceptions"), __extenddftf2=0
+    )
+    assert found(elsewhere) == [
+        said + f"its bytes are {origin}'s, but its relocation at +0x4, to "
+        "__sfp_handle_exceptions, points elsewhere"
+    ]
+    # Other bytes: only that.
+    assert found(_piece(origin, ".text", RET + RET, __extenddftf2=0)) == [
+        said + f"its bytes are none of the toolchain's ({origin})"
+    ]
+
+
+def test_the_toolchain_is_asked_as_the_units_record_it(root):
+    # The compiler finds the startup objects and archives by --target, --sysroot, -rtlib
+    # and the GCC installation: as every unit records them, or, where they differ, Peeky
+    # says the code it compared may not be what was linked.
+    from peeky.native_binary import toolchain_options
+
+    def unit(*words, name="a.c"):
+        return SimpleNamespace(
+            name=name, words=("clang", *words), unit=SimpleNamespace(comp_dir="/src/build")
+        )
+
+    assert toolchain_options([unit("-O0"), unit("-g")]) == ((), None)
+    recorded = ("-target", "aarch64-linux-gnu", "--sysroot", "../sysroot", "-rtlib=compiler-rt")
+    assert toolchain_options([unit(*recorded), unit("-g", *recorded)]) == (
+        ("--rtlib=compiler-rt", "--sysroot=/src/sysroot", "--target=aarch64-linux-gnu"),
+        None,
+    )
+    assert toolchain_options([unit("--target=x86_64-linux-gnu"), unit(name="b.c")]) == (
+        (),
+        "the units record different --target, so the toolchain's code Peeky compared it with "
+        "may not be what was linked",
+    )
 
 
 def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkeypatch):
@@ -1196,18 +1894,41 @@ def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkey
         monkeypatch.setattr(
             native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections)
         )
-        return uncovered_code(binary, [], lambda: (list(pieces), why))
+        return uncovered_code(binary, [], lambda names=(): (list(pieces), why, None))
 
     assert found(MOV + call + RET) == []
     # Another object's code between them.
     assert found(MOV + call + MOV + RET) == [
         "the code at 0x2008, in .init, may be the program's: it isn't crti.o's or crtn.o's"
     ]
-    # Not crti.o's head at all, or its call elsewhere.
-    for other in (RET + call, MOV + _bl(0x2004, 0x3100)):
-        assert found(other + RET) == [
-            "the code at 0x2000, in .init, may be the program's: it isn't crti.o's or crtn.o's"
-        ]
+    # Not crti.o's head, or its call elsewhere: each says which.
+    said = "the code at 0x2000, in .init, may be the program's: "
+    assert found(RET + call + RET) == [said + "its bytes are none of the toolchain's (crti.o)"]
+    assert found(MOV + _bl(0x2004, 0x3100) + RET) == [
+        said + "its bytes are crti.o's, but its relocation at +0x4, to call_weak_fn, points "
+        "elsewhere"
+    ]
+    # crti.o built for another machine, or holding a relocation Peeky doesn't read: Peeky
+    # can't compare them, and says so.
+    from peeky.native_startup import EM_X86_64, StartupPiece
+
+    x86 = StartupPiece("crti.o", ".init", head.data, EM_X86_64, head.relocations, {})
+    assert found(MOV + call + RET, pieces=(x86, tail)) == [
+        said + "Peeky can't compare it with crti.o, built for x86-64, not AArch64"
+    ]
+    unread = "a relocation of kind 257 at 0x4 of its .init"
+    odd = StartupPiece("crti.o", ".init", head.data, head.machine, (), {}, unread)
+    assert found(MOV + call + RET, pieces=(odd, tail)) == [
+        said + f"Peeky can't compare it with crti.o, which holds {unread}, a kind Peeky "
+        "doesn't read"
+    ]
+    # crtn.o's tail likewise, where the gap holds it.
+    odd_tail = StartupPiece("crtn.o", ".init", RET, head.machine, (), {}, unread.replace("4", "0"))
+    assert found(MOV + call + RET, pieces=(head, odd_tail)) == [
+        "the code at 0x2008, in .init, may be the program's: Peeky can't compare it with "
+        "crtn.o, which holds a relocation of kind 257 at 0x0 of its .init, a kind Peeky doesn't "
+        "read"
+    ]
     assert found(MOV + call + RET, pieces=(), why="clang finds no crti.o") == [
         "the code at 0x2000, in .init, may be the program's: Peeky can't compare it with "
         "crti.o's and crtn.o's (clang finds no crti.o)"
