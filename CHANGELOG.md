@@ -27,6 +27,14 @@
 
 ### Other changes
 
+- **Rust workspaces: the unit graph in another order, and dependency files Peeky missed
+  (#481).** Cargo lists units alike but for their dependencies in no fixed order. So the unit
+  graph Peeky reads twice was refused as changed about half the time (bat, coreutils, ripgrep's
+  test). It is now compared in a form that doesn't depend on that order. A build script at
+  `build/main.rs`, and a binary an integration test runs, had no dependency file Peeky found.
+  Peeky now reads rustc's own, beside the output Cargo copied up. Cargo's file beside the run's
+  binary could list a directory, which refused every bat build.
+
 - **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
   closure or async block captures the places it uses. rustc's MIR prints one capture per
   variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
