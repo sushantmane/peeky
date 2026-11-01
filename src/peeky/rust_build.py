@@ -1314,6 +1314,13 @@ _CARGO_INHERITED = re.compile(
     r"CARGO_(?:HOME|TARGET_DIR|INCREMENTAL|NET_OFFLINE|TERM_COLOR|PROFILE_[A-Z0-9_]+|"
     r"PRIMARY_PACKAGE|CRATE_NAME)"
 )
+# Cargo's configuration given in its environment (`CARGO_BUILD_RUSTFLAGS`,
+# `CARGO_TARGET_<triple>_RUSTFLAGS`, which portable-atomic's build script watches): Cargo
+# 1.96 sets none of them for a build script, whatever its configuration files say, and
+# passes on its own environment's unchanged. So each is what Peeky gives Cargo (#482).
+_CARGO_PASSED = re.compile(
+    r"CARGO_BUILD_[A-Z0-9_]+|CARGO_TARGET_[A-Z0-9_]+_(?:RUSTFLAGS|RUSTDOCFLAGS|RUNNER)"
+)
 # Cargo's `CARGO_PKG_*` of a manifest's `[package]` fields (as written, else empty).
 _PACKAGE_FIELDS = {
     "AUTHORS": "authors",
@@ -1543,10 +1550,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     how Peeky knows it: "cargo", "jobs" or "launch")
     in Peeky's build (``env``: what Peeky runs Cargo with; ``jobs_``: its `-j`): Cargo's
     own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, and
-    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph; the
+    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph
+    (where the script runs more than once, the value every run has); the
     build's `rustc --print cfg` for `CARGO_CFG_*`; the package's manifest and place for
     `CARGO_PKG_*` and `CARGO_MANIFEST_*`; Peeky's own rustflags; else what Peeky gives
-    Cargo, which Cargo passes on. Refused for one Cargo sets otherwise, whose value Peeky
+    Cargo, which Cargo passes on (Cargo's configuration in its environment too:
+    _CARGO_PASSED). Refused for one Cargo sets otherwise, whose value Peeky
     doesn't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`, `CARGO_PKG_README`, which a
     file's presence decides, `CARGO_CFG_DEBUG_ASSERTIONS`)."""
     source, directory, package, version = rust_workspace.package_id(package_id)
@@ -1555,7 +1564,13 @@ def _script_value(name, package_id, shape, env, jobs_):
     # environment's, which Cargo passes on.
     how = "cargo"
     profiles = [each for each in shape.build_profiles if each[0] == package_id]
-    profile = profiles[0] if len(profiles) == 1 else None
+
+    def agreed(value_of):
+        # A package's build script may run more than once (rustix's, for the build
+        # scripts and for the program): the value where every run's is the same.
+        values = {value_of(each) for each in profiles}
+        return values.pop() if len(values) == 1 else ...
+
     if source is None:
         place = Path(directory)
     elif (copy := shape.vendored.get((package, version))) is not None:
@@ -1569,15 +1584,13 @@ def _script_value(name, package_id, shape, env, jobs_):
         found = "debug"
     elif name == "NUM_JOBS":
         found, how = str(jobs_), "jobs"
-    elif name in ("OPT_LEVEL", "DEBUG") and profile is not None:
-        found = profile[1] if name == "OPT_LEVEL" else profile[2]
+    elif name in ("OPT_LEVEL", "DEBUG"):
+        found = agreed(lambda each: each[1] if name == "OPT_LEVEL" else each[2])
     elif name.startswith("CARGO_FEATURE_"):
-        if profile is not None:
-            features = {_envify(each) for each in profile[3]}
-            found = "1" if name.removeprefix("CARGO_FEATURE_") in features else None
+        feature = name.removeprefix("CARGO_FEATURE_")
+        found = agreed(lambda each: "1" if feature in {_envify(f) for f in each[3]} else None)
     elif name == "CARGO_CFG_FEATURE":
-        if profile is not None:
-            found = ",".join(profile[3])
+        found = agreed(lambda each: ",".join(each[3]))
     elif name.startswith("CARGO_CFG_") and name != "CARGO_CFG_DEBUG_ASSERTIONS":
         found = _cfg_value(name.removeprefix("CARGO_CFG_"), shape.cfgs)
     elif name == "CARGO_ENCODED_RUSTFLAGS":
@@ -1603,7 +1616,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     elif place is not None and name == "CARGO_MANIFEST_LINKS":
         found = _manifest_field(shape, place, "links")
         found = None if found == "" else found
-    elif name == "RUSTC" or _CARGO_INHERITED.fullmatch(name) or not _CARGO_SETS.fullmatch(name):
+    elif (
+        name == "RUSTC"
+        or _CARGO_INHERITED.fullmatch(name)
+        or _CARGO_PASSED.fullmatch(name)
+        or not _CARGO_SETS.fullmatch(name)
+    ):
         found, how = env.get(name), "launch"
     if found is ...:
         raise ValueError(
