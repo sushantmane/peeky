@@ -2164,6 +2164,8 @@ def _caller_rows(worker, stop, pairs, hit, phase, frame, stopped, options):
                 "frame": frame,
                 **shown,
                 "error": str(exc)[:2000],
+                # A refusal's own code: UNSUPPORTED for a shared library's frame.
+                **({"code": exc.code} if isinstance(exc, Refused) else {}),
             }
             for selector, _ in pairs
         ]

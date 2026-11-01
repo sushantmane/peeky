@@ -35,9 +35,12 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from peeky import native_startup
 from peeky.adapters import PythonAdapter
@@ -80,6 +83,7 @@ from peeky.native import (
     _remaining,
     _symbol_text,
     _tool,
+    elf_executable_ranges,
     has_nonlocal_jumps,
     mentions_nonlocal_jumps,
     module_identity,
@@ -183,6 +187,13 @@ REPLAY_MARGIN = 2.0
 MAX_REPLAY_ERRORS = 16000
 # How many names a config's `returns_twice` may give.
 MAX_RETURNS_TWICE = 100
+# How long a worker takes, at most, to list a binary's inputs for a remote client; and how
+# long another client's request waits for that listing before it is BUSY.
+REMOTE_INPUTS_SECONDS = 40
+# The last binary listed so: {(binary, root, size, time, inode, target): its inputs}.
+_REMOTE_INPUTS = {}
+# One listing at a time: it runs dsymutil and llvm-dwarfdump over the whole binary.
+_LISTING = threading.Lock()
 
 
 class BinaryChanged(RuntimeError):
@@ -205,6 +216,38 @@ def _refused(code, message):
     refused = Refused(code, message)
     refused.before_launch = True
     return refused
+
+
+# The keys a binary target's config may hold (BinaryTarget's fields).
+BINARY_KEYS = frozenset(
+    {
+        "binary",
+        "language",
+        "compiler",
+        "adapter",
+        "dwarfdump",
+        "dsymutil",
+        "arguments",
+        "optimized",
+        "returns_twice",
+    }
+)
+
+
+def binary_name(root, binary):
+    """``binary``, a config's or `--binary`'s, by its name relative to ``root``, as it is
+    written: no link is followed, and the file needn't exist on this host (a remote
+    client's). INVALID_REQUEST where the name is outside ``root``."""
+    root = Path(root).resolve(strict=True)
+    given = Path(binary)
+    path = Path(os.path.normpath(given if given.is_absolute() else root / given))
+    if not path.is_relative_to(root) or path == root:
+        raise _refused(
+            "INVALID_REQUEST",
+            f"The binary {binary} is outside the target directory, {root}: give the "
+            "directory its sources are under as the target",
+        )
+    return path.relative_to(root).as_posix()
 
 
 @dataclass(frozen=True)
@@ -1568,6 +1611,207 @@ class BinaryTarget:
             raise _refused("INVALID_REQUEST", f"No binary {self.binary} in {root}")
         return path
 
+    def _judge(
+        self, root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, hashed=True
+    ):
+        """The binary's units, each judged, and the files those Peeky reads name, each
+        checked against its MD5 ({absolute path: SHA-256}); on macOS, through the dSYM
+        Peeky makes in ``scratch``. Unless ``hashed`` (a listing), no file is hashed: the
+        files are None, and the debug map's objects are checked by their stat identities,
+        and the dSYM's files not at all."""
+        version = _version_line(compiler)
+        symbols, dsym = binary, ()
+        if sys.platform == "darwin":
+            bundle = scratch / f"{binary.name}.dSYM"
+            # dsymutil reads the debug information from the objects the binary's debug map
+            # names, as they are now: each must be the one linked, before and after.
+            try:
+                entries = debug_map(binary)
+            except ValueError as exc:
+                raise _refused(
+                    "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
+                ) from None
+            objects = check_debug_map(entries, root, binary, hashed, deadline)
+            said = _run(
+                [tools[-1], str(binary), "-o", str(bundle)],
+                scratch,
+                env,
+                _remaining(deadline, 40),
+                "dsymutil",
+            )
+            if warned := next(
+                (line.strip() for line in said.split("\n") if "warning" in line.lower()), None
+            ):
+                raise BinaryChanged(
+                    "Provenance: the binary's objects may not be what it was linked from: "
+                    f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
+                    "again"
+                )
+            if check_debug_map(debug_map(binary), root, binary, hashed, deadline) != objects:
+                raise BinaryChanged(
+                    "Provenance: an object the binary's debug map names changed while "
+                    "dsymutil read it"
+                )
+            symbols = bundle / "Contents/Resources/DWARF" / binary.name
+            if not symbols.is_file():
+                raise _refused(
+                    "UNSUPPORTED",
+                    f"{shown} has no debug information (dsymutil found none): rebuild with -g",
+                )
+            # A listing keeps no dSYM: nothing of it is hashed.
+            dsym = (
+                tuple(
+                    FileIdentity(item.relative_to(scratch).as_posix(), sha256_file(item), 0)
+                    for item in sorted(bundle.rglob("*"))
+                    if item.is_file()
+                )
+                if hashed
+                else ()
+            )
+        index = _metadata(
+            dwarfdump,
+            ["--debug-info", "--recurse-depth=0", str(symbols)],
+            scratch,
+            env,
+            max_bytes=16 * 1024 * 1024,
+            timeout=_remaining(deadline),
+        )
+        units = read_units(index)
+        if not units:
+            raise _refused(
+                "UNSUPPORTED", f"{shown} has no debug information: rebuild with -g -gdwarf-5"
+            )
+        for unit in units:
+            if unit.tag != "DW_TAG_compile_unit" or unit.dwo_name:
+                # As the whole read refuses them (native.ForeignUnits), and before it.
+                kind = "DW_UT_skeleton" if unit.dwo_name else _FOREIGN_TAGS.get(unit.tag, unit.tag)
+                raise _foreign(kind, unit.offset, unit.dwo_name)
+        headers = LineFiles()
+        with _symbol_text(
+            dwarfdump,
+            [["--debug-line", str(symbols)]],
+            scratch,
+            env,
+            limit=MAX_LINE_TEXT,
+            timeout=_remaining(deadline),
+            what="line tables",
+        ) as lines:
+            headers.feed(lines)
+        tables = headers.close()
+        judged = tuple(judge(unit, tables, version, root, self.optimized) for unit in units)
+        read = [each for each in judged if each.read]
+        if not read:
+            raise _refused("UNSUPPORTED", _none_read(shown, judged))
+        languages = {each.language for each in read}
+        language = self.language or ("cpp" if "cpp" in languages else "c")
+        if language == "c" and "cpp" in languages:
+            raise _refused(
+                "INVALID_REQUEST",
+                f"{shown}'s units include C++ ones ("
+                + ", ".join(each.name for each in read if each.language == "cpp")[:200]
+                + '): set "language": "cpp"',
+            )
+        files = check_files(read, root) if hashed else None
+        return SimpleNamespace(
+            version=version,
+            symbols=symbols,
+            dsym=dsym,
+            units=units,
+            judged=judged,
+            read=read,
+            language=language,
+            files=files,
+        )
+
+    def remote_inputs(self, root):
+        """The files under ``root`` a remote client's copies are compared with: those the
+        units Peeky reads name, by their relative names, as the binary is now. Listed once
+        per binary (cached by its size, time and inode), one listing at a time: another
+        caller waits for it, or is BUSY. Within REMOTE_INPUTS_SECONDS, and Python's bounds
+        (sources.MAX_PYTHON_INPUTS files, MAX_PYTHON_BYTES in all), checked before any file
+        is read: no file is hashed (preparation checks each against its MD5). UNSUPPORTED
+        past them, as for a binary Peeky doesn't read."""
+        root = Path(root).resolve(strict=True)
+        binary = self.located(root)
+        shown = binary.relative_to(root).as_posix()
+        _executable(binary, shown)
+        info = binary.stat()
+        key = (str(binary), str(root), info.st_size, info.st_mtime_ns, info.st_ino, self)
+        if key in _REMOTE_INPUTS:
+            return _REMOTE_INPUTS[key]
+        if not _LISTING.acquire(timeout=REMOTE_INPUTS_SECONDS):
+            raise Refused(
+                "BUSY",
+                f"The worker is still listing {shown}'s files for another client: nothing ran",
+                "Retry in a moment: the worker lists a binary's files once, then answers at once.",
+            )
+        try:
+            if key not in _REMOTE_INPUTS:
+                names = self._list_inputs(root, binary, shown)
+                _REMOTE_INPUTS.clear()
+                _REMOTE_INPUTS[key] = names
+            return _REMOTE_INPUTS[key]
+        finally:
+            _LISTING.release()
+
+    def _list_inputs(self, root, binary, shown):
+        from peeky.sources import MAX_PYTHON_BYTES, MAX_PYTHON_INPUTS
+
+        compiler, dwarfdump = _tool(self.compiler), _tool(self.dwarfdump)
+        tools = [compiler, dwarfdump]
+        if sys.platform == "darwin":
+            tools.append(_tool(self.dsymutil or "dsymutil"))
+        elif sys.platform != "linux":
+            raise ValueError("Native targets support Linux and macOS hosts only")
+        env = without_credentials(
+            {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
+        )
+        deadline = time.monotonic() + REMOTE_INPUTS_SECONDS
+        scratch = Path(tempfile.mkdtemp(prefix="peeky-binary-", dir=private_base())).resolve()
+        try:
+            found = self._judge(
+                root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline, False
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        names = sorted(
+            {
+                Path(path).relative_to(root).as_posix()
+                for each in found.read
+                for path, _ in each.files
+                if Path(path).is_relative_to(root)
+            }
+        )
+
+        def refused(size):
+            return Refused(
+                "UNSUPPORTED",
+                f"{shown}'s units name {len(names):,} files under the target directory"
+                + (f" ({size / (1 << 20):.1f} MiB or more)" if size is not None else "")
+                + f". A worker compares at most {MAX_PYTHON_INPUTS:,} files, "
+                f"{MAX_PYTHON_BYTES >> 20} MiB in all, with a remote client's copies: run Peeky "
+                "on the binary's own host",
+                "Nothing ran. Run Peeky on the binary's own host, where no file is compared "
+                "with a client's.",
+            )
+
+        if len(names) > MAX_PYTHON_INPUTS:
+            raise refused(None)
+        size = 0
+        for name in names:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Listing {shown}'s files took over {REMOTE_INPUTS_SECONDS} s: nothing ran"
+                )
+            try:
+                size += (root / name).stat().st_size
+            except OSError:
+                # Preparation refuses it, by name, as gone.
+                continue
+            if size > MAX_PYTHON_BYTES:
+                raise refused(size)
+        return tuple(names)
+
     def prepare(self, program, root, *, edit=None, deadline=None):
         if edit is not None:
             raise _refused(
@@ -1628,94 +1872,9 @@ class BinaryTarget:
     ):
         identity_before = sha256_file(binary)
         tool_ids = tuple(ToolIdentity(tool, sha256_file(tool)) for tool in sorted(set(tools)))
-        version = _version_line(compiler)
-        symbols, dsym = binary, ()
-        if sys.platform == "darwin":
-            bundle = scratch / f"{binary.name}.dSYM"
-            # dsymutil reads the debug information from the objects the binary's debug map
-            # names, as they are now: each must be the one linked, before and after.
-            try:
-                entries = debug_map(binary)
-            except ValueError as exc:
-                raise _refused(
-                    "UNSUPPORTED", f"Peeky can't read {shown}'s debug map: {exc}"
-                ) from None
-            objects = check_debug_map(entries, root, binary)
-            said = _run(
-                [tools[-1], str(binary), "-o", str(bundle)],
-                scratch,
-                env,
-                _remaining(deadline, 40),
-                "dsymutil",
-            )
-            if warned := next(
-                (line.strip() for line in said.split("\n") if "warning" in line.lower()), None
-            ):
-                raise BinaryChanged(
-                    "Provenance: the binary's objects may not be what it was linked from: "
-                    f"dsymutil warned: {warned[:300]}. Rebuild the binary (make), then probe "
-                    "again"
-                )
-            if check_debug_map(debug_map(binary), root, binary) != objects:
-                raise BinaryChanged(
-                    "Provenance: an object the binary's debug map names changed while "
-                    "dsymutil read it"
-                )
-            symbols = bundle / "Contents/Resources/DWARF" / binary.name
-            if not symbols.is_file():
-                raise _refused(
-                    "UNSUPPORTED",
-                    f"{shown} has no debug information (dsymutil found none): rebuild with -g",
-                )
-            dsym = tuple(
-                FileIdentity(item.relative_to(scratch).as_posix(), sha256_file(item), 0)
-                for item in sorted(bundle.rglob("*"))
-                if item.is_file()
-            )
-        index = _metadata(
-            dwarfdump,
-            ["--debug-info", "--recurse-depth=0", str(symbols)],
-            scratch,
-            env,
-            max_bytes=16 * 1024 * 1024,
-            timeout=_remaining(deadline),
-        )
-        units = read_units(index)
-        if not units:
-            raise _refused(
-                "UNSUPPORTED", f"{shown} has no debug information: rebuild with -g -gdwarf-5"
-            )
-        for unit in units:
-            if unit.tag != "DW_TAG_compile_unit" or unit.dwo_name:
-                # As the whole read refuses them (native.ForeignUnits), and before it.
-                kind = "DW_UT_skeleton" if unit.dwo_name else _FOREIGN_TAGS.get(unit.tag, unit.tag)
-                raise _foreign(kind, unit.offset, unit.dwo_name)
-        headers = LineFiles()
-        with _symbol_text(
-            dwarfdump,
-            [["--debug-line", str(symbols)]],
-            scratch,
-            env,
-            limit=MAX_LINE_TEXT,
-            timeout=_remaining(deadline),
-            what="line tables",
-        ) as lines:
-            headers.feed(lines)
-        tables = headers.close()
-        judged = tuple(judge(unit, tables, version, root, self.optimized) for unit in units)
-        read = [each for each in judged if each.read]
-        if not read:
-            raise _refused("UNSUPPORTED", _none_read(shown, judged))
-        languages = {each.language for each in read}
-        language = self.language or ("cpp" if "cpp" in languages else "c")
-        if language == "c" and "cpp" in languages:
-            raise _refused(
-                "INVALID_REQUEST",
-                f"{shown}'s units include C++ ones ("
-                + ", ".join(each.name for each in read if each.language == "cpp")[:200]
-                + '): set "language": "cpp"',
-            )
-        files = check_files(read, root)
+        found = self._judge(root, binary, shown, compiler, dwarfdump, tools, env, scratch, deadline)
+        symbols, dsym, units = found.symbols, found.dsym, found.units
+        judged, read, language, files = found.judged, found.read, found.language, found.files
         declared = tuple(
             sorted(
                 {
@@ -1854,6 +2013,31 @@ class BinaryTarget:
         return session
 
 
+# How many of the debugger's modules a frame's library is looked for among.
+MAX_MODULES = 1024
+
+
+def _segments_hold(module, address):
+    """Whether the debugger's ``module``, an ELF file loaded where its `addressRange`
+    says (its header's address: decimal from LLVM 18's lldb-dap, hex from later ones),
+    holds ``address`` in an executable segment of its file as it is now."""
+    path, loaded = module.get("path"), module.get("addressRange")
+    if not isinstance(path, str) or not isinstance(loaded, str):
+        return False
+    if re.fullmatch(r"0x[0-9a-fA-F]{1,16}", loaded):
+        base = int(loaded, 16)
+    elif re.fullmatch(r"[0-9]{1,20}", loaded):
+        base = int(loaded)
+    else:
+        return False
+    try:
+        header, ranges = elf_executable_ranges(path)
+    except (OSError, ValueError, struct.error):
+        return False
+    bias = base - header
+    return bias >= 0 and any(start + bias <= address < end + bias for start, end in ranges)
+
+
 def _run(argv, cwd, env, timeout, what):
     """Runs ``argv``; what it wrote (its output and diagnostics), or RuntimeError."""
     try:
@@ -1927,17 +2111,20 @@ def debug_map(binary):
     return found
 
 
-def _members(archive):
-    """{member name: [its modification times]} of a BSD or System V `ar` archive."""
+def _members(archive, deadline=None):
+    """{member name: [its modification times]} of a BSD or System V `ar` archive; read
+    within ``deadline`` (time.monotonic()), where one is given: TimeoutError past it."""
     found = {}
     with open(archive, "rb") as stream:
         if stream.read(8) != b"!<arch>\n":
             raise ValueError("not an ar archive")
         size = os.fstat(stream.fileno()).st_size
         at = 8
-        for _ in range(MAX_MEMBERS):
+        for count in range(MAX_MEMBERS):
             if at >= size:
                 return found
+            if deadline is not None and count % 4096 == 0 and time.monotonic() > deadline:
+                raise TimeoutError(f"Reading {archive}'s members ran past Peeky's deadline")
             stream.seek(at)
             header = stream.read(60)
             if len(header) != 60 or header[58:60] != b"`\n":
@@ -1952,9 +2139,12 @@ def _members(archive):
     raise ValueError("too many members")
 
 
-def check_debug_map(entries, root, binary):
-    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name, each
-    checked by the linker's timestamps, as LLDB and dsymutil check them: there, with the
+def check_debug_map(entries, root, binary, hashed=True, deadline=None):
+    """{object: SHA-256} of each file the debug map ``entries`` (debug_map) name (where not
+    ``hashed``, its size, modification time and inode: nothing is read of it but an
+    archive's member headers), within ``deadline`` (time.monotonic(), where given:
+    TimeoutError past it). Each is checked by the linker's timestamps, as LLDB and
+    dsymutil check them: there, with the
     modification time the linker recorded, in seconds (an archive's member by its
     header's), and the file itself no newer than ``binary``, to the nanosecond: the linker
     wrote the binary after reading it. One rebuilt after the link, gone, or changed makes
@@ -1963,9 +2153,13 @@ def check_debug_map(entries, root, binary):
     refused (UNSUPPORTED). So is a file written in the binary's second where either time
     has no part of a second, as a filesystem keeping whole seconds gives: which came
     first can't be told."""
-    hashes, stale, unordered = {}, [], None
+    hashes, stale, unordered, archives = {}, [], None, {}
     linked = os.stat(binary).st_mtime_ns
     for name, moment in entries:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(
+                "Checking the objects the binary's debug map names ran past Peeky's deadline"
+            )
         member = re.fullmatch(r"(.+)\(([^()]+)\)", name)
         path = member[1] if member else name
         shown = _shown(os.path.realpath(path), Path(root))
@@ -1978,14 +2172,17 @@ def check_debug_map(entries, root, binary):
             )
         try:
             if member:
-                times = _members(path).get(member[2])
+                if path not in archives:
+                    archives[path] = _members(path, deadline)
+                times = archives[path].get(member[2])
                 if not times:
                     stale.append(f"{shown} is gone")
                     continue
                 current = moment if moment in times else times[0]
             else:
                 current = int(os.stat(path).st_mtime)
-            written = os.stat(path).st_mtime_ns
+            info = os.stat(path)
+            written = info.st_mtime_ns
             # In one second, where either time has no part of a second (it may be rounded
             # down), neither order is proven: refused as such, never as newer or older.
             ambiguous = written // 10**9 == linked // 10**9 and (
@@ -1994,7 +2191,12 @@ def check_debug_map(entries, root, binary):
             newer = not ambiguous and written > linked
             if ambiguous:
                 unordered = unordered or _shown(os.path.realpath(path), Path(root))
-            hashes[path] = sha256_file(path)
+            hashes[path] = (
+                sha256_file(path) if hashed else (info.st_size, info.st_mtime_ns, info.st_ino)
+            )
+        except TimeoutError:
+            # An OSError too, but the deadline's: nothing is known of the file.
+            raise
         except (OSError, ValueError):
             stale.append(f"{shown} is gone or unreadable")
             continue
@@ -2101,6 +2303,57 @@ class BinarySession(NativeSession):
             "family": list(RETURNS_TWICE_NAMES),
             "named": sorted(getattr(self, "returns_twice", None) or ()),
         }
+
+    def library_frame(self, dap, frame):
+        """Why nothing of ``frame`` is read where it runs a shared library, never the
+        binary (library_path): `this frame runs <library>; Peeky reads only <binary>'s own
+        units`. None where it runs the binary's code, or which module it runs can't be told."""
+        shown = self.library_path(dap, frame)
+        if shown is None:
+            return None
+        binary = self.prepared.manifest.binary.path
+        return f"this frame runs {shown}; Peeky reads only {binary}'s own units"
+
+    def library_path(self, dap, frame):
+        """The shared library ``frame`` runs, where the debugger's modules prove it runs
+        one, never the binary: its path, relative to the root where it is under it. Its
+        module is the frame's moduleId where the debugger gives one (macOS); else, on Linux
+        (LLVM 18's lldb-dap gives none), the one module whose loaded executable segments
+        hold the frame's address. None where the frame runs the binary's code, or which
+        module it runs can't be told."""
+        try:
+            listed = dap.request("modules", {"startModule": 0, "moduleCount": MAX_MODULES})
+        except (RuntimeError, TimeoutError, ValueError, OSError):
+            return None
+        modules = [each for each in (listed or {}).get("modules") or () if isinstance(each, dict)]
+        if "moduleId" in frame:
+            found = [each for each in modules if each.get("id") == frame["moduleId"]]
+        elif sys.platform == "linux":
+            address = (frame or {}).get("instructionPointerReference")
+            if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", address):
+                return None
+            found = [each for each in modules if _segments_hold(each, int(address, 16))]
+        else:
+            return None
+        if len(found) != 1 or self._own_module(found[0]):
+            return None
+        path = found[0].get("path")
+        if not isinstance(path, str) or not path or "\n" in path:
+            return None
+        root = self.prepared.source_root
+        shown = Path(path).relative_to(root).as_posix() if Path(path).is_relative_to(root) else path
+        return shown[:500]
+
+    def _own_module(self, module):
+        """Whether the debugger's ``module`` is the binary: by its build ID or UUID, or by
+        its path."""
+        identity = module.get("id")
+        if isinstance(identity, str) and identity.replace("-", "").upper() == self.module_identity:
+            return True
+        try:
+            return Path(module["path"]).resolve(strict=True) == self.binary
+        except (OSError, KeyError, TypeError, ValueError, RuntimeError):
+            return False
 
     def _holding(self, address):
         return [
