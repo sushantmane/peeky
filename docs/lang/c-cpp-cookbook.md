@@ -1249,7 +1249,8 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
   found one. On Linux, `-fdebug-macro` lets Peeky check the build's own record of its macros
   instead, where the probe's branches define or undefine macros: a build that found the file
   would have left another record. A probe whose branches differ in code or includes alone stays
-  unproven. Or where its command has
+  unproven. Or where a file it reads holds a trigraph sequence (`??/`) and its command may turn
+  trigraphs on (`-std=c11`, `-trigraphs`), or where its command has
   `-march=native`, which names the build host's CPU.
 - **Calls that return twice:** setjmp's family, `vfork`, `getcontext`, `swapcontext` and
   `savectx`, by name. Where a unit isn't read, or holds `asm` (its headers too), any call may. So may any

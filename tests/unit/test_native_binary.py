@@ -1045,6 +1045,54 @@ def test_a_probe_finding_none_is_proven_by_the_build_s_record_of_its_macros(root
     assert _replay(root, tmp_path, record=_record(root)) == said + silent
 
 
+def test_a_file_holding_trigraph_sequences_leaves_the_text_unread(root, tmp_path):
+    # Under -trigraphs `??/` is a backslash: `#if __has_inclu??/` and `de("optional.h")`
+    # are one probe, which Peeky's own reading of the file doesn't see.
+    from peeky.native_binary import UnitText
+
+    (root / "src" / "a.h").write_text('#if __has_inclu??/\nde("optional.h")\n#endif\n')
+    (root / "reads").write_text("src/a.h")
+    (root / "dumped").write_text(DUMPED)
+    _search(root, tmp_path / "include")
+
+    def words(*options):
+        return ["/usr/bin/clang", *options, "-O0", "-c", "src/main.c"]
+
+    def said(option):
+        return (
+            "Peeky can't read src/main.c as compiled: its preprocessing reads src/a.h, which "
+            f"uses trigraph sequences (`??/` on line 1), and its command may turn them on "
+            f"({option}): Peeky doesn't read text that -trigraphs could change"
+        )
+
+    for option in ("-trigraphs", "-std=c11", "-ansi"):
+        assert _replay(root, tmp_path, words=words(option)) == said(option), option
+    # Whatever the build's record says, and wherever the sequence is: a comment too
+    # (linux/pci_regs.h's `(??)`).
+    assert _replay(root, tmp_path, words=words("-std=c99"), record=_record(root)) == said(
+        "-std=c99"
+    )
+    (root / "src" / "a.h").write_text("#define A 1 /* scale (??) */\n")
+    assert "sequences (`??)` on line 1)" in _replay(root, tmp_path, words=words("-std=c11"))
+    # Off: clang's default standard (GNU), a GNU one, or -fno-trigraphs last.
+    for options in ((), ("-std=gnu11",), ("-std=c11", "-fno-trigraphs")):
+        assert isinstance(_replay(root, tmp_path, words=words(*options)), UnitText), options
+
+
+def test_what_turns_trigraphs_on_is_read_from_the_recorded_words():
+    from peeky.native_binary import trigraphs_on
+
+    def on(*options, cpp=False):
+        return trigraphs_on(["clang", *options, "-c", "a.c"], cpp)
+
+    assert on() is None and on("-std=gnu17") is None and on("-std=gnu++14", cpp=True) is None
+    assert on("-std=c++17", cpp=True) is None and on("-std=c++20", cpp=True) is None
+    assert on("-std=c++14", cpp=True) == "-std=c++14" and on("-std=c17") == "-std=c17"
+    assert on("-std=c11", "-fno-trigraphs") is None and on("-fno-trigraphs", "-trigraphs")
+    assert on("-Xclang", "-trigraphs") == "-trigraphs" and on("-Wno-trigraphs") is None
+    assert on("-std", "c99") == "-std c99" and on("-Wp,-trigraphs") == "-Wp,-trigraphs"
+
+
 def test_a_probe_whose_group_holds_a_line_directive_stays_unproven(root, tmp_path):
     # A header since removed: had the build found it, each branch defines M "on line 100",
     # the same record, but their code differs.
@@ -1113,8 +1161,7 @@ def test_a_probe_after_a_branch_finding_a_file_alone_never_runs(root, tmp_path):
     files = {**tables[0].files, 2: LineFile(0, str(include / "bits" / "x.h"), _md5(""))}
     tables = {0: LineHeader(0, 5, tables[0].directories, files)}
     assert isinstance(_replay(root, tmp_path, tables=tables), UnitText)
-    # In a file holding a trigraph that may make a directive, Peeky can't be sure of its
-    # groups: the probe counts.
+    # In a file holding `??/` or `??=`, Peeky isn't sure of its groups: the probe counts.
     (root / "src" / "a.h").write_text(
         "#if defined(MUSL)\n#elif __has_include(<bits/x.h>)\n#include <bits/x.h>\n"
         "#elif __has_include(<sys/y.h>)\n#include <sys/y.h> // ??/\n#endif\n"

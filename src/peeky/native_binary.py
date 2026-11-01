@@ -639,10 +639,46 @@ def _unread_named(real, root):
     )
 
 
-def _unproven_probe(read, lists, root, cache, unnamed=frozenset(), named=frozenset(), entered=None):
+# A trigraph sequence: `??` and one of the nine characters -trigraphs replaces.
+_TRIGRAPH = re.compile(rb"\?\?[=/'()!<>-]")
+
+
+def trigraphs_on(words, cpp):
+    """What of a unit's recorded ``words`` may turn trigraphs on, or None where they are
+    surely off: `-trigraphs` last, a standard that has them (`-std=c11`, `-ansi`, `-std=c++14`),
+    or a form of the option Peeky doesn't read (`-Wp,-trigraphs`). clang's default
+    standard, a GNU one, and C++17 and later have none."""
+    std, chosen = None, None
+    for at, word in enumerate(words[1:], 1):
+        if word in ("-trigraphs", "-ftrigraphs", "--trigraphs", "-fno-trigraphs"):
+            chosen = word
+        elif "trigraphs" in word and word not in ("-Wtrigraphs", "-Wno-trigraphs"):
+            return word
+        elif word == "-ansi" or word.startswith(("-std=", "--std=")):
+            std = word
+        elif word in ("-std", "--std"):
+            std = f"{word} {words[at + 1] if at + 1 < len(words) else ''}"
+    if chosen is not None:
+        return None if chosen == "-fno-trigraphs" else chosen
+    if std is None:
+        return None
+    value = std.split("=", 1)[1] if "=" in std else ""
+    later = ("c++17", "c++1z", "c++20", "c++2a", "c++23", "c++2b", "c++26", "c++2c")
+    if value.startswith("gnu") or (cpp and value in later):
+        return None
+    return std
+
+
+def _unproven_probe(
+    read, lists, root, cache, unnamed=frozenset(), named=frozenset(), entered=None, trigraphs=None
+):
     """Each Unproven of the replay's inputs (``read``: their paths as the compiler opened
     them): a probe that may have been answered otherwise when the program was built, or a
     file it reads that its line table doesn't name (``unnamed``: resolved).
+
+    Where the unit's command may turn trigraphs on (``trigraphs``: trigraphs_on's), a file
+    holding a trigraph sequence (``_TRIGRAPH``) counts whole: a trigraph may make a
+    directive or splice lines, hiding a probe from ``probes``.
 
     A probe that finds a file now (``_found``, never further than clang's own search)
     is proven, or never ran: where it runs, clang lists the file it finds among the
@@ -673,6 +709,25 @@ def _unproven_probe(read, lists, root, cache, unnamed=frozenset(), named=frozens
         if entered is not None and not {path, os.path.realpath(path)} & entered:
             continue
         hidden = entered is None and os.path.realpath(path) in unnamed
+        key = ("trigraph", os.path.realpath(path))
+        if key not in cache:
+            cache[key] = _TRIGRAPH.search(data)
+        if trigraphs is not None and (trigraph := cache[key]) is not None:
+            # -trigraphs may make a directive or splice lines (`__has_inclu??/`), which
+            # Peeky's own reading of the file (probes, conditionals) doesn't follow.
+            line = data.count(b"\n", 0, trigraph.start()) + 1
+            issues.append(
+                Unproven(
+                    f"its preprocessing reads {_shown(path, root)}, which uses trigraph sequences "
+                    f"(`{trigraph[0].decode()}` on line {line}), and its command may turn them "
+                    f"on ({trigraphs}): Peeky doesn't read text that -trigraphs could change",
+                    path,
+                    None,
+                    False,
+                    hidden,
+                )
+            )
+            continue
         for probe in listed:
 
             def add(why, provable=False, probe=probe, path=path, hidden=hidden):
@@ -960,7 +1015,8 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None, record=No
         inputs = [path for path in read if os.path.realpath(path) not in settings]
         lists = _search_lists(said)
         probed = {} if probed is None else probed
-        issues = _unproven_probe(inputs, lists, root, probed, unnamed, named)
+        trigraphs = trigraphs_on(judged.words, judged.language == "cpp")
+        issues = _unproven_probe(inputs, lists, root, probed, unnamed, named, None, trigraphs)
         if issues and not all(issue.provable or issue.hidden for issue in issues):
             return unread(next(each for each in issues if not (each.provable or each.hidden)).why)
         if issues and record is None:
@@ -969,7 +1025,8 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None, record=No
             argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-dD"]
             argv += [arguments[-1], "-o", str(work / "unit.dd")]
             left = timeout - (time.monotonic() - started)
-            facts = (inputs, lists, probed, unnamed, named, {os.path.realpath(p) for p in read})
+            reals = {os.path.realpath(each) for each in read}
+            facts = (inputs, lists, probed, unnamed, named, reals, trigraphs)
             why = _proven(issues[0].why, record, argv, env, comp_dir, left, root, facts)
             if why is not None:
                 return unread(why)
@@ -1038,7 +1095,7 @@ def _proven(why, record, argv, env, comp_dir, timeout, root, facts):
     in ``comp_dir``) must leave the same record, the line table must name only files the
     replay read, and each probe left (``_unproven_probe`` of ``facts``, given the files the
     replay entered) must be settled."""
-    inputs, lists, probed, unnamed, named, reals = facts
+    inputs, lists, probed, unnamed, named, reals, trigraphs = facts
     dumped = Path(argv[-1])
     errors = dumped.with_suffix(".errors")
     status = _preprocess(argv, comp_dir, env, timeout, errors)
@@ -1061,7 +1118,7 @@ def _proven(why, record, argv, env, comp_dir, timeout, root, facts):
         return (
             f"{why}; its line table names {_shown(missing[0], root)}, which the replay doesn't read"
         )
-    for issue in _unproven_probe(inputs, lists, root, probed, unnamed, named, entered):
+    for issue in _unproven_probe(inputs, lists, root, probed, unnamed, named, entered, trigraphs):
         if not issue.provable:
             return issue.why
         found = _groups(issue.path, probed).get(issue.probe.line)

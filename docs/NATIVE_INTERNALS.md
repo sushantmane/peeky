@@ -129,9 +129,14 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   differ in code or includes alone stay unproven, as do probes in macros.
 - A group holding a `#line` or a line marker, at any depth, stays unproven: two branches may
   each say `#line 100` and define the same macro, the same record for different code.
-- A directive may begin `#`, the digraph `%:`, or the trigraph `??=`. Whether a trigraph
-  applies depends on `-trigraphs` and the standard, and `??/` splices lines: a file holding
-  `??=` or `??/` has no group read (`Group.trigraphed`), by the record or `_moot`.
+- A directive may begin `#`, the digraph `%:`, or the trigraph `??=`. Where the unit's command
+  may turn trigraphs on (`trigraphs_on`: `-trigraphs`, `-ansi`, an ISO standard before C++17),
+  a file the replay reads holding any trigraph sequence (`_TRIGRAPH`) leaves its text unread,
+  naming the file and line. `??/` splices lines: `#if __has_inclu??/` and `de("x.h")` are one
+  probe that `probes` misses. clang's default standard is a GNU one, which has no trigraphs,
+  so gtest's and oniguruma's `??(` and `'??'` comments leave nothing unread there. A file
+  holding `??=` or `??/` still has no group read (`Group.trigraphed`), by the record or
+  `_moot`.
 - So does a recorded `-D` (`_defined_probe`) whose value names a probe, holds `#` or `##`,
   which may paste one together, or holds any three characters of a probe's name. String
   literals don't count. A probe the source itself pastes together from pieces is outside what
