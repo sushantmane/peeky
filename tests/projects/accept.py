@@ -2,10 +2,12 @@
 
 It builds the project as the phase asks (build.sh), measures the binary against Peeky's symbol
 bounds (measure.py), and runs Peeky on it as an agent would. It checks how many units Peeky
-judges and reads. Each value read is checked against an oracle outside Peeky, named in its
-check: the program's output (jq's, valkey's CLIENT LIST, gtest's), the source the build
-generated (jq's parser.c), another tool's output (mpy-cross's, read by mpy-tool), or the
-program's arguments (fmt's argc). Each refusal must say why. Then it checks the refusals
+judges and reads. Every value whose correctness it asserts has an oracle outside Peeky, named
+in its check: the program's output (jq's, valkey's CLIENT LIST, gtest's), the source the build
+generated (jq's parser.c), another tool's output (mpy-cross's, read by mpy-tool), the program's
+arguments (fmt's argc), or the program's own copy (valkey's original). Values captured only to
+select a hit (MicroPython's comp.pass), or checked only for their note (its l_finally_block),
+have none. Each refusal must say why. Then it checks the refusals
 projects share: GCC's and DWARF 4's builds, and the project's optimized build. A file edited
 without a rebuild, and the optimized build read with "optimized": true, are checked where
 Peeky judges a unit: json's binary is refused whole, so neither applies. Each check records
@@ -612,6 +614,7 @@ def micropython(run):
     last = _line("py/compile.c", r"^\s*compile_decrease_except_level\(comp\);", end)
     code, result, seconds = run.probe(
         f"py/compile.c:{last}",
+        # comp.pass only selects the hit of the emitting pass; its value isn't asserted.
         ["comp.pass", "comp.scope_cur.stack_size"],
         str(script),
         extra=("--hits", "4"),
@@ -633,6 +636,7 @@ def micropython(run):
         "AttributeError: 'int' object has no attribute '_i'" in result.get("output", ""),
         result.get("output", "")[:400],
     )
+    # Checked only for its note: its value, a label number, has no oracle, and isn't asserted.
     first = _line("py/compile.c", r"^\s*uint l_finally_block = comp_next_label\(comp\);", end)
     code, result, seconds = run.probe(f"py/compile.c:{first}", ["l_finally_block"], str(script))
     row = _rows(result).get((1, "l_finally_block"), {})

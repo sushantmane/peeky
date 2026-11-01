@@ -30,7 +30,9 @@ is 1 if a check failed.
 
 - Each project checks how many units Peeky judges, and that it reads each one's text but those
   it names with their reason: fmt-3272's `util.cc` and `os.cc`, behind fmt's `FMT_HAS_INCLUDE`.
-- Each value read is checked against an oracle outside Peeky:
+- Every value whose correctness the acceptance asserts has an oracle outside Peeky. Values
+  captured only to select a hit (MicroPython's `comp.pass`), or checked only for their note (its
+  `l_finally_block`, which must name `nlr_push`), have none. The oracles:
   - the program's output: jq's result, its error message and count, and `jv_print.c`'s number;
     valkey's `CLIENT LIST` (its client's id and `(superuser)`); gtest's print of its filter;
   - the source the build generated: jq's rule number, from `src/parser.c`'s `case` for
