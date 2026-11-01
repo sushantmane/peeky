@@ -398,6 +398,20 @@ def test_make_dependency_files_list_every_file_by_its_own_name(tmp_path):
     ]
 
 
+def test_cargos_own_dependency_file_may_name_a_directory_with_its_slash(tmp_path):
+    from peeky.build import UnreadDependencies, dependency_paths
+
+    # Cargo prints a build script's `rerun-if-changed` path as the script wrote it: bat's
+    # `assets/completions/` (#481). clang prints a backslash as `/`, so there it is refused.
+    text = "target/debug/bat: /w/src/main.rs /w/assets/completions/\n"
+    found = dependency_paths(text, tmp_path, "cargo")
+    assert [str(path) for path in found] == ["/w/src/main.rs", "/w/assets/completions"]
+    with pytest.raises(UnreadDependencies, match="an empty step"):
+        dependency_paths(text, tmp_path, "make")
+    with pytest.raises(UnreadDependencies, match="an empty step"):
+        dependency_paths("target/debug/bat: /w//x.rs\n", tmp_path, "cargo")
+
+
 @pytest.mark.parametrize(
     "text, made, why",
     [

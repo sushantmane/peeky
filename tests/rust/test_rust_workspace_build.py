@@ -1154,6 +1154,99 @@ def test_a_procedural_macros_generated_source_is_scanned_too(workspace, capsys, 
     assert "/out/generated.rs (generated) mentions RUSTC_BOOTSTRAP" in message
 
 
+def lock(root):
+    """Cargo.lock written again for the workspace's changed manifests."""
+    subprocess.run(
+        [os.environ["PEEKY_RUST_CARGO"], "generate-lockfile", "--offline"]
+        + list(rw.vendor_arguments(root, "vendor")),
+        cwd=root,
+        env=rw.cargo_environment(os.environ["PEEKY_RUST_RUSTC"], root.parent / "cargo-home"),
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.timeout(300)
+def test_a_build_script_by_another_name_and_a_binary_a_test_runs_are_read(workspace, capsys):
+    # `build = "build/main.rs"` (bat): rustc names it `build_script_main-<hash>`, and Cargo
+    # its copy `build-script-main`. An integration test that runs the package's binary
+    # (ripgrep's): Cargo links or copies `deps/app-<hash>` up as `target/debug/app` and
+    # writes no dependency file beside it. Both were "Cargo wrote no dependency file"
+    # (#481). rustc's own file is read for the binary now, in both builds.
+    manifest = workspace / "util/Cargo.toml"
+    manifest.write_text(manifest.read_text() + 'build = "build/main.rs"\n')
+    (workspace / "util/build").mkdir()
+    (workspace / "util/build/main.rs").write_text(
+        'fn main() {\n    println!("cargo::rerun-if-changed=build/main.rs");\n}\n'
+    )
+    # The program's build script watches a directory: Cargo's make-form file beside the
+    # binary lists it as `app/assets/`, which Peeky doesn't read unambiguously (bat's).
+    (workspace / "app/assets").mkdir()
+    (workspace / "app/assets/notes.txt").write_text("notes\n")
+    (workspace / "app/build.rs").write_text(
+        'fn main() {\n    println!("cargo::rerun-if-changed=assets/");\n}\n'
+    )
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(
+        "#[test]\nfn runs() {\n"
+        '    let out = std::process::Command::new(env!("CARGO_BIN_EXE_app")).output().unwrap();\n'
+        '    assert_eq!(out.stdout, b"2\\n");\n'
+        "}\n"
+    )
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    _, recorded = manifest_of(summary)
+    assert "util/build/main.rs" in recorded["sources"]
+    read(*probe(capsys, workspace, config))
+    tested = configure(workspace, run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(tested), "--quiet")
+    assert code == 0, summary
+    _, recorded = manifest_of(summary)
+    assert "app/src/main.rs" in recorded["sources"]
+    shown = subprocess.run([summary["executable"]], capture_output=True, text=True)
+    assert shown.returncode == 0 and "test result: ok. 1 passed" in shown.stdout, shown.stdout
+
+
+@pytest.mark.timeout(300)
+def test_units_alike_but_for_their_dependencies_build_every_time(workspace, capsys):
+    # `twin` is a dependency and a build dependency of `app`, and `leaf` has feature `a` in
+    # one and `b` in the other: two `twin` units alike but for which `leaf` they use (bat's
+    # two `regex` units). Cargo lists them in either order, run to run, and Peeky took a
+    # second listing in the other order for a change: "Cargo's unit graph of the build
+    # changed" (#481).
+    for name, manifest, text in (
+        ("leaf", "\n[features]\na = []\nb = []\n", "pub fn one() -> u32 {\n    1\n}\n"),
+        (
+            "twin",
+            '\n[dependencies]\nleaf = { path = "../leaf" }\n',
+            "pub fn two() -> u32 {\n    leaf::one() + 1\n}\n",
+        ),
+    ):
+        (workspace / name / "src").mkdir(parents=True)
+        (workspace / name / "Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n{manifest}'
+        )
+        (workspace / name / "src/lib.rs").write_text(text)
+    (workspace / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["app", "util", "leaf", "twin"]\nresolver = "2"\n'
+    )
+    manifest = workspace / "app/Cargo.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + 'twin = { path = "../twin" }\nleaf = { path = "../leaf", features = ["a"] }\n\n'
+        '[build-dependencies]\ntwin = { path = "../twin" }\n'
+        'leaf = { path = "../leaf", features = ["b"] }\n'
+    )
+    (workspace / "app/build.rs").write_text("fn main() {\n    assert_eq!(twin::two(), 2);\n}\n")
+    lock(workspace)
+    config = configure(workspace)
+    for _ in range(6):
+        code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+        assert code == 0, summary
+    read(*probe(capsys, workspace, config))
+
+
 @pytest.mark.timeout(300)
 def test_cargos_configuration_a_build_script_watches_is_peekys_environments(workspace, capsys):
     # portable-atomic's build script (coreutils') watches CARGO_BUILD_RUSTFLAGS and

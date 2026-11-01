@@ -204,12 +204,16 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
         (deps / name).write_text("")
     (tmp_path / "debug/app").write_text("")
     (tmp_path / "debug/app.d").write_text("")
+    (tmp_path / "debug/other").write_text("not rustc's")
+    (tmp_path / "debug/other.d").write_text("")
     assert rb._dependency_file([str(deps / "libutil-0123.rlib")]) == (deps / "util-0123.d", "rustc")
     assert rb._dependency_file([str(deps / "app-4567")]) == (deps / "app-4567.d", "rustc")
-    # A binary Cargo copies up names only its copy: Cargo's own file, in make's form.
-    assert rb._dependency_file([str(tmp_path / "debug/app")]) == (
-        tmp_path / "debug/app.d",
-        "make",
+    # A binary Cargo copies up names only its copy: rustc's own file, beside the output it
+    # copied; else Cargo's own, in make's form.
+    assert rb._dependency_file([str(tmp_path / "debug/app")]) == (deps / "app-4567.d", "rustc")
+    assert rb._dependency_file([str(tmp_path / "debug/other")]) == (
+        tmp_path / "debug/other.d",
+        "cargo",
     )
     assert rb._dependency_file([str(tmp_path / "debug/none")]) == (None, None)
     # A build script: Cargo names its copy, beside rustc's output and dependency file.
@@ -225,6 +229,46 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
     assert rb._stem("app-4567.dSYM") == "app-4567"
 
 
+def test_an_output_cargo_linked_or_copied_up_leads_to_rustcs_dependency_file(tmp_path):
+    # `build = "build/main.rs"` (bat): rustc writes `build_script_main-<hash>`, which Cargo
+    # names `build-script-main`. And a binary an integration test runs (ripgrep's `rg`):
+    # Cargo links it (Linux) or copies it (macOS) up from `deps`, and writes no make-form
+    # file beside it (#481).
+    script = tmp_path / "debug/build/bat-89ab"
+    script.mkdir(parents=True)
+    for name in ("build-script-main", "build_script_main-cdef", "build_script_main-cdef.d"):
+        (script / name).write_text("")
+    assert rb._dependency_file([str(script / "build-script-main")]) == (
+        script / "build_script_main-cdef.d",
+        "rustc",
+    )
+    deps = tmp_path / "debug/deps"
+    deps.mkdir()
+    for name in ("rg-0123", "rg-4567", "rg_x-89ab"):
+        (deps / name).write_text(name)
+        (deps / f"{name}.d").write_text("")
+    os.link(deps / "rg-4567", tmp_path / "debug/rg")
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (deps / "rg-4567.d", "rustc")
+    # A copy: the one of the same bytes. A binary with `-` in its name is `rg_x-<hash>`.
+    (tmp_path / "debug/rg-x").write_text("rg_x-89ab")
+    assert rb._dependency_file([str(tmp_path / "debug/rg-x")]) == (deps / "rg_x-89ab.d", "rustc")
+    # Before Cargo's own make-form file, which may list a directory (bat's).
+    (tmp_path / "debug/rg.d").write_text("rg: /testbed/assets/completions/\n")
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (deps / "rg-4567.d", "rustc")
+    # None of the same bytes: none.
+    (tmp_path / "debug/other").write_text("rg-4567")
+    assert rb._dependency_file([str(tmp_path / "debug/other")]) == (None, None)
+    # Two of the same bytes: Peeky can't tell which compile it is.
+    (deps / "rg-cdef").write_text("rg-4567x")
+    (tmp_path / "debug/twice").write_text("rg-4567x")
+    (deps / "twice-0001").write_text("rg-4567x")
+    (deps / "twice-0002").write_text("rg-4567x")
+    assert rb._dependency_file([str(tmp_path / "debug/twice")]) == (None, None)
+    # rustc's output without its dependency file: Cargo's own.
+    (deps / "rg-4567.d").unlink()
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (tmp_path / "debug/rg.d", "cargo")
+
+
 def test_a_watched_directory_cargo_lists_is_recorded_by_its_entries_not_hashed(tmp_path):
     # Cargo's own dependency file lists a build script's `rerun-if-changed` paths: a
     # directory too, which isn't a file to hash (a build watching one failed, "Expected a
@@ -236,7 +280,7 @@ def test_a_watched_directory_cargo_lists_is_recorded_by_its_entries_not_hashed(t
     target.mkdir()
     depfile = tmp_path / "app.d"
     depfile.write_text(f"{target}/debug/app: {root}/util/src/lib.rs {root}/util/proto\n")
-    read = rb._read_dependencies(depfile, root, root, target, "app", "make")
+    read = rb._read_dependencies(depfile, root, root, target, "app", "cargo")
     assert read["sources"] == ["util/src/lib.rs"]
     assert read["directories"] == [root / "util/proto"]
     # Recorded entry by entry where a local build script watches it, or a vendored copy's
