@@ -4897,6 +4897,10 @@ class DebugWorker:
                 if getattr(own, "pointer_free", False):
                     # Its type holds no pointer: its note says so.
                     output["pointer_free"] = True
+                if isinstance(reason := getattr(own, "reason", None), str):
+                    # Why, where the runtime tells it (a Rust closure's capture the MIR
+                    # leaves out).
+                    output["stale_reason"] = reason[:500]
             if isinstance(raw_reason, str) and not output.get("unavailable"):
                 output["raw_reason"] = raw_reason[:500]
             if (

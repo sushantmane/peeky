@@ -27,6 +27,14 @@
 
 ### Other changes
 
+- **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
+  closure or async block captures the places it uses. rustc's MIR prints one capture per
+  variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
+  value, from memory the closure had freed after growing its `String`. Now, where the MIR leaves
+  captures out and they may move something, the variables it names read as stale, saying so.
+  Where only shared references or `Copy` values are left out, they read as before. A change of a
+  named variable is refused either way, since Peeky can't tell what the closure holds.
+
 - **A version 2 Cargo.lock's refusal says what works (#467).** It said to run `cargo update
   --workspace`, which keeps a lockfile's version, so tokio-4867's and ripgrep-2209's stayed
   version 2. It now says to add `version = 3` as the first line: without git sources, the two
