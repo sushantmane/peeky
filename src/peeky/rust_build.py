@@ -1107,8 +1107,8 @@ def _build(target, root, *, deadline=None, progress=None):
         stuck |= _prune(directory, nonce)
         say(f"built in {manifest['seconds']} s")
         result = summary(manifest, directory)
-        if stuck:
-            result["notes"].append(_stuck_note(directory, stuck))
+        if note := _stuck_note(directory, stuck):
+            result["notes"].append(note)
         return result
 
 
@@ -2264,7 +2264,11 @@ def _empty_trash(directory, budget, examine=MAX_TRASH_EXAMINED):
 
 def _stuck_note(directory, stuck):
     """The build summary's note of what Peeky couldn't remove of its trash (``stuck``:
-    {path: why}), once."""
+    {path: why}, of each cleaning this build did), once; None where none of it is still
+    there (a later cleaning in the same build removed it)."""
+    stuck = {path: why for path, why in stuck.items() if os.path.lexists(path)}
+    if not stuck:
+        return None
     first = min(stuck)
     count = len(stuck)
     return (

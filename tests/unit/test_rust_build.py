@@ -1059,6 +1059,36 @@ def test_one_call_reads_at_most_its_cap_of_entries(tmp_path, monkeypatch):
     )
 
 
+def test_only_what_is_still_there_is_noted_as_stuck(tmp_path, monkeypatch):
+    # The build's first cleaning can't remove `a`; its last one, after the build is
+    # recorded, can. The note names only what is still there.
+    trash = tmp_path / "trash"
+    for name in ("a", "b"):
+        (trash / "run" / name).parent.mkdir(parents=True, exist_ok=True)
+        (trash / "run" / name).write_text("")
+    real = os.unlink
+    refusing = {"a", "b"}
+
+    def unlink(path, *args, **kwargs):
+        if Path(path).name in refusing:
+            raise PermissionError(1, "Operation not permitted")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(rb.os, "unlink", unlink)
+    stuck = rb._empty_trash(tmp_path, 100)
+    assert sorted(Path(path).name for path in stuck) == ["a", "b", "run"]
+    refusing.discard("a")
+    stuck |= rb._empty_trash(tmp_path, 100)
+    assert rb._stuck_note(tmp_path, stuck) == (
+        f"Peeky couldn't remove 2 entries of its earlier builds' files in {trash}, such as "
+        f"{trash / 'run'} (Directory not empty). Each build tries again; remove them yourself "
+        "to free the space"
+    )
+    refusing.clear()
+    stuck |= rb._empty_trash(tmp_path, 100)
+    assert rb._stuck_note(tmp_path, stuck) is None
+
+
 def rb_stopping(stop):
     from peeky.stopping import stopping
 
