@@ -4,8 +4,10 @@ recorded commands, and its refusals' codes."""
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1823,3 +1825,62 @@ def test_an_input_through_a_link_to_nothing_is_refused(tmp_path):
         "`util`'s build script watches util/link, a link to util/target.txt that didn't exist "
         "before the build"
     )
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_git_index_read_by_the_build_is_compared_by_its_entries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    # git-version's macro (bat's) lists `.git/index` in rustc's dependency file and runs
+    # `git describe --dirty` while the crate compiles; a build script may watch it too.
+    # git rewrites the index with a file's cached status refreshed: the same index.
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/src/lib.rs": "", "notes.txt": "n\n"})
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    def refreshed(ago=[1000]):
+        # A modification time the index doesn't cache (earlier, so not racily clean).
+        ago[0] += 100
+        earlier = time.time() - ago[0]
+        os.utime(root / "notes.txt", (earlier, earlier))
+        before = (root / ".git/index").read_bytes()
+        git("describe", "--always", "--dirty")
+        assert (root / ".git/index").read_bytes() != before
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    shape = fake_shape(tmp_path, local=("util",))
+    before = rb._snapshot(shape, None)
+    refreshed()
+    # A compile's source: not changed while Cargo ran, and recorded by its entries.
+    sources = {}
+    read = {"sources": [".git/index"], "generated": []}
+    rb._record_read(read, root, tmp_path / "target", before, 0, sources, {})
+    assert sources[".git/index"].startswith("git-index:")
+    # A build script's input, the same.
+    messages = [build_script_run(tmp_path, "util", "cargo:rerun-if-changed=../.git/index\n")]
+    found = rb._build_inputs(shape, root, messages, {}, before, 0, None)
+    manifest = {"build_inputs": found, "watch": {}, "rustflags": []}
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    refreshed()
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    assert rb._content(root / ".git/index", rb.sha256_file) == sources[".git/index"]
+    # A staged change changes what git reports: changed while Cargo ran, or since.
+    (root / "notes.txt").write_text("staged\n")
+    git("add", "notes.txt")
+    with pytest.raises(RuntimeError, match=r"Provenance: \.git/index changed while Peeky built"):
+        rb._record_read(read, root, tmp_path / "target", before, 0, {}, {})
+    with pytest.raises(RuntimeError, match=r"Provenance: \.git/index changed while Peeky built"):
+        rb._build_inputs(shape, root, messages, {}, before, 0, None)
+    with pytest.raises(rb.BuildRequired, match=r"\.git/index, which a build script reads, changed"):
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    assert rb._content(root / ".git/index", rb.sha256_file) != sources[".git/index"]

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -1152,3 +1153,66 @@ def test_a_procedural_macros_generated_source_is_scanned_too(workspace, capsys, 
         f"`{name}`'s debug/build/{name}-"
     ), message
     assert "/out/generated.rs (generated) mentions RUSTC_BOOTSTRAP" in message
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_git_index_the_build_reads_is_compared_by_its_entries(workspace, capsys):
+    # git-version's `git_version!()` (bat's) expands to `include_bytes!` of `.git/index`, so
+    # rustc's dependency file lists it, and runs `git describe --dirty` while the crate
+    # compiles. git rewrites the index with a file's cached status refreshed: every bat
+    # build in a fresh checkout was refused as changed while Cargo ran.
+    (workspace / "util/build.rs").write_text(
+        "fn main() {\n"
+        '    println!("cargo::rerun-if-changed=build.rs");\n'
+        '    let described = std::process::Command::new("git")\n'
+        '        .args(["describe", "--always", "--dirty"])\n'
+        "        .output()\n"
+        "        .unwrap();\n"
+        "    assert!(described.status.success());\n"
+        "}\n"
+    )
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\nconst _: &[u8] = include_bytes!("../../.git/index");\n'
+    )
+    (workspace / "notes.txt").write_text("notes\n")
+    index = workspace / ".git/index"
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+        )
+
+    def stale_status(ago=[1000]):
+        # A modification time the index doesn't cache: `git describe --dirty` refreshes it.
+        ago[0] += 100
+        earlier = time.time() - ago[0]
+        os.utime(workspace / "notes.txt", (earlier, earlier))
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    stale_status()
+    written = index.read_bytes()
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    assert index.read_bytes() != written
+    _, manifest = manifest_of(summary)
+    assert manifest["sources"][".git/index"].startswith("git-index:")
+    read(*probe(capsys, workspace, config))
+    # Refreshed again since the build: still current.
+    stale_status()
+    git("describe", "--always", "--dirty")
+    read(*probe(capsys, workspace, config))
+    # A staged change changes what git reports: the build is stale.
+    (workspace / "notes.txt").write_text("staged\n")
+    git("add", "notes.txt")
+    code, result = probe(capsys, workspace, config)
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"].startswith(
+        "No current Peeky build of this workspace: .git/index changed since `peeky build` ran"
+    )

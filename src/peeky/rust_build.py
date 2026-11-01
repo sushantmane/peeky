@@ -34,7 +34,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
-from peeky import rust_workspace
+from peeky import gitindex, rust_workspace
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
 from peeky.digest import sha256_file
 from peeky.stopping import Stopped, check_stop
@@ -620,6 +620,17 @@ def _hash(path, store=None):
     return sha256_file(path, store=store)
 
 
+def _content(path, digest=None):
+    """What a file a compile or build script read is compared by: a git index's entries
+    (gitindex.digest), which a `git status` or `git describe --dirty` while Cargo runs
+    rewrites unchanged; any other file's, or an index Peeky can't read so, its SHA-256
+    (``digest``, else ``_hash``)."""
+    if gitindex.is_index(path) and (found := gitindex.digest(path)) is not None:
+        check_stop()
+        return found
+    return (digest or _hash)(path)
+
+
 def _digest(store):
     """A SHA-256 function that keeps digests in ``store`` (digest.sha256_file's rules), and
     ends a stopped build first (``_hash``)."""
@@ -630,7 +641,8 @@ def _snapshot(shape, vendor):
     """What is there before Cargo runs, to tell what changed while it ran from what changed
     before: {"l:" path: (mtime, ctime, size), not followed} of every entry, directories
     and links too, and {"f:" path: the same, followed} of each link; {"d:" directory:
-    True} of each directory listed whole. Everything under the workspace, hidden
+    True} of each directory listed whole; {"g:" path: its entries} of each git index
+    (gitindex.digest), where Peeky reads it so. Everything under the workspace, hidden
     directories (`.git`) included, and under each local package outside it; not a
     `target` directory at their tops. What its absence of an entry proves
     (_absent_before) depends on ":tops", ":skipped", ":uncovered" (each path Peeky
@@ -667,6 +679,10 @@ def _snapshot(shape, vendor):
             return True
         found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
         count += 1
+        if stat.S_ISREG(info.st_mode) and gitindex.is_index(path):
+            # A git index by its entries too, which git may rewrite unchanged meanwhile.
+            if (entries := gitindex.digest(path)) is not None:
+                found["g:" + path] = entries
         if stat.S_ISLNK(info.st_mode):
             try:
                 info = os.stat(path)
@@ -922,7 +938,10 @@ def _dependency_file(filenames):
 
 def _changed_during(path, before, started_ns):
     """Whether the file ``path`` (followed) changed while Cargo ran: its status differs
-    from _snapshot's, or, with none there, it changed after the build started."""
+    from _snapshot's, or, with none there, it changed after the build started. A git index
+    read by its entries before: whether they differ now."""
+    if (entries := before.get("g:" + os.path.normpath(path))) is not None:
+        return gitindex.digest(path) != entries
     info = os.stat(path)
     now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
     key = ("f:" if os.path.islink(path) else "l:") + os.path.normpath(path)
@@ -1455,7 +1474,10 @@ def _watched_directory(top, root, budget):
 def _entry_changed_during(path, before, started_ns):
     """Whether ``path`` itself, not followed (a directory, a link, a file), changed while
     Cargo ran: its lstat differs from the snapshot's (one gone, too), or, with none there,
-    it changed after the build started."""
+    it changed after the build started. A git index read by its entries before: whether
+    it is no longer one with those entries (git writes a new file in its place)."""
+    if (entries := before.get("g:" + os.path.normpath(path))) is not None:
+        return os.path.islink(path) or gitindex.digest(path) != entries
     try:
         info = os.lstat(path)
         now = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
@@ -1853,7 +1875,7 @@ def _build_inputs(
             elif str(path) not in files:
                 _spend(budget, path)
                 unchanged(path)
-                files[str(path)] = rust_workspace.identity(path)
+                files[str(path)] = rust_workspace.identity(path, _content)
                 missing = files[str(path)] == ["missing"]
                 unproven = missing and _absent_before(path, before)
                 if missing and not unproven and (moved := _changed_on_the_way(path, before)):
@@ -1911,7 +1933,7 @@ def _record_read(read, root, target_dir, before, started_ns, sources, generated)
                     f"Provenance: {path} changed while Peeky built the workspace, so the build "
                     "may not be of it. Build again"
                 )
-            sources[path] = _hash(root / path)
+            sources[path] = _content(root / path)
     for path in read["generated"]:
         if path not in generated:
             generated[path] = _hash(target_dir / path)
@@ -2391,7 +2413,7 @@ def verify(target, root, directory, manifest):
     # identifies the build (PROVENANCE_CHANGED).
     for name, recorded in manifest["sources"].items():
         try:
-            same = sha256_file(root / name) == recorded
+            same = _content(root / name, sha256_file) == recorded
         except OSError:
             same = False
         if not same:
@@ -2434,7 +2456,7 @@ def _check_build_inputs(target, root, directory, manifest):
     would give it now."""
     inputs = manifest["build_inputs"]
     for path, recorded in inputs["files"].items():
-        if rust_workspace.identity(path) != recorded:
+        if rust_workspace.identity(path, lambda each: _content(each, sha256_file)) != recorded:
             raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
     for top, recorded in inputs["dirs"].items():
         try:
