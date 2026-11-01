@@ -1454,3 +1454,74 @@ def test_a_build_that_used_the_index_bytes_is_stale_when_they_change(workspace, 
     assert result["error"]["message"].startswith(
         "No current Peeky build of this workspace: .git/index changed since `peeky build` ran. Run"
     )
+
+
+# An integration test that runs its package's binary as assert_cmd's
+# `Command::cargo_bin("app")` finds it (bat's tests): `CARGO_BIN_EXE_app` at run time, else
+# beside the test's own executable (one up from `deps`).
+FINDS_ITS_BINARY = """fn cargo_bin(name: &str, from_env: bool) -> std::path::PathBuf {
+    let set = std::env::var_os(format!("CARGO_BIN_EXE_{name}")).filter(|_| from_env);
+    set.map(Into::into).unwrap_or_else(|| {
+        let mut dir = std::env::current_exe().unwrap();
+        dir.pop();
+        if dir.ends_with("deps") {
+            dir.pop();
+        }
+        dir.join(name)
+    })
+}
+
+#[test]
+fn runs() {
+    let out = std::process::Command::new(cargo_bin("app", true)).output().unwrap();
+    let printed = out.stdout.len();
+    assert_eq!(out.stdout, b"2\\n"); // PRINTED
+    assert!(printed > 0);
+}
+
+#[test]
+fn beside() {
+    let out = std::process::Command::new(cargo_bin("app", false)).output().unwrap();
+    assert_eq!(out.stdout, b"2\\n");
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_integration_test_finds_its_packages_binary_as_cargo_test_gives_it(workspace, capsys):
+    # bat's integration test runs `bat` through assert_cmd's `Command::cargo_bin`. Peeky ran
+    # its copy of the test from its run's directory, which held no `bat`, and gave no
+    # `CARGO_BIN_EXE_bat`: the test panicked with NotFound, and the probe never stopped (#488).
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(FINDS_ITS_BINARY)
+    config = configure(workspace, analyse=["app"], run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    # Under Peeky, `CARGO_BIN_EXE_app` too: the probe stops after the binary ran.
+    line = next(
+        i for i, text in enumerate(FINDS_ITS_BINARY.splitlines(), 1) if "// PRINTED" in text
+    )
+    at = ["--at", f"app/tests/cli.rs:{line}", "--capture", "printed", "--quiet", "--json"]
+    code = main(["probe", str(workspace), "--config", str(config), *at, "--", "--exact", "runs"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    (row,) = [r for r in result["rows"] if r["selector"] == "printed" and r["phase"] == "observed"]
+    assert row["value"] == "2", row
+    assert "test result: ok. 1 passed" in result["output"], result["output"]
+    directory, manifest = manifest_of(summary)
+    copy = manifest["run"]["binaries"]["app"]
+    assert Path(copy).parent == Path(manifest["run"]["executable"]).parent
+    assert copy in manifest["artifacts"]
+    # The copy beside the test's own executable, as `target/debug/app` is beside `deps`.
+    shown = subprocess.run(
+        [summary["executable"], "--exact", "beside"],
+        capture_output=True,
+        text=True,
+        cwd=workspace / "app",
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert "test result: ok. 1 passed" in shown.stdout, shown.stdout + shown.stderr
+    # A changed copy is the build's own output changed.
+    (directory / copy).write_bytes(b"not the binary")
+    code, result = probe(capsys, workspace, config, "app/tests/cli.rs:1")
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result

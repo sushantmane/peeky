@@ -31,6 +31,13 @@
 
 ### Other changes
 
+- **Rust workspaces: an integration test finds its package's binaries (#488).** bat's
+  integration test runs `bat` through assert_cmd's `Command::cargo_bin`, which reads
+  `CARGO_BIN_EXE_bat`, else looks beside the test's own executable. Peeky gave neither, so the
+  test panicked and a probe at its assertion never stopped. Peeky now copies the package's
+  binaries beside its copy of the test, records them with the build, and sets
+  `CARGO_BIN_EXE_<name>` to them, as `cargo test` does.
+
 - **Rust workspaces: a change of `.git/index` whose entries are the same is said so.**
   git-version's macro (bat's) has rustc read `.git/index` as a source, and runs `git describe
   --dirty` while the crate compiles. git may then rewrite the index with its cached file status

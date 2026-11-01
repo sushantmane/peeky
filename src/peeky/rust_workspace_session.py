@@ -278,15 +278,19 @@ def _private(directory):
     return private
 
 
-def _environment(target, run_directory):
+def _environment(target, run_directory, binaries=None):
     """What the debugger, and the program it runs, are given: the tools' directory first
     on PATH, the C locale, the SDK on macOS, and the run's package directory as Cargo
-    gives it (`CARGO_MANIFEST_DIR`)."""
+    gives it (`CARGO_MANIFEST_DIR`). An integration test also gets each of its package's
+    binaries as `cargo test` gives it (`CARGO_BIN_EXE_<name>`): ``binaries``, {name: the
+    build's copy}."""
     env = {
         "PATH": ":".join(dict.fromkeys((str(Path(target.rustc).parent), "/usr/bin", "/bin"))),
         "LC_ALL": "C",
         "CARGO_MANIFEST_DIR": str(run_directory),
     }
+    for name, path in (binaries or {}).items():
+        env[f"CARGO_BIN_EXE_{name}"] = str(path)
     if target.sysroot is not None:
         env["SDKROOT"] = str(Path(target.sysroot).resolve(strict=True))
     return env
@@ -414,7 +418,8 @@ def prepare_session(target, program, root, *, deadline=None):
         package = next(each for each in manifest["local"] if each["name"] == run["package"])
         tested = "bin" not in run["kinds"]
         cwd = (root / package["directory"]).resolve() if tested else workspace
-        env = _environment(target, (root / package["directory"]).resolve())
+        binaries = {name: directory / path for name, path in run.get("binaries", {}).items()}
+        env = _environment(target, (root / package["directory"]).resolve(), binaries)
         private = _private(directory)
         record = _Record(manifest, env, target.rustc, root, workspace)
         prepared = _Prepared(workspace, record, lease, private)

@@ -1270,7 +1270,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     by_manifest = {str((root / package.manifest).resolve()): package for package in shape.local}
     analysed_names = {package.name for package in shape.analysed}
     run_package, run_target = shape.run
-    executable = None
+    executable, binaries = None, {}
     sources, generated, units, macros = {}, {}, [], set()
     seen_units, directories = set(), set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
@@ -1310,6 +1310,14 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             and message.get("executable")
         ):
             executable = message["executable"]
+        elif (
+            package.name == run_package.name
+            and "bin" in kinds
+            and not profile.get("test")
+            and message.get("executable")
+        ):
+            # The package's binaries, which Cargo builds for its integration test.
+            binaries[str(artifact.get("name"))] = message["executable"]
         depfile, producer = _dependency_file(filenames)
         if depfile is None:
             raise ValueError(
@@ -1378,6 +1386,9 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             "don't name"
         )
     copied = _copy_executable(Path(executable), run)
+    # An integration test finds its package's binaries as `cargo test` gives them
+    # (``_copy_binaries``); no other run is given them.
+    binaries = _copy_binaries(binaries, run) if "test" in run_target.kinds else {}
     # Only the bodies after rustc's last MIR pass are read; a body's before and after, and
     # each unit's few other files, within twice what is recorded.
     for entry in _walked(run / "units", [2 * MAX_RECORDED + 4096], _TOO_MANY_FILES):
@@ -1397,6 +1408,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             "kinds": list(run_target.kinds),
             "source": run_target.source,
             "executable": copied,
+            "binaries": binaries,
             "cargo_arguments": list(shape.cargo_arguments()),
         },
         "dependencies": len(shape.vendored),
@@ -2159,6 +2171,23 @@ def _check_bootstrap_read(package, crate, depfile):
                 "Peeky's build sets for that crate's compile alone. Read it elsewhere, or "
                 "analyse another package"
             )
+
+
+def _copy_binaries(binaries, run):
+    """{name: path relative to the build's directory} of the run package's binaries
+    (``binaries``: {name: Cargo's copy, `target/debug/bat`}), copied beside the run's own
+    executable. `cargo test` runs an integration test from `target/debug/deps`, beside
+    `target/debug/bat`, and gives it `CARGO_BIN_EXE_bat` (rust_workspace_session). So
+    assert_cmd's `Command::cargo_bin("bat")` finds it either way (bat's tests, #488).
+    They are the build's own output, recorded and checked as the executable is."""
+    folder, found = run / "bin", {}
+    for name, executable in sorted(binaries.items()):
+        copy = folder / Path(executable).name
+        if copy.exists():
+            raise ValueError(f"Peeky's build holds two files named {copy.name} to run")
+        shutil.copy2(executable, copy)
+        found[name] = copy.relative_to(run.parent.parent).as_posix()
+    return found
 
 
 def _copy_executable(executable, run):
