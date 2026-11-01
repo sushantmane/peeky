@@ -1476,28 +1476,31 @@ def _canonical_type(text):
     return head
 
 
-def _impl_self_place(text, module, types=None):
+def _impl_self_place(text, module, types=None, traits=frozenset()):
     """The type an `impl` header names as ``text`` (``_impl_self_type``), in
     ``_canonical_type``'s form, its crate's paths from the crate's root (`a::Mine`): a bare name
     the block's ``module``'s (its function's path's segments before `<impl at …>`), `crate::`,
     `self::` and `super::` paths followed, a reference and the standard library's `Box` and
     `Pin` kept (`&a::Mine`, `std::boxed::Box<a::Mine>`), a path rooted at the standard
     library's as named. "" where Peeky can't place it: another path (through a `use`, or a
-    module's), a bare name ``types`` (the crate's type paths, from the debug information)
-    doesn't have in that module (a `use` may have brought it, or the prelude: `String`), any
-    other type (a tuple, a slice, a trait object, another generic one: `Vec<Mine>`)."""
+    module's), a bare name or a path from the crate's root ``types`` (the crate's type paths,
+    from the debug information) doesn't have (a `use` may have brought it, or the prelude:
+    `String`; an alias, `type Paren = (dyn Sink);`, is no type there), a
+    name ``traits`` (those the crate's sources define) has, which edition 2018 reads as a
+    trait object (`impl Keep for Box<Sink>`), any other type (a tuple, a slice, a trait
+    object, another generic one: `Vec<Mine>`)."""
     text = (text or "").strip()
     if not text:
         return ""
     if found := _REFERENCE.match(text):
-        inner = _impl_self_place(text[found.end() :], module, types)
+        inner = _impl_self_place(text[found.end() :], module, types, traits)
         return ("&mut " if found[1] else "&") + inner if inner else ""
     head, arguments = _type_head(text)
     plain = head.removeprefix("::")
     for paths, name in ((_BOX_PATHS, "Box"), (_PIN_PATHS, "Pin")):
         ours = types is not None and any(each.rsplit("::", 1)[-1] == name for each in types)
         if plain in paths or (plain == name and not ours):
-            inner = _impl_self_place(arguments[0], module, types) if arguments else ""
+            inner = _impl_self_place(arguments[0], module, types, traits) if arguments else ""
             wrapper = "std::boxed::Box" if name == "Box" else "std::pin::Pin"
             return f"{wrapper}<{inner}>" if inner else ""
     if not re.fullmatch(r"(?:\w+::)*\w+", plain) or (
@@ -1507,19 +1510,22 @@ def _impl_self_place(text, module, types=None):
     segments, module = plain.split("::"), list(module)
     if segments[0] in _STD_CRATES:
         return plain
+    if segments[-1] in traits:
+        return ""
     if len(segments) == 1:
         placed = "::".join([*module, plain])
-        return "" if types is not None and placed not in types else placed
-    if segments[0] == "crate":
-        return "::".join(segments[1:])
-    if segments[0] in ("self", "super"):
+    elif segments[0] == "crate":
+        placed = "::".join(segments[1:])
+    elif segments[0] in ("self", "super"):
         while segments and segments[0] in ("self", "super"):
             if segments.pop(0) == "super":
                 if not module:
                     return ""
                 module.pop()
-        return "::".join([*module, *segments])
-    return ""
+        placed = "::".join([*module, *segments])
+    else:
+        return ""
+    return "" if types is not None and placed not in types else placed
 
 
 def _crate_traits(texts):
@@ -1835,12 +1841,41 @@ def _generic_rooted(subject, generics, wrapped=False):
     return bool(generics) and re.split(r"::|<", text, maxsplit=1)[0] in generics
 
 
-def _local_impls(bodies, texts, types=None):
+def _trait_names(texts):
+    """The names the crate's sources ``texts`` ({file: text}) may give one of its traits:
+    each it defines, each a `use … as` renames one to, and each a `type` alias names it by
+    (`type Alias = Sink;`, `dyn Sink`), which edition 2018 reads as a trait object."""
+    names = set(_crate_traits(texts)[0])
+    renamed = [
+        pair for text in texts.values() for pair in re.findall(r"\b(\w+)\s+as\s+(\w+)\b", text)
+    ]
+    aliased = [
+        (original, alias)
+        for text in texts.values()
+        for alias, original in re.findall(
+            r"\btype\s+(\w+)(?:<[^=;]*>)?\s*=\s*(?:dyn\s+)?(?:[\w:]*::)?(\w+)\b", text
+        )
+    ]
+    grown = True
+    while grown:
+        grown = False
+        for original, alias in (*renamed, *aliased):
+            if original in names and alias not in names:
+                names.add(alias)
+                grown = True
+    return frozenset(names)
+
+
+def _local_impls(bodies, texts, types=None, confirm=False):
     """The crate's `impl` blocks the dump has functions of: (the type it is for, from the
     crate's root (``_impl_self_place``; "" where Peeky can't place it), the trait
     (``_impl_trait``), the names of the functions it defines, the type as its header names
-    it), each block once. ``types``: the crate's type paths, from the debug information."""
+    it), each block once. ``types``: the crate's type paths, from the debug information.
+    With ``confirm`` (edition 2018, where a name may be a trait object's) and no ``types``,
+    every type placed counts only where some function of the block takes `self` as the MIR
+    prints it in full (``_receivers_of``: `S`, `&S`, `Box<S>`); else Peeky can't place it."""
     blocks, receivers = {}, {}
+    traits = _trait_names(texts)
     for body in bodies:
         segments = _segments(body.path)
         if len(segments) < 2 or not segments[-2].startswith("<impl at "):
@@ -1848,20 +1883,35 @@ def _local_impls(bodies, texts, types=None):
         block = segments[-2]
         if block not in blocks:
             named = _impl_self_type(block, texts)
-            placed = _impl_self_place(named, segments[:-2], types)
+            placed = _impl_self_place(named, segments[:-2], types, traits)
             blocks[block] = (placed, _impl_trait(block, texts), set(), named or "")
         blocks[block][2].add(segments[-1])
         if any(found[0] == 1 for found in body.bindings.get("self", ())):
             receivers.setdefault(block, set()).add(_canonical_type(body.types.get(1)))
     found = []
     for block, (kind, trait, names, named) in blocks.items():
-        if kind and _BARE_WRAPPER.search(named):
+        if kind and (_BARE_WRAPPER.search(named) or (confirm and types is None)):
             # A bare `Box` or `Pin` is the standard library's only where no `use` or local
-            # item shadows it: a function's `self`, as the MIR prints it in full, says so.
-            if not {kind, f"&{kind}", f"&mut {kind}"} & receivers.get(block, set()):
+            # item shadows it. In edition 2018, any name the header gives, inside a `Box`, a
+            # `Pin` or a reference too, may be a trait object's through an alias Peeky
+            # doesn't see. A function's `self`, as the MIR prints it in full, says which.
+            if not _receivers_of(kind) & receivers.get(block, set()):
                 kind = ""
         found.append((kind, trait, frozenset(names), named))
     return tuple(found)
+
+
+def _receivers_of(kind):
+    """The types, in ``_canonical_type``'s form, a method's `self` has where its `impl` is
+    for ``kind`` (`self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Pin<&mut Self>`)."""
+    return {
+        kind,
+        f"&{kind}",
+        f"&mut {kind}",
+        f"std::boxed::Box<{kind}>",
+        f"std::pin::Pin<&{kind}>",
+        f"std::pin::Pin<&mut {kind}>",
+    }
 
 
 def _foreign_rows(body, found):
@@ -1916,7 +1966,13 @@ def _std_callee(path, trusted, layouts):
 
 
 def global_state(
-    bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=None, foreign=frozenset()
+    bodies,
+    trusted=_STD_CRATES,
+    layouts=None,
+    defined=(),
+    texts=None,
+    foreign=frozenset(),
+    confirm=False,
 ):
     """``GlobalState`` of the crate whose MIR bodies are ``bodies``, or None where
     none of them names global state with interior mutability: then no call touches any.
@@ -1978,7 +2034,9 @@ def global_state(
         for body in bodies
         for each in _SPANNED.findall(body.types.get(1, "") if body.arguments else "")
     )
-    impl_blocks = _local_impls(bodies, texts or {}, _crate_type_paths(layouts)) if foreign else ()
+    impl_blocks = (
+        _local_impls(bodies, texts or {}, _crate_type_paths(layouts), confirm) if foreign else ()
+    )
     # Each body's type parameters: a call on one may run another crate's code.
     parameters = [
         (body.generics if body.generics is not None else body.guessed_generics(layouts))
@@ -9046,6 +9104,8 @@ class OwnedLocals:
         # The roots of the build's other crates' paths, whose code Peeky reads none of: a
         # workspace's dependencies (``_foreign_root``). Empty for a crate built alone.
         self.foreign = frozenset(foreign)
+        # The analysed crate's edition, where its build names it (a workspace's).
+        self.edition = None
         # The path of every function the crate's MIR dump holds (load_bodies).
         self.defined = frozenset(defined)
         # Statement-level positions rely on local macro code keeping its own lines in
@@ -10755,7 +10815,9 @@ class OwnedLocals:
         """``_local_impls`` of the crate's bodies, its types' paths from the debug
         information (``TypeLayouts.crate``)."""
         layouts = self._layouts()
-        return _local_impls(self.bodies, self.texts, _crate_type_paths(layouts))
+        return _local_impls(
+            self.bodies, self.texts, _crate_type_paths(layouts), self.edition == "2018"
+        )
 
     def _forwarding(self):
         """``_Forwarding`` of the crate: which of its functions, closures and `impl`s may
@@ -10839,6 +10901,7 @@ class OwnedLocals:
                 self.defined,
                 self.texts,
                 self.foreign,
+                self.edition == "2018",
             )
         return self._globals_known
 

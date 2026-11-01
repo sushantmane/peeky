@@ -384,6 +384,15 @@ it as one more source (`EXPANDED`).
   and the unsafe scan reads each, naming it.
 - A frame outside the analysed compile's files, a dependency's or another member's, is read as a
   library's (`owns_source`), though its file is under the workspace.
+- An analysed package of edition 2018 is lexed as Rust 2021 is. The two differ only on a raw C
+  string, `cr"…"`, which 2018 reads as `cr` and an ordinary string. So a 2018 compile whose
+  sources or expansion hold one is refused, naming the line (`_check_lexed_as_2018`).
+- An `impl` header's bare name that the crate defines as a trait, or a `use` or `type` alias of
+  one, is a 2018 trait object (`impl Keep for Box<Sink>`). It is never placed as a type
+  (`_impl_self_place`). Peeky finds no pattern for every alias (`type Paren = (dyn Sink);`).
+  So without the debug information's types, any type a 2018 header names counts only where a
+  function's `self`, as the MIR prints it in full, confirms it (`_receivers_of`). That holds
+  inside a `Box`, a `Pin` or a reference too.
 
 ## Changing a value
 
@@ -951,7 +960,8 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   `Box` or `Pin` counts as the standard library's only where a function's `self`, as the MIR
   prints it in full, says so: a `use` may bring another. Another path, a generic type
   (`Vec<Mine>`), or a bare name the debug information places in another module only (a `use`
-  may have brought it), isn't placed. An inherent
+  may have brought it), isn't placed. Nor is a `crate::`, `self::` or `super::` path to no
+  type it names, such as an alias. An inherent
   `impl`, and one of another trait named in full (`tokio::Keep`, `crate::Keep`), is no
   doubt. Peeky resolves no `use` line: an `impl` that defines `m` but names its trait by a bare
   name, an alias or a module's alias, or isn't placed, gives "?impl", and the note says Peeky
@@ -1205,6 +1215,13 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
   messages are split at `\n` alone. So a source's name may hold any character.
 - Edition 2024 was qualified by running the whole Rust suite, every owned-local proof included,
   with its example crate switched to 2024.
+- Edition 2018 is qualified for a workspace's analysed packages, not for a crate alone (ADR 0008,
+  "Editions"). rustc lowers closure captures, arrays' `into_iter` and `panic!` by the edition, and
+  the proofs read that MIR. `tests/rust/test_rust_workspace_edition2018.py` checks each against
+  the program's own print. Edition 2015 is refused.
+- Under Cargo's resolver 1, a workspace whose root is a package gives `--features` to that
+  package. A build where Cargo's unit graph lacks a configured feature is refused, naming
+  `package/feature` (`check_features`).
 - Test processes share OS permissions with the checker, and are trusted code.
 - Not delivered yet: any `Option` payload other than `i32`, a tuple or a crate struct, and any
   other data-carrying enum.

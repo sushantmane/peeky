@@ -1793,6 +1793,24 @@ def test_code_whose_brackets_do_not_pair_up_is_not_read(text, why):
     assert (code_only(text) is None) is (why is not None)
 
 
+@pytest.mark.parametrize(
+    "text, line",
+    [
+        ('m!(cr"a");', 1),
+        ('fn f() {}\nm!(cr#"a"#);', 2),
+        # Not one: a C string, a raw string, a word ending in `cr`, and inside other literals.
+        ('m!(c"a"); m!(r"a"); m!(br"a"); m!(xcr"a");', None),
+        ('// cr"a"\nlet s = "cr\\"";\n/* cr#"x"# */', None),
+    ],
+)
+def test_a_raw_c_string_is_found_where_peeky_lexes_one(text, line):
+    # Rust 2021 lexes `cr"…"` as a raw C string, as Peeky does; edition 2018 lexes `cr` and an
+    # ordinary string, whose escapes may end it elsewhere (rust_workspace_session).
+    from peeky.rust_lexer import raw_c_string
+
+    assert raw_c_string(text) == line
+
+
 BOXED = "std::boxed::Box<Pt>"
 
 

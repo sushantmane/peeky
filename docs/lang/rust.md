@@ -28,6 +28,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - A plain `cargo new` binary crate works: edition 2021 or 2024, with no dependencies. It can't
   have `src/lib.rs`, `src/bin` or `build.rs`, and has at most one integration test
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
+- A workspace's analysed packages may be edition 2018 too
+  ([ADR 0008](../adr/0008-native-project-reach.md#verified-for-phase-2)).
 - If `Cargo.lock` is missing, run `cargo generate-lockfile` once
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
 - Name the line with `--at src/main.rs:LINE`. Pass program arguments after `--`, or with repeated
