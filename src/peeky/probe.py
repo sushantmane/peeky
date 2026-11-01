@@ -1456,6 +1456,17 @@ _STALE_PLAIN_RUST = (
     "caller frame, or unmatched MIR. Its type holds no pointer, but its fields may show "
     "leftover bytes"
 )
+
+
+def _stale_because(variable):
+    """The note of a Rust local's row the runtime says why is stale (``stale_reason``)."""
+    reason = str(variable["stale_reason"])
+    lead = "This is (or is inside) a Rust local Peeky proves nothing of here: " + reason
+    if variable.get("pointer_free"):
+        return lead + ". Its type holds no pointer, but its fields may show leftover bytes."
+    return lead + ". Its fields show leftover bytes, and its pointers only their address."
+
+
 _UNREAD_RUST = (
     "This value is LLDB's summary (its type and address), not its contents: check "
     "contents with `peeky verify`. {items}{length}Peeky reads Rust contents only for "
@@ -2002,6 +2013,9 @@ def _capture(
                     row["note"] = _raw_rust(variable, selector)
                 elif owned_type and len(parse_selector(selector)) == 1:
                     row["note"] = _rust_note(_OWNED_RUST, variable, selector)
+                elif variable.get("stale") and isinstance(variable.get("stale_reason"), str):
+                    # The runtime said why: a closure took what the MIR leaves out.
+                    row["note"] = _stale_because(variable)
                 elif variable.get("stale") and not _THROUGH.match(str(variable.get("note"))):
                     # A note carried from what holds it says why first (a call may be
                     # changing it), else every way a value can be stale.

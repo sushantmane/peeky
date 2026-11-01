@@ -31,6 +31,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - Anything else is a workspace: a crate with dependencies, a library, `build.rs`, several
   members. Vendor its dependencies, name what Peeky analyses and what runs in a JSON file, then
   run `peeky build . --config rust.json` ([Rust 7.2](rust-cookbook.md#a-rust-workspace)).
+- A workspace's analysed packages may be edition 2018 too
+  ([ADR 0008](../adr/0008-native-project-reach.md#verified-for-phase-2)).
 - A probe of a workspace never builds it. Without a current build it is refused with
   `BUILD_REQUIRED`, which names the exact `peeky build` command. `--build` builds first
   ([Rust 7.2](rust-cookbook.md#build-it-then-probe-it)).

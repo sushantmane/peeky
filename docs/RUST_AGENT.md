@@ -486,6 +486,15 @@ it as one more source (`EXPANDED`).
   and the unsafe scan reads each, naming it.
 - A frame outside the analysed compile's files, a dependency's or another member's, is read as a
   library's (`owns_source`), though its file is under the workspace.
+- An analysed package of edition 2018 is lexed as Rust 2021 is. The two differ only on a raw C
+  string, `cr"…"`, which 2018 reads as `cr` and an ordinary string. So a 2018 compile whose
+  sources or expansion hold one is refused, naming the line (`_check_lexed_as_2018`).
+- An `impl` header's bare name that the crate defines as a trait, or a `use` or `type` alias of
+  one, is a 2018 trait object (`impl Keep for Box<Sink>`). It is never placed as a type
+  (`_impl_self_place`). Peeky finds no pattern for every alias (`type Paren = (dyn Sink);`).
+  So without the debug information's types, any type a 2018 header names counts only where a
+  function's `self`, as the MIR prints it in full, confirms it (`_receivers_of`). That holds
+  inside a `Box`, a `Pin` or a reference too.
 
 ## Changing a value
 
@@ -657,6 +666,18 @@ used again. Such a temporary is:
 - A closure counts by what it captures, from the aggregate that builds it
   (`Body.closure_captures`). Where the debug information wasn't read, every type of the crate's may
   hold anything. These make `TypeLayouts`, set as `Body.layouts` when the body is matched.
+- rustc prints a closure's or coroutine's aggregate with one capture per variable it mentions.
+  Since Rust 2021 a closure captures the places it uses, so two of one variable's leave one out,
+  and another variable's may go by the next name (#465). The annotation after the aggregate
+  gives their types (its last `+ args` item, a tuple), so the ones left out are known by type
+  (`Body.omitted`). Each name is the binding in the nearest enclosing scope; one bound twice
+  there, or not at all, leaves the body unanalyzed.
+- Where what is left out is only shared references and `Copy` values, nothing was moved: every
+  value reads as before. A `&mut` left out may be a borrow, or a `&mut` field moved out: the type
+  doesn't say which. Else, or with no annotation (an async closure), a named variable whose type
+  isn't `Copy` may have lost all or part of it. Past the aggregate, it isn't proven initialized,
+  and its rows say why; a reference shows only its pointer (`OwnedLocals._judge`). A change of
+  any named variable is refused there, saying so.
 - So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`,
   while `Counter { c: Cell<u32> }` does.
 - A field moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of `_6`
@@ -1041,7 +1062,8 @@ graph). `OwnedLocals.foreign` is those, less the crate's own and the standard li
   `Box` or `Pin` counts as the standard library's only where a function's `self`, as the MIR
   prints it in full, says so: a `use` may bring another. Another path, a generic type
   (`Vec<Mine>`), or a bare name the debug information places in another module only (a `use`
-  may have brought it), isn't placed. An inherent
+  may have brought it), isn't placed. Nor is a `crate::`, `self::` or `super::` path to no
+  type it names, such as an alias. An inherent
   `impl`, and one of another trait named in full (`tokio::Keep`, `crate::Keep`), is no
   doubt. Peeky resolves no `use` line: an `impl` that defines `m` but names its trait by a bare
   name, an alias or a module's alias, or isn't placed, gives "?impl", and the note says Peeky
@@ -1295,6 +1317,13 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
   messages are split at `\n` alone. So a source's name may hold any character.
 - Edition 2024 was qualified by running the whole Rust suite, every owned-local proof included,
   with its example crate switched to 2024.
+- Edition 2018 is qualified for a workspace's analysed packages, not for a crate alone (ADR 0008,
+  "Editions"). rustc lowers closure captures, arrays' `into_iter` and `panic!` by the edition, and
+  the proofs read that MIR. `tests/rust/test_rust_workspace_edition2018.py` checks each against
+  the program's own print. Edition 2015 is refused.
+- Under Cargo's resolver 1, a workspace whose root is a package gives `--features` to that
+  package. A build where Cargo's unit graph lacks a configured feature is refused, naming
+  `package/feature` (`check_features`).
 - Test processes share OS permissions with the checker, and are trusted code.
 - Not delivered yet: any `Option` payload other than `i32`, a tuple or a crate struct, and any
   other data-carrying enum.

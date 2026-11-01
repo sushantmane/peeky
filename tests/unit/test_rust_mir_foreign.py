@@ -741,3 +741,127 @@ def test_a_dependency_traits_method_on_a_reference_to_a_trait_object_is_an_impls
     assert call(path, ("&&dyn Sink",), state(blocks=blocks))[1].startswith(
         "?impl\x1f`impl smallnum::Keep for &dyn Sink`"
     )
+
+
+def test_a_bare_trait_object_edition_2018_writes_is_never_placed_as_a_type():
+    # Edition 2018 reads `impl smallnum::Keep for Box<Sink>`, `trait Sink` the crate's, as
+    # `Box<dyn Sink>`, which the MIR prints as `std::boxed::Box<dyn Sink>`. Without the debug
+    # information's types, `Sink` was placed as a type of the crate's root: the call then ran
+    # the dependency's default `noted`, a false note. Now Peeky can't tell, and says so.
+    texts = {
+        "src/d.rs": "pub trait Sink {}\nimpl smallnum::Keep for Box<Sink> {\n"
+        "impl smallnum::Keep for &Sink {\n"
+    }
+    for span, kind in (("2:1: 2:34", "std::boxed::Box<dyn Sink>"), ("3:1: 3:30", "&dyn Sink")):
+        method = impl_of([], "src/d.rs", span, receiver=f"&{kind}")
+        for types in (None, TYPES):
+            blocks = _local_impls([method], texts, types)
+            assert blocks[0][0] == "", (span, types)
+            found = call(f"<{kind} as smallnum::Keep>::noted", (), state(blocks=blocks))
+            assert found[1].startswith("?impl\x1f`impl smallnum::Keep for "), (span, types, found)
+    # A type of that name is still placed.
+    mine = impl_of([], "src/d.rs", "2:1: 2:34", receiver="&std::boxed::Box<Sink>")
+    assert _local_impls([mine], {"src/d.rs": texts["src/d.rs"].replace("trait", "struct")})[0][
+        0
+    ] == ("std::boxed::Box<Sink>")
+
+
+def test_an_edition_2018_compiles_text_peeky_lexes_otherwise_is_refused(tmp_path):
+    import json
+
+    from peeky.errors import classify
+    from peeky.rust_workspace_session import _check_lexed_as_2018, _edition
+
+    args = ["--crate-name", "util", "--edition=2018", "util/src/lib.rs"]
+    (tmp_path / "command.json").write_text(json.dumps({"args": args}))
+    assert _edition(tmp_path) == "2018"
+    assert _edition(tmp_path / "missing") is None
+    unit = {"package": "util"}
+    # A C string lexes alike in both editions.
+    _check_lexed_as_2018(unit, {"util/src/lib.rs": 'm!(c"\\"");'})
+    with pytest.raises(ValueError) as caught:
+        _check_lexed_as_2018(unit, {"util/src/lib.rs": 'fn f() {}\nm!(cr"\\"");'})
+    assert str(caught.value) == (
+        "Peeky can't read `util`'s text as edition 2018 does: util/src/lib.rs has a raw C "
+        'string (`cr"…"`) on line 2. Peeky reads one as Rust 2021 does, and edition 2018 '
+        "reads `cr` and an ordinary string. Analyse another package, or put a space after "
+        "`cr`, as edition 2018 reads it"
+    )
+    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+ALIASES = (
+    "pub trait Sink {}\n"
+    "use self::Sink as Alias;\n"
+    "impl smallnum::Keep for &Alias {\n"
+    "type Bare = Sink;\n"
+    "impl smallnum::Keep for Box<Bare> {\n"
+    "use smallnum::Keep as K;\n"
+    "impl smallnum::Keep for Box<K> {\n"
+    "impl smallnum::Keep for Mine {\n"
+    "type Paren = (dyn Sink);\n"
+    "impl smallnum::Keep for std::boxed::Box<Paren> {\n"
+    "impl smallnum::Keep for &crate::Paren {\n"
+    "impl smallnum::Keep for std::boxed::Box<Mine> {\n"
+)
+
+
+def test_a_trait_alias_or_an_unconfirmed_bare_name_is_never_the_dependencys():
+    # Edition 2018 reads `impl smallnum::Keep for &Alias`, `Alias` a `use` of the crate's trait
+    # `Sink`, as one for `&dyn Sink`. Without the debug information's types, `&Alias` was
+    # placed as a type, its block discarded, and the call named `smallnum`'s (a false reason).
+    texts = {"src/d.rs": ALIASES}
+    cases = {
+        "3:1: 3:32": "&dyn Sink",
+        "5:1: 5:34": "std::boxed::Box<dyn Sink>",
+        "7:1: 7:31": "std::boxed::Box<dyn smallnum::Keep>",
+    }
+    for span, kind in cases.items():
+        method = impl_of([], "src/d.rs", span, receiver=f"&{kind}")
+        # Edition 2018, no types: placed only where the MIR's `self` says so.
+        blocks = _local_impls([method], texts, None, confirm=True)
+        assert blocks[0][0] == "", (span, blocks)
+        found = call(f"<{kind} as smallnum::Keep>::noted", (), state(blocks=blocks))
+        assert found[1].startswith("?impl\x1f`impl smallnum::Keep for "), (span, found)
+    # A `use` or `type` alias of the crate's trait is never placed, in any edition.
+    for span in ("3:1: 3:32", "5:1: 5:34"):
+        assert _local_impls([impl_of([], "src/d.rs", span)], texts)[0][0] == "", span
+    # A bare name the MIR's `self` confirms is the crate's type: its `impl`, its code.
+    mine = impl_of([], "src/d.rs", "8:1: 8:30", receiver="&Mine")
+    blocks = _local_impls([mine], texts, None, confirm=True)
+    assert blocks[0][0] == "Mine"
+    assert call("<Mine as smallnum::Keep>::noted", (), state(blocks=blocks)) is None
+    # One no function's `self` confirms: Peeky can't tell, never the dependency's.
+    unsaid = _local_impls([impl_of([], "src/d.rs", "8:1: 8:30")], texts, None, confirm=True)
+    assert call("<Mine as smallnum::Keep>::noted", (), state(blocks=unsaid))[1].startswith("?impl")
+
+
+def test_an_alias_no_pattern_finds_is_never_placed_as_a_type():
+    # `type Paren = (dyn Sink);`, its parentheses kept in the expanded text, is no alias
+    # `_trait_names` finds. `impl smallnum::Keep for std::boxed::Box<Paren>` was placed, being
+    # rooted at `std`, unconfirmed: its block was discarded, and the call named `smallnum`'s.
+    texts = {"src/d.rs": ALIASES}
+    boxed = "std::boxed::Box<dyn Sink>"
+    method = impl_of([], "src/d.rs", "10:1: 10:48", receiver=f"&{boxed}")
+    # Edition 2018, no types: every type a header names counts only where the MIR's `self`
+    # says so, inside a `Box`, a `Pin` or a reference too.
+    blocks = _local_impls([method], texts, None, confirm=True)
+    assert blocks[0][0] == "", blocks
+    found = call(f"<{boxed} as smallnum::Keep>::noted", (), state(blocks=blocks))
+    assert found[1].startswith("?impl\x1f`impl smallnum::Keep for std::boxed::Box<Paren>`"), found
+    # With the debug information's types, a `crate::` path is placed only where it is a type.
+    for types in (None, TYPES):
+        method = impl_of([], "src/d.rs", "11:1: 11:39", receiver="&&dyn Sink")
+        blocks = _local_impls([method], texts, types, confirm=True)
+        assert blocks[0][0] == "", (types, blocks)
+        found = call("<&dyn Sink as smallnum::Keep>::noted", (), state(blocks=blocks))
+        assert found[1].startswith("?impl\x1f`impl smallnum::Keep for &crate::Paren`"), found
+    # A type the MIR's `self` confirms is placed, in a `Box` too.
+    mine = impl_of([], "src/d.rs", "12:1: 12:47", receiver="&std::boxed::Box<Mine>")
+    blocks = _local_impls([mine], texts, None, confirm=True)
+    assert blocks[0][0] == "std::boxed::Box<Mine>"
+    assert (
+        call("<std::boxed::Box<Mine> as smallnum::Keep>::noted", (), state(blocks=blocks)) is None
+    )
+    owned = impl_of([], "src/d.rs", "8:1: 8:30", receiver="std::boxed::Box<Mine>")
+    assert _local_impls([owned], texts, None, confirm=True)[0][0] == "Mine"

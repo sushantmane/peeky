@@ -2152,8 +2152,9 @@ none of the dependencies' code ([ADR 0008](../adr/0008-native-project-reach.md))
 What a workspace build refuses, each with a message that says why
 ([ERRORS](../ERRORS.md#build_required)):
 
-- an analysed package outside editions 2021 and 2024. Edition 2018 is refused until Peeky
-  qualifies it;
+- an analysed package outside editions 2018, 2021 and 2024. Edition 2015 is refused;
+- under resolver 1, a configured feature Cargo would build the package without. Name it
+  `package/feature`, or set `resolver = "2"`;
 - a git dependency, vendored or not: `Cargo.lock` records no checksum for a git source. So is
   `[patch]`;
 - a vendored copy whose files don't match its `.cargo-checksum.json`, or whose checksum isn't
@@ -2162,6 +2163,10 @@ What a workspace build refuses, each with a message that says why
   the file and the key;
 - an analysed crate, or a local procedural macro, that mentions `RUSTC_BOOTSTRAP`: Peeky sets it
   for the analysed compiles alone.
+
+A probe refuses an edition 2018 package whose text holds a raw C string (`cr"…"`), naming the
+line. Edition 2018 reads it as `cr` and an ordinary string
+([ERRORS](../ERRORS.md#unsupported)).
 
 #### Build it, then probe it
 
