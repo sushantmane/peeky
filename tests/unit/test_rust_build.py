@@ -224,6 +224,48 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
     assert rb._stem("app-4567.dSYM") == "app-4567"
 
 
+def test_an_output_cargo_linked_or_copied_up_leads_to_rustcs_dependency_file(tmp_path):
+    # `build = "build/main.rs"` (bat): rustc writes `build_script_main-<hash>`, which Cargo
+    # names `build-script-main`. And a binary an integration test runs (ripgrep's `rg`):
+    # Cargo links it (Linux) or copies it (macOS) up from `deps`, and writes no make-form
+    # file beside it (#481).
+    script = tmp_path / "debug/build/bat-89ab"
+    script.mkdir(parents=True)
+    for name in ("build-script-main", "build_script_main-cdef", "build_script_main-cdef.d"):
+        (script / name).write_text("")
+    assert rb._dependency_file([str(script / "build-script-main")]) == (
+        script / "build_script_main-cdef.d",
+        "rustc",
+    )
+    deps = tmp_path / "debug/deps"
+    deps.mkdir()
+    for name in ("rg-0123", "rg-4567", "rg_x-89ab"):
+        (deps / name).write_text(name)
+        (deps / f"{name}.d").write_text("")
+    os.link(deps / "rg-4567", tmp_path / "debug/rg")
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (deps / "rg-4567.d", "rustc")
+    # A copy: the one of the same bytes. A binary with `-` in its name is `rg_x-<hash>`.
+    (tmp_path / "debug/rg-x").write_text("rg_x-89ab")
+    assert rb._dependency_file([str(tmp_path / "debug/rg-x")]) == (deps / "rg_x-89ab.d", "rustc")
+    # None of the same bytes: Cargo's own make-form file, else none.
+    (tmp_path / "debug/other").write_text("rg-4567")
+    assert rb._dependency_file([str(tmp_path / "debug/other")]) == (None, None)
+    (tmp_path / "debug/other.d").write_text("")
+    assert rb._dependency_file([str(tmp_path / "debug/other")]) == (
+        tmp_path / "debug/other.d",
+        "make",
+    )
+    # Two of the same bytes: Peeky can't tell which compile it is.
+    (deps / "rg-cdef").write_text("rg-4567x")
+    (tmp_path / "debug/twice").write_text("rg-4567x")
+    (deps / "twice-0001").write_text("rg-4567x")
+    (deps / "twice-0002").write_text("rg-4567x")
+    assert rb._dependency_file([str(tmp_path / "debug/twice")]) == (None, None)
+    # rustc's output without its dependency file: none.
+    (deps / "rg-4567.d").unlink()
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (None, None)
+
+
 def test_the_build_refusals_have_their_codes():
     assert "BUILD_REQUIRED" in ERROR_CODES
     required = classify(

@@ -20,6 +20,7 @@ the program runs. Not a sandbox.
 
 import contextlib
 import fcntl
+import filecmp
 import hashlib
 import json
 import os
@@ -629,7 +630,8 @@ def _dependency_file(filenames):
     """(the dependency file of a compile with these output files, its form): rustc's own,
     beside an output in `deps` or a build script's directory; else the one Cargo writes
     beside a binary it copies up (`target/debug/app.d`, make's form, which also lists the
-    local packages it uses)."""
+    local packages it uses); else rustc's own beside the output it copied up
+    (``_copied_from``), where Cargo writes none (a binary an integration test runs)."""
     paths = [Path(filename) for filename in filenames]
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
@@ -637,17 +639,55 @@ def _dependency_file(filenames):
             candidate.is_file()
         ):
             return candidate, "rustc"
-        if path.parent.parent.name == "build" and path.name == "build-script-build":
-            # A build script, which Cargo names `build-script-build` beside rustc's own
-            # `build_script_build-<hash>` and its dependency file.
-            found = sorted(path.parent.glob("build_script_build-*.d"))
+        if path.parent.parent.name == "build" and path.name.startswith("build-script-"):
+            # A build script, which Cargo names `build-script-build` (`build-script-main`
+            # for `build = "build/main.rs"`) beside rustc's own `build_script_main-<hash>`
+            # and its dependency file, alone in the compile's directory.
+            found = sorted(path.parent.glob("build_script_*-*.d"))
             if len(found) == 1:
                 return found[0], "rustc"
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
         if candidate.is_file():
             return candidate, "make"
+    for path in paths:
+        copied = _copied_from(path)
+        if copied is not None and (candidate := copied.with_name(copied.name + ".d")).is_file():
+            return candidate, "rustc"
     return None, None
+
+
+def _copied_from(path):
+    """rustc's own output in `deps` that Cargo copied up as ``path`` (`deps/rg-<hash>` as
+    `target/debug/rg`), or None: the one `<crate>-<hash>` there of the same inode (a hard
+    link, as on Linux), else of the same bytes (a copy, as on macOS). Cargo writes a
+    dependency file beside the copy only for what the command names, not for a binary an
+    integration test runs (#481)."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or path.parent.name == "deps":
+        return None
+    named = re.compile(re.escape(path.name.replace("-", "_")) + r"-[0-9a-f]+")
+    candidates = []
+    try:
+        with os.scandir(path.parent / "deps") as entries:
+            for entry in entries:
+                if named.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+                    candidates.append(entry)
+    except OSError:
+        return None
+    linked = [entry for entry in candidates if entry.inode() == info.st_ino]
+    if len(linked) == 1 and linked[0].stat(follow_symlinks=False).st_dev == info.st_dev:
+        return Path(linked[0].path)
+    same = [
+        entry
+        for entry in candidates
+        if entry.stat(follow_symlinks=False).st_size == info.st_size
+        and filecmp.cmp(entry.path, path, shallow=False)
+    ]
+    return Path(same[0].path) if len(same) == 1 else None
 
 
 def _changed_during(path, before, started_ns):
