@@ -29,8 +29,11 @@ exclude() { for path in "$@"; do echo "$path" >> .git/info/exclude; done; }
 
 libcxx() {
   # libstdc++'s headers carry `#pragma GCC system_header`, which leaves a unit with no MD5s.
+  # Pinned to clang 18's own, as tests/projects/Dockerfile pins it (#473).
+  local v=1:18.1.3-1ubuntu1
   apt-get update -qq >/dev/null
-  apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev >/dev/null
+  apt-get install -y -qq --no-install-recommends libc++-18-dev=$v libc++1-18=$v \
+    libc++abi-18-dev=$v libc++abi1-18=$v libunwind-18=$v >/dev/null
   rm -rf /var/lib/apt/lists/*
 }
 

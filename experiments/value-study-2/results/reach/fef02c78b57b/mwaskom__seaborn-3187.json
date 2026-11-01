@@ -1,0 +1,160 @@
+{
+ "bug": "mwaskom__seaborn-3187",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/mwaskom__seaborn-3187:peeky-r2",
+ "image_id": "sha256:06a9f649cf55dff2b478cb56d65a842250c585fb918491726f56c69c7e8ba84e",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T08:59:26+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in ContinuousBase._get_formatter's label code",
+   "at": "seaborn/_core/scales.py:381",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at seaborn/_core/scales.py:381 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset",
+     "exit": 0,
+     "seconds": 1.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/seaborn/_core/scales.py:381",
+    "function": "_setup",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 11,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "a",
+      "value": "100000001.0"
+     },
+     {
+      "name": "axis",
+      "value": "<seaborn._core.scales.PseudoAxis object at 0xffff2ab44d50>"
+     },
+     {
+      "name": "b",
+      "value": "3.0"
+     },
+     {
+      "name": "data",
+      "value": "0    100000001.0\n1    100000002.0\n2    100000003.0\n3    100000004.0\n4    100000001.0\n5    100000002.0\n6    100000003.0\n7    100000004.0\nName: color, dtype: floa"
+     },
+     {
+      "name": "locs",
+      "value": "array([1.00000001e+08, 1.00000002e+08, 1.00000003e+08, 1.00000004e+08])"
+     },
+     {
+      "name": "mpl_scale",
+      "value": "<seaborn._core.scales.Scale._get_scale.<locals>.InternalScale object at 0xffff2ab44dd0>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in locator_to_legend_entries",
+   "at": "seaborn/utils.py:702",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at seaborn/utils.py:702 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset",
+     "exit": 0,
+     "seconds": 2.2
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_____________________ TestLegend.test_legend_has_no_offset _____________________\n\nself = <tests._core.test_plot.TestLegend object at 0xffff2f4d9d90>\nxy = {'x': [1, 2, 3, 4], 'y': [1, 2, 3, 4]}\n\n    def test_legend_has_no_offset(self, xy):\n    \n        color = np.add(xy[\"x\"], 1e8)\n        p = Plot(**xy, color=color).add(MockMark()).plot()\n        legend = p._figure.legends[0]\n        assert legend.texts\n        for text in legend.texts:\n>           assert float(text.get_text()) > 1e7\nE           AssertionError\n\ntests/_core/test_plot.py:2061: AssertionError\n=========================== short test summary info ============================\nFAILED tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset - Asse...\n1 failed in 0.62s\n"
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/_core/test_plot.py:2059",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/_core/test_plot.py:2059 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset",
+     "exit": 0,
+     "seconds": 1.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/_core/test_plot.py:2059",
+    "function": "test_legend_has_no_offset",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "color",
+      "value": "array([1.00000001e+08, 1.00000002e+08, 1.00000003e+08, 1.00000004e+08])"
+     },
+     {
+      "name": "legend",
+      "value": "<matplotlib.legend.Legend object at 0xffff3b110490>"
+     },
+     {
+      "name": "p",
+      "value": "<seaborn._core.plot.Plotter object at 0xffff3d28e090>"
+     },
+     {
+      "name": "self",
+      "value": "<tests._core.test_plot.TestLegend object at 0xffff3d276450>"
+     },
+     {
+      "name": "xy",
+      "value": "{'x': [1, 2, 3, 4], 'y': [1, 2, 3, 4]}"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T08:59:32+00:00"
+}

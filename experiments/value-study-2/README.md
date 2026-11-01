@@ -58,7 +58,8 @@ Everything not listed here is as in round 1's [protocol](../value-study/README.m
 - **Budgets:** 40 minutes and 250 AI credits per attempt, as in round 1.
 - **Repeats and order:** 3 attempts per bug per arm. The 261 attempts run in an order shuffled
   with seed 20261101, at most 3 at once.
-- **Pilot:** as in round 1, one bug once in each arm, to check the harness. It doesn't count.
+- **Pilot:** as in round 1, one bug once in each arm, to check the harness: round 1's pilot bug,
+  `psf__requests-6028`. It doesn't count, and its records stay outside `results/`.
 
 ### The Peeky image
 
@@ -90,8 +91,9 @@ refuses. A pre-built binary leaves the agent one step, `--binary`, as the owner 
 difference from the control arm, listed below.
 
 The flags are the cookbook's: `-O0 -g -gdwarf-5 -grecord-command-line -fdebug-macro`, and a build
-ID. They are the same as `tests/projects/build.sh` on #473's branch, which the phase 1 acceptance
-uses. prepare.sh doesn't call that script, for three reasons:
+ID. They are the same as `tests/projects/build.sh` (#473), which the phase 1 acceptance uses. So is
+libc++: version `1:18.1.3-1ubuntu1`, pinned as `tests/projects/Dockerfile` pins it. prepare.sh
+doesn't call build.sh, for three reasons:
 
 - valkey's tests need `valkey-cli` too, and build.sh builds only `valkey-server`.
 - jq's rebuild must keep `bison -l`, so prepare.sh records `YFLAGS=-l` in configure.
@@ -107,7 +109,7 @@ uses. prepare.sh doesn't call that script, for three reasons:
 | json-4237 | `build-peeky/`, with libc++ | unchanged (`build/`) | `cmake --build build-peeky --target <test>` |
 
 - C++ builds with libc++, as the cookbook asks: libstdc++'s headers leave a unit with no MD5s. The
-  Peeky image installs `libc++-18-dev` for fmt and json.
+  Peeky image installs libc++ 18 for fmt and json, at the pinned version.
 - jq and valkey build only in their source trees, so there Peeky's build replaces the project's
   own. Their tests then run on a clang `-O0` build in the Peeky arms.
 - Grading is unaffected. Every C and C++ `eval.sh` configures or cleans, then rebuilds the
@@ -145,7 +147,8 @@ fix. It is made by a fixed rule, from the test hint alone, which both arms' prom
   It asks for a `version = 3` first line, which changes nothing Cargo resolves, so the image
   adds it. ripgrep's lockfile is tracked, so the line shows in `git diff`; tokio's is ignored.
 - After an edit, `peeky build` with the same config rebuilds the analysed packages alone. At
-  image time, on `e78bf440`, a first build took 10 to 45 s, dependencies included.
+  image time, on `fef02c78`, a first build took 7 to 29 s, dependencies included. All 6 built,
+  and a probe in a fresh container used each build without rebuilding.
 - A first version of the rule ran tokio's library tests. That build compiles tokio twice, and
   Peeky reads one compile per session, so the config couldn't probe tokio's own files. The rule
   above replaced it before any agent run.
@@ -153,7 +156,7 @@ fix. It is made by a fixed rule, from the test hint alone, which both arms' prom
 
 ### Grading in the Peeky image
 
-Grading was checked in all 29 Peeky images, with no agent, as round 1 checked its images. The
+Grading was checked in all 29 Peeky images, on `fef02c78` as before, with no agent. The
 upstream fix is solved, and an unchanged checkout isn't (`harness/study.sh run_one.py <bug> peeky 1
 --fake-agent gold|noop`). One needed care: jq's upstream fix also edits the generated
 `src/parser.c`, which doesn't apply to the image's regenerated one. With the fix to `src/parser.y`
@@ -171,6 +174,22 @@ alone, grading regenerates the parser, and the attempt is solved.
 - Rust: `/testbed/vendor`, which git ignores; `/opt/peeky/study/rust.json` and its Peeky build,
   in Peeky's state directory; git's index refreshed. tokio-4867's and ripgrep-2209's
   `Cargo.lock` start with `version = 3`, which shows in ripgrep's `git diff`.
+
+### The pilot
+
+It ran on 1 November, on `fef02c78`'s images, with Copilot CLI 1.0.105 and `gpt-6.1-sol`. Its
+records stay outside `results/`, as in round 1.
+
+| Arm | Solved | Wall (s) | AI credits | Tool calls | Peeky commands | Values Peeky printed |
+| --- | --- | --- | --- | --- | --- | --- |
+| control | yes | 142 | 17.4 | 19 | 0 | 0 |
+| peeky | yes | 157 | 18.6 | 20 | 0 (read the docs twice) | 0 |
+| peeky-first | yes | 172 | 23.6 | 21 | 4: `describe` and `probe` | 4 |
+
+- The `peeky-first` attempt probed `requests/utils.py` under `--run-module pytest`. Its final
+  paragraph cites the probe: `auth='user:pass'` but `netloc='example.com'`.
+- Every attempt's isolation check flags the CLI's `customized_identity_preamble` segment, as in
+  round 1. It is the CLI's own system prompt, not a custom instruction, so nothing changes.
 
 ## Outcomes
 
@@ -282,28 +301,31 @@ The analysis reports the two primary differences within each group, and Peeky's 
 (`harness/descriptive.py`). These splits are exploration: the groups are small, and bugs aren't
 assigned to them at random. The overall results stay the primary outcomes.
 
-Python and Java wait on no open PR. On `42878bbd`, 15 of their 16 bugs were reached. astropy's
-failing test fails before it runs any changed line, so it is "other".
+Python and Java wait on no open PR. On `42878bbd`, 15 of their 16 bugs were reached, and so
+were they on `fef02c78`. astropy's failing test fails before it runs any changed line, so it is
+"other".
 
-| Bug | On `42878bbd` | Waits on | Likely on the final `main` |
-| --- | --- | --- | --- |
-| jq-2650 | reached (the fix's action in `parser.c`) | #469 (its harness's 3 withheld locals), #473 | reached |
-| micropython-13569 | reached | #469, #473 | reached |
-| valkey-1842 | stops; every local withheld (`__has_include`) | #477, #469, #473 | reached |
-| valkey-790 | stops; every local withheld (`__has_include`) | #477, #469, #473 | reached |
-| fmt-3158 | refused: no unit with the fix's code is judged | #480 and #477 (`test-main.cc` only), #473 | refused, until phase 3 |
-| fmt-3272 | refused: no unit with the fix's code is judged | #480 and #477 (`test-main.cc` only), #473 | refused, until phase 3 |
-| json-4237 | refused: the binary, whole | #473 | refused, until phase 3 |
-| tokio-4867 | stops in generic code; `inspect` fails | #463 | refused: generic code that another crate compiles |
-| ripgrep-2209 | stops in generic code; `inspect` fails; its test's build fails | #463, #481 | refused: generic code that another crate compiles |
-| tokio-6752 | stops in generic code; `inspect` fails | #463 | refused: generic code that another crate compiles |
-| axum-1934 | refused: `BUDGET_EXHAUSTED` | #483, #463 | depends on #483 |
-| bat-3108 | refused: its build fails, intermittently | #481, #463 | depends on #481 |
-| coreutils-6690 | refused: a build script reads `CARGO_BUILD_RUSTFLAGS`; its test's build fails | #482, #481, #463 | depends on #482 and #481 |
+| Bug | On `42878bbd` | Waits on | Likely on the final `main` | On `fef02c78`: the group |
+| --- | --- | --- | --- | --- |
+| jq-2650 | reached (the fix's action in `parser.c`) | #469 (its harness's 3 withheld locals), #473 | reached | reached |
+| micropython-13569 | reached | #469, #473 | reached | reached |
+| valkey-1842 | stops; every local withheld (`__has_include`) | #477, #469, #473 | reached | reached |
+| valkey-790 | stops; every local withheld (`__has_include`) | #477, #469, #473 | reached | reached |
+| fmt-3158 | refused: no unit with the fix's code is judged | #480 and #477 (`test-main.cc` only), #473 | refused, until phase 3 | refused |
+| fmt-3272 | refused: no unit with the fix's code is judged | #480 and #477 (`test-main.cc` only), #473 | refused, until phase 3 | refused |
+| json-4237 | refused: the binary, whole | #473 | refused, until phase 3 | refused |
+| tokio-4867 | stops in generic code; `inspect` fails | #463 | refused: generic code that another crate compiles | refused |
+| ripgrep-2209 | stops in generic code; `inspect` fails; its test's build fails | #463, #481 | refused: generic code that another crate compiles | refused |
+| tokio-6752 | stops in generic code; `inspect` fails | #463 | refused: generic code that another crate compiles | refused |
+| axum-1934 | refused: `BUDGET_EXHAUSTED` | #483, #463 | depends on #483 | refused (#483 open) |
+| bat-3108 | refused: its build fails, intermittently | #481, #463 | depends on #481 | reached |
+| coreutils-6690 | refused: a build script reads `CARGO_BUILD_RUSTFLAGS`; its test's build fails | #482, #481, #463 | depends on #482 and #481 | other (stops; no locals there) |
 
 - Every Rust bug also waits on #463 for the guide: on `42878bbd`, it still says crates with
   dependencies aren't supported. That changes what an agent tries, not what the reach check finds.
-- The last column is a forecast. The group is what the final reach run records.
+- The fourth column is the forecast made on 31 October. The last is the group the final reach
+  run recorded, on `fef02c78` ([REACH.md](REACH.md#groups-for-part-a)): 20 reached, 7 refused,
+  2 other.
 - If a listed PR hasn't merged when Part A starts, the report says so. The groups still come from
   the final reach run.
 

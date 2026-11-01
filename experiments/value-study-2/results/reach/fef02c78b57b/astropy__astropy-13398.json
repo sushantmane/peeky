@@ -1,0 +1,100 @@
+{
+ "bug": "astropy__astropy-13398",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/astropy__astropy-13398:peeky-r2",
+ "image_id": "sha256:1590c1a3f822624f435b840b52b060508e5d9eda18ee0d18f7eac218d65009dd",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T08:57:59+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement whose location argument changes in itrs_to_tete's caller (first code hunk)",
+   "at": "astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py:150",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py:150 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction",
+     "exit": 0,
+     "seconds": 2.1
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026        dist = np.linspace(1., 1000.0, len(usph)) * u.au\n        icrs = ICRS(ra=usph.lon, dec=usph.lat, distance=dist)\n        altaz_frame1 = AltAz(obstime = 'J2000', location=loc)\n        altaz_frame2 = AltAz(obstime = 'J2000', location=loc, pressure=1000.0 * u.hPa,\n                             relative_humidity=0.5)\n        cirs_frame = CIRS(obstime = 'J2000', location=loc)\n>       itrs_frame = ITRS(location=loc)\n\nastropy/coordinates/tests/test_intermediate_transformations.py:207: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <ITRS Frame (obstime=J2000.000)>, copy = True, representation_type = None\ndifferential_type = None, args = ()\nkwargs = {'location': <EarthLocation (6378137., 0., 0.) m>}, values = {}\nfnm = 'obstime'\nfdefault = <Time object: scale='tt' format='jyear_str' value=J2000.000>\n\n    def __init__(self, *args, copy=True, representation_type=None,\n                 differential_type=None, **kwargs):\n        self._attr_names_with_defaults = []\n    \n        self._representation = self._infer_representation(representation_type, differential_type)\n        self._data = self._infer_data(args, copy, kwargs)  # possibly None.\n    \n        # Set frame attributes, if any\n    \n        values = {}\n        for fnm, fdefault in self.get_frame_attr_names().items():\n            # Read-only frame attributes are defined as FrameAttribute\n            # descriptors which are not settable, so set 'real' attributes as\n            # the name prefaced with an underscore.\n    \n            if fnm in kwargs:\n                value = kwargs.pop(fnm)\n                setattr(self, '_' + fnm, value)\n                # Validate attribute by getting it. If the instance has data,\n                # this also checks its shape is OK. If not, we do it below.\n                values[fnm] = getattr(self, fnm)\n            else:\n                setattr(self, '_' + fnm, fdefault)\n                self._attr_names_with_defaults.append(fnm)\n    \n        if kwargs:\n>           raise TypeError(\n                f'Coordinate frame {self.__class__.__name__} got unexpected '\n                f'keywords: {list(kwargs)}')\nE           TypeError: Coordinate frame ITRS got unexpected keywords: ['location']\n\nastropy/coordinates/baseframe.py:319: TypeError\n=========================== short test summary info ============================\nFAILED astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction\n1 failed in 0.09s\n"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed CIRS construction in itrs_to_cirs (last code hunk)",
+   "at": "astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py:214",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py:214 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction",
+     "exit": 0,
+     "seconds": 1.9
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026        dist = np.linspace(1., 1000.0, len(usph)) * u.au\n        icrs = ICRS(ra=usph.lon, dec=usph.lat, distance=dist)\n        altaz_frame1 = AltAz(obstime = 'J2000', location=loc)\n        altaz_frame2 = AltAz(obstime = 'J2000', location=loc, pressure=1000.0 * u.hPa,\n                             relative_humidity=0.5)\n        cirs_frame = CIRS(obstime = 'J2000', location=loc)\n>       itrs_frame = ITRS(location=loc)\n\nastropy/coordinates/tests/test_intermediate_transformations.py:207: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <ITRS Frame (obstime=J2000.000)>, copy = True, representation_type = None\ndifferential_type = None, args = ()\nkwargs = {'location': <EarthLocation (6378137., 0., 0.) m>}, values = {}\nfnm = 'obstime'\nfdefault = <Time object: scale='tt' format='jyear_str' value=J2000.000>\n\n    def __init__(self, *args, copy=True, representation_type=None,\n                 differential_type=None, **kwargs):\n        self._attr_names_with_defaults = []\n    \n        self._representation = self._infer_representation(representation_type, differential_type)\n        self._data = self._infer_data(args, copy, kwargs)  # possibly None.\n    \n        # Set frame attributes, if any\n    \n        values = {}\n        for fnm, fdefault in self.get_frame_attr_names().items():\n            # Read-only frame attributes are defined as FrameAttribute\n            # descriptors which are not settable, so set 'real' attributes as\n            # the name prefaced with an underscore.\n    \n            if fnm in kwargs:\n                value = kwargs.pop(fnm)\n                setattr(self, '_' + fnm, value)\n                # Validate attribute by getting it. If the instance has data,\n                # this also checks its shape is OK. If not, we do it below.\n                values[fnm] = getattr(self, fnm)\n            else:\n                setattr(self, '_' + fnm, fdefault)\n                self._attr_names_with_defaults.append(fnm)\n    \n        if kwargs:\n>           raise TypeError(\n                f'Coordinate frame {self.__class__.__name__} got unexpected '\n                f'keywords: {list(kwargs)}')\nE           TypeError: Coordinate frame ITRS got unexpected keywords: ['location']\n\nastropy/coordinates/baseframe.py:319: TypeError\n=========================== short test summary info ============================\nFAILED astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction\n1 failed in 0.08s\n"
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "astropy/coordinates/tests/test_intermediate_transformations.py:225",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/coordinates/tests/test_intermediate_transformations.py:225 --name reach --timeout 300 --json -- -q -p no:cacheprovider astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction",
+     "exit": 0,
+     "seconds": 1.8
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026        dist = np.linspace(1., 1000.0, len(usph)) * u.au\n        icrs = ICRS(ra=usph.lon, dec=usph.lat, distance=dist)\n        altaz_frame1 = AltAz(obstime = 'J2000', location=loc)\n        altaz_frame2 = AltAz(obstime = 'J2000', location=loc, pressure=1000.0 * u.hPa,\n                             relative_humidity=0.5)\n        cirs_frame = CIRS(obstime = 'J2000', location=loc)\n>       itrs_frame = ITRS(location=loc)\n\nastropy/coordinates/tests/test_intermediate_transformations.py:207: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <ITRS Frame (obstime=J2000.000)>, copy = True, representation_type = None\ndifferential_type = None, args = ()\nkwargs = {'location': <EarthLocation (6378137., 0., 0.) m>}, values = {}\nfnm = 'obstime'\nfdefault = <Time object: scale='tt' format='jyear_str' value=J2000.000>\n\n    def __init__(self, *args, copy=True, representation_type=None,\n                 differential_type=None, **kwargs):\n        self._attr_names_with_defaults = []\n    \n        self._representation = self._infer_representation(representation_type, differential_type)\n        self._data = self._infer_data(args, copy, kwargs)  # possibly None.\n    \n        # Set frame attributes, if any\n    \n        values = {}\n        for fnm, fdefault in self.get_frame_attr_names().items():\n            # Read-only frame attributes are defined as FrameAttribute\n            # descriptors which are not settable, so set 'real' attributes as\n            # the name prefaced with an underscore.\n    \n            if fnm in kwargs:\n                value = kwargs.pop(fnm)\n                setattr(self, '_' + fnm, value)\n                # Validate attribute by getting it. If the instance has data,\n                # this also checks its shape is OK. If not, we do it below.\n                values[fnm] = getattr(self, fnm)\n            else:\n                setattr(self, '_' + fnm, fdefault)\n                self._attr_names_with_defaults.append(fnm)\n    \n        if kwargs:\n>           raise TypeError(\n                f'Coordinate frame {self.__class__.__name__} got unexpected '\n                f'keywords: {list(kwargs)}')\nE           TypeError: Coordinate frame ITRS got unexpected keywords: ['location']\n\nastropy/coordinates/baseframe.py:319: TypeError\n=========================== short test summary info ============================\nFAILED astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction\n1 failed in 0.09s\n"
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T08:58:06+00:00"
+}
