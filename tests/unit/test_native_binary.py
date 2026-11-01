@@ -868,6 +868,17 @@ def test_code_no_unit_covers_is_named(root, monkeypatch):
         "nlr_push is code no unit's debug information covers (assembly built without -g?)",
         "the code at 0x10c4 has no symbol, and no unit's debug information covers it",
     ]
+    # In a Mach-O binary, Peeky compares nothing with the toolchain's: it says so.
+    monkeypatch.setattr(
+        native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections, macho=True)
+    )
+    asked = []
+    assert uncovered_code(binary, units, lambda names=(): asked.append(names))[0] == (
+        "nlr_push is code no unit's debug information covers (assembly built without -g, or the "
+        "toolchain's own code, which Peeky compares on Linux only)"
+    )
+    assert asked == []
+    monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
     # Where Peeky can't search them, it can't tell.
     assert uncovered_code(binary, units)[0] == (
         "nlr_push is code no unit's debug information covers, and Peeky can't tell whether it "

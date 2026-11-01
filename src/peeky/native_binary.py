@@ -980,10 +980,12 @@ class CodeSymbol:
 @dataclass(frozen=True)
 class CodeMap:
     """What code_symbols reads of an executable: its symbols at code (None where it has
-    no symbol table) and its CodeSections."""
+    no symbol table), its CodeSections, and whether it is Mach-O, whose code Peeky
+    compares with no toolchain object or archive (they are ELF's alone)."""
 
     symbols: list | None
     sections: list
+    macho: bool = False
 
 
 # Sections of stubs the linker makes: never the program's code.
@@ -1088,7 +1090,7 @@ def _macho_symbols(stream, header):
         cursor += extent
     code = [section for section, is_code in sections if is_code]
     if table is None:
-        return CodeMap(None, code)
+        return CodeMap(None, code, macho=True)
     offset, symbols, strings, strings_size = table
     if symbols > MAX_SYMBOLS or offset + symbols * 16 > size or strings + strings_size > size:
         raise ValueError("Invalid Mach-O symbol table")
@@ -1109,7 +1111,7 @@ def _macho_symbols(stream, header):
         text = os.fsdecode(names[start:end]) if end >= 0 else ""
         if text and not text.startswith(("ltmp", "l_", "L")):
             found.append(CodeSymbol(text.removeprefix("_"), value, 0, not kind & 0x01))  # N_EXT
-    return CodeMap(found, code)
+    return CodeMap(found, code, macho=True)
 
 
 # What fills the space between functions: zeros, AArch64's `nop`, x86's `nop`s and `int3`.
@@ -1267,6 +1269,8 @@ def uncovered_code(binary, units, startup=None, unsure=None):
         and (symbol.name in _MATCHED_STARTUP or not units_hold(symbol.address))
     ]
     unframed, pieces, why, unsearched = {}, [], None, None
+    if code.macho:
+        wanted = []
     if framed or wanted:
         names = sorted({symbol.name for symbol in wanted} - _MATCHED_STARTUP)
         if startup is None:
@@ -1359,7 +1363,12 @@ def uncovered_code(binary, units, startup=None, unsure=None):
         named.append(symbol)
         keys = tried.get(symbol, [])
         if not keys:
-            if symbol.name in _MATCHED_STARTUP:
+            if code.macho:
+                found.append(
+                    f"{said} (assembly built without -g, or the toolchain's own code, which "
+                    "Peeky compares on Linux only)"
+                )
+            elif symbol.name in _MATCHED_STARTUP:
                 found.append(
                     f"{said}, and Peeky found no toolchain startup object holding it "
                     f"({why or 'none names it'}){doubt}"

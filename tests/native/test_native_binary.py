@@ -726,6 +726,11 @@ def test_code_no_unit_covers_may_return_twice(project, capsys, stripped):
         [compiler, *_sysroot(), *link, "main.o", "nlr.o", "-o", "prog"], cwd=project, check=True
     )
     said = "nlr_push is code no unit's debug information covers (assembly built without -g?)"
+    if macos:
+        # Peeky compares code with the toolchain's objects and archives on Linux alone.
+        said = said.replace(
+            "?)", ", or the toolchain's own code, which Peeky compares on Linux only)"
+        )
     if stripped:
         if not macos:
             subprocess.run(["objcopy", "--strip-symbol=nlr_push", "prog"], cwd=project, check=True)

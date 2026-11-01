@@ -188,6 +188,9 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     tail, matched byte for byte, are the toolchain's. Anything else there counts.
   - Peeky asks the compiler in its own environment (`replay_environment`), never the one the
     program launches with.
+  - A Mach-O binary's code is compared with nothing (`CodeMap.macho`): the objects and archives
+    Peeky reads are ELF's. A symbol no unit covers there says it may be assembly built without
+    `-g` or the toolchain's own code.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 
