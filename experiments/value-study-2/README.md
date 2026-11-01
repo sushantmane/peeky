@@ -148,10 +148,11 @@ alone, grading regenerates the parser, and the attempt is solved.
     on every attempt. A second, unblinded judge checks the values Peeky printed against the
     program, in attempts that ran Peeky.
   - By category and by language, as exploration only.
+- **By reach group** ([below](#reach-groups-and-the-prs-they-wait-on)): the primary outcomes
+  within the bugs Peeky reaches and within the others, as exploration.
 - **Descriptive** ([harness/descriptive.py](harness/descriptive.py)): this round's control rate
-  against round 1's, bug by bug, to show drift. And Peeky's uptake against the reach check: in
-  bugs where Peeky stopped at a gold point and in the others, the share of attempts that ran
-  Peeky and that printed a program value.
+  against round 1's, bug by bug, to show drift. And Peeky's uptake in each reach group: the share
+  of attempts that ran Peeky and that printed a program value.
 
 ## Analysis
 
@@ -189,9 +190,9 @@ reach run, by these rules:
   generates from it. Both are probed: the grammar action, and the same action in the image's
   `parser.c`, found by its text.
 - **The assertion point:** the first assertion that the first failing test runs, in its body or
-  in a helper it calls first. Its line is in the file after the hidden test patch. When the test is data that a harness checks, the point is the harness's
-  comparison, if the harness is in the project's language. Otherwise it isn't attempted, with the
-  reason.
+  in a helper it calls first. Its line is in the file after the hidden test patch. When the test
+  is data that a harness checks, the point is the harness's comparison, if the harness is in the
+  project's language. Otherwise it isn't attempted, with the reason.
 - **The run:** each point runs what the failing test runs: the test itself, or for a Rust binary
   or a server, the program with the test's arguments. A server is driven to the line by commands,
   such as valkey's `ACL LOAD` on a replica.
@@ -225,6 +226,46 @@ tried again. The lockfile remedy was added then too. That pass's records aren't 
 One point moved after the runs on `791510a6`. druid's assertion point was the first assertion in
 its test's text (line 573), but the test first calls a helper that asserts. It is now that
 helper's first assertion (line 1018), as the rule says. The run on `791510a6` keeps line 573.
+
+## Reach groups, and the PRs they wait on
+
+This section is fixed before Part A, like the rest. On 31 October, the Rust and C and C++ bugs'
+reach depends on PRs that are still open. Part A starts once they merge. Then the reach check
+runs on the `main` that Part A uses, before any attempt, and its records fix each bug's group:
+
+- **Reached:** a gold point stopped, and `session inspect` read at least one value there.
+- **Not reached:** every other bug. Two kinds are reported apart:
+  - **refused:** Peeky refused every gold point;
+  - **other:** Peeky stopped but read no value, or the failing test never ran a gold line.
+
+The analysis reports the two primary differences within each group, and Peeky's uptake there
+(`harness/descriptive.py`). These splits are exploration: the groups are small, and bugs aren't
+assigned to them at random. The overall results stay the primary outcomes.
+
+Python and Java wait on no open PR. On `42878bbd`, 15 of their 16 bugs were reached. astropy's
+failing test fails before it runs any changed line, so it is "other".
+
+| Bug | On `42878bbd` | Waits on | Likely on the final `main` |
+| --- | --- | --- | --- |
+| jq-2650 | reached (the fix's action in `parser.c`) | #469 (its harness's 3 withheld locals), #473 | reached |
+| micropython-13569 | reached | #469, #473 | reached |
+| valkey-1842 | stops; every local withheld (`__has_include`) | #477, #469, #473 | reached |
+| valkey-790 | stops; every local withheld (`__has_include`) | #477, #469, #473 | reached |
+| fmt-3158 | refused: no unit with the fix's code is judged | #480 and #477 (`test-main.cc` only), #473 | refused, until phase 3 |
+| fmt-3272 | refused: no unit with the fix's code is judged | #480 and #477 (`test-main.cc` only), #473 | refused, until phase 3 |
+| json-4237 | refused: the binary, whole | #473 | refused, until phase 3 |
+| tokio-4867 | stops in generic code; `inspect` fails | #463 | refused: generic code that another crate compiles |
+| ripgrep-2209 | stops in generic code; `inspect` fails; its test's build fails | #463, #481 | refused: generic code that another crate compiles |
+| tokio-6752 | stops in generic code; `inspect` fails | #463 | refused: generic code that another crate compiles |
+| axum-1934 | refused: `BUDGET_EXHAUSTED` | #483, #463 | depends on #483 |
+| bat-3108 | refused: its build fails, intermittently | #481, #463 | depends on #481 |
+| coreutils-6690 | refused: a build script reads `CARGO_BUILD_RUSTFLAGS`; its test's build fails | #482, #481, #463 | depends on #482 and #481 |
+
+- Every Rust bug also waits on #463 for the guide: on `42878bbd`, it still says crates with
+  dependencies aren't supported. That changes what an agent tries, not what the reach check finds.
+- The last column is a forecast. The group is what the final reach run records.
+- If a listed PR hasn't merged when Part A starts, the report says so. The groups still come from
+  the final reach run.
 
 ## Deviations from round 1
 
@@ -284,6 +325,6 @@ harness/study.sh analyze.py
 | [harness/build_images.sh](harness/build_images.sh) | Builds the Peeky images with round 1's script. |
 | [harness/study.sh](harness/study.sh) | Runs a round 1 harness script with this round's config. |
 | [harness/reach.py](harness/reach.py), [harness/reach_specs.json](harness/reach_specs.json) | The reach check and its points. |
-| [harness/descriptive.py](harness/descriptive.py) | Drift of the control arm, and uptake against reach. |
+| [harness/descriptive.py](harness/descriptive.py) | Drift of the control arm, the reach groups' differences, and uptake. |
 | [REACH.md](REACH.md) | The reach check's results. |
 | `results/reach/<sha>/` | Each reach run's records, one JSON file per bug. |
