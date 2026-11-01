@@ -1248,7 +1248,12 @@ FLAGS='-O0 -g -gdwarf-5 -grecord-command-line'
   `describe` lists each unit whose text it can't read, and why: `text not read: Peeky can't read
   src/util.c as compiled: …`. The rules that need the text withhold there, saying so. So they do
   where its preprocessing asks for a file it doesn't find (`__has_include`): the build may have
-  found one. Or where its command has `-march=native`, which names the build host's CPU.
+  found one. On Linux, `-fdebug-macro` lets Peeky check the build's own record of its macros
+  instead, where the probe's branches define or undefine macros: a build that found the file
+  would have left another record. A probe whose branches differ in code or includes alone stays
+  unproven. Or where a file it reads holds a trigraph sequence (`??/`) and its command may turn
+  trigraphs on (`-std=c11`, `-trigraphs`), or where its command has
+  `-march=native`, which names the build host's CPU.
 - **Calls that return twice:** setjmp's family, `vfork`, `getcontext`, `swapcontext` and
   `savectx`, by name. Where a unit isn't read, or holds `asm` (its headers too), any call may. So may any
   where the binary holds code no unit covers, such as assembly built without `-g`: the note names

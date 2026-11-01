@@ -1793,6 +1793,24 @@ def test_code_whose_brackets_do_not_pair_up_is_not_read(text, why):
     assert (code_only(text) is None) is (why is not None)
 
 
+@pytest.mark.parametrize(
+    "text, line",
+    [
+        ('m!(cr"a");', 1),
+        ('fn f() {}\nm!(cr#"a"#);', 2),
+        # Not one: a C string, a raw string, a word ending in `cr`, and inside other literals.
+        ('m!(c"a"); m!(r"a"); m!(br"a"); m!(xcr"a");', None),
+        ('// cr"a"\nlet s = "cr\\"";\n/* cr#"x"# */', None),
+    ],
+)
+def test_a_raw_c_string_is_found_where_peeky_lexes_one(text, line):
+    # Rust 2021 lexes `cr"…"` as a raw C string, as Peeky does; edition 2018 lexes `cr` and an
+    # ordinary string, whose escapes may end it elsewhere (rust_workspace_session).
+    from peeky.rust_lexer import raw_c_string
+
+    assert raw_c_string(text) == line
+
+
 BOXED = "std::boxed::Box<Pt>"
 
 
@@ -4824,6 +4842,55 @@ def test_a_signature_over_several_lines_is_matched_by_its_source():
     assert not _signature_continues(SimpleNamespace(head=frozenset({1})), function, text)
     assert not _signature_continues(SimpleNamespace(head=frozenset()), function, text)
     assert not _signature_continues(body, function, None)
+
+
+def test_a_split_signatures_visibility_qualifiers_abi_and_comments_are_read_token_wise():
+    # `pub(in crate::m)`, an ABI with a `-`, and a comment before `fn` were refused (#474).
+    from types import SimpleNamespace
+
+    from peeky.rust_mir import _signature_continues
+
+    function = SimpleNamespace(line=1, name="f")
+
+    def continues(opening):
+        # The parameter's line and the return place's, after the opening's own.
+        first = opening.count("\n") + 2
+        body = SimpleNamespace(head=frozenset({first, first + 1}))
+        return _signature_continues(body, function, opening + "\n    x: u8,\n) -> u8 {\n    x\n}")
+
+    unmatched = [
+        opening
+        for opening in (
+            "pub(in crate::m) fn f(",
+            "pub(crate) fn f(",
+            "pub ( super ) fn f(",
+            "pub(self) const fn f(",
+            'unsafe extern "C-unwind" fn f(',
+            'pub extern "C" fn f(',
+            'extern r"system" fn f(',
+            "extern fn f(",
+            "pub async unsafe fn f(",
+            "pub /* visible */ fn f(",
+            "pub /* a /* nested */ comment */ fn f(",
+            "/** doc */ pub fn f(",
+            "pub /* fn */ fn f(",
+            "pub // visible\nfn f(",
+            '    pub(crate) unsafe extern /* abi */ "C" fn f(',
+        )
+        if not continues(opening)
+    ]
+    assert unmatched == []
+    # Anything else first is no signature's start: not matched, so a change stays refused.
+    for opening in (
+        "impl S { fn f(",
+        "pub(foo bar) fn f(",
+        'extern "C" { fn f(',
+        "/* unclosed fn f(",
+        "} pub fn f(",
+        "fnord fn f(",
+        "pub fn g(",
+    ):
+        assert not continues(opening), opening
 
 
 # `move || p.a as usize + p.name.len()` at edition 2021, as rustc 1.96 dumps it: two captures

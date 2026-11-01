@@ -49,9 +49,45 @@ fn noted(
     println!("{} {}", label, shown);
 }
 
+mod scaling {
+    pub(in crate::scaling) fn scaled(
+        x: u32,
+        factor: u32,
+    ) -> u32 {
+        let mut scaled = x * factor;
+        std::hint::black_box(&mut scaled); // SCALED
+        scaled
+    }
+
+    pub fn call(x: u32) -> u32 {
+        scaled(x, 3)
+    }
+}
+
+unsafe extern "C-unwind" fn unwound(
+    x: u32,
+    y: u32,
+) -> u32 {
+    let mut sum = x + y;
+    std::hint::black_box(&mut sum); // SUMMED
+    sum
+}
+
+pub /* visible */ fn commented(
+    x: u32,
+    y: u32,
+) -> u32 {
+    let mut product = x * y;
+    std::hint::black_box(&mut product); // PRODUCT
+    product
+}
+
 fn main() {
     println!("KEPT {}", trimmed(b"    abc", Span { start: 0, end: 7 }));
     noted("SHOWN", 4);
+    println!("SCALED {}", scaling::call(5));
+    println!("SUMMED {}", unsafe { unwound(2, 3) });
+    println!("PRODUCT {}", commented(4, 6));
 }
 """
 
@@ -90,3 +126,20 @@ def test_a_change_in_a_function_with_a_signature_over_several_lines_is_made(crat
     rows, result = probe(capsys, crate, "SHOWN", "--capture", "shown", "--set", "shown=11")
     assert rows["shown"]["value"] == "11"
     assert "SHOWN 11" in result["output"]
+
+
+@pytest.mark.timeout(400)
+def test_a_split_signature_with_a_path_visibility_an_abi_or_a_comment_is_matched(crate, capsys):
+    # `pub(in crate::scaling)`, `unsafe extern "C-unwind"` and `pub /* visible */` before `fn`
+    # left these unmatched, and every change in them refused (#474).
+    for marker, variable, value, printed in (
+        ("SCALED", "scaled", "40", "SCALED 40"),
+        ("SUMMED", "sum", "50", "SUMMED 50"),
+        ("PRODUCT", "product", "60", "PRODUCT 60"),
+    ):
+        rows, result = probe(
+            capsys, crate, marker, "--capture", variable, "--set", f"{variable}={value}"
+        )
+        assert rows[variable]["value"] == value, (marker, rows)
+        assert rows[variable]["type"] == "u32", (marker, rows)
+        assert printed in result["output"], (marker, result["output"])

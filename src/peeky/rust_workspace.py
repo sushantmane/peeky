@@ -6,9 +6,9 @@ Peeky builds such a workspace itself, in a separate step, offline and from its l
 with every registry dependency from `cargo vendor`'s copy. It refuses here, before
 anything runs: a git dependency, a registry other than crates.io, `[patch]` and
 `[replace]`, Cargo configuration it doesn't account for, a vendored copy that isn't what
-`cargo vendor` wrote, and an analysed package outside editions 2021 and 2024, or built
-otherwise than at opt-level 0. What the build compiles comes from Cargo's unit graph of
-the build's own command. What Cargo reads is hashed before it runs and checked again
+`cargo vendor` wrote, and an analysed package outside editions 2018, 2021 and 2024, or
+built otherwise than at opt-level 0. What the build compiles comes from Cargo's unit graph
+of the build's own command. What Cargo reads is hashed before it runs and checked again
 after. Trusted configuration; not a sandbox: Cargo runs the project's build scripts and
 procedural macros, as it runs the program.
 """
@@ -25,6 +25,7 @@ import urllib.parse
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from peeky import stopping as _stopping
 from peeky.build import _inside, _relative
 from peeky.digest import sha256_file
 from peeky.textlines import split_lines
@@ -59,7 +60,7 @@ MAX_LOCK_BYTES = 16 * 1024 * 1024
 MAX_CHECKSUMS_BYTES = 16 * 1024 * 1024
 MAX_METADATA_BYTES = 64 * 1024 * 1024
 MAX_VENDORED_FILES = 200_000
-EDITIONS = ("2021", "2024")
+EDITIONS = ("2018", "2021", "2024")
 # crates.io as Cargo.lock names it; the only registry Peeky builds from.
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 VENDORED_SOURCE = "peeky-vendored"
@@ -602,25 +603,26 @@ def _copy_files(entry, label, workspace, vendor, listed, digest):
     """{path in the copy: SHA-256} of a vendored copy's files, each of which its
     `.cargo-checksum.json` must list (``listed``) with the digest Peeky computes."""
     found = {}
-    for base, folders, files in os.walk(entry):
-        for name in (*folders, *files):
-            path = Path(base, name)
-            if path.is_symlink():
-                raise _vendor_refusal(
-                    f"{label} holds a link ({path.relative_to(entry)})", workspace, vendor
-                )
-        for name in files:
-            path = Path(base, name)
-            relative = path.relative_to(entry).as_posix()
-            if relative == ".cargo-checksum.json":
-                continue
-            if not path.is_file():
-                raise _vendor_refusal(
-                    f"{label} holds {relative}, which is not a regular file", workspace, vendor
-                )
-            found[relative] = digest(path)
-            if len(found) > MAX_VENDORED_FILES:
-                raise ValueError(f"The vendored copies hold more than {MAX_VENDORED_FILES} files")
+    # Read lazily, the build's stop checked at each entry, within a bound of entries.
+    too_many = f"The vendored copies hold more than {MAX_VENDORED_FILES} files"
+    for item in _stopping.walked(entry, [2 * MAX_VENDORED_FILES], too_many):
+        path = Path(item.path)
+        if item.is_symlink():
+            raise _vendor_refusal(
+                f"{label} holds a link ({path.relative_to(entry)})", workspace, vendor
+            )
+        if item.is_dir(follow_symlinks=False):
+            continue
+        relative = path.relative_to(entry).as_posix()
+        if relative == ".cargo-checksum.json":
+            continue
+        if not item.is_file(follow_symlinks=False):
+            raise _vendor_refusal(
+                f"{label} holds {relative}, which is not a regular file", workspace, vendor
+            )
+        found[relative] = digest(path)
+        if len(found) > MAX_VENDORED_FILES:
+            raise ValueError(too_many)
     if not listed:
         raise _vendor_refusal(
             f"{label}'s .cargo-checksum.json lists no files to check it against",
@@ -681,9 +683,12 @@ def vendored(workspace, vendor, locked, digest=None):
             f"`{vendor_command(workspace, vendor)}`"
         )
     copies, files = {}, {}
-    entries = sorted(directory.iterdir())
-    if len(entries) > MAX_PACKAGES:
-        raise ValueError(f"{directory} holds more than {MAX_PACKAGES} entries")
+    entries = [
+        Path(each.path)
+        for each in _stopping.listed(
+            directory, [MAX_PACKAGES], f"{directory} holds more than {MAX_PACKAGES} entries"
+        )
+    ]
     for entry in entries:
         if entry.is_symlink():
             raise _vendor_refusal(f"{vendor}/{entry.name} is a link", workspace, vendor)
@@ -826,24 +831,31 @@ def member_candidates(workspace, patterns, exclude=()):
         for part in pattern.replace("\\", "/").split("/"):
             if part in ("", "."):
                 continue
+            # Each directory read lazily, within a bound of entries, the build's stop checked
+            # at each (stopping.listed).
+            too_many = (
+                f"Workspace member pattern `{pattern}` matches more directories than Peeky checks"
+            )
             if part == "**":
-                deeper = []
+                deeper, limit = [], [MAX_PACKAGES * 256]
                 for base in current:
-                    for directory, folders, _ in os.walk(base):
-                        deeper.append(Path(directory))
+                    if not base.is_dir():
+                        continue
+                    deeper.append(base)
+                    for entry in _stopping.walked(base, limit, too_many):
+                        if entry.is_dir(follow_symlinks=False):
+                            deeper.append(Path(entry.path))
                         if len(deeper) > MAX_PACKAGES * 16:
-                            raise ValueError(
-                                f"Workspace member pattern `{pattern}` matches more directories "
-                                "than Peeky checks"
-                            )
+                            raise ValueError(too_many)
                 current = deeper
             elif _GLOB.search(part):
+                limit = [MAX_PACKAGES * 256]
                 current = [
-                    base / name
+                    base / entry.name
                     for base in current
                     if base.is_dir()
-                    for name in sorted(os.listdir(base))
-                    if fnmatch.fnmatchcase(name, part)
+                    for entry in _stopping.listed(base, limit, too_many)
+                    if fnmatch.fnmatchcase(entry.name, part)
                 ]
             else:
                 current = [base / part for base in current]
@@ -1300,8 +1312,8 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
     metadata --no-deps --format-version 1`, as parsed JSON: the members) and ``graph``:
     Cargo's unit graph of the exact command the build runs (its packages, features,
     targets and profiles). Every path package that command compiles, and every member,
-    must be inside ``root``. Each analysed package must be a member of edition 2021 or
-    2024, compiled by that command at opt-level 0 (check_profile), and no procedural
+    must be inside ``root``. Each analysed package must be a member of edition 2018, 2021
+    or 2024, compiled by that command at opt-level 0 (check_profile), and no procedural
     macro; the run's target is the command's root. ``cargo_version`` names Cargo where
     its output is not what Peeky reads (check_metadata, check_graph)."""
     root = Path(root).resolve(strict=True)
@@ -1396,6 +1408,7 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
         raise ValueError(f"Peeky can't tell apart two path packages named `{twice[0]}`")
     by_name = {package.name: (package_key, package) for package_key, package in local.items()}
     run = _run_target(config.run, graph, units, local)
+    check_features(config.features, units[graph["roots"][0]], units, local)
     command = "cargo " + " ".join(_selection(run[0].name, run[1], config.features))
     analysed = []
     for name in config.analyse:
@@ -1433,9 +1446,9 @@ def read_workspace(root, config, preflight, metadata, graph, cargo_version=""):
         editions = {package.edition, *(unit["target"]["edition"] for unit in own)}
         if outside := sorted(editions - set(EDITIONS)):
             raise ValueError(
-                f"Peeky analyses only editions 2021 and 2024: package `{name}` is edition "
-                f"{outside[0]}. Analyse another package, or move this one to edition 2021 "
-                "(`cargo fix --edition`)"
+                f"Peeky analyses only editions 2018, 2021 and 2024: package `{name}` is "
+                f"edition {outside[0]}. Analyse another package, or move this one to edition "
+                "2018 (`cargo fix --edition`)"
             )
         for unit in own:
             check_profile(name, unit)
@@ -1485,6 +1498,38 @@ def _crate_names(units):
             if isinstance(each.get("extern_crate_name"), str):
                 found.add(each["extern_crate_name"])
     return tuple(sorted(found))
+
+
+def check_features(features, root, units, local):
+    """Refuse where Cargo's unit graph builds without a feature ``features`` names: a plain
+    one in the graph's root unit's own (``root``: the run's); `package/feature` in the
+    workspace's package so named, by its exact package ID (``local``: {package ID:
+    Package}), or else in the dependency the root unit calls so (its `extern_crate_name`).
+    A name neither gives is Cargo's to judge. Under resolver 1, a workspace whose root is a
+    package gives `--features` to that package, not to the one `-p` selects, and builds the
+    selected one without them, saying nothing."""
+    run = package_id(root["pkg_id"])[2]
+    for feature in features:
+        package, _, name = feature.rpartition("/")
+        if not package:
+            compiled = [root]
+        elif ids := {key for key, each in local.items() if each.name == package}:
+            compiled = [unit for unit in units if unit["pkg_id"] in ids]
+        else:
+            crate = package.replace("-", "_")
+            compiled = [
+                units[each["index"]]
+                for each in root.get("dependencies") or ()
+                if each.get("extern_crate_name") == crate
+            ]
+        if compiled and not any(name in unit["features"] for unit in compiled):
+            named = package or run
+            raise ValueError(
+                f'Peeky builds only with the features "features" names, and Cargo would build '
+                f"`{named}` without `{name}`. Under resolver 1, Cargo gives --features to the "
+                "package in the workspace's root directory, not to the one it builds. Name it "
+                f'`{named}/{name}`, or set resolver = "2" in the workspace\'s Cargo.toml'
+            )
 
 
 def _run_target(run, graph, units, local):
