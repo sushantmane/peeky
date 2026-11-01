@@ -838,6 +838,36 @@ def test_an_unknown_cargo_variable_is_refused_and_a_known_inherited_one_kept(tmp
             rb._build_inputs(fake_shape(tmp_path), root, messages, env, {}, LATER, None, 6)
 
 
+def test_cargos_configuration_in_its_environment_is_what_peeky_gives_cargo(tmp_path):
+    # portable-atomic's build script watches CARGO_BUILD_RUSTFLAGS and
+    # CARGO_TARGET_<triple>_RUSTFLAGS. Cargo 1.96 sets neither for a build script, whatever
+    # its configuration files say, and passes on its own environment's: Peeky's, which has
+    # none (#482).
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": ""})
+    names = (
+        "CARGO_BUILD_RUSTFLAGS",
+        "CARGO_BUILD_JOBS",
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+        "CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTDOCFLAGS",
+        "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER",
+    )
+    output = "".join(f"cargo::rerun-if-env-changed={name}\n" for name in names)
+    output += "cargo::rerun-if-changed=build.rs\n"
+    messages = [build_script_run(tmp_path, "util", output)]
+    found = rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None, 6)
+    assert [(each["name"], each["value"], each["from"]) for each in found["env"]] == [
+        (name, None, "launch") for name in sorted(names)
+    ]
+    # Another configuration variable is Cargo's to set, refused as before.
+    for name in ("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER", "CARGO_TARGET_TMPDIR"):
+        messages = [
+            build_script_run(tmp_path / name, "util", f"cargo::rerun-if-env-changed={name}\n")
+        ]
+        with pytest.raises(ValueError, match=f"of {name}, which it says it reads"):
+            rb._build_inputs(fake_shape(tmp_path), root, messages, {}, {}, LATER, None, 6)
+
+
 @pytest.mark.parametrize("each", ["../schema.txt", ".config/schema.txt"])
 def test_an_input_deleted_while_cargo_ran_is_refused(tmp_path, each):
     import time

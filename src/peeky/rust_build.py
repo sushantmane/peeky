@@ -975,6 +975,13 @@ _CARGO_INHERITED = re.compile(
     r"CARGO_(?:HOME|TARGET_DIR|INCREMENTAL|NET_OFFLINE|TERM_COLOR|PROFILE_[A-Z0-9_]+|"
     r"PRIMARY_PACKAGE|CRATE_NAME)"
 )
+# Cargo's configuration given in its environment (`CARGO_BUILD_RUSTFLAGS`,
+# `CARGO_TARGET_<triple>_RUSTFLAGS`, which portable-atomic's build script watches): Cargo
+# 1.96 sets none of them for a build script, whatever its configuration files say, and
+# passes on its own environment's unchanged. So each is what Peeky gives Cargo (#482).
+_CARGO_PASSED = re.compile(
+    r"CARGO_BUILD_[A-Z0-9_]+|CARGO_TARGET_[A-Z0-9_]+_(?:RUSTFLAGS|RUSTDOCFLAGS|RUNNER)"
+)
 # Cargo's `CARGO_PKG_*` of a manifest's `[package]` fields (as written, else empty).
 _PACKAGE_FIELDS = {
     "AUTHORS": "authors",
@@ -1158,7 +1165,8 @@ def _script_value(name, package_id, shape, env, jobs_):
     the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph; the
     build's `rustc --print cfg` for `CARGO_CFG_*`; the package's manifest and place for
     `CARGO_PKG_*` and `CARGO_MANIFEST_*`; Peeky's own rustflags; else what Peeky gives
-    Cargo, which Cargo passes on. Refused for one Cargo sets otherwise, whose value Peeky
+    Cargo, which Cargo passes on (Cargo's configuration in its environment too:
+    _CARGO_PASSED). Refused for one Cargo sets otherwise, whose value Peeky
     doesn't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`, `CARGO_PKG_README`, which a
     file's presence decides, `CARGO_CFG_DEBUG_ASSERTIONS`)."""
     source, directory, package, version = rust_workspace.package_id(package_id)
@@ -1215,7 +1223,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     elif place is not None and name == "CARGO_MANIFEST_LINKS":
         found = _manifest_field(shape, place, "links")
         found = None if found == "" else found
-    elif name == "RUSTC" or _CARGO_INHERITED.fullmatch(name) or not _CARGO_SETS.fullmatch(name):
+    elif (
+        name == "RUSTC"
+        or _CARGO_INHERITED.fullmatch(name)
+        or _CARGO_PASSED.fullmatch(name)
+        or not _CARGO_SETS.fullmatch(name)
+    ):
         found, how = env.get(name), "launch"
     if found is ...:
         raise ValueError(

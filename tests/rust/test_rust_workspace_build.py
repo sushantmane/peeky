@@ -685,3 +685,40 @@ def test_a_procedural_macros_generated_source_is_scanned_too(workspace, capsys, 
         f"`{name}`'s debug/build/{name}-"
     ), message
     assert "/out/generated.rs (generated) mentions RUSTC_BOOTSTRAP" in message
+
+
+@pytest.mark.timeout(300)
+def test_cargos_configuration_a_build_script_watches_is_peekys_environments(workspace, capsys):
+    # portable-atomic's build script (coreutils') watches CARGO_BUILD_RUSTFLAGS and
+    # CARGO_TARGET_<triple>_RUSTFLAGS. Cargo sets neither for a build script, and passes on
+    # its own environment's: Peeky's has none, so a build script reads none (#482).
+    (workspace / "util/build.rs").write_text(
+        "fn main() {\n"
+        "    let target = std::env::var(\"TARGET\").unwrap().replace(['-', '.'], \"_\");\n"
+        '    let named = format!("CARGO_TARGET_{}_RUSTFLAGS", target.to_uppercase());\n'
+        '    for name in ["CARGO_BUILD_RUSTFLAGS", named.as_str()] {\n'
+        '        println!("cargo::rerun-if-env-changed={name}");\n'
+        "        let seen = std::env::var(name).is_ok();\n"
+        '        println!("cargo::rustc-env={}={seen}", &name[..name.len() - 10]);\n'
+        "    }\n"
+        "}\n"
+    )
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\npub fn seen() -> &\'static str {\n    env!("CARGO_BUILD")\n}\n'
+    )
+    main = workspace / "app/src/main.rs"
+    main.write_text(
+        main.read_text().replace('println!("{x}");', 'println!("{x} {}", util::seen());')
+    )
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    shown = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
+    assert shown.stdout == "2 false\n"
+    _, manifest = manifest_of(summary)
+    recorded = [
+        (each["name"], each["value"], each["from"]) for each in manifest["build_inputs"]["env"]
+    ]
+    assert recorded[0] == ("CARGO_BUILD_RUSTFLAGS", None, "launch")
+    assert recorded[1][0].startswith("CARGO_TARGET_") and recorded[1][1:] == (None, "launch")
+    read(*probe(capsys, workspace, config))
