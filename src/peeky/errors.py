@@ -48,11 +48,15 @@ from peeky.textlines import split_lines
 # 14: a probe or session on a Rust workspace without a current Peeky build (`peeky build`)
 # is refused with BUILD_REQUIRED, which names the build command; an agent builds, then
 # repeats the request. A protocol 13 client would take an unknown code for another failure.
-# 15: a worker on a Rust workspace builds it for a remote client (`build`, from its own
+# 15: a worker's `--native-config` may name a `binary` the project built. `version` says
+# so (`sources`: `{"kind": "binary", "binary": ...}`), and the `inputs` operation lists the
+# files its judged units name, once per binary. A client checks the binary is the one it
+# names, and a session keeps the names compared at its start.
+# 16: a worker on a Rust workspace builds it for a remote client (`build`, from its own
 # `--rust-config`), compares every workspace file the build compiled and its build scripts
 # read (never `.git`), its manifests, Cargo configuration and vendored checksum files with
-# the client's, and probes it; a protocol 14 worker refuses a remote client's workspace probe.
-PROTOCOL_VERSION = 15
+# the client's, and probes it; a protocol 15 worker refuses a remote client's workspace probe.
+PROTOCOL_VERSION = 16
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -948,11 +952,12 @@ def _refusal(code):
 
 
 class Refused(ValueError):
-    """A refusal whose code is fixed: the selector it quotes never decides it."""
+    """A refusal whose code is fixed: the selector it quotes never decides it. ``hint``:
+    what to do, where the code's usual hint doesn't fit this refusal."""
 
-    def __init__(self, code, message):
+    def __init__(self, code, message, hint=None):
         super().__init__(message)
-        self.code = code
+        self.code, self.hint = code, hint
 
 
 class UnplacedStop(ValueError):
@@ -1027,6 +1032,8 @@ def _classify(exc, session_closed, secret=None):
         code, (hint, retryable) = exc.code, _refusal(exc.code)
         if code == "MUTATION_REJECTED":
             hint = _mutation_hint(message)
+        if isinstance(getattr(exc, "hint", None), str):
+            hint = exc.hint
         return {
             "code": code,
             "message": message[: _limit(MESSAGE_CHARS)],

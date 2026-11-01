@@ -154,6 +154,7 @@ the same keys as `--config`. Its paths are relative to `--root`.
 | Target | Worker flag | The config names |
 | --- | --- | --- |
 | C or C++ | `--native-config` | `sources`, `headers`, `compiler`, `adapter`, `dwarfdump`; `"language": "cpp"` for C++ |
+| A binary your project built | `--native-config` | `binary`, `compiler`, `adapter`, `dwarfdump`, and on macOS `dsymutil` ([below](#a-binary-your-project-built)) |
 | A Cargo crate | `--rust-config` | `sources`, `tests`, and every tool: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump` |
 | A Rust workspace | `--rust-config` | `analyse`, `run`, `vendor` and the rest of [its configuration](lang/rust-cookbook.md#set-up-the-workspace), and every tool |
 
@@ -196,6 +197,42 @@ not in that copy. Other paths are marked `worker:` ([Paths in results](#paths-in
 **In a container,** LLDB calls `personality(2)` as it launches the program, and Docker's default
 seccomp profile refuses that call (`personality set failed`). So run the container with
 `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`.
+
+### A binary your project built
+
+A worker whose `--native-config` names `binary` debugs a binary built on its host, where it is
+([C and C++](lang/c-cpp.md#a-binary-your-project-built)). It builds nothing. On your machine, name
+the same binary with `--binary`, from a checkout of the sources. You don't need the binary there.
+
+```
+$ peeky probe . --binary prog --at src/util.c:3 --capture doubled,x --worker http://127.0.0.1:18799 --no-save
+hit  phase     line  function  selector  type  value
+1    observed  3     scale     doubled   int   4  [settable]
+1    observed  3     scale     x         int   2  [settable]
+status: completed  hits: 1  seconds: 0.955  max pause: 23.0 ms
+output:
+  2 5 30
+$ peeky session start . --binary prog --at src/util.c:3 --worker http://127.0.0.1:18799
+session default (c, remote): state: stopped at src/util.c:3 in scale, hit 1 (paused 0.0 s)
+```
+
+- **The files compared** are those under the root that the binary's judged units name, as its
+  debug information records them. The worker lists them when a client asks (`inputs`), once per
+  binary, and compares them once it has judged the units, before the debugger starts. Headers outside the root aren't compared with
+  yours: the worker checks each against its MD5. So values reflect the worker's system headers,
+  as the binary was built with them, and those may differ from yours.
+- **A binary the worker refuses,** such as one without debug information, is refused before the
+  probe or session is sent: `The worker refuses its binary: …`, with the worker's code and reason.
+- **At most 4096 files and 16 MiB in all,** counted before any of them is read. A binary whose units
+  name more is refused, with `UNSUPPORTED`: `The worker refuses its binary: prog's units name 5,000 files under the target
+  directory. A worker compares at most 4,096 files, 16 MiB in all, with a remote client's
+  copies: run Peeky on the binary's own host`.
+- **One listing at a time.** While the worker lists the files for one client, another waits for
+  that listing, or is `BUSY` after 40 s: `The worker is still listing prog's files for another
+  client: nothing ran`. Retry it.
+- **Another binary is refused:** `The worker debugs the binary prog, which its configuration
+  names, not build/prog: pass --binary prog`. So is `--binary` on a worker that names no binary.
+- A request names no tool, path or flag. The worker runs only what its own configuration names.
 
 ### A Rust workspace
 
@@ -301,6 +338,7 @@ and sends the hashes with the request.
 | Python | every `.py` file under the root, except in virtual environments (a directory holding `pyvenv.cfg`) |
 | Java, launched or attached | the config's `sources` |
 | C and C++ | the config's `sources` and `headers` |
+| A binary your project built | the files under the root that its judged units name, at most 4096 and 16 MiB in all ([details](#a-binary-your-project-built)) |
 | Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
 | A Rust workspace | the build's manifests, `Cargo.lock` and Cargo configuration, every workspace file it compiled, and each vendored copy's `.cargo-checksum.json` ([A Rust workspace](#a-rust-workspace)) |
 
@@ -320,6 +358,8 @@ and sends the hashes with the request.
 
 - **C, C++, Rust and launched Java:** the build's own copies are compared again, after the build
   and before the debugger starts. So a source changed in between is refused, and doesn't run.
+- **A binary your project built:** its files are compared once the worker has judged its units,
+  before the debugger starts. The worker hashes them again, with the binary, before every operation.
 - **Python:** the worker hashes its `.py` files again before and after every operation that
   resumes the program or returns a stop or values: `wait` (and so `session start`), `continue`,
   `step`, `inspect` (and so `get`), `expand`, `preview`, `set` and `report`. A change closes the
@@ -377,7 +417,7 @@ as compared, and says the rest of that directory isn't.
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 15.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
+**Protocol 16.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
 Protocol 4 adds restores (`@before`). Protocol 5 withholds what a C or C++ pointer one past an
 array's end points at, which a protocol 4 worker reads as a value. Protocol 6 marks what is read
 through a C or C++ pointer `unproven` where Peeky can't show it points at a live object. A
@@ -389,18 +429,20 @@ reads a key of a GCC build's unordered container past its first 256 entries. Pro
 token. Protocol 12 runs a Python program on the worker root's virtual environment, or the
 worker's `--python`, and names it. Protocol 13 runs pytest, as `python -m pytest` does
 (`--run-module pytest`). Protocol 14 adds `BUILD_REQUIRED`, for a Rust workspace without a
-current Peeky build. Protocol 15 probes a [Rust workspace](#a-rust-workspace) from another host.
+current Peeky build. Protocol 15 debugs a [binary your project built](#a-binary-your-project-built)
+from another host. Protocol 16 probes a [Rust workspace](#a-rust-workspace) from another host.
 Both hosts need the same protocol. A client and a worker of different protocols refuse
 each other:
 
 - A client refuses a worker of another protocol before sending anything but a `hello`, which
-  carries no token: `Worker speaks protocol 14, this client 15: install the same Peeky version on
+  carries no token: `Worker speaks protocol 15, this client 16: install the same Peeky version on
   both hosts`. That holds for a probe and a `session start`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 15: `Client
-  speaks protocol 14, this worker 15: install the same Peeky version on both hosts`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 16: `Client
+  speaks protocol 15, this worker 16: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
-- A remote session keeps its protocol and its sources' digest. Every later `session` command checks
-  the worker's protocol again. A session started with another protocol is refused: start it again.
+- A remote session keeps its protocol, its sources' digest, and the names of the files compared.
+  Every later `session` command checks the worker's protocol again, and hashes those files. A
+  session started with another protocol is refused: start it again.
 
 
 ### Why `ExitOnForwardFailure=yes`

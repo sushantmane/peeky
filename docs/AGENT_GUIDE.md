@@ -63,7 +63,7 @@ Gradle dependencies: `{"sources": ["pkg/Main.java"], "main_class": "pkg.Main"}`.
 **C or C++:** `peeky probe DIR --at file.c:LINE --capture a,b.c -- ARGS`. Peeky builds the `.c` or
 `.cpp` files of one directory itself, as C11 or C++17, with the headers beside them, and no
 flags or libraries. With a project's own build (Make, CMake, autotools), build with clang
-`-O0 -g -gdwarf-5 -grecord-command-line`, then add `--binary ./prog`.
+`-O0 -g -gdwarf-5 -grecord-command-line`, then add `--binary ./prog` (sessions too).
 
 **Rust:** `peeky probe CRATE --at src/main.rs:LINE --capture a,b.c` for a `cargo new` crate. A crate
 with dependencies, or a workspace: run `cargo vendor --locked vendor`, name what to analyse and run

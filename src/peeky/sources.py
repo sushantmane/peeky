@@ -4,9 +4,11 @@ worker compare before anything launches.
 The worker's trusted target names them: Java's `sources`; C and C++ `sources` and
 `headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`; a Rust workspace's build's
 manifests, lockfile and configuration, every workspace file it compiled, and what its build
-scripts read. A Python program may import any `.py` file under the root, so for Python they are
-all of those, except in virtual environments (a directory holding `pyvenv.cfg`: installed
-packages). Both sides must hold the same set, file for file.
+scripts read. A binary the project built (native_binary.BinaryTarget) names the files its
+judged units read, under the root, as its debug information records them. A Python program may
+import any `.py` file under the root, so for Python they are all of those, except in virtual
+environments (a directory holding `pyvenv.cfg`: installed packages). Both sides must hold the
+same set, file for file.
 
 A Rust workspace's are compared by their structure too (``structured``): each file's kind, the
 links on its way and what they say, and each directory a build script watches entry by entry,
@@ -127,9 +129,13 @@ def python_manifest_digest(manifest):
 
 def declared(adapter, root=None):
     """The names the worker's trusted target reads, or None for a Python program. A Rust
-    workspace's are its current build's under ``root`` (``compared_names``)."""
+    workspace's are its current build's under ``root`` (``compared_names``); a binary
+    target's are those its units name under ``root`` (BinaryTarget.remote_inputs), or its
+    refusal."""
     if (names_for := getattr(adapter, "compared_names", None)) is not None:
         return tuple(dict.fromkeys(str(name) for name in names_for(root)))
+    if (listed := getattr(adapter, "remote_inputs", None)) is not None:
+        return tuple(listed(root))
     names = getattr(adapter, "verification_inputs", None)
     if names is None:
         names = getattr(adapter, "sources", None)  # an attached JVM's declared sources
@@ -139,7 +145,17 @@ def declared(adapter, root=None):
 def describe(adapter, root=None):
     """The worker's `version` field that tells a client which sources to hash: for a Rust
     workspace, the directories compared entry by entry too (``trees``: {directory:
-    "exact"}), each source by its structure (``structured``)."""
+    "exact"}), each source by its structure (``structured``). A binary target's names only
+    its binary, by its name under ``root``: listing its files reads the binary's debug
+    information, which only the `inputs` operation does (listed)."""
+    if getattr(adapter, "remote_inputs", None) is not None:
+        from peeky.native_binary import binary_name
+
+        try:
+            shown = binary_name(root, adapter.binary)
+        except ValueError:
+            shown = adapter.binary
+        return {"kind": "binary", "binary": shown}
     names = declared(adapter, root)
     if names is None:
         return {"kind": "python"}
@@ -346,6 +362,35 @@ def structured(root, names, trees=None, contents=None, side="the worker host"):
     return found
 
 
+def listed(adapter, root):
+    """The worker's `inputs` answer: a binary target's files, as `version` gives other
+    targets' (``{"kind": "declared", "names": [...], "binary": ...}``), listed once per
+    binary (BinaryTarget.remote_inputs). A binary the worker refuses is refused, saying so:
+    a client's request is never what is wrong."""
+    if getattr(adapter, "remote_inputs", None) is None:
+        return describe(adapter, root)
+    from peeky.errors import Refused, classify
+    from peeky.native_binary import binary_name
+
+    try:
+        shown = binary_name(root, adapter.binary)
+        names = declared(adapter, root)
+    except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
+        error = classify(exc, session_closed=False)
+        if error["code"] == "BUSY":
+            raise
+        hint = error["hint"]
+        if error["code"] == "INVALID_REQUEST":
+            hint = (
+                "Nothing ran. Fix it on the worker's host: its own configuration names the "
+                "binary and its tools."
+            )
+        raise Refused(
+            error["code"], f"The worker refuses its binary: {error['message']}", hint
+        ) from None
+    return {"kind": "declared", "names": list(names), "binary": shown}
+
+
 def files(root, names):
     """{name: sha256, or None where the file is missing, unreadable or not a regular
     file}."""
@@ -457,7 +502,8 @@ def worker_sources(adapter, root):
 
 
 def client_sources(root, info):
-    """{name: sha256} of the local copies of the sources the worker says it reads."""
+    """{name: sha256} of the local copies of the sources the worker says it reads (for a
+    binary target, as its `inputs` answer lists them)."""
     if not isinstance(info, dict) or info.get("kind") not in ("python", "declared"):
         raise ValueError(
             "The worker does not say which sources it reads, so they cannot be compared: "

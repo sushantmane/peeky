@@ -75,6 +75,14 @@
   `-march=native`, for a `-D` that names a probe or may paste one, and where one file is built
   twice with different commands. `vfork` returns twice, as setjmp does. Startup code whose name
   a program may use counts as the program's unless its bytes are the toolchain's.
+- **C and C++: a binary your project built, in a session and on a worker (protocol 15).**
+  `peeky session start . --binary ./prog --at src/x.c:LINE` runs a session on it. A worker's
+  `--native-config` may name `binary`: it builds nothing, and a request names no tool, path or
+  flag. A client names the same binary with `--binary`, and its copies of the files the judged
+  units name are compared, at most 4096 files and 16 MiB in all. A remote session keeps the names
+  compared at its start. A frame in a shared library, built from sources under the root or not, is
+  `UNSUPPORTED`, naming the library, and the session goes on. It was `DEBUGGER_ERROR`, or a stop
+  in the library failed.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and
@@ -103,7 +111,7 @@
   code is unknown code, taken as sound: a change it may keep a copy of is refused, naming the
   call, its line and its crate. So is one the crate's own code may hand on to it. A dependency's
   frame is read as a library's. The source scans read the crate as rustc expands it.
-- **A Rust workspace through a worker (protocol 15; ADR 0008, phase 2):** a worker started with a
+- **A Rust workspace through a worker (protocol 16; ADR 0008, phase 2):** a worker started with a
   workspace's `--rust-config` builds it on request (`peeky build . --worker URL`, or `--build`),
   from its own configuration only. It compares every workspace file the build compiled, the
   binary's included, what local build scripts read, its manifests, lockfile, Cargo configuration

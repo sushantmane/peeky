@@ -217,7 +217,7 @@ transitions. A future event stream may replace polling, without changing what th
 ## HTTP contract
 
 Requests are JSON objects with `Authorization: Bearer <token>`. Each also names its client's
-protocol in `X-Peeky-Protocol: 15`. The worker refuses any request but `version` and `hello` that
+protocol in `X-Peeky-Protocol: 16`. The worker refuses any request but `version` and `hello` that
 names another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protocol-version)).
 
 - The worker binds only to `127.0.0.1`. It refuses a request whose `Host` isn't 127.0.0.1, or
@@ -235,13 +235,13 @@ names another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protoc
 and the error codes:
 
 ```
-$ curl -s -i -X POST -H 'Authorization: Bearer …' -H 'X-Peeky-Protocol: 15' -d '{}' \
+$ curl -s -i -X POST -H 'Authorization: Bearer …' -H 'X-Peeky-Protocol: 16' -d '{}' \
     http://127.0.0.1:18766/version
 HTTP/1.0 200 OK
 ...
-X-Peeky-Protocol: 15
+X-Peeky-Protocol: 16
 ...
-{"protocol": 15, "sources": {"kind": "python"}, "root": "/srv/app", "operations": ["breakpoints", "build", "close", "continue", "expand", "hello", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUILD_FAILED", "BUILD_REQUIRED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "NO_STOP", "PROGRAM_CRASHED", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
+{"protocol": 16, "sources": {"kind": "python"}, "root": "/srv/app", "operations": ["breakpoints", "build", "close", "continue", "expand", "hello", "inputs", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUILD_FAILED", "BUILD_REQUIRED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "NO_STOP", "PROGRAM_CRASHED", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
 ```
 
 `version` is answered whatever `X-Peeky-Protocol` a request names, or none. Any other request
@@ -250,11 +250,11 @@ must name the worker's protocol: otherwise it is refused with `INVALID_REQUEST` 
 Without the token, the reply is `401`:
 
 ```
-{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Set PEEKY_WORKER_TOKEN to the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 15}
+{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Set PEEKY_WORKER_TOKEN to the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 16}
 ```
 
 `POST /hello` needs no token. It takes `{"nonce": HEX}`, 32 random bytes from the client. The
-answer is `{"protocol": 15, "proof": HEX}`: HMAC-SHA256, keyed by the token, of the label
+answer is `{"protocol": 16, "proof": HEX}`: HMAC-SHA256, keyed by the token, of the label
 `peeky worker hello v1` and a NUL byte, then the nonce. A client checks the proof before it sends
 the token or any request ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundaries)).
 
@@ -272,8 +272,9 @@ the token or any request ([THREAT_MODEL.md](THREAT_MODEL.md#assets-and-boundarie
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |
 | probe | one stateless request: `at`, `capture`, optional `set` and the probe's other options ([ADR 0004](adr/0004-stateless-probes.md)) | the probe's result |
-| version | none | protocol version, the sources a client hashes, the worker's root, operations, error codes |
-| build | optional `request` (a running build's id), `wait` (seconds, at most 30); a Rust workspace's worker only, from its own `--rust-config` (protocol 15) | the build's summary, its error, or `{"status": "building", "build": id}` while it runs |
+| version | none | protocol version, the sources a client hashes (a binary target's: its binary, protocol 15), the worker's root, operations, error codes |
+| inputs | none; a binary target's worker (protocol 15) | the files under the root its judged units name, which a client hashes: listed once per binary, one listing at a time (`BUSY` after 40 s) |
+| build | optional `request` (a running build's id), `wait` (seconds, at most 30); a Rust workspace's worker only, from its own `--rust-config` (protocol 16) | the build's summary, its error, or `{"status": "building", "build": id}` while it runs |
 | hello | `nonce`; no token | `protocol` and `proof` only |
 | shutdown | none | the worker closes its session and stops |
 

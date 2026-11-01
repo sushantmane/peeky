@@ -231,12 +231,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 ## A binary your project built
 
 - Build with clang `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux a build ID. Then
-  `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`. Recipes for Make, CMake and
-  autotools: [C and C++ 7.1](c-cpp-cookbook.md#debug-a-binary-your-project-built).
-- Or name it in a `--config`: `{"binary": "jq", "compiler": "/usr/bin/clang-18", …}`, without
-  `sources`. Either path is relative to the target directory, and inside it.
-- Peeky runs the binary where it is, and writes nothing beside it. On macOS, it makes the dSYM
-  in a directory of its own.
+  `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`. Recipes per build system:
+  [C and C++ 7.1](c-cpp-cookbook.md#debug-a-binary-your-project-built).
+- Or name it in a `--config`: `{"binary": "jq", …}`, without `sources`. Either path is relative to
+  the target directory, and inside it. Peeky runs the binary there, and writes nothing beside it.
 - `peeky describe . --binary ./jq` lists each unit, judged or not and why:
   `src/fast.c: built with -O2 (its recorded flags)`.
 - A unit is judged when clang built it at `-O0` without LTO, with DWARF 5 and its command line
@@ -256,7 +254,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - A unit's text is its preprocessing replayed, where each header it reads has an MD5 in its line
   table (on Linux, `-fdebug-macro`; rarely on macOS). Elsewhere text rules withhold, saying why.
 - Any call may return twice where a unit isn't read or holds `asm`, or no unit covers code,
-  unless a config names those that do (`"returns_twice": ["nlr_push"]`). Sessions and edits don't work on a binary yet.
+  unless a config names those that do (`"returns_twice": ["nlr_push"]`).
+- `session start` and a worker take `--binary` too
+  ([REMOTE](../REMOTE.md#a-binary-your-project-built)). A shared library's frame is
+  `UNSUPPORTED`, naming the library, and the session goes on.
 
 ## Builds
 
