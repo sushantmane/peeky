@@ -1793,6 +1793,24 @@ def test_code_whose_brackets_do_not_pair_up_is_not_read(text, why):
     assert (code_only(text) is None) is (why is not None)
 
 
+@pytest.mark.parametrize(
+    "text, line",
+    [
+        ('m!(cr"a");', 1),
+        ('fn f() {}\nm!(cr#"a"#);', 2),
+        # Not one: a C string, a raw string, a word ending in `cr`, and inside other literals.
+        ('m!(c"a"); m!(r"a"); m!(br"a"); m!(xcr"a");', None),
+        ('// cr"a"\nlet s = "cr\\"";\n/* cr#"x"# */', None),
+    ],
+)
+def test_a_raw_c_string_is_found_where_peeky_lexes_one(text, line):
+    # Rust 2021 lexes `cr"…"` as a raw C string, as Peeky does; edition 2018 lexes `cr` and an
+    # ordinary string, whose escapes may end it elsewhere (rust_workspace_session).
+    from peeky.rust_lexer import raw_c_string
+
+    assert raw_c_string(text) == line
+
+
 BOXED = "std::boxed::Box<Pt>"
 
 
@@ -4873,3 +4891,133 @@ def test_a_split_signatures_visibility_qualifiers_abi_and_comments_are_read_toke
         "pub fn g(",
     ):
         assert not continues(opening), opening
+
+
+# `move || p.a as usize + p.name.len()` at edition 2021, as rustc 1.96 dumps it: two captures
+# of `p` (the annotation's last item), one printed.
+TWO_CAPTURES = """// MIR for `two` after PreCodegen
+
+fn two(_1: Named) -> usize {
+    debug p => _1;                       // in scope 0 at src/lib.rs:5:12: 5:13
+    let mut _0: usize;                   // return place in scope 0 at src/lib.rs:5:25: 5:30
+    let _2: {closure@src/lib.rs:6:13: 6:20};  // in scope 0 at src/lib.rs:6:9: 6:10
+    let mut _3: &{closure@src/lib.rs:6:13: 6:20}; // in scope 0 at src/lib.rs:7:5: 7:6
+    let mut _4: ();                      // in scope 0 at src/lib.rs:7:5: 7:8
+    scope 1 {
+        debug f => _2;                   // in scope 1 at src/lib.rs:6:9: 6:10
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/lib.rs:6:9: 6:10
+        _2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32) }; // scope 0 at src/lib.rs:6:13: 6:48
+                                         // closure
+                                         // + def_id: DefId(0:10 ~ lib[4cf1]::two::{closure#0})
+                                         // + args: [
+                                         //     i8,
+                                         //     Binder { value: extern "RustCall" fn(()) -> usize, bound_vars: [] },
+                                         //     (u32, std::string::String),
+                                         // ]
+        StorageLive(_3);                 // scope 1 at src/lib.rs:7:5: 7:6
+        _3 = &_2;                        // scope 1 at src/lib.rs:7:5: 7:6
+        StorageLive(_4);                 // scope 1 at src/lib.rs:7:5: 7:8
+        _4 = ();                         // scope 1 at src/lib.rs:7:5: 7:8
+        _0 = <{closure@src/lib.rs:6:13: 6:20} as Fn<()>>::call(move _3, move _4) -> [return: bb1, unwind: bb3]; // scope 1 at src/lib.rs:7:5: 7:8
+                                         // mir::ConstOperand
+                                         // + span: src/lib.rs:7:5: 7:6
+                                         // + const_: Const { ty: for<'a> extern "rust-call" fn(&'a {closure@src/lib.rs:6:13: 6:20}, ()) -> <{closure@src/lib.rs:6:13: 6:20} as FnOnce<()>>::Output {<{closure@src/lib.rs:6:13: 6:20} as Fn<()>>::call}, val: Value(<{closure@src/lib.rs:6:13: 6:20} as Fn<()>>::call) }
+    }
+
+    bb1: {
+        StorageDead(_4);                 // scope 1 at src/lib.rs:7:7: 7:8
+        StorageDead(_3);                 // scope 1 at src/lib.rs:7:7: 7:8
+        drop(_2) -> [return: bb2, unwind: bb4]; // scope 0 at src/lib.rs:8:1: 8:2
+    }
+
+    bb2: {
+        StorageDead(_2);                 // scope 0 at src/lib.rs:8:1: 8:2
+        return;                          // scope 0 at src/lib.rs:8:2: 8:2
+    }
+
+    bb3 (cleanup): {
+        drop(_2) -> [return: bb4, unwind terminate(cleanup)]; // scope 0 at src/lib.rs:8:1: 8:2
+    }
+
+    bb4 (cleanup): {
+        resume;                          // scope 0 at src/lib.rs:5:1: 8:2
+    }
+}
+"""
+
+
+def _built(text):
+    from peeky.rust_mir import parse_body
+
+    body = parse_body(text)
+    return body, [code for code, _, _ in body.blocks[0].statements if " = {closure@" in code]
+
+
+def test_a_closure_the_mir_prints_fewer_captures_of_is_an_uncertainty_of_its_own():
+    # rustc prints one capture per variable it mentions, so `p.name`'s move was missing, and
+    # `p.name` read as `p`'s own value from memory the closure had freed (#465). The
+    # statement stays as rustc wrote it; what the closure may have taken, and moved, is noted.
+    built = "_2 = {closure@src/lib.rs:6:13: 6:20} { p: copy (_1.0: u32) };"
+    body, statements = _built(TWO_CAPTURES)
+    assert body.supported and statements == [built]
+    assert body.omitted == [((0, 1), frozenset({1}), frozenset({1}), 6)]
+
+    def omitted(text):
+        body = _built(text)[0]
+        assert body.supported
+        return body.omitted
+
+    tuple_ = "(u32, std::string::String),"
+    # Every capture printed (one, `(u32,)`): nothing is left out.
+    assert omitted(TWO_CAPTURES.replace(tuple_, "(u32,),")) == []
+    # What is left out moves nothing: a `Copy` value or a shared reference. It still took
+    # something.
+    for kinds in ("(u32, u32),", "(&u32, &std::string::String),", "(u32, &&mut [u8; 4]),"):
+        assert omitted(TWO_CAPTURES.replace(tuple_, kinds)) == [
+            ((0, 1), frozenset({1}), frozenset(), 6)
+        ], kinds
+    # A `&mut` left out may be a borrow of a place or a `&mut` field moved out (`Mix { a: u32,
+    # b: &mut u32 }`, `move || { m.a; *m.b += 1 }`): the type doesn't say which.
+    for kinds in (
+        "(u32, &mut u32),",
+        "(u32, &'a mut u32),",
+        "(u32, (u8, &mut u32)),",
+        "(u32, [&mut u32; 2]),",
+    ):
+        assert omitted(TWO_CAPTURES.replace(tuple_, kinds)) == [
+            ((0, 1), frozenset({1}), frozenset({1}), 6)
+        ], kinds
+    # Nor is anything moved out of a variable whose type moves nothing; a `&mut` one may be.
+    assert omitted(TWO_CAPTURES.replace("(_1: Named)", "(_1: (u32, u32))"))[0][2] == frozenset()
+    assert omitted(TWO_CAPTURES.replace("(_1: Named)", "(_1: &mut Named)"))[0][2] == frozenset({1})
+    # Without the annotation, which rustc writes for every closure and coroutine but an async
+    # closure, or one Peeky can't count from, anything may have been moved.
+    plain = "\n".join(
+        line
+        for line in TWO_CAPTURES.splitlines()
+        if not line.strip().startswith("// ") or "MIR" in line
+    )
+    assert omitted(plain)[0][2] == frozenset({1})
+    assert omitted(TWO_CAPTURES.replace(tuple_, "Unknown,"))[0][2] == frozenset({1})
+    # The nearest binding of the name in the aggregate's scope: an inner `p` shadows `_1`.
+    inner = TWO_CAPTURES.replace(
+        "        debug f => _2;",
+        "        debug p => _4;                   // in scope 1 at src/lib.rs:6:9: 6:10\n"
+        "        debug f => _2;",
+    )
+    assert omitted(inner)[0][1] == frozenset({1})
+    assert omitted(inner.replace(built + " // scope 0", built + " // scope 1"))[0][1] == frozenset(
+        {4}
+    )
+    # A name bound twice in one scope, or not at all: what it took is unknown, so the body
+    # isn't analyzed.
+    twice = TWO_CAPTURES.replace(
+        "    debug p => _1;",
+        "    debug p => _3;                       // in scope 0 at src/lib.rs:5:12: 5:13\n"
+        "    debug p => _1;",
+    )
+    assert not _built(twice)[0].supported
+    assert not _built(TWO_CAPTURES.replace("{ p: copy", "{ r: copy"))[0].supported

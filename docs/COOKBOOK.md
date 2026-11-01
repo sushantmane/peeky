@@ -4189,7 +4189,7 @@ language's own sections are in its cookbook.
 
 ### 7.1 C and C++
 
-In [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c): read, set, withheld locals, strings and changing their text, maps, what `set` checks.
+In [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c): read, set, withheld locals, strings and changing their text, maps, what `set` checks, and a binary your project built: probes, sessions, a worker, and its shared libraries' frames.
 
 ### 7.2 Rust (a Cargo crate)
 
@@ -4383,6 +4383,9 @@ hint: Sources, build outputs or tools changed; start a new session on a fresh bu
   Pass your own `--config` too ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
 - For C and C++, start the worker with `--native-config`; for Rust, with `--rust-config`. You need
   no `--config` on your machine ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)).
+- For a binary your project built, the worker's `--native-config` names it, and you name the same
+  one: `peeky probe . --binary prog --at src/util.c:3 --worker URL`. The files its judged units
+  name are compared with yours ([REMOTE.md](REMOTE.md#a-binary-your-project-built)).
 - A dropped tunnel gives `UNREACHABLE`. Reconnect and continue: the worker keeps the session.
 - To try this without a second machine, run `PEEKY_E2E_DOCKER=1 pytest tests/remote -v`. It runs
   against a Linux container, and needs Docker or OrbStack.

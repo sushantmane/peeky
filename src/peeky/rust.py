@@ -1987,6 +1987,56 @@ class _Taint(str):
     pointer_free = True
 
 
+class _OmittedTaint(str):
+    """aggregate_taint's "stale" for a local a closure built before the stop may have moved
+    part of, rustc's MIR leaving that capture out: its rows say so (``reason``)."""
+
+    def __new__(cls, reason, pointer_free=False):
+        made = super().__new__(cls, "stale")
+        made.reason, made.pointer_free = reason, pointer_free
+        return made
+
+
+def _unproven_why(session, hashed, name, line, path):
+    """Why the build's MIR doesn't prove the local ``name`` initialized at a stop on
+    ``line`` of ``path``: a closure that may have moved part of it, rustc's MIR leaving
+    that capture out (``_omitted_why``), or what may have left it so."""
+    return _omitted_why(session, hashed, name, line, path) or (
+        f"the build's MIR does not prove `{name}` initialized at this line: it may be "
+        "moved, dropped or not yet assigned around it"
+    )
+
+
+def _omitted_why(session, hashed, name, line, path, moves=True):
+    """``_omitted_text`` where a closure or async block built before a stop on ``line``
+    of ``path`` may have taken something from the local ``name`` (with ``moves``,
+    moved part of it), rustc's MIR leaving that capture out; else None."""
+    check = getattr(getattr(session, "owned", None), "omitted_captures", None)
+    if check is None or not hashed:
+        return None
+    found = check(hashed, name, line, path)
+    if not found or (moves and not found[1]):
+        return None
+    return _omitted_text(str(name).partition(" @ ")[0], found[0], found[1])
+
+
+def _omitted_text(name, lines, moved):
+    """Why Peeky can't tell what a closure or async block took from ``name``: rustc's MIR
+    leaves out some of its captures (``OwnedLocals.omitted_captures``: ``lines``, whether
+    one may have moved something out of it)."""
+    shown = [str(line) for line in lines]
+    where = (
+        f"the closure or async block on line {shown[0]}"
+        if len(shown) == 1
+        else f"the closures or async blocks on lines {_listed(shown)}"
+    )
+    return f"rustc's MIR omits some of the captures of {where}, so Peeky can't tell what it " + (
+        f"took from `{name}`: all or part of it may be moved"
+        if moved
+        else f"took from `{name}`: it may hold a copy of part of it, or a pointer into it"
+    )
+
+
 _STALE_NO_POINTER = _Taint("stale")
 
 
@@ -2083,6 +2133,8 @@ def _gap_reason(name, reasons, line):
         return f"what `{name}` points at may be dropped here, before a new value is stored there"
     if reason[0] == "unassigned":
         return f"`{name}` may not be assigned yet here"
+    if reason[0] == "omitted":
+        return _omitted_text(str(name).partition(" @ ")[0], reason[1], True)
     if reason[0] == "elsewhere":
         return (
             "the build's MIR cannot place this stop: it is in code from another file, on a line "
@@ -2515,10 +2567,16 @@ class RustSession(NativeSession):
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
         if not (hashed and proofs is not None and proofs.proven(hashed[1], name, line, path)):
+            omitted = hashed and _omitted_why(self, hashed[1], name, line, path)
             raise ValueError(
-                f"`{name}` cannot be changed at this stop: the build's MIR does not prove it "
-                "initialized here (it may be moved, dropped or not yet assigned), and a "
-                "String's buffer may then be freed memory"
+                f"`{name}` cannot be changed at this stop: "
+                + (
+                    omitted
+                    if omitted
+                    else "the build's MIR does not prove it initialized here (it may be moved, "
+                    "dropped or not yet assigned)"
+                )
+                + ", and a String's buffer may then be freed memory"
             )
         if unsafe := getattr(self, "unsafe_code", None):
             # A raw pointer, or an address kept as an integer (`s.as_ptr()
@@ -3140,7 +3198,8 @@ class RustSession(NativeSession):
                 return ("type", str(exc))
         if kept is True:
             return (
-                self._foreign_everywhere(hashed, plain, source, line)
+                self._omitted_everywhere(hashed, plain, source, line)
+                or self._foreign_everywhere(hashed, plain, source, line)
                 or self._copied_everywhere(hashed, plain, source, line, projection)
                 or self._unread_everywhere(hashed, plain, source, line, projection)
             )
@@ -3152,6 +3211,19 @@ class RustSession(NativeSession):
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
         return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
+
+    def _omitted_everywhere(self, hashed, plain, source, line):
+        """("omitted", why) where, at every place ``line`` can stop at in ``hashed``, a
+        closure or async block built before the stop may have taken something from
+        ``plain``, rustc's MIR leaving that capture out (``OwnedLocals.omitted_everywhere``);
+        else None."""
+        check = getattr(getattr(self, "owned", None), "omitted_everywhere", None)
+        if check is None or self._optimized():
+            return None
+        found = check(hashed, plain, line, str(Path(self.prepared.source_root) / source))
+        if not found:
+            return None
+        return ("omitted", _omitted_text(plain, *found))
 
     def _foreign_everywhere(self, hashed, plain, source, line):
         """("foreign", why) where, at every place ``line`` can stop at in ``hashed``, a
@@ -3289,7 +3361,7 @@ class RustSession(NativeSession):
         # (function, rule naming it as FUNCTION): the functions sharing a rule are named
         # together, each rule once (a generic's instances, a closure on the line).
         parts, registers, states = [], set(), False  # registers: the advice for each
-        statements = unread = foreign = False
+        statements = unread = foreign = omitted = False
         for function, (kind, detail) in failures:
             if kind == "register":
                 parameter, why = detail
@@ -3346,6 +3418,9 @@ class RustSession(NativeSession):
             elif kind == "foreign":
                 foreign = True
                 parts.append((function, f"in {FUNCTION}, {detail}"))
+            elif kind == "omitted":
+                omitted = True
+                parts.append((function, f"in {FUNCTION}, {detail}"))
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
@@ -3392,6 +3467,8 @@ class RustSession(NativeSession):
             text += (
                 ". Change it before the program hands it to that code (`--set-at` an earlier line)"
             )
+        if omitted:
+            text += ". Change it before the program makes that closure (`--set-at` an earlier line)"
         if states:
             text += (
                 ". Change what it is computed from before it is assigned, or copy it with a "
@@ -3563,6 +3640,21 @@ class RustSession(NativeSession):
                 ),
                 "named": not members,
             }
+            check = getattr(proofs, "omitted_captures", None)
+            omitted = (
+                check(**{key: value for key, value in asked.items() if key in _PLACE_KEYS})
+                if check is not None
+                else None
+            )
+            if omitted:
+                # A closure built before the stop took what rustc's MIR leaves out.
+                lines, moved = omitted
+                name = str(variable.get("name")).partition(" @ ")[0]
+                return _Copied(
+                    _omitted_text(name, lines, moved),
+                    "Change it before the program makes that closure (a stop on an earlier line)",
+                    f"a closure may hold it (line {lines[0]})",
+                )
             # A crate built alone calls no other crate's code.
             given = (
                 getattr(proofs, "foreign_given", None) if getattr(proofs, "foreign", None) else None
@@ -4300,8 +4392,18 @@ class RustSession(NativeSession):
             or self.aggregate_taint(root, frame, innermost=True)
         ):
             raise Unsettable(
-                f"the build's MIR does not prove `{name}` initialized here: it may be moved, "
-                "dropped or not yet assigned, so a change could be lost or overwritten"
+                (
+                    _omitted_why(
+                        self,
+                        hashed[1],
+                        name,
+                        place.get("line"),
+                        (place.get("source") or {}).get("path"),
+                    )
+                    or f"the build's MIR does not prove `{name}` initialized here: it may be "
+                    "moved, dropped or not yet assigned"
+                )
+                + ", so a change could be lost or overwritten"
             )
 
     def _field_types(self):
@@ -4742,10 +4844,7 @@ class RustSession(NativeSession):
                 name = variable.get("name")
                 if not provable:
                     return _raw_container(_caller_reason(name, "a local"))
-                why = (
-                    f"the build's MIR does not prove `{name}` initialized at this line: it "
-                    "may be moved, dropped or not yet assigned around it"
-                )
+                why = _unproven_why(self, hashed[1] if hashed else None, name, line, shown_path)
                 element = str(kind).removeprefix("alloc::vec::Vec<")
                 if re.search(r"[&*]", element):
                     why += ", and its items are references"
@@ -4858,10 +4957,7 @@ class RustSession(NativeSession):
         elif hashed is None or proofs is None:
             why = "Peeky cannot match this frame to the build's MIR"
         elif not proofs.proven(hashed[1], name, line, path):
-            why = (
-                f"the build's MIR does not prove `{name}` initialized at this line: it may "
-                "be moved, dropped or not yet assigned around it"
-            )
+            why = _unproven_why(self, hashed[1], name, line, path)
             # It may hold nothing to borrow here: an `if let` on it reads nothing.
             instead = uninitialized_advice(str(name).partition(" @ ")[0])
         else:
@@ -4897,9 +4993,8 @@ class RustSession(NativeSession):
         if not owned and not proofs.proven(
             hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
         ):
-            return (
-                f"the build's MIR does not prove `{name}` initialized at this line: it may "
-                "be moved, dropped or not yet assigned around it"
+            return _unproven_why(
+                self, hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
             )
         if getattr(self, "unsafe_code", None):
             return getattr(self, "unsafe_code", None)
@@ -4972,10 +5067,7 @@ class RustSession(NativeSession):
             if taint == "pointers" or not innermost:
                 return _raw_container(_caller_reason(root, "a local"))
             if not proofs.proven(hashed[1], root, line, path):
-                return {
-                    "raw_reason": f"the build's MIR does not prove `{root}` initialized at "
-                    "this line: it may be moved, dropped or not yet assigned around it"
-                }
+                return {"raw_reason": _unproven_why(self, hashed[1], root, line, path)}
             declared = proofs.declared_type(hashed[1], root, line, path) or ""
             through, dereference = "owned", bool(re.match(r"(?:std::boxed::)?Box<", declared))
             if re.match(r"&(?:mut )?[\w(]", declared):
@@ -5114,6 +5206,17 @@ class RustSession(NativeSession):
         if proven:
             # Unsafe code may have freed what its pointers reach.
             return None if innermost and not getattr(self, "unsafe_code", None) else "pointers"
+        place = frame or {}
+        if hashed and (
+            why := _omitted_why(
+                self,
+                hashed[1],
+                variable.get("name"),
+                place.get("line"),
+                (place.get("source") or {}).get("path"),
+            )
+        ):
+            return _OmittedTaint(why, self._pointer_free(variable, frame))
         return _STALE_NO_POINTER if self._pointer_free(variable, frame) else "stale"
 
     def _pointer_free(self, variable, frame):

@@ -83,6 +83,17 @@ def lexemes(text):
     return found, True
 
 
+def raw_c_string(text):
+    """The line of the first raw C string (`cr"…"`, `cr#"…"#`) ``text`` holds as ``lexemes``
+    reads it, outside comments and other literals, or None. Rust 2021 made it one, as
+    Peeky reads it; edition 2018 reads `cr` and an ordinary string, whose escapes may end
+    it elsewhere (only a macro's input can hold one there)."""
+    for start, end, comment in lexemes(text)[0]:
+        if not comment and text.startswith("cr", start):
+            return text.count("\n", 0, start) + 1
+    return None
+
+
 def without_comments(text):
     """``text`` with its comments blanked; strings and char literals stay whole, so a
     `//` or `/*` inside one starts no comment. An unterminated one keeps the rest."""
