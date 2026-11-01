@@ -1,0 +1,97 @@
+{
+ "bug": "tokio-rs__tokio-4867",
+ "language": "rust",
+ "category": "C",
+ "image": "peeky-study/tokio-rs__tokio-4867:peeky-r2",
+ "image_id": "sha256:f604ee89a30827f45861485e06cbb03fd8ecaf14e13334c361d47809e17f6183",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:21:08+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed call in Sender::send (first code hunk)",
+   "at": "tokio/src/sync/broadcast.rs:540",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:540 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 2,
+     "seconds": 2.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky analyses only editions 2021 and 2024: package `tokio` is edition 2018. Analyse another package, or move this one to edition 2021 (`cargo fix --edition`)",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0,
+   "first_try": {
+    "outcome": "refused",
+    "detail": {
+     "code": "UNSUPPORTED",
+     "message": "Peeky reads only Cargo.lock versions 3 and 4, and /testbed/Cargo.lock is version 2. `cargo update` keeps a lockfile's version. Without git sources, version 2 is version 3 but for its first line: add `version = 3` there",
+     "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+     "retryable": false
+    },
+    "commands": [
+     {
+      "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:540 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+      "exit": 2,
+      "seconds": 0.2
+     }
+    ],
+    "remedy": {
+     "command": "sed -i '1i version = 3' Cargo.lock",
+     "exit": 0,
+     "output": ""
+    }
+   }
+  },
+  {
+   "role": "gold",
+   "why": "the removed closed check in Receiver::recv_ref (last code hunk)",
+   "at": "tokio/src/sync/broadcast.rs:885",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:885 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky analyses only editions 2021 and 2024: package `tokio` is edition 2018. Analyse another package, or move this one to edition 2021 (`cargo fix --edition`)",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/sync_broadcast.rs:527",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/sync_broadcast.rs:527 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky analyses only editions 2021 and 2024: package `tokio` is edition 2018. Analyse another package, or move this one to edition 2021 (`cargo fix --edition`)",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:21:14+00:00"
+}

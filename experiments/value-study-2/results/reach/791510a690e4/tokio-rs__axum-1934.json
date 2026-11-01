@@ -1,0 +1,56 @@
+{
+ "bug": "tokio-rs__axum-1934",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__axum-1934:peeky-r2",
+ "image_id": "sha256:718701d9cc1b73c9c39e42eb93045677fc0fa71c2573e3729ebf0133ae945093",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:19:30+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the call PathRouter::call_with_state makes, which the fix guards (the only hunk changing a statement)",
+   "at": "axum/src/routing/path_router.rs:297",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/lib.json --build --at axum/src/routing/path_router.rs:297 --name reach --timeout 300 --json -- --exact routing::tests::fallback::doesnt_panic_if_used_with_nested_router --test-threads=1",
+     "exit": 2,
+     "seconds": 54.5
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUDGET_EXHAUSTED",
+    "message": "Peeky keeps at most 300 MiB of a build's debug information in memory, and this build needs more: probe a smaller program (fewer source files, standard headers or std collections).",
+    "hint": "Probe a smaller program: fewer source files or standard headers, or in Rust fewer std collections. These limits are fixed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "axum/src/routing/tests/fallback.rs:242",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/lib.json --build --at axum/src/routing/tests/fallback.rs:242 --name reach --timeout 300 --json -- --exact routing::tests::fallback::doesnt_panic_if_used_with_nested_router --test-threads=1",
+     "exit": 2,
+     "seconds": 42.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUDGET_EXHAUSTED",
+    "message": "Peeky keeps at most 300 MiB of a build's debug information in memory, and this build needs more: probe a smaller program (fewer source files, standard headers or std collections).",
+    "hint": "Probe a smaller program: fewer source files or standard headers, or in Rust fewer std collections. These limits are fixed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:21:07+00:00"
+}

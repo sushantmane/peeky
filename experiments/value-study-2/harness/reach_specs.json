@@ -1,0 +1,1234 @@
+{
+ "_comment": "Fixed before the reach run (README, 'Reach check'). Lines are in the base files, the test files after test.patch; `match` finds a line by its text.",
+ "psf__requests-6028": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "requests/utils.py",
+    "line": 977,
+    "why": "the statement after the inserted lines in prepend_scheme_if_needed"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/test_utils.py",
+    "line": 615
+   }
+  ]
+ },
+ "pallets__flask-5014": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "tests/test_blueprints.py::test_empty_name_not_allowed"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/flask/blueprints.py",
+    "line": 193,
+    "why": "the statement after the inserted check in Blueprint.__init__"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/test_blueprints.py",
+    "line": 260
+   }
+  ]
+ },
+ "django__django-11087": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run",
+   "tests/runtests.py"
+  ],
+  "program": [
+   "--settings=test_sqlite",
+   "--parallel",
+   "1",
+   "delete.tests.DeletionTests.test_only_referenced_fields_selected"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "django/db/models/deletion.py",
+    "line": 138,
+    "why": "the changed condition in Collector.can_fast_delete"
+   },
+   {
+    "role": "gold",
+    "file": "django/db/models/deletion.py",
+    "line": 223,
+    "why": "the changed branch in Collector.collect"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/delete/tests.py",
+    "line": 453
+   }
+  ]
+ },
+ "astropy__astropy-13398": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "astropy/coordinates/tests/test_intermediate_transformations.py::test_itrs_topo_to_altaz_with_refraction"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py",
+    "line": 150,
+    "why": "the statement whose location argument changes in itrs_to_tete's caller (first code hunk)"
+   },
+   {
+    "role": "gold",
+    "file": "astropy/coordinates/builtin_frames/intermediate_rotation_transforms.py",
+    "line": 214,
+    "why": "the changed CIRS construction in itrs_to_cirs (last code hunk)"
+   },
+   {
+    "role": "assertion",
+    "file": "astropy/coordinates/tests/test_intermediate_transformations.py",
+    "line": 225
+   }
+  ]
+ },
+ "mwaskom__seaborn-3069": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "seaborn/_core/plot.py",
+    "line": 1636,
+    "why": "the statement after the first insertion in _finalize_figure"
+   },
+   {
+    "role": "gold",
+    "file": "seaborn/_core/plot.py",
+    "line": 1647,
+    "why": "the statement after the last insertion in _finalize_figure"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/_core/test_plot.py",
+    "line": 652
+   }
+  ]
+ },
+ "mwaskom__seaborn-3187": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "seaborn/_core/scales.py",
+    "line": 381,
+    "why": "the statement after the insertion in ContinuousBase._get_formatter's label code"
+   },
+   {
+    "role": "gold",
+    "file": "seaborn/utils.py",
+    "line": 702,
+    "why": "the statement after the insertion in locator_to_legend_entries"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/_core/test_plot.py",
+    "line": 2059
+   }
+  ]
+ },
+ "pydata__xarray-6599": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "xarray/tests/test_computation.py::test_polyval[timedelta-False]"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "xarray/core/computation.py",
+    "line": 1936,
+    "why": "the changed condition in _ensure_numeric.to_floatable"
+   },
+   {
+    "role": "gold",
+    "file": "xarray/core/computation.py",
+    "line": 1944,
+    "why": "the statement after the inserted timedelta branch"
+   },
+   {
+    "role": "assertion",
+    "file": "xarray/tests/test_computation.py",
+    "line": 2036
+   }
+  ]
+ },
+ "sphinx-doc__sphinx-10614": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "tests/test_ext_inheritance_diagram.py::test_inheritance_diagram_svg_html"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "sphinx/ext/inheritance_diagram.py",
+    "line": 415,
+    "why": "the changed SVG branch in html_visit_inheritance_diagram"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/test_ext_inheritance_diagram.py",
+    "line": 224
+   }
+  ]
+ },
+ "sphinx-doc__sphinx-7889": {
+  "kind": "python",
+  "target": ".",
+  "options": [
+   "--run-module",
+   "pytest"
+  ],
+  "program": [
+   "-q",
+   "-p",
+   "no:cacheprovider",
+   "tests/test_ext_autodoc_mock.py::test_MockObject"
+  ],
+  "timeout": 600,
+  "points": [
+   {
+    "role": "gold",
+    "file": "sphinx/ext/autodoc/mock.py",
+    "line": 56,
+    "why": "the changed return in _MockObject.__getitem__"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/test_ext_autodoc_mock.py",
+    "line": 38
+   }
+  ]
+ },
+ "apache__druid-15402": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java",
+     "processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java"
+    ],
+    "class_roots": [
+     "processing/target/classes",
+     "processing/target/test-classes"
+    ]
+   }
+  },
+  "prepare": [],
+  "launch": "mvn test -B -o -pl processing -Dtest=org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testCacheStrategy -Dmaven.surefire.debug",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java",
+    "line": 654,
+    "why": "the removed iterator over post-aggregators in the cache strategy's pullFromCache"
+   },
+   {
+    "role": "assertion",
+    "file": "processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java",
+    "line": 1018,
+    "why": "the first assertion the test runs: in doTestCacheStrategy, which testCacheStrategy calls first"
+   }
+  ]
+ },
+ "apache__lucene-12022": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+     "lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java"
+    ],
+    "class_roots": [
+     "lucene/core/build/classes/java/main",
+     "lucene/core/build/classes/java/test"
+    ]
+   }
+  },
+  "prepare": [],
+  "launch": "./gradlew --offline :lucene:core:test --tests org.apache.lucene.document.TestLatLonShape.testFlatPolygonDoesNotContainIntersectingLine --debug-jvm",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+    "line": 379,
+    "why": "the statement after the first insertion in resolveTriangleType"
+   },
+   {
+    "role": "gold",
+    "file": "lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+    "line": 386,
+    "why": "the statement after the last insertion in resolveTriangleType"
+   },
+   {
+    "role": "assertion",
+    "file": "lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java",
+    "line": 974
+   }
+  ]
+ },
+ "apache__lucene-13704": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java",
+     "lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java"
+    ],
+    "class_roots": [
+     "lucene/core/build/classes/java/main",
+     "lucene/test-framework/build/classes/java/main"
+    ]
+   }
+  },
+  "prepare": [],
+  "launch": "./gradlew --offline :lucene:core:test --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --debug-jvm",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java",
+    "line": 366,
+    "why": "the changed bounds check in DistancePredicate's constructor"
+   },
+   {
+    "role": "gold",
+    "file": "lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java",
+    "line": 414,
+    "why": "the changed bounds check in Component2DPredicate's constructor"
+   },
+   {
+    "role": "assertion",
+    "file": "lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java",
+    "line": 1789
+   }
+  ]
+ },
+ "reactivex__rxjava-7597": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java",
+     "src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java"
+    ],
+    "class_roots": [
+     "build/classes/java/main",
+     "build/classes/java/test"
+    ]
+   }
+  },
+  "prepare": [],
+  "launch": "./gradlew --no-daemon --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.innerOnSubscribeOuterCancelRace --debug-jvm",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java",
+    "line": 352,
+    "why": "the changed condition in SwitchMapInnerObserver.onNext"
+   },
+   {
+    "role": "assertion",
+    "file": "src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java",
+    "line": 1454
+   }
+  ]
+ },
+ "projectlombok__lombok-3009": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "src/core/lombok/eclipse/handlers/HandleFieldDefaults.java",
+     "src/core/lombok/javac/handlers/HandleFieldDefaults.java",
+     "test/core/src/lombok/AbstractRunTests.java"
+    ],
+    "class_roots": [
+     "build/lombok-main",
+     "build/tests"
+    ]
+   }
+  },
+  "prepare": [
+   "f=buildScripts/tests.ant.xml && { head -n -1 $f; cat <<'XML'; tail -n 1 $f; } > /root/reach/tests.ant.xml && cp /root/reach/tests.ant.xml $f\n<target name=\"test.instance\" depends=\"test.compile, test.formatter.compile\">\n  <junit printsummary=\"yes\" fork=\"true\" forkmode=\"once\" haltonfailure=\"no\">\n    <jvmarg value=\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005\" />\n    <formatter classname=\"lombok.ant.SimpleTestFormatter\" usefile=\"false\" unless=\"tests.quiet\" />\n    <classpath location=\"build/ant\" />\n    <classpath refid=\"cp.test\" />\n    <classpath refid=\"cp.stripe\" />\n    <classpath refid=\"packing.basedirs.path\" />\n    <classpath location=\"build/tests\" />\n    <classpath location=\"build/teststubs\" />\n    <test name=\"lombok.transform.TestWithDelombok\" />\n  </junit>\n</target>\nXML"
+  ],
+  "launch": "ant -noinput test.instance",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/core/lombok/eclipse/handlers/HandleFieldDefaults.java",
+    "line": 163,
+    "why": "the statement after the inserted record check (ecj handler; first code hunk)"
+   },
+   {
+    "role": "gold",
+    "file": "src/core/lombok/javac/handlers/HandleFieldDefaults.java",
+    "line": 143,
+    "why": "the statement after the inserted record check (javac handler; last code hunk)"
+   },
+   {
+    "role": "assertion",
+    "file": "test/core/src/lombok/AbstractRunTests.java",
+    "match": "assertEquals(String.format(\"Difference in %s on line %d\"",
+    "why": "the harness's comparison of the expected and generated file, which every case of the failing suite runs"
+   }
+  ]
+ },
+ "projectlombok__lombok-3052": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "src/core/lombok/javac/handlers/HandleBuilder.java",
+     "src/core/lombok/javac/handlers/HandleSuperBuilder.java",
+     "test/core/src/lombok/AbstractRunTests.java"
+    ],
+    "class_roots": [
+     "build/lombok-main",
+     "build/tests"
+    ]
+   }
+  },
+  "prepare": [
+   "f=buildScripts/tests.ant.xml && { head -n -1 $f; cat <<'XML'; tail -n 1 $f; } > /root/reach/tests.ant.xml && cp /root/reach/tests.ant.xml $f\n<target name=\"test.instance\" depends=\"test.compile, test.formatter.compile\">\n  <junit printsummary=\"yes\" fork=\"true\" forkmode=\"once\" haltonfailure=\"no\">\n    <jvmarg value=\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005\" />\n    <formatter classname=\"lombok.ant.SimpleTestFormatter\" usefile=\"false\" unless=\"tests.quiet\" />\n    <classpath location=\"build/ant\" />\n    <classpath refid=\"cp.test\" />\n    <classpath refid=\"cp.stripe\" />\n    <classpath refid=\"packing.basedirs.path\" />\n    <classpath location=\"build/tests\" />\n    <classpath location=\"build/teststubs\" />\n    <test name=\"lombok.transform.TestWithDelombok\" />\n  </junit>\n</target>\nXML"
+  ],
+  "launch": "ant -noinput test.instance",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/core/lombok/javac/handlers/HandleBuilder.java",
+    "line": 289,
+    "why": "the changed call of generateDefaultProvider in HandleBuilder (first code hunk)"
+   },
+   {
+    "role": "gold",
+    "file": "src/core/lombok/javac/handlers/HandleSuperBuilder.java",
+    "line": 211,
+    "why": "the changed call of generateDefaultProvider in HandleSuperBuilder (last code hunk)"
+   },
+   {
+    "role": "assertion",
+    "file": "test/core/src/lombok/AbstractRunTests.java",
+    "match": "assertEquals(String.format(\"Difference in %s on line %d\"",
+    "why": "the harness's comparison of the expected and generated file, which every case of the failing suite runs"
+   }
+  ]
+ },
+ "projectlombok__lombok-3326": {
+  "kind": "java",
+  "target": ".",
+  "options": [
+   "--config",
+   "/root/reach/attach.json"
+  ],
+  "files": {
+   "/root/reach/attach.json": {
+    "port": 5005,
+    "sources": [
+     "src/core/lombok/javac/handlers/HandleUtilityClass.java",
+     "test/core/src/lombok/AbstractRunTests.java"
+    ],
+    "class_roots": [
+     "build/lombok-main",
+     "build/tests"
+    ]
+   }
+  },
+  "prepare": [
+   "f=buildScripts/tests.ant.xml && { head -n -1 $f; cat <<'XML'; tail -n 1 $f; } > /root/reach/tests.ant.xml && cp /root/reach/tests.ant.xml $f\n<target name=\"test.instance\" depends=\"test.compile, test.formatter.compile\">\n  <junit printsummary=\"yes\" fork=\"true\" forkmode=\"once\" haltonfailure=\"no\">\n    <jvmarg value=\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005\" />\n    <formatter classname=\"lombok.ant.SimpleTestFormatter\" usefile=\"false\" unless=\"tests.quiet\" />\n    <classpath location=\"build/ant\" />\n    <classpath refid=\"cp.test\" />\n    <classpath refid=\"cp.stripe\" />\n    <classpath refid=\"packing.basedirs.path\" />\n    <classpath location=\"build/tests\" />\n    <classpath location=\"build/teststubs\" />\n    <test name=\"lombok.transform.TestWithDelombok\" />\n  </junit>\n</target>\nXML"
+  ],
+  "launch": "ant -noinput test.instance",
+  "ready": "Listening for transport dt_socket",
+  "launch_timeout": 900,
+  "timeout": 900,
+  "wait": 900,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/core/lombok/javac/handlers/HandleUtilityClass.java",
+    "line": 131,
+    "why": "the changed condition in changeModifiersAndGenerateConstructor (the stub's hunk is a declaration)"
+   },
+   {
+    "role": "assertion",
+    "file": "test/core/src/lombok/AbstractRunTests.java",
+    "match": "assertEquals(String.format(\"Difference in %s on line %d\"",
+    "why": "the harness's comparison of the expected and generated file, which every case of the failing suite runs"
+   }
+  ]
+ },
+ "jqlang__jq-2650": {
+  "kind": "c",
+  "target": ".",
+  "options": [
+   "--binary",
+   "./jq"
+  ],
+  "program": [
+   "-L",
+   "tests/modules",
+   "--run-tests",
+   "tests/jq.test"
+  ],
+  "timeout": 300,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/parser.y",
+    "line": 714,
+    "why": "the action after the inserted grammar rules: the fix's own file (the generated parser.c holds its code)"
+   },
+   {
+    "role": "gold",
+    "file": "src/parser.c",
+    "match": "gen_slice_index((yyvsp[-6].blk), (yyvsp[-4].blk), (yyvsp[-2].blk), INDEX_OPT)",
+    "why": "the same action in the parser bison generated in the image (`bison -l`)"
+   },
+   {
+    "role": "assertion",
+    "file": "src/jq_test.c",
+    "line": 195,
+    "why": "the harness's comparison of a case's expected and actual output (the test is a case in tests/jq.test)"
+   }
+  ]
+ },
+ "micropython__micropython-13569": {
+  "kind": "c",
+  "target": ".",
+  "options": [
+   "--binary",
+   "ports/unix/build-peeky/micropython"
+  ],
+  "program": [
+   "tests/basics/try_finally_return.py"
+  ],
+  "timeout": 300,
+  "points": [
+   {
+    "role": "gold",
+    "file": "py/compile.c",
+    "line": 1653,
+    "why": "the statement after the insertion in compile_try_except"
+   },
+   {
+    "role": "gold",
+    "file": "py/compile.c",
+    "line": 1685,
+    "why": "the statement after the insertion in compile_try_finally"
+   },
+   {
+    "role": "assertion",
+    "not_attempted": "the test is a MicroPython script whose output run-tests.py compares with CPython's; neither is the project's C code"
+   }
+  ]
+ },
+ "valkey-io__valkey-1842": {
+  "kind": "c",
+  "target": ".",
+  "options": [
+   "--binary",
+   "src/valkey-server"
+  ],
+  "files": {
+   "/root/reach/users.acl": "user default on nopass ~* &* +@all\n"
+  },
+  "program": [
+   "--port",
+   "7001",
+   "--save",
+   "",
+   "--appendonly",
+   "no",
+   "--aclfile",
+   "/root/reach/users.acl"
+  ],
+  "timeout": 120,
+  "wait": 5,
+  "trigger": "src/valkey-server --port 7000 --save '' --appendonly no --daemonize yes >/dev/null && sleep 1 && src/valkey-cli -p 7001 replicaof 127.0.0.1 7000 && sleep 3 && timeout 20 src/valkey-cli -p 7001 acl load; true",
+  "cleanup": "src/valkey-cli -p 7000 shutdown nosave >/dev/null 2>&1; true",
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/acl.c",
+    "line": 2380,
+    "why": "the statement after the inserted check in ACLLoadFromFile's loop over clients (the test's ACL LOAD on a replica)"
+   },
+   {
+    "role": "assertion",
+    "not_attempted": "the test is Tcl (tests/unit/acl.tcl), which Peeky doesn't debug"
+   }
+  ]
+ },
+ "valkey-io__valkey-790": {
+  "kind": "c",
+  "target": ".",
+  "options": [
+   "--binary",
+   "src/valkey-server"
+  ],
+  "program": [
+   "--port",
+   "7002",
+   "--save",
+   "",
+   "--appendonly",
+   "no",
+   "--cluster-enabled",
+   "yes",
+   "--cluster-config-file",
+   "/root/reach/nodes-7002.conf"
+  ],
+  "timeout": 120,
+  "wait": 5,
+  "trigger": "sleep 1 && src/valkey-cli -p 7002 cluster addslots 1 2 3 && timeout 20 src/valkey-cli -p 7002 cluster shards; true",
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/cluster_legacy.c",
+    "line": 5667,
+    "why": "the first statement of the removed addShardReplyForClusterShards (CLUSTER SHARDS on one node)"
+   },
+   {
+    "role": "gold",
+    "file": "src/cluster_legacy.c",
+    "line": 5704,
+    "why": "the removed call in clusterCommandShards"
+   },
+   {
+    "role": "assertion",
+    "not_attempted": "the test is Tcl (tests/unit/cluster/cluster-shards.tcl), which Peeky doesn't debug"
+   }
+  ]
+ },
+ "fmtlib__fmt-3158": {
+  "kind": "cpp",
+  "target": ".",
+  "options": [
+   "--binary",
+   "build-peeky/bin/ranges-test"
+  ],
+  "program": [
+   "--gtest_filter=ranges_test.format_vector"
+  ],
+  "prepare": [
+   "cmake --build build-peeky --parallel 4 --target ranges-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+  ],
+  "timeout": 300,
+  "points": [
+   {
+    "role": "gold",
+    "file": "include/fmt/ranges.h",
+    "line": 478,
+    "why": "the changed return in range_formatter::parse (first hunk)"
+   },
+   {
+    "role": "gold",
+    "file": "include/fmt/ranges.h",
+    "line": 488,
+    "why": "the changed return in range_formatter::parse (last hunk)"
+   },
+   {
+    "role": "assertion",
+    "file": "test/ranges-test.cc",
+    "line": 50
+   }
+  ]
+ },
+ "fmtlib__fmt-3272": {
+  "kind": "cpp",
+  "target": ".",
+  "options": [
+   "--binary",
+   "build-peeky/bin/xchar-test"
+  ],
+  "program": [
+   "--gtest_filter=locale_test.localized_double"
+  ],
+  "prepare": [
+   "cmake --build build-peeky --parallel 4 --target xchar-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+  ],
+  "timeout": 300,
+  "points": [
+   {
+    "role": "gold",
+    "file": "include/fmt/format.h",
+    "line": 2550,
+    "why": "the changed size computation in do_write_float"
+   },
+   {
+    "role": "assertion",
+    "file": "test/xchar-test.cc",
+    "line": 436
+   }
+  ]
+ },
+ "nlohmann__json-4237": {
+  "kind": "cpp",
+  "target": ".",
+  "options": [
+   "--binary",
+   "build-peeky/tests/test-udt_cpp11"
+  ],
+  "program": [
+   "--test-case=basic usage",
+   "--subcase=conversion to json via free-functions"
+  ],
+  "prepare": [
+   "cmake --build build-peeky --parallel 4 --target test-udt_cpp11 > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+  ],
+  "timeout": 300,
+  "points": [
+   {
+    "role": "gold",
+    "file": "include/nlohmann/detail/conversions/to_json.hpp",
+    "line": 323,
+    "why": "the changed enum conversion in to_json (first hunk)"
+   },
+   {
+    "role": "gold",
+    "file": "single_include/nlohmann/json.hpp",
+    "line": 5700,
+    "why": "the same line in the single header, which the tests include (last hunk)"
+   },
+   {
+    "role": "assertion",
+    "file": "tests/src/unit-udt.cpp",
+    "line": 249
+   }
+  ]
+ },
+ "tokio-rs__tokio-6752": {
+  "kind": "rust",
+  "target": ".",
+  "timeout": 1500,
+  "points": [
+   {
+    "role": "gold",
+    "file": "tokio-util/src/time/delay_queue.rs",
+    "line": 769,
+    "why": "the expression after the insertion in DelayQueue::remove",
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "wake_after_remove_last",
+     "--test-threads=1"
+    ]
+   },
+   {
+    "role": "assertion",
+    "file": "tokio-util/tests/time_delay_queue.rs",
+    "line": 888,
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "wake_after_remove_last",
+     "--test-threads=1"
+    ]
+   }
+  ],
+  "files": {
+   "/root/reach/test.json": {
+    "workspace": ".",
+    "analyse": [
+     "tokio-util"
+    ],
+    "run": {
+     "package": "tokio-util",
+     "test": "time_delay_queue"
+    },
+    "vendor": "vendor",
+    "features": [
+     "full"
+    ]
+   }
+  }
+ },
+ "tokio-rs__tokio-4867": {
+  "kind": "rust",
+  "target": ".",
+  "timeout": 1500,
+  "points": [
+   {
+    "role": "gold",
+    "file": "tokio/src/sync/broadcast.rs",
+    "line": 540,
+    "why": "the removed call in Sender::send (first code hunk)",
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "resubscribe_to_closed_channel",
+     "--test-threads=1"
+    ]
+   },
+   {
+    "role": "gold",
+    "file": "tokio/src/sync/broadcast.rs",
+    "line": 885,
+    "why": "the removed closed check in Receiver::recv_ref (last code hunk)",
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "resubscribe_to_closed_channel",
+     "--test-threads=1"
+    ]
+   },
+   {
+    "role": "assertion",
+    "file": "tokio/tests/sync_broadcast.rs",
+    "line": 527,
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "resubscribe_to_closed_channel",
+     "--test-threads=1"
+    ]
+   }
+  ],
+  "files": {
+   "/root/reach/test.json": {
+    "workspace": ".",
+    "analyse": [
+     "tokio"
+    ],
+    "run": {
+     "package": "tokio",
+     "test": "sync_broadcast"
+    },
+    "vendor": "vendor",
+    "features": [
+     "full"
+    ]
+   }
+  },
+  "remedies": [
+   {
+    "when": "add `version = 3` there",
+    "run": "sed -i '1i version = 3' Cargo.lock"
+   }
+  ]
+ },
+ "tokio-rs__axum-1934": {
+  "kind": "rust",
+  "target": ".",
+  "timeout": 1500,
+  "points": [
+   {
+    "role": "gold",
+    "file": "axum/src/routing/path_router.rs",
+    "line": 297,
+    "why": "the call PathRouter::call_with_state makes, which the fix guards (the only hunk changing a statement)",
+    "options": [
+     "--config",
+     "/root/reach/lib.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "routing::tests::fallback::doesnt_panic_if_used_with_nested_router",
+     "--test-threads=1"
+    ]
+   },
+   {
+    "role": "assertion",
+    "file": "axum/src/routing/tests/fallback.rs",
+    "line": 242,
+    "options": [
+     "--config",
+     "/root/reach/lib.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "routing::tests::fallback::doesnt_panic_if_used_with_nested_router",
+     "--test-threads=1"
+    ]
+   }
+  ],
+  "files": {
+   "/root/reach/lib.json": {
+    "workspace": ".",
+    "analyse": [
+     "axum"
+    ],
+    "run": {
+     "package": "axum",
+     "lib": true
+    },
+    "vendor": "vendor"
+   }
+  }
+ },
+ "sharkdp__bat-3108": {
+  "kind": "rust",
+  "target": ".",
+  "timeout": 1500,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/bin/bat/app.rs",
+    "line": 101,
+    "why": "the statement after the insertion in App::config (first code hunk)",
+    "options": [
+     "--config",
+     "/root/reach/bin.json",
+     "--build"
+    ],
+    "program": [
+     "--decorations=always",
+     "--plain",
+     "--paging=never",
+     "/root/reach/test.txt"
+    ]
+   },
+   {
+    "role": "gold",
+    "file": "src/bin/bat/clap_app.rs",
+    "line": 325,
+    "why": "the removed overrides_with in build_app (last code hunk)",
+    "options": [
+     "--config",
+     "/root/reach/bin.json",
+     "--build"
+    ],
+    "program": [
+     "--decorations=always",
+     "--plain",
+     "--paging=never",
+     "/root/reach/test.txt"
+    ]
+   },
+   {
+    "role": "assertion",
+    "file": "tests/integration_tests.rs",
+    "line": 1030,
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "paging_does_not_override_simple_plain",
+     "--test-threads=1"
+    ]
+   }
+  ],
+  "files": {
+   "/root/reach/bin.json": {
+    "workspace": ".",
+    "analyse": [
+     "bat"
+    ],
+    "run": {
+     "bin": "bat"
+    },
+    "vendor": "vendor"
+   },
+   "/root/reach/test.json": {
+    "workspace": ".",
+    "analyse": [
+     "bat"
+    ],
+    "run": {
+     "package": "bat",
+     "test": "integration_tests"
+    },
+    "vendor": "vendor"
+   },
+   "/root/reach/test.txt": "hello world\n"
+  }
+ },
+ "burntsushi__ripgrep-2209": {
+  "kind": "rust",
+  "target": ".",
+  "timeout": 1500,
+  "points": [
+   {
+    "role": "gold",
+    "file": "crates/printer/src/util.rs",
+    "line": 85,
+    "why": "the removed replace_with_captures_at call in Replacer::replace_all",
+    "options": [
+     "--config",
+     "/root/reach/bin.json",
+     "--build"
+    ],
+    "program": [
+     "-N",
+     "-U",
+     "-r",
+     "$usage",
+     "^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?",
+     "/root/reach/rg/test"
+    ]
+   },
+   {
+    "role": "assertion",
+    "file": "tests/regression.rs",
+    "line": 1119,
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "regression::r2208",
+     "--test-threads=1"
+    ]
+   }
+  ],
+  "files": {
+   "/root/reach/bin.json": {
+    "workspace": ".",
+    "analyse": [
+     "grep-printer"
+    ],
+    "run": {
+     "bin": "rg"
+    },
+    "vendor": "vendor"
+   },
+   "/root/reach/test.json": {
+    "workspace": ".",
+    "analyse": [
+     "ripgrep"
+    ],
+    "run": {
+     "package": "ripgrep",
+     "test": "integration"
+    },
+    "vendor": "vendor"
+   }
+  },
+  "prepare": [
+   "mkdir -p /root/reach/rg && sed -n '/^rgtest!(r2208/,/^\");/p' tests/regression.rs | sed '1d;$d' | sed '1s/^    dir.create(\"test\", \"//' > /root/reach/rg/test && wc -l /root/reach/rg/test"
+  ],
+  "remedies": [
+   {
+    "when": "add `version = 3` there",
+    "run": "sed -i '1i version = 3' Cargo.lock"
+   }
+  ]
+ },
+ "uutils__coreutils-6690": {
+  "kind": "rust",
+  "target": ".",
+  "timeout": 1500,
+  "points": [
+   {
+    "role": "gold",
+    "file": "src/uu/cp/src/cp.rs",
+    "line": 680,
+    "why": "the builder call after the insertion in uu_app's PATHS argument",
+    "options": [
+     "--config",
+     "/root/reach/bin.json",
+     "--build"
+    ],
+    "program": [
+     "cp"
+    ]
+   },
+   {
+    "role": "assertion",
+    "file": "tests/by-util/test_cp.rs",
+    "line": 5767,
+    "options": [
+     "--config",
+     "/root/reach/test.json",
+     "--build"
+    ],
+    "program": [
+     "--exact",
+     "test_cp::test_cp_no_file",
+     "--test-threads=1"
+    ]
+   }
+  ],
+  "files": {
+   "/root/reach/bin.json": {
+    "workspace": ".",
+    "analyse": [
+     "uu_cp"
+    ],
+    "run": {
+     "bin": "coreutils"
+    },
+    "vendor": "vendor"
+   },
+   "/root/reach/test.json": {
+    "workspace": ".",
+    "analyse": [
+     "coreutils"
+    ],
+    "run": {
+     "package": "coreutils",
+     "test": "tests"
+    },
+    "vendor": "vendor"
+   }
+  }
+ }
+}

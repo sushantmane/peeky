@@ -1,0 +1,120 @@
+{
+ "bug": "pallets__flask-5014",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/pallets__flask-5014:peeky-r2",
+ "image_id": "sha256:38cfe54b8e5110a1ea2e3f01839183ef8a08e67ab6a15db429b91e0440d0d052",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:34:50+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted check in Blueprint.__init__",
+   "at": "src/flask/blueprints.py:193",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at src/flask/blueprints.py:193 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_blueprints.py::test_empty_name_not_allowed",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/flask/blueprints.py:193",
+    "function": "__init__",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 11,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "cli_group",
+      "value": "<object object at 0xffff90b5fc70>"
+     },
+     {
+      "name": "import_name",
+      "value": "'test_blueprints'"
+     },
+     {
+      "name": "name",
+      "value": "''"
+     },
+     {
+      "name": "root_path",
+      "value": "None"
+     },
+     {
+      "name": "self",
+      "value": "<flask.blueprints.Blueprint object at 0xffff8c83cd10>"
+     },
+     {
+      "name": "static_folder",
+      "value": "None"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/test_blueprints.py:260",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/test_blueprints.py:260 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_blueprints.py::test_empty_name_not_allowed",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/test_blueprints.py:260",
+    "function": "test_empty_name_not_allowed",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "app",
+      "value": "<Flask 'flask_test'>"
+     },
+     {
+      "name": "client",
+      "value": "<FlaskClient <Flask 'flask_test'>>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:34:53+00:00"
+}

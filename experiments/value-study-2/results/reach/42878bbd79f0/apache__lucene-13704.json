@@ -1,0 +1,156 @@
+{
+ "bug": "apache__lucene-13704",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__lucene-13704:peeky-r2",
+ "image_id": "sha256:5efbbc86614e1e53ff469ad0f80533fa541f031ea166f269bcc8430053e7869a",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:32:37+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed bounds check in DistancePredicate's constructor",
+   "at": "lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java:366",
+   "launch": {
+    "ready_seconds": 18.4
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java:366 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "gold",
+   "why": "the changed bounds check in Component2DPredicate's constructor",
+   "at": "lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java:414",
+   "launch": {
+    "ready_seconds": 9.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java:414 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java:414",
+    "function": "GeoEncodingUtils$Component2DPredicate.test(int,int)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "lat",
+      "value": "2147483645"
+     },
+     {
+      "name": "lon",
+      "value": "2147483645"
+     },
+     {
+      "name": "lat2",
+      "value": "2147483646"
+     },
+     {
+      "name": "this",
+      "value": "GeoEncodingUtils$Component2DPredicate@2517"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java:1789",
+   "launch": {
+    "ready_seconds": 9.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java:1789 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java:1789",
+    "function": "BaseGeoPointTestCase.testNarrowPolygonCloseToNorthPole()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 13,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "iwc",
+      "value": "IndexWriterConfig@2577"
+     },
+     {
+      "name": "dir",
+      "value": "MockDirectoryWrapper@2578"
+     },
+     {
+      "name": "w",
+      "value": "IndexWriter@2579"
+     },
+     {
+      "name": "doc",
+      "value": "Document@2580"
+     },
+     {
+      "name": "base",
+      "value": "2147483647"
+     },
+     {
+      "name": "reader",
+      "value": "StandardDirectoryReader@2581"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 9
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:33:24+00:00"
+}

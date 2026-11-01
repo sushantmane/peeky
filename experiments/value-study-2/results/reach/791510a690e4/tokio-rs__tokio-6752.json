@@ -1,0 +1,104 @@
+{
+ "bug": "tokio-rs__tokio-6752",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__tokio-6752:peeky-r2",
+ "image_id": "sha256:c1a51019466e46fc7403e6413fddaecb77d7823114b8c259cd8cd19cd1021261",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:21:14+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the expression after the insertion in DelayQueue::remove",
+   "at": "tokio-util/src/time/delay_queue.rs:769",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio-util/src/time/delay_queue.rs:769 --name reach --timeout 300 --json -- --exact wake_after_remove_last --test-threads=1",
+     "exit": 0,
+     "seconds": 14.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 2,
+     "seconds": 0.8
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio-util/src/time/delay_queue.rs:769",
+    "function": "tokio_util::time::delay_queue::DelayQueue$LT$T$GT$::remove::h91644e7c08de4371"
+   },
+   "moved": false,
+   "values": {
+    "error": {
+     "code": "DEBUGGER_ERROR",
+     "message": "Native stopped line does not match prepared symbols",
+     "hint": "The debugger failed and the session was closed; start a new one.",
+     "retryable": false,
+     "session_closed": true,
+     "cleanup": "terminated pids 737, 740"
+    }
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio-util/tests/time_delay_queue.rs:888",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio-util/tests/time_delay_queue.rs:888 --name reach --timeout 300 --json -- --exact wake_after_remove_last --test-threads=1",
+     "exit": 0,
+     "seconds": 11.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 1.9
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio-util/tests/time_delay_queue.rs:888",
+    "function": "time_delay_queue::wake_after_remove_last::_$u7b$$u7b$closure$u7d$$u7d$::h314a7b2b80a54463",
+    "warnings": [
+     "Line 888 stops up to 4 times per pass in time_delay_queue::wake_after_remove_last::{{closure}} (4 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 4, in address order) says which location."
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "<null>",
+      "value": "core::pin::Pin<time_delay_queue::wake_after_remove_last::{async_block_env#0} *> @ 0xfffff7d0cf98"
+     },
+     {
+      "name": "_task_context",
+      "value": "0x0000fffff7d0d368"
+     },
+     {
+      "name": "queue",
+      "value": "tokio_test::task::Spawn<tokio_util::time::delay_queue::DelayQueue<&str> > @ 0xfffff7d0cda0"
+     },
+     {
+      "name": "key",
+      "value": "tokio_util::time::delay_queue::Key @ 0xfffff7d0ce78"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:21:44+00:00"
+}

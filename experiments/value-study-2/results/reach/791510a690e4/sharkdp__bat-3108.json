@@ -1,0 +1,93 @@
+{
+ "bug": "sharkdp__bat-3108",
+ "language": "rust",
+ "category": "B",
+ "image": "peeky-study/sharkdp__bat-3108:peeky-r2",
+ "image_id": "sha256:0175c5602e1fb1a94c013c46e32eebf4b80d8514d0c2b26915e8c4614393f149",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:24:22+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in App::config (first code hunk)",
+   "at": "src/bin/bat/app.rs:101",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/bin/bat/app.rs:101 --name reach --timeout 300 --json -- --decorations=always --plain --paging=never /root/reach/test.txt",
+     "exit": 2,
+     "seconds": 16.8
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "Cargo wrote no dependency file for `bat`'s build-script-main",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the removed overrides_with in build_app (last code hunk)",
+   "at": "src/bin/bat/clap_app.rs:325",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/bin/bat/clap_app.rs:325 --name reach --timeout 300 --json -- --decorations=always --plain --paging=never /root/reach/test.txt",
+     "exit": 2,
+     "seconds": 5.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "Cargo wrote no dependency file for `bat`'s build-script-main",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/integration_tests.rs:1030",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/integration_tests.rs:1030 --name reach --timeout 300 --json -- --exact paging_does_not_override_simple_plain --test-threads=1",
+     "exit": 2,
+     "seconds": 1.5
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "PROVENANCE_CHANGED",
+    "message": "Provenance: Cargo's unit graph of the build changed while Peeky read the workspace and Cargo ran. Build again",
+    "hint": "Sources, build outputs or tools changed; start a new session on a fresh build.",
+    "retryable": false
+   },
+   "leftover_processes": 0,
+   "first_try": {
+    "outcome": "refused",
+    "detail": {
+     "code": "PROVENANCE_CHANGED",
+     "message": "Provenance: Cargo's unit graph of the build changed while Peeky read the workspace and Cargo ran. Build again",
+     "hint": "Sources, build outputs or tools changed; start a new session on a fresh build.",
+     "retryable": false
+    },
+    "commands": [
+     {
+      "command": "peeky session start . --config /root/reach/test.json --build --at tests/integration_tests.rs:1030 --name reach --timeout 300 --json -- --exact paging_does_not_override_simple_plain --test-threads=1",
+      "exit": 2,
+      "seconds": 1.5
+     }
+    ]
+   },
+   "retried": true
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:24:48+00:00"
+}

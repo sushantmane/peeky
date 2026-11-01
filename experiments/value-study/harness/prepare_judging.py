@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import studylib  # noqa: E402
 
 
 def main(runs, out, batches=6):
@@ -21,7 +23,7 @@ def main(runs, out, batches=6):
     (out / "inputs-peeky").mkdir(parents=True, exist_ok=True)
     (out / "batches").mkdir(parents=True, exist_ok=True)
     attempts = sorted(p for p in runs.glob("*/*") if (p / "result.json").exists())
-    rng = random.Random(441)
+    rng = random.Random(studylib.SEED)
     rng.shuffle(attempts)
     key = {}
     for n, run in enumerate(attempts, 1):
@@ -35,14 +37,15 @@ def main(runs, out, batches=6):
             check=True,
         ).stdout
         (out / "inputs" / f"{anon}.md").write_text(text)
-        if result["arm"] == "peeky" and result.get("peeky_commands"):
+        if studylib.arm_uses_peeky(result["arm"]) and result.get("peeky_commands"):
             text = subprocess.run(
                 [sys.executable, str(HERE / "judge_input.py"), str(run), "--peeky"],
                 capture_output=True,
                 text=True,
                 check=True,
             ).stdout
-            (out / "inputs-peeky" / f"{result['bug']}__{result['rep']}.md").write_text(text)
+            arm = f"{result['arm']}__" if studylib.EXTENDED else ""
+            (out / "inputs-peeky" / f"{result['bug']}__{arm}{result['rep']}.md").write_text(text)
     (out / "key.json").write_text(json.dumps(key, indent=1))
     ids = list(key)
     for b in range(batches):

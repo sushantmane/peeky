@@ -15,6 +15,15 @@ library only, Docker, and a signed-in Copilot CLI. The protocol is in [../README
 | `prompt.md`, `prompt-peeky.md` | The prompt; the Peeky arm appends the second. |
 | `studylib.py`, `metrics.py` | Shared code: bug files, Docker, grading; the CLI's events and usage. |
 
+## Later rounds
+
+A later round reuses this code with a study config, a JSON file that `$PEEKY_STUDY_CONFIG` names
+([round 2's](../../value-study-2/study.json)). It sets the bugs and results directories, the
+seed, the arms with their images and prompts, and the comparisons to analyse. Without one,
+everything runs as this round ran: run on this round's results, `analyze.py` gives the same
+report and `summary.json`. `build_peeky_images.sh` takes its Dockerfile, image names and build
+context from `STUDY_*` variables (its header lists them).
+
 ## Running
 
 ```sh
