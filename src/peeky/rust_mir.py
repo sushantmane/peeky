@@ -2824,6 +2824,9 @@ class Body:
     # Lines of every span in the body's own file (its own code, and the definitions of
     # same-file macros it expands).
     lines: frozenset = frozenset()
+    # Lines of its parameters' and return place's spans in its own file: its signature's,
+    # which are past its `fn` line where rustfmt has put the parameters on lines of their own.
+    head: frozenset = frozenset()
     types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
     # {(name, file, line, scope): place} for bindings through a projection (a closure's
     # capture `(*((*_1).0: &mut T))`, an async local).
@@ -2899,6 +2902,10 @@ class Body:
     _share_edges: dict | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
+    # Closures and coroutines built whose captures rustc's MIR prints only some of
+    # (``_captured_kinds``): [((block, index), {local}: the variables it may have taken
+    # something from, {local}: those it may have moved part of, the line it is built on)].
+    omitted: list = field(default_factory=list)
     _lent_cache: frozenset | None = None
     _written_fields: frozenset = frozenset()
     _into: dict | None = None
@@ -4036,16 +4043,33 @@ class Body:
                     grown = True
         return frozenset(found)
 
-    def _reaches_before_restart(self, place, local, positions):
+    def omitted_before(self, local, positions, moves=False):
+        """The lines of ``omitted``'s closures and coroutines that may have been built
+        before a stop at one of ``positions`` (a path from the statement after the aggregate
+        reaches one, ``local`` not restarted on the way) and may have taken something from
+        ``local`` (with ``moves``, moved something out of it)."""
+        return sorted(
+            {
+                line or 0
+                for place, taken, moved, line in self.omitted
+                if local in (moved if moves else taken)
+                and self._reaches_before_restart(place, local, positions, statement=True)
+            }
+        )
+
+    def _reaches_before_restart(self, place, local, positions, statement=False):
         """Whether some path from the return of the call or drop at ``place`` (the end of
-        its block) reaches one of ``positions`` before ``local``'s value starts again (its
-        storage starts or ends, or the whole of it is assigned): the call ran before
-        that stop, on the value it has there."""
+        its block; with ``statement``, from the statement after it) reaches one of
+        ``positions`` before ``local``'s value starts again (its storage starts or ends, or
+        the whole of it is assigned): the call ran before that stop, on the value it has
+        there."""
         targets = set(positions)
         restart = re.compile(rf"Storage(?:Live|Dead)\(_{local}\);$|_{local} = ")
         number = place[0]
         resumed = (self.resumes[number],) if number in self.resumes else ()
         pending = [(each, 0) for each in (*self.blocks[number].successors, *resumed)]
+        if statement:
+            pending = [(number, place[1] + 1)]
         seen = set()
         while pending:
             node = pending.pop()
@@ -8075,6 +8099,81 @@ def _top_level(text):
     return [part for part in parts if part]
 
 
+# A closure or coroutine built (`_6 = {closure@src/lib.rs:5:13: 5:20} { p: copy (_2.0: u32) };`,
+# `{coroutine@src/lib.rs:3:5: 3:15 (#0)}`, `{coroutine-closure@…}`): its kind, and the
+# operands printed.
+_CAPTURING = re.compile(
+    r"^(_[0-9]+ = \{(closure|coroutine|coroutine-closure)@[^{}]*\})(?: \{ (.*) \})?;$"
+)
+
+
+def _captured_kinds(lines, index):
+    """The types of the places the closure or coroutine built on ``lines[index]`` captures,
+    in order, from the annotation `-Zmir-include-spans` writes after it (`// closure`, then
+    `// + args: […]`, whose last item is the tuple of their types; a coroutine's too). None
+    where Peeky can't tell them: no annotation (rustc writes none for an async closure's),
+    or one whose last item isn't that tuple (a `coroutine-closure`'s)."""
+    following = []
+    for line in lines[index + 1 :]:
+        stripped = line.strip()
+        if not stripped.startswith("//"):
+            break
+        following.append(stripped[2:].strip())
+    if not following or following[0] not in ("closure", "coroutine") or "]" not in following:
+        return None
+    last = following[following.index("]") - 1].removesuffix(",")
+    if "{coroutine-closure@" in lines[index] or not (last.startswith("(") and last.endswith(")")):
+        return None
+    return _top_level_items(last[1:-1])
+
+
+def _moves_nothing(kind):
+    """Whether a capture of the MIR type ``kind`` moves nothing out of the variable it is
+    taken from: a shared reference, a raw or function pointer, a primitive, `()`, or a tuple
+    or array of these, each `Copy` whatever the crate defines. Not a `&mut T`: the type
+    doesn't say whether the closure borrowed a place or moved a `&mut` field out."""
+    text = (kind or "").strip()
+    if _MUTABLE_REFERENCE.match(text):
+        return False
+    if text.startswith("&") or _RAW_ONLY.match(text) or _FN_START.match(text):
+        return True
+    if text in _NUMERIC_PRIMITIVES or text in ("()", "!"):
+        return True
+    if text.startswith("(") and text.endswith(")"):
+        return all(_moves_nothing(each) for each in _top_level_items(text[1:-1]))
+    found = re.fullmatch(r"\[(.+); [^;\[\]]+\]", text)
+    return bool(found) and _moves_nothing(found[1])
+
+
+_MUTABLE_REFERENCE = re.compile(r"&(?:'\S+\s+)?mut\b")
+
+
+def _captured_locals(body, printed, scope):
+    """{local} of the variables a closure's or coroutine's aggregate names (``printed``: its
+    `name: operand` items), each the binding of that name in the nearest scope enclosing
+    ``scope`` (the aggregate's) that binds it. A binding through a projection (an enclosing
+    closure's capture) is none: Peeky proves nothing of one. None where a name binds
+    nothing there, or twice in one scope: Peeky can't tell which was captured."""
+    enclosing, at = [], scope
+    while at is not None and at not in enclosing:
+        enclosing.append(at)
+        at = body.scopes.get(at)
+    found = set()
+    for item in printed:
+        name = item.partition(": ")[0]
+        for each in enclosing:
+            here = [binding for binding in body.bindings.get(name, ()) if binding[4] == each]
+            if len(here) > 1:
+                return None
+            if here:
+                if here[0][0] is not None:
+                    found.add(here[0][0])
+                break
+        else:
+            return None
+    return found
+
+
 def parse_body(text):
     """One `-Zdump-mir` body, or None when the file holds no function body."""
     lines = split_lines(text)
@@ -8088,8 +8187,8 @@ def parse_body(text):
     for argument in _top_level(header[2]):
         if found := re.fullmatch(r"_([0-9]+): (.+)", argument):
             body.types[int(found[1])] = found[2]
-    block, spans, opened_scopes = None, [], [0]
-    for line in lines[start + 1 :]:
+    block, spans, opened_scopes, head = None, [], [0], []
+    for index, line in enumerate(lines[start + 1 :], start + 1):
         if line == "}":
             break
         if line.lstrip().startswith("//") or not line.strip():
@@ -8097,11 +8196,14 @@ def parse_body(text):
         if local := _LOCAL.match(line):
             if local[1] == "0":
                 body.file = local[3]
+                head.append((local[3], int(local[4])))
             body.types[int(local[1])] = local[2]
             spans.append((local[3], int(local[4])))
             continue
         if debug := _DEBUG.match(line):
             whole = _WHOLE_LOCAL.match(debug[2])
+            if whole and int(whole[1]) in arguments:
+                head.append((debug[4], int(debug[5])))
             # A binding through a projection (a closure's capture, an async local) has no
             # whole local, but names its type: `(_1.0: std::boxed::Box<Pt>)`.
             typed = None if whole else _projected_type(debug[2])
@@ -8132,7 +8234,8 @@ def parse_body(text):
             opened_scopes.pop()
             continue
         if opened := _BLOCK.match(line):
-            block = body.blocks.setdefault(int(opened[1]), Block())
+            current = int(opened[1])
+            block = body.blocks.setdefault(current, Block())
             continue
         if line == "    }":
             if block is not None and not _finish(block):
@@ -8149,6 +8252,33 @@ def parse_body(text):
             body.supported = False
             continue
         span = _SPAN.match(statement[3])
+        if built := _CAPTURING.match(statement[1]):
+            # rustc prints one capture per variable it mentions (it zips them,
+            # `FIXME(project-rfc-2229#48)`), but since Rust 2021 a closure captures the
+            # places it uses: two of one variable's leave one out, and the next variable's
+            # may go by its name. What it took, and from which variable, is then unknown.
+            printed = _top_level_items(built[3] or "")
+            kinds = _captured_kinds(lines, index)
+            if kinds is None or len(kinds) > len(printed):
+                taken = _captured_locals(body, printed, int(statement[2]))
+                if taken is None:
+                    body.supported = False
+                elif taken:
+                    # What is left out moves nothing where each is a shared reference or
+                    # `Copy`; nor is anything moved out of a variable of such a type. A
+                    # `&mut` may be a borrow or a field moved out: the MIR doesn't show which.
+                    moves = kinds is None or not all(
+                        _moves_nothing(each) for each in kinds[len(printed) :]
+                    )
+                    moved = frozenset(
+                        local
+                        for local in taken
+                        if moves and not _moves_nothing(body.types.get(local))
+                    )
+                    at = (current, len(block.statements))
+                    body.omitted.append(
+                        (at, frozenset(taken), moved, int(span[2]) if span else None)
+                    )
         block.statements.append(
             (statement[1], span[1] if span else None, int(span[2]) if span else None)
         )
@@ -8168,6 +8298,7 @@ def parse_body(text):
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
     body.lines = frozenset(number for file, number in spans if file == body.file)
+    body.head = frozenset(number for file, number in head if file == body.file)
     if body.coroutine is not None and body.coroutine >= 0:
         body.types.update(saved)
         body.saved = frozenset(saved)
@@ -8285,6 +8416,21 @@ def _finish(block):
         returned = _RETURN_EDGE.search(edges)
         block.returns = int(returned[1]) if returned else None
     return True
+
+
+def _signature_continues(body, function, text):
+    """Whether the `fn` line the DISubprogram of ``function`` names (rustc puts no MIR span on
+    it) opens a signature whose next lines hold ``body``'s parameters and return place
+    (``Body.head``), as rustfmt writes a long one: the source ``text`` from that line to the
+    first of them is `fn` and the function's name, then nothing that ends a signature."""
+    if not text or not body.head or function.line is None or min(body.head) <= function.line:
+        return False
+    lines = text.split("\n")
+    if min(body.head) > len(lines):
+        return False
+    opening = "\n".join(lines[function.line - 1 : min(body.head) - 1])
+    name = re.escape(_mir_name(function.name))
+    return bool(re.match(rf"\s*(?:[\w\s()\"]*\s)?fn\s+{name}\b[^{{}};]*$", opening))
 
 
 def load_bodies(directory, crate, defined=None):
@@ -9005,7 +9151,10 @@ class OwnedLocals:
                 if body.file == function.file
                 and body.name == name
                 and _same_path(body, function)
-                and function.line in body.lines
+                and (
+                    function.line in body.lines
+                    or _signature_continues(body, function, self.texts.get(function.file))
+                )
             ]
             if len(candidates) == 1:
                 chosen = next(i for i, b in enumerate(self.bodies) if b is candidates[0])
@@ -10313,8 +10462,9 @@ class OwnedLocals:
 
     def _judge(self, site, local, line, facts, block=None, why=None):
         """True, False or None for ``local`` (see reference_valid). Where False, ``why``
-        (a list, if given) gets the reason: ("raw",), ("dropped",), ("unassigned",), or
-        ("since", gaps): {(kind, line)} of what may have run since its last use on some
+        (a list, if given) gets the reason: ("raw",), ("dropped",), ("omitted", lines) (a
+        closure or coroutine built on one of ``lines`` may have moved it, rustc's MIR leaving
+        that capture out), ("unassigned",), or ("since", gaps): {(kind, line)} of what may have run since its last use on some
         path to the stop ("call", "drop", "write", "end" of a variable's storage;
         "start" for a path with no use at all), up to ``Body.gaps_before``'s limit per
         place, the line None where the statement is not in the function's own file (a
@@ -10351,6 +10501,8 @@ class OwnedLocals:
         # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.
         if any(body.dropped_through(local, position) for position in positions):
             return _false(why, ("dropped",))
+        if body.omitted and (lines := body.omitted_before(local, positions, moves=True)):
+            return _false(why, ("omitted", tuple(lines)))
         if (
             argument
             and kind.startswith("&")
@@ -10921,6 +11073,11 @@ class OwnedLocals:
 
     def _initialized(self, site, local, line):
         body, function, blocks, shared = site
+        if any(local in moved for _, _, moved, _ in body.omitted):
+            # A closure built before the stop may have moved part of it: rustc's MIR leaves
+            # that capture out.
+            if self._omitted_at(site, local, line, moves=True) != []:
+                return False
         if function.inline_only:
             return body.initialized_before(local, self._positions(site, line, None))
         if not self.precise:
@@ -10933,6 +11090,53 @@ class OwnedLocals:
             function.line,
             shared,
             foreign=may_invoke_macro(self.texts.get(function.file), line),
+        )
+
+    def _omitted_at(self, site, local, line, moves=False, positions=None):
+        """``Body.omitted_before`` at the places a stop on ``line`` can be (``positions``,
+        or every place of it); None where they are not known."""
+        if positions is None:
+            positions = self._positions(site, line, None)
+        if not positions:
+            return None
+        return site[0].omitted_before(local, positions, moves)
+
+    def omitted_captures(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+    ):
+        """For the frame's local ``variable_name``: (the lines of the closures and coroutines
+        built before a stop on ``line`` of ``path`` that may have taken something from it,
+        rustc's MIR leaving that capture out, whether one may have moved something out of
+        it), or None where there is none or that is not understood. ``breakpoint``,
+        ``column`` and ``block`` as for ``copy_hazards``."""
+        placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
+        if placed is None or not placed[0].omitted:
+            return None
+        body, local, positions = placed
+        lines = body.omitted_before(local, positions)
+        if not lines:
+            return None
+        return lines, bool(body.omitted_before(local, positions, moves=True))
+
+    def omitted_everywhere(self, hashed, variable_name, line, path):
+        """``omitted_captures`` where every place of ``line`` a stop can be at (before a
+        statement that emits code, as ``foreign_everywhere``) has one: no change there is
+        known to reach what the closure took (refused before the program runs). None
+        where some place has none, or that is not understood."""
+        placed = self._stop_places(hashed, variable_name, line, path, False, None, None)
+        if placed is None or not placed[0].omitted:
+            return None
+        body, local, positions = placed
+        coded = [
+            position
+            for position in positions
+            if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
+        ] or positions
+        each = [body.omitted_before(local, [position]) for position in coded]
+        if not each or not all(each):
+            return None
+        return sorted({line for found in each for line in found}), bool(
+            body.omitted_before(local, coded, moves=True)
         )
 
 

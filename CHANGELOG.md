@@ -27,11 +27,24 @@
 
 ### Other changes
 
+- **Rust: a field a closure moved is no value of the variable's (#465).** Since Rust 2021, a
+  closure or async block captures the places it uses. rustc's MIR prints one capture per
+  variable, so `move || p.a + p.name.len()` showed only `p.a`'s. `p.name` then read as `p`'s own
+  value, from memory the closure had freed after growing its `String`. Now, where the MIR leaves
+  captures out and they may move something, the variables it names read as stale, saying so.
+  Where only shared references or `Copy` values are left out, they read as before. A change of a
+  named variable is refused either way, since Peeky can't tell what the closure holds.
+
 - **A version 2 Cargo.lock's refusal says what works (#467).** It said to run `cargo update
   --workspace`, which keeps a lockfile's version, so tokio-4867's and ripgrep-2209's stayed
   version 2. It now says to add `version = 3` as the first line: without git sources, the two
   versions differ only by it. A version 1 lockfile is told to be written again with `cargo
   generate-lockfile`.
+- **Rust: a function whose signature spans several lines is read (#466).** rustc puts no MIR
+  span on such a function's `fn` line, so Peeky matched no MIR to it. Every change in it was
+  refused, saying Peeky couldn't tell, and its rows lost their MIR types. rustfmt writes a long
+  signature so, as in ripgrep's `grep_printer::util`. It is matched now by the lines its
+  signature spans in the source.
 
 - **Rust: a store through a lock's guard into a static is a copy there (#461).** `let r =
   slot(); *r.lock().unwrap() = x;`, with `slot()` returning a `&'static Mutex<u32>`, wrote `x`
@@ -70,6 +83,14 @@
   `-march=native`, for a `-D` that names a probe or may paste one, and where one file is built
   twice with different commands. `vfork` returns twice, as setjmp does. Startup code whose name
   a program may use counts as the program's unless its bytes are the toolchain's.
+- **C and C++: a binary your project built, in a session and on a worker (protocol 15).**
+  `peeky session start . --binary ./prog --at src/x.c:LINE` runs a session on it. A worker's
+  `--native-config` may name `binary`: it builds nothing, and a request names no tool, path or
+  flag. A client names the same binary with `--binary`, and its copies of the files the judged
+  units name are compared, at most 4096 files and 16 MiB in all. A remote session keeps the names
+  compared at its start. A frame in a shared library, built from sources under the root or not, is
+  `UNSUPPORTED`, naming the library, and the session goes on. It was `DEBUGGER_ERROR`, or a stop
+  in the library failed.
 - **DWARF 5:** Peeky's clang builds use DWARF 5, as projects do; GCC's stay at DWARF 4. Peeky
   reads DWARF 5's indexed range and location lists, and statics' address indexes. In a DWARF 5
   unit, anything it can't read fails the read, and is never dropped. Split DWARF, type units and
