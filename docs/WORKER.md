@@ -189,6 +189,36 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD" --native-config "$PWD/work/binar
 - A frame in a shared library is never read, even one built from sources under the root. An
   `inspect` of it is refused with `UNSUPPORTED`, naming the library, and the session is kept.
 
+## Start a Rust workspace's worker
+
+A workspace's `--rust-config` is its configuration ([Rust 7.2](lang/rust-cookbook.md#set-up-the-workspace)),
+with every tool named: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump`, and `dsymutil` on
+macOS. Its paths are relative to `--root`.
+
+- The worker builds only from that configuration. A `peeky build` on its host builds the same
+  build, which the worker's probes then use.
+- The `build` operation builds it for a client: no field names a tool, path or flag. It takes
+  only `wait`, at most 30 s, and `request`, a running build's id. It answers with the build's
+  summary, its error, or `{"status": "building", "request": ID}`. Ask again with that `request`
+  until it ends. One build runs at a time; a second request joins it.
+- A running build keeps the worker from its idle exit. Every way the worker ends stops the build
+  first: `shutdown`, SIGTERM, the idle timeout. Cargo and every process it ran are killed, and no
+  build starts after.
+- A build still running 30 s after it was stopped refuses `shutdown` with `BUSY`: the worker
+  keeps running, and owns the build. A build that ended otherwise, such as a kill that failed,
+  is named in `shutdown`'s `warning`, and on SIGTERM the worker exits with status 1, saying so.
+- `version` names the files to compare: the recorded build's manifests, lockfile and Cargo
+  configuration, every workspace file it compiled (the binary's too), what local build scripts
+  read, and each vendored copy's `.cargo-checksum.json`. Nothing under `.git` is named. Before
+  any build, the workspace's `Cargo.toml` and `Cargo.lock`. After `launch`, the build's own
+  record is compared again.
+- `version` also sets `structured`: each file is compared by the links on its path too. Its
+  `trees` names the directories compared entry by entry: each a build script watches. A package
+  Cargo watches whole is compared by the files `cargo package --list` gave at the build.
+- A launch on no current build is refused with `BUILD_REQUIRED`
+  ([ERRORS](ERRORS.md#build_required)). The worker's message names the build command on its
+  host. `peeky probe --worker` shows the client's own instead: `peeky build . --worker URL`.
+
 ## Inspect and change a C value
 
 `examples/c/branch_bug.c` has an integer `value`, a pointer to it, an integer array, and a branch.

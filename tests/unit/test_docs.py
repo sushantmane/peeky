@@ -53,6 +53,7 @@ def test_the_guide_opens_with_when_to_use_peeky_and_the_first_command():
         "With a project's own build (Make, CMake, autotools), build with clang",
         "--binary ./prog",
         "A crate with dependencies",
+        "peeky build . --config rust.json",
     ):
         assert text in first, text
 

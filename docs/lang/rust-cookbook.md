@@ -38,6 +38,7 @@ are explained in [rust.md](rust.md#words-these-pages-use).
   - [Locals that can't change, and what to do](#locals-that-cant-change-and-what-to-do)
   - [Change a value behind a reference](#change-a-value-behind-a-reference)
   - [Set a String to a text](#set-a-string-to-a-text)
+  - [A Rust workspace](#a-rust-workspace)
 
 ## 1.1 What Can I Ask?
 
@@ -2116,3 +2117,153 @@ Dropping a value counts as using its borrow where the drop may run code that rea
 a guard whose `Drop` reads its `&str`, a trait object, a closure, and a type of your crate. A
 standard container of references, such as `Vec<&str>`, doesn't count. A `Box` dropped before the
 stop drops nothing at its scope's end.
+
+### A Rust workspace
+
+A crate with dependencies, a library, a build script, or a workspace of several members: Peeky
+builds it with Cargo, as `cargo build` does, and reads values in the packages you name. It reads
+none of the dependencies' code ([ADR 0008](../adr/0008-native-project-reach.md)).
+
+#### Set up the workspace
+
+1. Vendor the registry dependencies once, from the workspace's directory:
+   `cargo vendor --locked vendor`. It needs the network, or Cargo's cache. Without it, `peeky
+   build` names that command:
+
+   ```
+   peeky: [INVALID_REQUEST] Peeky builds registry dependencies only from `cargo vendor`'s copy, and /work/ws/vendor doesn't exist (`smallnum 1.0.0` come from crates.io). Run `cd /work/ws && cargo vendor --locked vendor`
+   ```
+
+2. Write a configuration, such as `rust.json`, beside it:
+
+   ```json
+   {"analyse": ["util"], "run": {"bin": "app"}, "vendor": "vendor"}
+   ```
+
+| Field | What it says |
+| --- | --- |
+| `analyse` | The packages Peeky reads values in, 1 to 16. Breakpoints go only in their files. |
+| `run` | What runs: `{"bin": "rg"}`, an integration test `{"test": "flow"}`, or a library's unit tests `{"package": "axum", "lib": true}`. `package` picks the package where two have that target. |
+| `vendor` | The directory `cargo vendor` wrote, relative to the workspace. |
+| `workspace` | The workspace's directory, relative to the target directory; `.` if left out. |
+| `features` | Cargo features to build with. |
+| `arguments` | The program's arguments. A test's filter goes here: `["--exact", "tests::name", "--test-threads=1"]`. |
+
+What a workspace build refuses, each with a message that says why
+([ERRORS](../ERRORS.md#build_required)):
+
+- an analysed package outside editions 2018, 2021 and 2024. Edition 2015 is refused;
+- under resolver 1, a configured feature Cargo would build the package without. Name it
+  `package/feature`, or set `resolver = "2"`;
+- a git dependency, vendored or not: `Cargo.lock` records no checksum for a git source. So is
+  `[patch]`;
+- a vendored copy whose files don't match its `.cargo-checksum.json`, or whose checksum isn't
+  `Cargo.lock`'s;
+- an analysed package built optimized, or Cargo configuration Peeky doesn't account for, naming
+  the file and the key;
+- an analysed crate, or a local procedural macro, that mentions `RUSTC_BOOTSTRAP`: Peeky sets it
+  for the analysed compiles alone.
+
+A probe refuses an edition 2018 package whose text holds a raw C string (`cr"…"`), naming the
+line. Edition 2018 reads it as `cr` and an ordinary string
+([ERRORS](../ERRORS.md#unsupported)).
+
+#### Build it, then probe it
+
+`peeky build` builds into Peeky's state directory, not your `target/`:
+
+```
+$ peeky build . --config rust.json
+peeky: building /work/ws (analysed: util)
+peeky: built in 0.94 s
+built /work/ws in 0.94 s: analysed util; runs bin app
+executable: /home/me/.local/state/peeky/rust-builds/fe20a816526c85b41756de90/runs/8844434e515bd864/bin/app
+build: a850acc93ff35dfb81846355e67cbf877168e482ebe548656a87e683acf31ca6
+```
+
+Dependencies are built once, then reused. The analysed packages are compiled every time, at
+opt-level 0, whatever the profiles say. Add `--background` for a long build, and read it with `peeky
+job`.
+
+Then probe with the same `--config`:
+
+```
+$ peeky probe . --config rust.json --at util/src/lib.rs:26 --capture x --set x=100
+hit  phase      line  function        selector  type  value
+1    observed   26    util::std_only  x         u32   5  [settable]
+1    after-set  26    util::std_only  x         u32   100  [settable]
+set x: 5 -> 100
+status: completed  hits: 1  seconds: 0.932  max pause: 48.3 ms
+output:
+  ...
+  STD 101
+  ...
+```
+
+A probe never builds. After an edit, it is refused before anything runs, and names the command:
+
+```
+error [BUILD_REQUIRED]: No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` ran. Run `peeky build . --config rust.json` again, or add --build
+hint: Run the `peeky build` command the message gives, then this command again; or add --build to build first.
+```
+
+`--build` on a probe or `session start` runs the same build first, under the build's own deadline
+of 900 s. So does a change to a manifest, the lockfile, or what a build script reads. A change to
+Cargo's configuration, a vendored copy or a tool is `PROVENANCE_CHANGED` instead
+([ERRORS](../ERRORS.md#build_required)).
+
+#### What Peeky reads in a workspace
+
+- **Only the analysed packages' files.** A breakpoint goes only there. A dependency's frame, or
+  another member's, reads as a library's: refused, naming the frame.
+- **Dependencies are taken as sound,** as the standard library is. So an analysed crate with no
+  unsafe code of its own still reads a `Vec`'s or `String`'s contents. Unsafe code a dependency's
+  macro writes into it counts as the dependency's.
+- **The project's own code counts:** unsafe code a local procedural macro writes, or a build
+  script's generated file the crate `include!`s, withholds memory reads, and the note names it
+  ([Crates with unsafe code](#crates-with-unsafe-code)).
+- **A generic or inlined function only another crate uses** has no code in the analysed crate's
+  build: the program runs the code the other crate's build made of it. A breakpoint there is
+  refused before anything runs:
+
+  ```
+  error [INVALID_BREAKPOINT]: Line 208 has no code to stop at in `util`'s build: it is in `util::only_app`, a generic or inlined function whose code only the crates that use it compile, for their own types, and Peeky reads none of theirs. Stop where `util`'s own code calls it, or choose a line from `peeky describe`
+  ```
+
+  Where the analysed crate has code of it too, a stop in the other crate's copy reads no value,
+  and says why: `withheld: Peeky reads no value of frame 0 (util::boxed) here: the debugger shows
+  the stop on line 196 of util/src/lib.rs, in code another crate's build compiled`. The stops in
+  the crate's own copy are read. A stop Peeky can't tell is the crate's own reads no value
+  either, and the note says why: the debugger gave no address, for example.
+
+#### Calls into dependencies
+
+Peeky reads none of a dependency's code, so a call into it may keep a copy of what it is given. A
+change of a value the program gave a dependency is refused, naming the call, its line and its
+crate:
+
+```
+$ peeky probe . --config rust.json --at util/src/lib.rs:18 --capture x --set x=100
+error [MUTATION_REJECTED]: `x` cannot be changed at util/src/lib.rs:18, at any stop of this build: in util::kept, a call to `smallnum::keep` (dependency `smallnum`) on line 17 is given a pointer into `x`: Peeky reads no dependency's code, so it may keep a copy, which a change would not reach. Refused before the program runs: nothing ran. Change it before the program hands it to that code (`--set-at` an earlier line); settable here: no root locals (fields where rows mark them [settable])
+```
+
+Where only the standard library is called, as in the probe above, the change is made. These count
+as a dependency's code:
+
+- a dependency's function or method, its trait's default method, or its blanket `impl`;
+- a method of a trait on a type parameter or a trait object, the crate's own trait too: the
+  program's binary may implement a public trait. So may it for `&T`, `Box<T>` or `Pin<T>`;
+- a call through a function pointer, or a closure whose body Peeky didn't read;
+- a standard library function given a dependency's type, such as `drop` of a
+  `smallnum::Holder`;
+- the crate's own code that may hand the value on to one of these: the note names both calls.
+
+Read the value instead, or change it on a line before the call (`--set-at`). The rules are in
+[RUST_AGENT](../RUST_AGENT.md#dependency-calls).
+
+#### Through a worker
+
+Start the worker on the workspace's host with the workspace's configuration, every tool named,
+as `--rust-config`. Then build and probe from your checkout with `--worker URL`
+([REMOTE](../REMOTE.md#a-rust-workspace)).
+
