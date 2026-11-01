@@ -2,7 +2,9 @@
 worker compare before anything launches.
 
 The worker's trusted target names them: Java's `sources`; C and C++ `sources` and
-`headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`. A Python program may
+`headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`. A binary the project built
+(native_binary.BinaryTarget) names the files its judged units read, under the root, as its
+debug information records them. A Python program may
 import any `.py` file under the root, so for Python they are all of those, except in virtual
 environments (a directory holding `pyvenv.cfg`: installed packages). Both sides must hold the
 same set, file for file.
@@ -119,18 +121,61 @@ def python_manifest_digest(manifest):
     return hashlib.sha256(json.dumps(list(manifest.items())).encode()).hexdigest()
 
 
-def declared(adapter):
-    """The names the worker's trusted target reads, or None for a Python program."""
+def declared(adapter, root=None):
+    """The names the worker's trusted target reads, or None for a Python program. A
+    binary target's are those its units name under ``root`` (BinaryTarget.remote_inputs),
+    or its refusal."""
+    if (listed := getattr(adapter, "remote_inputs", None)) is not None:
+        return tuple(listed(root))
     names = getattr(adapter, "verification_inputs", None)
     if names is None:
         names = getattr(adapter, "sources", None)  # an attached JVM's declared sources
     return None if names is None else tuple(dict.fromkeys(str(name) for name in names))
 
 
-def describe(adapter):
-    """The worker's `version` field that tells a client which sources to hash."""
-    names = declared(adapter)
-    return {"kind": "python"} if names is None else {"kind": "declared", "names": list(names)}
+def describe(adapter, root=None):
+    """The worker's `version` field that tells a client which sources to hash. A binary
+    target's names only its binary, by its name under ``root``: listing its files reads
+    the binary's debug information, which only the `inputs` operation does (listed)."""
+    if getattr(adapter, "remote_inputs", None) is None:
+        names = declared(adapter)
+        return {"kind": "python"} if names is None else {"kind": "declared", "names": list(names)}
+    from peeky.native_binary import binary_name
+
+    try:
+        shown = binary_name(root, adapter.binary)
+    except ValueError:
+        shown = adapter.binary
+    return {"kind": "binary", "binary": shown}
+
+
+def listed(adapter, root):
+    """The worker's `inputs` answer: a binary target's files, as `version` gives other
+    targets' (``{"kind": "declared", "names": [...], "binary": ...}``), listed once per
+    binary (BinaryTarget.remote_inputs). A binary the worker refuses is refused, saying so:
+    a client's request is never what is wrong."""
+    if getattr(adapter, "remote_inputs", None) is None:
+        return describe(adapter, root)
+    from peeky.errors import Refused, classify
+    from peeky.native_binary import binary_name
+
+    try:
+        shown = binary_name(root, adapter.binary)
+        names = declared(adapter, root)
+    except (ValueError, RuntimeError, OSError, TimeoutError) as exc:
+        error = classify(exc, session_closed=False)
+        if error["code"] == "BUSY":
+            raise
+        hint = error["hint"]
+        if error["code"] == "INVALID_REQUEST":
+            hint = (
+                "Nothing ran. Fix it on the worker's host: its own configuration names the "
+                "binary and its tools."
+            )
+        raise Refused(
+            error["code"], f"The worker refuses its binary: {error['message']}", hint
+        ) from None
+    return {"kind": "declared", "names": list(names), "binary": shown}
 
 
 def files(root, names):
@@ -197,7 +242,7 @@ def check_expected(expected):
 
 def worker_sources(adapter, root):
     """{name: sha256 or None} of what this worker's target reads under ``root``."""
-    names = declared(adapter)
+    names = declared(adapter, root)
     if names is not None:
         return files(root, names)
     try:
@@ -211,7 +256,8 @@ def worker_sources(adapter, root):
 
 
 def client_sources(root, info):
-    """{name: sha256} of the local copies of the sources the worker says it reads."""
+    """{name: sha256} of the local copies of the sources the worker says it reads (for a
+    binary target, as its `inputs` answer lists them)."""
     if not isinstance(info, dict) or info.get("kind") not in ("python", "declared"):
         raise ValueError(
             "The worker does not say which sources it reads, so they cannot be compared: "
