@@ -11,8 +11,9 @@ read as C reads them (`-std=c11`; C++17, Peeky's C++, has none). Nothing is gues
 end that cannot be found is None, and so is one where the text the scan reads may differ
 from what the compiler reads. That is anywhere in a file with a `#line`, a line splice
 inside a token or before `\n\r`; and, from the declaration's line
-to its end, a directive (an `#include` can hold the rows), a line splice, a `<::`, or
-a macro whose expansion may hold an unclosed bracket or a `;` (`macro_hazards`).
+to its end, a directive (an `#include` can hold the rows), a line splice, a C `<::`, or
+a macro whose expansion may hold an unclosed bracket or a `;` (`macro_hazards`). C++ reads
+`<::` as C++11 does (`_CXX_TOKENS`): `<` and `::` unless a `:` or `>` follows.
 """
 
 import bisect
@@ -148,6 +149,14 @@ _WORD = re.compile(_NAME)
 # Words and punctuators as a declaration is read: its `=` and `,` (not `==`, `+=`, ...).
 _DECLARATION_TOKENS = re.compile(
     f"(?<!{_ID}){_NAME}|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,.]"
+)
+# As C++11 and later read them: `<::` not followed by `:` or `>` is `<` and `::`
+# (`f<::std::size_t>`); otherwise `<:` (`<::>` is `[]`). C reads `<::` as the digraph
+# `<:` and `:`, which is no other token: there `<::` stays one token, read as unreadable.
+_CXX_TOKENS = re.compile(r"<(?=::(?![:>]))|" + _TOKENS.pattern.removeprefix("<::|"))
+_CXX_WORDS = re.compile(f"(?<!{_ID}){_NAME}|" + _CXX_TOKENS.pattern)
+_CXX_DECLARATION_TOKENS = re.compile(
+    f"(?<!{_ID}){_NAME}|==|!=|[-+*/%&|^]=|<<=|>>=|" + _CXX_TOKENS.pattern + r"|[=,.]"
 )
 # Statements whose header (in parentheses) can declare a variable for their body.
 _HEADERS = frozenset(("for", "if", "while", "switch", "catch"))
@@ -384,7 +393,7 @@ _PREFIX = re.compile(f"{_NAME}|::|->|\\S")
 
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
     r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
-    text: ``brackets`` (a bracket it does not close, a `;` outside its brackets, a
+    text: ``brackets`` (a bracket it does not close, a `;` outside its brackets, a C
     `<::`, or a pasted token: `<` ## `%` is a brace), ``blocks`` (the same but for a
     `;`: a bracket it does not close), ``labels`` (a `case`, `default` or label a jump
     can reach, `x:`), ``gotos`` (a `goto`), ``setjmp`` (a call that may return twice, `setjmp`) and
@@ -392,6 +401,8 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
     macro counts too, and every macro of a source with a splice before `\n\r` counts
     for all of them. ``trigraphs``: C's (by default, without ``raw_strings``: C)."""
     trigraphs = not raw_strings if trigraphs is None else trigraphs
+    # C++ reads `<::` as C++11 does (`_CXX_TOKENS`); C as the digraph `<:` and `:`.
+    tokens = _CXX_TOKENS if raw_strings else _TOKENS
     uses = {}
     found = {
         "brackets": set(),
@@ -416,9 +427,9 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
                 body = body[close + 1 :]
             words = {word[0] for word in _IDENTIFIER.finditer(body)}
             uses.setdefault(name, set()).update(words)
-            if unknown or not _balanced(body):
+            if unknown or not _balanced(body, tokens):
                 found["brackets"].add(name)
-            if unknown or not _balanced(body.replace(";", " ")):
+            if unknown or not _balanced(body.replace(";", " "), tokens):
                 found["blocks"].add(name)
             if unknown or words & {"case", "default"} or _LABEL.search(body):
                 found["labels"].add(name)
@@ -544,12 +555,13 @@ def _parameters_follow(token):
     return bool(_WORD.fullmatch(token)) or token in (")", "]", ":>")
 
 
-def _balanced(body):
+def _balanced(body, tokens=_TOKENS):
     """Whether a macro's blanked body closes each bracket it opens and holds no `;`
-    outside them (a statement expression's `({ a; b; })` is fine), `<::` or token
-    paste."""
+    outside them (a statement expression's `({ a; b; })` is fine), C's `<::` or token
+    paste. ``tokens``: the language's (``_CXX_TOKENS`` for C++, where `<::x` is `<` and
+    `::x`)."""
     depth = 0
-    for token in _TOKENS.finditer(body):
+    for token in tokens.finditer(body):
         if token[0] in _OPEN:
             depth += 1
         elif token[0] in _CLOSE:
@@ -647,6 +659,12 @@ class Statements:
     def __init__(self, text, raw_strings=True, hazards=None, trigraphs=None):
         # C (`-std=c11`) has trigraphs and no raw strings; C++17 the other way round.
         self.raw_strings = raw_strings
+        # C++ (C++11 on) reads `<::x` as `<` and `::x`; C reads it as the digraph `<:`.
+        self._tokens, self._words, self._declaration_tokens = (
+            (_CXX_TOKENS, _CXX_WORDS, _CXX_DECLARATION_TOKENS)
+            if raw_strings
+            else (_TOKENS, _WORDS, _DECLARATION_TOKENS)
+        )
         self.text = translated(text, not raw_strings if trigraphs is None else trigraphs)
         self.blanked = blank(self.text, raw_strings)
         self.starts = [0] + [mark.end() for mark in re.finditer("\n", self.blanked)]
@@ -697,7 +715,7 @@ class Statements:
         first = start = starts[line - 1]
         end_of_line = starts[line] if line < len(starts) else len(blanked)
         depth, found, last = 0, None, None
-        for mark in _TOKENS.finditer(blanked, first):
+        for mark in self._tokens.finditer(blanked, first):
             token = mark[0]
             if token in _OPEN:
                 depth += 1
@@ -775,11 +793,11 @@ class Statements:
         # Each statement on the line that names the name, and each that declares it, as
         # ``found`` gives them.
         named, declared = [], []
-        while (token := _WORDS.search(blanked, position)) is not None:
+        while (token := self._words.search(blanked, position)) is not None:
             word, start = token[0], token.start()
             if start >= end_of_line:
                 break
-            following = _WORDS.search(blanked, token.end())
+            following = self._words.search(blanked, token.end())
             after = following[0] if following else None
             if word in ("{", "<%", "}", "%>", ";") or word in _LEADING:
                 # A block's edge, an empty statement, or what a statement follows.
@@ -798,7 +816,7 @@ class Statements:
             if word in _HEADERS:
                 opening = following
                 if after == "constexpr":
-                    opening = _WORDS.search(blanked, following.end())
+                    opening = self._words.search(blanked, following.end())
                 if opening is not None and opening[0] == "(":
                     closed = self._closing(opening.start())
                     if closed is None:
@@ -991,16 +1009,16 @@ class Statements:
         does not read (`else`, `__try`), or one that begins with no word, nor a bracket
         or `-`, `--` or `::` that can begin an expression."""
         code, pairs = self._code()
-        token = _WORDS.search(code, start)
+        token = self._words.search(code, start)
         if token is None:
             return None
         word = token[0]
         if word in ("{", "<%"):
             end = pairs.get(token.start())
         elif word in _HEADERS:
-            opening = _WORDS.search(code, token.end())
+            opening = self._words.search(code, token.end())
             if opening is not None and opening[0] == "constexpr":
-                opening = _WORDS.search(code, opening.end())
+                opening = self._words.search(code, opening.end())
             closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
             end = None if closing is None else self._controlled(closing + 1, word)
         elif word == "do":
@@ -1021,7 +1039,7 @@ class Statements:
             return None
         if end is None or keyword != "if":
             return end
-        following = _WORDS.search(code, end + 1)
+        following = self._words.search(code, end + 1)
         if following is None or following[0] != "else":
             return end
         # `else if (...)` is read as an `if`, with its own `else`.
@@ -1031,7 +1049,7 @@ class Statements:
         """Whether the word ``token`` (a match in ``_code``) is a label's: a `:` follows
         it, not `::`."""
         code = self._code()[0]
-        following = _WORDS.search(code, token.end())
+        following = self._words.search(code, token.end())
         return bool(
             _WORD.fullmatch(token[0])
             and following is not None
@@ -1044,7 +1062,7 @@ class Statements:
         `default:`, `case N::k ? 1 : 2:`); None if Peeky cannot tell."""
         code = self._code()[0]
         if token[0] != "case":
-            following = _WORDS.search(code, token.end())
+            following = self._words.search(code, token.end())
             if following is None or following[0] != ":":
                 return None
             return following.start() if not code[token.end() : following.start()].strip() else None
@@ -1080,31 +1098,31 @@ class Statements:
         body = self._controlled(start)
         if body is None:
             return None
-        word = _WORDS.search(code, body + 1)
+        word = self._words.search(code, body + 1)
         if word is None or word[0] != "while":
             return None
-        opening = _WORDS.search(code, word.end())
+        opening = self._words.search(code, word.end())
         closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
         if closing is None:
             return None
-        semicolon = _WORDS.search(code, closing + 1)
+        semicolon = self._words.search(code, closing + 1)
         return semicolon.start() if semicolon and semicolon[0] == ";" else None
 
     def _try_end(self, start):
         """Where a `try` block that starts at ``start`` ends: the `}` of its last
         `catch (...) { … }`; None if Peeky cannot tell."""
         code, pairs = self._code()
-        block = _WORDS.search(code, start)
+        block = self._words.search(code, start)
         if block is None or block[0] not in ("{", "<%"):
             return None
         end, handlers = pairs.get(block.start()), 0
         while end is not None:
-            word = _WORDS.search(code, end + 1)
+            word = self._words.search(code, end + 1)
             if word is None or word[0] != "catch":
                 break
-            opening = _WORDS.search(code, word.end())
+            opening = self._words.search(code, word.end())
             closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
-            body = _WORDS.search(code, closing + 1) if closing is not None else None
+            body = self._words.search(code, closing + 1) if closing is not None else None
             if body is None or body[0] not in ("{", "<%"):
                 return None
             end, handlers = pairs.get(body.start()), handlers + 1
@@ -1113,7 +1131,7 @@ class Statements:
     def _statement(self, start):
         """Where the plain statement at ``start`` ends (its `;`), or None."""
         depth = 0
-        for mark in _TOKENS.finditer(self.blanked, start):
+        for mark in self._tokens.finditer(self.blanked, start):
             token = mark[0]
             if token in _OPEN:
                 depth += 1
@@ -1173,7 +1191,7 @@ class Statements:
             return None
         position, depth, header = found[0], found[1], found[2]
         blanked, starts = self.blanked, self.starts
-        marks = list(_WORDS.finditer(blanked, position + 1))
+        marks = list(self._words.finditer(blanked, position + 1))
         for index, mark in enumerate(marks):
             word = mark[0]
             after = marks[index + 1][0] if index + 1 < len(marks) else None
@@ -1209,7 +1227,7 @@ class Statements:
         """(position of the bracket closing the one at ``opening``, position of the
         first `;` directly inside it or None), or None if they do not balance."""
         depth, semicolon = 0, None
-        for mark in _TOKENS.finditer(self.blanked, opening):
+        for mark in self._tokens.finditer(self.blanked, opening):
             token = mark[0]
             if token in _OPEN:
                 depth += 1
@@ -1436,7 +1454,7 @@ class Statements:
         for number in range(bisect.bisect_right(starts, position) + 1, stop + 1):
             if _INCLUDE.match(blanked, starts[number - 1]) and not self._transparent(number):
                 return None
-        marks = list(_WORDS.finditer(blanked, position + 1, limit))
+        marks = list(self._words.finditer(blanked, position + 1, limit))
         for index, mark in enumerate(marks):
             word = mark[0]
             after = marks[index + 1][0] if index + 1 < len(marks) else None
@@ -1475,7 +1493,7 @@ class Statements:
         head = next(
             (
                 word
-                for word in _WORDS.finditer(blanked, starts[line - 1], end_of_line)
+                for word in self._words.finditer(blanked, starts[line - 1], end_of_line)
                 if word[0] in ("struct", "class", "union")
             ),
             None,
@@ -1545,7 +1563,7 @@ class Statements:
         nor a macro that may hold a label, a jump or an open bracket."""
         if "jumpless_text" not in self.__dict__:
             blanked = self.blanked
-            words = list(_WORDS.finditer(blanked))
+            words = list(self._words.finditer(blanked))
             labelled = any(
                 word[0] in ("case", "goto")
                 or word[0] in self.opaque
@@ -1645,7 +1663,7 @@ class Statements:
         blanked = self.blanked
         stack, braces, switches = [], [], {}
         closed_paren = None
-        for mark in _TOKENS.finditer(blanked):
+        for mark in self._tokens.finditer(blanked):
             token = mark[0]
             if token in _OPEN:
                 if token in ("{", "<%"):
@@ -1789,9 +1807,9 @@ class Statements:
         code, pairs = self._code()
         finish = self.starts[line] if line < len(self.starts) else len(code)
         position, last = begin, begin
-        while (token := _WORDS.search(code, position)) is not None and token.start() < finish:
+        while (token := self._words.search(code, position)) is not None and token.start() < finish:
             word, start = token[0], token.start()
-            following = _WORDS.search(code, token.end())
+            following = self._words.search(code, token.end())
             after = following[0] if following else None
             if word in ("{", "<%", "}", "%>", ";") or word in _LEADING:
                 position = token.end()
@@ -1811,7 +1829,7 @@ class Statements:
                 continue
             opening = following
             if word in _HEADERS and after == "constexpr":
-                opening = _WORDS.search(code, following.end())
+                opening = self._words.search(code, following.end())
             if word in _HEADERS and opening is not None and opening[0] == "(":
                 closing = pairs.get(opening.start())
                 if closing is None:
@@ -2063,7 +2081,7 @@ class Statements:
             if "?" in code[parenthesis : before[1]]:
                 continue
             depth = 0
-            for mark in _TOKENS.finditer(code, parenthesis + 1, before[1]):
+            for mark in self._tokens.finditer(code, parenthesis + 1, before[1]):
                 if mark[0] in _OPEN:
                     depth += 1
                 elif mark[0] in _CLOSE:
@@ -2130,7 +2148,7 @@ class Statements:
             again = closing if keyword != "while" else start
             if keyword == "for" and binding is None:
                 depth, semicolons = 0, []
-                for mark in _TOKENS.finditer(code, start + 1, closing):
+                for mark in self._tokens.finditer(code, start + 1, closing):
                     depth += (mark[0] in _OPEN) - (mark[0] in _CLOSE)
                     if depth == 0 and mark[0] == ";":
                         semicolons.append(mark.start())
@@ -2249,7 +2267,7 @@ class Statements:
         `}`)."""
         code = self._code()[0]
         depth = 0
-        for mark in _TOKENS.finditer(code, position, end):
+        for mark in self._tokens.finditer(code, position, end):
             token = mark[0]
             if token in _OPEN:
                 depth += 1
@@ -2293,7 +2311,7 @@ class Statements:
         # The binding's brackets at the header's own depth (after its last `;`, an
         # init-statement's end), then the range's `:`.
         binding, depth = None, 0
-        for mark in _TOKENS.finditer(code, start + 1, closing):
+        for mark in self._tokens.finditer(code, start + 1, closing):
             token = mark[0]
             if token in _OPEN:
                 if (
@@ -2320,7 +2338,7 @@ class Statements:
             return None
         code = self._code()[0]
         depth, begin, semicolons = 0, start + 1, 0
-        for mark in _TOKENS.finditer(code, start + 1, closing):
+        for mark in self._tokens.finditer(code, start + 1, closing):
             token = mark[0]
             if token in _OPEN:
                 depth += 1
@@ -2448,7 +2466,7 @@ class Statements:
                     return None
             return found
 
-        for token in _DECLARATION_TOKENS.finditer(code, start, stop):
+        for token in self._declaration_tokens.finditer(code, start, stop):
             text = token[0]
             state = conditions.get(bisect.bisect_right(self.starts, token.start()))
             if state == "dead":
@@ -3570,7 +3588,7 @@ class Statements:
                     lines[index] = " " * len(text)
             code = "\n".join(lines)
             stack, pairs = [], {}
-            for mark in _TOKENS.finditer(code):
+            for mark in self._tokens.finditer(code):
                 token = mark[0]
                 if token in _OPEN:
                     stack.append((token, mark.start()))
@@ -3609,7 +3627,7 @@ class Statements:
             while start > 0 and _word_char(code[start - 1]):
                 start -= 1
             return code[start : at + 1], start
-        for mark in _TOKENS.finditer(code, max(0, at - 3), at + 1):
+        for mark in self._tokens.finditer(code, max(0, at - 3), at + 1):
             if mark.end() == at + 1:
                 return mark[0], mark.start()
         return code[at], at

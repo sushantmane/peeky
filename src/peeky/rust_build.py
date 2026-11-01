@@ -20,6 +20,7 @@ the program runs. Not a sandbox.
 
 import contextlib
 import fcntl
+import filecmp
 import fnmatch
 import hashlib
 import json
@@ -898,9 +899,10 @@ def check_codegen(package, crate, args):
 
 def _dependency_file(filenames):
     """(the dependency file of a compile with these output files, its form): rustc's own,
-    beside an output in `deps` or a build script's directory; else the one Cargo writes
-    beside a binary it copies up (`target/debug/app.d`, make's form, which also lists the
-    local packages it uses)."""
+    beside an output in `deps` or a build script's directory, or beside the output Cargo
+    copied up (``_copied_from``); else the one Cargo writes beside a binary it copies up
+    (``_cargo_dependency_file``), "cargo". Cargo writes that one only for what the command
+    names, not for a binary an integration test runs (#481)."""
     paths = [Path(filename) for filename in filenames]
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
@@ -908,23 +910,74 @@ def _dependency_file(filenames):
             candidate.is_file()
         ):
             return candidate, "rustc"
-        if path.parent.parent.name == "build" and path.name == "build-script-build":
-            # A build script, which Cargo names `build-script-build` beside rustc's own
-            # `build_script_build-<hash>` and its dependency file.
+        if path.parent.parent.name == "build" and path.name.startswith("build-script-"):
+            # A build script, which Cargo names `build-script-build` (`build-script-main`
+            # for `build = "build/main.rs"`) beside rustc's own `build_script_main-<hash>`
+            # and its dependency file, alone in the compile's directory.
             found = [
                 Path(entry.path)
                 for entry in _listed(
                     path.parent, [4096], f"Cargo's {path.parent} holds more than 4096 entries"
                 )
-                if fnmatch.fnmatchcase(entry.name, "build_script_build-*.d")
+                if fnmatch.fnmatchcase(entry.name, "build_script_*-*.d")
             ]
             if len(found) == 1:
                 return found[0], "rustc"
     for path in paths:
+        copied = _copied_from(path)
+        if copied is not None and (candidate := copied.with_name(copied.name + ".d")).is_file():
+            return candidate, "rustc"
+    if (candidate := _cargo_dependency_file(filenames)) is not None:
+        return candidate, "cargo"
+    return None, None
+
+
+def _cargo_dependency_file(filenames):
+    """The dependency file Cargo writes, in make's form, beside a binary it copies up
+    (`target/debug/app.d`), or None. It lists its build scripts' `rerun-if-changed`
+    paths too, which rustc's doesn't."""
+    for path in (Path(filename) for filename in filenames):
+        if path.parent.name == "deps" or path.parent.parent.name == "build":
+            continue
         candidate = path.with_name(_stem(path.name) + ".d")
         if candidate.is_file():
-            return candidate, "make"
-    return None, None
+            return candidate
+    return None
+
+
+def _copied_from(path):
+    """rustc's own output in `deps` that Cargo copied up as ``path`` (`deps/rg-<hash>` as
+    `target/debug/rg`), or None: the one `<crate>-<hash>` there of the same inode (a hard
+    link, as on Linux), else of the same bytes (a copy, as on macOS) (#481)."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or path.parent.name == "deps":
+        return None
+    named = re.compile(re.escape(path.name.replace("-", "_")) + r"-[0-9a-f]+")
+    deps = path.parent / "deps"
+    try:
+        candidates = [
+            entry
+            for entry in _listed(
+                deps, [MAX_RECORDED], f"Cargo's {deps} holds more than {MAX_RECORDED:,} entries"
+            )
+            if named.fullmatch(entry.name) and entry.is_file(follow_symlinks=False)
+        ]
+    except OSError:
+        return None
+    linked = [entry for entry in candidates if entry.inode() == info.st_ino]
+    if len(linked) == 1 and linked[0].stat(follow_symlinks=False).st_dev == info.st_dev:
+        return Path(linked[0].path)
+    same = []
+    for entry in candidates:
+        check_stop()
+        if entry.stat(follow_symlinks=False).st_size == info.st_size and filecmp.cmp(
+            entry.path, path, shallow=False
+        ):
+            same.append(entry)
+    return Path(same[0].path) if len(same) == 1 else None
 
 
 # What is known of a git index whose bytes changed, its entries as they were. It is
@@ -1267,6 +1320,14 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         )
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         directories.update(read["directories"])
+        if (cargo := _cargo_dependency_file(filenames)) not in (None, depfile):
+            # Cargo's own too, beside the binary it copied up: its build scripts'
+            # `rerun-if-changed` paths, directories among them (``_watched_directories``).
+            also = _read_dependencies(
+                cargo, shape.workspace, root, target_dir, package.name, "cargo"
+            )
+            _record_read(also, root, target_dir, before, started_ns, sources, generated)
+            directories.update(also["directories"])
         if macro:
             _check_bootstrap_mentions(
                 read, root, target_dir, f"the procedural macro `{artifact.get('name')}`"
@@ -1369,6 +1430,13 @@ _CARGO_SETS = re.compile(
 _CARGO_INHERITED = re.compile(
     r"CARGO_(?:HOME|TARGET_DIR|INCREMENTAL|NET_OFFLINE|TERM_COLOR|PROFILE_[A-Z0-9_]+|"
     r"PRIMARY_PACKAGE|CRATE_NAME)"
+)
+# Cargo's configuration given in its environment (`CARGO_BUILD_RUSTFLAGS`,
+# `CARGO_TARGET_<triple>_RUSTFLAGS`, which portable-atomic's build script watches): Cargo
+# 1.96 sets none of them for a build script, whatever its configuration files say, and
+# passes on its own environment's unchanged. So each is what Peeky gives Cargo (#482).
+_CARGO_PASSED = re.compile(
+    r"CARGO_BUILD_[A-Z0-9_]+|CARGO_TARGET_[A-Z0-9_]+_(?:RUSTFLAGS|RUSTDOCFLAGS|RUNNER)"
 )
 # Cargo's `CARGO_PKG_*` of a manifest's `[package]` fields (as written, else empty).
 _PACKAGE_FIELDS = {
@@ -1599,10 +1667,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     how Peeky knows it: "cargo", "jobs" or "launch")
     in Peeky's build (``env``: what Peeky runs Cargo with; ``jobs_``: its `-j`): Cargo's
     own for its host, profile and jobs; the profile's for `OPT_LEVEL` and `DEBUG`, and
-    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph; the
+    the features for `CARGO_FEATURE_*` and `CARGO_CFG_FEATURE`, from the unit graph
+    (where the script runs more than once, the value every run has); the
     build's `rustc --print cfg` for `CARGO_CFG_*`; the package's manifest and place for
     `CARGO_PKG_*` and `CARGO_MANIFEST_*`; Peeky's own rustflags; else what Peeky gives
-    Cargo, which Cargo passes on. Refused for one Cargo sets otherwise, whose value Peeky
+    Cargo, which Cargo passes on (Cargo's configuration in its environment too:
+    _CARGO_PASSED). Refused for one Cargo sets otherwise, whose value Peeky
     doesn't compute (`OUT_DIR`, `DEP_*`, `CARGO_MAKEFLAGS`, `CARGO_PKG_README`, which a
     file's presence decides, `CARGO_CFG_DEBUG_ASSERTIONS`)."""
     source, directory, package, version = rust_workspace.package_id(package_id)
@@ -1611,7 +1681,13 @@ def _script_value(name, package_id, shape, env, jobs_):
     # environment's, which Cargo passes on.
     how = "cargo"
     profiles = [each for each in shape.build_profiles if each[0] == package_id]
-    profile = profiles[0] if len(profiles) == 1 else None
+
+    def agreed(value_of):
+        # A package's build script may run more than once (rustix's, for the build
+        # scripts and for the program): the value where every run's is the same.
+        values = {value_of(each) for each in profiles}
+        return values.pop() if len(values) == 1 else ...
+
     if source is None:
         place = Path(directory)
     elif (copy := shape.vendored.get((package, version))) is not None:
@@ -1625,15 +1701,13 @@ def _script_value(name, package_id, shape, env, jobs_):
         found = "debug"
     elif name == "NUM_JOBS":
         found, how = str(jobs_), "jobs"
-    elif name in ("OPT_LEVEL", "DEBUG") and profile is not None:
-        found = profile[1] if name == "OPT_LEVEL" else profile[2]
+    elif name in ("OPT_LEVEL", "DEBUG"):
+        found = agreed(lambda each: each[1] if name == "OPT_LEVEL" else each[2])
     elif name.startswith("CARGO_FEATURE_"):
-        if profile is not None:
-            features = {_envify(each) for each in profile[3]}
-            found = "1" if name.removeprefix("CARGO_FEATURE_") in features else None
+        feature = name.removeprefix("CARGO_FEATURE_")
+        found = agreed(lambda each: "1" if feature in {_envify(f) for f in each[3]} else None)
     elif name == "CARGO_CFG_FEATURE":
-        if profile is not None:
-            found = ",".join(profile[3])
+        found = agreed(lambda each: ",".join(each[3]))
     elif name.startswith("CARGO_CFG_") and name != "CARGO_CFG_DEBUG_ASSERTIONS":
         found = _cfg_value(name.removeprefix("CARGO_CFG_"), shape.cfgs)
     elif name == "CARGO_ENCODED_RUSTFLAGS":
@@ -1659,7 +1733,12 @@ def _script_value(name, package_id, shape, env, jobs_):
     elif place is not None and name == "CARGO_MANIFEST_LINKS":
         found = _manifest_field(shape, place, "links")
         found = None if found == "" else found
-    elif name == "RUSTC" or _CARGO_INHERITED.fullmatch(name) or not _CARGO_SETS.fullmatch(name):
+    elif (
+        name == "RUSTC"
+        or _CARGO_INHERITED.fullmatch(name)
+        or _CARGO_PASSED.fullmatch(name)
+        or not _CARGO_SETS.fullmatch(name)
+    ):
         found, how = env.get(name), "launch"
     if found is ...:
         raise ValueError(
@@ -1995,13 +2074,13 @@ def _read_dependencies(depfile, workspace, root, target_dir, package, producer="
         resolved = path.resolve()
         if resolved.is_relative_to(target_dir):
             found["generated"].append(resolved.relative_to(target_dir).as_posix())
-        elif producer == "make" and resolved.is_relative_to(root) and resolved.is_dir():
+        elif producer == "cargo" and resolved.is_relative_to(root) and resolved.is_dir():
             # A build script's `rerun-if-changed` directory, which Cargo lists too: what it
             # holds is recorded entry by entry (``_build_inputs``), not hashed as a file.
             found["directories"].append(resolved)
         elif resolved.is_relative_to(root):
             found["sources"].append(resolved.relative_to(root).as_posix())
-        elif producer == "make":
+        elif producer == "cargo":
             # Cargo's own dependency file lists its build scripts' `rerun-if-changed` paths too.
             raise ValueError(
                 f"Peeky builds only files inside {root}: `{package}`'s build read "

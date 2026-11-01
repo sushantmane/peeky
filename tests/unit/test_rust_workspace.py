@@ -1316,6 +1316,55 @@ def test_reading_a_workspace_takes_the_unit_graph_again_and_needs_it_identical(
     assert code(caught) == "PROVENANCE_CHANGED"
 
 
+def twin_graph(root):
+    """bat's shape (#481): two `regex`-like units alike but for what they depend on (a
+    `leaf` with feature `a`, and one with `b`), in the order Cargo happened to list them."""
+    units = graph(root)["units"]
+    a = unit(SMALLNUM, "smallnum", ["lib"], root / "vendor/smallnum/src/lib.rs", edition="2015")
+    b = {**a, "features": ["b"]}
+    a["features"] = ["a"]
+    twin = unit(ident(root, "util"), "util", ["lib"], root / "util/src/lib.rs")
+    units[1] = {**twin, "dependencies": [{"index": 3, "extern_crate_name": "smallnum"}]}
+    units[2] = {**twin, "dependencies": [{"index": 4, "extern_crate_name": "smallnum"}]}
+    units[0]["dependencies"] = [{"index": 1, "extern_crate_name": "util"}]
+    return {"version": 1, "units": [*units, a, b], "roots": [0]}
+
+
+def test_a_unit_graph_listed_in_another_order_is_the_same_graph(tmp_path, workspace, monkeypatch):
+    # Cargo lists units alike but for their dependencies in no fixed order: bat's graph
+    # numbered its two `regex` units either way, run to run, and every build was refused.
+    first = twin_graph(workspace)
+    second = json.loads(json.dumps(first))
+    second["units"][1], second["units"][2] = second["units"][2], second["units"][1]
+    second["units"][0]["dependencies"] = [{"index": 2, "extern_crate_name": "util"}]
+    assert json.dumps(first) != json.dumps(second)
+    fake_cargo(monkeypatch, workspace, [first, second])
+    read(tmp_path, workspace)
+    assert rw.canonical_graph(first) == rw.canonical_graph(second)
+    # Each part a unit has, and each it depends on, still counts.
+    changes = [
+        lambda g: g["units"][3]["features"].append("c"),
+        lambda g: g["units"][3]["profile"].update(debuginfo=0),
+        lambda g: g["units"][1]["dependencies"][0].update(index=3),
+        lambda g: g["units"][1]["dependencies"][0].update(extern_crate_name="num"),
+        lambda g: g["units"][0]["dependencies"].append({"index": 2, "extern_crate_name": "u"}),
+        lambda g: g["units"].append(g["units"][4]),
+        lambda g: g.update(roots=[1]),
+    ]
+    for change in changes:
+        other = json.loads(json.dumps(second))
+        change(other)
+        assert rw.canonical_graph(first) != rw.canonical_graph(other)
+        fake_cargo(monkeypatch, workspace, [first, other])
+        with pytest.raises(ValueError, match="unit graph of the build changed"):
+            read(tmp_path, workspace)
+    # A cycle is no unit graph Peeky reads.
+    looped = json.loads(json.dumps(first))
+    looped["units"][3]["dependencies"] = [{"index": 0, "extern_crate_name": "app"}]
+    with pytest.raises(ValueError, match="units that depend on each other in a cycle"):
+        rw.canonical_graph(looped)
+
+
 def test_every_manifest_cargos_metadata_names_is_watched(tmp_path, workspace, monkeypatch):
     # A path dependency the build doesn't compile (an optional one) is named by its member's
     # metadata; Cargo reads its manifest, wherever it is.

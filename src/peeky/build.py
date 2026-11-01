@@ -807,10 +807,13 @@ class UnreadDependencies(ValueError):
 
 def dependency_paths(text, base, producer):
     """Every file a compile read, from its dependency file: ``producer`` "rustc" (rustc's
-    `--emit=dep-info`) or "make" (`clang -MD`, `gcc -MD`), each read by its own escaping.
-    Lines end at `\n` alone (a U+2028 is part of a name). Anything that could be read two
-    ways raises UnreadDependencies."""
-    names = _rustc_dependencies(text) if producer == "rustc" else _make_dependencies(text, base)
+    `--emit=dep-info`), "make" (`clang -MD`, `gcc -MD`) or "cargo" (Cargo's own, beside a
+    binary it copies up), each read by its own escaping. Lines end at `\n` alone (a U+2028
+    is part of a name). Anything that could be read two ways raises UnreadDependencies."""
+    if producer == "rustc":
+        names = _rustc_dependencies(text)
+    else:
+        names = _make_dependencies(text, base, cargo=producer == "cargo")
     return [path if (path := Path(name)).is_absolute() else Path(base) / path for name in names]
 
 
@@ -852,7 +855,7 @@ _DOLLARS = re.compile(r"\$*")
 _PLAIN = re.compile(r"[^\\$#\t ]+")
 
 
-def _make_dependencies(text, base):
+def _make_dependencies(text, base, cargo=False):
     r"""The prerequisites of the one rule in a `-MD` file (`peeky-object-0.o: a.c b\ c.h
     \`, continued on the next line). clang and gcc (10 and later) escape a space as `\ `
     (and a space after N backslashes as 2N+1 of them), `#` as `\#` and `$` as `$$`; gcc
@@ -861,7 +864,10 @@ def _make_dependencies(text, base):
     backslash or a tab, an undoubled `$`, a bare `#`, a line that neither ends the rule
     nor continues it (a name with a newline), and an escaped space where the file the
     other reading names (one ending in a backslash) exists; as are a `$` where the
-    file with it undoubled exists too (gcc before 10 does not escape `$`)."""
+    file with it undoubled exists too (gcc before 10 does not escape `$`). Cargo's own
+    (``cargo``) prints a build script's `rerun-if-changed` path as the script wrote it,
+    with no backslash for clang's: a directory's may end at one `/` (bat's
+    `assets/completions/`)."""
     lines = text.split("\n")
     if lines[-1:] == [""]:
         lines.pop()
@@ -939,7 +945,7 @@ def _make_dependencies(text, base):
             raise UnreadDependencies(
                 f"a backslash or tab in {name!r}, which make's escaping leaves ambiguous"
             )
-        if "//" in name or name.endswith("/"):
+        if "//" in name or (name.endswith("/") and not cargo):
             # clang prints a name's backslash as `/`: `/w/\\x.h` reads `/w//x.h`, which a
             # path would shorten to another file (`/w/x.h`).
             raise UnreadDependencies(
