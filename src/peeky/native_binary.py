@@ -767,6 +767,18 @@ def _declares(blanked, at):
     return bool(_WORD.fullmatch(token)) and token not in _STATEMENT_WORDS
 
 
+def _before_cxx11(words):
+    """The option of a C++ unit's recorded ``words`` choosing a standard before C++11
+    (`-std=c++03`, `-ansi`), where it is the last to choose one; else None. clang's default
+    is later."""
+    chosen = None
+    for word in words[1:]:
+        if word == "-ansi" or word.startswith(("-std=", "--std=")):
+            chosen = word
+    value = chosen.split("=", 1)[1] if chosen and "=" in chosen else chosen
+    return chosen if value in ("-ansi", "c++98", "c++03", "gnu++98", "gnu++03") else None
+
+
 def replay_environment(scratch):
     """The environment of a unit's replay: Peeky's own. None of what may add options or
     header paths (CCC_*, CL, _CL_, CPATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH,
@@ -810,6 +822,11 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         return unread(str(exc))
     if (defined := _defined_probe(arguments)) is not None:
         return unread(defined)
+    if judged.language == "cpp" and (older := _before_cxx11(judged.words)) is not None:
+        return unread(
+            f"its command uses {older}: Peeky reads C++ as C++11 and later do (raw strings, "
+            "`<::` as `<` and `::`)"
+        )
     if unit.sysroot and not any(
         word in ("-isysroot", "--sysroot") or word.startswith("--sysroot=") for word in arguments
     ):

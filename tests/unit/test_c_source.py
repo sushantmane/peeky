@@ -127,8 +127,29 @@ def test_digraphs_are_brackets():
     )
     assert end(source, 1, "t") == 3
     assert end("long v = arr<: <:&:>() <% return 0; %>() :> + g(\n    1);\n", 1, "v") == 2
-    # C++11 reads `<::` as `<` and `::`, C as `<:` and `:`.
-    assert end("std::vector<::Item> items = make(\n    1);\n", 1, "items") is None
+    # C++11 reads `<::` as `<` and `::`, but `<::>` and `<:::` as `<:` first; C reads
+    # every `<::` as `<:` and `:`, which Peeky doesn't follow.
+    vector = "std::vector<::Item> items = make(\n    1);\n"
+    assert end(vector, 1, "items") == 2
+    assert Statements(vector, raw_strings=False).end(1, "items") is None
+    assert end("long v = arr<::> + g(\n    1);\n", 1, "v") == 2
+    assert end("long v = arr<:::x:> + g(\n    1);\n", 1, "v") == 2
+    assert end("long v = f<::x>(\n    1);\n", 1, "v") == 2
+
+
+def test_a_template_argument_after_lt_colon_colon_leaves_the_blocks_readable():
+    # gtest.h's `internal::PrintTo<::std::type_info>(value, os);`: C++11 reads `<` and `::`,
+    # so the blocks around a later stop still balance, and a parameter (declared on no line
+    # Peeky knows) is read past an `#include`.
+    source = (
+        "#include <typeinfo>\n"
+        "inline void at(const std::type_info *i) { show<::std::type_info>(i); }\n"
+        "int main(int argc, char **argv) {\n  try {\n    use(&argc, argv);\n"
+        "  } catch (...) {\n  }\n  return 0;\n}\n"
+    )
+    assert Statements(source).block_storage(5, "argc", None, True) is False
+    # C reads `<::` as `<:` and `:`: Peeky can't tell.
+    assert Statements(source, raw_strings=False).block_storage(5, "argc", None, True) is None
 
 
 def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():

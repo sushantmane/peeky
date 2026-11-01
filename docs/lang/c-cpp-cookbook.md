@@ -609,7 +609,7 @@ The local is also withheld wherever the source doesn't show where the declaratio
 - brackets that don't balance;
 - between the declaration and its end, text the compiler may read differently from Peeky's scan:
   - a directive such as `#include`;
-  - a line splice, or `<::`;
+  - a line splice, or, in C, `<::`;
   - a macro of the program's sources and headers that leaves a bracket open, or holds a `;` outside
     its brackets;
 - anywhere in the file, a `#line` directive.
@@ -617,7 +617,9 @@ The local is also withheld wherever the source doesn't show where the declaratio
 How Peeky reads the source:
 
 - C's trigraphs are read as `-std=c11` reads them: `??/` is a backslash. C++17 has no trigraphs.
-- Digraphs (`<% %> <: :>`) are brackets.
+- Digraphs (`<% %> <: :>`) are brackets. C++ reads `f<::std::size_t>` as `<` and `::`, as C++11
+  does; `<::>` stays `<:` `:>`. A binary target's C++ unit built before C++11 (`-std=c++03`) has
+  its text unread.
 - Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
   lone `\n` each end a line; `\n\r` is two line ends.
 

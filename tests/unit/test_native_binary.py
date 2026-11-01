@@ -754,6 +754,22 @@ def test_what_a_replay_reads_must_be_what_the_line_table_names(root, tmp_path):
     assert isinstance(_replay(root, tmp_path, words=words), UnitText)
 
 
+def test_a_cpp_unit_built_before_cpp11_leaves_its_text_unread(root, tmp_path):
+    # Peeky reads C++ as C++11 and later do: raw strings, and `<::` as `<` and `::`.
+    from peeky.native_binary import UnitText
+
+    cpp = judge(_unit(root, language="DW_LANG_C_plus_plus_14"), _tables(root), CLANG, root)
+    for std in ("-std=c++03", "-std=gnu++98", "-ansi"):
+        words = ["/usr/bin/clang++", std, "-O0", "-c", "src/main.c"]
+        assert _replay(root, tmp_path, judged=cpp, words=words) == (
+            f"Peeky can't read src/main.c as compiled: its command uses {std}: Peeky reads C++ "
+            "as C++11 and later do (raw strings, `<::` as `<` and `::`)"
+        ), std
+    for std in ((), ("-std=c++03", "-std=c++11"), ("-std=gnu++17",)):
+        words = ["/usr/bin/clang++", *std, "-O0", "-c", "src/main.c"]
+        assert isinstance(_replay(root, tmp_path, judged=cpp, words=words), UnitText), std
+
+
 def test_a_replay_that_cant_run_says_why(root, tmp_path):
     (root / "fail").write_text("")
     assert _replay(root, tmp_path) == (
