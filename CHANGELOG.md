@@ -31,6 +31,14 @@
 
 ### Other changes
 
+- **Rust workspaces: a change of `.git/index` whose entries are the same is said so.**
+  git-version's macro (bat's) has rustc read `.git/index` as a source, and runs `git describe
+  --dirty` while the crate compiles. git may then rewrite the index with its cached file status
+  refreshed, its entries the same, so bat's first build in a fresh checkout is refused. Peeky
+  still compares the index by its bytes, which a crate may use. The refusal, and a probe's, now
+  says its entries are the same: `peeky build` again builds it. A probe no longer fails on a
+  crate's source that isn't UTF-8, such as this index.
+
 - **Rust workspaces: the unit graph in another order, and dependency files Peeky missed
   (#481).** Cargo lists units alike but for their dependencies in no fixed order. So the unit
   graph Peeky reads twice was refused as changed about half the time (bat, coreutils, ripgrep's

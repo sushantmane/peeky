@@ -470,3 +470,15 @@ def test_a_dwarf_5_line_table_without_its_own_directory_fails(tmp_path, change):
     text = LINE_TABLE.replace(*change, 1).format(root=tmp_path)
     with pytest.raises(ValueError):
         _line_rows(text, tmp_path, declared)
+
+
+def test_a_file_a_rust_crate_includes_as_bytes_is_counted_by_its_bytes(tmp_path):
+    # git-version's `git_version!()` (bat's) `include_bytes!`es `.git/index`, so rustc's
+    # dependency file lists it among the crate's sources: no UTF-8, and no line-table rows.
+    (tmp_path / "lib.rs").write_text("fn f() {}\n")
+    (tmp_path / "index").write_bytes(b"DIRC\xff\xfe\n\x00\x9c")
+    parser = _LineParser(tmp_path, ["lib.rs", "index"], rust=True)
+    assert parser.counts == {"lib.rs": 1, "index": 2}
+    # A C or C++ source is read as clang reads it, UTF-8, as before.
+    with pytest.raises(UnicodeDecodeError):
+        _LineParser(tmp_path, ["index"])
