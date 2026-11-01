@@ -1,0 +1,7 @@
+{
+ "judge_id": "a071",
+ "wrong_root_cause": false,
+ "evidence": "Message 5: \"The old CIRS route applied unwanted aberration corrections to nearby-object geometry.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 probe at cirs_observed_transforms.py:31 on the common_errors doctest: cirs_coo.distance 10.02067845 km and location (3934.36, -68.67, 5002.80) km match cmd 8's printed AltAz distance 10.02067845 km for the same J2010 example. Cmd 45 at itrs_observed_transforms.py:97: itrs_coo.spherical.distance [10,10,10] km, observed_frame.obstime None, rep ~(0,0,10) km agree with test_straight_overhead's three 10 km-high objects, obstime=None case (cmd 31 test code) and its passing distance==10 km / alt==90 deg asserts. Nothing contradicted."
+}

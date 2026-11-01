@@ -1,0 +1,354 @@
+{
+ "bug": "micropython__micropython-13569",
+ "arm": "peeky-first",
+ "rep": 3,
+ "language": "c",
+ "category": "C",
+ "image": "peeky-study/micropython__micropython-13569:peeky-r2",
+ "image_digest": "sha256:dbf02c2dbb49bd8ff4881fd41e5b1ac356d71e876bff2562e57652e3fea553f3",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-micropython__micropython-13569-peeky-first-3-decb4f",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T11:24:18+00:00",
+ "ended": "2026-11-01T11:29:52+00:00",
+ "wall_seconds": 334.7,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "basics/try_finally_return.py": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.9,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "69e789698625bcabde4ab8fc547855f7318a6ff753bc640dc3b6de16ecd4d779",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "py/compile.c",
+  "tests/basics/try_finally_stack.py"
+ ],
+ "patch_bytes": 2651,
+ "patch_notes": [
+  "untracked, not in the patch: tests/ports/unix/ffi_lib.so"
+ ],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 29
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 20,
+ "ai_credits": 30.4398,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 726481,
+  "output": 9595,
+  "cache_read": 669885,
+  "cache_write": 56536,
+  "reasoning": 2705
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 32,
+ "tool_calls_by_name": {
+  "bash": 32
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -la; if [ -d /testbed ]; then ls -ld /testbed; fi; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && ls ports/unix/build-standard/micropython; rg -n 'finally|unwind' py/compile.c py/vm.c | head -100; ls tests/basics/*finally* tests/basics/*try*; command -v peeky; command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ports/unix/build-standard/micropython -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'; python3 -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md; sed -n '1,235p' /opt/peeky/docs/lang/c-cpp.md; cd /testbed && grep -nE 'finally|unwind' py/compile.c py/vm.c | head -110; file ports/unix/build-standard/micropython; grep -nE 'ci_unix_build_helper|CFLAGS|DEBUG' tools/ci.sh ports/unix/Makefile py/mkenv.mk; sed -n '1,210p' tests/basics/try_finally_return5.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md; sed -n '1,115p' /opt/peeky/docs/lang/c-cpp.md; sed -n '1,130p' /opt/peeky/docs/lang/c-cpp-cookbook.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'finally|unwind' py/compile.c py/vm.c | head -110 && sed -n '540,750p' py/vm.c && grep -n 'mp_load_attr' py/runtime.c; grep -nE 'ci_unix_build_helper|CFLAGS|DEBUG' tools/ci.sh ports/unix/Makefile py/mkenv.mk | head -60; cat tests/basics/try_finally_return5.py; ls /usr/local/bin/*patch* /opt/*/bin/*patch* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,175p' py/compile.c && sed -n '250,310p' py/compile.c && sed -n '1560,1700p' py/compile.c && grep -nE 'stack_size|stack_adjust|setup_block|end_finally' py/emitbc.c && sed -n '1005,1065p' py/runtime.c && sed -n '1080,1135p' py/vm.c; sed -n '410,430p' tools/ci.sh",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --binary ports/unix/build-peeky/micropython --at py/runtime.c | grep -A14 -B4 'mp_load_attr'; peeky probe . --binary ports/unix/build-peeky/micropython --at py/runtime.c:1053 --capture base,attr --hits all -- -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --binary ports/unix/build-peeky/micropython --at py/runtime.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '250,310p' py/compile.c && sed -n '1620,1695p' py/compile.c && grep -nE 'stack_size|stack_adjust|setup_block|end_finally' py/emitbc.c && nl -ba py/runtime.c | sed -n '1030,1065p' && sed -n '1088,1135p' py/vm.c && sed -n '410,430p' tools/ci.sh",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/runtime.c:1055 --capture base,attr --hits all -- -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '635,675p' py/emitbc.c && sed -n '793,818p' py/emitbc.c && grep -nE 'setup_block|end_finally|start_except_handler|adjust_stack_size' py/emitnative.c | head -45 && sed -n '1855,1895p' py/compile.c && cat tests/basics/try_finally_return.py tests/basics/try_finally_return2.py tests/basics/try_finally_return3.py tests/basics/try_finally_return4.py && ls -la /opt",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '50,160p' py/compile.c && sed -n '408,425p' py/emitbc.c && sed -n '748,805p' py/emitnative.c && sed -n '2110,2230p' py/emitnative.c && sed -n '2905,2925p' py/emitnative.c && grep -nE 'MP_OBJ_NEW_SMALL_INT|MP_OBJ_SMALL_INT_VALUE' py/obj.h | head -12 && sed -n '1,85p' py/vm.c && sed -n '270,325p' py/emitbc.c && sed -n '1,85p' tests/run-tests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/compile.c:1689 --capture comp.pass,comp.scope_cur.simple_name,comp.scope_cur.num_locals,comp.scope_cur.stack_size --hits all -- -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '748,788p' py/emitnative.c && sed -n '2112,2228p' py/emitnative.c && sed -n '2908,2923p' py/emitnative.c && sed -n '272,314p' py/emitbc.c && sed -n '408,425p' py/emitbc.c && grep -nE 'MP_OBJ_NEW_SMALL_INT|MP_OBJ_SMALL_INT_VALUE' py/obj.h | head -14",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'state\\[|fastn|stack_size|n_state|LOCAL' py/vm.c | head -42; grep -n 'UNWIND_JUMP state' py/compile.c py/emitbc.c; grep -nE 'finally|try' tests/micropython/native* | head -55; ls -l /usr/local/bin | head -25; peeky probe --help | grep -A8 -E 'config|optimized'; grep -nA90 'Debug a binary your project built' /opt/peeky/docs/lang/c-cpp-cookbook.md | head -92",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nA32 'emit_native_load_const_tok' py/emitnative.c | head -40 && sed -n '1884,1952p' py/compile.c && sed -n '1550,1620p' py/compile.c && cat tests/micropython/native_try.py && sed -n '1,150p' tests/basics/try_finally_loops.py && grep -nE 'MICROPY_DEBUG_VM_STACK_OVERFLOW|build-peeky|py/vm.o' ports/unix/Makefile py/py.mk py/mpconfig.h && grep -nA65 '^### Debug a binary your project built' /opt/peeky/docs/lang/c-cpp-cookbook.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/emitbc.c:417 --capture emit.stack_size,delta --hits all -- -c $'def get(self):\\n    try:\\n        return self._i\\n    finally:\\n        self._i += 1\\n        if self._i > self._mi:\\n            self._i = 0\\nclass IDGenerator:\\n    pass\\nid_gen = IDGenerator()\\nid_gen._i = 0\\nid_gen._mi = 10\\nprint(get(id_gen))'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nA85 'STATIC void emit_native_label_assign' py/emitnative.c && sed -n '355,400p' py/compile.c && grep -nE 'adjust_stack_size, [0-9-]+.*[Bb]yte|MP_EMIT_OPT_BYTECODE|MICROPY_EMIT_NATIVE' py/compile.c | head -40 && ls -l /usr/bin/patch && grep -n 'py/vm' py/py.mk ports/unix/Makefile && sed -n '140,180p' py/py.mk",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && apply_patch() { git apply --whitespace=error -; }\napply_patch <<'PATCH'\ndiff --git a/tests/basics/try_finally_stack.py b/tests/basics/try_finally_stack.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/basics/try_finally_stack.py\n@@ -0,0 +1,88 @@\n+# Finally blocks need space for both the unwind value and its sentinel.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_with_except(self, fail):\n+        try:\n+            if fail:\n+                raise ValueError\n+        except ValueError:\n+            return self._i\n+        else:\n+            return self._i\n+        finally:\n+            self._i = max(self._i, self._mi, 2, 3, 4, 5)\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._mi = max(self._mi, self._i, 2, 3, 4, 5)\n+\n+\n+gen = IDGenerator(10)\n+for _ in range(13):\n+    print(gen.get())\n+print(gen._i)\n+\n+gen = IDGenerator(10)\n+print(gen.get_with_except(False), gen._i, gen._mi)\n+print(gen.get_with_except(True), gen._i, gen._mi)\n+\n+gen = IDGenerator(10)\n+print(gen.get_nested(), gen._i, gen._mi)\n+\n+\n+def unwind_jump(gen, stop):\n+    while gen._i < 2:\n+        try:\n+            if stop:\n+                break\n+            continue\n+        finally:\n+            gen._i += 1\n+            gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+print(unwind_jump(IDGenerator(10), False))\n+print(unwind_jump(IDGenerator(10), True))\n+\n+\n+def fallthrough(gen):\n+    try:\n+        gen._i = 1\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+def exception(gen):\n+    try:\n+        raise ValueError\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+\n+\n+print(fallthrough(IDGenerator(10)))\n+gen = IDGenerator(10)\n+try:\n+    exception(gen)\n+except ValueError:\n+    print(gen._i, gen._mi)\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_stack.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && apply_patch() { git apply --recount --whitespace=error -; }\napply_patch <<'PATCH'\ndiff --git a/tests/basics/try_finally_stack.py b/tests/basics/try_finally_stack.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/basics/try_finally_stack.py\n@@ -0,0 +1,88 @@\n+# Finally blocks need space for both the unwind value and its sentinel.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_with_except(self, fail):\n+        try:\n+            if fail:\n+                raise ValueError\n+        except ValueError:\n+            return self._i\n+        else:\n+            return self._i\n+        finally:\n+            self._i = max(self._i, self._mi, 2, 3, 4, 5)\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._mi = max(self._mi, self._i, 2, 3, 4, 5)\n+\n+\n+gen = IDGenerator(10)\n+for _ in range(13):\n+    print(gen.get())\n+print(gen._i)\n+\n+gen = IDGenerator(10)\n+print(gen.get_with_except(False), gen._i, gen._mi)\n+print(gen.get_with_except(True), gen._i, gen._mi)\n+\n+gen = IDGenerator(10)\n+print(gen.get_nested(), gen._i, gen._mi)\n+\n+\n+def unwind_jump(gen, stop):\n+    while gen._i < 2:\n+        try:\n+            if stop:\n+                break\n+            continue\n+        finally:\n+            gen._i += 1\n+            gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+print(unwind_jump(IDGenerator(10), False))\n+print(unwind_jump(IDGenerator(10), True))\n+\n+\n+def fallthrough(gen):\n+    try:\n+        gen._i = 1\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+def exception(gen):\n+    try:\n+        raise ValueError\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+\n+\n+print(fallthrough(IDGenerator(10)))\n+gen = IDGenerator(10)\n+try:\n+    exception(gen)\n+except ValueError:\n+    print(gen._i, gen._mi)\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_stack.py; cd /testbed && cat tests/try_finally_stack.py.out && git status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ports/unix/build-standard/micropython tests/basics/try_finally_stack.py; git status --short; find tests -maxdepth 2 -name '*try_finally_stack*'; apply_patch() { git apply --recount --whitespace=error -; }\napply_patch <<'PATCH'\ndiff --git a/py/compile.c b/py/compile.c\n--- a/py/compile.c\n+++ b/py/compile.c\n@@ -1684,9 +1684,11 @@ STATIC void compile_try_finally(compiler_t *comp, mp_parse_node_t pn_body, int n_exc\n     }\n     EMIT_ARG(load_const_tok, MP_TOKEN_KW_NONE);\n     EMIT_ARG(label_assign, l_finally_block);\n+    EMIT_ARG(adjust_stack_size, 1); // stack adjust for the unwind value beneath the sentinel\n     compile_node(comp, pn_finally);\n+    EMIT_ARG(adjust_stack_size, -1);\n \n     compile_decrease_except_level(comp);\n }\nPATCH\nsource tools/ci.sh && ci_unix_build_helper VARIANT=standard",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try*.py basics/with*.py basics/async_with*.py micropython/native_try*.py micropython/native_with*.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff -- py/compile.c && sed -n '1,115p' tests/basics/try_finally_stack.py && ports/unix/build-standard/micropython -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'; grep -nA24 'add_argument.*emit' tests/run-tests.py; grep -nA6 'MICROPY_DEBUG_VM_STACK_OVERFLOW' py/vm.c py/mpconfig.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'EMIT|NATIVE|MICROPY_CONFIG_ROM_LEVEL' ports/unix/variants/standard/mpconfigvariant.h ports/unix/mpconfigport.h ports/unix/variants/mpconfigvariant_common.h && grep -nE 'native|emit|mpy|skip' tests/run-tests.py | tail -75 && grep -n 'MICROPY_EMIT' ports/unix/build-standard/genhdr/qstr.i.last | head -12; git status --short && ls tests/results/*try_finally_stack* 2>/dev/null; grep -nA13 -B4 'VM_STACK_OVERFLOW' py/vm.c py/bc.c",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && mpy-cross/build/mpy-cross -o ports/unix/build-standard/try_finally_stack.mpy tests/basics/try_finally_stack.py && ports/unix/build-standard/micropython ports/unix/build-standard/try_finally_stack.mpy > ports/unix/build-standard/try_finally_stack.out && python3 tests/basics/try_finally_stack.py > ports/unix/build-standard/try_finally_stack.exp && diff -u ports/unix/build-standard/try_finally_stack.exp ports/unix/build-standard/try_finally_stack.out",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython MICROPY_MPYCROSS=../mpy-cross/build/mpy-cross ./run-tests.py --via-mpy basics/try_finally_stack.py basics/try_finally_return*.py basics/try_finally_break*.py basics/try_finally_continue.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ports/unix/build-standard/micropython -c $'import micropython\\n@micropython.native\\ndef f():\\n    try:\\n        return 1\\n    finally:\\n        print(2)\\nprint(f())'; sed -n '505,555p' tests/run-tests.py; ls ports/unix/build-standard/py/*native*; grep -nE 'CFLAGS.*vm|vm.o|CFLAGS.*O[023]|COPT|EMIT_NATIVE' py/py.mk ports/unix/Makefile | head -50; ls -la ports/unix/variants/standard && sed -n '1,95p' ports/unix/variants/standard/mpconfigvariant.mk",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython MICROPY_MPYCROSS=../mpy-cross/build/mpy-cross ./run-tests.py --via-mpy --mpy-cross-flags=-march=x64 basics/try_finally_stack.py basics/try_finally_return*.py basics/try_finally_break*.py basics/try_finally_continue.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && mpy-cross/build/mpy-cross -march=x64 -X emit=native -o ports/unix/build-standard/try_finally_stack_native.mpy tests/basics/try_finally_stack.py && mpy-cross/build/mpy-cross -march=x64 -X emit=native -o ports/unix/build-standard/native_try.mpy tests/micropython/native_try.py && mpy-cross/build/mpy-cross -march=x64 -X emit=native -o ports/unix/build-standard/native_try_deep.mpy tests/micropython/native_try_deep.py && mpy-cross/build/mpy-cross -march=x64 -X emit=native -o ports/unix/build-standard/native_with.mpy tests/micropython/native_with.py && git --no-pager diff --check; sed -n '268,305p' tests/run-tests.py && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm -f ports/unix/build-standard/try_finally_stack.mpy ports/unix/build-standard/try_finally_stack.out ports/unix/build-standard/try_finally_stack.exp ports/unix/build-standard/try_finally_stack_native.mpy ports/unix/build-standard/native_try.mpy ports/unix/build-standard/native_try_deep.mpy ports/unix/build-standard/native_with.mpy && git --no-pager diff --check && git --no-pager diff --stat && git status --short && test -x ports/unix/build-standard/micropython && test -f tests/basics/try_finally_stack.py",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 6,
+ "build_or_test_commands": [
+  "cd /testbed && apply_patch() { git apply --whitespace=error -; }\napply_patch <<'PATCH'\ndiff --git a/tests/basics/try_finally_stack.py b/tests/basics/try_finally_stack.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/basics/try_finally_stack.py\n@@ -0,0 +1,88 @@\n+# Finally blocks need space for both the unwind value and its sentinel.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_with_except(self, fail):\n+        try:\n+            if fail:\n+                raise ValueError\n+        except ValueError:\n+            return self._i\n+        else:\n+            return self._i\n+        finally:\n+            self._i = max(self._i, self._mi, 2, 3, 4, 5)\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._mi = max(self._mi, self._i, 2, 3, 4, 5)\n+\n+\n+gen = IDGenerator(10)\n+for _ in range(13):\n+    print(gen.get())\n+print(gen._i)\n+\n+gen = IDGenerator(10)\n+print(gen.get_with_except(False), gen._i, gen._mi)\n+print(gen.get_with_except(True), gen._i, gen._mi)\n+\n+gen = IDGenerator(10)\n+print(gen.get_nested(), gen._i, gen._mi)\n+\n+\n+def unwind_jump(gen, stop):\n+    while gen._i < 2:\n+        try:\n+            if stop:\n+                break\n+            continue\n+        finally:\n+            gen._i += 1\n+            gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+print(unwind_jump(IDGenerator(10), False))\n+print(unwind_jump(IDGenerator(10), True))\n+\n+\n+def fallthrough(gen):\n+    try:\n+        gen._i = 1\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+def exception(gen):\n+    try:\n+        raise ValueError\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+\n+\n+print(fallthrough(IDGenerator(10)))\n+gen = IDGenerator(10)\n+try:\n+    exception(gen)\n+except ValueError:\n+    print(gen._i, gen._mi)\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_stack.py",
+  "cd /testbed && apply_patch() { git apply --recount --whitespace=error -; }\napply_patch <<'PATCH'\ndiff --git a/tests/basics/try_finally_stack.py b/tests/basics/try_finally_stack.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/basics/try_finally_stack.py\n@@ -0,0 +1,88 @@\n+# Finally blocks need space for both the unwind value and its sentinel.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_with_except(self, fail):\n+        try:\n+            if fail:\n+                raise ValueError\n+        except ValueError:\n+            return self._i\n+        else:\n+            return self._i\n+        finally:\n+            self._i = max(self._i, self._mi, 2, 3, 4, 5)\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._mi = max(self._mi, self._i, 2, 3, 4, 5)\n+\n+\n+gen = IDGenerator(10)\n+for _ in range(13):\n+    print(gen.get())\n+print(gen._i)\n+\n+gen = IDGenerator(10)\n+print(gen.get_with_except(False), gen._i, gen._mi)\n+print(gen.get_with_except(True), gen._i, gen._mi)\n+\n+gen = IDGenerator(10)\n+print(gen.get_nested(), gen._i, gen._mi)\n+\n+\n+def unwind_jump(gen, stop):\n+    while gen._i < 2:\n+        try:\n+            if stop:\n+                break\n+            continue\n+        finally:\n+            gen._i += 1\n+            gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+print(unwind_jump(IDGenerator(10), False))\n+print(unwind_jump(IDGenerator(10), True))\n+\n+\n+def fallthrough(gen):\n+    try:\n+        gen._i = 1\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+    return gen._i, gen._mi\n+\n+\n+def exception(gen):\n+    try:\n+        raise ValueError\n+    finally:\n+        gen._mi = max(gen._mi, gen._i, 2, 3, 4, 5)\n+\n+\n+print(fallthrough(IDGenerator(10)))\n+gen = IDGenerator(10)\n+try:\n+    exception(gen)\n+except ValueError:\n+    print(gen._i, gen._mi)\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_stack.py; cd /testbed && cat tests/try_finally_stack.py.out && git status --short",
+  "cd /testbed && ports/unix/build-standard/micropython tests/basics/try_finally_stack.py; git status --short; find tests -maxdepth 2 -name '*try_finally_stack*'; apply_patch() { git apply --recount --whitespace=error -; }\napply_patch <<'PATCH'\ndiff --git a/py/compile.c b/py/compile.c\n--- a/py/compile.c\n+++ b/py/compile.c\n@@ -1684,9 +1684,11 @@ STATIC void compile_try_finally(compiler_t *comp, mp_parse_node_t pn_body, int n_exc\n     }\n     EMIT_ARG(load_const_tok, MP_TOKEN_KW_NONE);\n     EMIT_ARG(label_assign, l_finally_block);\n+    EMIT_ARG(adjust_stack_size, 1); // stack adjust for the unwind value beneath the sentinel\n     compile_node(comp, pn_finally);\n+    EMIT_ARG(adjust_stack_size, -1);\n \n     compile_decrease_except_level(comp);\n }\nPATCH\nsource tools/ci.sh && ci_unix_build_helper VARIANT=standard",
+  "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try*.py basics/with*.py basics/async_with*.py micropython/native_try*.py micropython/native_with*.py",
+  "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython MICROPY_MPYCROSS=../mpy-cross/build/mpy-cross ./run-tests.py --via-mpy basics/try_finally_stack.py basics/try_finally_return*.py basics/try_finally_break*.py basics/try_finally_continue.py",
+  "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython MICROPY_MPYCROSS=../mpy-cross/build/mpy-cross ./run-tests.py --via-mpy --mpy-cross-flags=-march=x64 basics/try_finally_stack.py basics/try_finally_return*.py basics/try_finally_break*.py basics/try_finally_continue.py"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && peeky describe . --binary ports/unix/build-peeky/micropython --at py/runtime.c | grep -A14 -B4 'mp_load_attr'; peeky probe . --binary ports/unix/build-peeky/micropython --at py/runtime.c:1053 --capture base,attr --hits all -- -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "subcommands": [
+    "describe",
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && peeky describe . --binary ports/unix/build-peeky/micropython --at py/runtime.c",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/runtime.c:1055 --capture base,attr --hits all -- -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/compile.c:1689 --capture comp.pass,comp.scope_cur.simple_name,comp.scope_cur.num_locals,comp.scope_cur.stack_size --hits all -- -c $'class IDGenerator:\\n    def __init__(self, max_id: int):\\n        self._i = 0\\n        self._mi = max_id\\n\\n    def get(self):\\n        try:\\n            return self._i\\n        finally:\\n            self._i += 1\\n            if self._i > self._mi:\\n                self._i = 0\\n\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && grep -nE 'state\\[|fastn|stack_size|n_state|LOCAL' py/vm.c | head -42; grep -n 'UNWIND_JUMP state' py/compile.c py/emitbc.c; grep -nE 'finally|try' tests/micropython/native* | head -55; ls -l /usr/local/bin | head -25; peeky probe --help | grep -A8 -E 'config|optimized'; grep -nA90 'Debug a binary your project built' /opt/peeky/docs/lang/c-cpp-cookbook.md | head -92",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/emitbc.c:417 --capture emit.stack_size,delta --hits all -- -c $'def get(self):\\n    try:\\n        return self._i\\n    finally:\\n        self._i += 1\\n        if self._i > self._mi:\\n            self._i = 0\\nclass IDGenerator:\\n    pass\\nid_gen = IDGenerator()\\nid_gen._i = 0\\nid_gen._mi = 10\\nprint(get(id_gen))'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  }
+ ],
+ "peeky_subcommands": {
+  "describe": 2,
+  "probe": 5
+ },
+ "peeky_doc_reads": 6,
+ "peeky_mentions_in_commands": 24,
+ "peeky_withheld_markers": 22,
+ "peeky_withheld_by_marker": {
+  "[unproven]": 22
+ },
+ "peeky_values_printed": 55,
+ "contaminated": false,
+ "final_message": "The compiler undercounted `finally`\u2019s unwind stack, allowing it to overwrite `self`. Peeky\u2019s probe at `py/runtime.c:1055` showed `base = 0x3`, integer `1`, confirming the corrupted receiver. I reserved the missing stack slot and added regression coverage. The original example now prints `0`, and related tests pass.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the failure, inspect it with Peeky, then fix the source and add a regression test.\n",
+  "Peeky stopped at the failing attribute load and showed `base = 0x3`, MicroPython\u2019s encoding of integer `1`. The compiler reserves only one control slot for `finally`, but return and jump unwinding need two, allowing the value stack to overwrite `self`. I\u2019ll correct that accounting and cover deeper stacks and nested `finally` blocks.\n",
+  "The compiler undercounted `finally`\u2019s unwind stack, allowing it to overwrite `self`. Peeky\u2019s probe at `py/runtime.c:1055` showed `base = 0x3`, integer `1`, confirming the corrupted receiver. I reserved the missing stack slot and added regression coverage. The original example now prints `0`, and related tests pass."
+ ],
+ "assistant_reasoning": [
+  "**Considering patch command usage**\n\nI'm thinking about how to apply a patch correctly. I need to figure out if the system has the 'apply_patch' command installed. If not, manual edits might be needed, which could be more tedious. It seems like I should check the location, possibly /opt? Also, I should reproduce the process without any files using the -c flag. This requires careful attention to detail to avoid errors!",
+  "**Debugging stack size**\n\nI'm thinking that likely, the stack sizing requires an extra slot return sentinel instead of the usual approach. Before jumping ahead with that, it\u2019s crucial for me to debug everything and compile a proper estimate for the stack size. I want to make sure I'm accurately assessing the situation so I can avoid any issues down the line. It's all about getting the details right!",
+  "**Figuring out tool paths**\n\nI need to avoid accessing saved paths that are outside the current working directory since they're not accessible. I'm trying to use the `describe --json` command with `jq` for filtering, but the structure of the command isn't clear. Calling `describe --at path` seems to output everything, but it\u2019s huge. I need to check if `grep` can match features in `runtime.c` or `load_attr` effectively. I guess I'll have to try filtering the output.",
+  "**Evaluating code fixes**\n\nI need a complete fix here, not just adding +1 manually, since it misses the nesting of the unwind state that\u2019s existing with the outer finally and the internal try body. My thought is that adding +1 per compile finally might track the worst runtime appropriately. I\u2019m considering allocating an artificial stack, but how exactly could that affect the bytecode? It seems I\u2019m also wondering about native consts and label assignments.",
+  "**Evaluating patch application**\n\nOkay, I\u2019m checking if the patch count is 90. Using \"git apply --recount\" seems to help avoid errors. I noticed that the \"run-tests\" file is missing; that\u2019s a concern since I expected it as an artifact. So I need to ensure I clean up after the actual run. I\u2019ll reapply the identical diff, recount, and source fix separately after establishing the baseline. Let's keep everything organized for accuracy!",
+  "**Evaluating test cases and checks**\n\nI'm looking at the regression test cases, where I have a file with 90 actual cases but only 21 expected. I need to target specific test files using a command like \"find tests -maxdepth2 -name '*try_finally_stack*'.\" I also wonder if I can edit a baseline read before verifying the failure since my original reproduction is sufficient. I'll have to check the combined output before editing the build to ensure everything is correct. No issues with the required network submodules either!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 336.2
+}

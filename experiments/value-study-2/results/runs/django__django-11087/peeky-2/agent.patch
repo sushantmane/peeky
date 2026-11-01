@@ -1,0 +1,204 @@
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..df461d34b6 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -220,8 +225,19 @@ class Collector:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+                         self.fast_deletes.append(sub_objs)
+-                    elif sub_objs:
+-                        field.remote_field.on_delete(self, field, sub_objs, self.using)
++                    else:
++                        related_model = related.related_model
++                        # Defer non-referenced fields unless signal receivers or
++                        # select_related() require the full objects.
++                        if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
++                            referenced_fields = {
++                                field.attname
++                                for rel in get_candidate_relations_to_delete(related_model._meta)
++                                for field in rel.field.foreign_related_fields
++                            }
++                            sub_objs = sub_objs.only('pk', *referenced_fields)
++                        if sub_objs:
++                            field.remote_field.on_delete(self, field, sub_objs, self.using)
+             for field in model._meta.private_fields:
+                 if hasattr(field, 'bulk_related_objects'):
+                     # It's something like generic foreign key.
+diff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt
+index 44656b11cd..5ed579e92a 100644
+--- a/docs/releases/3.0.txt
++++ b/docs/releases/3.0.txt
+@@ -193,6 +193,9 @@ Models
+   :class:`~django.db.models.functions.Trunc` database functions determines the
+   treatment of nonexistent and ambiguous datetimes.
+ 
++* Deleting objects now avoids fetching unnecessary fields of related objects
++  when there are no signal listeners or ``select_related()`` calls.
++
+ Requests and Responses
+ ~~~~~~~~~~~~~~~~~~~~~~
+ 
+diff --git a/tests/delete_regress/models.py b/tests/delete_regress/models.py
+index 90eae1ba1c..1efed53d2a 100644
+--- a/tests/delete_regress/models.py
++++ b/tests/delete_regress/models.py
+@@ -141,3 +141,28 @@ class OrderedPerson(models.Model):
+ 
+     class Meta:
+         ordering = ['name']
++
++
++class DeleteRoot(models.Model):
++    pass
++
++
++class DeleteBranch(models.Model):
++    root = models.ForeignKey(DeleteRoot, models.CASCADE)
++    name = models.CharField(max_length=20, unique=True)
++    key = models.OneToOneField(Toy, models.CASCADE)
++    description = models.TextField()
++
++
++class DeleteLeaf(models.Model):
++    branch = models.ForeignKey(
++        DeleteBranch, models.CASCADE, to_field='name', related_name='+',
++    )
++    branch_key = models.ForeignKey(
++        DeleteBranch, models.CASCADE, to_field='key', related_name='+',
++    )
++
++
++class DeleteRootReference(models.Model):
++    root = models.ForeignKey(DeleteRoot, models.SET_NULL, null=True)
++    description = models.TextField()
+diff --git a/tests/delete_regress/tests.py b/tests/delete_regress/tests.py
+index a1bead144e..aed7a6a2d6 100644
+--- a/tests/delete_regress/tests.py
++++ b/tests/delete_regress/tests.py
+@@ -1,13 +1,14 @@
+ import datetime
++from unittest import mock
+ 
+ from django.db import connection, models, transaction
+ from django.test import TestCase, TransactionTestCase, skipUnlessDBFeature
+ 
+ from .models import (
+-    Award, AwardNote, Book, Child, Contact, Eaten, Email, File, Food, FooFile,
+-    FooFileProxy, FooImage, FooPhoto, House, Image, Item, Location, Login,
+-    OrderedPerson, OrgUnit, Person, Photo, PlayedWith, PlayedWithNote, Policy,
+-    Researcher, Toy, Version,
++    Award, AwardNote, Book, Child, Contact, DeleteBranch, DeleteLeaf, DeleteRoot,
++    DeleteRootReference, Eaten, Email, File, Food, FooFile, FooFileProxy, FooImage,
++    FooPhoto, House, Image, Item, Location, Login, OrderedPerson, OrgUnit, Person,
++    Photo, PlayedWith, PlayedWithNote, Policy, Researcher, Toy, Version,
+ )
+ 
+ 
+@@ -93,6 +94,82 @@ class DeleteCascadeTests(TestCase):
+         policy.delete()
+ 
+ 
++class DeleteOnlyRequiredFieldsTests(TestCase):
++    def setUp(self):
++        self.root = DeleteRoot.objects.create()
++        self.branch = DeleteBranch.objects.create(
++            root=self.root, name='branch', key=Toy.objects.create(name='key'),
++            description='Unneeded text',
++        )
++        DeleteLeaf.objects.create(branch=self.branch, branch_key=self.branch)
++
++    def test_only_required_fields(self):
++        queryset = DeleteBranch.objects.filter(root__in=[self.root]).only('id', 'name', 'key')
++        expected_sql = str(queryset.query)
++        with self.assertNumQueries(6) as queries:
++            deleted = self.root.delete()
++        self.assertEqual(queries.captured_queries[0]['sql'], expected_sql)
++        self.assertEqual(deleted, (3, {
++            'delete_regress.DeleteRoot': 1,
++            'delete_regress.DeleteBranch': 1,
++            'delete_regress.DeleteLeaf': 1,
++        }))
++        self.assertFalse(DeleteBranch.objects.exists())
++        self.assertFalse(DeleteLeaf.objects.exists())
++
++    def test_only_primary_key_required(self):
++        reference = DeleteRootReference.objects.create(root=self.root, description='Retained text')
++        queryset = DeleteRootReference.objects.filter(root__in=[self.root]).only('pk')
++        expected_sql = str(queryset.query)
++        with self.assertNumQueries(7) as queries:
++            self.root.delete()
++        self.assertEqual(queries.captured_queries[1]['sql'], expected_sql)
++        reference.refresh_from_db()
++        self.assertIsNone(reference.root)
++        self.assertEqual(reference.description, 'Retained text')
++
++    def test_unreadable_unused_field(self):
++        field = DeleteBranch._meta.get_field('description')
++        error = UnicodeDecodeError('utf-8', b'\xed', 0, 1, 'invalid continuation byte')
++        with mock.patch.object(field, 'from_db_value', side_effect=error, create=True):
++            DeleteRoot.objects.filter(pk=self.root.pk).delete()
++        self.assertFalse(DeleteBranch.objects.exists())
++        self.assertFalse(DeleteLeaf.objects.exists())
++
++    def test_delete_signals(self):
++        for signal in (models.signals.pre_delete, models.signals.post_delete):
++            for sender in (DeleteBranch, None):
++                with self.subTest(signal=signal, sender=sender):
++                    calls = []
++
++                    def receiver(instance, **kwargs):
++                        if isinstance(instance, DeleteBranch):
++                            with self.assertNumQueries(0):
++                                self.assertEqual(instance.description, 'Unneeded text')
++                            self.assertEqual(instance.get_deferred_fields(), set())
++                            calls.append(instance)
++
++                    signal.connect(receiver, sender=sender)
++                    try:
++                        # Roll back each deletion to reuse the same objects.
++                        with transaction.atomic():
++                            DeleteRoot.objects.get(pk=self.root.pk).delete()
++                            transaction.set_rollback(True)
++                    finally:
++                        signal.disconnect(receiver, sender=sender)
++                    self.assertEqual(len(calls), 1)
++
++    def test_select_related(self):
++        queryset = DeleteBranch.objects.select_related('root')
++        expected_sql = str(queryset.filter(root__in=[self.root]).query)
++        with mock.patch.object(DeleteBranch._base_manager, 'get_queryset', return_value=queryset):
++            with self.assertNumQueries(6) as queries:
++                self.root.delete()
++        self.assertEqual(queries.captured_queries[0]['sql'], expected_sql)
++        self.assertFalse(DeleteBranch.objects.exists())
++        self.assertFalse(DeleteLeaf.objects.exists())
++
++
+ class DeleteCascadeTransactionTests(TransactionTestCase):
+ 
+     available_apps = ['delete_regress']

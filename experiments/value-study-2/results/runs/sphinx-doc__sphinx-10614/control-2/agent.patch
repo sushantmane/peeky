@@ -1,0 +1,272 @@
+diff --git a/CHANGES b/CHANGES
+index e05488388..06afac90a 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -45,6 +45,8 @@ Bugs fixed
+ * #11529: Line Block in LaTeX builder outputs spurious empty token.
+   Patch by Adrian Vollmer.
+ * #11196: autosummary: Summary line extraction failed with "e.g."
++* inheritance_diagram: Fix SVG links to classes on nested HTML pages.
++* graphviz: Resolve relative SVG links from the containing HTML page.
+ 
+ Testing
+ -------
+diff --git a/doc/usage/extensions/graphviz.rst b/doc/usage/extensions/graphviz.rst
+index c134f6ddb..673bd7ac3 100644
+--- a/doc/usage/extensions/graphviz.rst
++++ b/doc/usage/extensions/graphviz.rst
+@@ -28,6 +28,9 @@ It adds these directives:
+    :confval:`graphviz_output_format`).  In LaTeX output, the code will be
+    rendered to an embeddable PDF file.
+ 
++   Relative links in HTML output are resolved relative to the page containing
++   the graph, for both PNG and SVG output.
++
+    You can also embed external dot files, by giving the file name as an
+    argument to :rst:dir:`graphviz` and no additional content::
+ 
+diff --git a/doc/usage/extensions/inheritance.rst b/doc/usage/extensions/inheritance.rst
+index 33284b52d..d9176eb27 100644
+--- a/doc/usage/extensions/inheritance.rst
++++ b/doc/usage/extensions/inheritance.rst
+@@ -24,6 +24,10 @@ It adds this directive:
+    generated which is then rendered via the graphviz extension to a directed
+    graph.
+ 
++   In HTML output, classes link to their documentation when available.  These
++   links work with both PNG and SVG output; SVG links are relative to the
++   generated image rather than the page containing the diagram.
++
+    This directive supports an option called ``parts`` that, if given, must be an
+    integer, advising the directive to keep that many dot-separated parts
+    in the displayed names (from right to left). For example, ``parts=1`` will
+diff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py
+index 8b21d9e3b..9f32b7d9b 100644
+--- a/sphinx/ext/graphviz.py
++++ b/sphinx/ext/graphviz.py
+@@ -26,7 +26,7 @@ from sphinx.util import logging
+ from sphinx.util.docutils import SphinxDirective, SphinxTranslator
+ from sphinx.util.i18n import search_image_for_language
+ from sphinx.util.nodes import set_source_info
+-from sphinx.util.osutil import ensuredir
++from sphinx.util.osutil import canon_path, ensuredir
+ from sphinx.util.typing import OptionSpec
+ from sphinx.writers.html import HTML5Translator
+ from sphinx.writers.latex import LaTeXTranslator
+@@ -218,7 +218,7 @@ class GraphvizSimple(SphinxDirective):
+ 
+ 
+ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+-    """Change relative links in generated svg files to be relative to imgpath."""
++    """Change links relative to the HTML document to be relative to the SVG file."""
+     tree = ET.parse(filepath)  # NoQA: S314
+     root = tree.getroot()
+     ns = {'svg': 'http://www.w3.org/2000/svg', 'xlink': 'http://www.w3.org/1999/xlink'}
+@@ -230,15 +230,19 @@ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+         root.findall('.//svg:a[@xlink:href]', ns),
+     ):
+         scheme, hostname, url, query, fragment = urlsplit(element.attrib[href_name])
+-        if hostname:
++        if scheme or hostname or url.startswith('/'):
+             # not a relative link
+             continue
+ 
+-        old_path = path.join(self.builder.outdir, url)
+-        new_path = path.relpath(
+-            old_path,
+-            start=path.join(self.builder.outdir, self.builder.imgpath),
++        old_path = path.join(
++            path.dirname(self.builder.get_outfilename(self.builder.current_docname)), url,
+         )
++        new_path = canon_path(path.relpath(
++            old_path,
++            start=path.dirname(filepath),
++        ))
++        if url.endswith('/'):
++            new_path += '/'
+         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))
+ 
+         element.set(href_name, modified_url)
+diff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py
+index 6e3985512..26e7b715b 100644
+--- a/sphinx/ext/inheritance_diagram.py
++++ b/sphinx/ext/inheritance_diagram.py
+@@ -36,6 +36,7 @@ import inspect
+ import re
+ from collections.abc import Iterable
+ from importlib import import_module
++from os import path
+ from typing import Any, cast
+ 
+ from docutils import nodes
+@@ -397,8 +398,7 @@ def get_graph_hash(node: inheritance_diagram) -> str:
+ 
+ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diagram) -> None:
+     """
+-    Output the graph for HTML.  This will insert a PNG with clickable
+-    image map.
++    Output the graph for HTML as a PNG with a clickable image map or an SVG.
+     """
+     graph = node['graph']
+ 
+@@ -407,23 +407,21 @@ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diag
+ 
+     # Create a mapping from fully-qualified class names to URLs.
+     graphviz_output_format = self.builder.env.config.graphviz_output_format.upper()
+-    current_filename = self.builder.current_docname + self.builder.out_suffix
++    current_filename = path.basename(self.builder.get_outfilename(self.builder.current_docname))
+     urls = {}
+     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)
+     for child in pending_xrefs:
+         if child.get('refuri') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = "../" + child.get('refuri')
+-            else:
+-                urls[child['reftitle']] = child.get('refuri')
++            urls[child['reftitle']] = child.get('refuri')
+         elif child.get('refid') is not None:
+             if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')
++                urls[child['reftitle']] = current_filename + '#' + child.get('refid')
+             else:
+                 urls[child['reftitle']] = '#' + child.get('refid')
+ 
+     dotcode = graph.generate_dot(name, urls, env=self.builder.env)
+-    render_dot_html(self, node, dotcode, {}, 'inheritance', 'inheritance',
++    render_dot_html(self, node, dotcode, {'docname': self.builder.current_docname},
++                    'inheritance', 'inheritance',
+                     alt='Inheritance diagram of ' + node['content'])
+     raise nodes.SkipNode
+ 
+diff --git a/tests/roots/test-ext-inheritance_diagram-links/conf.py b/tests/roots/test-ext-inheritance_diagram-links/conf.py
+new file mode 100644
+index 000000000..6c3b67902
+--- /dev/null
++++ b/tests/roots/test-ext-inheritance_diagram-links/conf.py
+@@ -0,0 +1,6 @@
++import os
++import sys
++
++sys.path.insert(0, os.path.abspath('.'))
++
++extensions = ['sphinx.ext.autodoc', 'sphinx.ext.inheritance_diagram']
+diff --git a/tests/roots/test-ext-inheritance_diagram-links/diagram_links.py b/tests/roots/test-ext-inheritance_diagram-links/diagram_links.py
+new file mode 100644
+index 000000000..43c09b11d
+--- /dev/null
++++ b/tests/roots/test-ext-inheritance_diagram-links/diagram_links.py
+@@ -0,0 +1,14 @@
++class External:
++    pass
++
++
++class Base(External):
++    pass
++
++
++class Child(Base):
++    pass
++
++
++class Leaf(Child):
++    pass
+diff --git a/tests/roots/test-ext-inheritance_diagram-links/index.rst b/tests/roots/test-ext-inheritance_diagram-links/index.rst
+new file mode 100644
+index 000000000..c536a6276
+--- /dev/null
++++ b/tests/roots/test-ext-inheritance_diagram-links/index.rst
+@@ -0,0 +1,10 @@
++Inheritance links
++=================
++
++.. toctree::
++
++   nested/index
++
++.. autoclass:: diagram_links.Base
++
++.. inheritance-diagram:: diagram_links.Leaf
+diff --git a/tests/roots/test-ext-inheritance_diagram-links/nested/deep/leaf.rst b/tests/roots/test-ext-inheritance_diagram-links/nested/deep/leaf.rst
+new file mode 100644
+index 000000000..c8edea6eb
+--- /dev/null
++++ b/tests/roots/test-ext-inheritance_diagram-links/nested/deep/leaf.rst
+@@ -0,0 +1,6 @@
++Deep inheritance links
++======================
++
++.. autoclass:: diagram_links.Leaf
++
++.. inheritance-diagram:: diagram_links.Leaf
+diff --git a/tests/roots/test-ext-inheritance_diagram-links/nested/index.rst b/tests/roots/test-ext-inheritance_diagram-links/nested/index.rst
+new file mode 100644
+index 000000000..0c22265fe
+--- /dev/null
++++ b/tests/roots/test-ext-inheritance_diagram-links/nested/index.rst
+@@ -0,0 +1,10 @@
++Nested inheritance links
++========================
++
++.. toctree::
++
++   deep/leaf
++
++.. autoclass:: diagram_links.Child
++
++.. inheritance-diagram:: diagram_links.Leaf
+diff --git a/tests/test_ext_graphviz.py b/tests/test_ext_graphviz.py
+index 44e5d8429..5ed95b94c 100644
+--- a/tests/test_ext_graphviz.py
++++ b/tests/test_ext_graphviz.py
+@@ -1,10 +1,12 @@
+ """Test sphinx.ext.graphviz extension."""
+ 
+ import re
++import xml.etree.ElementTree as ET
++from types import SimpleNamespace
+ 
+ import pytest
+ 
+-from sphinx.ext.graphviz import ClickableMapDefinition
++from sphinx.ext.graphviz import ClickableMapDefinition, fix_svg_relative_paths
+ 
+ 
+ @pytest.mark.sphinx('html', testroot='ext-graphviz')
+@@ -188,3 +190,37 @@ def test_graphviz_parse_mapfile():
+     assert cmap.id == 'inheritance66ff5471b9'
+     assert len(cmap.clickable) == 0
+     assert cmap.generate_clickable_map() == ''
++
++
++@pytest.mark.sphinx('html', testroot='ext-graphviz')
++def test_graphviz_svg_relative_paths(app):
++    app.builder.current_docname = 'nested/deep/page'
++    app.builder.imgpath = '../../_images'
++    filepath = app.outdir / '_images' / 'relative-links.svg'
++    filepath.parent.mkdir(parents=True, exist_ok=True)
++    links = {
++        '../../index.html?view=all&lang=en#Base': '../index.html?view=all&lang=en#Base',
++        'page.html#Child': '../nested/deep/page.html#Child',
++        '../': '../nested/',
++        '_static/image.svg': '../nested/deep/_static/image.svg',
++        'https://example.org/index.html#Base': 'https://example.org/index.html#Base',
++        '//example.org/index.html#Base': '//example.org/index.html#Base',
++        '/index.html#Base': '/index.html#Base',
++        'mailto:docs@example.org': 'mailto:docs@example.org',
++    }
++    svg_namespace = '{http://www.w3.org/2000/svg}'
++    href_name = '{http://www.w3.org/1999/xlink}href'
++    root = ET.Element(svg_namespace + 'svg')
++    for tag in ('image', 'a'):
++        for link in links:
++            ET.SubElement(root, svg_namespace + tag, {href_name: link})
++    ET.ElementTree(root).write(filepath)
++
++    fix_svg_relative_paths(SimpleNamespace(builder=app.builder), str(filepath))
++
++    tree = ET.parse(filepath)
++    for tag in ('image', 'a'):
++        assert [
++            element.attrib[href_name]
++            for element in tree.findall('.//' + svg_namespace + tag)
++        ] == list(links.values())

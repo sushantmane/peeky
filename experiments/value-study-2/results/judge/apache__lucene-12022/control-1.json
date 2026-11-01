@@ -1,0 +1,7 @@
+{
+ "judge_id": "a167",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The simplification retained the first edge\u2019s boundary flag even when that edge collapsed, causing false-positive `CONTAINS` results.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

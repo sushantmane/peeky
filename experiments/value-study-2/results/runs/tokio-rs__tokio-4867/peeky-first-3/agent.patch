@@ -1,0 +1,45 @@
+diff --git a/tokio/src/sync/broadcast.rs b/tokio/src/sync/broadcast.rs
+index 69ede8f8..49b295cf 100644
+--- a/tokio/src/sync/broadcast.rs
++++ b/tokio/src/sync/broadcast.rs
+@@ -666,7 +666,12 @@ fn new_receiver<T>(shared: Arc<Shared<T>>) -> Receiver<T> {
+ 
+     tail.rx_cnt = tail.rx_cnt.checked_add(1).expect("overflow");
+ 
+-    let next = tail.pos;
++    // The closing marker is at the previous position.
++    let next = if tail.closed {
++        tail.pos.wrapping_sub(1)
++    } else {
++        tail.pos
++    };
+ 
+     drop(tail);
+ 
+@@ -880,12 +885,12 @@ impl<T> Receiver<T> {
+             }
+         }
+ 
+-        self.next = self.next.wrapping_add(1);
+-
+         if slot.closed {
+             return Err(TryRecvError::Closed);
+         }
+ 
++        self.next = self.next.wrapping_add(1);
++
+         Ok(RecvGuard { slot })
+     }
+ }
+@@ -895,7 +900,10 @@ impl<T: Clone> Receiver<T> {
+     ///
+     /// This [`Receiver`] handle will receive a clone of all values sent
+     /// **after** it has resubscribed. This will not include elements that are
+-    /// in the queue of the current receiver. Consider the following example.
++    /// in the queue of the current receiver.
++    ///
++    /// If the channel is closed, the new receiver will immediately return a
++    /// `Closed` error when receiving.
+     ///
+     /// # Examples
+     ///

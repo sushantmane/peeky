@@ -1,0 +1,7 @@
+{
+ "judge_id": "a051",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed integer overflow in the latitude-grid upper bound. ... `lat2 = latBase = 2147483646` and `maxLatDelta = 2`, making their sum overflow negative.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 19 probe at GeoEncodingUtils.java:415 showed lat=lon=2147483645, lat2 2147483646, latShift 1, latBase 2147483646, maxLatDelta 2, lonBase 2147483646, maxLonDelta 2. lat/lon match the point Integer.MAX_VALUE-2 passed in cmd 18; lat2 = (2147483645 - MIN_VALUE) >>> 1 = 2147483646 per the code in cmd 9; latBase+maxLatDelta overflowing makes line 414 return false, matching 'predicate containment=false' (cmd 18) and the failing tests later. Nothing contradicts; cmds 14 and 16 were no-stop."
+}

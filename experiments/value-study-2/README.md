@@ -375,7 +375,9 @@ harness/reach.py --report results/reach/<sha, 12>
 harness/study.sh schedule.py --dry-run
 harness/study.sh schedule.py --concurrency 3 --budget-minutes 40 --budget-credits 250
 harness/study.sh prepare_judging.py results/runs <judge dir>   # then judge, as in round 1
+harness/collect_verdicts.py <judge dir>
 harness/study.sh analyze.py
+harness/descriptive.py --reach results/reach/<sha, 12>
 ```
 
 ## Files
@@ -390,4 +392,7 @@ harness/study.sh analyze.py
 | [harness/reach.py](harness/reach.py), [harness/reach_specs.json](harness/reach_specs.json) | The reach check and its points. |
 | [harness/descriptive.py](harness/descriptive.py) | Drift of the control arm, the reach groups' differences, and uptake. |
 | [REACH.md](REACH.md) | The reach check's results. |
+| [REPORT.md](REPORT.md) | Part A's results. |
+| [harness/collect_verdicts.py](harness/collect_verdicts.py) | Gathers the judges' verdicts into `results/judge/`. |
+| `results/runs/`, `results/judge/`, `results/summary.json` | Each attempt's `result.json` and `agent.patch`, the verdicts, and the analysis. |
 | `results/reach/<sha>/` | Each reach run's records, one JSON file per bug. |

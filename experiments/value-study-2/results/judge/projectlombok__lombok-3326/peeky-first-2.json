@@ -1,0 +1,7 @@
+{
+ "judge_id": "a175",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"showed distinct type and erasure objects (`@3497` and `@3490`); only the former was being updated, leaving inconsistent metadata during generic inference.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 probe at HandleUtilityClass.java:132 showed innerClassDecl.mods.flags=8 (STATIC), innerClassSymbol.type=Type$ClassType@3497 and a distinct erasure_field=Type$ClassType@3490 whose outer_field was @4173 (not cleared). Consistent with later evidence: the patch also clearing erasure_field's enclosing type (cmd 26) made the repro compile (cmds 32-33). Cmd 12 had 0 hits (processor failed to load per cmd 11). Nothing contradicted."
+}

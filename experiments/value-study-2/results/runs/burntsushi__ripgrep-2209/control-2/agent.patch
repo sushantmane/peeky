@@ -1,0 +1,139 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ba427f9..ee1b10d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,8 @@ Unreleased changes. Release notes have not yet been written.
+ 
+ Bug fixes:
+ 
++* Fix multiline replacements leaking look-ahead context into the output.
++
+ * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):
+   Fix bug when using `-w` with a regex that can match the empty string.
+ * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):
+diff --git a/crates/printer/src/util.rs b/crates/printer/src/util.rs
+index 434deec..a62895a 100644
+--- a/crates/printer/src/util.rs
++++ b/crates/printer/src/util.rs
+@@ -47,9 +47,10 @@ impl<M: Matcher> Replacer<M> {
+         Replacer { space: None }
+     }
+ 
+-    /// Executes a replacement on the given subject string by replacing all
+-    /// matches with the given replacement. To access the result of the
+-    /// replacement, use the `replacement` method.
++    /// Executes a replacement on the given range of the subject string by
++    /// replacing all matches with the given replacement. The surrounding
++    /// subject is used for look-around, but is not included in the result.
++    /// To access the result, use the `replacement` method.
+     ///
+     /// This can fail if the underlying matcher reports an error.
+     pub fn replace_all<'a>(
+@@ -82,26 +83,32 @@ impl<M: Matcher> Replacer<M> {
+             dst.clear();
+             matches.clear();
+ 
++            let mut last_match = range.start;
+             matcher
+-                .replace_with_captures_at(
+-                    subject,
+-                    range.start,
+-                    caps,
+-                    dst,
+-                    |caps, dst| {
+-                        let start = dst.len();
+-                        caps.interpolate(
+-                            |name| matcher.capture_index(name),
+-                            subject,
+-                            replacement,
+-                            dst,
+-                        );
+-                        let end = dst.len();
+-                        matches.push(Match::new(start, end));
+-                        true
+-                    },
+-                )
++                .captures_iter_at(subject, range.start, caps, |caps| {
++                    let m = caps.get(0).unwrap();
++                    if is_multi_line && m.start() >= range.end {
++                        return false;
++                    }
++                    dst.extend_from_slice(&subject[last_match..m.start()]);
++                    last_match = m.end();
++                    let start = dst.len();
++                    caps.interpolate(
++                        |name| matcher.capture_index(name),
++                        subject,
++                        replacement,
++                        dst,
++                    );
++                    let end = dst.len();
++                    matches.push(Match::new(start, end));
++                    true
++                })
+                 .map_err(io::Error::error_message)?;
++            // Copy the remaining bytes, but not the look-ahead context.
++            let end = range.end.min(subject.len());
++            if last_match < end {
++                dst.extend_from_slice(&subject[last_match..end]);
++            }
+         }
+         Ok(())
+     }
+diff --git a/tests/multiline.rs b/tests/multiline.rs
+index d084c96..d0bf79e 100644
+--- a/tests/multiline.rs
++++ b/tests/multiline.rs
+@@ -100,6 +100,52 @@ rgtest!(stdin, |_: Dir, mut cmd: TestCommand| {
+     eqnice!(expected, cmd.pipe(SHERLOCK.as_bytes()));
+ });
+ 
++rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {
++    dir.create(
++        "test",
++        "# documentation\npipc () {  # usage\n    emulate -L zsh\n}\n",
++    );
++    cmd.args(&[
++        "-NU",
++        "-r",
++        "$usage",
++        r"^(# .*\n)*(?P<fname>pipc) \(\) \{(  #(?P<usage> .+))?",
++        "test",
++    ]);
++    eqnice!(" usage\n", cmd.stdout());
++});
++
++rgtest!(replacement_match_range, |dir: Dir, mut cmd: TestCommand| {
++    dir.create("test", "before\nfoo\nbar after\nnot a match\nfoo\nbar\nlast\n");
++    cmd.args(&["-nU", "-r", "$name", r"foo\n(?P<name>bar)", "test"]);
++    eqnice!("2:bar after\n5:bar\n", cmd.stdout());
++
++    let mut cmd = dir.command();
++    cmd.args(&["-nUo", "-r", "$name", r"foo\n(?P<name>bar)", "test"]);
++    eqnice!("2:bar\n5:bar\n", cmd.stdout());
++});
++
++rgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {
++    if !dir.is_pcre2() {
++        return;
++    }
++    dir.create("test", "before\nfoo\nbar after\nnot a match\nlast\n");
++    cmd.args(&[
++        "-nU",
++        "-r",
++        "$name",
++        r"(?<=before\n)foo\n(?P<name>bar)(?= after\nnot a match)",
++        "test",
++    ]);
++    eqnice!("2:bar after\n", cmd.stdout());
++});
++
++rgtest!(replacement_long_look_ahead, |dir: Dir, mut cmd: TestCommand| {
++    dir.create("test", &format!("foo\nbar\n{}\n", "x".repeat(256)));
++    cmd.args(&["-NU", "-r", "$name", r"foo\n(?P<name>bar)", "test"]);
++    eqnice!("bar\n", cmd.stdout());
++});
++
+ // Test that multiline search and contextual matches work.
+ rgtest!(context, |dir: Dir, mut cmd: TestCommand| {
+     dir.create("sherlock", SHERLOCK);

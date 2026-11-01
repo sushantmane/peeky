@@ -1,0 +1,7 @@
+{
+ "judge_id": "a155",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The compiler underallocated stack space for `finally` blocks during return or jump unwinding, allowing stack values to overwrite locals such as `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

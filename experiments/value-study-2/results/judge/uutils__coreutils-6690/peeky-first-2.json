@@ -1,0 +1,7 @@
+{
+ "judge_id": "a116",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed `cp`'s missing `.num_args(1..)`, which made Zsh completion treat paths as a single operand.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 9 probe at coreutils.rs:182 for `completion cp zsh`: shell=Zsh, consistent with the program's zsh completion output in cmd 9 (#compdef/_cp, compdef) and cmd 8. Cmd 13 command.args.args.len=34 has nothing in the attempt to check it against. utility [unproven] and LLDB summaries with notes excluded. None contradicted."
+}

@@ -1,0 +1,49 @@
+diff --git a/doc/api.rst b/doc/api.rst
+index 2d65d5b3..1f7461d7 100644
+--- a/doc/api.rst
++++ b/doc/api.rst
+@@ -446,6 +446,11 @@ The library also supports convenient formatting of ranges and tuples::
+   // Prints "('a', 1, 2.0)"
+   fmt::print("{}", t);
+ 
++Character ranges are formatted as sequences of quoted characters, including
++when nested inside other ranges. For example, a range containing ``{'a', 'b'}``
++is formatted as ``['a', 'b']``. Strings and string views are formatted as strings
++instead. C++20 range views, including split and transform views, are supported.
++
+ 
+ NOTE: currently, the overload of ``fmt::join`` for iterables exists in the main
+ ``format.h`` header, but expect this to change in the future.
+diff --git a/include/fmt/ranges.h b/include/fmt/ranges.h
+index 2105a668..84358b18 100644
+--- a/include/fmt/ranges.h
++++ b/include/fmt/ranges.h
+@@ -475,7 +475,7 @@ struct range_formatter<
+     auto end = ctx.end();
+     if (it == end || *it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it == 'n') {
+@@ -485,7 +485,8 @@ struct range_formatter<
+ 
+     if (*it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      ctx.advance_to(it);
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it != ':')
+@@ -509,7 +510,8 @@ struct range_formatter<
+       if (i > 0) out = detail::copy_str<Char>(separator_, out);
+       ;
+       ctx.advance_to(out);
+-      out = underlying_.format(mapper.map(*it), ctx);
++      auto&& item = *it;
++      out = underlying_.format(mapper.map(item), ctx);
+       ++i;
+     }
+     out = detail::copy_str<Char>(closing_bracket_, out);

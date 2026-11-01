@@ -1,0 +1,7 @@
+{
+ "judge_id": "a173",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: The deletion collector unnecessarily fetched all related-model fields, exposing unused text to decoding errors.",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 7 probe deletion.py:224: sub_objs.query.deferred_loading=(frozenset({}), True), the default that clear_deferred_loading sets (code in Cmd 10); _result_cache[0].__dict__ has id=1, s_id=1, matching the same run's query 1 'SELECT \"delete_t\".\"id\", \"delete_t\".\"s_id\" ... IN (1)' and Cmd 6's SELECT; field.name='s' matches T.s. Nothing contradicted. The run's extra query (6 != 5, while Cmd 9 passes without Peeky) is a side effect, not a wrong value."
+}

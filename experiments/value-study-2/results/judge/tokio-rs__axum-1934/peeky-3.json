@@ -1,0 +1,7 @@
+{
+ "judge_id": "a013",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Fallback routing is inserting an internal catch-all as `MatchedPath`. The nested service then sees that stale value and hits the assertion.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

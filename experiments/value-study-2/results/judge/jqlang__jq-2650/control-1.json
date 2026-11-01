@@ -1,0 +1,7 @@
+{
+ "judge_id": "a118",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The reported object-key chains already work in this checkout, but the parser lacked equivalent dotted rules for iterators and slices.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

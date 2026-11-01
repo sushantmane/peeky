@@ -1,0 +1,175 @@
+diff --git a/lucene/CHANGES.txt b/lucene/CHANGES.txt
+index ae15247ac2..8d9fb4405d 100644
+--- a/lucene/CHANGES.txt
++++ b/lucene/CHANGES.txt
+@@ -184,6 +184,9 @@ Optimizations
+ Bug Fixes
+ ---------------------
+ 
++* Fix latitude-grid integer overflow that caused narrow polygon and distance
++  queries near the north pole to reject matching points.
++
+ * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until
+   they reach the maximum merge size. (Adrien Grand)
+ 
+diff --git a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+index d7ff62ba3b..818639bee8 100644
+--- a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
++++ b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+@@ -363,7 +363,7 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+@@ -411,7 +411,7 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+diff --git a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
+index d654e44647..3e194517d7 100644
+--- a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
++++ b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
+@@ -31,6 +31,7 @@ import java.util.Random;
+ import org.apache.lucene.tests.util.LuceneTestCase;
+ import org.apache.lucene.tests.util.TestUtil;
+ import org.apache.lucene.util.NumericUtils;
++import org.apache.lucene.util.SloppyMath;
+ 
+ /** Tests methods in {@link GeoEncodingUtils} */
+ public class TestGeoEncodingUtils extends LuceneTestCase {
+@@ -135,6 +136,66 @@ public class TestGeoEncodingUtils extends LuceneTestCase {
+     }
+   }
+ 
++  public void testNarrowPolygonPredicateAtEncodingBoundaries() {
++    int[] minima = {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 4, Integer.MAX_VALUE - 3};
++    for (int minLat : minima) {
++      for (int minLon : minima) {
++        double minLatitude = decodeLatitude(minLat);
++        double maxLatitude = decodeLatitude(minLat + 3);
++        double minLongitude = decodeLongitude(minLon);
++        double maxLongitude = decodeLongitude(minLon + 3);
++        Component2D component =
++            LatLonGeometry.create(
++                new Polygon(
++                    new double[] {minLatitude, minLatitude, maxLatitude, maxLatitude, minLatitude},
++                    new double[] {
++                      minLongitude, maxLongitude, maxLongitude, minLongitude, minLongitude
++                    }));
++        GeoEncodingUtils.Component2DPredicate predicate =
++            GeoEncodingUtils.createComponentPredicate(component);
++        assertTrue(component.contains(decodeLongitude(minLon + 1), decodeLatitude(minLat + 1)));
++        for (long lat = Math.max(Integer.MIN_VALUE, (long) minLat - 1);
++            lat <= Math.min(Integer.MAX_VALUE, (long) minLat + 4);
++            lat++) {
++          for (long lon = Math.max(Integer.MIN_VALUE, (long) minLon - 1);
++              lon <= Math.min(Integer.MAX_VALUE, (long) minLon + 4);
++              lon++) {
++            assertEquals(
++                "lat=" + lat + ", lon=" + lon,
++                component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),
++                predicate.test((int) lat, (int) lon));
++          }
++        }
++      }
++    }
++  }
++
++  public void testDistancePredicateNearNorthPole() {
++    int latitude = Integer.MAX_VALUE - 2;
++    for (int longitude : new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 2}) {
++      double lat = decodeLatitude(latitude);
++      double lon = decodeLongitude(longitude);
++      for (double radius : new double[] {0.01, 0.1, 1.0, 10.0}) {
++        GeoEncodingUtils.DistancePredicate predicate =
++            GeoEncodingUtils.createDistancePredicate(lat, lon, radius);
++        assertTrue(predicate.test(latitude, longitude));
++        double distanceKey = GeoUtils.distanceQuerySortKey(radius);
++        for (int pointLat :
++            new int[] {
++              Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 100, latitude, Integer.MAX_VALUE
++            }) {
++          for (int pointLon : new int[] {Integer.MIN_VALUE, 0, longitude, Integer.MAX_VALUE}) {
++            assertEquals(
++                SloppyMath.haversinSortKey(
++                        decodeLatitude(pointLat), decodeLongitude(pointLon), lat, lon)
++                    <= distanceKey,
++                predicate.test(pointLat, pointLon));
++          }
++        }
++      }
++    }
++  }
++
+   // check edge/interesting cases explicitly
+   public void testEncodeEdgeCases() {
+     assertEquals(Integer.MIN_VALUE, encodeLatitude(MIN_LAT_INCL));
+diff --git a/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java b/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java
+index 3e88aeb986..9423bf651d 100644
+--- a/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java
++++ b/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java
+@@ -18,14 +18,55 @@ package org.apache.lucene.search;
+ 
+ import org.apache.lucene.document.Document;
+ import org.apache.lucene.document.LatLonDocValuesField;
++import org.apache.lucene.document.LatLonPoint;
+ import org.apache.lucene.document.ShapeField;
+ import org.apache.lucene.geo.GeoEncodingUtils;
+ import org.apache.lucene.geo.LatLonGeometry;
+ import org.apache.lucene.geo.Polygon;
++import org.apache.lucene.index.DirectoryReader;
++import org.apache.lucene.index.IndexReader;
++import org.apache.lucene.index.IndexWriter;
++import org.apache.lucene.store.Directory;
+ import org.apache.lucene.tests.geo.BaseGeoPointTestCase;
+ 
+ public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {
+ 
++  public void testNarrowPolygonCloseToNorthPole() throws Exception {
++    double lat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 2);
++    double lon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 2);
++    double minLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 3);
++    double maxLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE);
++    double minLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 3);
++    double maxLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE);
++    Polygon polygon =
++        new Polygon(
++            new double[] {minLat, minLat, maxLat, maxLat, minLat},
++            new double[] {minLon, maxLon, maxLon, minLon, minLon});
++
++    try (Directory dir = newDirectory();
++        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig())) {
++      Document doc = new Document();
++      addPointToDoc(FIELD_NAME, doc, lat, lon);
++      doc.add(new LatLonPoint(FIELD_NAME, lat, lon));
++      writer.addDocument(doc);
++      try (IndexReader reader = DirectoryReader.open(writer)) {
++        IndexSearcher searcher = newSearcher(reader);
++        assertEquals(1, searcher.count(LatLonPoint.newPolygonQuery(FIELD_NAME, polygon)));
++        assertEquals(1, searcher.count(newPolygonQuery(FIELD_NAME, polygon)));
++        assertEquals(
++            1,
++            searcher.count(
++                LatLonDocValuesField.newSlowGeometryQuery(
++                    FIELD_NAME, ShapeField.QueryRelation.WITHIN, polygon)));
++        assertEquals(
++            0,
++            searcher.count(
++                LatLonDocValuesField.newSlowGeometryQuery(
++                    FIELD_NAME, ShapeField.QueryRelation.DISJOINT, polygon)));
++      }
++    }
++  }
++
+   @Override
+   protected void addPointToDoc(String field, Document doc, double lat, double lon) {
+     doc.add(new LatLonDocValuesField(field, lat, lon));

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a015",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"[debugger command] at `mock.py:73` showed the root cause: `name` was `~T`, a `TypeVar`, being concatenated with a string.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 9 probe at sphinx/ext/autodoc/mock.py:73: hit 3 name = TypeVar ~T, module = 'missing_dependency.GenericBase' (hits 1-2: name 'GenericBase', module 'missing_dependency'). Consistent with the run's own traceback in the same output and cmd 5: `module + '.' + name` at line 73 raising 'can only concatenate str (not \"typing.TypeVar\") to str' via __getitem__ passing self.__display_name__ as module; the str(key) fix makes builds/tests pass (cmds 22-23). Cmds 6-7 were errors. Nothing contradicts."
+}

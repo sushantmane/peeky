@@ -1,0 +1,7 @@
+{
+ "judge_id": "a241",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"the debugger confirmed that the CIRS intermediate already had the wrong distance (`650.97714819 m`).\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 19 probe at cirs_observed_transforms.py:25 showed cirs_coo.distance=650.97714819 m; the same run's pytest failure (and the plain pytest run in cmd 19) shows observed.distance array(650.97714819) vs 100. Cmd 33 at itrs_observed_transforms.py:81 showed topocentric_repr 100 m 'up' vectors matching the test's three sites, rep=(~0,~0,100) and observed_frame.obstime=None for the [None-AltAz] case; the test passed (25 passed). Cmds 11/14/15 were error/no-stop. Nothing contradicted."
+}

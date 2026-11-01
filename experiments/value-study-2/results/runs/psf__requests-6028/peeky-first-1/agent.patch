@@ -1,0 +1,90 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..47b26bb5 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,6 +4,9 @@ Release History
+ dev
+ ---
+ 
++- Fixed proxy URL normalization dropping credentials and causing proxy
++  authentication failures.
++
+ - \[Short description of non-trivial change.\]
+ 
+ 2.27.0 (2022-01-03)
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..e0c1a697 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -974,6 +974,9 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth:
++        netloc = '@'.join([auth, netloc])
++
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_lowlevel.py b/tests/test_lowlevel.py
+index 7256eda9..10083c72 100644
+--- a/tests/test_lowlevel.py
++++ b/tests/test_lowlevel.py
+@@ -21,6 +21,34 @@ def echo_response_handler(sock):
+     sock.send(text_200)
+ 
+ 
++@pytest.mark.parametrize('auth, username, password', (
++    ('user:pass', 'user', 'pass'),
++    ('user:', 'user', ''),
++    ('user%40name:p%3Ass', 'user@name', 'p:ss'),
++))
++def test_authenticated_proxy(auth, username, password):
++    expected = ('Proxy-Authorization: ' +
++                requests.auth._basic_auth_str(username, password)).encode('ascii')
++
++    def proxy_handler(sock):
++        request = consume_socket_content(sock, timeout=0.1)
++        status = (b'200 OK' if expected + b'\r\n' in request else
++                  b'407 Proxy Authentication Required')
++        sock.sendall(b'HTTP/1.1 ' + status + b'\r\nContent-Length: 0\r\n\r\n')
++        return request
++
++    server = Server(proxy_handler)
++    with server as (host, port):
++        proxy = 'http://{}@{}:{}'.format(auth, host, port)
++        with requests.Session() as session:
++            session.trust_env = False
++            response = session.get('http://example.org/',
++                                   proxies={'http': proxy}, timeout=3)
++
++    assert response.status_code == 200
++    assert expected + b'\r\n' in server.handler_results[0]
++
++
+ def test_chunked_upload():
+     """can safely send generators"""
+     close_server = threading.Event()
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 29b3aca8..c4b69fcf 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1896,6 +1896,18 @@ class TestRequests:
+         headers = adapter.proxy_headers("http://user:@httpbin.org")
+         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}
+ 
++    @pytest.mark.parametrize('request_scheme', ('http', 'https'))
++    @pytest.mark.parametrize('proxy_scheme', ('http', 'https'))
++    def test_proxy_connection_preserves_auth(self, request_scheme, proxy_scheme):
++        proxy = '{}://user:pass@proxy.example:8080'.format(proxy_scheme)
++        url = '{}://example.org/'.format(request_scheme)
++
++        with contextlib.closing(HTTPAdapter()) as adapter:
++            connection = adapter.get_connection(url, {request_scheme: proxy})
++            assert connection.proxy_headers == {
++                'Proxy-Authorization': _basic_auth_str('user', 'pass')
++            }
++
+     def test_response_json_when_content_is_None(self, httpbin):
+         r = requests.get(httpbin('/status/204'))
+         # Make sure r.content is None

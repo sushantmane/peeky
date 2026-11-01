@@ -1,0 +1,156 @@
+diff --git a/docs/Transforming-Observables.md b/docs/Transforming-Observables.md
+index 3a3d94cd2..0ca2c0ab0 100644
+--- a/docs/Transforming-Observables.md
++++ b/docs/Transforming-Observables.md
+@@ -734,6 +734,8 @@ Observable.just(5, 3, 8, 1, 7)
+ 
+ Applies the given `io.reactivex.functions.Function` to each item emitted by a reactive source, where that function returns a reactive source, and emits the items emitted by the most recently projected of these reactive sources.
+ 
++Disposing an `Observable.switchMap` or `Observable.switchMapDelayError` subscription also disposes the active inner source, even while it is subscribing. Initial emissions, such as the seed from `scan`, that arrive after disposal are ignored.
++
+ ### switchMap example
+ 
+ ```java
+diff --git a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
+index e213352a0..07b4538d5 100644
+--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
++++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
+@@ -350,10 +350,14 @@ public final class ObservableSwitchMap<T, R> extends AbstractObservableWithUpstr
+         @Override
+         public void onNext(R t) {
+             if (index == parent.unique) {
+-                if (t != null) {
+-                    queue.offer(t);
++                SimpleQueue<R> q = queue;
++                // Cancellation before onSubscribe can leave the queue uninitialized.
++                if (q != null) {
++                    if (t != null) {
++                        q.offer(t);
++                    }
++                    parent.drain();
+                 }
+-                parent.drain();
+             }
+         }
+ 
+diff --git a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapDisposeTest.java b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapDisposeTest.java
+new file mode 100644
+index 000000000..9ef39b5cf
+--- /dev/null
++++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapDisposeTest.java
+@@ -0,0 +1,115 @@
++/*
++ * Copyright (c) 2016-present, RxJava Contributors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in
++ * compliance with the License. You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software distributed under the License is
++ * distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See
++ * the License for the specific language governing permissions and limitations under the License.
++ */
++
++package io.reactivex.rxjava3.internal.operators.observable;
++
++import static org.junit.Assert.*;
++
++import org.junit.Test;
++
++import io.reactivex.rxjava3.core.*;
++import io.reactivex.rxjava3.exceptions.TestException;
++import io.reactivex.rxjava3.functions.Function;
++import io.reactivex.rxjava3.observers.TestObserver;
++import io.reactivex.rxjava3.subjects.*;
++import io.reactivex.rxjava3.testsupport.TestHelper;
++
++public class ObservableSwitchMapDisposeTest extends RxJavaTest {
++
++    @Test
++    public void disposeBeforeInnerOnSubscribe() throws Throwable {
++        disposeBeforeInnerOnSubscribe(false);
++    }
++
++    @Test
++    public void disposeBeforeInnerOnSubscribeDelayError() throws Throwable {
++        disposeBeforeInnerOnSubscribe(true);
++    }
++
++    void disposeBeforeInnerOnSubscribe(boolean delayErrors) throws Throwable {
++        TestHelper.withErrorTracking(errors -> {
++            BehaviorSubject<Integer> outer = BehaviorSubject.createDefault(1);
++            PublishSubject<Integer> inner = PublishSubject.create();
++            TestObserver<Integer> to = new TestObserver<>();
++
++            Function<Integer, Observable<Integer>> mapper = v -> Observable.defer(() -> {
++                to.dispose();
++                return inner.scan(0, (a, b) -> a + b).map(w -> w);
++            });
++
++            Observable<Integer> result = delayErrors
++                    ? outer.switchMapDelayError(mapper) : outer.switchMap(mapper);
++            result.subscribe(to);
++
++            to.assertEmpty();
++            assertTrue(to.isDisposed());
++            assertFalse(outer.hasObservers());
++            assertFalse(inner.hasObservers());
++            assertTrue(errors.toString(), errors.isEmpty());
++        });
++    }
++
++    @Test
++    public void outerErrorBeforeInnerOnSubscribe() throws Throwable {
++        TestHelper.withErrorTracking(errors -> {
++            PublishSubject<Integer> outer = PublishSubject.create();
++            PublishSubject<Integer> inner = PublishSubject.create();
++
++            TestObserver<Integer> to = outer.switchMap(v -> Observable.defer(() -> {
++                outer.onError(new TestException());
++                return inner.scan(0, (a, b) -> a + b).map(w -> w);
++            })).test();
++
++            outer.onNext(1);
++
++            to.assertFailure(TestException.class);
++            assertFalse(outer.hasObservers());
++            assertFalse(inner.hasObservers());
++            assertTrue(errors.toString(), errors.isEmpty());
++        });
++    }
++
++    @Test
++    public void disposeInnerSubscribeRace() throws Throwable {
++        disposeInnerSubscribeRace(false);
++    }
++
++    @Test
++    public void disposeInnerSubscribeRaceDelayError() throws Throwable {
++        disposeInnerSubscribeRace(true);
++    }
++
++    void disposeInnerSubscribeRace(boolean delayErrors) throws Throwable {
++        TestHelper.withErrorTracking(errors -> {
++            for (int i = 0; i < TestHelper.RACE_DEFAULT_LOOPS; i++) {
++                PublishSubject<Integer> outer = PublishSubject.create();
++                PublishSubject<Integer> inner = PublishSubject.create();
++
++                Function<Integer, Observable<Integer>> mapper = v -> Observable.defer(() ->
++                        inner.scan(0, (a, b) -> a + b).map(w -> w));
++
++                Observable<Integer> result = delayErrors
++                        ? outer.switchMapDelayError(mapper) : outer.switchMap(mapper);
++                TestObserver<Integer> to = result.test();
++
++                TestHelper.race(() -> outer.onNext(1), to::dispose);
++
++                to.assertNoErrors().assertNotComplete();
++                assertTrue(to.isDisposed());
++                assertFalse(outer.hasObservers());
++                assertFalse(inner.hasObservers());
++            }
++            assertTrue(errors.toString(), errors.isEmpty());
++        });
++    }
++}

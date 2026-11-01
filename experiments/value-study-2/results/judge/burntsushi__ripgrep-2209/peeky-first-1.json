@@ -1,0 +1,7 @@
+{
+ "judge_id": "a166",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The source points to the issue: replacement copies the entire look-ahead buffer, not just the matching lines.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 20 probe util.rs:104: range.start=0, range.end=15 (= len of 'before\\nfoo bar\\n', the matched lines of the 27-byte input); Cmd 21 util.rs:99 closure: start=0, dst.len=3 (= 'bar'). Consistent with test output '1:bar' (Cmd 18/20) and the range.end-bounded fix making replacement_multi_line_bounded expecting '1:bar\\n' pass (Cmd 24). Nothing contradicts."
+}

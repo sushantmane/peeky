@@ -1,0 +1,7 @@
+{
+ "judge_id": "a127",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler allows for one control value in `finally`, but a pending return or jump carries two. That can undersize the value stack and overwrite `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,223 @@
+{
+ "bug": "django__django-11087",
+ "arm": "control",
+ "rep": 2,
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/django__django-11087:control",
+ "image_digest": "sha256:68a25a564a069b1f20eca166fa546d90669b1e4f07f29adfedb72af28d7f027b",
+ "peeky_sha": null,
+ "container": "study-django__django-11087-control-2-50a7ef",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T15:08:53+00:00",
+ "ended": "2026-11-01T15:13:04+00:00",
+ "wall_seconds": 251.1,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "test_only_referenced_fields_selected (delete.tests.DeletionTests)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.5,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "84897ef3228974b89fbdf140d26731188cf3ae667a967a89a97510522253f37a",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "django/db/models/deletion.py",
+  "docs/ref/models/querysets.txt",
+  "tests/delete_regress/models.py",
+  "tests/delete_regress/tests.py"
+ ],
+ "patch_bytes": 9672,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 49
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 13,
+ "ai_credits": 23.2671,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 375368,
+  "output": 9624,
+  "cache_read": 334154,
+  "cache_write": 41175,
+  "reasoning": 5480
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 17,
+ "tool_calls_by_name": {
+  "bash": 17
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a | head && if [ -d /testbed ]; then cd /testbed; fi && pwd && git status --short && sed -n '1,360p' django/db/models/deletion.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat tests/delete/models.py && sed -n '1,300p' tests/delete/tests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '300,760p' tests/delete/tests.py && rg -n 'delete\\(\\)|signals|select_related' docs/ref/models/querysets.txt | tail -40 && rg -n 'select_related|base_manager|defer|to_field|pre_delete|m2m_changed' tests/delete* --glob '*.py' && ls docs/releases | tail",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls tests/delete_regress && cat tests/delete_regress/models.py && cat tests/delete_regress/tests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A78 -B5 '^delete()' docs/ref/models/querysets.txt && head -55 docs/releases/3.0.txt && grep -n -A36 -B6 'foreign_related_fields' django/db/models/fields/related.py && grep -n -A40 'def get_queryset' django/db/models/manager.py && grep -R -n -E 'base_manager_name|select_related|to_field|defer' tests/delete* --include='*.py'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A85 -B5 '^``delete()``' docs/ref/models/querysets.txt; head -60 docs/releases/3.0.txt; grep -n -A35 -B6 'foreign_related_fields' django/db/models/fields/related.py; grep -n -A14 'def get_queryset' django/db/models/manager.py; grep -R -n -E 'base_manager_name|select_related|to_field|defer' tests/delete* --include='*.py'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A65 'def delete' django/db/models/query.py | head -70 && grep -n -A58 'def get_queryset' django/db/models/fields/related_descriptors.py | head -62 && grep -n -A40 'def get_object' django/db/models/fields/related_descriptors.py | head -100 && grep -R -n 'mock.patch.*get_queryset\\|patch.object.*get_queryset\\|get_deferred_fields()' tests --include='*.py' | head -35 && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v patch && grep -n 'mock\\|CaptureQueriesContext' tests/delete_regress/tests.py && true",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && wc -l tests/delete_regress/models.py tests/delete_regress/tests.py && tail -12 tests/delete_regress/models.py && sed -n '1,17p' tests/delete_regress/tests.py && sed -n '85,111p' tests/delete_regress/tests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\npath = Path('tests/delete_regress/models.py')\ntext = path.read_text()\ntext += '''\n\nclass DeleteRoot(models.Model):\n    pass\n\n\nclass DeleteBranch(models.Model):\n    root = models.ForeignKey(DeleteRoot, models.CASCADE, null=True)\n    name = models.CharField(max_length=20, unique=True)\n    data = models.TextField()\n\n\nclass DeleteLeaf(models.Model):\n    branch = models.ForeignKey(DeleteBranch, models.CASCADE, to_field='name', null=True)\n    data = models.TextField()\n'''\npath.write_text(text)\n\npath = Path('tests/delete_regress/tests.py')\ntext = path.read_text()\ntext = text.replace('import datetime\\n', 'import datetime\\nfrom unittest import mock\\n', 1)\ntext = text.replace('from django.db import connection, models, transaction\\n', 'from django.db import connection, models, transaction\\nfrom django.db.models.deletion import Collector\\n', 1)\ntext = text.replace('    Award, AwardNote, Book, Child, Contact, Eaten, Email, File, Food, FooFile,\\n', '    Award, AwardNote, Book, Child, Contact, DeleteBranch, DeleteLeaf, DeleteRoot,\\n    Eaten, Email, File, Food, FooFile,\\n', 1)\ntext += '''\n\nclass DeleteRequiredFieldsTests(TestCase):\n    def create_objects(self):\n        root = DeleteRoot.objects.create()\n        branch = DeleteBranch.objects.create(root=root, name='branch', data='branch data')\n        leaf = DeleteLeaf.objects.create(branch=branch, data='leaf data')\n        return root, branch, leaf\n\n    def test_only_required_fields(self):\n        for queryset_delete in (False, True):\n            with self.subTest(queryset_delete=queryset_delete):\n                root, branch, leaf = self.create_objects()\n                objs = DeleteRoot.objects.filter(pk=root.pk) if queryset_delete else root\n                error = UnicodeDecodeError('utf-8', b'\\\\xed', 0, 1, 'invalid continuation byte')\n                with mock.patch.object(models.TextField, 'from_db_value', side_effect=error, create=True):\n                    with self.assertNumQueries(5 if queryset_delete else 4) as queries:\n                        deleted = objs.delete()\n                quote = connection.ops.quote_name\n                table = quote(DeleteBranch._meta.db_table)\n                self.assertIn(\n                    'SELECT %s.%s, %s.%s FROM' % (table, quote('id'), table, quote('name')),\n                    queries.captured_queries[1 if queryset_delete else 0]['sql'],\n                )\n                self.assertEqual(deleted, (3, {\n                    'delete_regress.DeleteRoot': 1,\n                    'delete_regress.DeleteBranch': 1,\n                    'delete_regress.DeleteLeaf': 1,\n                }))\n                self.assertFalse(DeleteRoot.objects.exists())\n                self.assertFalse(DeleteBranch.objects.exists())\n                self.assertFalse(DeleteLeaf.objects.exists())\n\n    def test_only_primary_key_for_field_update(self):\n        root, branch, leaf = self.create_objects()\n        field = DeleteLeaf._meta.get_field('branch')\n        error = UnicodeDecodeError('utf-8', b'\\\\xed', 0, 1, 'invalid continuation byte')\n        with mock.patch.object(field.remote_field, 'on_delete', models.SET_NULL):\n            with mock.patch.object(models.TextField, 'from_db_value', side_effect=error, create=True):\n                with self.assertNumQueries(3) as queries:\n                    branch.delete()\n        quote = connection.ops.quote_name\n        self.assertIn(\n            'SELECT %s.%s FROM' % (quote(DeleteLeaf._meta.db_table), quote('id')),\n            queries.captured_queries[0]['sql'],\n        )\n        leaf.refresh_from_db()\n        self.assertIsNone(leaf.branch)\n        self.assertEqual(leaf.data, 'leaf data')\n        self.assertTrue(DeleteRoot.objects.filter(pk=root.pk).exists())\n        self.assertFalse(DeleteBranch.objects.exists())\n\n    def test_signal_listeners_receive_all_fields(self):\n        for signal in (models.signals.pre_delete, models.signals.post_delete):\n            with self.subTest(signal=signal):\n                root, branch, leaf = self.create_objects()\n                calls = []\n\n                def receiver(instance, **kwargs):\n                    self.assertEqual(instance.get_deferred_fields(), set())\n                    self.assertEqual(instance.data, 'branch data')\n                    self.assertEqual(instance.root_id, root.pk)\n                    calls.append(instance)\n\n                signal.connect(receiver, sender=DeleteBranch)\n                try:\n                    with self.assertNumQueries(4):\n                        root.delete()\n                finally:\n                    signal.disconnect(receiver, sender=DeleteBranch)\n                self.assertEqual(len(calls), 1)\n\n    def test_select_related(self):\n        root, branch, leaf = self.create_objects()\n        queryset = DeleteBranch.objects.select_related('root')\n        collector = Collector(using='default')\n        with mock.patch.object(DeleteBranch._base_manager, 'get_queryset', return_value=queryset):\n            with self.assertNumQueries(1):\n                collector.collect([root])\n        collected_branch, = collector.data[DeleteBranch]\n        self.assertEqual(collected_branch.get_deferred_fields(), set())\n        self.assertTrue(DeleteBranch._meta.get_field('root').is_cached(collected_branch))\n        with self.assertNumQueries(3):\n            self.assertEqual(collector.delete()[0], 3)\n'''\npath.write_text(text)\nPY\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete_regress.tests.DeleteRequiredFieldsTests --verbosity 2",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\npath = Path('django/db/models/deletion.py')\ntext = path.read_text()\nold = '    def can_fast_delete(self, objs, from_field=None):\\n'\nnew = '''    def _has_signal_listeners(self, model):\n        return (\n            signals.pre_delete.has_listeners(model) or\n            signals.post_delete.has_listeners(model) or\n            signals.m2m_changed.has_listeners(model)\n        )\n\n    def can_fast_delete(self, objs, from_field=None):\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\nold = '''        if (signals.pre_delete.has_listeners(model) or\n                signals.post_delete.has_listeners(model) or\n                signals.m2m_changed.has_listeners(model)):\n'''\nassert text.count(old) == 1\ntext = text.replace(old, '        if self._has_signal_listeners(model):\\n')\nold = '''                    elif sub_objs:\n                        field.remote_field.on_delete(self, field, sub_objs, self.using)\n'''\nnew = '''                    else:\n                        # Non-referenced fields can be deferred if no signal\n                        # receivers are connected. Don't defer fields when\n                        # select_related() is in use as the query may be invalid.\n                        if not (sub_objs.query.select_related or self._has_signal_listeners(sub_objs.model)):\n                            referenced_fields = {\n                                field.attname\n                                for related in get_candidate_relations_to_delete(sub_objs.model._meta)\n                                for field in related.field.foreign_related_fields\n                            }\n                            sub_objs = sub_objs.only(sub_objs.model._meta.pk.attname, *referenced_fields)\n                        if sub_objs:\n                            field.remote_field.on_delete(self, field, sub_objs, self.using)\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\n\npath = Path('tests/delete_regress/tests.py')\ntext = path.read_text()\ntext = text.replace(\"branch = DeleteBranch.objects.create(root=root, name='branch', data='branch data')\", \"branch = DeleteBranch.objects.create(root=root, name='branch%s' % root.pk, data='branch data')\")\npath.write_text(text)\n\npath = Path('docs/ref/models/querysets.txt')\ntext = path.read_text()\nold = '''executed queries can be reduced, too.\n\nForeignKeys which are set to'''\nnew = '''executed queries can be reduced, too.\n\nWhen fetching related objects to handle cascades, Django may defer fields that\naren't needed for deletion if there are no signal listeners for those objects.\n\nForeignKeys which are set to'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git --no-pager diff --stat && git --no-pager diff -- django/db/models/deletion.py docs/ref/models/querysets.txt tests/delete_regress/models.py tests/delete_regress/tests.py && cat setup.cfg | head -120",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -n -E 'collector\\.collect\\(|\\.delete\\(' tests/generic_relations* tests/foreign_object tests/model_inheritance* tests/signals --include='*.py' | head -90 && ls tests | grep -E '^(generic_relations|foreign_object|model_inheritance|signals|custom_managers)'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E '^class |^    def test_.*(delet|cascad|inherit)' tests/generic_relations/tests.py tests/generic_relations_regress/tests.py tests/model_inheritance_regress/tests.py tests/signals/tests.py tests/foreign_object/tests.py && command -v flake8; command -v isort; cat tox.ini | head -95",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- tests/delete_regress/models.py\n+++ tests/delete_regress/models.py\n@@ -148,7 +148,7 @@\n \n \n class DeleteBranch(models.Model):\n-    root = models.ForeignKey(DeleteRoot, models.CASCADE, null=True)\n+    root = models.ForeignKey(DeleteRoot, models.CASCADE)\n     name = models.CharField(max_length=20, unique=True)\n     data = models.TextField()\n \nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- tests/delete_regress/tests.py\n+++ tests/delete_regress/tests.py\n@@ -9,4 +9,3 @@\n-    Eaten, Email, File, Food, FooFile,\n-    FooFileProxy, FooImage, FooPhoto, House, Image, Item, Location, Login,\n-    OrderedPerson, OrgUnit, Person, Photo, PlayedWith, PlayedWithNote, Policy,\n-    Researcher, Toy, Version,\n+    Eaten, Email, File, Food, FooFile, FooFileProxy, FooImage, FooPhoto, House,\n+    Image, Item, Location, Login, OrderedPerson, OrgUnit, Person, Photo,\n+    PlayedWith, PlayedWithNote, Policy, Researcher, Toy, Version,\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress generic_relations.tests.GenericRelationsTests.test_object_deletion_with_generic_relation generic_relations.tests.GenericRelationsTests.test_object_deletion_without_generic_relation generic_relations.tests.GenericRelationsTests.test_tag_deletion_related_objects_unaffected generic_relations.tests.GenericRelationsTests.test_generic_relation_to_inherited_child generic_relations_regress.tests.GenericRelationTests.test_charlink_delete generic_relations_regress.tests.GenericRelationTests.test_textlink_delete model_inheritance_regress.tests.ModelInheritanceTest.test_model_inheritance signals.tests.SignalTests.test_delete_signals signals.tests.SignalTests.test_save_and_delete_signals_with_m2m && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm tests/delete_regress/tests.py.orig && sed -n '1,17p' tests/delete_regress/tests.py && python - <<'PY'\nfrom pathlib import Path\nfor name in ('django/db/models/deletion.py', 'tests/delete_regress/models.py', 'tests/delete_regress/tests.py'):\n    for number, line in enumerate(Path(name).read_text().splitlines(), 1):\n        if len(line) > 119:\n            raise SystemExit('%s:%s exceeds the configured line length' % (name, number))\nPY\n git diff --check && git --no-pager diff --stat && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 3,
+ "build_or_test_commands": [
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\npath = Path('tests/delete_regress/models.py')\ntext = path.read_text()\ntext += '''\n\nclass DeleteRoot(models.Model):\n    pass\n\n\nclass DeleteBranch(models.Model):\n    root = models.ForeignKey(DeleteRoot, models.CASCADE, null=True)\n    name = models.CharField(max_length=20, unique=True)\n    data = models.TextField()\n\n\nclass DeleteLeaf(models.Model):\n    branch = models.ForeignKey(DeleteBranch, models.CASCADE, to_field='name', null=True)\n    data = models.TextField()\n'''\npath.write_text(text)\n\npath = Path('tests/delete_regress/tests.py')\ntext = path.read_text()\ntext = text.replace('import datetime\\n', 'import datetime\\nfrom unittest import mock\\n', 1)\ntext = text.replace('from django.db import connection, models, transaction\\n', 'from django.db import connection, models, transaction\\nfrom django.db.models.deletion import Collector\\n', 1)\ntext = text.replace('    Award, AwardNote, Book, Child, Contact, Eaten, Email, File, Food, FooFile,\\n', '    Award, AwardNote, Book, Child, Contact, DeleteBranch, DeleteLeaf, DeleteRoot,\\n    Eaten, Email, File, Food, FooFile,\\n', 1)\ntext += '''\n\nclass DeleteRequiredFieldsTests(TestCase):\n    def create_objects(self):\n        root = DeleteRoot.objects.create()\n        branch = DeleteBranch.objects.create(root=root, name='branch', data='branch data')\n        leaf = DeleteLeaf.objects.create(branch=branch, data='leaf data')\n        return root, branch, leaf\n\n    def test_only_required_fields(self):\n        for queryset_delete in (False, True):\n            with self.subTest(queryset_delete=queryset_delete):\n                root, branch, leaf = self.create_objects()\n                objs = DeleteRoot.objects.filter(pk=root.pk) if queryset_delete else root\n                error = UnicodeDecodeError('utf-8', b'\\\\xed', 0, 1, 'invalid continuation byte')\n                with mock.patch.object(models.TextField, 'from_db_value', side_effect=error, create=True):\n                    with self.assertNumQueries(5 if queryset_delete else 4) as queries:\n                        deleted = objs.delete()\n                quote = connection.ops.quote_name\n                table = quote(DeleteBranch._meta.db_table)\n                self.assertIn(\n                    'SELECT %s.%s, %s.%s FROM' % (table, quote('id'), table, quote('name')),\n                    queries.captured_queries[1 if queryset_delete else 0]['sql'],\n                )\n                self.assertEqual(deleted, (3, {\n                    'delete_regress.DeleteRoot': 1,\n                    'delete_regress.DeleteBranch': 1,\n                    'delete_regress.DeleteLeaf': 1,\n                }))\n                self.assertFalse(DeleteRoot.objects.exists())\n                self.assertFalse(DeleteBranch.objects.exists())\n                self.assertFalse(DeleteLeaf.objects.exists())\n\n    def test_only_primary_key_for_field_update(self):\n        root, branch, leaf = self.create_objects()\n        field = DeleteLeaf._meta.get_field('branch')\n        error = UnicodeDecodeError('utf-8', b'\\\\xed', 0, 1, 'invalid continuation byte')\n        with mock.patch.object(field.remote_field, 'on_delete', models.SET_NULL):\n            with mock.patch.object(models.TextField, 'from_db_value', side_effect=error, create=True):\n                with self.assertNumQueries(3) as queries:\n                    branch.delete()\n        quote = connection.ops.quote_name\n        self.assertIn(\n            'SELECT %s.%s FROM' % (quote(DeleteLeaf._meta.db_table), quote('id')),\n            queries.captured_queries[0]['sql'],\n        )\n        leaf.refresh_from_db()\n        self.assertIsNone(leaf.branch)\n        self.assertEqual(leaf.data, 'leaf data')\n        self.assertTrue(DeleteRoot.objects.filter(pk=root.pk).exists())\n        self.assertFalse(DeleteBranch.objects.exists())\n\n    def test_signal_listeners_receive_all_fields(self):\n        for signal in (models.signals.pre_delete, models.signals.post_delete):\n            with self.subTest(signal=signal):\n                root, branch, leaf = self.create_objects()\n                calls = []\n\n                def receiver(instance, **kwargs):\n                    self.assertEqual(instance.get_deferred_fields(), set())\n                    self.assertEqual(instance.data, 'branch data')\n                    self.assertEqual(instance.root_id, root.pk)\n                    calls.append(instance)\n\n                signal.connect(receiver, sender=DeleteBranch)\n                try:\n                    with self.assertNumQueries(4):\n                        root.delete()\n                finally:\n                    signal.disconnect(receiver, sender=DeleteBranch)\n                self.assertEqual(len(calls), 1)\n\n    def test_select_related(self):\n        root, branch, leaf = self.create_objects()\n        queryset = DeleteBranch.objects.select_related('root')\n        collector = Collector(using='default')\n        with mock.patch.object(DeleteBranch._base_manager, 'get_queryset', return_value=queryset):\n            with self.assertNumQueries(1):\n                collector.collect([root])\n        collected_branch, = collector.data[DeleteBranch]\n        self.assertEqual(collected_branch.get_deferred_fields(), set())\n        self.assertTrue(DeleteBranch._meta.get_field('root').is_cached(collected_branch))\n        with self.assertNumQueries(3):\n            self.assertEqual(collector.delete()[0], 3)\n'''\npath.write_text(text)\nPY\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete_regress.tests.DeleteRequiredFieldsTests --verbosity 2",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\n\npath = Path('django/db/models/deletion.py')\ntext = path.read_text()\nold = '    def can_fast_delete(self, objs, from_field=None):\\n'\nnew = '''    def _has_signal_listeners(self, model):\n        return (\n            signals.pre_delete.has_listeners(model) or\n            signals.post_delete.has_listeners(model) or\n            signals.m2m_changed.has_listeners(model)\n        )\n\n    def can_fast_delete(self, objs, from_field=None):\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\nold = '''        if (signals.pre_delete.has_listeners(model) or\n                signals.post_delete.has_listeners(model) or\n                signals.m2m_changed.has_listeners(model)):\n'''\nassert text.count(old) == 1\ntext = text.replace(old, '        if self._has_signal_listeners(model):\\n')\nold = '''                    elif sub_objs:\n                        field.remote_field.on_delete(self, field, sub_objs, self.using)\n'''\nnew = '''                    else:\n                        # Non-referenced fields can be deferred if no signal\n                        # receivers are connected. Don't defer fields when\n                        # select_related() is in use as the query may be invalid.\n                        if not (sub_objs.query.select_related or self._has_signal_listeners(sub_objs.model)):\n                            referenced_fields = {\n                                field.attname\n                                for related in get_candidate_relations_to_delete(sub_objs.model._meta)\n                                for field in related.field.foreign_related_fields\n                            }\n                            sub_objs = sub_objs.only(sub_objs.model._meta.pk.attname, *referenced_fields)\n                        if sub_objs:\n                            field.remote_field.on_delete(self, field, sub_objs, self.using)\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\n\npath = Path('tests/delete_regress/tests.py')\ntext = path.read_text()\ntext = text.replace(\"branch = DeleteBranch.objects.create(root=root, name='branch', data='branch data')\", \"branch = DeleteBranch.objects.create(root=root, name='branch%s' % root.pk, data='branch data')\")\npath.write_text(text)\n\npath = Path('docs/ref/models/querysets.txt')\ntext = path.read_text()\nold = '''executed queries can be reduced, too.\n\nForeignKeys which are set to'''\nnew = '''executed queries can be reduced, too.\n\nWhen fetching related objects to handle cascades, Django may defer fields that\naren't needed for deletion if there are no signal listeners for those objects.\n\nForeignKeys which are set to'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress",
+  "cd /testbed && patch -p0 <<'PATCH'\n--- tests/delete_regress/tests.py\n+++ tests/delete_regress/tests.py\n@@ -9,4 +9,3 @@\n-    Eaten, Email, File, Food, FooFile,\n-    FooFileProxy, FooImage, FooPhoto, House, Image, Item, Location, Login,\n-    OrderedPerson, OrgUnit, Person, Photo, PlayedWith, PlayedWithNote, Policy,\n-    Researcher, Toy, Version,\n+    Eaten, Email, File, Food, FooFile, FooFileProxy, FooImage, FooPhoto, House,\n+    Image, Item, Location, Login, OrderedPerson, OrgUnit, Person, Photo,\n+    PlayedWith, PlayedWithNote, Policy, Researcher, Toy, Version,\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress generic_relations.tests.GenericRelationsTests.test_object_deletion_with_generic_relation generic_relations.tests.GenericRelationsTests.test_object_deletion_without_generic_relation generic_relations.tests.GenericRelationsTests.test_tag_deletion_related_objects_unaffected generic_relations.tests.GenericRelationsTests.test_generic_relation_to_inherited_child generic_relations_regress.tests.GenericRelationTests.test_charlink_delete generic_relations_regress.tests.GenericRelationTests.test_textlink_delete model_inheritance_regress.tests.ModelInheritanceTest.test_model_inheritance signals.tests.SignalTests.test_delete_signals signals.tests.SignalTests.test_save_and_delete_signals_with_m2m && git diff --check && git status --short"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "The deletion collector fetched unused columns during cascades, triggering decoding errors on irrelevant text. Related-object queries now load only primary keys and fields needed for further relations, while preserving full-field loading for signal listeners and `select_related()`. Added regression tests and updated documentation.",
+ "assistant_messages": [
+  "I\u2019ll inspect the deletion collector and its tests, then limit fetched fields while preserving cascade and signal behavior.\n",
+  "The collector fetches every column of related objects before cascading. I\u2019ll defer fields not needed for further relations, but keep full objects for signal listeners and `select_related()` querysets. Regression tests will cover unreadable text and cascades through non-primary-key fields.\n",
+  "The deletion regressions now pass, including the unreadable-text case. The collector also retains non-primary-key fields needed for cascades and full objects for signals. I\u2019m checking nearby generic-relation and inheritance behavior before finishing.\n",
+  "The deletion collector fetched unused columns during cascades, triggering decoding errors on irrelevant text. Related-object queries now load only primary keys and fields needed for further relations, while preserving full-field loading for signal listeners and `select_related()`. Added regression tests and updated documentation."
+ ],
+ "assistant_reasoning": [
+  "**Verifying Python Layout**\n\nI\u2019m getting started on reading line lengths and calculating if they fit. I think I might want to use Python's textwrap module for managing layout but won't add tools just yet. I need to manually verify the length of a specific line, like \"Image, Item, Location...\" which seems to have a length of 79. I'll do a quick check using Python to compute the maximum line allowed. \n\nI also need to confirm that Python's scoping and comprehension don\u2019t lead to any issues. Plus, I want to ensure that documentation statements are correctly noted and that signal emission is handled appropriately in the context.\n\n**Developing Assertion for Updates**\n\nI need to create assertions for nullable updates on the branch.root, specifically for leaf names and related models. It's essential to ensure that null values are only removed after passing tests. I'll add a regression test to address empty primary keys, which is significant even if it's a known patch. \n\nThere's this final phrase I need to tighten up. It should clarify that the deletion collector now only fetches primary keys and necessary fields, preserving full loading for signals. I might need to adjust it to be more precise about related-object queries, and I should include regression tests while omitting redundant mentions of the tests in the phrasing."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 252.0
+}

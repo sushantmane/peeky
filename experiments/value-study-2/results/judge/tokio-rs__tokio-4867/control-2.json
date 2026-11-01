@@ -1,0 +1,7 @@
+{
+ "judge_id": "a045",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"`resubscribe` starts after the closure marker, so it waits for a message that can never arrive.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

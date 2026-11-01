@@ -1,0 +1,7 @@
+{
+ "judge_id": "a033",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The collector fetches every column of related objects before deciding how to delete them.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

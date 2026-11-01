@@ -1,0 +1,7 @@
+{
+ "judge_id": "a211",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"dotted chaining still failed for slices and iterators because their grammar rules lacked the separating-dot form.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

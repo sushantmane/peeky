@@ -1,0 +1,183 @@
+diff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+index bd85a5771f..7e9602f54a 100644
+--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
++++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+@@ -380,13 +380,16 @@ public final class ShapeField {
+         triangle.bY = triangle.cY;
+         triangle.cX = triangle.aX;
+         triangle.cY = triangle.aY;
++        triangle.ab = triangle.bc || triangle.ca;
+         triangle.type = DecodedTriangle.TYPE.LINE;
+       }
+     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {
++      triangle.ab = triangle.ab || triangle.bc;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {
+       triangle.cX = triangle.aX;
+       triangle.cY = triangle.aY;
++      triangle.ab = triangle.ab || triangle.ca;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else {
+       triangle.type = DecodedTriangle.TYPE.TRIANGLE;
+@@ -418,7 +421,10 @@ public final class ShapeField {
+     public int cX;
+     /** y coordinate, vertex three */
+     public int cY;
+-    /** represent if edge ab belongs to original shape */
++    /**
++     * Represents whether edge ab belongs to the original shape. For a triangle simplified to a
++     * line, this is true if either of the non-collapsed edges belongs to the original shape.
++     */
+     public boolean ab;
+     /** represent if edge bc belongs to original shape */
+     public boolean bc;
+diff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java
+new file mode 100644
+index 0000000000..20ed8b562f
+--- /dev/null
++++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java
+@@ -0,0 +1,144 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.lucene.document;
++
++import org.apache.lucene.document.ShapeField.DecodedTriangle;
++import org.apache.lucene.document.ShapeField.QueryRelation;
++import org.apache.lucene.geo.LatLonGeometry;
++import org.apache.lucene.geo.Line;
++import org.apache.lucene.geo.Polygon;
++import org.apache.lucene.geo.Rectangle;
++import org.apache.lucene.index.IndexReader;
++import org.apache.lucene.search.IndexSearcher;
++import org.apache.lucene.store.Directory;
++import org.apache.lucene.tests.index.RandomIndexWriter;
++import org.apache.lucene.tests.util.LuceneTestCase;
++
++public class TestShapeField extends LuceneTestCase {
++
++  public void testCollapsedTriangleBoundaryFlags() {
++    int[][] x = {{0, 0, 10}, {0, 10, 10}, {0, 10, 0}};
++    int[][] y = {{0, 0, 20}, {0, 20, 20}, {0, 20, 0}};
++    for (int collapsedEdge = 0; collapsedEdge < 3; collapsedEdge++) {
++      for (int flags = 0; flags < 8; flags++) {
++        boolean ab = (flags & 1) != 0;
++        boolean bc = (flags & 2) != 0;
++        boolean ca = (flags & 4) != 0;
++        boolean expected =
++            switch (collapsedEdge) {
++              case 0 -> bc || ca;
++              case 1 -> ab || ca;
++              default -> ab || bc;
++            };
++        DecodedTriangle triangle = new DecodedTriangle();
++        triangle.setValues(
++            x[collapsedEdge][0],
++            y[collapsedEdge][0],
++            ab,
++            x[collapsedEdge][1],
++            y[collapsedEdge][1],
++            bc,
++            x[collapsedEdge][2],
++            y[collapsedEdge][2],
++            ca);
++        ShapeField.resolveTriangleType(triangle);
++        assertEquals(DecodedTriangle.TYPE.LINE, triangle.type);
++        assertEquals(expected, triangle.ab);
++        assertEquals(triangle.aX, triangle.cX);
++        assertEquals(triangle.aY, triangle.cY);
++
++        byte[] bytes = new byte[7 * ShapeField.BYTES];
++        ShapeField.encodeTriangle(
++            bytes,
++            y[collapsedEdge][0],
++            x[collapsedEdge][0],
++            ab,
++            y[collapsedEdge][1],
++            x[collapsedEdge][1],
++            bc,
++            y[collapsedEdge][2],
++            x[collapsedEdge][2],
++            ca);
++        ShapeField.decodeTriangle(bytes, triangle);
++        assertEquals(DecodedTriangle.TYPE.LINE, triangle.type);
++        assertEquals(expected, triangle.ab);
++        assertEquals(0, triangle.aX);
++        assertEquals(0, triangle.aY);
++        assertEquals(10, triangle.bX);
++        assertEquals(20, triangle.bY);
++        assertEquals(triangle.aX, triangle.cX);
++        assertEquals(triangle.aY, triangle.cY);
++      }
++    }
++  }
++
++  public void testContainsFlatPolygon() throws Exception {
++    Polygon polygon =
++        new Polygon(
++            new double[] {1, 1.7, 1 + 1e-9, 1.7, 1, 1 - 1e-9, 0, 1 - 1e-9, 1},
++            new double[] {2, 1.7, 1, 0.3, 1 - 1e-9, 1 - 1e-9, 1, 1 + 1e-9, 2});
++    try (Directory directory = newDirectory();
++        RandomIndexWriter writer = new RandomIndexWriter(random(), directory)) {
++      Document document = new Document();
++      for (Field field : LatLonShape.createIndexableFields("shape", polygon, true)) {
++        document.add(field);
++      }
++      writer.addDocument(document);
++      try (IndexReader reader = writer.getReader()) {
++        IndexSearcher searcher = newSearcher(reader);
++        LatLonGeometry[] crossing = {
++          new Line(new double[] {1.35, 1.35}, new double[] {1.3, 1.4}),
++          new Polygon(
++              new double[] {1.32, 1.38, 1.38, 1.32, 1.32},
++              new double[] {1.3, 1.3, 1.4, 1.4, 1.3}),
++          new Rectangle(1.32, 1.38, 1.3, 1.4)
++        };
++        for (LatLonGeometry geometry : crossing) {
++          assertEquals(
++              1,
++              searcher.count(
++                  LatLonShape.newGeometryQuery("shape", QueryRelation.INTERSECTS, geometry)));
++          assertEquals(
++              0,
++              searcher.count(
++                  LatLonShape.newGeometryQuery("shape", QueryRelation.CONTAINS, geometry)));
++          if (geometry instanceof Line == false) {
++            assertEquals(
++                0,
++                searcher.count(
++                    LatLonShape.newGeometryQuery("shape", QueryRelation.WITHIN, geometry)));
++          }
++          assertEquals(
++              0,
++              searcher.count(
++                  LatLonShape.newGeometryQuery("shape", QueryRelation.DISJOINT, geometry)));
++        }
++        assertEquals(
++            0,
++            searcher.count(
++                LatLonShape.newBoxQuery("shape", QueryRelation.CONTAINS, 1.32, 1.38, 1.3, 1.4)));
++        assertEquals(
++            1,
++            searcher.count(
++                LatLonShape.newLineQuery(
++                    "shape",
++                    QueryRelation.CONTAINS,
++                    new Line(new double[] {1.1, 1.1}, new double[] {1.2, 1.4}))));
++      }
++    }
++  }
++}

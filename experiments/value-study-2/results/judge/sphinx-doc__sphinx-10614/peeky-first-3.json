@@ -1,0 +1,7 @@
+{
+ "judge_id": "a132",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"The root cause was mixing page-relative and image-relative paths: ... showed `../target.html` instead of `../nested/target.html`.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 (inheritance_diagram.py:425, pre-fix) urls={'test.Baz': '../nested/index.html#test.Baz', 'test.Bar': '../target.html#test.Bar', 'test.Foo': '../target.html#test.Foo'}, current_filename='nested/index.html': matches the SVG links the program wrote in cmd 7 and the '../'+refuri / '../'+current_filename code shown in cmd 12. Cmd 16 (graphviz.py:244) url/new_path/modified_url per hit match the same SVG links. Cmd 29 (post-fix, line 423) raw urls and current_uri='nested/index.html' agree with the patched code (cmd 28) and with the final SVG links checked in cmd 29. Nothing contradicted."
+}

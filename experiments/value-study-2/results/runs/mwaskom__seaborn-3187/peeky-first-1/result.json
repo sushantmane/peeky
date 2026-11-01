@@ -1,0 +1,331 @@
+{
+ "bug": "mwaskom__seaborn-3187",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/mwaskom__seaborn-3187:peeky-r2",
+ "image_digest": "sha256:06a9f649cf55dff2b478cb56d65a842250c585fb918491726f56c69c7e8ba84e",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-mwaskom__seaborn-3187-peeky-first-1-061004",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:52:55+00:00",
+ "ended": "2026-11-01T13:57:56+00:00",
+ "wall_seconds": 300.7,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/_core/test_plot.py::TestLegend::test_legend_has_no_offset": "PASSED",
+  "tests/test_relational.py::TestRelationalPlotter::test_legend_has_no_offset": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 13.3,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "8338f30ed20c6a0a15c592ec9aae282eea302c6712411686387a648dfbab71e4",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "doc/whatsnew/v0.12.2.rst",
+  "seaborn/_core/scales.py",
+  "seaborn/utils.py",
+  "tests/_core/test_scales.py",
+  "tests/test_utils.py"
+ ],
+ "patch_bytes": 5582,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 251
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 21,
+ "ai_credits": 32.7145,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 724464,
+  "output": 13126,
+  "cache_read": 673018,
+  "cache_write": 51383,
+  "reasoning": 4229
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 31,
+ "tool_calls_by_name": {
+  "bash": 31
+ },
+ "shell_commands": [
+  {
+   "command": "cd /testbed && pwd && git status --short && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,210p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'ScalarFormatter|legend.*numeric|locator_to_legend_entries' seaborn tests && sed -n '310,415p' seaborn/_core/scales.py && ls tests",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -n -E 'ScalarFormatter|locator_to_legend_entries' seaborn tests --include='*.py' && sed -n '1,130p' seaborn/_core/scales.py && sed -n '260,440p' seaborn/_core/scales.py && ls tests",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat /opt/peeky/docs/lang/python.md && sed -n '1,200p' tests/_core/test_scales.py && grep -n -E 'legend|locator_to' tests/test_utils.py tests/test_relational.py | head -75",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport pandas as pd\nimport seaborn as sns\nimport seaborn.objects as so\nfrom seaborn._core.scales import Continuous\nfrom seaborn._core.properties import PointSize\nvalues = pd.Series([3000000, 4000000, 5000000, 6000000], name='body_mass_mg')\nscale = Continuous()._setup(values, PointSize())\nprint('objects scale legend:', scale._legend)\np = so.Plot(x=[1, 2, 3, 4], y=[1, 2, 3, 4], pointsize=values).add(so.Dot()).plot()\nprint('objects legend labels:', [t.get_text() for t in p._figure.legends[0].get_texts()])\nax = sns.scatterplot(x=[1, 2, 3, 4], y=[1, 2, 3, 4], size=values)\nprint('scatterplot legend labels:', [t.get_text() for t in ax.get_legend().get_texts()])\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,125p' /opt/peeky/docs/lang/python.md && sed -n '675,715p' seaborn/utils.py && sed -n '300,345p' tests/test_utils.py && grep -n -E 'legend|class TestContinuous|class TestTemporal' tests/_core/test_scales.py && sed -n '590,665p' seaborn/_core/scales.py && ls doc/whatsnew | tail -10",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,210p' tests/_core/test_scales.py && sed -n '430,565p' tests/_core/test_scales.py && sed -n '190,295p' seaborn/relational.py && ls doc/whatsnew/v0.12* && command -v apply_patch && peeky probe --help | head -80",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport numpy as np\nimport seaborn as sns\nax = sns.scatterplot(x=np.arange(10), y=np.arange(10), size=np.linspace(3e6, 6e6, 10), legend='brief')\nprint('scatterplot brief legend:', [t.get_text() for t in ax.get_legend().get_texts()])\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --at seaborn/_core/scales.py --python /opt/venv/bin/python | grep -A 100 -B 5 -E 'ContinuousBase|_setup|382:' | head -150 && nl -ba seaborn/_core/scales.py | sed -n '331,388p' && peeky probe --help | head -100",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,110p' doc/whatsnew/v0.12.2.rst && sed -n '235,340p' tests/_core/test_scales.py && head -60 tests/test_utils.py && head -70 seaborn/utils.py && grep -n -E '^class|legend' tests/test_relational.py | tail -90",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --python /opt/venv/bin/python --at seaborn/_core/scales.py:382 --capture locs,labels,axis.major.formatter.orderOfMagnitude,axis.major.formatter.offset --set-at '378 vmin=3000000' --set-at '378 vmax=6000000' --run-module pytest -- -q tests/_core/test_scales.py::TestContinuous::test_color_defaults",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --python /opt/venv/bin/python --at seaborn/_core/scales.py:382 --capture locs,labels,axis.major.formatter.orderOfMagnitude,axis.major.formatter.offset --set-at 378 vmin=3000000 --set-at 378 vmax=6000000 --run-module pytest -- -q tests/_core/test_scales.py::TestContinuous::test_color_defaults",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport inspect\nfrom matplotlib.ticker import ScalarFormatter\nprint(inspect.getsource(ScalarFormatter.format_data_short))\nprint(inspect.getsource(ScalarFormatter._set_format))\nPY\nsed -n '785,839p' seaborn/_core/scales.py && sed -n '1,100p' tests/conftest.py && grep -n -E 'legend|class Test' tests/test_objects.py | tail -65 && sed -n '1465,1535p' tests/test_relational.py && ls -a | grep -E 'setup|tox|pytest'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find /opt /usr/local/bin /usr/bin -maxdepth 3 -name '*apply_patch*' -type f 2>/dev/null | head -15 && grep -n -E 'from seaborn.utils|from \\.utils|from seaborn._core' seaborn/_core/scales.py seaborn/utils.py && grep -n -E 'legend =|legend:' seaborn/_core/properties.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E 'from seaborn.utils|legend|class Test' seaborn/_core/*.py tests/_core/test_plot.py | head -90 && cat setup.cfg && sed -n '1,115p' tests/test_relational.py && ls tests/_core && head -100 tests/test_objects.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport numpy as np\nfrom matplotlib.ticker import ScalarFormatter\nfrom seaborn._core.scales import Continuous, PseudoAxis\nfor limits in [(3e6,6e6),(1e6,1e6+5),(3e-6,6e-6),(1e12,1e12+.005)]:\n    formatter=ScalarFormatter()\n    axis=PseudoAxis(Continuous().tick().label()._get_scale('',lambda x:x,lambda x:x))\n    formatter.set_axis(axis)\n    axis.set_view_interval(*limits)\n    locs=np.linspace(*limits, 4)\n    print(limits, 'ticks', formatter.format_ticks(locs), 'offset', formatter.get_offset(), 'short', [formatter.format_data_short(x) for x in locs])\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py\n--- a/seaborn/_core/scales.py\n+++ b/seaborn/_core/scales.py\n@@ -378,7 +378,13 @@\n             axis.set_view_interval(vmin, vmax)\n             locs = axis.major.locator()\n             locs = locs[(vmin <= locs) & (locs <= vmax)]\n-            labels = axis.major.formatter.format_ticks(locs)\n+            formatter = axis.major.formatter\n+            if isinstance(formatter, ScalarFormatter):\n+                # Unlike axes, legends cannot display an offset or multiplier.\n+                formatter = copy(formatter)\n+                formatter.set_useOffset(False)\n+                formatter.set_scientific(False)\n+            labels = formatter.format_ticks(locs)\n             new._legend = list(locs), list(labels)\n \n         return new\n diff --git a/seaborn/utils.py b/seaborn/utils.py\n--- a/seaborn/utils.py\n+++ b/seaborn/utils.py\n@@ -698,7 +698,8 @@\n     if isinstance(locator, mpl.ticker.LogLocator):\n         formatter = mpl.ticker.LogFormatter()\n     else:\n-        formatter = mpl.ticker.ScalarFormatter()\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=False)\n+        formatter.set_scientific(False)\n     formatter.axis = dummy_axis()\n \n     # TODO: The following two lines should be replaced\n diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py\n--- a/tests/_core/test_scales.py\n+++ b/tests/_core/test_scales.py\n@@ -311,6 +311,45 @@\n         label, = a.major.formatter.format_ticks([100])\n         assert r\"10^{2}\" in label\n \n+    @pytest.mark.parametrize(\"values, expected\", [\n+        ([1, 3, 9], [\"1\", \"3\", \"9\"]),\n+        ([1e6, 3e6, 9e6], [\"1000000\", \"3000000\", \"9000000\"]),\n+        ([1e-6, 3e-6, 9e-6], [\"0.000001\", \"0.000003\", \"0.000009\"]),\n+        ([1e6 + 1, 1e6 + 3, 1e6 + 9], [\"1000001\", \"1000003\", \"1000009\"]),\n+    ])\n+    @pytest.mark.parametrize(\"use_offset\", [True, False])\n+    @pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+    @pytest.mark.parametrize(\"use_math_text\", [True, False])\n+    def test_legend_scalar_formatter(\n+        self, values, expected, use_offset, power_limits, use_math_text,\n+    ):\n+\n+        x = pd.Series(values, dtype=float)\n+        rc = {\n+            \"axes.formatter.useoffset\": use_offset,\n+            \"axes.formatter.limits\": power_limits,\n+            \"axes.formatter.use_mathtext\": use_math_text,\n+        }\n+        with mpl.rc_context(rc):\n+            s = Continuous().tick(at=values)._setup(x, Color())\n+        levels, labels = s._legend\n+        assert_array_equal(levels, values)\n+        if use_math_text:\n+            expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+        assert labels == expected\n+\n+    def test_legend_preserves_scalar_formatter(self):\n+\n+        x = pd.Series([1e6, 3e6, 9e6])\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=True, useMathText=False)\n+        formatter.set_scientific(True)\n+        formatter.set_powerlimits((-5, 6))\n+        s = Continuous().tick(at=x).label(formatter)._setup(x, Color())\n+        assert s._legend[1] == [\"1000000\", \"3000000\", \"9000000\"]\n+        assert formatter.format_ticks(s._legend[0]) == [\"1\", \"3\", \"9\"]\n+        assert formatter.get_useOffset()\n+        assert formatter.get_offset() == \"1e6\"\n+\n     def test_label_type_checks(self):\n \n         s = Continuous()\n diff --git a/tests/test_utils.py b/tests/test_utils.py\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -338,6 +338,31 @@\n         assert re.match(f\"1e.0{exp}\", str_levels[i])\n \n \n+@pytest.mark.parametrize(\"limits, expected\", [\n+    ((1, 6), [\"2\", \"4\", \"6\"]),\n+    ((1e6, 6e6), [\"2000000\", \"4000000\", \"6000000\"]),\n+    ((1e-6, 6e-6), [\"0.000002\", \"0.000004\", \"0.000006\"]),\n+    ((1e6 + 1, 1e6 + 6), [\"1000002\", \"1000004\", \"1000006\"]),\n+])\n+@pytest.mark.parametrize(\"use_offset\", [True, False])\n+@pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+@pytest.mark.parametrize(\"use_math_text\", [True, False])\n+def test_locator_to_legend_entries_scalar_formatter(\n+    limits, expected, use_offset, power_limits, use_math_text,\n+):\n+\n+    rc = {\n+        \"axes.formatter.useoffset\": use_offset,\n+        \"axes.formatter.limits\": power_limits,\n+        \"axes.formatter.use_mathtext\": use_math_text,\n+    }\n+    with mpl.rc_context(rc):\n+        locator = mpl.ticker.MaxNLocator(nbins=3)\n+        levels, labels = utils.locator_to_legend_entries(locator, limits, float)\n+    assert_array_equal(levels, [float(label) for label in expected])\n+    if use_math_text:\n+        expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+    assert labels == expected\n+\n+\n def test_move_legend_matplotlib_objects():\n \n     fig, ax = plt.subplots()\n diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst\n--- a/doc/whatsnew/v0.12.2.rst\n+++ b/doc/whatsnew/v0.12.2.rst\n@@ -9,3 +9,5 @@\n - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).\n \n - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\n+\n+- |Fix| Fixed incorrect numeric legend labels in the objects interface and relational plots when matplotlib's scalar formatter used an offset or scientific notation.\nPATCH\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'legend_scalar_formatter or legend_preserves_scalar_formatter or locator_to_legend_entries'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py\n--- a/seaborn/_core/scales.py\n+++ b/seaborn/_core/scales.py\n@@ -378,7 +378,13 @@\n             axis.set_view_interval(vmin, vmax)\n             locs = axis.major.locator()\n             locs = locs[(vmin <= locs) & (locs <= vmax)]\n-            labels = axis.major.formatter.format_ticks(locs)\n+            formatter = axis.major.formatter\n+            if isinstance(formatter, ScalarFormatter):\n+                # Unlike axes, legends cannot display an offset or multiplier.\n+                formatter = copy(formatter)\n+                formatter.set_useOffset(False)\n+                formatter.set_scientific(False)\n+            labels = formatter.format_ticks(locs)\n             new._legend = list(locs), list(labels)\n \n         return new\ndiff --git a/seaborn/utils.py b/seaborn/utils.py\n--- a/seaborn/utils.py\n+++ b/seaborn/utils.py\n@@ -698,7 +698,8 @@\n     if isinstance(locator, mpl.ticker.LogLocator):\n         formatter = mpl.ticker.LogFormatter()\n     else:\n-        formatter = mpl.ticker.ScalarFormatter()\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=False)\n+        formatter.set_scientific(False)\n     formatter.axis = dummy_axis()\n \n     # TODO: The following two lines should be replaced\ndiff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py\n--- a/tests/_core/test_scales.py\n+++ b/tests/_core/test_scales.py\n@@ -311,6 +311,45 @@\n         label, = a.major.formatter.format_ticks([100])\n         assert r\"10^{2}\" in label\n \n+    @pytest.mark.parametrize(\"values, expected\", [\n+        ([1, 3, 9], [\"1\", \"3\", \"9\"]),\n+        ([1e6, 3e6, 9e6], [\"1000000\", \"3000000\", \"9000000\"]),\n+        ([1e-6, 3e-6, 9e-6], [\"0.000001\", \"0.000003\", \"0.000009\"]),\n+        ([1e6 + 1, 1e6 + 3, 1e6 + 9], [\"1000001\", \"1000003\", \"1000009\"]),\n+    ])\n+    @pytest.mark.parametrize(\"use_offset\", [True, False])\n+    @pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+    @pytest.mark.parametrize(\"use_math_text\", [True, False])\n+    def test_legend_scalar_formatter(\n+        self, values, expected, use_offset, power_limits, use_math_text,\n+    ):\n+\n+        x = pd.Series(values, dtype=float)\n+        rc = {\n+            \"axes.formatter.useoffset\": use_offset,\n+            \"axes.formatter.limits\": power_limits,\n+            \"axes.formatter.use_mathtext\": use_math_text,\n+        }\n+        with mpl.rc_context(rc):\n+            s = Continuous().tick(at=values)._setup(x, Color())\n+        levels, labels = s._legend\n+        assert_array_equal(levels, values)\n+        if use_math_text:\n+            expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+        assert labels == expected\n+\n+    def test_legend_preserves_scalar_formatter(self):\n+\n+        x = pd.Series([1e6, 3e6, 9e6])\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=True, useMathText=False)\n+        formatter.set_scientific(True)\n+        formatter.set_powerlimits((-5, 6))\n+        s = Continuous().tick(at=x).label(formatter)._setup(x, Color())\n+        assert s._legend[1] == [\"1000000\", \"3000000\", \"9000000\"]\n+        assert formatter.format_ticks(s._legend[0]) == [\"1\", \"3\", \"9\"]\n+        assert formatter.get_useOffset()\n+        assert formatter.get_offset() == \"1e6\"\n+\n     def test_label_type_checks(self):\n \n         s = Continuous()\ndiff --git a/tests/test_utils.py b/tests/test_utils.py\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -338,6 +338,31 @@\n         assert re.match(f\"1e.0{exp}\", str_levels[i])\n \n \n+@pytest.mark.parametrize(\"limits, expected\", [\n+    ((1, 6), [\"2\", \"4\", \"6\"]),\n+    ((1e6, 6e6), [\"2000000\", \"4000000\", \"6000000\"]),\n+    ((1e-6, 6e-6), [\"0.000002\", \"0.000004\", \"0.000006\"]),\n+    ((1e6 + 1, 1e6 + 6), [\"1000002\", \"1000004\", \"1000006\"]),\n+])\n+@pytest.mark.parametrize(\"use_offset\", [True, False])\n+@pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+@pytest.mark.parametrize(\"use_math_text\", [True, False])\n+def test_locator_to_legend_entries_scalar_formatter(\n+    limits, expected, use_offset, power_limits, use_math_text,\n+):\n+\n+    rc = {\n+        \"axes.formatter.useoffset\": use_offset,\n+        \"axes.formatter.limits\": power_limits,\n+        \"axes.formatter.use_mathtext\": use_math_text,\n+    }\n+    with mpl.rc_context(rc):\n+        locator = mpl.ticker.MaxNLocator(nbins=3)\n+        levels, labels = utils.locator_to_legend_entries(locator, limits, float)\n+    assert_array_equal(levels, [float(label) for label in expected])\n+    if use_math_text:\n+        expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+    assert labels == expected\n+\n+\n def test_move_legend_matplotlib_objects():\n \n     fig, ax = plt.subplots()\ndiff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst\n--- a/doc/whatsnew/v0.12.2.rst\n+++ b/doc/whatsnew/v0.12.2.rst\n@@ -9,3 +9,5 @@\n - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).\n \n - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\n+\n+- |Fix| Fixed incorrect numeric legend labels in the objects interface and relational plots when matplotlib's scalar formatter used an offset or scientific notation.\nPATCH\nif [ $? -eq 0 ]; then pytest -q tests/_core/test_scales.py tests/test_utils.py -k 'legend_scalar_formatter or legend_preserves_scalar_formatter or locator_to_legend_entries'; else exit 1; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && pytest -q tests/_core/test_scales.py tests/test_utils.py tests/test_relational.py tests/_core/test_plot.py -k 'TestContinuous or TestTemporal or locator_to_legend_entries or legend'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport numpy as np\nimport matplotlib.pyplot as plt\nimport seaborn as sns\nimport seaborn.objects as so\n\nfor values in [np.linspace(3e6, 6e6, 10), np.linspace(3e-6, 6e-6, 10), np.linspace(1e6, 1e6 + 5, 10)]:\n    for prop in ['pointsize', 'color']:\n        p = so.Plot(x=np.arange(10), y=np.arange(10), **{prop: values}).add(so.Dot()).plot()\n        levels, labels = p._scales[prop]._legend\n        assert np.allclose([float(text) for text in labels], levels, rtol=1e-12, atol=0)\n        assert [text.get_text() for text in p._figure.legends[0].get_texts()] == labels\n        plt.close(p._figure)\n    for func in [sns.scatterplot, sns.lineplot]:\n        for prop in ['size', 'hue']:\n            for legend in ['brief', 'auto']:\n                ax = func(x=np.arange(10), y=np.arange(10), **{prop: values}, legend=legend)\n                labels = [float(text.get_text()) for text in ax.get_legend().get_texts()]\n                assert len(labels) >= 2\n                assert values.min() <= min(labels) <= max(labels) <= values.max()\n                plt.close(ax.figure)\n\np = so.Plot(x=np.linspace(3e6, 6e6, 10), y=np.arange(10), pointsize=np.linspace(3e6, 6e6, 10)).add(so.Dot()).plot()\np._figure.canvas.draw()\nassert p._figure.axes[0].xaxis.get_major_formatter().get_offset() == '1e6'\nassert [text.get_text() for text in p._figure.legends[0].get_texts()] == ['3000000', '4000000', '5000000', '6000000']\nplt.close(p._figure)\nprint('Verified full-value legends in objects, scatterplot, and lineplot; axis scientific notation is unchanged.')\nPY\n git diff --check && git --no-pager diff --stat && git --no-pager diff -- seaborn/_core/scales.py seaborn/utils.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport numpy as np\nimport matplotlib.pyplot as plt\nimport seaborn as sns\nfor values in [np.linspace(3e6, 6e6, 10), np.linspace(3e-6, 6e-6, 10), np.linspace(1e6, 1e6 + 5, 10)]:\n    for func in [sns.scatterplot, sns.lineplot]:\n        for prop in ['size', 'hue']:\n            for legend in ['brief', 'auto']:\n                ax = func(x=np.arange(10), y=np.arange(10), **{prop: values}, legend=legend)\n                labels = [float(text.get_text()) for text in ax.get_legend().get_texts()]\n                if not values.min() <= min(labels) <= max(labels) <= values.max():\n                    print(func.__name__, prop, legend, 'range:', (values.min(), values.max()), 'labels:', labels)\n                plt.close(ax.figure)\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport numpy as np\nimport matplotlib.pyplot as plt\nimport seaborn as sns\nimport seaborn.objects as so\n\nfor values in [np.linspace(3e6, 6e6, 10), np.linspace(3e-6, 6e-6, 10), np.linspace(1e6, 1e6 + 5, 10)]:\n    for prop in ['pointsize', 'color']:\n        p = so.Plot(x=np.arange(10), y=np.arange(10), **{prop: values}).add(so.Dot()).plot()\n        levels, labels = p._scales[prop]._legend\n        assert np.allclose([float(text) for text in labels], levels, rtol=1e-12, atol=0), (prop, levels, labels)\n        assert [text.get_text() for text in p._figure.legends[0].get_texts()] == labels\n        plt.close(p._figure)\n    for func in [sns.scatterplot, sns.lineplot]:\n        for prop in ['size', 'hue']:\n            for legend in ['brief', 'auto']:\n                _, ax = plt.subplots()\n                func(x=np.arange(10), y=np.arange(10), **{prop: values}, legend=legend, ax=ax)\n                labels = [float(text.get_text()) for text in ax.get_legend().get_texts()]\n                context = func.__name__, prop, legend, values, labels\n                assert len(labels) >= 2, context\n                assert values.min() <= min(labels) <= max(labels) <= values.max(), context\n                plt.close(ax.figure)\n\np = so.Plot(x=np.linspace(3e6, 6e6, 10), y=np.arange(10), pointsize=np.linspace(3e6, 6e6, 10)).add(so.Dot()).plot()\np._figure.canvas.draw()\nassert p._figure.axes[0].xaxis.get_major_formatter().get_offset() == '1e6'\nassert [text.get_text() for text in p._figure.legends[0].get_texts()] == ['3000000', '4000000', '5000000', '6000000']\nplt.close(p._figure)\nprint('Verified full-value legends in objects, scatterplot, and lineplot; axis scientific notation is unchanged.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport numpy as np\nimport seaborn.objects as so\np = so.Plot(x=np.linspace(3e6, 6e6, 10), y=np.arange(10), pointsize=np.linspace(3e6, 6e6, 10)).add(so.Dot()).plot()\np._figure.canvas.draw()\nformatter=p._figure.axes[0].xaxis.get_major_formatter()\nprint('axis formatter:', type(formatter).__name__, 'offset:', repr(formatter.get_offset()))\nprint('axis labels:', [text.get_text() for text in p._figure.axes[0].get_xticklabels()])\nprint('legend labels:', [text.get_text() for text in p._figure.legends[0].get_texts()])\nprint('axis scientific enabled:', formatter._scientific)\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport inspect\nimport numpy as np\nimport seaborn.objects as so\nfrom matplotlib.ticker import ScalarFormatter\nprint(inspect.getsource(ScalarFormatter.get_offset))\np = so.Plot(x=np.linspace(3e6, 6e6, 10), y=np.arange(10), pointsize=np.linspace(3e6, 6e6, 10)).add(so.Dot()).plot()\np._figure.canvas.draw()\nf=p._figure.axes[0].xaxis.get_major_formatter()\nprint('formatter state:', vars(f))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && git --no-pager diff -- tests/_core/test_scales.py tests/test_utils.py doc/whatsnew/v0.12.2.rst && command -v flake8; command -v mypy",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && flake8 seaborn/_core/scales.py seaborn/utils.py tests/_core/test_scales.py tests/test_utils.py && mypy --follow-imports=silent seaborn/_core/scales.py seaborn/utils.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport numpy as np\nimport matplotlib.pyplot as plt\nimport seaborn as sns\nimport seaborn.objects as so\n\nfor values in [np.linspace(3e6, 6e6, 10), np.linspace(3e-6, 6e-6, 10), np.linspace(1e6, 1e6 + 5, 10)]:\n    for prop in ['pointsize', 'color']:\n        p = so.Plot(x=np.arange(10), y=np.arange(10), **{prop: values}).add(so.Dot()).plot()\n        levels, labels = p._scales[prop]._legend\n        assert np.allclose([float(text) for text in labels], levels, rtol=1e-12, atol=0)\n        assert [text.get_text() for text in p._figure.legends[0].get_texts()] == labels\n        plt.close(p._figure)\n    for func in [sns.scatterplot, sns.lineplot]:\n        for prop in ['size', 'hue']:\n            for legend in ['brief', 'auto']:\n                _, ax = plt.subplots()\n                func(x=np.arange(10), y=np.arange(10), **{prop: values}, legend=legend, ax=ax)\n                labels = [float(text.get_text()) for text in ax.get_legend().get_texts()]\n                assert len(labels) >= 2\n                assert values.min() <= min(labels) <= max(labels) <= values.max()\n                plt.close(ax.figure)\n\np = so.Plot(x=np.linspace(3e6, 6e6, 10), y=np.arange(10), pointsize=np.linspace(3e6, 6e6, 10)).add(so.Dot()).plot()\naxis = p._figure.axes[0].xaxis\nformatter = axis.get_major_formatter()\nformatter.format_ticks(axis.get_majorticklocs())\nassert formatter.get_offset() == '1e6'\nassert [text.get_text() for text in p._figure.legends[0].get_texts()] == ['3000000', '4000000', '5000000', '6000000']\nplt.close(p._figure)\nprint('Verified full-value legends in objects, scatterplot, and lineplot; axis scientific notation is unchanged.')\nPY\nif [ $? -eq 0 ]; then git diff --check; else exit 1; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && flake8 seaborn/_core/scales.py seaborn/utils.py tests/_core/test_scales.py && flake8 --extend-ignore=E721 tests/test_utils.py && mypy --follow-imports=silent seaborn/_core/scales.py seaborn/utils.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git status --short && sed -n '1855,1918p' tests/_core/test_plot.py && sed -n '790,880p' tests/test_relational.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git show HEAD:seaborn/_core/scales.py | mypy --follow-imports=silent --shadow-file seaborn/_core/scales.py /dev/stdin seaborn/_core/scales.py seaborn/utils.py",
+   "exit_code": 1,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && python - <<'PY'\nimport inspect\nfrom matplotlib.ticker import ScalarFormatter\nprint(inspect.getsource(ScalarFormatter.format_data_short))\nprint(inspect.getsource(ScalarFormatter._set_format))\nPY\nsed -n '785,839p' seaborn/_core/scales.py && sed -n '1,100p' tests/conftest.py && grep -n -E 'legend|class Test' tests/test_objects.py | tail -65 && sed -n '1465,1535p' tests/test_relational.py && ls -a | grep -E 'setup|tox|pytest'",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py\n--- a/seaborn/_core/scales.py\n+++ b/seaborn/_core/scales.py\n@@ -378,7 +378,13 @@\n             axis.set_view_interval(vmin, vmax)\n             locs = axis.major.locator()\n             locs = locs[(vmin <= locs) & (locs <= vmax)]\n-            labels = axis.major.formatter.format_ticks(locs)\n+            formatter = axis.major.formatter\n+            if isinstance(formatter, ScalarFormatter):\n+                # Unlike axes, legends cannot display an offset or multiplier.\n+                formatter = copy(formatter)\n+                formatter.set_useOffset(False)\n+                formatter.set_scientific(False)\n+            labels = formatter.format_ticks(locs)\n             new._legend = list(locs), list(labels)\n \n         return new\n diff --git a/seaborn/utils.py b/seaborn/utils.py\n--- a/seaborn/utils.py\n+++ b/seaborn/utils.py\n@@ -698,7 +698,8 @@\n     if isinstance(locator, mpl.ticker.LogLocator):\n         formatter = mpl.ticker.LogFormatter()\n     else:\n-        formatter = mpl.ticker.ScalarFormatter()\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=False)\n+        formatter.set_scientific(False)\n     formatter.axis = dummy_axis()\n \n     # TODO: The following two lines should be replaced\n diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py\n--- a/tests/_core/test_scales.py\n+++ b/tests/_core/test_scales.py\n@@ -311,6 +311,45 @@\n         label, = a.major.formatter.format_ticks([100])\n         assert r\"10^{2}\" in label\n \n+    @pytest.mark.parametrize(\"values, expected\", [\n+        ([1, 3, 9], [\"1\", \"3\", \"9\"]),\n+        ([1e6, 3e6, 9e6], [\"1000000\", \"3000000\", \"9000000\"]),\n+        ([1e-6, 3e-6, 9e-6], [\"0.000001\", \"0.000003\", \"0.000009\"]),\n+        ([1e6 + 1, 1e6 + 3, 1e6 + 9], [\"1000001\", \"1000003\", \"1000009\"]),\n+    ])\n+    @pytest.mark.parametrize(\"use_offset\", [True, False])\n+    @pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+    @pytest.mark.parametrize(\"use_math_text\", [True, False])\n+    def test_legend_scalar_formatter(\n+        self, values, expected, use_offset, power_limits, use_math_text,\n+    ):\n+\n+        x = pd.Series(values, dtype=float)\n+        rc = {\n+            \"axes.formatter.useoffset\": use_offset,\n+            \"axes.formatter.limits\": power_limits,\n+            \"axes.formatter.use_mathtext\": use_math_text,\n+        }\n+        with mpl.rc_context(rc):\n+            s = Continuous().tick(at=values)._setup(x, Color())\n+        levels, labels = s._legend\n+        assert_array_equal(levels, values)\n+        if use_math_text:\n+            expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+        assert labels == expected\n+\n+    def test_legend_preserves_scalar_formatter(self):\n+\n+        x = pd.Series([1e6, 3e6, 9e6])\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=True, useMathText=False)\n+        formatter.set_scientific(True)\n+        formatter.set_powerlimits((-5, 6))\n+        s = Continuous().tick(at=x).label(formatter)._setup(x, Color())\n+        assert s._legend[1] == [\"1000000\", \"3000000\", \"9000000\"]\n+        assert formatter.format_ticks(s._legend[0]) == [\"1\", \"3\", \"9\"]\n+        assert formatter.get_useOffset()\n+        assert formatter.get_offset() == \"1e6\"\n+\n     def test_label_type_checks(self):\n \n         s = Continuous()\n diff --git a/tests/test_utils.py b/tests/test_utils.py\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -338,6 +338,31 @@\n         assert re.match(f\"1e.0{exp}\", str_levels[i])\n \n \n+@pytest.mark.parametrize(\"limits, expected\", [\n+    ((1, 6), [\"2\", \"4\", \"6\"]),\n+    ((1e6, 6e6), [\"2000000\", \"4000000\", \"6000000\"]),\n+    ((1e-6, 6e-6), [\"0.000002\", \"0.000004\", \"0.000006\"]),\n+    ((1e6 + 1, 1e6 + 6), [\"1000002\", \"1000004\", \"1000006\"]),\n+])\n+@pytest.mark.parametrize(\"use_offset\", [True, False])\n+@pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+@pytest.mark.parametrize(\"use_math_text\", [True, False])\n+def test_locator_to_legend_entries_scalar_formatter(\n+    limits, expected, use_offset, power_limits, use_math_text,\n+):\n+\n+    rc = {\n+        \"axes.formatter.useoffset\": use_offset,\n+        \"axes.formatter.limits\": power_limits,\n+        \"axes.formatter.use_mathtext\": use_math_text,\n+    }\n+    with mpl.rc_context(rc):\n+        locator = mpl.ticker.MaxNLocator(nbins=3)\n+        levels, labels = utils.locator_to_legend_entries(locator, limits, float)\n+    assert_array_equal(levels, [float(label) for label in expected])\n+    if use_math_text:\n+        expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+    assert labels == expected\n+\n+\n def test_move_legend_matplotlib_objects():\n \n     fig, ax = plt.subplots()\n diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst\n--- a/doc/whatsnew/v0.12.2.rst\n+++ b/doc/whatsnew/v0.12.2.rst\n@@ -9,3 +9,5 @@\n - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).\n \n - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\n+\n+- |Fix| Fixed incorrect numeric legend labels in the objects interface and relational plots when matplotlib's scalar formatter used an offset or scientific notation.\nPATCH\npytest -q tests/_core/test_scales.py tests/test_utils.py -k 'legend_scalar_formatter or legend_preserves_scalar_formatter or locator_to_legend_entries'",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py\n--- a/seaborn/_core/scales.py\n+++ b/seaborn/_core/scales.py\n@@ -378,7 +378,13 @@\n             axis.set_view_interval(vmin, vmax)\n             locs = axis.major.locator()\n             locs = locs[(vmin <= locs) & (locs <= vmax)]\n-            labels = axis.major.formatter.format_ticks(locs)\n+            formatter = axis.major.formatter\n+            if isinstance(formatter, ScalarFormatter):\n+                # Unlike axes, legends cannot display an offset or multiplier.\n+                formatter = copy(formatter)\n+                formatter.set_useOffset(False)\n+                formatter.set_scientific(False)\n+            labels = formatter.format_ticks(locs)\n             new._legend = list(locs), list(labels)\n \n         return new\ndiff --git a/seaborn/utils.py b/seaborn/utils.py\n--- a/seaborn/utils.py\n+++ b/seaborn/utils.py\n@@ -698,7 +698,8 @@\n     if isinstance(locator, mpl.ticker.LogLocator):\n         formatter = mpl.ticker.LogFormatter()\n     else:\n-        formatter = mpl.ticker.ScalarFormatter()\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=False)\n+        formatter.set_scientific(False)\n     formatter.axis = dummy_axis()\n \n     # TODO: The following two lines should be replaced\ndiff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py\n--- a/tests/_core/test_scales.py\n+++ b/tests/_core/test_scales.py\n@@ -311,6 +311,45 @@\n         label, = a.major.formatter.format_ticks([100])\n         assert r\"10^{2}\" in label\n \n+    @pytest.mark.parametrize(\"values, expected\", [\n+        ([1, 3, 9], [\"1\", \"3\", \"9\"]),\n+        ([1e6, 3e6, 9e6], [\"1000000\", \"3000000\", \"9000000\"]),\n+        ([1e-6, 3e-6, 9e-6], [\"0.000001\", \"0.000003\", \"0.000009\"]),\n+        ([1e6 + 1, 1e6 + 3, 1e6 + 9], [\"1000001\", \"1000003\", \"1000009\"]),\n+    ])\n+    @pytest.mark.parametrize(\"use_offset\", [True, False])\n+    @pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+    @pytest.mark.parametrize(\"use_math_text\", [True, False])\n+    def test_legend_scalar_formatter(\n+        self, values, expected, use_offset, power_limits, use_math_text,\n+    ):\n+\n+        x = pd.Series(values, dtype=float)\n+        rc = {\n+            \"axes.formatter.useoffset\": use_offset,\n+            \"axes.formatter.limits\": power_limits,\n+            \"axes.formatter.use_mathtext\": use_math_text,\n+        }\n+        with mpl.rc_context(rc):\n+            s = Continuous().tick(at=values)._setup(x, Color())\n+        levels, labels = s._legend\n+        assert_array_equal(levels, values)\n+        if use_math_text:\n+            expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+        assert labels == expected\n+\n+    def test_legend_preserves_scalar_formatter(self):\n+\n+        x = pd.Series([1e6, 3e6, 9e6])\n+        formatter = mpl.ticker.ScalarFormatter(useOffset=True, useMathText=False)\n+        formatter.set_scientific(True)\n+        formatter.set_powerlimits((-5, 6))\n+        s = Continuous().tick(at=x).label(formatter)._setup(x, Color())\n+        assert s._legend[1] == [\"1000000\", \"3000000\", \"9000000\"]\n+        assert formatter.format_ticks(s._legend[0]) == [\"1\", \"3\", \"9\"]\n+        assert formatter.get_useOffset()\n+        assert formatter.get_offset() == \"1e6\"\n+\n     def test_label_type_checks(self):\n \n         s = Continuous()\ndiff --git a/tests/test_utils.py b/tests/test_utils.py\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -338,6 +338,31 @@\n         assert re.match(f\"1e.0{exp}\", str_levels[i])\n \n \n+@pytest.mark.parametrize(\"limits, expected\", [\n+    ((1, 6), [\"2\", \"4\", \"6\"]),\n+    ((1e6, 6e6), [\"2000000\", \"4000000\", \"6000000\"]),\n+    ((1e-6, 6e-6), [\"0.000002\", \"0.000004\", \"0.000006\"]),\n+    ((1e6 + 1, 1e6 + 6), [\"1000002\", \"1000004\", \"1000006\"]),\n+])\n+@pytest.mark.parametrize(\"use_offset\", [True, False])\n+@pytest.mark.parametrize(\"power_limits\", [(-5, 6), (0, 0)])\n+@pytest.mark.parametrize(\"use_math_text\", [True, False])\n+def test_locator_to_legend_entries_scalar_formatter(\n+    limits, expected, use_offset, power_limits, use_math_text,\n+):\n+\n+    rc = {\n+        \"axes.formatter.useoffset\": use_offset,\n+        \"axes.formatter.limits\": power_limits,\n+        \"axes.formatter.use_mathtext\": use_math_text,\n+    }\n+    with mpl.rc_context(rc):\n+        locator = mpl.ticker.MaxNLocator(nbins=3)\n+        levels, labels = utils.locator_to_legend_entries(locator, limits, float)\n+    assert_array_equal(levels, [float(label) for label in expected])\n+    if use_math_text:\n+        expected = [r\"$\\mathdefault{%s}$\" % label for label in expected]\n+    assert labels == expected\n+\n+\n def test_move_legend_matplotlib_objects():\n \n     fig, ax = plt.subplots()\ndiff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst\n--- a/doc/whatsnew/v0.12.2.rst\n+++ b/doc/whatsnew/v0.12.2.rst\n@@ -9,3 +9,5 @@\n - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).\n \n - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).\n+\n+- |Fix| Fixed incorrect numeric legend labels in the objects interface and relational plots when matplotlib's scalar formatter used an offset or scientific notation.\nPATCH\nif [ $? -eq 0 ]; then pytest -q tests/_core/test_scales.py tests/test_utils.py -k 'legend_scalar_formatter or legend_preserves_scalar_formatter or locator_to_legend_entries'; else exit 1; fi",
+  "cd /testbed && pytest -q tests/_core/test_scales.py tests/test_utils.py tests/test_relational.py tests/_core/test_plot.py -k 'TestContinuous or TestTemporal or locator_to_legend_entries or legend'"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && sed -n '1,210p' tests/_core/test_scales.py && sed -n '430,565p' tests/_core/test_scales.py && sed -n '190,295p' seaborn/relational.py && ls doc/whatsnew/v0.12* && command -v apply_patch && peeky probe --help | head -80",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky describe . --at seaborn/_core/scales.py --python /opt/venv/bin/python | grep -A 100 -B 5 -E 'ContinuousBase|_setup|382:' | head -150 && nl -ba seaborn/_core/scales.py | sed -n '331,388p' && peeky probe --help | head -100",
+   "subcommands": [
+    "describe",
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --python /opt/venv/bin/python --at seaborn/_core/scales.py:382 --capture locs,labels,axis.major.formatter.orderOfMagnitude,axis.major.formatter.offset --set-at '378 vmin=3000000' --set-at '378 vmax=6000000' --run-module pytest -- -q tests/_core/test_scales.py::TestContinuous::test_color_defaults",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && peeky probe . --python /opt/venv/bin/python --at seaborn/_core/scales.py:382 --capture locs,labels,axis.major.formatter.orderOfMagnitude,axis.major.formatter.offset --set-at 378 vmin=3000000 --set-at 378 vmax=6000000 --run-module pytest -- -q tests/_core/test_scales.py::TestContinuous::test_color_defaults",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 4,
+  "describe": 1
+ },
+ "peeky_doc_reads": 4,
+ "peeky_mentions_in_commands": 10,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 4,
+ "contaminated": false,
+ "final_message": "Fixed numeric legends in both objects and relational plots by disabling offsets and scientific scaling for legend labels while preserving axis formatting. The root cause was omitting `ScalarFormatter`\u2019s separate multiplier: Peeky stopped at `_core/scales.py:382` and showed million-scale ticks labeled `3` through `6` with `orderOfMagnitude = 6`. Added regression coverage and a release note.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the incorrect legend labels, inspect the formatter values with Peeky, and fix both plotting interfaces.\n",
+  "Peeky confirmed that ticks from 3,000,000 to 6,000,000 became labels `3` through `6`, while the formatter stored an exponent of `6`. I\u2019ll make scalar legend labels self-contained without changing axis tick formatting.\n",
+  "Fixed numeric legends in both objects and relational plots by disabling offsets and scientific scaling for legend labels while preserving axis formatting. The root cause was omitting `ScalarFormatter`\u2019s separate multiplier: Peeky stopped at `_core/scales.py:382` and showed million-scale ticks labeled `3` through `6` with `orderOfMagnitude = 6`. Added regression coverage and a release note."
+ ],
+ "assistant_reasoning": [
+  "**Exploring ScalarFormatter options**\n\nI\u2019m diving into ScalarFormatter to see how to disable offsets and scientific notation for numeric legends. I'm thinking about using format_data_short to yield a self-contained scientific format. I need to check if I can utilize axis attributes, and maybe the PseudoAxis doesn't have a `__name__`. I\u2019ll investigate matplotlib to better understand these formatting options. There\u2019s a bit to unpack here, but I'm excited to get it right!",
+  "**Considering testing and patching strategies**\n\nI'm thinking about whether 32 parameters are enough without adding more integrations. The user mentioned some bugs scattered in scripts and how objects are plotted, so I want to validate outputs effectively. It makes sense to conduct integration tests on the files. Having two separate tests and documents sounds reasonable, but I need to ensure patches apply correctly. I might prefer using `git apply` for unified patches since it falls within the ecosystem's constraints and keeps everything coherent.\n\n**Generating valid patches**\n\nI'm considering how to generate valid patches via diff. It seems that I can rely on `git apply --recount`, which allows me to ignore hunk counts. That sounds really helpful! So, using `git apply --recount <<'PATCH'` should simplify things. I just need to ensure the source and tests are well documented since there won't be any other manual creations involved. Keeping everything organized will certainly make my work smoother!",
+  "**Debugging assertion issues**\n\nI'm thinking about assertion labels and the potential for roundoff errors with small values, like 6e-6. I\u2019m wondering if the max values printed are correct compared to the original data. It looks like I need to check if the minimum labels include repeated values, especially since the line corresponds to an assertion of minimum values. I should gather print conditional context to help debug instead of changing the routine.",
+  "**Evaluating context managers and type safety**\n\nI'm considering the objects context manager `_theme_with_context` and whether it effectively snapshots axis fields. I need to validate the tick formatting manually before fetching the offset to ensure everything updates correctly. I\u2019m looking at assertions related to formatted tick labels \u2014 could these lists be frozen? Maybe I should also test an explicit numeric formatter. There are concerns about type safety while running mypy on the seaborn module, especially since it could indicate missing baseline configurations. I'll need to check for type issues with the formatter from the axis."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 314.6
+}

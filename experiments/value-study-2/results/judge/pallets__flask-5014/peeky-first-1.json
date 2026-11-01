@@ -1,0 +1,7 @@
+{
+ "judge_id": "a172",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The constructor only rejected names containing dots, allowing empty names.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 8: `set name: 'app.ui' -> ''` at blueprints.py:193 and then name='' and self.name='' at line 197. The old value 'app.ui' matches the test's Blueprint(\"app.ui\", __name__) (shown in cmd 9's diff context), and the test then failing with 'DID NOT RAISE ValueError' agrees with an empty name passing the dot check (also cmd 4: 'Blueprint accepted empty name'). Nothing contradicted."
+}

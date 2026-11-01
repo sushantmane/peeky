@@ -1,0 +1,7 @@
+{
+ "judge_id": "a083",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler reserves only one stack slot for `finally` entry, but a pending return also needs its return value below the sentinel. The resulting overflow overwrites `self`.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 17 probe emitbc.c:412 (mp_emit_bc_adjust_stack_size) delta per hit = 1,1,-1,0,3,1. emit.stack_size/emit.scope.stack_size rows are [unproven], so they don't count. The deltas fit the code shown: compile_try_finally calls EMIT_ARG(adjust_stack_size, 3) for this try/finally with no except (Cmd 8), and label_assign/setup calls adjust with 0 (Cmd 10). No later output (Cmd 28 -v -v shows only N_STATE) contradicts them. Cmd 15 printed nothing."
+}

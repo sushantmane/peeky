@@ -1,0 +1,7 @@
+{
+ "judge_id": "a050",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The bug came from mutual argument overrides: `--plain` discarded `--paging=never`, restoring automatic paging.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

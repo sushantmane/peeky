@@ -1,0 +1,7 @@
+{
+ "judge_id": "a039",
+ "wrong_root_cause": true,
+ "evidence": "Message 3: \"The 404s came from a hard-coded `../` prefix and SVG link rewriting that used the wrong path base.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

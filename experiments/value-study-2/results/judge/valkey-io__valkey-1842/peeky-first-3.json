@@ -1,0 +1,7 @@
+{
+ "judge_id": "a223",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"`ACL LOAD` dereferenced the replica\u2019s upstream client\u2019s intentionally null ACL user.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Marked PEEKY cmds 7, 9, 14 printed only help text. Peeky values came from cmd 11 (peeky session run via a python wrapper): stopped at src/acl.c:2382 in ACLLoadFromFile, `original: user * = 0x0000000000000000` (c.user also NULL but [unproven]). Consistent with cmd 5's crash 'Accessing address: (nil)' in aclCommand on the replica, and with the fix `if (original == NULL) continue;` (cmd 17) making ACL LOAD succeed on the replica (cmds 20-23 tests pass, cmd 22 repro fixed). Nothing contradicts."
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a188",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Generated-node marking overwrote initializer positions, causing Java 11's position-keyed cache to reuse the wrong generic type.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 23 (JavacHandlerUtil.java:177) showed method-invocation node.pos 119, 133, 151, and cmd 27 (line 178, after `node.pos = sourceNode.getStartPos()` shown in cmd 11 output) showed the same nodes at 45; cmd 16 md.pos=45. These match the MyTest.java text written in cmd 13 (the '(' offsets of doSth/myInt/myChar, and @Builder at offset 45), and the fix built on them made the repro print '42A' (cmd 51). Other Peeky outputs were errors/depth-limit notes (cmds 15, 21). Nothing contradicted."
+}

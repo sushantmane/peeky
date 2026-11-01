@@ -1,0 +1,7 @@
+{
+ "judge_id": "a057",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The decoder keeps the first edge's flag even when that edge collapses or an overlapping surviving edge is on the polygon boundary.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

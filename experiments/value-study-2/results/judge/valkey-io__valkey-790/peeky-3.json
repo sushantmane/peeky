@@ -1,0 +1,7 @@
+{
+ "judge_id": "a047",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was selecting the failed former primary for slot information after failover, even though its replica had taken ownership.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

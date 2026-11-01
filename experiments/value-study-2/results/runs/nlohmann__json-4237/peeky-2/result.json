@@ -1,0 +1,228 @@
+{
+ "bug": "nlohmann__json-4237",
+ "arm": "peeky",
+ "rep": 2,
+ "language": "cpp",
+ "category": "E",
+ "image": "peeky-study/nlohmann__json-4237:peeky-r2",
+ "image_digest": "sha256:9ecbade36ce02dbb342fca60561a7ec5a81ab36557dfbb731177e99cfe3782ed",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-nlohmann__json-4237-peeky-2-f9f58f",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T09:28:27+00:00",
+ "ended": "2026-11-01T09:31:18+00:00",
+ "wall_seconds": 170.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "basic usage > conversion to json via free-functions": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 1.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "ace2831c7d993aeb45e47989d753725efbc64b41666712dffff0a95e8b858b01",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "docs/mkdocs/docs/features/enum_conversion.md",
+  "include/nlohmann/detail/conversions/to_json.hpp",
+  "single_include/nlohmann/json.hpp"
+ ],
+ "patch_bytes": 3573,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 22
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 14,
+ "ai_credits": 19.6571,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 360755,
+  "output": 6965,
+  "cache_read": 322894,
+  "cache_write": 37819,
+  "reasoning": 2409
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 17,
+ "tool_calls_by_name": {
+  "bash": 17
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -la && if [ -d /testbed ]; then printf '\\n/testbed available\\n'; fi && if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short && rg -n 'is_enum|underlying_type|number_integer|number_unsigned' include/nlohmann/detail/conversions/to_json.hpp && sed -n '1,390p' tests/src/unit-udt.cpp",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,165p' /opt/peeky/docs/AGENT_GUIDE.md && ls tools && rg -n 'amalgam|JSON_MultipleHeaders|JSON_BuildTests' CMakeLists.txt tests/CMakeLists.txt tools/amalgamate/* docs/mkdocs/docs/features/enum_conversion.md docs/mkdocs/docs/api/macros/json_disable_enum_serialization.md && ls build",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'is_enum|underlying_type|number_integer|number_unsigned' include/nlohmann/detail/conversions/to_json.hpp && sed -n '1,380p' tests/src/unit-udt.cpp && sed -n '250,360p' include/nlohmann/detail/conversions/to_json.hpp",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls tools/amalgamate && grep -nE 'amalgam|JSON_MultipleHeaders|JSON_BuildTests' CMakeLists.txt tests/CMakeLists.txt && cat docs/mkdocs/docs/features/enum_conversion.md && cat docs/mkdocs/docs/api/macros/json_disable_enum_serialization.md && ls build && ls tests/src/unit-*regression*",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'enum|custom_json|numeric_limits|TEST_CASE_TEMPLATE' tests/src/unit-udt.cpp tests/src/unit-conversions.cpp tests/src/unit-regression2.cpp && sed -n '1,200p' tests/CMakeLists.txt && sed -n '1,130p' tests/src/unit-conversions.cpp && sed -n '1,140p' tools/amalgamate/README.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'CMAKE_BUILD_TYPE:|CMAKE_CXX_COMPILER:|JSON_MultipleHeaders:|JSON_DisableEnumSerialization:|JSON_BuildTests:|JSON_TestStandards:' build/CMakeCache.txt && sed -n '80,165p' include/nlohmann/detail/conversions/to_json.hpp && grep -n -A12 -B3 'std::is_enum' include/nlohmann/detail/conversions/from_json.hpp && grep -nE 'is_unsigned|external_constructor<.*\\?' include/nlohmann/detail/conversions/*.hpp && command -v apply_patch && sed -n '1,90p' CMakeLists.txt",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "command -v apply_patch; grep -n -A10 -B3 'amalgam' Makefile; tail -45 tests/src/unit-udt.cpp; sed -n '1,70p' tools/amalgamate/config_json.json; sed -n '1,70p' CMakeLists.txt; grep -n 'TEST_CASE_TEMPLATE' tests/src/unit-*.cpp | head -15",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p1 <<'PATCH'\n--- a/tests/src/unit-udt.cpp\n+++ b/tests/src/unit-udt.cpp\n@@ -20,6 +20,8 @@\n #endif\n \n+#include <cstdint>\n+#include <limits>\n #include <map>\n #include <memory>\n #include <string>\n@@ -322,6 +324,62 @@\n     }\n }\n \n+TEST_CASE_TEMPLATE(\"enum integer serialization\" * doctest::test_suite(\"udt\"), Json,\n+                   nlohmann::json, nlohmann::ordered_json)\n+{\n+    SECTION(\"unsigned 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::uint64_t {};\n+        const std::uint64_t values[] =\n+        {\n+            1,\n+            std::uint64_t{1} << 63,\n+            (std::numeric_limits<std::uint64_t>::max)() - 1,\n+            (std::numeric_limits<std::uint64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j > 0u);\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+            CHECK(Json::parse(j.dump()).template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"unsigned 32-bit unscoped enum\")\n+    {\n+        enum book_id : std::uint32_t { first = 0, last = 0xFFFFFFFFu };\n+        for (const auto id : {first, last})\n+        {\n+            const Json j = id;\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(static_cast<std::uint32_t>(id)));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"signed 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::int64_t {};\n+        const std::int64_t values[] =\n+        {\n+            (std::numeric_limits<std::int64_t>::min)(), -2, 0,\n+            (std::numeric_limits<std::int64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j.type() == Json::value_t::number_integer);\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+}\n+\n namespace udt\n {\n struct legacy_type\nPATCH\ncd /testbed/build && cmake .. && make test-udt_cpp11 && ./tests/test-udt_cpp11 --test-case='enum integer serialization*'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager diff -- tests/src/unit-udt.cpp && git apply --recount <<'PATCH'\ndiff --git a/tests/src/unit-udt.cpp b/tests/src/unit-udt.cpp\n--- a/tests/src/unit-udt.cpp\n+++ b/tests/src/unit-udt.cpp\n@@ -20,6 +20,8 @@\n #endif\n \n+#include <cstdint>\n+#include <limits>\n #include <map>\n #include <memory>\n #include <string>\n@@ -322,6 +324,62 @@\n     }\n }\n \n+TEST_CASE_TEMPLATE(\"enum integer serialization\" * doctest::test_suite(\"udt\"), Json,\n+                   nlohmann::json, nlohmann::ordered_json)\n+{\n+    SECTION(\"unsigned 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::uint64_t {};\n+        const std::uint64_t values[] =\n+        {\n+            1,\n+            std::uint64_t{1} << 63,\n+            (std::numeric_limits<std::uint64_t>::max)() - 1,\n+            (std::numeric_limits<std::uint64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j > 0u);\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+            CHECK(Json::parse(j.dump()).template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"unsigned 32-bit unscoped enum\")\n+    {\n+        enum book_id : std::uint32_t { first = 0, last = 0xFFFFFFFFu };\n+        for (const auto id : {first, last})\n+        {\n+            const Json j = id;\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(static_cast<std::uint32_t>(id)));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"signed 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::int64_t {};\n+        const std::int64_t values[] =\n+        {\n+            (std::numeric_limits<std::int64_t>::min)(), -2, 0,\n+            (std::numeric_limits<std::int64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j.type() == Json::value_t::number_integer);\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+}\n+\n namespace udt\n {\n struct legacy_type\nPATCH\ncd /testbed/build && make test-udt_cpp11 && ./tests/test-udt_cpp11 --test-case='enum integer serialization*' --no-skip",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp\n--- a/include/nlohmann/detail/conversions/to_json.hpp\n+++ b/include/nlohmann/detail/conversions/to_json.hpp\n@@ -15,1 +15,1 @@\n-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type\n+#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type\n@@ -322,2 +322,4 @@\n     using underlying_type = typename std::underlying_type<EnumType>::type;\n-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));\n+    constexpr auto type = std::is_unsigned<underlying_type>::value\n+                          ? value_t::number_unsigned : value_t::number_integer;\n+    external_constructor<type>::construct(j, static_cast<underlying_type>(e));\ndiff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md\n--- a/docs/mkdocs/docs/features/enum_conversion.md\n+++ b/docs/mkdocs/docs/features/enum_conversion.md\n@@ -3,4 +3,5 @@\n-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an\n-enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be\n-undefined or a different enum value than was originally intended.\n+By default, enum values are serialized to JSON as integers, with signedness matching their underlying type. In some cases\n+this could result in undesired behavior. If an enum is modified or re-ordered after data has been serialized to JSON, the\n+later de-serialized JSON data may be undefined or a different enum value than was originally intended.\nPATCH\npython3 tools/amalgamate/amalgamate.py -c tools/amalgamate/config_json.json -s . && git --no-pager diff --check && cd /testbed/build && make test-udt_cpp11 test-conversions_cpp11 && ./tests/test-udt_cpp11 && ./tests/test-conversions_cpp11",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "set -e\ngit apply --recount --unidiff-zero <<'PATCH'\ndiff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp\n--- a/include/nlohmann/detail/conversions/to_json.hpp\n+++ b/include/nlohmann/detail/conversions/to_json.hpp\n@@ -15,1 +15,1 @@\n-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type\n+#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type\n@@ -319,8 +319,10 @@\n          enable_if_t<std::is_enum<EnumType>::value, int> = 0>\n inline void to_json(BasicJsonType& j, EnumType e) noexcept\n {\n     using underlying_type = typename std::underlying_type<EnumType>::type;\n-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));\n+    constexpr auto type = std::is_unsigned<underlying_type>::value\n+                          ? value_t::number_unsigned : value_t::number_integer;\n+    external_constructor<type>::construct(j, static_cast<underlying_type>(e));\n }\n #endif  // JSON_DISABLE_ENUM_SERIALIZATION\n \ndiff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md\n--- a/docs/mkdocs/docs/features/enum_conversion.md\n+++ b/docs/mkdocs/docs/features/enum_conversion.md\n@@ -1,8 +1,8 @@\n # Specializing enum conversion\n \n-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an\n-enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be\n-undefined or a different enum value than was originally intended.\n+By default, enum values are serialized to JSON as integers, with signedness matching their underlying type. In some cases\n+this could result in undesired behavior. If an enum is modified or re-ordered after data has been serialized to JSON, the\n+later de-serialized JSON data may be undefined or a different enum value than was originally intended.\n \n It is possible to more precisely specify how a given enum is mapped to and from JSON as shown below:\n \nPATCH\npython3 tools/amalgamate/amalgamate.py -c tools/amalgamate/config_json.json -s .\ngit --no-pager diff --check\ncd /testbed/build && make test-udt_cpp11 test-conversions_cpp11 && ./tests/test-udt_cpp11 && ./tests/test-conversions_cpp11",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short && git --no-pager diff --stat && git --no-pager diff -- include/nlohmann/detail/conversions/to_json.hpp single_include/nlohmann/json.hpp docs/mkdocs/docs/features/enum_conversion.md tests/src/unit-udt.cpp && git --no-pager diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cmake -S /testbed -B /testbed/build/enum-single-header -DJSON_MultipleHeaders=OFF -DJSON_TestStandards=11 -DJSON_BuildTests=ON -DJSON_Install=OFF && cmake --build /testbed/build/enum-single-header --target test-udt_cpp11 test-conversions_cpp11 && /testbed/build/enum-single-header/tests/test-udt_cpp11 && /testbed/build/enum-single-header/tests/test-conversions_cpp11",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "command -v astyle; sed -n '145,168p' Makefile; git --no-pager diff --numstat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "set -e\ngit diff -- single_include/nlohmann/json.hpp | python3 -c 'import re, sys; parts = re.split(r\"(?=^@@ )\", sys.stdin.read(), flags=re.MULTILINE); sys.stdout.write(parts[0] + \"\".join(hunk for hunk in parts[1:] if \"is_unsigned\" not in hunk and \"external_constructor<type>\" not in hunk))' | git apply --reverse\ngit --no-pager diff --check\ngit --no-pager diff --stat\ngit --no-pager diff -- single_include/nlohmann/json.hpp\ncd /testbed/build && make test-udt_cpp20 && ./tests/test-udt_cpp20 && cmake --build enum-single-header --target test-udt_cpp11 test-conversions_cpp11 && ./enum-single-header/tests/test-udt_cpp11 && ./enum-single-header/tests/test-conversions_cpp11",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cmake -S /testbed -B /testbed/build/enum-single-header '-DJSON_TestStandards=11;20' && cmake --build /testbed/build/enum-single-header --target test-udt_cpp11 test-conversions_cpp11 test-udt_cpp20 && /testbed/build/enum-single-header/tests/test-udt_cpp11 && /testbed/build/enum-single-header/tests/test-conversions_cpp11 && /testbed/build/enum-single-header/tests/test-udt_cpp20 && git --no-pager diff --check && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "patch -p1 <<'PATCH'\n--- a/tests/src/unit-udt.cpp\n+++ b/tests/src/unit-udt.cpp\n@@ -20,6 +20,8 @@\n #endif\n \n+#include <cstdint>\n+#include <limits>\n #include <map>\n #include <memory>\n #include <string>\n@@ -322,6 +324,62 @@\n     }\n }\n \n+TEST_CASE_TEMPLATE(\"enum integer serialization\" * doctest::test_suite(\"udt\"), Json,\n+                   nlohmann::json, nlohmann::ordered_json)\n+{\n+    SECTION(\"unsigned 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::uint64_t {};\n+        const std::uint64_t values[] =\n+        {\n+            1,\n+            std::uint64_t{1} << 63,\n+            (std::numeric_limits<std::uint64_t>::max)() - 1,\n+            (std::numeric_limits<std::uint64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j > 0u);\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+            CHECK(Json::parse(j.dump()).template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"unsigned 32-bit unscoped enum\")\n+    {\n+        enum book_id : std::uint32_t { first = 0, last = 0xFFFFFFFFu };\n+        for (const auto id : {first, last})\n+        {\n+            const Json j = id;\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(static_cast<std::uint32_t>(id)));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"signed 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::int64_t {};\n+        const std::int64_t values[] =\n+        {\n+            (std::numeric_limits<std::int64_t>::min)(), -2, 0,\n+            (std::numeric_limits<std::int64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j.type() == Json::value_t::number_integer);\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+}\n+\n namespace udt\n {\n struct legacy_type\nPATCH\ncd /testbed/build && cmake .. && make test-udt_cpp11 && ./tests/test-udt_cpp11 --test-case='enum integer serialization*'",
+  "git --no-pager diff -- tests/src/unit-udt.cpp && git apply --recount <<'PATCH'\ndiff --git a/tests/src/unit-udt.cpp b/tests/src/unit-udt.cpp\n--- a/tests/src/unit-udt.cpp\n+++ b/tests/src/unit-udt.cpp\n@@ -20,6 +20,8 @@\n #endif\n \n+#include <cstdint>\n+#include <limits>\n #include <map>\n #include <memory>\n #include <string>\n@@ -322,6 +324,62 @@\n     }\n }\n \n+TEST_CASE_TEMPLATE(\"enum integer serialization\" * doctest::test_suite(\"udt\"), Json,\n+                   nlohmann::json, nlohmann::ordered_json)\n+{\n+    SECTION(\"unsigned 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::uint64_t {};\n+        const std::uint64_t values[] =\n+        {\n+            1,\n+            std::uint64_t{1} << 63,\n+            (std::numeric_limits<std::uint64_t>::max)() - 1,\n+            (std::numeric_limits<std::uint64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j > 0u);\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+            CHECK(Json::parse(j.dump()).template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"unsigned 32-bit unscoped enum\")\n+    {\n+        enum book_id : std::uint32_t { first = 0, last = 0xFFFFFFFFu };\n+        for (const auto id : {first, last})\n+        {\n+            const Json j = id;\n+            CHECK(j.is_number_unsigned());\n+            CHECK(j.dump() == std::to_string(static_cast<std::uint32_t>(id)));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+\n+    SECTION(\"signed 64-bit scoped enum\")\n+    {\n+        enum class book_id : std::int64_t {};\n+        const std::int64_t values[] =\n+        {\n+            (std::numeric_limits<std::int64_t>::min)(), -2, 0,\n+            (std::numeric_limits<std::int64_t>::max)()\n+        };\n+        for (const auto value : values)\n+        {\n+            const auto id = static_cast<book_id>(value);\n+            const Json j = id;\n+            CHECK(j.type() == Json::value_t::number_integer);\n+            CHECK(j.dump() == std::to_string(value));\n+            CHECK(j.template get<book_id>() == id);\n+        }\n+    }\n+}\n+\n namespace udt\n {\n struct legacy_type\nPATCH\ncd /testbed/build && make test-udt_cpp11 && ./tests/test-udt_cpp11 --test-case='enum integer serialization*' --no-skip",
+  "git apply --recount <<'PATCH'\ndiff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp\n--- a/include/nlohmann/detail/conversions/to_json.hpp\n+++ b/include/nlohmann/detail/conversions/to_json.hpp\n@@ -15,1 +15,1 @@\n-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type\n+#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type\n@@ -322,2 +322,4 @@\n     using underlying_type = typename std::underlying_type<EnumType>::type;\n-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));\n+    constexpr auto type = std::is_unsigned<underlying_type>::value\n+                          ? value_t::number_unsigned : value_t::number_integer;\n+    external_constructor<type>::construct(j, static_cast<underlying_type>(e));\ndiff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md\n--- a/docs/mkdocs/docs/features/enum_conversion.md\n+++ b/docs/mkdocs/docs/features/enum_conversion.md\n@@ -3,4 +3,5 @@\n-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an\n-enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be\n-undefined or a different enum value than was originally intended.\n+By default, enum values are serialized to JSON as integers, with signedness matching their underlying type. In some cases\n+this could result in undesired behavior. If an enum is modified or re-ordered after data has been serialized to JSON, the\n+later de-serialized JSON data may be undefined or a different enum value than was originally intended.\nPATCH\npython3 tools/amalgamate/amalgamate.py -c tools/amalgamate/config_json.json -s . && git --no-pager diff --check && cd /testbed/build && make test-udt_cpp11 test-conversions_cpp11 && ./tests/test-udt_cpp11 && ./tests/test-conversions_cpp11",
+  "set -e\ngit apply --recount --unidiff-zero <<'PATCH'\ndiff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp\n--- a/include/nlohmann/detail/conversions/to_json.hpp\n+++ b/include/nlohmann/detail/conversions/to_json.hpp\n@@ -15,1 +15,1 @@\n-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type\n+#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, is_unsigned, underlying_type\n@@ -319,8 +319,10 @@\n          enable_if_t<std::is_enum<EnumType>::value, int> = 0>\n inline void to_json(BasicJsonType& j, EnumType e) noexcept\n {\n     using underlying_type = typename std::underlying_type<EnumType>::type;\n-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));\n+    constexpr auto type = std::is_unsigned<underlying_type>::value\n+                          ? value_t::number_unsigned : value_t::number_integer;\n+    external_constructor<type>::construct(j, static_cast<underlying_type>(e));\n }\n #endif  // JSON_DISABLE_ENUM_SERIALIZATION\n \ndiff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md\n--- a/docs/mkdocs/docs/features/enum_conversion.md\n+++ b/docs/mkdocs/docs/features/enum_conversion.md\n@@ -1,8 +1,8 @@\n # Specializing enum conversion\n \n-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an\n-enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be\n-undefined or a different enum value than was originally intended.\n+By default, enum values are serialized to JSON as integers, with signedness matching their underlying type. In some cases\n+this could result in undesired behavior. If an enum is modified or re-ordered after data has been serialized to JSON, the\n+later de-serialized JSON data may be undefined or a different enum value than was originally intended.\n \n It is possible to more precisely specify how a given enum is mapped to and from JSON as shown below:\n \nPATCH\npython3 tools/amalgamate/amalgamate.py -c tools/amalgamate/config_json.json -s .\ngit --no-pager diff --check\ncd /testbed/build && make test-udt_cpp11 test-conversions_cpp11 && ./tests/test-udt_cpp11 && ./tests/test-conversions_cpp11",
+  "cmake -S /testbed -B /testbed/build/enum-single-header -DJSON_MultipleHeaders=OFF -DJSON_TestStandards=11 -DJSON_BuildTests=ON -DJSON_Install=OFF && cmake --build /testbed/build/enum-single-header --target test-udt_cpp11 test-conversions_cpp11 && /testbed/build/enum-single-header/tests/test-udt_cpp11 && /testbed/build/enum-single-header/tests/test-conversions_cpp11",
+  "set -e\ngit diff -- single_include/nlohmann/json.hpp | python3 -c 'import re, sys; parts = re.split(r\"(?=^@@ )\", sys.stdin.read(), flags=re.MULTILINE); sys.stdout.write(parts[0] + \"\".join(hunk for hunk in parts[1:] if \"is_unsigned\" not in hunk and \"external_constructor<type>\" not in hunk))' | git apply --reverse\ngit --no-pager diff --check\ngit --no-pager diff --stat\ngit --no-pager diff -- single_include/nlohmann/json.hpp\ncd /testbed/build && make test-udt_cpp20 && ./tests/test-udt_cpp20 && cmake --build enum-single-header --target test-udt_cpp11 test-conversions_cpp11 && ./enum-single-header/tests/test-udt_cpp11 && ./enum-single-header/tests/test-conversions_cpp11",
+  "cmake -S /testbed -B /testbed/build/enum-single-header '-DJSON_TestStandards=11;20' && cmake --build /testbed/build/enum-single-header --target test-udt_cpp11 test-conversions_cpp11 test-udt_cpp20 && /testbed/build/enum-single-header/tests/test-udt_cpp11 && /testbed/build/enum-single-header/tests/test-conversions_cpp11 && /testbed/build/enum-single-header/tests/test-udt_cpp20 && git --no-pager diff --check && git --no-pager status --short"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 2,
+ "peeky_mentions_in_commands": 3,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed: enum serialization always selected signed integer storage, making large unsigned values negative. It now selects storage matching the enum\u2019s underlying signedness in both header distributions. Added regression coverage for unsigned boundary values and signed enums, and updated the documentation.",
+ "assistant_messages": [
+  "I\u2019ll inspect enum serialization, fix how it chooses the numeric type, and add a regression test for large unsigned values.\n",
+  "The enum overload always uses signed JSON storage, even after casting to the enum\u2019s unsigned underlying type. I\u2019ll select storage based on that type\u2019s signedness and update the single-header distribution too.\n",
+  "Fixed: enum serialization always selected signed integer storage, making large unsigned values negative. It now selects storage matching the enum\u2019s underlying signedness in both header distributions. Added regression coverage for unsigned boundary values and signed enums, and updated the documentation."
+ ],
+ "assistant_reasoning": [
+  "**Improving patch application**\n\nI need to find a better way to apply patches using a Python script. If that's unavailable, I could just make manual changes as a fallback. There\u2019s no need for a custom solution. Instead, I can use `git apply --recount` which automatically recalculates the necessary changes, making it more precise. This way, I can verify the file patch against `git diff` to ensure nothing is missed.",
+  "**Debugging Git Commands**\n\nI need to address the git context issues here. It looks like I'm trying to apply a diff with zero context, which is causing problems with the documentation hunk. I should probably use `git apply --recount --unidiff-zero` and ensure there's some context around the enum. I'll also set `-e` after the heredoc commands to avoid any errors. Overall, I want to streamline my approach to prevent these issues from occurring in the future!",
+  "**Verifying project setup**\n\nI need to verify the persistent status of the tests with a single header. I\u2019m thinking about running a parallel git diff while compiling the same test with a project runner using CMake. Should I create a separate build subdirectory called \"enum-single-header\" to avoid unnecessary files? Alternatively, I could compile the tests manually using the same flags. I think I'll need to read the existing generated flags to determine the best approach.\n\n**Setting up C++ test configuration**\n\nI'm running a C++ command with specific flags and include paths to compile my tests. I need to check if my test configurations, including 'DOCTEST_CONFIG_SUPER_FAST_ASSERTS,' are correctly set up while avoiding unnecessary manual commands. It also seems I need to configure CMake properly for my project. I\u2019ll ensure everything aligns with the standard settings and validate if the configurations match before compiling. It\u2019s important to make sure I define the main correctly to avoid any issues.\n\n**Refining CMake configuration**\n\nI\u2019m considering using the existing infrastructure for my project with a separate CMake configuration. This way, I can modify the build without affecting anything tracked or ignored. It seems like the tests can keep the default settings without needing global UDLs or other complexities. I think that if I stay consistent with the default, it should be a good approach for maintaining clarity and simplicity in the project setup.",
+  "**Inspecting formatting tools**\n\nI need to fix the single formatting that\u2019s not related to the expected generator output. First, I'll check if astyle is installed with the command `command -v astyle`. Then, I can read the Makefile options. It's tricky since I want to apply formatting to just the single file without altering the root source files. I should inspect all available options for astyle to make sure I don't lose any crucial details during formatting."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 173.0
+}

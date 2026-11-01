@@ -1,0 +1,7 @@
+{
+ "judge_id": "a016",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The response uses the first node\u2019s primary, which can still be the failed, slotless master after promotion.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a100",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was proxy URL normalization discarding credentials, preventing `Proxy-Authorization` from being generated.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a111",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Fixed the crash: `@UtilityClass` cleared the inner class\u2019s enclosing type but left its cached erasure stale, breaking generic inference.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 probe at HandleUtilityClass.java:132: innerClassDecl.mods.flags = 8 (STATIC, set on line 130 by `innerClassDecl.mods.flags |= Flags.STATIC`), innerClassSymbol.type.tsym == innerClassSymbol (@3470), type.outer_field a ClassType (not yet cleared on line 132). Cmd 21 session get: cached innerClassSymbol.erasure_field = Type$ClassType@3477 with outer_field = Type$ClassType@3488. Consistent with the code and with the fix clearing erasure_field's enclosing type removing the javac NPE (cmd 31 NPE gone; cmds 39-42 build/compile and ECJ_REGRESSION_PASSED). Nothing contradicts."
+}

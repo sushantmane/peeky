@@ -1,0 +1,7 @@
+{
+ "judge_id": "a246",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"fallback routing incorrectly set `MatchedPath` to its internal catch-all pattern, contaminating nested routing.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Cmds 8/10/12 only read docs/help; cmd 14 describe and cmd 16 probe both failed [BUDGET_EXHAUSTED]. Peeky printed no values."
+}

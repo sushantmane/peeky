@@ -1,0 +1,71 @@
+diff --git a/doc/whatsnew/v0.12.1.rst b/doc/whatsnew/v0.12.1.rst
+index 6ba57d5b..1cf1c74a 100644
+--- a/doc/whatsnew/v0.12.1.rst
++++ b/doc/whatsnew/v0.12.1.rst
+@@ -8,6 +8,8 @@ v0.12.1 (Unreleased)
+ 
+ - |Feature| The :class:`Band` and :class:`Range` marks will now cover the full extent of the data if `min` / `max` variables are not explicitly assigned or added in a transform (:pr:`3056`).
+ 
++- |Enhancement| Axes with a :class:`objects.Nominal` scale now match categorical plots: limits extend half a unit beyond the first and last category, grid lines are hidden, and the y axis is inverted. This applies to both explicit and inferred scales; explicit plot limits still control the visible range.
++
+ - |Enhancement| The :class:`Jitter` move now applies a small amount of jitter by default (:pr:`3066`).
+ 
+ - |Enhancement| Marks that sort along the orient axis (e.g. :class:`Line`) now use a stable algorithm (:pr:`3064`).
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..aadc927e 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1273,6 +1272,7 @@ class Plotter:
+                 axis_obj = getattr(view["ax"], f"{axis}axis")
+                 seed_values = self._get_subplot_data(var_df, var, view, share_state)
+                 view_scale = scale._setup(seed_values, prop, axis=axis_obj)
++                view[f"{axis}scale"] = view_scale
+                 set_scale_obj(view["ax"], axis, view_scale._matplotlib_scale)
+ 
+                 for layer, new_series in zip(layers, transformed_data):
+@@ -1631,10 +1631,17 @@ class Plotter:
+             ax = sub["ax"]
+             for axis in "xy":
+                 axis_key = sub[axis]
++                axis_obj = getattr(ax, f"{axis}axis")
++                nominal = isinstance(sub.get(f"{axis}scale"), Nominal)
++                if nominal:
++                    axis_obj.grid(False, which="both")
++                    n = len(axis_obj.get_majorticklocs())
++                    if n:
++                        getattr(ax, f"set_{axis}lim")(-.5, n - .5, auto=None)
+ 
+                 # Axis limits
+                 if axis_key in p._limits:
+-                    convert_units = getattr(ax, f"{axis}axis").convert_units
++                    convert_units = axis_obj.convert_units
+                     a, b = p._limits[axis_key]
+                     lo = a if a is None else convert_units(a)
+                     hi = b if b is None else convert_units(b)
+@@ -1644,6 +1651,9 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++                if nominal and axis == "y":
++                    axis_obj.set_inverted(True)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)

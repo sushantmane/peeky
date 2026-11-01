@@ -1,0 +1,7 @@
+{
+ "judge_id": "a069",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The simplifier rewrites the vertices but leaves `ab` unchanged, even when that edge collapses.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

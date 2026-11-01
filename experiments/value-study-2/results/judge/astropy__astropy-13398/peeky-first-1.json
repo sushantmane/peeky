@@ -1,0 +1,7 @@
+{
+ "judge_id": "a097",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"the debugger showed the 10 km overhead object had become a 10.02067845 km topocentric CIRS position before the AltAz rotation.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 13 probe at cirs_observed_transforms.py:31: cirs_coo CIRS (obstime=J2010, location=home, distance 10.02067845 km) and observed_frame AltAz(obstime=J2010, location=(3934.36,-68.67,5002.80) km, pressure=0). Consistent with the doc example shown in cmd 29 (t = Time('J2010'), obj 10 km above home at -1 deg/52 deg, AltAz(obstime=t, location=home)); no later output contradicts. Cmd 12 was NO_STOP."
+}

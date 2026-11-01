@@ -1,0 +1,296 @@
+{
+ "bug": "projectlombok__lombok-3009",
+ "arm": "control",
+ "rep": 3,
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/projectlombok__lombok-3009:control",
+ "image_digest": "sha256:0de7dbc1ad68d38c3336950e10f700205a4d200773f3ef5fc226bd2598f821ae",
+ "peeky_sha": null,
+ "container": "study-projectlombok__lombok-3009-control-3-a7af16",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T09:47:57+00:00",
+ "ended": "2026-11-01T09:51:56+00:00",
+ "wall_seconds": 238.9,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "javac-FieldDefaultsViaConfigOnRecord.java(lombok.transform.TestWithDelombok)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 5.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "b4b3276d347ebce60ce75cd8d83d061774e66341739fc96de69fa25b85208582",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "src/core/lombok/eclipse/handlers/HandleFieldDefaults.java",
+  "src/core/lombok/javac/handlers/HandleFieldDefaults.java",
+  "test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java",
+  "test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java",
+  "test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java",
+  "test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java",
+  "test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java",
+  "test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java",
+  "website/templates/features/experimental/FieldDefaults.html"
+ ],
+ "patch_bytes": 5308,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 329
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 19,
+ "ai_credits": 26.2656,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 553265,
+  "output": 10039,
+  "cache_read": 508695,
+  "cache_write": 44513,
+  "reasoning": 3155
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 30,
+ "tool_calls_by_name": {
+  "bash": 30
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -a; if [ -d /testbed ]; then cd /testbed && git --no-pager status --short; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'class HandleFieldDefaults|FieldDefaults is only supported|defaultPrivate|defaultFinal' src/core/lombok/{javac,eclipse}/handlers/*FieldDefaults* src/core/lombok/ConfigurationKeys.java && find test -iname '*FieldDefaults*' -o -iname '*Record*'",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'test.compile|test.javacCurrent|javacCurrent|delombok' build.xml buildScripts/*.xml && ls test && find . -name AGENTS.md -print",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'class HandleFieldDefaults|FieldDefaults is only supported|defaultPrivate|defaultFinal' src/core/lombok/javac/handlers/*FieldDefaults* src/core/lombok/eclipse/handlers/*FieldDefaults* src/core/lombok/ConfigurationKeys.java && find test \\( -iname '*FieldDefaults*' -o -iname '*Record*' \\)",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'test.compile|test.javacCurrent|javacCurrent|delombok' build.xml buildScripts/*.xml; ls test; find . -name AGENTS.md -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat src/core/lombok/javac/handlers/HandleFieldDefaults.java && cat src/core/lombok/eclipse/handlers/HandleFieldDefaults.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat test/transform/resource/{before,after-delombok,after-ecj}/FieldDefaultsViaConfig.java && cat test/transform/resource/{before,after-delombok,after-ecj}/FieldDefaultsOnRecord.java && cat test/transform/resource/messages-{delombok,ecj}/FieldDefaultsOnRecord.java.messages && sed -n '1,245p' buildScripts/tests.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'FieldDefaults|defaultPrivate|defaultFinal' website/templates/features/experimental/FieldDefaults.html && grep -nE 'isRecord|FIELD_DEFAULTS_PRIVATE_EVERYWHERE|isClassOrEnum' src/core/lombok/{javac,eclipse}/handlers/{JavacHandlerUtil,EclipseHandlerUtil,HandleValue,HandleData}.java 2>/dev/null && find test -maxdepth 4 -type f -name '*Test*.java' | head -60",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1960,2010p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '2625,2668p' src/core/lombok/eclipse/handlers/EclipseHandlerUtil.java && cat website/templates/features/experimental/FieldDefaults.html && find test/transform/src -type f -maxdepth 5 -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat test/transform/src/lombok/TestJavac.java && cat test/transform/src/lombok/TestEclipse.java && grep -nE 'System.getProperty|filter|directory|messages|print|version' test/transform/src/lombok/{AbstractRunTests,RunTestsViaDelombok,RunTestsViaEcj,DirectoryRunner}.java && ls lib && command -v apply_patch && java -version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find test -type f \\( -name 'TestJavac.java' -o -name 'TestEclipse.java' -o -name '*RunTests*.java' -o -name 'DirectoryRunner.java' \\) && cat test/transform/src/lombok/transform/{TestWithDelombok,TestWithEcj,TestSourceFiles}.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls lib && command -v apply_patch; java -version; grep -nE 'System.getProperty|filter|print|version' test/core/src/lombok/*.java | head -100; cat test/transform/resource/after-ecj/FieldNameConstantsOnRecord.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat test/core/src/lombok/{TestJavac,TestEclipse,DirectoryRunner}.java && sed -n '50,150p' test/core/src/lombok/AbstractRunTests.java && sed -n '160,215p' buildScripts/info.ant.xml && sed -n '1,130p' build.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls /usr/lib/jvm; cd /testbed && find build -maxdepth 2 -type d && ls -l dist && find lib/test lib/build lib/stripe -maxdepth 1 -type f -name '*.jar' && grep -nE 'cp.test|cp.stripe|packing.basedirs|classpath' buildScripts/{dependencies,compile}.ant.xml | head -65; command -v patch",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '65,103p' test/core/src/lombok/RunTestsViaDelombok.java && sed -n '150,179p' test/core/src/lombok/RunTestsViaEcj.java && sed -n '225,252p' test/core/src/lombok/LombokTestSource.java && find lib/test lib/build lib/stripe -type f -name '*.jar' && grep -nE 'cp.test|cp.stripe|ivyplusplus|ivysettings' buildScripts/setup.ant.xml && sed -n '50,67p' buildScripts/compile.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q test.compile",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find ivyCache -type f \\( -name '*junit*.jar' -o -name '*hamcrest*.jar' -o -name '*ecj*.jar' -o -name '*eclipse*jdt*.jar' \\) && sed -n '183,226p' test/core/src/lombok/LombokTestSource.java && grep -n 'platform' test/transform/resource/before/*Record.java | head -30 && sed -n '150,196p' buildScripts/setup.ant.xml && cat test/transform/resource/after-ecj/BuilderSimpleOnRecord.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q test.javacCurrent > /tmp/lombok-field-defaults-baseline.log 2>&1; result=$?; tail -35 /tmp/lombok-field-defaults-baseline.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- /dev/null\n+++ test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,13 @@\n+// version 14:\n+//CONF: lombok.fieldDefaults.defaultFinal = true\n+//CONF: lombok.fieldDefaults.defaultPrivate = true\n+\n+public record FieldDefaultsViaConfigOnRecord(int x) {\n+\tstatic class Nested {\n+\t\tint y = 0;\n+\t}\n+}\n+\n+record FieldDefaultsViaConfigOnEmptyRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-delombok/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,9 @@\n+// version 14:\n+public record FieldDefaultsViaConfigOnRecord(int x) {\n+\tstatic class Nested {\n+\t\tprivate final int y = 0;\n+\t}\n+}\n+record FieldDefaultsViaConfigOnEmptyRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-ecj/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,22 @@\n+// version 14:\n+public record FieldDefaultsViaConfigOnRecord(int x) {\n+  static class Nested {\n+    private final int y = 0;\n+    Nested() {\n+      super();\n+    }\n+  }\n+/* Implicit */  private final int x;\n+  public FieldDefaultsViaConfigOnRecord(int x) {\n+    super();\n+    .x = x;\n+  }\n+}\n+record FieldDefaultsViaConfigOnEmptyRecord() {\n+  FieldDefaultsViaConfigOnEmptyRecord() {\n+    super();\n+  }\n+}\n+\n+\n+\n--- /dev/null\n+++ test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+// unchanged\n+//CONF: lombok.fieldDefaults.defaultPrivate = true\n+\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,4 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,7 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+  public FieldDefaultsViaConfigPrivateOnRecord() {\n+    super();\n+  }\n+}\n--- /dev/null\n+++ test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+// unchanged\n+//CONF: lombok.fieldDefaults.defaultFinal = true\n+\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,4 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,7 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+  public FieldDefaultsViaConfigFinalOnRecord() {\n+    super();\n+  }\n+}\nPATCH\nmkdir -p build/field-defaults-test && patch -p0 <<'PATCH'\n--- /dev/null\n+++ build/field-defaults-test/FieldDefaultsRegression.java\n@@ -0,0 +1,21 @@\n+import java.io.File;\n+import lombok.DirectoryRunner;\n+import lombok.RunTestsViaDelombok;\n+import lombok.transform.TestWithDelombok;\n+\n+public class FieldDefaultsRegression {\n+\tpublic static void main(String[] args) throws Throwable {\n+\t\tDirectoryRunner.TestParams params = new TestWithDelombok();\n+\t\tint failures = 0;\n+\t\tfor (String name : args) {\n+\t\t\ttry {\n+\t\t\t\tnew RunTestsViaDelombok().createTester(params, new File(params.getBeforeDirectory(), name), \"javac\", 17).runTest();\n+\t\t\t\tSystem.out.println(\"PASS \" + name);\n+\t\t\t} catch (AssertionError error) {\n+\t\t\t\tSystem.out.println(\"FAIL \" + name + \": \" + error.getMessage());\n+\t\t\t\tfailures++;\n+\t\t\t}\n+\t\t}\n+\t\tif (failures != 0) throw new AssertionError(failures + \" tests failed\");\n+\t}\n+}\nPATCH\nCP=build/field-defaults-test:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:ivyCache/junit/junit/jars/junit-4.8.2.jar:ivyCache/org.eclipse.jdt/org.eclipse.jdt.core/jars/org.eclipse.jdt.core-3.13.102.jar && /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -proc:none -cp \"$CP\" -d build/field-defaults-test build/field-defaults-test/FieldDefaultsRegression.java && /usr/lib/jvm/java-17-openjdk-arm64/bin/java -cp \"$CP\" FieldDefaultsRegression FieldDefaultsViaConfigOnRecord.java FieldDefaultsViaConfigPrivateOnRecord.java FieldDefaultsViaConfigFinalOnRecord.java",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && find ivyCache -type f -name '*.jar' | grep -E 'cmdreader|stripe|guava' && ls test/transform/resource/before/FieldDefaultsViaConfig*OnRecord.java 2>/dev/null; ls build/field-defaults-test",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- /dev/null\n+++ test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,12 @@\n+// version 14:\n+//CONF: lombok.fieldDefaults.defaultFinal = true\n+//CONF: lombok.fieldDefaults.defaultPrivate = true\n+\n+public record FieldDefaultsViaConfigOnRecord(int x) {\n+\tstatic class Nested {\n+\t\tint y = 0;\n+\t}\n+}\n+\n+record FieldDefaultsViaConfigOnEmptyRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-delombok/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,8 @@\n+// version 14:\n+public record FieldDefaultsViaConfigOnRecord(int x) {\n+\tstatic class Nested {\n+\t\tprivate final int y = 0;\n+\t}\n+}\n+record FieldDefaultsViaConfigOnEmptyRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-ecj/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,19 @@\n+// version 14:\n+public record FieldDefaultsViaConfigOnRecord(int x) {\n+  static class Nested {\n+    private final int y = 0;\n+    Nested() {\n+      super();\n+    }\n+  }\n+/* Implicit */  private final int x;\n+  public FieldDefaultsViaConfigOnRecord(int x) {\n+    super();\n+    .x = x;\n+  }\n+}\n+record FieldDefaultsViaConfigOnEmptyRecord() {\n+  FieldDefaultsViaConfigOnEmptyRecord() {\n+    super();\n+  }\n+}\n--- /dev/null\n+++ test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+// unchanged\n+//CONF: lombok.fieldDefaults.defaultPrivate = true\n+\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,4 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,7 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+  public FieldDefaultsViaConfigPrivateOnRecord() {\n+    super();\n+  }\n+}\n--- /dev/null\n+++ test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+// unchanged\n+//CONF: lombok.fieldDefaults.defaultFinal = true\n+\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,4 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+}\n--- /dev/null\n+++ test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,7 @@\n+// version 14:\n+// unchanged\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+  public FieldDefaultsViaConfigFinalOnRecord() {\n+    super();\n+  }\n+}\nPATCH\nCP=build/field-defaults-test:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:ivyCache/junit/junit/jars/junit-4.8.2.jar:ivyCache/org.eclipse.jdt/org.eclipse.jdt.core/jars/org.eclipse.jdt.core-3.13.102.jar:ivyCache/zwitserloot.com/cmdreader/jars/cmdreader-1.2.jar && /usr/lib/jvm/java-17-openjdk-arm64/bin/java -cp \"$CP\" FieldDefaultsRegression FieldDefaultsViaConfigOnRecord.java FieldDefaultsViaConfigPrivateOnRecord.java FieldDefaultsViaConfigFinalOnRecord.java",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- src/core/lombok/javac/handlers/HandleFieldDefaults.java\n+++ src/core/lombok/javac/handlers/HandleFieldDefaults.java\n@@ -133,3 +133,3 @@\n-\t\tif (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\n \t\t\n \t\tboolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));\n--- src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n+++ src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n@@ -161,3 +161,3 @@\n-\t\tif (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\n \t\t\n \t\tboolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));\n--- website/templates/features/experimental/FieldDefaults.html\n+++ website/templates/features/experimental/FieldDefaults.html\n@@ -54,3 +54,5 @@\n \t\t\tLike other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.\n+\t\t</p><p>\n+\t\t\tThe <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration options ignore records. Explicit use of <code>@FieldDefaults</code> on a record is not supported.\n \t\t</p>\n \t</@f.smallPrint>\nPATCH\nJAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q test.compile && CP=build/field-defaults-test:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:ivyCache/junit/junit/jars/junit-4.8.2.jar:ivyCache/org.eclipse.jdt/org.eclipse.jdt.core/jars/org.eclipse.jdt.core-3.13.102.jar:ivyCache/zwitserloot.com/cmdreader/jars/cmdreader-1.2.jar && /usr/lib/jvm/java-17-openjdk-arm64/bin/java -cp \"$CP\" FieldDefaultsRegression FieldDefaultsViaConfigOnRecord.java FieldDefaultsViaConfigPrivateOnRecord.java FieldDefaultsViaConfigFinalOnRecord.java FieldDefaultsOnRecord.java FieldDefaults.java FieldDefaultsNoop.java FieldDefaultsViaConfig.java FieldDefaultsViaConfigAndRequiredArgsConstructor.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant test.javacCurrent > /tmp/lombok-field-defaults-fixed.log 2>&1; result=$?; grep -E 'FieldDefaults|FAIL|ERROR|Tests run:|FAILED|Exception|expected:|Unexpected message:' /tmp/lombok-field-defaults-fixed.log | head -70; tail -10 /tmp/lombok-field-defaults-fixed.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager status --short && jar tf lib/ivyplusplus.jar | grep -E 'org/eclipse/jdt/internal/compiler/(batch/Main|impl/CompilerOptions|classfmt/ClassFileConstants)\\.class|ecj.*\\.jar' && find . -maxdepth 2 -name 'TEST*' -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/java -cp lib/ivyplusplus.jar org.eclipse.jdt.internal.compiler.batch.Main -version && sed -n '25,67p' test/core/src/lombok/RunTestsViaEcj.java && grep -nE 'getEcjCompilerVersion|ECJ.*VERSION' src/utils/lombok/eclipse/Eclipse.java src/core/lombok/eclipse/Eclipse.java 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q dist && rm src/core/lombok/eclipse/handlers/HandleFieldDefaults.java.orig src/core/lombok/javac/handlers/HandleFieldDefaults.java.orig website/templates/features/experimental/FieldDefaults.html.orig",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/javap -cp lib/ivyplusplus.jar org.eclipse.jdt.internal.compiler.classfmt.ClassFileConstants | grep -E 'AccRecord|JDK1[4567]' && jar tf lib/ivyplusplus.jar | grep -E '(RecordComponent|internal/core/JavaModelManager|jdt/core/dom/AST)\\.class' && sed -n '240,277p' src/utils/lombok/eclipse/Eclipse.java && sed -n '65,95p' test/core/src/lombok/RunTestsViaEcj.java",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && mkdir -p build/field-defaults-test/javac && /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -cp dist/lombok.jar -J-Dlombok.fieldDefaults.defaultPrivate=true -d build/field-defaults-test/javac test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java && git --no-pager diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && mkdir -p build/field-defaults-test/{private,final,both} && patch -p0 <<'PATCH'\n--- /dev/null\n+++ build/field-defaults-test/private/lombok.config\n@@ -0,0 +1,3 @@\n+config.stopBubbling = true\n+lombok.fieldDefaults.defaultPrivate = true\n+lombok.fieldDefaults.defaultFinal = false\n--- /dev/null\n+++ build/field-defaults-test/final/lombok.config\n@@ -0,0 +1,3 @@\n+config.stopBubbling = true\n+lombok.fieldDefaults.defaultPrivate = false\n+lombok.fieldDefaults.defaultFinal = true\n--- /dev/null\n+++ build/field-defaults-test/both/lombok.config\n@@ -0,0 +1,3 @@\n+config.stopBubbling = true\n+lombok.fieldDefaults.defaultPrivate = true\n+lombok.fieldDefaults.defaultFinal = true\nPATCH\nfor setting in private final both; do\n  cp test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java \"build/field-defaults-test/$setting/FieldDefaultsViaConfigOnRecord.java\" &&\n  /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -cp dist/lombok.jar -d \"build/field-defaults-test/$setting\" \"build/field-defaults-test/$setting/FieldDefaultsViaConfigOnRecord.java\" || exit 1\n  echo \"PASS javac records with $setting defaults\"\n  /usr/lib/jvm/java-17-openjdk-arm64/bin/javap -private -cp \"build/field-defaults-test/$setting\" 'FieldDefaultsViaConfigOnRecord$Nested' | grep 'int y;'\ndone && cp test/transform/resource/before/FieldDefaultsOnRecord.java build/field-defaults-test/both/FieldDefaultsOnRecord.java && if /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -cp dist/lombok.jar -d build/field-defaults-test/both build/field-defaults-test/both/FieldDefaultsOnRecord.java > build/field-defaults-test/explicit-error.log 2>&1; then echo 'Explicit @FieldDefaults incorrectly accepted'; exit 1; else grep -F '@FieldDefaults is only supported on a class or an enum.' build/field-defaults-test/explicit-error.log; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm -r build/field-defaults-test && rm /tmp/lombok-field-defaults-baseline.log /tmp/lombok-field-defaults-fixed.log && git --no-pager diff --check && git --no-pager diff -- src/core/lombok/javac/handlers/HandleFieldDefaults.java src/core/lombok/eclipse/handlers/HandleFieldDefaults.java website/templates/features/experimental/FieldDefaults.html && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q test.compile",
+  "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q test.javacCurrent > /tmp/lombok-field-defaults-baseline.log 2>&1; result=$?; tail -35 /tmp/lombok-field-defaults-baseline.log; exit \"$result\"",
+  "cd /testbed && patch -p0 <<'PATCH'\n--- src/core/lombok/javac/handlers/HandleFieldDefaults.java\n+++ src/core/lombok/javac/handlers/HandleFieldDefaults.java\n@@ -133,3 +133,3 @@\n-\t\tif (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\n \t\t\n \t\tboolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));\n--- src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n+++ src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n@@ -161,3 +161,3 @@\n-\t\tif (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\n \t\t\n \t\tboolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));\n--- website/templates/features/experimental/FieldDefaults.html\n+++ website/templates/features/experimental/FieldDefaults.html\n@@ -54,3 +54,5 @@\n \t\t\tLike other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.\n+\t\t</p><p>\n+\t\t\tThe <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration options ignore records. Explicit use of <code>@FieldDefaults</code> on a record is not supported.\n \t\t</p>\n \t</@f.smallPrint>\nPATCH\nJAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q test.compile && CP=build/field-defaults-test:build/tests:build/teststubs:build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants:ivyCache/junit/junit/jars/junit-4.8.2.jar:ivyCache/org.eclipse.jdt/org.eclipse.jdt.core/jars/org.eclipse.jdt.core-3.13.102.jar:ivyCache/zwitserloot.com/cmdreader/jars/cmdreader-1.2.jar && /usr/lib/jvm/java-17-openjdk-arm64/bin/java -cp \"$CP\" FieldDefaultsRegression FieldDefaultsViaConfigOnRecord.java FieldDefaultsViaConfigPrivateOnRecord.java FieldDefaultsViaConfigFinalOnRecord.java FieldDefaultsOnRecord.java FieldDefaults.java FieldDefaultsNoop.java FieldDefaultsViaConfig.java FieldDefaultsViaConfigAndRequiredArgsConstructor.java",
+  "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant test.javacCurrent > /tmp/lombok-field-defaults-fixed.log 2>&1; result=$?; grep -E 'FieldDefaults|FAIL|ERROR|Tests run:|FAILED|Exception|expected:|Unexpected message:' /tmp/lombok-field-defaults-fixed.log | head -70; tail -10 /tmp/lombok-field-defaults-fixed.log; exit \"$result\"",
+  "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -q dist && rm src/core/lombok/eclipse/handlers/HandleFieldDefaults.java.orig src/core/lombok/javac/handlers/HandleFieldDefaults.java.orig website/templates/features/experimental/FieldDefaults.html.orig"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Configured field defaults failed because records weren\u2019t excluded from implicit processing. Both javac and Eclipse handlers now apply implicit defaults only to classes and enums, ignoring records while preserving the error for explicit `@FieldDefaults` use.",
+ "assistant_messages": [
+  "I\u2019ll check how the configured field defaults are applied and exclude records without changing the error for explicit `@FieldDefaults` use.\n",
+  "Both compiler handlers skip interfaces and annotations for configured defaults, but not records. I\u2019ll use the existing class-or-enum predicate for that guard and add coverage for each configuration key and their combination.\n",
+  "Configured field defaults failed because records weren\u2019t excluded from implicit processing. Both javac and Eclipse handlers now apply implicit defaults only to classes and enums, ignoring records while preserving the error for explicit `@FieldDefaults` use."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating test setups**\n\nI think I've got around 8 minutes, so I don't want to overdo it. I notice that the Eclipse ECJ lacks a record library for the older ECJ8. I\u2019m wondering if I can test javac fixtures and snapshots that are unverified. I think it's enough to add three new fixtures for all versions, considering the records are stable. The base seems to use Java 14 to 28, and I need to check if javac 17 with the enable preview flag is invalid for the minimum version 14. Also, what's up with RunTestsViaDelombok in the source?",
+  "**Evaluating fixture validation issues**\n\nI'm encountering a problem validating the ECJ record for new fixtures, likely due to having only the installed library ECJ8. It seems I can only add new entries after delomboking. I might also mark the patterns for Java compilation with comments. I need to dig deeper into this issue to find a viable solution, possibly looking for how to manage or adjust the existing setups more effectively. Let's see what I can come up with!",
+  "**Evaluating test configuration**\n\nI see that the task is done, but I'm unsure about testing the afterECJ snapshots. Should I remove those tests? The user has allowed 12 files to be added, which should be adequate. It seems I need to ensure that the test snapshots reflect empty records and that the ecj implicit fields are set to null in the output. I'll also verify if the access level for autogenerated records is public and check the nested static class transformations. Let's focus on making sure everything is cleaned up properly and ready for inspection!\n\n**Finalizing configuration summary**\n\nI need to prepare a final summary regarding the root fix which involves no tests since the developer didn't request validation. I'll say, \"Configuration-driven field defaults were applied to records, triggering the annotation-only type error. Both javac and Eclipse handlers restrict implicit defaults to classes and enums, ignoring records while preserving errors for explicit @FieldDefaults usage.\" That's 44 words! I should also clarify on regression tests and ensure no mention of validation or tests unless explicitly requested. Let's wrap this up after cleanup!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 245.0
+}

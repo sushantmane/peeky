@@ -1,0 +1,7 @@
+{
+ "judge_id": "a126",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"javac's cached erased type retained stale enclosing-type metadata after `@UtilityClass` made the inner class static.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

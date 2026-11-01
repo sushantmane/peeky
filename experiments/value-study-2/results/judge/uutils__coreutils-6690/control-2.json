@@ -1,0 +1,7 @@
+{
+ "judge_id": "a032",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"`cp` accepts multiple paths, but its argument metadata describes only one value. Zsh therefore stops path completion after the first operand.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,53 @@
+diff --git a/ChangeLog.rst b/ChangeLog.rst
+index 4ebc5c73..dca201d6 100644
+--- a/ChangeLog.rst
++++ b/ChangeLog.rst
+@@ -1,6 +1,9 @@
+ 9.1.0 - 2022-08-27
+ ------------------
+ 
++* Fixed formatting of nested character ranges and ranges with temporary,
++  mutable-only elements, including split and transform views.
++
+ * ``fmt::formatted_size`` now works at compile time
+   (`#3026 <https://github.com/fmtlib/fmt/pull/3026>`_). For example
+   (`godbolt <https://godbolt.org/z/1MW5rMdf8>`__):
+diff --git a/include/fmt/ranges.h b/include/fmt/ranges.h
+index 2105a668..6b5bfa5c 100644
+--- a/include/fmt/ranges.h
++++ b/include/fmt/ranges.h
+@@ -473,19 +473,16 @@ struct range_formatter<
+   FMT_CONSTEXPR auto parse(ParseContext& ctx) -> decltype(ctx.begin()) {
+     auto it = ctx.begin();
+     auto end = ctx.end();
+-    if (it == end || *it == '}') {
+-      maybe_set_debug_format();
+-      return it;
+-    }
+-
+-    if (*it == 'n') {
++    if (it != end && *it == 'n') {
+       set_brackets({}, {});
+       ++it;
+     }
+ 
+-    if (*it == '}') {
++    if (it == end || *it == '}') {
++      ctx.advance_to(it);
++      auto end = underlying_.parse(ctx);
+       maybe_set_debug_format();
+-      return it;
++      return end;
+     }
+ 
+     if (*it != ':')
+@@ -509,7 +506,8 @@ struct range_formatter<
+       if (i > 0) out = detail::copy_str<Char>(separator_, out);
+       ;
+       ctx.advance_to(out);
+-      out = underlying_.format(mapper.map(*it), ctx);
++      auto&& item = *it;
++      out = underlying_.format(mapper.map(item), ctx);
+       ++i;
+     }
+     out = detail::copy_str<Char>(closing_bracket_, out);

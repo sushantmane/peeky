@@ -1,0 +1,79 @@
+diff --git a/doc/user-guide/computation.rst b/doc/user-guide/computation.rst
+index dc9748af..f626f94f 100644
+--- a/doc/user-guide/computation.rst
++++ b/doc/user-guide/computation.rst
+@@ -463,6 +463,12 @@ The inverse operation is done with :py:meth:`~xarray.polyval`,
+ 
+     xr.polyval(coord=x, coeffs=out.polyfit_coefficients)
+ 
++:py:func:`~xarray.polyval` evaluates the values in its ``coord`` argument, not
++its index coordinate. To evaluate at a dimension coordinate, pass that coordinate
++explicitly, for example ``xr.polyval(coord=a["x"], coeffs=out.polyfit_coefficients)``.
++Datetime values are evaluated as nanoseconds since 1970-01-01, and timedelta
++values as nanoseconds.
++
+ .. note::
+     These methods replicate the behaviour of :py:func:`numpy.polyfit` and :py:func:`numpy.polyval`.
+ 
+diff --git a/doc/whats-new.rst b/doc/whats-new.rst
+index 6cba8563..a9c5f9c2 100644
+--- a/doc/whats-new.rst
++++ b/doc/whats-new.rst
+@@ -93,6 +93,8 @@ Deprecations
+ Bug fixes
+ ~~~~~~~~~
+ 
++- Fix :py:func:`polyval` conversion of ``timedelta64`` inputs to numeric
++  nanoseconds, preserving missing values.
+ - Set ``skipna=None`` for all ``quantile`` methods (e.g. :py:meth:`Dataset.quantile`) and
+   ensure it skips missing values for float dtypes (consistent with other methods). This should
+   not change the behavior (:pull:`6303`).
+diff --git a/xarray/core/computation.py b/xarray/core/computation.py
+index 823cbe02..bb2f60d8 100644
+--- a/xarray/core/computation.py
++++ b/xarray/core/computation.py
+@@ -1876,7 +1876,9 @@ def polyval(
+     Parameters
+     ----------
+     coord : DataArray or Dataset
+-        Values at which to evaluate the polynomial.
++        Values at which to evaluate the polynomial. Datetime64 values are
++        converted to float64 nanoseconds since 1970-01-01. Timedelta64 values
++        are converted to float64 nanoseconds.
+     coeffs : DataArray or Dataset
+         Coefficients of the polynomial.
+     degree_dim : Hashable, default: "degree"
+@@ -1918,17 +1920,17 @@ def polyval(
+ 
+ 
+ def _ensure_numeric(data: T_Xarray) -> T_Xarray:
+-    """Converts all datetime64 variables to float64
++    """Converts datetime64 and timedelta64 variables to float64
+ 
+     Parameters
+     ----------
+     data : DataArray or Dataset
+-        Variables with possible datetime dtypes.
++        Variables with possible datetime or timedelta dtypes.
+ 
+     Returns
+     -------
+     DataArray or Dataset
+-        Variables with datetime64 dtypes converted to float64.
++        Variables with datetime64 or timedelta64 dtypes converted to float64.
+     """
+     from .dataset import Dataset
+ 
+@@ -1937,7 +1939,11 @@ def _ensure_numeric(data: T_Xarray) -> T_Xarray:
+             return x.copy(
+                 data=datetime_to_numeric(
+                     x.data,
+-                    offset=np.datetime64("1970-01-01"),
++                    offset=(
++                        np.datetime64("1970-01-01")
++                        if x.dtype.kind == "M"
++                        else np.timedelta64(0, "ns")
++                    ),
+                     datetime_unit="ns",
+                 ),
+             )

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a259",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The mock\u2019s `__getitem__` assumed subscription keys were strings, so `Generic[T]` passed a `TypeVar` into string concatenation and raised `TypeError`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

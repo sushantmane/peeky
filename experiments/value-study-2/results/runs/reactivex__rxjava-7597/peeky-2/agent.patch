@@ -1,0 +1,22 @@
+diff --git a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
+index e213352a0..ae7f9b78f 100644
+--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
++++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
+@@ -350,10 +350,14 @@ public final class ObservableSwitchMap<T, R> extends AbstractObservableWithUpstr
+         @Override
+         public void onNext(R t) {
+             if (index == parent.unique) {
+-                if (t != null) {
+-                    queue.offer(t);
++                SimpleQueue<R> q = queue;
++                // The queue is null if the inner was cancelled before onSubscribe.
++                if (q != null) {
++                    if (t != null) {
++                        q.offer(t);
++                    }
++                    parent.drain();
+                 }
+-                parent.drain();
+             }
+         }
+ 

@@ -1,0 +1,14 @@
+diff --git a/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java b/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java
+index 9c746dd414..1937d84119 100644
+--- a/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java
++++ b/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java
+@@ -654,7 +654,9 @@ public class GroupByQueryQueryToolChest extends QueryToolChest<ResultRow, GroupB
+               Iterator<PostAggregator> postItr = query.getPostAggregatorSpecs().iterator();
+               int postPos = 0;
+               while (postItr.hasNext() && results.hasNext()) {
++                postItr.next();
+                 resultRow.set(postAggregatorStart + postPos, results.next());
++                postPos++;
+               }
+             }
+             if (dimsIter.hasNext() || results.hasNext()) {

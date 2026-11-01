@@ -1,0 +1,7 @@
+{
+ "judge_id": "a256",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"[debugger command] at `GeoEncodingUtils.java:415` showed `lat2 = latBase = 2147483646` and `maxLatDelta = 2`: their sum overflowed, incorrectly rejecting the point.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 21 probe at GeoEncodingUtils.java:415 (the `return false` under `if (lat2 < latBase || lat2 >= latBase + maxLatDelta)`, code shown cmd 23) showed lat=lon=2147483645, lat2=2147483646, latShift=1, latBase=2147483646, maxLatDelta=2. lat/lon match the test(Integer.MAX_VALUE - 2, ...) call; lat2 follows from `(lat - Integer.MIN_VALUE) >>> latShift`; reaching line 415 agrees with latBase+maxLatDelta overflowing and with the program printing 'Predicate contains: false' (cmd 20); the delta-comparison fix then passes tests (cmds 33/34). Cmds 16/18 were NO_STOP errors. Nothing contradicted."
+}

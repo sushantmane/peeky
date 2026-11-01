@@ -1,0 +1,166 @@
+diff --git a/CHANGES b/CHANGES
+index e05488388..f9ce9400f 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -40,6 +40,8 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* inheritance_diagram: Fix links in SVG diagrams on nested HTML pages.
++  Preserve directory URLs when using the dirhtml builder.
+ * #11077: graphviz: Fix relative links from within the graph.
+   Patch by Ralf Grubenmann.
+ * #11529: Line Block in LaTeX builder outputs spurious empty token.
+diff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py
+index 8b21d9e3b..a7230c8b5 100644
+--- a/sphinx/ext/graphviz.py
++++ b/sphinx/ext/graphviz.py
+@@ -26,7 +26,7 @@ from sphinx.util import logging
+ from sphinx.util.docutils import SphinxDirective, SphinxTranslator
+ from sphinx.util.i18n import search_image_for_language
+ from sphinx.util.nodes import set_source_info
+-from sphinx.util.osutil import ensuredir
++from sphinx.util.osutil import canon_path, ensuredir
+ from sphinx.util.typing import OptionSpec
+ from sphinx.writers.html import HTML5Translator
+ from sphinx.writers.latex import LaTeXTranslator
+@@ -218,7 +218,7 @@ class GraphvizSimple(SphinxDirective):
+ 
+ 
+ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+-    """Change relative links in generated svg files to be relative to imgpath."""
++    """Change links relative to the output directory to be relative to the SVG."""
+     tree = ET.parse(filepath)  # NoQA: S314
+     root = tree.getroot()
+     ns = {'svg': 'http://www.w3.org/2000/svg', 'xlink': 'http://www.w3.org/1999/xlink'}
+@@ -230,15 +230,17 @@ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+         root.findall('.//svg:a[@xlink:href]', ns),
+     ):
+         scheme, hostname, url, query, fragment = urlsplit(element.attrib[href_name])
+-        if hostname:
++        if scheme or hostname or url.startswith('/'):
+             # not a relative link
+             continue
+ 
+         old_path = path.join(self.builder.outdir, url)
+-        new_path = path.relpath(
++        new_path = canon_path(path.relpath(
+             old_path,
+-            start=path.join(self.builder.outdir, self.builder.imgpath),
+-        )
++            start=path.dirname(filepath),
++        ))
++        if url.endswith('/'):
++            new_path += '/'
+         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))
+ 
+         element.set(href_name, modified_url)
+diff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py
+index 6e3985512..43358da41 100644
+--- a/sphinx/ext/inheritance_diagram.py
++++ b/sphinx/ext/inheritance_diagram.py
+@@ -33,10 +33,12 @@ from __future__ import annotations
+ import builtins
+ import hashlib
+ import inspect
++import posixpath
+ import re
+ from collections.abc import Iterable
+ from importlib import import_module
+ from typing import Any, cast
++from urllib.parse import urlsplit, urlunsplit
+ 
+ from docutils import nodes
+ from docutils.nodes import Node
+@@ -407,20 +409,30 @@ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diag
+ 
+     # Create a mapping from fully-qualified class names to URLs.
+     graphviz_output_format = self.builder.env.config.graphviz_output_format.upper()
+-    current_filename = self.builder.current_docname + self.builder.out_suffix
++    current_filename = (
++        self.builder.get_target_uri(self.builder.current_docname).split('#')[0] or './'
++    )
+     urls = {}
+     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)
+     for child in pending_xrefs:
+         if child.get('refuri') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = "../" + child.get('refuri')
+-            else:
+-                urls[child['reftitle']] = child.get('refuri')
++            uri = child['refuri']
+         elif child.get('refid') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')
+-            else:
+-                urls[child['reftitle']] = '#' + child.get('refid')
++            uri = '#' + child['refid']
++        else:
++            continue
++
++        if graphviz_output_format == 'SVG':
++            # Graphviz rebases SVG links from the output root to the image directory.
++            parsed_uri = urlsplit(uri)
++            if not (parsed_uri.scheme or parsed_uri.netloc or parsed_uri.path.startswith('/')):
++                if parsed_uri.path:
++                    target = posixpath.join(posixpath.dirname(current_filename),
++                                            parsed_uri.path)
++                else:
++                    target = current_filename
++                uri = urlunsplit(parsed_uri._replace(path=target))
++        urls[child['reftitle']] = uri
+ 
+     dotcode = graph.generate_dot(name, urls, env=self.builder.env)
+     render_dot_html(self, node, dotcode, {}, 'inheritance', 'inheritance',
+diff --git a/tests/test_ext_graphviz.py b/tests/test_ext_graphviz.py
+index 44e5d8429..74e774704 100644
+--- a/tests/test_ext_graphviz.py
++++ b/tests/test_ext_graphviz.py
+@@ -1,10 +1,12 @@
+ """Test sphinx.ext.graphviz extension."""
+ 
+ import re
++import xml.etree.ElementTree as ET
++from types import SimpleNamespace
+ 
+ import pytest
+ 
+-from sphinx.ext.graphviz import ClickableMapDefinition
++from sphinx.ext.graphviz import ClickableMapDefinition, fix_svg_relative_paths
+ 
+ 
+ @pytest.mark.sphinx('html', testroot='ext-graphviz')
+@@ -188,3 +190,33 @@ def test_graphviz_parse_mapfile():
+     assert cmap.id == 'inheritance66ff5471b9'
+     assert len(cmap.clickable) == 0
+     assert cmap.generate_clickable_map() == ''
++
++
++@pytest.mark.sphinx('html', testroot='ext-graphviz')
++@pytest.mark.parametrize('imgpath', ['_images', '../_images', '../../_images'])
++def test_fix_svg_relative_paths(app, imgpath):
++    app.builder.imgpath = imgpath
++    filename = app.outdir / 'assets' / 'images' / 'graph.svg'
++    filename.parent.mkdir(parents=True, exist_ok=True)
++    ns = 'http://www.w3.org/2000/svg'
++    href = '{http://www.w3.org/1999/xlink}href'
++    urls = {
++        'nested/page.html?view=full#target': '../../nested/page.html?view=full#target',
++        'nested/#target': '../../nested/#target',
++        './#target': '../../#target',
++        'https://example.org/page.html#target': 'https://example.org/page.html#target',
++        '//example.org/page.html#target': '//example.org/page.html#target',
++        '/page.html#target': '/page.html#target',
++        'mailto:example@example.org': 'mailto:example@example.org',
++    }
++    root = ET.Element('{%s}svg' % ns)
++    for url in urls:
++        ET.SubElement(root, '{%s}a' % ns, {href: url})
++    ET.SubElement(root, '{%s}image' % ns, {href: '_static/images/test.svg'})
++    ET.ElementTree(root).write(filename)
++
++    fix_svg_relative_paths(SimpleNamespace(builder=app.builder), str(filename))
++
++    root = ET.parse(filename).getroot()  # NoQA: S314
++    assert [element.get(href) for element in root.findall('{%s}a' % ns)] == list(urls.values())
++    assert root.find('{%s}image' % ns).get(href) == '../../_static/images/test.svg'

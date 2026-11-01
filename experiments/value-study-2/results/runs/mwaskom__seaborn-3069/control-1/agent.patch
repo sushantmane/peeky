@@ -1,0 +1,68 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..dc5d8e32 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1631,8 +1630,30 @@ class Plotter:
+             ax = sub["ax"]
+             for axis in "xy":
+                 axis_key = sub[axis]
++                axis_obj = getattr(ax, f"{axis}axis")
+ 
+-                # Axis limits
++                if isinstance(self._scales.get(axis_key), Nominal):
++                    axis_obj.grid(False)
++                    n = len(axis_obj.get_majorticklocs())
++                    if n:
++                        lo, hi = -.5, n - .5
++                        # Seed the categorical extent without disabling autoscaling.
++                        ax.update_datalim(
++                            ((lo, lo), (hi, hi)),
++                            updatex=axis == "x", updatey=axis == "y",
++                        )
++                        spine = ax.spines[{"x": "bottom", "y": "left"}[axis]]
++                        getattr(spine.sticky_edges, axis)[:] = lo, hi
++                        getattr(ax, f"set_{axis}margin")(0)
++                        ax.autoscale_view(scalex=axis == "x", scaley=axis == "y")
++                    if axis == "y":
++                        axis_obj.set_inverted(True)
++
++        # Apply explicit limits after defaults on all shared axes.
++        for sub in self._subplots:
++            ax = sub["ax"]
++            for axis in "xy":
++                axis_key = sub[axis]
+                 if axis_key in p._limits:
+                     convert_units = getattr(ax, f"{axis}axis").convert_units
+                     a, b = p._limits[axis_key]
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..33091d30 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -138,6 +138,10 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    When used for a coordinate, the axis extends half a category beyond the
++    first and last ticks and has no grid. Nominal y axes increase from top to
++    bottom, unless overridden by explicit plot limits.
+     """
+     # Categorical (convert to strings), un-sortable
+ 

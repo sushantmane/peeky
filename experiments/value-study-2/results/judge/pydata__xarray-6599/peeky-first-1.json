@@ -1,0 +1,7 @@
+{
+ "judge_id": "a048",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"the debugger at `duck_array_ops.py:434` showed timedelta data incorrectly paired with `datetime64('1970-01-01')`\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 13 probe at duck_array_ops.py:434: array timedelta64[ns] [-10e9, 0, 10e9, 50e9, NaT] matches the new test's input (-10, 0, 10, 50, NaN seconds) and offset numpy.datetime64('1970-01-01') matches the same run's error 'cannot use operands with types dtype('<m8[ns]') and dtype('<M8[D]')' and the offset=np.datetime64(\"1970-01-01\") code in the cmd 14 diff; cmd 16 offset numpy.timedelta64(0,'ns') matches the patched code and the passing test. Nothing contradicted."
+}

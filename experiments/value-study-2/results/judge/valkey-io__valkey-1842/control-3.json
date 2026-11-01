@@ -1,0 +1,7 @@
+{
+ "judge_id": "a054",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`ACL LOAD` crashed by dereferencing the primary connection's intentionally NULL ACL user.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

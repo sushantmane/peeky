@@ -1,0 +1,7 @@
+{
+ "judge_id": "a023",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed `ShapeField` simplification to combine boundary flags from both non-collapsed edges, rather than retaining an internal edge\u2019s flag.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 28 probe ShapeField.java:388: a=(0,238609294), b=c=(11930464,238609294), ab=false, bc=true, ca=true; Cmd 14 jshell decodes the same collapsed LINE '0, 238609294 11930464, 238609294 0, 238609294 [false,true,true]' (c=a after lines 388-389), and the b==c branch of line 387 (Cmd 16 code) fits. 'set triangle.ab: false -> true' is matched by the attached run printing CONTAINS=0 (Cmd 27) vs CONTAINS=1 unmodified (Cmd 23/25). Cmd 26 coordinates are the polygon's encoded values (lon 10 -> 119304647, lat 10 -> 238609294 as in Cmd 14). Nothing contradicted; Cmds 22/24 were NO_STOP errors."
+}

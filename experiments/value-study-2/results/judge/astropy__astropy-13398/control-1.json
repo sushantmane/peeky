@@ -1,0 +1,7 @@
+{
+ "judge_id": "a225",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The current path goes through CIRS, where aberration corrections turn a point 10 km overhead into an altitude of about 86.3\u00b0.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

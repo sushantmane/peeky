@@ -1,0 +1,7 @@
+{
+ "judge_id": "a141",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed mutual Clap overrides that let `--plain` discard `--paging=never`.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 21/23 probe app.rs:131 with --paging=never --plain: paging_mode=QuitIfOneScreen, interactive_output=true; cmd 23 output 'pager-output' (pager ran) and cmd 21 less prompt confirm paging was on. Cmd 19 extra_plain=false with one --plain matches code (count>1). None contradicted."
+}

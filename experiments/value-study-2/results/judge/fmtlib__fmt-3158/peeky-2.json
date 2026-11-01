@@ -1,0 +1,7 @@
+{
+ "judge_id": "a101",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: nested ranges skip default parsing, leaving characters unquoted",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a076",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was missing categorical handling during figure finalization.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 11 probe at plot.py:1636: hit 1 ax.xaxis.units._mapping {'b':0,'c':1,'a':2} consistent with test_inferred_categorical_converter (x=['b','c','a'], asserts convert_units('c')==1) passing in the same run ('2 passed'); axis 'x'/'y' per hit matches the `for axis in \"xy\"` loop; gridOn True consistent with cmd 8/10 printing grid [True, True, True] before the fix; p._limits {} (no .limit() in those tests). Nothing contradicted."
+}

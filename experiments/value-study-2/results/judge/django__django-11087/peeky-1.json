@@ -1,0 +1,7 @@
+{
+ "judge_id": "a085",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The collector fetches every column of related objects before following cascades.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,228 @@
+{
+ "bug": "valkey-io__valkey-1842",
+ "arm": "control",
+ "rep": 1,
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-1842:control",
+ "image_digest": "sha256:39f3f6efc17ed66053f0ede7d4d115df71d332ed569174ec143452df9fb9ad46",
+ "peeky_sha": null,
+ "container": "study-valkey-io__valkey-1842-control-1-f1951a",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:39:46+00:00",
+ "ended": "2026-11-01T13:41:59+00:00",
+ "wall_seconds": 133.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "Test ACL LOAD works on replica": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 62.4,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "a347120506497b07f3c1d5f821d4f15d6445964a2ef0591fb93498bdf099e803",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 34,
+ "patch_files": [
+  "src/acl.c"
+ ],
+ "patch_bytes": 615,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 110
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 13,
+ "ai_credits": 14.2058,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 260222,
+  "output": 4533,
+  "cache_read": 230753,
+  "cache_write": 29430,
+  "reasoning": 1610
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 19,
+ "tool_calls_by_name": {
+  "bash": 19
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -d /testbed 2>/dev/null; ls -a | head",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg -n 'ACLLoad|ACL LOAD|load.*[Aa][Cc][Ll]|free.*[Uu]ser|FreeUser' src/acl.c",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'acl load|ACL LOAD|replicaof|start_server' tests/unit/acl* tests/unit/*repl* tests/integration/replication* | head -130; ls AGENTS.md src/AGENTS.md tests/AGENTS.md 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'ACLLoad|ACL LOAD|load.*[Aa][Cc][Ll]|free.*[Uu]ser|FreeUser' src/acl.c && find . -name AGENTS.md -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls tests/unit/*acl* && grep -nEi 'acl load|replicaof|start_server' tests/unit/acl* tests/integration/replication*.tcl | head -130",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '430,525p' src/acl.c && sed -n '2200,2415p' src/acl.c && sed -n '2910,2945p' src/acl.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '940,1175p' tests/unit/acl.tcl && grep -nE 'user =|cached_master|createClient' src/replication.c | head -90 && grep -nE 'c->user|CLIENT_MASTER' src/networking.c | head -80 && sed -n '1,70p' tests/integration/replication.tcl",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat tests/assets/user.acl && cat tests/assets/nodefaultuser.acl && grep -nE 'proc (wait_for_sync|wait_for_ofs_sync|status)|wait_for_sync|wait_for_ofs_sync' tests/support/util.tcl tests/unit/*.tcl | head -65 && sed -n '1970,2015p' src/replication.c && grep -nE 'c->user == NULL|!c->user|c->user != NULL' src/acl.c && ls -l src/valkey-server && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,115p' tests/unit/auth.tcl && sed -n '1,100p' tests/unit/acl.tcl && grep -nE -- '--only|--single' tests/test_helper.tcl | head -25 && grep -n 'wait_for_ofs_sync' tests/integration/replication.tcl | head -12 && ls -l src/valkey-cli && git --no-pager log -1 --oneline",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '78,145p' tests/support/util.tcl && grep -nE 'proc.*client|client list type (master|primary)|client list.*id=|regexp.*id=' tests/support/util.tcl tests/unit/*.tcl | head -65 && grep -nE 'clientType|primary\"|master\"' src/networking.c | tail -35 && command -v patch",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1110,1165p' tests/unit/acl.tcl && sed -n '1,75p' tests/unit/bitfield.tcl && sed -n '220,260p' tests/unit/bitfield.tcl && grep -nE 'documentation|ACL' CONTRIBUTING.md | head",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/unit/acl.tcl b/tests/unit/acl.tcl\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1116,6 +1116,47 @@\n     } {*NOPERM*channel*}\n }\n \n+set server_path [tmpdir \"replica.acl\"]\n+exec cp -f tests/assets/nodefaultuser.acl $server_path\n+set aclfile [file normalize \"$server_path/nodefaultuser.acl\"]\n+start_server [list overrides [list \"aclfile\" $aclfile] tags [list \"acl\" \"repl\" \"external:skip\"]] {\n+    start_server [list overrides [list \"aclfile\" $aclfile]] {\n+        test {ACL LOAD on a replica preserves the replication connection} {\n+            set primary [srv -1 client]\n+            set replica [srv 0 client]\n+            $replica replicaof [srv -1 host] [srv -1 port]\n+            wait_for_sync $replica\n+\n+            set alice [valkey [srv 0 host] [srv 0 port] 0 $::tls]\n+            $alice AUTH alice \"\"\n+            $replica ACL SETUSER alice -get\n+            assert_error {*NOPERM*get*} {$alice GET acl-load-key}\n+\n+            regexp {id=([0-9]+)} [$replica CLIENT LIST TYPE primary] _ primary_client_id\n+            assert_equal OK [$replica ACL LOAD]\n+            assert_equal {alice bob default} [$replica ACL USERS]\n+            assert_equal alice [$alice ACL WHOAMI]\n+            assert_equal up [status $replica master_link_status]\n+            assert_match \"id=$primary_client_id *\" [$replica CLIENT LIST TYPE primary]\n+\n+            $primary SET acl-load-key after-load\n+            wait_for_ofs_sync $primary $replica\n+            assert_equal after-load [$alice GET acl-load-key]\n+            $alice close\n+        }\n+    }\n+}\n+\n set server_path [tmpdir \"resetchannels.acl\"]\n exec cp -f tests/assets/nodefaultuser.acl $server_path\n exec cp -f tests/assets/default.conf $server_path\nPATCH\n./runtest --single unit/acl --only \"ACL LOAD on a replica preserves the replication connection\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find tests/tmp -name '*.log' -o -name '*stdout*' | head -25; grep -nE -A18 -B4 'BUG REPORT|signal|ACLLoadFromFile|acl.c:|crashed' tests/tmp/server.*/stdout | tail -115; git --no-pager diff --stat && git apply --recount <<'PATCH'\ndiff --git a/src/acl.c b/src/acl.c\n--- a/src/acl.c\n+++ b/src/acl.c\n@@ -2379,6 +2379,8 @@\n         listRewind(server.clients, &li);\n         while ((ln = listNext(&li)) != NULL) {\n             client *c = listNodeValue(ln);\n+            /* Clients without an ACL user, such as the primary, are not affected by ACL changes. */\n+            if (c->user == NULL) continue;\n             user *original = c->user;\n             list *channels = NULL;\n             user *new_user = ACLGetUserByName(c->user->name, sdslen(c->user->name));\nPATCH\nmake -j4 > /tmp/valkey-acl-load-build.log 2>&1 && tail -8 /tmp/valkey-acl-load-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./runtest --single unit/acl --single unit/acl-v2 > /tmp/valkey-acl-load-tests.log 2>&1; result=$?; tail -30 /tmp/valkey-acl-load-tests.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff -- src/acl.c tests/unit/acl.tcl",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'proc (valkey_client|valkey_deferring_client)|proc.*client|select 9|SELECT 9' tests/support/server.tcl tests/support/cli.tcl tests/support/redis.tcl tests/test_helper.tcl 2>/dev/null | head -65 && grep -nE 'valkey_client' tests/unit/acl.tcl tests/unit/acl-v2.tcl | head -35 && grep -n 'proc valkey_deferring_client' tests/support/*.tcl",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A8 -B4 'ACL LOAD on a replica' /tmp/valkey-acl-load-tests.log && grep -nE 'dbnum|select|select.*9' tests/support/server.tcl | tail -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '222,241p' tests/test_helper.tcl && git apply --recount <<'PATCH'\ndiff --git a/tests/unit/acl.tcl b/tests/unit/acl.tcl\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1127,7 +1127,7 @@\n             $replica replicaof [srv -1 host] [srv -1 port]\n             wait_for_sync $replica\n \n-            set alice [valkey [srv 0 host] [srv 0 port] 0 $::tls]\n+            set alice [valkey_client]\n             $alice AUTH alice \"\"\n             $replica ACL SETUSER alice -get\n             assert_error {*NOPERM*get*} {$alice GET acl-load-key}\nPATCH\n./runtest --single unit/acl --single unit/acl-v2 > /tmp/valkey-acl-load-tests.log 2>&1; result=$?; tail -19 /tmp/valkey-acl-load-tests.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager status --short && grep -F '[ok]: ACL LOAD on a replica preserves the replication connection' /tmp/valkey-acl-load-tests.log && git --no-pager diff --stat && rm /tmp/valkey-acl-load-build.log /tmp/valkey-acl-load-tests.log",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/unit/acl.tcl b/tests/unit/acl.tcl\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1116,6 +1116,47 @@\n     } {*NOPERM*channel*}\n }\n \n+set server_path [tmpdir \"replica.acl\"]\n+exec cp -f tests/assets/nodefaultuser.acl $server_path\n+set aclfile [file normalize \"$server_path/nodefaultuser.acl\"]\n+start_server [list overrides [list \"aclfile\" $aclfile] tags [list \"acl\" \"repl\" \"external:skip\"]] {\n+    start_server [list overrides [list \"aclfile\" $aclfile]] {\n+        test {ACL LOAD on a replica preserves the replication connection} {\n+            set primary [srv -1 client]\n+            set replica [srv 0 client]\n+            $replica replicaof [srv -1 host] [srv -1 port]\n+            wait_for_sync $replica\n+\n+            set alice [valkey [srv 0 host] [srv 0 port] 0 $::tls]\n+            $alice AUTH alice \"\"\n+            $replica ACL SETUSER alice -get\n+            assert_error {*NOPERM*get*} {$alice GET acl-load-key}\n+\n+            regexp {id=([0-9]+)} [$replica CLIENT LIST TYPE primary] _ primary_client_id\n+            assert_equal OK [$replica ACL LOAD]\n+            assert_equal {alice bob default} [$replica ACL USERS]\n+            assert_equal alice [$alice ACL WHOAMI]\n+            assert_equal up [status $replica master_link_status]\n+            assert_match \"id=$primary_client_id *\" [$replica CLIENT LIST TYPE primary]\n+\n+            $primary SET acl-load-key after-load\n+            wait_for_ofs_sync $primary $replica\n+            assert_equal after-load [$alice GET acl-load-key]\n+            $alice close\n+        }\n+    }\n+}\n+\n set server_path [tmpdir \"resetchannels.acl\"]\n exec cp -f tests/assets/nodefaultuser.acl $server_path\n exec cp -f tests/assets/default.conf $server_path\nPATCH\n./runtest --single unit/acl --only \"ACL LOAD on a replica preserves the replication connection\"",
+  "cd /testbed && find tests/tmp -name '*.log' -o -name '*stdout*' | head -25; grep -nE -A18 -B4 'BUG REPORT|signal|ACLLoadFromFile|acl.c:|crashed' tests/tmp/server.*/stdout | tail -115; git --no-pager diff --stat && git apply --recount <<'PATCH'\ndiff --git a/src/acl.c b/src/acl.c\n--- a/src/acl.c\n+++ b/src/acl.c\n@@ -2379,6 +2379,8 @@\n         listRewind(server.clients, &li);\n         while ((ln = listNext(&li)) != NULL) {\n             client *c = listNodeValue(ln);\n+            /* Clients without an ACL user, such as the primary, are not affected by ACL changes. */\n+            if (c->user == NULL) continue;\n             user *original = c->user;\n             list *channels = NULL;\n             user *new_user = ACLGetUserByName(c->user->name, sdslen(c->user->name));\nPATCH\nmake -j4 > /tmp/valkey-acl-load-build.log 2>&1 && tail -8 /tmp/valkey-acl-load-build.log",
+  "cd /testbed && ./runtest --single unit/acl --single unit/acl-v2 > /tmp/valkey-acl-load-tests.log 2>&1; result=$?; tail -30 /tmp/valkey-acl-load-tests.log; exit \"$result\"",
+  "cd /testbed && sed -n '222,241p' tests/test_helper.tcl && git apply --recount <<'PATCH'\ndiff --git a/tests/unit/acl.tcl b/tests/unit/acl.tcl\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1127,7 +1127,7 @@\n             $replica replicaof [srv -1 host] [srv -1 port]\n             wait_for_sync $replica\n \n-            set alice [valkey [srv 0 host] [srv 0 port] 0 $::tls]\n+            set alice [valkey_client]\n             $alice AUTH alice \"\"\n             $replica ACL SETUSER alice -get\n             assert_error {*NOPERM*get*} {$alice GET acl-load-key}\nPATCH\n./runtest --single unit/acl --single unit/acl-v2 > /tmp/valkey-acl-load-tests.log 2>&1; result=$?; tail -19 /tmp/valkey-acl-load-tests.log; exit \"$result\""
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "`ACL LOAD` crashed because it dereferenced the replica\u2019s primary connection\u2019s NULL ACL-user pointer. The fix skips userless clients, preserving replication while reloading normal users. Added a regression test covering ACL restoration and continued replication.",
+ "assistant_messages": [
+  "I\u2019ll trace how `ACL LOAD` handles replica connections, fix the crash, and add a regression test.\n",
+  "The replica\u2019s primary connection has no ACL user, but `ACL LOAD` dereferences every client\u2019s user pointer. I\u2019ll skip userless clients and add coverage for ACL restoration and continued replication.\n",
+  "`ACL LOAD` crashed because it dereferenced the replica\u2019s primary connection\u2019s NULL ACL-user pointer. The fix skips userless clients, preserving replication while reloading normal users. Added a regression test covering ACL restoration and continued replication."
+ ],
+ "assistant_reasoning": [],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 196.0
+}

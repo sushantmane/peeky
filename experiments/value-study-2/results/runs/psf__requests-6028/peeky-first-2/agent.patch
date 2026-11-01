@@ -1,0 +1,83 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..1abcd0b8 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,7 +4,7 @@ Release History
+ dev
+ ---
+ 
+-- \[Short description of non-trivial change.\]
++- Fixed proxy authentication by preserving URL credentials during scheme normalization.
+ 
+ 2.27.0 (2022-01-03)
+ -------------------
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..fc53ec45 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -974,6 +974,9 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth:
++        netloc = '{}@{}'.format(auth, netloc)
++
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_lowlevel.py b/tests/test_lowlevel.py
+index 7256eda9..a9a27081 100644
+--- a/tests/test_lowlevel.py
++++ b/tests/test_lowlevel.py
+@@ -268,6 +268,31 @@ def test_digestauth_only_on_4xx():
+         close_server.set()
+ 
+ 
++@pytest.mark.parametrize('userinfo, expected_auth', (
++    ('user:pass', b'Basic dXNlcjpwYXNz'),
++    ('user:', b'Basic dXNlcjo='),
++    ('user:p%40ss', b'Basic dXNlcjpwQHNz'),
++))
++def test_authenticated_http_proxy(userinfo, expected_auth):
++    expected_header = b'Proxy-Authorization: ' + expected_auth + b'\r\n'
++
++    def proxy_handler(sock):
++        request_content = consume_socket_content(sock, timeout=0.1)
++        status = (b'200 OK' if expected_header in request_content
++                  else b'407 Proxy Authentication Required')
++        sock.sendall(b'HTTP/1.1 ' + status + b'\r\nContent-Length: 0\r\n\r\n')
++        return request_content
++
++    server = Server(proxy_handler)
++    with server as (host, port), requests.Session() as session:
++        session.trust_env = False
++        proxy = 'http://{}@{}:{}'.format(userinfo, host, port)
++        response = session.get('http://example.org/', proxies={'http': proxy}, timeout=3)
++
++    assert response.status_code == 200
++    assert expected_header in server.handler_results[0]
++
++
+ _schemes_by_var_prefix = [
+     ('http', ['http']),
+     ('https', ['https']),
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 29b3aca8..7649673e 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1896,6 +1896,15 @@ class TestRequests:
+         headers = adapter.proxy_headers("http://user:@httpbin.org")
+         assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}
+ 
++    @pytest.mark.parametrize('scheme', ('http', 'https'))
++    def test_proxy_auth_preserved_on_get_connection(self, scheme):
++        adapter = HTTPAdapter()
++        proxy = 'http://user:pass@localhost:8080'
++        conn = adapter.get_connection(
++            '{}://example.org/'.format(scheme), {scheme: proxy}
++        )
++        assert conn.proxy_headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}
++
+     def test_response_json_when_content_is_None(self, httpbin):
+         r = requests.get(httpbin('/status/204'))
+         # Make sure r.content is None

@@ -1,0 +1,337 @@
+{
+ "bug": "micropython__micropython-13569",
+ "arm": "peeky",
+ "rep": 3,
+ "language": "c",
+ "category": "C",
+ "image": "peeky-study/micropython__micropython-13569:peeky-r2",
+ "image_digest": "sha256:dbf02c2dbb49bd8ff4881fd41e5b1ac356d71e876bff2562e57652e3fea553f3",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-micropython__micropython-13569-peeky-3-5db473",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T11:06:03+00:00",
+ "ended": "2026-11-01T11:11:03+00:00",
+ "wall_seconds": 299.4,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "basics/try_finally_return.py": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.9,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "9f8965fc9bc1f3512ec8bfc44b2ffc02290d12cdd7527347d312c360c5c275dc",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "docs/develop/compiler.rst",
+  "py/compile.c",
+  "tests/basics/try_finally_return6.py"
+ ],
+ "patch_bytes": 2825,
+ "patch_notes": [
+  "untracked, not in the patch: tests/ports/unix/ffi_lib.so"
+ ],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 29
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 21,
+ "ai_credits": 32.0806,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 804295,
+  "output": 10213,
+  "cache_read": 746679,
+  "cache_write": 57553,
+  "reasoning": 3573
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 34,
+ "tool_calls_by_name": {
+  "bash": 34
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -la && if [ -d /testbed ]; then cd /testbed && git --no-pager status --short; fi; if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg -n 'finally|UNWIND_JUMP|RETURN_VALUE' py/compile.c py/emitbc.c py/vm.c && ls tests/basics/*finally* && ls ports/unix/build-standard/micropython",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,210p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'finally|UNWIND_JUMP|RETURN_VALUE' py/compile.c py/emitbc.c py/vm.c && ls tests/basics/*finally* && ls ports/unix/build-standard/micropython && sed -n '1,100p' /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,230p' py/emitbc.c && sed -n '1600,1950p' py/compile.c && for file in tests/basics/try_finally*.py; do echo \"--- $file\"; cat \"$file\"; done",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '100,155p' py/vm.c && sed -n '620,758p' py/vm.c && sed -n '1080,1145p' py/vm.c && sed -n '1580,1700p' py/compile.c && sed -n '1820,1950p' py/compile.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '35,125p' py/emitbc.c && sed -n '625,680p' py/emitbc.c && sed -n '775,820p' py/emitbc.c && for file in tests/basics/try_finally_return{,2,3,4,5}.py; do echo \"--- $file\"; cat \"$file\"; done && ./ports/unix/build-standard/micropython -c $'class IDGenerator:\\n def __init__(self, max_id: int):\\n  self._i = 0\\n  self._mi = max_id\\n def get(self):\\n  try:\\n   return self._i\\n  finally:\\n   self._i += 1\\n   if self._i > self._mi:\\n    self._i = 0\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1650,1695p' py/compile.c && grep -nE 'adjust_stack_size|label_assign|suppress' py/emitbc.c && sed -n '270,405p' py/emitbc.c && sed -n '655,750p' py/vm.c && sed -n '1090,1135p' py/vm.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1840,1948p' py/compile.c && sed -n '120,150p' py/vm.c && grep -nE 'ci_unix_build_helper|MICROPY_DEBUG_PRINTERS' tools/ci.sh ports/unix/variants/standard/mpconfigvariant.h py/mpconfig.h && ls tests/cmdline/*verbose* tests/cmdline/*show* 2>/dev/null",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '405,452p' py/emitbc.c && sed -n '138,180p' py/emitbc.c && sed -n '215,240p' py/emitbc.c && sed -n '260,310p' py/compile.c && sed -n '410,448p' tools/ci.sh && grep -nE 'start_except_handler|end_except_handler|end_finally|setup_block|adjust_stack_size' py/emitnative.c | head -45 && cat tests/cmdline/cmd_showbc.py | head -70",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./ports/unix/build-standard/micropython -h && sed -n '1,175p' /opt/peeky/docs/lang/c-cpp.md && sed -n '1,100p' tests/basics/try_finally_break2.py && sed -n '1,130p' tests/basics/try_finally_continue.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '748,785p' py/emitnative.c && sed -n '2100,2218p' py/emitnative.c && sed -n '2900,2928p' py/emitnative.c && grep -nE 'EMIT_NATIVE|EMIT_ARG\\(adjust_stack_size' py/compile.c | head -65 && sed -n '75,153p' py/compile.c && sed -n '1500,1588p' py/compile.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./ports/unix/build-standard/micropython -v -v -c $'def f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\n' && grep -nE 'VM_STACK_OVERFLOW|stack overflow|fastn' py/vm.c | head -25 && ls tests/micropython/*native* tests/micropython/*async* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '785,875p' py/emitnative.c && cat tests/micropython/native_try.py && sed -n '1,130p' tests/micropython/native_try_deep.py && grep -nE 'STACK_OVERFLOW|CHECK.*STACK|stack_size' py/vm.c py/bc.c | head -40 && ls docs/develop",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v apply_patch && peeky probe . --binary ports/unix/build-peeky/micropython --at py/emitbc.c:411 --capture delta,emit.stack_size,emit.scope.stack_size --hits 30 -- -c $'def f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\n'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n 'STATIC void emit_native_label_assign' py/emitnative.c && sed -n '990,1078p' py/emitnative.c && sed -n '1,165p' docs/develop/compiler.rst && command -v peeky; command -v patch; ls /usr/local/bin/apply_patch /usr/bin/apply_patch /opt/peeky/bin/apply_patch 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/emitbc.c:411 --capture delta,emit.stack_size,emit.scope.stack_size --hits 30 -- -c $'def f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\n'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1120,1192p' py/emitnative.c && sed -n '1730,1790p' py/compile.c && grep -nE 'stack|Emit|emit' docs/develop/compiler.rst | tail -35 && sed -n '190,262p' docs/develop/compiler.rst && ls tests/basics/*async_with* && sed -n '1,115p' tests/basics/async_with2.py && sed -n '1,100p' tools/codeformat.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./ports/unix/build-standard/micropython -X emit=native -c $'class C:\\n a = 0\\ndef f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\nx = C()\\nprint(f(x), x.a)' && ./ports/unix/build-standard/micropython -c $'class C:\\n a = 0\\ndef f(x):\\n try:\\n  return 0\\n except ValueError:\\n  pass\\n finally:\\n  x.a += 1\\nx = C()\\nprint(f(x), x.a)'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/py/compile.c\n+++ b/py/compile.c\n@@ -1684,9 +1684,12 @@\n     }\n     EMIT_ARG(load_const_tok, MP_TOKEN_KW_NONE);\n     EMIT_ARG(label_assign, l_finally_block);\n+    // Reserve space for the return value or jump destination below the sentinel.\n+    EMIT_ARG(adjust_stack_size, 1);\n     compile_node(comp, pn_finally);\n \n     compile_decrease_except_level(comp);\n+    EMIT_ARG(adjust_stack_size, -1);\n }\n \n STATIC void compile_try_stmt(compiler_t *comp, mp_parse_node_struct_t *pns) {\n--- /dev/null\n+++ b/tests/basics/try_finally_return6.py\n@@ -0,0 +1,51 @@\n+# A pending return needs an extra stack slot throughout the finally block.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_except(self):\n+        try:\n+            return self._i\n+        except ValueError:\n+            pass\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._i += 1\n+                if self._i > self._mi:\n+                    self._i = 0\n+\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get_except(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(8):\n+    print(id_gen.get_nested(), id_gen._i)\n--- a/docs/develop/compiler.rst\n+++ b/docs/develop/compiler.rst\n@@ -291,6 +291,12 @@\n is a wrapper around the main function ``emit_get_cur_to_write_bytecode()`` that all\n functions must call to emit bytecode.\n \n+Stack sizing also accounts for values kept on the stack while control flow is\n+unwound. In a ``finally`` block, a pending return or jump keeps its return value\n+or jump destination below the unwind sentinel. The compiler reserves an extra\n+slot for this value throughout the block, including any nested exception\n+handlers, in addition to the slot used by the sentinel or exception.\n+\n .. _emitting_native_code:\n \n Emitting native code\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --stat && sed -n '1670,1698p' py/compile.c && wc -l tests/basics/try_finally_return6.py && cat tests/basics/try_finally_return6.py && cat tests/try_finally_return6.py.out && git --no-pager status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls ports/unix/variants && grep -nE 'MICROPY_EMIT|uname|ARCH' ports/unix/Makefile ports/unix/mpconfigport.h ports/unix/variants/standard/mpconfigvariant.h | head -40 && sed -n '280,300p' docs/develop/compiler.rst",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- /dev/null\n+++ b/tests/basics/try_finally_return6.py\n@@ -0,0 +1,50 @@\n+# A pending return needs an extra stack slot throughout the finally block.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_except(self):\n+        try:\n+            return self._i\n+        except ValueError:\n+            pass\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._i += 1\n+                if self._i > self._mi:\n+                    self._i = 0\n+\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get_except(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(8):\n+    print(id_gen.get_nested(), id_gen._i)\n--- a/docs/develop/compiler.rst\n+++ b/docs/develop/compiler.rst\n@@ -291,6 +291,12 @@\n is a wrapper around the main function ``emit_get_cur_to_write_bytecode()`` that all\n functions must call to emit bytecode.\n \n+Stack sizing also accounts for values kept on the stack while control flow is\n+unwound. In a ``finally`` block, a pending return or jump keeps its return value\n+or jump destination below the unwind sentinel. The compiler reserves an extra\n+slot for this value throughout the block, including any nested exception\n+handlers, in addition to the slot used by the sentinel or exception.\n+\n .. _emitting_native_code:\n \n Emitting native code\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py; cat /testbed/tests/try_finally_return6.py.out",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY' | patch -p1\nimport difflib\nfrom pathlib import Path\npath = 'tests/basics/try_finally_return6.py'\nnew = '''# A pending return needs an extra stack slot throughout the finally block.\n\n\nclass IDGenerator:\n    def __init__(self, max_id: int):\n        self._i = 0\n        self._mi = max_id\n\n    def get(self):\n        try:\n            return self._i\n        finally:\n            self._i += 1\n            if self._i > self._mi:\n                self._i = 0\n\n    def get_except(self):\n        try:\n            return self._i\n        except ValueError:\n            pass\n        finally:\n            self._i += 1\n            if self._i > self._mi:\n                self._i = 0\n\n    def get_nested(self):\n        try:\n            return self._i\n        finally:\n            try:\n                self._i += 1\n            finally:\n                self._i += 1\n                if self._i > self._mi:\n                    self._i = 0\n\n\nid_gen = IDGenerator(10)\nfor _ in range(14):\n    print(id_gen.get(), id_gen._i)\n\nid_gen = IDGenerator(10)\nfor _ in range(14):\n    print(id_gen.get_except(), id_gen._i)\n\nid_gen = IDGenerator(10)\nfor _ in range(8):\n    print(id_gen.get_nested(), id_gen._i)\n'''\nassert not Path(path).exists()\nprint(''.join(difflib.unified_diff([], new.splitlines(True), fromfile='/dev/null', tofile='b/' + path)), end='')\npath = 'docs/develop/compiler.rst'\nold = Path(path).read_text()\nneedle = '.. _emitting_native_code:\\n'\nnew = '''Stack sizing also accounts for values kept on the stack while control flow is\nunwound. In a ``finally`` block, a pending return or jump keeps its return value\nor jump destination below the unwind sentinel. The compiler reserves an extra\nslot for this value throughout the block, including any nested exception\nhandlers, in addition to the slot used by the sentinel or exception.\n\n'''\nassert old.count(needle) == 1\nprint(''.join(difflib.unified_diff(old.splitlines(True), old.replace(needle, new + needle).splitlines(True), fromfile='a/' + path, tofile='b/' + path)), end='')\nPY\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py; find /testbed/tests -maxdepth 2 -name '*return6*' -print",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && source tools/ci.sh && ci_unix_build_helper VARIANT=standard > /tmp/micropython-finally-build.log 2>&1 && tail -8 /tmp/micropython-finally-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat tests/results/basics_try_finally_return6.py.out && git --no-pager diff --check && git --no-pager diff -- py/compile.c docs/develop/compiler.rst && git --no-pager status --short && sed -n '125,250p' tools/codeformat.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try*.py basics/async_with*.py basics/with*.py micropython/native_try*.py micropython/native_with.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./ports/unix/build-standard/micropython -c $'class IDGenerator:\\n def __init__(self, max_id: int):\\n  self._i = 0\\n  self._mi = max_id\\n def get(self):\\n  try:\\n   return self._i\\n  finally:\\n   self._i += 1\\n   if self._i > self._mi:\\n    self._i = 0\\nid_gen = IDGenerator(10)\\nprint(id_gen.get())' && ./ports/unix/build-standard/micropython -v -v -c $'def f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\n' | grep -E 'N_STATE|SETUP_FINALLY|END_FINALLY' && git --no-pager diff --check && cat pyproject.toml | head -65",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -l 'finally:' tests/basics/generator*.py tests/basics/async*.py tests/micropython/viper*.py && ./mpy-cross/build/mpy-cross -h | head -30 && git --no-pager diff --check && git --no-pager status --short && ls /tmp/micropython-finally-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/generator*.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/tests && diff -u results/basics_generator_throw.py.exp results/basics_generator_throw.py.out && true; sed -n '1,240p' basics/generator_throw.py; MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-peeky/micropython ./run-tests.py basics/generator_throw.py",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./mpy-cross/build/mpy-cross -march=x64 -X emit=native -o /tmp/micropython-finally-native.mpy tests/basics/try_finally_return6.py && ./mpy-cross/build/mpy-cross -march=x64 -o /tmp/micropython-finally-viper.mpy tests/micropython/viper_try.py && ./mpy-cross/build/mpy-cross -march=x64 -o /tmp/micropython-finally-native-deep.mpy tests/micropython/native_try_deep.py && cat tests/micropython/viper_try.py && ls tests/basics/*gen*finally* tests/basics/*yield* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY' | patch -p1\nimport difflib\nfrom pathlib import Path\npath = 'tests/basics/try_finally_return6.py'\nold = Path(path).read_text()\nnew = old.replace('''        except ValueError:\n            pass\n        finally:\n            self._i += 1\n''', '''        except ValueError:\n            pass\n        finally:\n            self._i += max(0, 0, 0, 1)\n''').replace('''            finally:\n                self._i += 1\n''', '''            finally:\n                self._i += max(0, 0, 0, 1)\n''')\nassert new != old\nprint(''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile='a/' + path, tofile='b/' + path)), end='')\nPY\n./ports/unix/build-peeky/micropython -c $'exec(open(\"tests/basics/try_finally_return6.py\").read().split(\"id_gen =\")[0])\\nfor name in (\"get\", \"get_except\", \"get_nested\"):\\n try:\\n  print(name, getattr(IDGenerator(10), name)())\\n except AttributeError:\\n  print(name, \"AttributeError\")' && cd tests && PYTHONWARNINGS=ignore::DeprecationWarning MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py basics/generator_throw.py basics/gen_yield_from*.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./mpy-cross/build/mpy-cross -march=x64 -X emit=native -o /tmp/micropython-finally-native.mpy tests/basics/try_finally_return6.py && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- py/compile.c docs/develop/compiler.rst && cat tests/basics/try_finally_return6.py && rm /tmp/micropython-finally-build.log /tmp/micropython-finally-native.mpy /tmp/micropython-finally-viper.mpy /tmp/micropython-finally-native-deep.mpy && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 8,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/py/compile.c\n+++ b/py/compile.c\n@@ -1684,9 +1684,12 @@\n     }\n     EMIT_ARG(load_const_tok, MP_TOKEN_KW_NONE);\n     EMIT_ARG(label_assign, l_finally_block);\n+    // Reserve space for the return value or jump destination below the sentinel.\n+    EMIT_ARG(adjust_stack_size, 1);\n     compile_node(comp, pn_finally);\n \n     compile_decrease_except_level(comp);\n+    EMIT_ARG(adjust_stack_size, -1);\n }\n \n STATIC void compile_try_stmt(compiler_t *comp, mp_parse_node_struct_t *pns) {\n--- /dev/null\n+++ b/tests/basics/try_finally_return6.py\n@@ -0,0 +1,51 @@\n+# A pending return needs an extra stack slot throughout the finally block.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_except(self):\n+        try:\n+            return self._i\n+        except ValueError:\n+            pass\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._i += 1\n+                if self._i > self._mi:\n+                    self._i = 0\n+\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get_except(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(8):\n+    print(id_gen.get_nested(), id_gen._i)\n--- a/docs/develop/compiler.rst\n+++ b/docs/develop/compiler.rst\n@@ -291,6 +291,12 @@\n is a wrapper around the main function ``emit_get_cur_to_write_bytecode()`` that all\n functions must call to emit bytecode.\n \n+Stack sizing also accounts for values kept on the stack while control flow is\n+unwound. In a ``finally`` block, a pending return or jump keeps its return value\n+or jump destination below the unwind sentinel. The compiler reserves an extra\n+slot for this value throughout the block, including any nested exception\n+handlers, in addition to the slot used by the sentinel or exception.\n+\n .. _emitting_native_code:\n \n Emitting native code\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- /dev/null\n+++ b/tests/basics/try_finally_return6.py\n@@ -0,0 +1,50 @@\n+# A pending return needs an extra stack slot throughout the finally block.\n+\n+\n+class IDGenerator:\n+    def __init__(self, max_id: int):\n+        self._i = 0\n+        self._mi = max_id\n+\n+    def get(self):\n+        try:\n+            return self._i\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_except(self):\n+        try:\n+            return self._i\n+        except ValueError:\n+            pass\n+        finally:\n+            self._i += 1\n+            if self._i > self._mi:\n+                self._i = 0\n+\n+    def get_nested(self):\n+        try:\n+            return self._i\n+        finally:\n+            try:\n+                self._i += 1\n+            finally:\n+                self._i += 1\n+                if self._i > self._mi:\n+                    self._i = 0\n+\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(14):\n+    print(id_gen.get_except(), id_gen._i)\n+\n+id_gen = IDGenerator(10)\n+for _ in range(8):\n+    print(id_gen.get_nested(), id_gen._i)\n--- a/docs/develop/compiler.rst\n+++ b/docs/develop/compiler.rst\n@@ -291,6 +291,12 @@\n is a wrapper around the main function ``emit_get_cur_to_write_bytecode()`` that all\n functions must call to emit bytecode.\n \n+Stack sizing also accounts for values kept on the stack while control flow is\n+unwound. In a ``finally`` block, a pending return or jump keeps its return value\n+or jump destination below the unwind sentinel. The compiler reserves an extra\n+slot for this value throughout the block, including any nested exception\n+handlers, in addition to the slot used by the sentinel or exception.\n+\n .. _emitting_native_code:\n \n Emitting native code\nPATCH\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py; cat /testbed/tests/try_finally_return6.py.out",
+  "cd /testbed && python3 - <<'PY' | patch -p1\nimport difflib\nfrom pathlib import Path\npath = 'tests/basics/try_finally_return6.py'\nnew = '''# A pending return needs an extra stack slot throughout the finally block.\n\n\nclass IDGenerator:\n    def __init__(self, max_id: int):\n        self._i = 0\n        self._mi = max_id\n\n    def get(self):\n        try:\n            return self._i\n        finally:\n            self._i += 1\n            if self._i > self._mi:\n                self._i = 0\n\n    def get_except(self):\n        try:\n            return self._i\n        except ValueError:\n            pass\n        finally:\n            self._i += 1\n            if self._i > self._mi:\n                self._i = 0\n\n    def get_nested(self):\n        try:\n            return self._i\n        finally:\n            try:\n                self._i += 1\n            finally:\n                self._i += 1\n                if self._i > self._mi:\n                    self._i = 0\n\n\nid_gen = IDGenerator(10)\nfor _ in range(14):\n    print(id_gen.get(), id_gen._i)\n\nid_gen = IDGenerator(10)\nfor _ in range(14):\n    print(id_gen.get_except(), id_gen._i)\n\nid_gen = IDGenerator(10)\nfor _ in range(8):\n    print(id_gen.get_nested(), id_gen._i)\n'''\nassert not Path(path).exists()\nprint(''.join(difflib.unified_diff([], new.splitlines(True), fromfile='/dev/null', tofile='b/' + path)), end='')\npath = 'docs/develop/compiler.rst'\nold = Path(path).read_text()\nneedle = '.. _emitting_native_code:\\n'\nnew = '''Stack sizing also accounts for values kept on the stack while control flow is\nunwound. In a ``finally`` block, a pending return or jump keeps its return value\nor jump destination below the unwind sentinel. The compiler reserves an extra\nslot for this value throughout the block, including any nested exception\nhandlers, in addition to the slot used by the sentinel or exception.\n\n'''\nassert old.count(needle) == 1\nprint(''.join(difflib.unified_diff(old.splitlines(True), old.replace(needle, new + needle).splitlines(True), fromfile='a/' + path, tofile='b/' + path)), end='')\nPY\ncd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py; find /testbed/tests -maxdepth 2 -name '*return6*' -print",
+  "cd /testbed && source tools/ci.sh && ci_unix_build_helper VARIANT=standard > /tmp/micropython-finally-build.log 2>&1 && tail -8 /tmp/micropython-finally-build.log",
+  "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try*.py basics/async_with*.py basics/with*.py micropython/native_try*.py micropython/native_with.py",
+  "cd /testbed/tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/generator*.py",
+  "cd /testbed/tests && diff -u results/basics_generator_throw.py.exp results/basics_generator_throw.py.out && true; sed -n '1,240p' basics/generator_throw.py; MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-peeky/micropython ./run-tests.py basics/generator_throw.py",
+  "cd /testbed && python3 - <<'PY' | patch -p1\nimport difflib\nfrom pathlib import Path\npath = 'tests/basics/try_finally_return6.py'\nold = Path(path).read_text()\nnew = old.replace('''        except ValueError:\n            pass\n        finally:\n            self._i += 1\n''', '''        except ValueError:\n            pass\n        finally:\n            self._i += max(0, 0, 0, 1)\n''').replace('''            finally:\n                self._i += 1\n''', '''            finally:\n                self._i += max(0, 0, 0, 1)\n''')\nassert new != old\nprint(''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile='a/' + path, tofile='b/' + path)), end='')\nPY\n./ports/unix/build-peeky/micropython -c $'exec(open(\"tests/basics/try_finally_return6.py\").read().split(\"id_gen =\")[0])\\nfor name in (\"get\", \"get_except\", \"get_nested\"):\\n try:\\n  print(name, getattr(IDGenerator(10), name)())\\n except AttributeError:\\n  print(name, \"AttributeError\")' && cd tests && PYTHONWARNINGS=ignore::DeprecationWarning MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-tests.py basics/try_finally_return6.py basics/generator_throw.py basics/gen_yield_from*.py"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && command -v apply_patch && peeky probe . --binary ports/unix/build-peeky/micropython --at py/emitbc.c:411 --capture delta,emit.stack_size,emit.scope.stack_size --hits 30 -- -c $'def f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\n'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ports/unix/build-peeky/micropython --at py/emitbc.c:411 --capture delta,emit.stack_size,emit.scope.stack_size --hits 30 -- -c $'def f(x):\\n try:\\n  return 0\\n finally:\\n  x.a += 1\\n'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 2
+ },
+ "peeky_doc_reads": 4,
+ "peeky_mentions_in_commands": 13,
+ "peeky_withheld_markers": 12,
+ "peeky_withheld_by_marker": {
+  "[unproven]": 12
+ },
+ "peeky_values_printed": 18,
+ "contaminated": false,
+ "final_message": "Fixed the compiler\u2019s stack underallocation in `finally`: a pending return needs an extra slot, and the overflow was overwriting `self`. The compiler now reserves that slot throughout the handler. Added regression coverage for plain, combined, and nested blocks; the reported snippet now prints `0`.",
+ "assistant_messages": [
+  "I\u2019ll inspect the `try/finally` bytecode handling, reproduce the failure, and add a regression test for the fix.\n",
+  "The compiler reserves only one stack slot for `finally` entry, but a pending return also needs its return value below the sentinel. The resulting overflow overwrites `self`. I\u2019ll reserve the extra slot throughout the handler and add tests for plain, combined, and nested `try/finally` blocks.\n",
+  "Fixed the compiler\u2019s stack underallocation in `finally`: a pending return needs an extra slot, and the overflow was overwriting `self`. The compiler now reserves that slot throughout the handler. Added regression coverage for plain, combined, and nested blocks; the reported snippet now prints `0`."
+ ],
+ "assistant_reasoning": [
+  "**Adjusting stack operations**\n\nI need to adjust the stack operations before the final execution. There\u2019s a confusion with runtime calculations, as it seems like I\u2019d need to try again, possibly pushing a temporary value. It looks like I might want to move a value after the final operation to fix discrepancies, but I also need to ensure I reserve the correct states and maintain consistency in the native calculation. I should examine things more closely from the native context to clarify.",
+  "**Focusing on adjustments**\n\nI need to focus on the adjustments regarding the native compatibility of bytecode. It seems I should consider adding or adjusting slots around the starting point using the offset. I\u2019m wondering if the adjustments add a slot before the sentinel emitter, which might be correct if I use new helpers. I need to look at the emitter setup, which seems to reserve a block per kind. Additionally, I\u2019ll need to read up on native operations.",
+  "**Checking patch process**\n\nI need to ensure I have the proper count of 50 and a baseline. I'm considering using a patch generated with Python for this. Maybe I should create the patch manually for the new count of 50. I want to confirm if the count is correct at 50 by reading the printed numbered list in my mind. I'll run the patch and use the format with @@1,50. Hopefully, that all comes together smoothly!",
+  "**Finding a solution for patching**\n\nI'm realizing I need to avoid repeating the count of 49. I should generate unified diffs using Python, leveraging strings and the subprocess module. This way, patch allows for manual editing without directly writing to the file. I think I'll compute the unified_diff for tests and documentation, which will generate the necessary patch. It seems necessary to use Python's difflib to create a generator piped into the patch program to streamline the process without wasting more time.",
+  "**Planning test structure**\n\nI'm considering implementing targeted tests now, and I want to use async tests that are readily available. I'll aim for a single runner to cover all tests at once, which should be efficient. I\u2019m aiming for around 100 tests, expecting them to run in about five seconds each. It feels like a lot to manage, but I think it\u2019s worth it to streamline the process!",
+  "**Diagnosing CPython issues**\n\nI need to diagnose the baseline failure for the CPython version. I'll start by checking for any error messages, looking into the version details, and verifying configurations. I wonder if this is a compatibility problem or just a straightforward bug. There might be logs or other documentation to sift through too. After gathering this information, I can determine the next steps toward troubleshooting the issue effectively."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 300.9
+}

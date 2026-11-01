@@ -1,0 +1,27 @@
+diff --git a/tokio/src/sync/broadcast.rs b/tokio/src/sync/broadcast.rs
+index 69ede8f8..dfa72fe9 100644
+--- a/tokio/src/sync/broadcast.rs
++++ b/tokio/src/sync/broadcast.rs
+@@ -666,7 +666,12 @@ fn new_receiver<T>(shared: Arc<Shared<T>>) -> Receiver<T> {
+ 
+     tail.rx_cnt = tail.rx_cnt.checked_add(1).expect("overflow");
+ 
+-    let next = tail.pos;
++    // A closed channel's tail points just past its closure marker.
++    let next = if tail.closed {
++        tail.pos.wrapping_sub(1)
++    } else {
++        tail.pos
++    };
+ 
+     drop(tail);
+ 
+@@ -897,6 +902,8 @@ impl<T: Clone> Receiver<T> {
+     /// **after** it has resubscribed. This will not include elements that are
+     /// in the queue of the current receiver. Consider the following example.
+     ///
++    /// If the channel is closed, the new receiver will also be closed.
++    ///
+     /// # Examples
+     ///
+     /// ```

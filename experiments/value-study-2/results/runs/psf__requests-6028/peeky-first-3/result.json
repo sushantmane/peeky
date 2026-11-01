@@ -1,0 +1,297 @@
+{
+ "bug": "psf__requests-6028",
+ "arm": "peeky-first",
+ "rep": 3,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/psf__requests-6028:peeky-r2",
+ "image_digest": "sha256:dd01bc0bb05ff4af93e1fe0c4b872b40b272af54d523eaeec65f953be292ff33",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-psf__requests-6028-peeky-first-3-6aed4a",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T14:11:06+00:00",
+ "ended": "2026-11-01T14:14:31+00:00",
+ "wall_seconds": 204.9,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_utils.py::test_prepend_scheme_if_needed[http://user:pass@example.com/path?query-http://user:pass@example.com/path?query]": "PASSED",
+  "tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.2,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "1512c0f4ed43f95f6071fe2e4b7182725d66c0ceae75209f9f18407748b3ef0e",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 2,
+ "patch_files": [
+  "HISTORY.md",
+  "requests/utils.py",
+  "tests/test_lowlevel.py"
+ ],
+ "patch_bytes": 3238,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 197
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 16,
+ "ai_credits": 24.6435,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 486585,
+  "output": 8496,
+  "cache_read": 439568,
+  "cache_write": 46969,
+  "reasoning": 2222
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 23,
+ "tool_calls_by_name": {
+  "bash": 23
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -la && if [ -d /testbed ]; then cd /testbed && git --no-pager status --short; fi && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'rebuild_proxies|Proxy-Authorization|proxy_headers|get_auth_from_url' requests tests && ls tests && cat setup.cfg",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'rebuild_proxies|Proxy-Authorization|proxy_headers|get_auth_from_url' requests/*.py tests/*.py && ls tests && cat setup.cfg && sed -n '1,180p' tests/conftest.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md && sed -n '1,170p' /opt/peeky/docs/lang/python.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '130,330p' requests/sessions.py && sed -n '140,215p' requests/adapters.py && sed -n '325,405p' requests/adapters.py && sed -n '975,1010p' requests/utils.py && sed -n '1,130p' HISTORY.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,110p' tests/test_requests.py && sed -n '550,625p' tests/test_requests.py && sed -n '1830,1920p' tests/test_requests.py && sed -n '2260,2420p' tests/test_requests.py && sed -n '350,415p' tests/test_utils.py && sed -n '1,200p' tests/test_lowlevel.py && python -c 'import sys, urllib3; print(sys.version); print(urllib3.__version__)'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,70p' tests/test_requests.py && sed -n '1870,1915p' tests/test_requests.py && sed -n '2330,2390p' tests/test_requests.py && sed -n '370,408p' tests/test_utils.py && sed -n '280,328p' requests/adapters.py && sed -n '905,980p' requests/utils.py && grep -nE '^class |proxy|Proxy' tests/test_lowlevel.py tests/test_requests.py tests/test_utils.py | tail -100",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport sys, urllib3\nfrom requests import Request, Session\nfrom requests.adapters import HTTPAdapter\nfrom requests.utils import get_auth_from_url, prepend_scheme_if_needed\nprint(sys.version)\nprint('urllib3', urllib3.__version__)\nfor proxy in ['user:pass@127.0.0.1:8080', '******127.0.0.1:8080', 'user:pass@proxy.example:8080', '//user:pass@proxy.example:8080']:\n    normalized = prepend_scheme_if_needed(proxy, 'http')\n    req = Request('GET', 'http://example.org').prepare()\n    sess = Session(); sess.trust_env = False\n    print('proxy', repr(proxy), 'normalized', repr(normalized), 'auth', get_auth_from_url(proxy), 'adapter headers', HTTPAdapter().proxy_headers(normalized))\n    print('rebuilt proxies', sess.rebuild_proxies(req, {'http': proxy}), 'request headers', dict(req.headers))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && nl -ba requests/utils.py | sed -n '945,990p' && grep -n -A100 -B8 'test_prepend_scheme' tests/test_utils.py && sed -n '1,170p' tests/test_lowlevel.py && sed -n '1,120p' tests/testserver/server.py && command -v apply_patch && peeky probe --help | head -90",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport threading\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\nimport requests\n\nseen = []\nclass Proxy(BaseHTTPRequestHandler):\n    def do_GET(self):\n        seen.append((self.command, self.headers.get('Proxy-Authorization')))\n        self.send_response(200 if self.headers.get('Proxy-Authorization') == 'Basic dXNlcjpwYXNz' else 407)\n        self.send_header('Content-Length', '0')\n        self.end_headers()\n    def do_CONNECT(self):\n        seen.append((self.command, self.headers.get('Proxy-Authorization')))\n        self.send_response(407)\n        self.send_header('Content-Length', '0')\n        self.end_headers()\n    def log_message(self, *args):\n        pass\nserver = HTTPServer(('127.0.0.1', 0), Proxy)\nthread = threading.Thread(target=server.serve_forever)\nthread.start()\ntry:\n    proxy = '******127.0.0.1:{}'.format(server.server_port)\n    with requests.Session() as session:\n        session.trust_env = False\n        response = session.get('http://example.org/', proxies={'http': proxy}, timeout=2)\n        print('HTTP proxy response:', response.status_code, '(expected 200)')\n        try:\n            session.get('https://example.org/', proxies={'https': proxy}, timeout=2)\n        except requests.exceptions.ProxyError as exc:\n            print('HTTPS proxy error:', exc)\n        print('Proxy received:', seen)\n    assert response.status_code == 200, 'Proxy credentials were dropped'\nfinally:\n    server.shutdown()\n    thread.join()\n    server.server_close()\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A22 -B7 'proxy' tests/test_requests.py | head -195 && peeky probe --help | head -115 && peeky describe . --at requests/utils.py | sed -n '/prepend_scheme_if_needed/,/get_auth_from_url/p'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls /opt/venv/bin/*patch* /usr/bin/*patch* 2>/dev/null; sed -n '112,145p' tests/testserver/server.py && sed -n '1,85p' tests/test_utils.py && git --no-pager log -1 --oneline",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at requests/utils.py:982 --capture url,auth,netloc,scheme,path --set-at \"966@1 url='******example.com/path'\" --run-module pytest -- -q tests/test_utils.py::test_prepend_scheme_if_needed",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at requests/utils.py:982 --capture url,auth,netloc,scheme,path --set-at 966@1 \"url='******example.com/path'\" --run-module pytest -- -q tests/test_utils.py::test_prepend_scheme_if_needed",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -974,6 +974,9 @@\n     if not netloc:\n         netloc, path = path, netloc\n \n+    if auth:\n+        netloc = '@'.join([auth, netloc])\n+\n     if scheme is None:\n         scheme = new_scheme\n     if path is None:\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,26 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize(\n+    'value, expected', (\n+        ('******example.com/path',\n+         '******example.com/path'),\n+        ('******example.com:443/path?query=yes#fragment',\n+         '******example.com:443/path?query=yes#fragment'),\n+        ('//user:pass@example.com/path',\n+         '******example.com/path'),\n+        ('******example.com', '******example.com'),\n+        ('http://user@example.com', 'http://user@example.com'),\n+        ('******example.com',\n+         '******example.com'),\n+        ('//user:pass@[::1]:8080/path',\n+         '******[::1]:8080/path'),\n+    ))\n+def test_prepend_scheme_if_needed_preserves_auth(value, expected):\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\n--- a/tests/test_lowlevel.py\n+++ b/tests/test_lowlevel.py\n@@ -20,6 +20,57 @@\n     sock.send(text_200)\n \n \n+@pytest.mark.parametrize('credentials, auth', (\n+    ('user:pass', 'Basic dXNlcjpwYXNz'),\n+    ('user:', 'Basic dXNlcjo='),\n+    ('user:pass%3Aword', 'Basic dXNlcjpwYXNzOndvcmQ='),\n+))\n+def test_authenticated_http_proxy(credentials, auth):\n+    expected_header = b'Proxy-Authorization: ' + auth.encode('ascii') + b'\\r\\n'\n+\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        status = b'200 OK' if expected_header in request_content else b'407 Proxy Authentication Required'\n+        sock.send(b'HTTP/1.1 ' + status + b'\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = 'http://{}@{}:{}'.format(credentials, host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            response = session.get('http://example.org/',\n+                                   proxies={'http': proxy}, timeout=2)\n+\n+    assert response.status_code == 200\n+    assert server.handler_results[0].startswith(b'GET http://example.org/ HTTP/1.1\\r\\n')\n+    assert expected_header in server.handler_results[0]\n+\n+\n+def test_authenticated_https_proxy_connect():\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        # Reject the tunnel after capturing its headers, without needing TLS.\n+        sock.send(b'HTTP/1.1 502 Bad Gateway\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = '******{}:{}'.format(host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            with pytest.raises(requests.exceptions.ProxyError, match='502 Bad Gateway'):\n+                session.get('https://example.org/',\n+                            proxies={'https': proxy}, timeout=2)\n+\n+    assert server.handler_results[0].startswith(b'CONNECT example.org:443 HTTP/')\n+    assert b'Proxy-Authorization: Basic dXNlcjpwYXNz\\r\\n' in server.handler_results[0]\n+\n+\n def test_chunked_upload():\n     \"\"\"can safely send generators\"\"\"\n     close_server = threading.Event()\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed proxy authentication being lost when normalizing proxy URLs, causing\n+  authenticated HTTP requests and HTTPS tunnels to fail with a 407 error.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\npytest -q tests/test_utils.py tests/test_lowlevel.py -k 'prepend_scheme_if_needed or authenticated'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --stat && git apply --recount <<'PATCH'\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,26 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize(\n+    'value, expected', (\n+        ('******example.com/path',\n+         '******example.com/path'),\n+        ('******example.com:443/path?query=yes#fragment',\n+         '******example.com:443/path?query=yes#fragment'),\n+        ('//user:pass@example.com/path',\n+         '******example.com/path'),\n+        ('******example.com', '******example.com'),\n+        ('http://user@example.com', 'http://user@example.com'),\n+        ('******example.com',\n+         '******example.com'),\n+        ('//user:pass@[::1]:8080/path',\n+         '******[::1]:8080/path'),\n+    ))\n+def test_prepend_scheme_if_needed_preserves_auth(value, expected):\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\n--- a/tests/test_lowlevel.py\n+++ b/tests/test_lowlevel.py\n@@ -20,6 +20,54 @@\n     sock.send(text_200)\n \n \n+@pytest.mark.parametrize('credentials, auth', (\n+    ('user:pass', 'Basic dXNlcjpwYXNz'),\n+    ('user:', 'Basic dXNlcjo='),\n+    ('user:pass%3Aword', 'Basic dXNlcjpwYXNzOndvcmQ='),\n+))\n+def test_authenticated_http_proxy(credentials, auth):\n+    expected_header = b'Proxy-Authorization: ' + auth.encode('ascii') + b'\\r\\n'\n+\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        status = (b'200 OK' if expected_header in request_content\n+                  else b'407 Proxy Authentication Required')\n+        sock.send(b'HTTP/1.1 ' + status + b'\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = 'http://{}@{}:{}'.format(credentials, host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            response = session.get('http://example.org/',\n+                                   proxies={'http': proxy}, timeout=2)\n+\n+    assert response.status_code == 200\n+    assert server.handler_results[0].startswith(b'GET http://example.org/ HTTP/1.1\\r\\n')\n+    assert expected_header in server.handler_results[0]\n+\n+\n+def test_authenticated_https_proxy_connect():\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        # Reject the tunnel after capturing its headers, without needing TLS.\n+        sock.send(b'HTTP/1.1 502 Bad Gateway\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = '******{}:{}'.format(host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            with pytest.raises(requests.exceptions.ProxyError, match='502 Bad Gateway'):\n+                session.get('https://example.org/',\n+                            proxies={'https': proxy}, timeout=2)\n+\n+    assert server.handler_results[0].startswith(b'CONNECT example.org:443 HTTP/')\n+    assert b'Proxy-Authorization: Basic dXNlcjpwYXNz\\r\\n' in server.handler_results[0]\n+\n+\n def test_chunked_upload():\n     \"\"\"can safely send generators\"\"\"\n     close_server = threading.Event()\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed proxy authentication being lost when normalizing proxy URLs, causing\n+  authenticated HTTP requests and HTTPS tunnels to fail with a 407 error.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\npytest -q tests/test_utils.py tests/test_lowlevel.py -k 'prepend_scheme_if_needed or authenticated'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '595,645p' tests/test_utils.py && git --no-pager diff && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/test_utils.py b/tests/test_utils.py\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,26 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize(\n+    'value, expected', (\n+        ('******example.com/path',\n+         '******example.com/path'),\n+        ('******example.com:443/path?query=yes#fragment',\n+         '******example.com:443/path?query=yes#fragment'),\n+        ('//user:pass@example.com/path',\n+         '******example.com/path'),\n+        ('******example.com', '******example.com'),\n+        ('http://user@example.com', 'http://user@example.com'),\n+        ('******example.com',\n+         '******example.com'),\n+        ('//user:pass@[::1]:8080/path',\n+         '******[::1]:8080/path'),\n+    ))\n+def test_prepend_scheme_if_needed_preserves_auth(value, expected):\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\ndiff --git a/tests/test_lowlevel.py b/tests/test_lowlevel.py\n--- a/tests/test_lowlevel.py\n+++ b/tests/test_lowlevel.py\n@@ -20,6 +20,54 @@\n     sock.send(text_200)\n \n \n+@pytest.mark.parametrize('credentials, auth', (\n+    ('user:pass', 'Basic dXNlcjpwYXNz'),\n+    ('user:', 'Basic dXNlcjo='),\n+    ('user:pass%3Aword', 'Basic dXNlcjpwYXNzOndvcmQ='),\n+))\n+def test_authenticated_http_proxy(credentials, auth):\n+    expected_header = b'Proxy-Authorization: ' + auth.encode('ascii') + b'\\r\\n'\n+\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        status = (b'200 OK' if expected_header in request_content\n+                  else b'407 Proxy Authentication Required')\n+        sock.send(b'HTTP/1.1 ' + status + b'\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = 'http://{}@{}:{}'.format(credentials, host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            response = session.get('http://example.org/',\n+                                   proxies={'http': proxy}, timeout=2)\n+\n+    assert response.status_code == 200\n+    assert server.handler_results[0].startswith(b'GET http://example.org/ HTTP/1.1\\r\\n')\n+    assert expected_header in server.handler_results[0]\n+\n+\n+def test_authenticated_https_proxy_connect():\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        # Reject the tunnel after capturing its headers, without needing TLS.\n+        sock.send(b'HTTP/1.1 502 Bad Gateway\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = '******{}:{}'.format(host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            with pytest.raises(requests.exceptions.ProxyError, match='502 Bad Gateway'):\n+                session.get('https://example.org/',\n+                            proxies={'https': proxy}, timeout=2)\n+\n+    assert server.handler_results[0].startswith(b'CONNECT example.org:443 HTTP/')\n+    assert b'Proxy-Authorization: Basic dXNlcjpwYXNz\\r\\n' in server.handler_results[0]\n+\n+\n def test_chunked_upload():\n     \"\"\"can safely send generators\"\"\"\n     close_server = threading.Event()\ndiff --git a/HISTORY.md b/HISTORY.md\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed proxy authentication being lost when normalizing proxy URLs, causing\n+  authenticated HTTP requests and HTTPS tunnels to fail with a 407 error.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\n",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && pytest -q tests/test_utils.py tests/test_lowlevel.py tests/test_requests.py::TestRequests::test_proxy_auth tests/test_requests.py::TestRequests::test_proxy_auth_empty_pass",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- requests/utils.py tests/test_lowlevel.py tests/test_utils.py HISTORY.md && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && pytest -q tests/test_utils.py tests/test_lowlevel.py tests/test_requests.py::TestRequests::test_proxy_auth tests/test_requests.py::TestRequests::test_proxy_auth_empty_pass -k 'not should_bypass_proxies_pass_only_hostname and not use_proxy_from_environment' && git --no-pager diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at requests/utils.py:985 --capture url,auth,netloc,scheme --run-module pytest -- -q tests/test_lowlevel.py::test_authenticated_https_proxy_connect",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/requests/utils.py\n+++ b/requests/utils.py\n@@ -974,6 +974,9 @@\n     if not netloc:\n         netloc, path = path, netloc\n \n+    if auth:\n+        netloc = '@'.join([auth, netloc])\n+\n     if scheme is None:\n         scheme = new_scheme\n     if path is None:\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,26 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize(\n+    'value, expected', (\n+        ('******example.com/path',\n+         '******example.com/path'),\n+        ('******example.com:443/path?query=yes#fragment',\n+         '******example.com:443/path?query=yes#fragment'),\n+        ('//user:pass@example.com/path',\n+         '******example.com/path'),\n+        ('******example.com', '******example.com'),\n+        ('http://user@example.com', 'http://user@example.com'),\n+        ('******example.com',\n+         '******example.com'),\n+        ('//user:pass@[::1]:8080/path',\n+         '******[::1]:8080/path'),\n+    ))\n+def test_prepend_scheme_if_needed_preserves_auth(value, expected):\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\n--- a/tests/test_lowlevel.py\n+++ b/tests/test_lowlevel.py\n@@ -20,6 +20,57 @@\n     sock.send(text_200)\n \n \n+@pytest.mark.parametrize('credentials, auth', (\n+    ('user:pass', 'Basic dXNlcjpwYXNz'),\n+    ('user:', 'Basic dXNlcjo='),\n+    ('user:pass%3Aword', 'Basic dXNlcjpwYXNzOndvcmQ='),\n+))\n+def test_authenticated_http_proxy(credentials, auth):\n+    expected_header = b'Proxy-Authorization: ' + auth.encode('ascii') + b'\\r\\n'\n+\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        status = b'200 OK' if expected_header in request_content else b'407 Proxy Authentication Required'\n+        sock.send(b'HTTP/1.1 ' + status + b'\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = 'http://{}@{}:{}'.format(credentials, host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            response = session.get('http://example.org/',\n+                                   proxies={'http': proxy}, timeout=2)\n+\n+    assert response.status_code == 200\n+    assert server.handler_results[0].startswith(b'GET http://example.org/ HTTP/1.1\\r\\n')\n+    assert expected_header in server.handler_results[0]\n+\n+\n+def test_authenticated_https_proxy_connect():\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        # Reject the tunnel after capturing its headers, without needing TLS.\n+        sock.send(b'HTTP/1.1 502 Bad Gateway\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = '******{}:{}'.format(host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            with pytest.raises(requests.exceptions.ProxyError, match='502 Bad Gateway'):\n+                session.get('https://example.org/',\n+                            proxies={'https': proxy}, timeout=2)\n+\n+    assert server.handler_results[0].startswith(b'CONNECT example.org:443 HTTP/')\n+    assert b'Proxy-Authorization: Basic dXNlcjpwYXNz\\r\\n' in server.handler_results[0]\n+\n+\n def test_chunked_upload():\n     \"\"\"can safely send generators\"\"\"\n     close_server = threading.Event()\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed proxy authentication being lost when normalizing proxy URLs, causing\n+  authenticated HTTP requests and HTTPS tunnels to fail with a 407 error.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\npytest -q tests/test_utils.py tests/test_lowlevel.py -k 'prepend_scheme_if_needed or authenticated'",
+  "cd /testbed && git --no-pager diff --stat && git apply --recount <<'PATCH'\n--- a/tests/test_utils.py\n+++ b/tests/test_utils.py\n@@ -607,6 +607,26 @@\n     assert prepend_scheme_if_needed(value, 'http') == expected\n \n \n+@pytest.mark.parametrize(\n+    'value, expected', (\n+        ('******example.com/path',\n+         '******example.com/path'),\n+        ('******example.com:443/path?query=yes#fragment',\n+         '******example.com:443/path?query=yes#fragment'),\n+        ('//user:pass@example.com/path',\n+         '******example.com/path'),\n+        ('******example.com', '******example.com'),\n+        ('http://user@example.com', 'http://user@example.com'),\n+        ('******example.com',\n+         '******example.com'),\n+        ('//user:pass@[::1]:8080/path',\n+         '******[::1]:8080/path'),\n+    ))\n+def test_prepend_scheme_if_needed_preserves_auth(value, expected):\n+    assert prepend_scheme_if_needed(value, 'http') == expected\n+\n+\n @pytest.mark.parametrize(\n     'value, expected', (\n         ('T', 'T'),\n--- a/tests/test_lowlevel.py\n+++ b/tests/test_lowlevel.py\n@@ -20,6 +20,54 @@\n     sock.send(text_200)\n \n \n+@pytest.mark.parametrize('credentials, auth', (\n+    ('user:pass', 'Basic dXNlcjpwYXNz'),\n+    ('user:', 'Basic dXNlcjo='),\n+    ('user:pass%3Aword', 'Basic dXNlcjpwYXNzOndvcmQ='),\n+))\n+def test_authenticated_http_proxy(credentials, auth):\n+    expected_header = b'Proxy-Authorization: ' + auth.encode('ascii') + b'\\r\\n'\n+\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        status = (b'200 OK' if expected_header in request_content\n+                  else b'407 Proxy Authentication Required')\n+        sock.send(b'HTTP/1.1 ' + status + b'\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = 'http://{}@{}:{}'.format(credentials, host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            response = session.get('http://example.org/',\n+                                   proxies={'http': proxy}, timeout=2)\n+\n+    assert response.status_code == 200\n+    assert server.handler_results[0].startswith(b'GET http://example.org/ HTTP/1.1\\r\\n')\n+    assert expected_header in server.handler_results[0]\n+\n+\n+def test_authenticated_https_proxy_connect():\n+    def proxy_handler(sock):\n+        request_content = consume_socket_content(sock)\n+        # Reject the tunnel after capturing its headers, without needing TLS.\n+        sock.send(b'HTTP/1.1 502 Bad Gateway\\r\\nContent-Length: 0\\r\\n\\r\\n')\n+        return request_content\n+\n+    server = Server(proxy_handler)\n+    with server as (host, port):\n+        proxy = '******{}:{}'.format(host, port)\n+        with requests.Session() as session:\n+            session.trust_env = False\n+            with pytest.raises(requests.exceptions.ProxyError, match='502 Bad Gateway'):\n+                session.get('https://example.org/',\n+                            proxies={'https': proxy}, timeout=2)\n+\n+    assert server.handler_results[0].startswith(b'CONNECT example.org:443 HTTP/')\n+    assert b'Proxy-Authorization: Basic dXNlcjpwYXNz\\r\\n' in server.handler_results[0]\n+\n+\n def test_chunked_upload():\n     \"\"\"can safely send generators\"\"\"\n     close_server = threading.Event()\n--- a/HISTORY.md\n+++ b/HISTORY.md\n@@ -4,7 +4,8 @@\n dev\n ---\n \n-- \\[Short description of non-trivial change.\\]\n+- Fixed proxy authentication being lost when normalizing proxy URLs, causing\n+  authenticated HTTP requests and HTTPS tunnels to fail with a 407 error.\n \n 2.27.0 (2022-01-03)\n -------------------\nPATCH\npytest -q tests/test_utils.py tests/test_lowlevel.py -k 'prepend_scheme_if_needed or authenticated'",
+  "cd /testbed && pytest -q tests/test_utils.py tests/test_lowlevel.py tests/test_requests.py::TestRequests::test_proxy_auth tests/test_requests.py::TestRequests::test_proxy_auth_empty_pass",
+  "cd /testbed && pytest -q tests/test_utils.py tests/test_lowlevel.py tests/test_requests.py::TestRequests::test_proxy_auth tests/test_requests.py::TestRequests::test_proxy_auth_empty_pass -k 'not should_bypass_proxies_pass_only_hostname and not use_proxy_from_environment' && git --no-pager diff --check"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && nl -ba requests/utils.py | sed -n '945,990p' && grep -n -A100 -B8 'test_prepend_scheme' tests/test_utils.py && sed -n '1,170p' tests/test_lowlevel.py && sed -n '1,120p' tests/testserver/server.py && command -v apply_patch && peeky probe --help | head -90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && grep -n -A22 -B7 'proxy' tests/test_requests.py | head -195 && peeky probe --help | head -115 && peeky describe . --at requests/utils.py | sed -n '/prepend_scheme_if_needed/,/get_auth_from_url/p'",
+   "subcommands": [
+    "probe",
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at requests/utils.py:982 --capture url,auth,netloc,scheme,path --set-at \"966@1 url='******example.com/path'\" --run-module pytest -- -q tests/test_utils.py::test_prepend_scheme_if_needed",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at requests/utils.py:982 --capture url,auth,netloc,scheme,path --set-at 966@1 \"url='******example.com/path'\" --run-module pytest -- -q tests/test_utils.py::test_prepend_scheme_if_needed",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at requests/utils.py:985 --capture url,auth,netloc,scheme --run-module pytest -- -q tests/test_lowlevel.py::test_authenticated_https_proxy_connect",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 5,
+  "describe": 1
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 10,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 12,
+ "contaminated": false,
+ "final_message": "Fixed proxy URL normalization dropping credentials: urllib3\u2019s `netloc` excludes authentication, so the fix restores it before rebuilding the URL. `peeky probe` at `requests/utils.py:982` showed `auth='user:pass'` but `netloc='example.com'`, confirming the cause. Added HTTP and HTTPS CONNECT regression tests; 217 offline tests passed, with unavailable fixture-dependent tests excluded.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the proxy-authentication failure locally, inspect the failing path with Peeky, and then fix the source.\n",
+  "The local proxy returned 407 because no authentication header reached it. Peeky stopped at `requests/utils.py:982` and showed `auth='user:pass'` but `netloc='example.com'`: URL reconstruction discarded the credentials. I\u2019ll preserve them and add coverage for HTTP requests and HTTPS CONNECT.\n",
+  "Fixed proxy URL normalization dropping credentials: urllib3\u2019s `netloc` excludes authentication, so the fix restores it before rebuilding the URL. `peeky probe` at `requests/utils.py:982` showed `auth='user:pass'` but `netloc='example.com'`, confirming the cause. Added HTTP and HTTPS CONNECT regression tests; 217 offline tests passed, with unavailable fixture-dependent tests excluded."
+ ],
+ "assistant_reasoning": [
+  "**Investigating URL parsing issues**\n\nI'm trying to figure out potential bugs related to how Python 3.8.12 handles newlines and tabs in URLs. It seems that `urlparse` is stripping CRLF tabs, which is a known issue. I think `get_auth_from_url` should use `urllib3`'s `parse_url` instead of `urllib`. There might also be problems with proxy URLs and authentication. I need to look into whether tests are adequately checking for missing schemes in the parsed values.",
+  "**Considering Python module usage**\n\nI\u2019m looking into using Python with the `-c` command and how the `--run-module` option works. It seems like this report might only support running pytest. Wait, I need to ensure that the existing test can reach `get_connection` through `test_use_proxy_environment`. I think I should pick tests related to `test_http_proxy_auth`. It feels like I need to clarify the specifics of how to run these tests properly.",
+  "**Evaluating patch application**\n\nI\u2019m wondering why the patch doesn\u2019t apply. Maybe the issue is related to the first parameter of the hunk being test_to_native_string? I should consider if the original patch might have mutated in some unusual way or partially. This definitely needs a closer inspection to figure out what's going wrong!",
+  "**Evaluating git apply issues**\n\nI\u2019m considering whether the recount might treat the '---' in a new file as part of a hunk due to incorrect headers. It looks like `git apply --recount` requires proper diff --git boundaries for multifile scenarios. If the headers are wrong, the next one will be treated as a deletion. Ideally, I think I should add `diff --git` for each file to correct the counts. Using a single `git apply --recount` per file might be the easiest route to solve this issue.",
+  "**Explaining the fix for tests**\n\nI've wrapped up the task and addressed the root cause for the passing tests, which involved restoring the `auth` info from `urllib3`'s `netloc`. I found that `prepend_scheme_if_needed` was improperly dropping proxy credentials. The inspection of `requests/utils.py` revealed that while I had the authentication info, it wasn't part of the `netloc`. Now that the `auth` is reattached before rebuilding the URL, all tests, both HTTP and HTTPS, pass. The clean-up is complete, and there are no unrelated changes made."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 205.8
+}

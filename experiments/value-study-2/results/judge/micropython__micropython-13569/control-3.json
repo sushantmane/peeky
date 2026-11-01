@@ -1,0 +1,7 @@
+{
+ "judge_id": "a218",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler underestimates stack usage in `finally`: a pending return or jump leaves extra values there, allowing later operations to overwrite locals such as `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

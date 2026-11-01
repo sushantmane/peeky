@@ -1,0 +1,250 @@
+{
+ "bug": "apache__lucene-12022",
+ "arm": "control",
+ "rep": 3,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__lucene-12022:control",
+ "image_digest": "sha256:c770ee4d8f31f218e6fe7ab6519cc5baabe54371813cd13f6b76d758fcc69952",
+ "peeky_sha": null,
+ "container": "study-apache__lucene-12022-control-3-6b9def",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T10:38:10+00:00",
+ "ended": "2026-11-01T10:41:19+00:00",
+ "wall_seconds": 188.9,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "org.apache.lucene.document.TestLatLonShape > testFlatPolygonDoesNotContainIntersectingLine": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 10.4,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "038c462093b2b5561f84a8400dab4c186ca7ca8594e46998236df8f29d8c0765",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "lucene/CHANGES.txt",
+  "lucene/core/src/java/org/apache/lucene/document/ShapeField.java",
+  "lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java"
+ ],
+ "patch_bytes": 4462,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 24
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 15,
+ "ai_credits": 25.5623,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 472499,
+  "output": 8522,
+  "cache_read": 421176,
+  "cache_write": 51278,
+  "reasoning": 2302
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 21,
+ "tool_calls_by_name": {
+  "bash": 21
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then ls -a /testbed | head; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && find lucene -name '*Shape*' -o -name '*Tessellator*' -o -name '*Triangle*'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'collapse|simplif|degenerate' lucene/core/src/java/org/apache/lucene/{geo,document} -g '*.java' && find . -name AGENTS.md",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'collapse|simplif|degenerate' lucene/core/src/java/org/apache/lucene/{geo,document}/*.java && find . -name AGENTS.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,280p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && find lucene/core/src/test -name '*Shape*' -o -name '*Tessellator*'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '280,610p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && sed -n '1,260p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat lucene/core/src/test/org/apache/lucene/document/TestLatLonShapeEncoding.java && cat lucene/core/src/test/org/apache/lucene/document/TestXYShapeEncoding.java && sed -n '1,230p' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java && sed -n '1,180p' lucene/core/src/test/org/apache/lucene/document/TestXYShape.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'test.*(Line|Point|Flag|Edge)|verifyEncoding|\\.ab|\\.bc|\\.ca' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && sed -n '260,640p' lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java && grep -nE 'resolveTriangleType|withinLine|case LINE|\\.ab' lucene/core/src/java/org/apache/lucene/document/{LatLonShapeQuery,XYShapeQuery,ShapeDocValues,LatLonShape,XYShape}.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,250p' lucene/core/src/test/org/apache/lucene/document/TestShapeDocValues.java && ls lucene && sed -n '1,180p' lucene/core/build.gradle && grep -n 'withinLine' lucene/core/src/java/org/apache/lucene/geo/{Polygon2D,Line2D,Rectangle2D}.java && grep -nE 'test.*Contains|flat|Flat|Degenerate' lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java && command -v apply_patch && java -version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '230,285p' lucene/core/src/java/org/apache/lucene/geo/Polygon2D.java && sed -n '145,200p' lucene/core/src/java/org/apache/lucene/geo/Rectangle2D.java && sed -n '1,130p' lucene/CHANGES.txt && sed -n '100,230p' lucene/core/src/java/org/apache/lucene/document/LatLonShape.java && sed -n '130,205p' lucene/core/src/java/org/apache/lucene/document/LatLonShapeQuery.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v patch; command -v java; java -version; grep -nE 'spotless|format|offline' gradle.properties gradle/*.gradle gradle/validation/*.gradle 2>/dev/null | head -45 && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n@@ -475,6 +475,45 @@\n+  public void testCollapsedTriangleEdgeFlags() {\n+    int[][] vertices = {{encodeX(0), encodeY(0)}, {encodeX(2), encodeY(2)}};\n+    int[][] permutations = {\n+      {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 1, 1}\n+    };\n+    byte[] bytes = new byte[7 * ShapeField.BYTES];\n+    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();\n+    for (int[] permutation : permutations) {\n+      int[] a = vertices[permutation[0]];\n+      int[] b = vertices[permutation[1]];\n+      int[] c = vertices[permutation[2]];\n+      for (int flags = 0; flags < 8; flags++) {\n+        boolean ab = (flags & 1) != 0;\n+        boolean bc = (flags & 2) != 0;\n+        boolean ca = (flags & 4) != 0;\n+        boolean fromPolygon =\n+            (ab && permutation[0] != permutation[1])\n+                || (bc && permutation[1] != permutation[2])\n+                || (ca && permutation[2] != permutation[0]);\n+\n+        triangle.setValues(a[0], a[1], ab, b[0], b[1], bc, c[0], c[1], ca);\n+        ShapeField.resolveTriangleType(triangle);\n+        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n+        assertEquals(fromPolygon, triangle.ab);\n+        assertEquals(triangle.aX, triangle.cX);\n+        assertEquals(triangle.aY, triangle.cY);\n+\n+        ShapeField.encodeTriangle(\n+            bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);\n+        ShapeField.decodeTriangle(bytes, triangle);\n+        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n+        assertEquals(fromPolygon, triangle.ab);\n+        assertEquals(vertices[0][0], triangle.aX);\n+        assertEquals(vertices[0][1], triangle.aY);\n+        assertEquals(vertices[1][0], triangle.bX);\n+        assertEquals(vertices[1][1], triangle.bY);\n+      }\n+    }\n+  }\n+\n   public void testRandomPointEncoding() {\n     double ay = nextY();\n     double ax = nextX();\n--- a/lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java\n@@ -210,6 +210,39 @@\n+  public void testContainsFlatPolygon() throws Exception {\n+    Polygon polygon =\n+        new Polygon(new double[] {0, 0, 1e-9, 2, 0}, new double[] {0, 2, 2, 0, 0});\n+    Polygon crossing =\n+        new Polygon(\n+            new double[] {0.75, 0.75, 1.25, 1.25, 0.75},\n+            new double[] {0.75, 1.25, 1.25, 0.75, 0.75});\n+    try (Directory dir = newDirectory();\n+        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n+      Document document = new Document();\n+      addPolygonsToDoc(FIELDNAME, document, polygon);\n+      writer.addDocument(document);\n+      try (IndexReader reader = writer.getReader()) {\n+        IndexSearcher searcher = newSearcher(reader);\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.INTERSECTS, crossing)));\n+        assertEquals(\n+            0,\n+            searcher.count(\n+                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.CONTAINS, crossing)));\n+        assertEquals(\n+            0,\n+            searcher.count(\n+                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.75, 1.25, 0.75, 1.25)));\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.25, 0.5, 0.25, 0.5)));\n+      }\n+    }\n+  }\n+\n   /** test random polygons with a single hole */\n   public void testPolygonWithHole() throws Exception {\n     int numVertices = TestUtil.nextInt(random(), 50, 100);\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestLatLonShape.testContainsFlatPolygon --console=plain > /tmp/lucene-flat-polygon-regression.log 2>&1; result=$?; tail -100 /tmp/lucene-flat-polygon-regression.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && grep -n 'testCollapsedTriangle\\|testContainsFlat' lucene/core/src/test/org/apache/lucene/document/{BaseShapeEncodingTestCase,TestLatLonShape}.java && find lucene/core/src/test/org/apache/lucene/document -name '*.orig' -o -name '*.rej'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\n\nadditions = {\n'lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java': (\"  public void testRandomPointEncoding() {\", '''  public void testCollapsedTriangleEdgeFlags() {\n    int[][] vertices = {{encodeX(0), encodeY(0)}, {encodeX(2), encodeY(2)}};\n    int[][] permutations = {\n      {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 1, 1}\n    };\n    byte[] bytes = new byte[7 * ShapeField.BYTES];\n    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();\n    for (int[] permutation : permutations) {\n      int[] a = vertices[permutation[0]];\n      int[] b = vertices[permutation[1]];\n      int[] c = vertices[permutation[2]];\n      for (int flags = 0; flags < 8; flags++) {\n        boolean ab = (flags & 1) != 0;\n        boolean bc = (flags & 2) != 0;\n        boolean ca = (flags & 4) != 0;\n        boolean fromPolygon =\n            (ab && permutation[0] != permutation[1])\n                || (bc && permutation[1] != permutation[2])\n                || (ca && permutation[2] != permutation[0]);\n\n        triangle.setValues(a[0], a[1], ab, b[0], b[1], bc, c[0], c[1], ca);\n        ShapeField.resolveTriangleType(triangle);\n        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n        assertEquals(fromPolygon, triangle.ab);\n        assertEquals(triangle.aX, triangle.cX);\n        assertEquals(triangle.aY, triangle.cY);\n\n        ShapeField.encodeTriangle(\n            bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);\n        ShapeField.decodeTriangle(bytes, triangle);\n        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n        assertEquals(fromPolygon, triangle.ab);\n        assertEquals(vertices[0][0], triangle.aX);\n        assertEquals(vertices[0][1], triangle.aY);\n        assertEquals(vertices[1][0], triangle.bX);\n        assertEquals(vertices[1][1], triangle.bY);\n      }\n    }\n  }\n\n'''),\n'lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java': ('  /** test random polygons with a single hole */', '''  public void testContainsFlatPolygon() throws Exception {\n    Polygon polygon =\n        new Polygon(new double[] {0, 0, 1e-9, 2, 0}, new double[] {0, 2, 2, 0, 0});\n    Polygon crossing =\n        new Polygon(\n            new double[] {0.75, 0.75, 1.25, 1.25, 0.75},\n            new double[] {0.75, 1.25, 1.25, 0.75, 0.75});\n    try (Directory dir = newDirectory();\n        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n      Document document = new Document();\n      addPolygonsToDoc(FIELDNAME, document, polygon);\n      writer.addDocument(document);\n      try (IndexReader reader = writer.getReader()) {\n        IndexSearcher searcher = newSearcher(reader);\n        assertEquals(\n            1,\n            searcher.count(\n                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.INTERSECTS, crossing)));\n        assertEquals(\n            0,\n            searcher.count(\n                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.CONTAINS, crossing)));\n        assertEquals(\n            0,\n            searcher.count(\n                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.75, 1.25, 0.75, 1.25)));\n        assertEquals(\n            1,\n            searcher.count(\n                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.25, 0.5, 0.25, 0.5)));\n      }\n    }\n  }\n\n''')}\nfor name, (anchor, addition) in additions.items():\n    old = Path(name).read_text()\n    assert old.count(anchor) == 1\n    new = old.replace(anchor, addition + anchor)\n    diff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'a/'+name, 'b/'+name))\n    subprocess.run(['patch', '-p1'], input=diff, text=True, check=True)\nPY\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestLatLonShape.testContainsFlatPolygon --console=plain > /tmp/lucene-flat-polygon-regression.log 2>&1; result=$?; tail -120 /tmp/lucene-flat-polygon-regression.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -380,6 +380,10 @@\n     resolveTriangleType(triangle);\n   }\n \n+  /**\n+   * Resolves the triangle type, marking a collapsed line as a polygon edge if either of its\n+   * non-collapsed edges belongs to the polygon.\n+   */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\n       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n@@ -387,16 +391,19 @@\n       } else {\n         triangle.bX = triangle.cX;\n         triangle.bY = triangle.cY;\n+        triangle.ab = triangle.bc || triangle.ca;\n         triangle.cX = triangle.aX;\n         triangle.cY = triangle.aY;\n         triangle.type = DecodedTriangle.TYPE.LINE;\n       }\n     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n+      triangle.ab = triangle.ab || triangle.bc;\n       triangle.type = DecodedTriangle.TYPE.LINE;\n     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\n       triangle.cX = triangle.aX;\n       triangle.cY = triangle.aY;\n+      triangle.ab = triangle.ab || triangle.ca;\n       triangle.type = DecodedTriangle.TYPE.LINE;\n     } else {\n       triangle.type = DecodedTriangle.TYPE.TRIANGLE;\n--- a/lucene/CHANGES.txt\n+++ b/lucene/CHANGES.txt\n@@ -65,6 +65,9 @@\n Bug Fixes\n ---------------------\n \n+* Shape queries with CONTAINS no longer report false positives for polygons whose triangles\n+  collapse to lines after coordinate quantization.\n+\n * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until\n   they reach the maximum merge size. (Adrien Grand)\n \nPATCH\n./gradlew :lucene:core:spotlessJavaApply :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues --console=plain > /tmp/lucene-flat-polygon-validation.log 2>&1; result=$?; tail -85 /tmp/lucene-flat-polygon-validation.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '370,416p' lucene/core/src/java/org/apache/lucene/document/ShapeField.java && git --no-pager diff --stat && find lucene/core/src -name '*.orig' -o -name '*.rej' && sed -n '1,110p' /tmp/lucene-flat-polygon-validation.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '20,105p' gradle/validation/spotless.gradle && grep -R -n 'encodeTriangle(' lucene/core/src/java --include='*.java' && sed -n '210,240p' lucene/core/src/java/org/apache/lucene/document/LatLonShape.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\n\nedits = {\n'lucene/core/src/java/org/apache/lucene/document/ShapeField.java': [\n('        triangle.bY = triangle.cY;\\n        triangle.cX = triangle.aX;', '        triangle.bY = triangle.cY;\\n        triangle.ab = triangle.bc || triangle.ca;\\n        triangle.cX = triangle.aX;'),\n('    } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\\n      triangle.type', '    } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\\n      triangle.ab = triangle.ab || triangle.bc;\\n      triangle.type'),\n('    } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\\n      triangle.cX = triangle.aX;\\n      triangle.cY = triangle.aY;\\n      triangle.type', '    } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\\n      triangle.cX = triangle.aX;\\n      triangle.cY = triangle.aY;\\n      triangle.ab = triangle.ab || triangle.ca;\\n      triangle.type')],\n'lucene/CHANGES.txt': [\n('Bug Fixes\\n---------------------\\n\\n* LUCENE-10599:', 'Bug Fixes\\n---------------------\\n\\n* Shape queries with CONTAINS no longer report false positives for polygons whose triangles\\n  collapse to lines after coordinate quantization.\\n\\n* LUCENE-10599:')]\n}\nfor name, replacements in edits.items():\n    old = Path(name).read_text()\n    new = old\n    for anchor, replacement in replacements:\n        assert new.count(anchor) == 1, anchor\n        new = new.replace(anchor, replacement)\n    diff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'a/'+name, 'b/'+name))\n    subprocess.run(['patch', '-p1'], input=diff, text=True, check=True)\nPY\nrm lucene/core/src/java/org/apache/lucene/document/ShapeField.java.orig lucene/core/src/java/org/apache/lucene/document/ShapeField.java.rej && ./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues --console=plain > /tmp/lucene-flat-polygon-validation.log 2>&1; result=$?; tail -70 /tmp/lucene-flat-polygon-validation.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff -- lucene/core/src/java/org/apache/lucene/document/ShapeField.java lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java lucene/CHANGES.txt && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find . -iname '*google*format*.jar' -o -iname '*google*format*' && grep -n 'test suite' lucene/core/build/test-results/test/TEST-org.apache.lucene.document.TestLatLonShape*.xml | head -10 && sed -n '1,160p' help/formatting.txt",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\nname = 'lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java'\nold = Path(name).read_text()\nanchor = '        ShapeField.encodeTriangle(\\n            bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);'\nassert old.count(anchor) == 1\nnew = old.replace(anchor, '        ShapeField.encodeTriangle(bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);')\ndiff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'a/'+name, 'b/'+name))\nsubprocess.run(['patch', '-p1'], input=diff, text=True, check=True)\nPY\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestLatLonShape.testContainsFlatPolygon --console=plain > /tmp/lucene-flat-polygon-final.log 2>&1 && tail -9 /tmp/lucene-flat-polygon-final.log && git --no-pager diff --check && rm /tmp/lucene-flat-polygon-regression.log /tmp/lucene-flat-polygon-validation.log /tmp/lucene-flat-polygon-final.log && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java\n@@ -475,6 +475,45 @@\n+  public void testCollapsedTriangleEdgeFlags() {\n+    int[][] vertices = {{encodeX(0), encodeY(0)}, {encodeX(2), encodeY(2)}};\n+    int[][] permutations = {\n+      {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 1, 1}\n+    };\n+    byte[] bytes = new byte[7 * ShapeField.BYTES];\n+    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();\n+    for (int[] permutation : permutations) {\n+      int[] a = vertices[permutation[0]];\n+      int[] b = vertices[permutation[1]];\n+      int[] c = vertices[permutation[2]];\n+      for (int flags = 0; flags < 8; flags++) {\n+        boolean ab = (flags & 1) != 0;\n+        boolean bc = (flags & 2) != 0;\n+        boolean ca = (flags & 4) != 0;\n+        boolean fromPolygon =\n+            (ab && permutation[0] != permutation[1])\n+                || (bc && permutation[1] != permutation[2])\n+                || (ca && permutation[2] != permutation[0]);\n+\n+        triangle.setValues(a[0], a[1], ab, b[0], b[1], bc, c[0], c[1], ca);\n+        ShapeField.resolveTriangleType(triangle);\n+        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n+        assertEquals(fromPolygon, triangle.ab);\n+        assertEquals(triangle.aX, triangle.cX);\n+        assertEquals(triangle.aY, triangle.cY);\n+\n+        ShapeField.encodeTriangle(\n+            bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);\n+        ShapeField.decodeTriangle(bytes, triangle);\n+        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n+        assertEquals(fromPolygon, triangle.ab);\n+        assertEquals(vertices[0][0], triangle.aX);\n+        assertEquals(vertices[0][1], triangle.aY);\n+        assertEquals(vertices[1][0], triangle.bX);\n+        assertEquals(vertices[1][1], triangle.bY);\n+      }\n+    }\n+  }\n+\n   public void testRandomPointEncoding() {\n     double ay = nextY();\n     double ax = nextX();\n--- a/lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java\n+++ b/lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java\n@@ -210,6 +210,39 @@\n+  public void testContainsFlatPolygon() throws Exception {\n+    Polygon polygon =\n+        new Polygon(new double[] {0, 0, 1e-9, 2, 0}, new double[] {0, 2, 2, 0, 0});\n+    Polygon crossing =\n+        new Polygon(\n+            new double[] {0.75, 0.75, 1.25, 1.25, 0.75},\n+            new double[] {0.75, 1.25, 1.25, 0.75, 0.75});\n+    try (Directory dir = newDirectory();\n+        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n+      Document document = new Document();\n+      addPolygonsToDoc(FIELDNAME, document, polygon);\n+      writer.addDocument(document);\n+      try (IndexReader reader = writer.getReader()) {\n+        IndexSearcher searcher = newSearcher(reader);\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.INTERSECTS, crossing)));\n+        assertEquals(\n+            0,\n+            searcher.count(\n+                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.CONTAINS, crossing)));\n+        assertEquals(\n+            0,\n+            searcher.count(\n+                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.75, 1.25, 0.75, 1.25)));\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.25, 0.5, 0.25, 0.5)));\n+      }\n+    }\n+  }\n+\n   /** test random polygons with a single hole */\n   public void testPolygonWithHole() throws Exception {\n     int numVertices = TestUtil.nextInt(random(), 50, 100);\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestLatLonShape.testContainsFlatPolygon --console=plain > /tmp/lucene-flat-polygon-regression.log 2>&1; result=$?; tail -100 /tmp/lucene-flat-polygon-regression.log; exit \"$result\"",
+  "cd /testbed && python3 - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\n\nadditions = {\n'lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java': (\"  public void testRandomPointEncoding() {\", '''  public void testCollapsedTriangleEdgeFlags() {\n    int[][] vertices = {{encodeX(0), encodeY(0)}, {encodeX(2), encodeY(2)}};\n    int[][] permutations = {\n      {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 1, 1}\n    };\n    byte[] bytes = new byte[7 * ShapeField.BYTES];\n    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();\n    for (int[] permutation : permutations) {\n      int[] a = vertices[permutation[0]];\n      int[] b = vertices[permutation[1]];\n      int[] c = vertices[permutation[2]];\n      for (int flags = 0; flags < 8; flags++) {\n        boolean ab = (flags & 1) != 0;\n        boolean bc = (flags & 2) != 0;\n        boolean ca = (flags & 4) != 0;\n        boolean fromPolygon =\n            (ab && permutation[0] != permutation[1])\n                || (bc && permutation[1] != permutation[2])\n                || (ca && permutation[2] != permutation[0]);\n\n        triangle.setValues(a[0], a[1], ab, b[0], b[1], bc, c[0], c[1], ca);\n        ShapeField.resolveTriangleType(triangle);\n        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n        assertEquals(fromPolygon, triangle.ab);\n        assertEquals(triangle.aX, triangle.cX);\n        assertEquals(triangle.aY, triangle.cY);\n\n        ShapeField.encodeTriangle(\n            bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);\n        ShapeField.decodeTriangle(bytes, triangle);\n        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);\n        assertEquals(fromPolygon, triangle.ab);\n        assertEquals(vertices[0][0], triangle.aX);\n        assertEquals(vertices[0][1], triangle.aY);\n        assertEquals(vertices[1][0], triangle.bX);\n        assertEquals(vertices[1][1], triangle.bY);\n      }\n    }\n  }\n\n'''),\n'lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java': ('  /** test random polygons with a single hole */', '''  public void testContainsFlatPolygon() throws Exception {\n    Polygon polygon =\n        new Polygon(new double[] {0, 0, 1e-9, 2, 0}, new double[] {0, 2, 2, 0, 0});\n    Polygon crossing =\n        new Polygon(\n            new double[] {0.75, 0.75, 1.25, 1.25, 0.75},\n            new double[] {0.75, 1.25, 1.25, 0.75, 0.75});\n    try (Directory dir = newDirectory();\n        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {\n      Document document = new Document();\n      addPolygonsToDoc(FIELDNAME, document, polygon);\n      writer.addDocument(document);\n      try (IndexReader reader = writer.getReader()) {\n        IndexSearcher searcher = newSearcher(reader);\n        assertEquals(\n            1,\n            searcher.count(\n                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.INTERSECTS, crossing)));\n        assertEquals(\n            0,\n            searcher.count(\n                LatLonShape.newGeometryQuery(FIELDNAME, QueryRelation.CONTAINS, crossing)));\n        assertEquals(\n            0,\n            searcher.count(\n                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.75, 1.25, 0.75, 1.25)));\n        assertEquals(\n            1,\n            searcher.count(\n                LatLonShape.newBoxQuery(FIELDNAME, QueryRelation.CONTAINS, 0.25, 0.5, 0.25, 0.5)));\n      }\n    }\n  }\n\n''')}\nfor name, (anchor, addition) in additions.items():\n    old = Path(name).read_text()\n    assert old.count(anchor) == 1\n    new = old.replace(anchor, addition + anchor)\n    diff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'a/'+name, 'b/'+name))\n    subprocess.run(['patch', '-p1'], input=diff, text=True, check=True)\nPY\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestLatLonShape.testContainsFlatPolygon --console=plain > /tmp/lucene-flat-polygon-regression.log 2>&1; result=$?; tail -120 /tmp/lucene-flat-polygon-regression.log; exit \"$result\"",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n+++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java\n@@ -380,6 +380,10 @@\n     resolveTriangleType(triangle);\n   }\n \n+  /**\n+   * Resolves the triangle type, marking a collapsed line as a polygon edge if either of its\n+   * non-collapsed edges belongs to the polygon.\n+   */\n   static void resolveTriangleType(DecodedTriangle triangle) {\n     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {\n       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n@@ -387,16 +391,19 @@\n       } else {\n         triangle.bX = triangle.cX;\n         triangle.bY = triangle.cY;\n+        triangle.ab = triangle.bc || triangle.ca;\n         triangle.cX = triangle.aX;\n         triangle.cY = triangle.aY;\n         triangle.type = DecodedTriangle.TYPE.LINE;\n       }\n     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\n+      triangle.ab = triangle.ab || triangle.bc;\n       triangle.type = DecodedTriangle.TYPE.LINE;\n     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\n       triangle.cX = triangle.aX;\n       triangle.cY = triangle.aY;\n+      triangle.ab = triangle.ab || triangle.ca;\n       triangle.type = DecodedTriangle.TYPE.LINE;\n     } else {\n       triangle.type = DecodedTriangle.TYPE.TRIANGLE;\n--- a/lucene/CHANGES.txt\n+++ b/lucene/CHANGES.txt\n@@ -65,6 +65,9 @@\n Bug Fixes\n ---------------------\n \n+* Shape queries with CONTAINS no longer report false positives for polygons whose triangles\n+  collapse to lines after coordinate quantization.\n+\n * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until\n   they reach the maximum merge size. (Adrien Grand)\n \nPATCH\n./gradlew :lucene:core:spotlessJavaApply :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues --console=plain > /tmp/lucene-flat-polygon-validation.log 2>&1; result=$?; tail -85 /tmp/lucene-flat-polygon-validation.log; exit \"$result\"",
+  "cd /testbed && python3 - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\n\nedits = {\n'lucene/core/src/java/org/apache/lucene/document/ShapeField.java': [\n('        triangle.bY = triangle.cY;\\n        triangle.cX = triangle.aX;', '        triangle.bY = triangle.cY;\\n        triangle.ab = triangle.bc || triangle.ca;\\n        triangle.cX = triangle.aX;'),\n('    } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\\n      triangle.type', '    } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {\\n      triangle.ab = triangle.ab || triangle.bc;\\n      triangle.type'),\n('    } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\\n      triangle.cX = triangle.aX;\\n      triangle.cY = triangle.aY;\\n      triangle.type', '    } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {\\n      triangle.cX = triangle.aX;\\n      triangle.cY = triangle.aY;\\n      triangle.ab = triangle.ab || triangle.ca;\\n      triangle.type')],\n'lucene/CHANGES.txt': [\n('Bug Fixes\\n---------------------\\n\\n* LUCENE-10599:', 'Bug Fixes\\n---------------------\\n\\n* Shape queries with CONTAINS no longer report false positives for polygons whose triangles\\n  collapse to lines after coordinate quantization.\\n\\n* LUCENE-10599:')]\n}\nfor name, replacements in edits.items():\n    old = Path(name).read_text()\n    new = old\n    for anchor, replacement in replacements:\n        assert new.count(anchor) == 1, anchor\n        new = new.replace(anchor, replacement)\n    diff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'a/'+name, 'b/'+name))\n    subprocess.run(['patch', '-p1'], input=diff, text=True, check=True)\nPY\nrm lucene/core/src/java/org/apache/lucene/document/ShapeField.java.orig lucene/core/src/java/org/apache/lucene/document/ShapeField.java.rej && ./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding --tests org.apache.lucene.document.TestXYShapeEncoding --tests org.apache.lucene.document.TestLatLonShape --tests org.apache.lucene.document.TestXYShape --tests org.apache.lucene.document.TestShapeDocValues --console=plain > /tmp/lucene-flat-polygon-validation.log 2>&1; result=$?; tail -70 /tmp/lucene-flat-polygon-validation.log; exit \"$result\"",
+  "cd /testbed && python3 - <<'PY'\nimport difflib\nfrom pathlib import Path\nimport subprocess\nname = 'lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java'\nold = Path(name).read_text()\nanchor = '        ShapeField.encodeTriangle(\\n            bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);'\nassert old.count(anchor) == 1\nnew = old.replace(anchor, '        ShapeField.encodeTriangle(bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);')\ndiff = ''.join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), 'a/'+name, 'b/'+name))\nsubprocess.run(['patch', '-p1'], input=diff, text=True, check=True)\nPY\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.document.TestLatLonShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestXYShapeEncoding.testCollapsedTriangleEdgeFlags --tests org.apache.lucene.document.TestLatLonShape.testContainsFlatPolygon --console=plain > /tmp/lucene-flat-polygon-final.log 2>&1 && tail -9 /tmp/lucene-flat-polygon-final.log && git --no-pager diff --check && rm /tmp/lucene-flat-polygon-regression.log /tmp/lucene-flat-polygon-validation.log /tmp/lucene-flat-polygon-final.log && git --no-pager status --short"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "The simplification retained the first edge\u2019s boundary flag even when that edge collapsed, causing false-positive `CONTAINS` matches. Fixed `ShapeField` to derive the retained line\u2019s flag from both non-collapsed edges, preserving any external boundary. Added regression coverage without modifying existing tests.",
+ "assistant_messages": [
+  "I\u2019ll trace how collapsed triangles retain polygon-edge flags, then add a regression test for the false-positive `CONTAINS` result.\n",
+  "The regression reproduces the false positive. The retained line needs to be marked as a polygon boundary if either non-collapsed edge was external; the collapsed edge\u2019s flag must be ignored.\n",
+  "The simplification retained the first edge\u2019s boundary flag even when that edge collapsed, causing false-positive `CONTAINS` matches. Fixed `ShapeField` to derive the retained line\u2019s flag from both non-collapsed edges, preserving any external boundary. Added regression coverage without modifying existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Exploring glob with bash**\n\nI need to investigate using glob patterns through bash, specifically focusing on which tools I can utilize exclusively within bash. There's definitely a lot to explore here since globbing allows for matching multiple file names, which is super useful in scripting and command-line operations. I wonder if I should document some examples while I go along, so I can reference them later in case I need a reminder or to help someone else.",
+  "**Resolving triangle type**\n\nI'm thinking about how to determine the type of triangle based on the edges. If edges a and b are equal, then I wonder if I should check whether ab equals bc or ca. It seems I need to ensure that the line segments aren\u2019t collapsing and maintain important boundaries if there's any collapse. I'll consider using OR for the edges, focusing on flags being consistent. Also, I should inspect callers to ensure all logical checks are in place.",
+  "**Considering integration and testing**\n\nI\u2019m thinking about adding shared encoding and integrating latitude-longitude. The changelog entry is unnumbered and mentions that shaping queries with CONTAINS won\u2019t report false positives for polygons that collapse to lines after coordinate quantization, which sounds important. However, I don't have attribution for it, so I\u2019m left a bit unsure. I think I should focus on implementing tests first to ensure everything works as expected.",
+  "**Evaluating patch method**\n\nI\u2019m realizing that I\u2019ve got the wrong method for patch counts; it\u2019s supposed to be about 40 lines but only shows 3, which is confusing. I need to generate a unified diff using Python as a fallback for editing and avoid the patch count issues. I can replace strings when necessary, and I might want to create my own apply_patch function. I'll also ensure to test everything carefully first to avoid premature reruns. Inspecting the status is crucial to catch any malformed patches.",
+  "**Updating documentation**\n\nI need to address the doc comments, ensuring they're precise and clear, like using /** Resolves ... Line's ab flag is ...*/. Good documentation should be directly related to the source, and while a changelog might be unnecessary, it\u2019s essential to update the instructional documentation. I must also ensure that all shape surfaces are consistent. It's crucial that fixed attributes affect encoded data properly, and I should check if docvalue queries intersect correctly without collapsing or skipping unrelated content.\n\n**Addressing boolean fixes**\n\nI think the expected fix is to use a single boolean OR. I need to ensure tests under all flags identify internal edges correctly, especially when collapsed to true, as it shouldn't affect external ones. I have to check if the resolve is being called twice, which might lead to a lossy state. For example, if ab is true, it includes stale bc.ca. I need to confirm that the repeated type line evaluates correctly without causing confusion with the original edges. A direct test set followed by decoding should reset the states properly.\n\n**Investigating existing workflows**\n\nI see that existing workflows are using decoded triangles with direct docvalues for ab serialization, specifically for ca and bcs, without re-encoding. I need to investigate the ShapeDocValues flag and its consumers for bc on lines that aren\u2019t currently in use. It might also make sense to look into the encodeTriangle method of dt, perhaps running some tests on that. I should search for references to encodeTriangle in the sources to get a better understanding.",
+  "**Evaluating patch issues**\n\nI seem to have counted patch hunks incorrectly, leading to mistakes with the files. It looks like I need to abandon manual patching and just use a diff generator consistently. I\u2019ve already added some documentation but might be missing some packages, probably due to network issues preventing installation. It might be good to inspect the beginning of the log for any errors. I\u2019ll need to address these points carefully moving forward.",
+  "**Fixing code edits**\n\nI need to focus on using difflib for editing without manual counts. I\u2019m contemplating whether to use flags and keep it relevant to just the root without expanding too much. Maybe I can condense everything into a tiny three-line method without needing a documentation string, which could be a huge win. Also, I should test docvalues without needing formatted tests. I\u2019ll run the tests without any formatting initially to see how it goes.",
+  "**Organizing regression logs**\n\nI'm thinking we might want to leave regression evidence logs behind. For cleanup, I guess we can focus on the named /tmp and task tool artifacts, while skipping any final touches. I don't want any .orig files except for the source .orig created by a successful patch? I wonder if leftovers might occur after an offset. Clean up done originals could streamline the source document to just two lines. \n\nI also need to think about the user and their expectation regarding \"source not existing tests\" with our changes. One final command to fix formatting and tests seems reasonable, along with a check for the smallest (three regression tests) plus a diff check."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 200.0
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a245",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fallback routing inserted a synthetic `MatchedPath`, triggering the nested ServeDir assertion.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no values: cmds 7/9 read docs, cmd 11 failed with INVALID_REQUEST (--old matched 0 times), cmd 12 INVALID_REQUEST, cmd 14 BUDGET_EXHAUSTED. No probe rows to check."
+}

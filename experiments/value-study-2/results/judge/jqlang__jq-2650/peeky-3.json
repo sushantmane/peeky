@@ -1,0 +1,7 @@
+{
+ "judge_id": "a156",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The reported syntax is already fixed in this checkout: `src/parser.y` supports chained bracket indexes, including optional `?` forms.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

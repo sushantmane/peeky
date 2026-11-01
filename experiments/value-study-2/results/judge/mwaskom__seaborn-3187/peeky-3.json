@@ -1,0 +1,7 @@
+{
+ "judge_id": "a207",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"legends used `ScalarFormatter` labels but omitted its separate multiplier or additive offset.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

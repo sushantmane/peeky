@@ -1,0 +1,7 @@
+{
+ "judge_id": "a230",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Cascade deletion fetched entire related rows, unnecessarily decoding unused text and causing `UnicodeDecodeError`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a150",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed a stale javac erasure cache left behind when `@UtilityClass` makes nested classes static.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 15 session get at HandleUtilityClass.java:132: innerClassDecl.mods.flags = 8 (STATIC just OR'd in on line 130), innerClassSymbol.type.outer_field still a ClassType, cached erasure_field.outer_field.tsym a ClassSymbol. Cmd 45 probe (fixed build, dist rebuilt cmd 40) at line 134 (`innerClassSymbol.erasure_field = null;`, per cmd 43 diff, not yet run): type.outer_field = Type$1 (noType set on line 132) with tsym null, erasure_field.outer_field still a ClassType. All consistent with the code and with clearing the cached erasure fixing the NPE (cmd 41 javac 11/17 compile; cmd 47 baseline fails the new test with NPE, cmds 48-49 pass). Nothing contradicts."
+}

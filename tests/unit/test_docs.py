@@ -159,6 +159,8 @@ PRIVATE_NOTE_EXCLUSIONS = {
     "experiments/value-study/bugs/tokio-rs__axum-1934/problem.md",
     # Copilot CLI's own folder name for a session (`session-state`), not a note.
     "experiments/value-study/harness/run_one.py",
+    # A study agent's own reasoning, kept verbatim: it names the CLI's session folder.
+    "experiments/value-study-2/results/runs/valkey-io__valkey-790/peeky-first-3/result.json",
 }
 PRIVATE_NOTES = (
     # A personal path; "/users/42" in an example is a route, so case matters.

@@ -1,0 +1,238 @@
+{
+ "bug": "sharkdp__bat-3108",
+ "arm": "control",
+ "rep": 1,
+ "language": "rust",
+ "category": "B",
+ "image": "peeky-study/sharkdp__bat-3108:control",
+ "image_digest": "sha256:40549a1927d03ed980e4dcb40c5651706a7935c34210af105514d131f982de61",
+ "peeky_sha": null,
+ "container": "study-sharkdp__bat-3108-control-1-e3164b",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T10:27:42+00:00",
+ "ended": "2026-11-01T10:31:10+00:00",
+ "wall_seconds": 208.1,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "paging_does_not_override_simple_plain": "PASSED",
+  "simple_plain_does_not_override_paging": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 1.2,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "ae6d691ec21e6f1e465367a17413b72078df459c6d073b674a7e20e265062bec",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 4,
+ "patch_files": [
+  "CHANGELOG.md",
+  "src/bin/bat/app.rs",
+  "src/bin/bat/clap_app.rs"
+ ],
+ "patch_bytes": 4576,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 29
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 13,
+ "ai_credits": 22.0132,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 338052,
+  "output": 8601,
+  "cache_read": 296245,
+  "cache_write": 41768,
+  "reasoning": 3744
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 19,
+ "tool_calls_by_name": {
+  "bash": 19
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed && pwd && git status --short; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'paging|plain' src/bin/bat.rs src/bin/bat src/cli.rs src/config.rs tests/integration_tests* Cargo.toml",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,110p' CHANGELOG.md && rg -n 'test|format|clippy' CONTRIBUTING.md && rg --files src tests | head -80",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find src tests -maxdepth 3 -type f && grep -R -n -E 'paging|plain' src/bin --include='*.rs'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E 'paging|plain' tests/integration_tests.rs && sed -n '1,200p' Cargo.toml && grep -n -E 'test|format|clippy' CONTRIBUTING.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,160p' src/bin/bat/app.rs && sed -n '350,440p' src/bin/bat/app.rs && sed -n '1,150p' src/bin/bat/clap_app.rs && sed -n '295,375p' src/bin/bat/clap_app.rs && sed -n '1,190p' src/bin/bat/config.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,125p' tests/integration_tests.rs && sed -n '690,790p' tests/integration_tests.rs && sed -n '930,1075p' tests/integration_tests.rs && cat tests/utils/mocked_pagers.rs && cat tests/utils/command.rs && sed -n '20,95p' CONTRIBUTING.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,140p' src/bin/bat/app.rs && sed -n '380,415p' src/bin/bat/app.rs && sed -n '90,115p' src/bin/bat/clap_app.rs && sed -n '315,350p' src/bin/bat/clap_app.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E 'pty|Openpty|SAFE_CHILD|CHILD_WAIT|terminal|stdout_is' tests/integration_tests.rs && sed -n '1,200p' src/output.rs && sed -n '120,158p' src/bin/bat/config.rs && tail -70 src/bin/bat/clap_app.rs && grep -R -n 'indices_of\\|index_of' src --include='*.rs'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '400,461p' tests/integration_tests.rs && tail -130 src/bin/bat/app.rs && sed -n '1,110p' src/style.rs && sed -n '1,65p' src/config.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E 'plain|paging' doc/bat.1.in doc/* README.md 2>/dev/null | head -65 && command -v apply_patch && git log -3 --oneline && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pp_flag -- --nocapture",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v patch; command -v cargo; git log -3 --oneline && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pp_flag",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '180,265p' src/bin/bat/app.rs && grep -n -E 'bat|InvalidPager' src/pager.rs src/error.rs tests/integration_tests.rs && sed -n '55,85p' README.md && cat rustfmt.toml && sed -n '1,50p' build/main.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/bin/bat/app.rs\n+++ b/src/bin/bat/app.rs\n@@ -442,3 +442,45 @@\n         Ok(styled_components)\n     }\n }\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn paging_with_plain() {\n+        let cases: &[(&[&str], PagingMode)] = &[\n+            (&[\"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-pp\"], PagingMode::Never),\n+            (&[\"--plain\", \"--plain\"], PagingMode::Never),\n+            (&[\"--paging=never\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"--paging=never\"], PagingMode::Never),\n+            (&[\"--paging=always\", \"--plain\"], PagingMode::Always),\n+            (&[\"--plain\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--plain\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--paging=always\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-P\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"-P\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\", \"-P\"], PagingMode::Never),\n+        ];\n+\n+        for &(args, expected) in cases {\n+            let app = App {\n+                matches: clap_app::build_app(true)\n+                    .get_matches_from(std::iter::once(\"bat\").chain(args.iter().copied())),\n+                interactive_output: true,\n+            };\n+            let config = app.config(&[]).unwrap();\n+\n+            assert_eq!(config.paging_mode, expected, \"args: {args:?}\");\n+            assert!(config.style_components.plain(), \"args: {args:?}\");\n+        }\n+    }\n+}\n--- a/tests/integration_tests.rs\n+++ b/tests/integration_tests.rs\n@@ -1020,6 +1020,31 @@\n }\n \n #[test]\n+#[cfg(unix)]\n+fn pager_never_with_plain() {\n+    for args in [\n+        [\"--paging=never\", \"--plain\"],\n+        [\"--plain\", \"--paging=never\"],\n+        [\"--paging=never\", \"-p\"],\n+        [\"-p\", \"--paging=never\"],\n+    ] {\n+        let OpenptyResult { master: _master, slave } =\n+            openpty(None, None).expect(\"Couldn't open pty.\");\n+\n+        // Using bat as a pager fails if paging is accidentally enabled.\n+        bat_raw_command()\n+            .args(args)\n+            .arg(\"--pager=bat\")\n+            .arg(\"--color=never\")\n+            .arg(\"test.txt\")\n+            .stdout(File::from(slave))\n+            .assert()\n+            .success()\n+            .stderr(\"\");\n+    }\n+}\n+\n+#[test]\n fn pager_failed_to_parse() {\n     bat()\n         .env(\"BAT_PAGER\", \"mismatched-quotes 'a\")\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pager_never_with_plain",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --stat && git apply --recount <<'PATCH'\ndiff --git a/src/bin/bat/app.rs b/src/bin/bat/app.rs\n--- a/src/bin/bat/app.rs\n+++ b/src/bin/bat/app.rs\n@@ -442,3 +442,45 @@\n         Ok(styled_components)\n     }\n }\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn paging_with_plain() {\n+        let cases: &[(&[&str], PagingMode)] = &[\n+            (&[\"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-pp\"], PagingMode::Never),\n+            (&[\"--plain\", \"--plain\"], PagingMode::Never),\n+            (&[\"--paging=never\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"--paging=never\"], PagingMode::Never),\n+            (&[\"--paging=always\", \"--plain\"], PagingMode::Always),\n+            (&[\"--plain\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--plain\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--paging=always\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-P\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"-P\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\", \"-P\"], PagingMode::Never),\n+        ];\n+\n+        for &(args, expected) in cases {\n+            let app = App {\n+                matches: clap_app::build_app(true)\n+                    .get_matches_from(std::iter::once(\"bat\").chain(args.iter().copied())),\n+                interactive_output: true,\n+            };\n+            let config = app.config(&[]).unwrap();\n+\n+            assert_eq!(config.paging_mode, expected, \"args: {args:?}\");\n+            assert!(config.style_components.plain(), \"args: {args:?}\");\n+        }\n+    }\n+}\ndiff --git a/tests/integration_tests.rs b/tests/integration_tests.rs\n--- a/tests/integration_tests.rs\n+++ b/tests/integration_tests.rs\n@@ -1020,6 +1020,31 @@\n }\n \n #[test]\n+#[cfg(unix)]\n+fn pager_never_with_plain() {\n+    for args in [\n+        [\"--paging=never\", \"--plain\"],\n+        [\"--plain\", \"--paging=never\"],\n+        [\"--paging=never\", \"-p\"],\n+        [\"-p\", \"--paging=never\"],\n+    ] {\n+        let OpenptyResult { master: _master, slave } =\n+            openpty(None, None).expect(\"Couldn't open pty.\");\n+\n+        // Using bat as a pager fails if paging is accidentally enabled.\n+        bat_raw_command()\n+            .args(args)\n+            .arg(\"--pager=bat\")\n+            .arg(\"--color=never\")\n+            .arg(\"test.txt\")\n+            .stdout(File::from(slave))\n+            .assert()\n+            .success()\n+            .stderr(\"\");\n+    }\n+}\n+\n+#[test]\n fn pager_failed_to_parse() {\n     bat()\n         .env(\"BAT_PAGER\", \"mismatched-quotes 'a\")\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pager_never_with_plain",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/src/bin/bat/clap_app.rs b/src/bin/bat/clap_app.rs\n--- a/src/bin/bat/clap_app.rs\n+++ b/src/bin/bat/clap_app.rs\n@@ -96,9 +96,8 @@\n         .arg(\n             Arg::new(\"plain\")\n                 .overrides_with(\"plain\")\n                 .overrides_with(\"number\")\n-                .overrides_with(\"paging\")\n                 .short('p')\n                 .long(\"plain\")\n                 .action(ArgAction::Count)\n@@ -322,8 +321,7 @@\n                 .long(\"paging\")\n                 .overrides_with(\"paging\")\n                 .overrides_with(\"no-paging\")\n-                .overrides_with(\"plain\")\n                 .value_name(\"when\")\n                 .value_parser([\"auto\", \"never\", \"always\"])\n                 .default_value(\"auto\")\ndiff --git a/src/bin/bat/app.rs b/src/bin/bat/app.rs\n--- a/src/bin/bat/app.rs\n+++ b/src/bin/bat/app.rs\n@@ -12,6 +12,7 @@\n use bat::BinaryBehavior;\n use bat::StripAnsiMode;\n+use clap::parser::ValueSource;\n use clap::ArgMatches;\n \n use console::Term;\n@@ -99,13 +100,16 @@\n         let style_components = self.style_components()?;\n \n+        let plain_disables_paging = self.matches.get_count(\"plain\") > 1\n+            && (self.matches.value_source(\"paging\") == Some(ValueSource::DefaultValue)\n+                || self.matches.index_of(\"plain\") > self.matches.index_of(\"paging\"));\n+\n         let paging_mode = match self.matches.get_one::<String>(\"paging\").map(|s| s.as_str()) {\n+            _ if plain_disables_paging => PagingMode::Never,\n             Some(\"always\") => PagingMode::Always,\n             Some(\"never\") => PagingMode::Never,\n             Some(\"auto\") | None => {\n-                // If we have -pp as an option when in auto mode, the pager should be disabled.\n-                let extra_plain = self.matches.get_count(\"plain\") > 1;\n-                if extra_plain || self.matches.get_flag(\"no-paging\") {\n+                if self.matches.get_flag(\"no-paging\") {\n                     PagingMode::Never\n                 } else if inputs.iter().any(Input::is_stdin) {\n                     // If we are reading from stdin, only enable paging if we write to an\nPATCH\n git apply --recount <<'PATCH'\ndiff --git a/CHANGELOG.md b/CHANGELOG.md\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -14,6 +14,7 @@\n \n ## Bugfixes\n \n+- Fix `--plain` overriding `--paging` and preserve plain style when `--paging` is specified.\n - Fix long file name wrapping in header, see #2835 (@FilipRazek)\n - Fix `NO_COLOR` support, see #2767 (@acuteenvy)\n - Fix handling of inputs with OSC ANSI escape sequences, see #2541 and #2544 (@eth-p)\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --bin bat paging_with_plain && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pager && cargo fmt --all -- --check",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git --no-pager diff --stat && git --no-pager diff -- src/bin/bat/app.rs src/bin/bat/clap_app.rs tests/integration_tests.rs CHANGELOG.md && command -v rustfmt; rustup toolchain list; ls /usr/bin/rustfmt /usr/local/bin/rustfmt 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests paging && RUSTFLAGS=-Awarnings cargo test --package bat --bin bat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/integration_tests.rs b/tests/integration_tests.rs\n--- a/tests/integration_tests.rs\n+++ b/tests/integration_tests.rs\n@@ -1022,18 +1022,24 @@\n #[test]\n #[cfg(unix)]\n fn pager_never_with_plain() {\n-    for args in [\n-        [\"--paging=never\", \"--plain\"],\n-        [\"--plain\", \"--paging=never\"],\n-        [\"--paging=never\", \"-p\"],\n-        [\"-p\", \"--paging=never\"],\n-    ] {\n-        let OpenptyResult { master: _master, slave } =\n-            openpty(None, None).expect(\"Couldn't open pty.\");\n+    let cases: &[&[&str]] = &[\n+        &[\"--paging=never\", \"--plain\"],\n+        &[\"--plain\", \"--paging=never\"],\n+        &[\"--paging=never\", \"-p\"],\n+        &[\"-p\", \"--paging=never\"],\n+        &[\"--plain\"],\n+        &[\"-p\"],\n+    ];\n+    for &args in cases {\n+        let OpenptyResult {\n+            master: _master,\n+            slave,\n+        } = openpty(None, None).expect(\"Couldn't open pty.\");\n \n         // Using bat as a pager fails if paging is accidentally enabled.\n         bat_raw_command()\n+            .env(\"BAT_PAGING\", \"never\")\n             .args(args)\n             .arg(\"--pager=bat\")\n             .arg(\"--color=never\")\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pag && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "cd /testbed && grep -n -E 'plain|paging' doc/bat.1.in doc/* README.md 2>/dev/null | head -65 && command -v apply_patch && git log -3 --oneline && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pp_flag -- --nocapture",
+  "cd /testbed && command -v patch; command -v cargo; git log -3 --oneline && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pp_flag",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/bin/bat/app.rs\n+++ b/src/bin/bat/app.rs\n@@ -442,3 +442,45 @@\n         Ok(styled_components)\n     }\n }\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn paging_with_plain() {\n+        let cases: &[(&[&str], PagingMode)] = &[\n+            (&[\"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-pp\"], PagingMode::Never),\n+            (&[\"--plain\", \"--plain\"], PagingMode::Never),\n+            (&[\"--paging=never\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"--paging=never\"], PagingMode::Never),\n+            (&[\"--paging=always\", \"--plain\"], PagingMode::Always),\n+            (&[\"--plain\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--plain\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--paging=always\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-P\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"-P\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\", \"-P\"], PagingMode::Never),\n+        ];\n+\n+        for &(args, expected) in cases {\n+            let app = App {\n+                matches: clap_app::build_app(true)\n+                    .get_matches_from(std::iter::once(\"bat\").chain(args.iter().copied())),\n+                interactive_output: true,\n+            };\n+            let config = app.config(&[]).unwrap();\n+\n+            assert_eq!(config.paging_mode, expected, \"args: {args:?}\");\n+            assert!(config.style_components.plain(), \"args: {args:?}\");\n+        }\n+    }\n+}\n--- a/tests/integration_tests.rs\n+++ b/tests/integration_tests.rs\n@@ -1020,6 +1020,31 @@\n }\n \n #[test]\n+#[cfg(unix)]\n+fn pager_never_with_plain() {\n+    for args in [\n+        [\"--paging=never\", \"--plain\"],\n+        [\"--plain\", \"--paging=never\"],\n+        [\"--paging=never\", \"-p\"],\n+        [\"-p\", \"--paging=never\"],\n+    ] {\n+        let OpenptyResult { master: _master, slave } =\n+            openpty(None, None).expect(\"Couldn't open pty.\");\n+\n+        // Using bat as a pager fails if paging is accidentally enabled.\n+        bat_raw_command()\n+            .args(args)\n+            .arg(\"--pager=bat\")\n+            .arg(\"--color=never\")\n+            .arg(\"test.txt\")\n+            .stdout(File::from(slave))\n+            .assert()\n+            .success()\n+            .stderr(\"\");\n+    }\n+}\n+\n+#[test]\n fn pager_failed_to_parse() {\n     bat()\n         .env(\"BAT_PAGER\", \"mismatched-quotes 'a\")\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pager_never_with_plain",
+  "cd /testbed && git diff --stat && git apply --recount <<'PATCH'\ndiff --git a/src/bin/bat/app.rs b/src/bin/bat/app.rs\n--- a/src/bin/bat/app.rs\n+++ b/src/bin/bat/app.rs\n@@ -442,3 +442,45 @@\n         Ok(styled_components)\n     }\n }\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn paging_with_plain() {\n+        let cases: &[(&[&str], PagingMode)] = &[\n+            (&[\"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-pp\"], PagingMode::Never),\n+            (&[\"--plain\", \"--plain\"], PagingMode::Never),\n+            (&[\"--paging=never\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"--paging=never\"], PagingMode::Never),\n+            (&[\"--paging=always\", \"--plain\"], PagingMode::Always),\n+            (&[\"--plain\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"--plain\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--plain\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"--paging=always\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\"], PagingMode::Always),\n+            (&[\"--paging=auto\", \"-pp\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=auto\"], PagingMode::QuitIfOneScreen),\n+            (&[\"-P\", \"--plain\"], PagingMode::Never),\n+            (&[\"--plain\", \"-P\"], PagingMode::Never),\n+            (&[\"-pp\", \"--paging=always\", \"-P\"], PagingMode::Never),\n+        ];\n+\n+        for &(args, expected) in cases {\n+            let app = App {\n+                matches: clap_app::build_app(true)\n+                    .get_matches_from(std::iter::once(\"bat\").chain(args.iter().copied())),\n+                interactive_output: true,\n+            };\n+            let config = app.config(&[]).unwrap();\n+\n+            assert_eq!(config.paging_mode, expected, \"args: {args:?}\");\n+            assert!(config.style_components.plain(), \"args: {args:?}\");\n+        }\n+    }\n+}\ndiff --git a/tests/integration_tests.rs b/tests/integration_tests.rs\n--- a/tests/integration_tests.rs\n+++ b/tests/integration_tests.rs\n@@ -1020,6 +1020,31 @@\n }\n \n #[test]\n+#[cfg(unix)]\n+fn pager_never_with_plain() {\n+    for args in [\n+        [\"--paging=never\", \"--plain\"],\n+        [\"--plain\", \"--paging=never\"],\n+        [\"--paging=never\", \"-p\"],\n+        [\"-p\", \"--paging=never\"],\n+    ] {\n+        let OpenptyResult { master: _master, slave } =\n+            openpty(None, None).expect(\"Couldn't open pty.\");\n+\n+        // Using bat as a pager fails if paging is accidentally enabled.\n+        bat_raw_command()\n+            .args(args)\n+            .arg(\"--pager=bat\")\n+            .arg(\"--color=never\")\n+            .arg(\"test.txt\")\n+            .stdout(File::from(slave))\n+            .assert()\n+            .success()\n+            .stderr(\"\");\n+    }\n+}\n+\n+#[test]\n fn pager_failed_to_parse() {\n     bat()\n         .env(\"BAT_PAGER\", \"mismatched-quotes 'a\")\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pager_never_with_plain",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/src/bin/bat/clap_app.rs b/src/bin/bat/clap_app.rs\n--- a/src/bin/bat/clap_app.rs\n+++ b/src/bin/bat/clap_app.rs\n@@ -96,9 +96,8 @@\n         .arg(\n             Arg::new(\"plain\")\n                 .overrides_with(\"plain\")\n                 .overrides_with(\"number\")\n-                .overrides_with(\"paging\")\n                 .short('p')\n                 .long(\"plain\")\n                 .action(ArgAction::Count)\n@@ -322,8 +321,7 @@\n                 .long(\"paging\")\n                 .overrides_with(\"paging\")\n                 .overrides_with(\"no-paging\")\n-                .overrides_with(\"plain\")\n                 .value_name(\"when\")\n                 .value_parser([\"auto\", \"never\", \"always\"])\n                 .default_value(\"auto\")\ndiff --git a/src/bin/bat/app.rs b/src/bin/bat/app.rs\n--- a/src/bin/bat/app.rs\n+++ b/src/bin/bat/app.rs\n@@ -12,6 +12,7 @@\n use bat::BinaryBehavior;\n use bat::StripAnsiMode;\n+use clap::parser::ValueSource;\n use clap::ArgMatches;\n \n use console::Term;\n@@ -99,13 +100,16 @@\n         let style_components = self.style_components()?;\n \n+        let plain_disables_paging = self.matches.get_count(\"plain\") > 1\n+            && (self.matches.value_source(\"paging\") == Some(ValueSource::DefaultValue)\n+                || self.matches.index_of(\"plain\") > self.matches.index_of(\"paging\"));\n+\n         let paging_mode = match self.matches.get_one::<String>(\"paging\").map(|s| s.as_str()) {\n+            _ if plain_disables_paging => PagingMode::Never,\n             Some(\"always\") => PagingMode::Always,\n             Some(\"never\") => PagingMode::Never,\n             Some(\"auto\") | None => {\n-                // If we have -pp as an option when in auto mode, the pager should be disabled.\n-                let extra_plain = self.matches.get_count(\"plain\") > 1;\n-                if extra_plain || self.matches.get_flag(\"no-paging\") {\n+                if self.matches.get_flag(\"no-paging\") {\n                     PagingMode::Never\n                 } else if inputs.iter().any(Input::is_stdin) {\n                     // If we are reading from stdin, only enable paging if we write to an\nPATCH\n git apply --recount <<'PATCH'\ndiff --git a/CHANGELOG.md b/CHANGELOG.md\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -14,6 +14,7 @@\n \n ## Bugfixes\n \n+- Fix `--plain` overriding `--paging` and preserve plain style when `--paging` is specified.\n - Fix long file name wrapping in header, see #2835 (@FilipRazek)\n - Fix `NO_COLOR` support, see #2767 (@acuteenvy)\n - Fix handling of inputs with OSC ANSI escape sequences, see #2541 and #2544 (@eth-p)\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --bin bat paging_with_plain && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pager && cargo fmt --all -- --check",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests paging && RUSTFLAGS=-Awarnings cargo test --package bat --bin bat",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/integration_tests.rs b/tests/integration_tests.rs\n--- a/tests/integration_tests.rs\n+++ b/tests/integration_tests.rs\n@@ -1022,18 +1022,24 @@\n #[test]\n #[cfg(unix)]\n fn pager_never_with_plain() {\n-    for args in [\n-        [\"--paging=never\", \"--plain\"],\n-        [\"--plain\", \"--paging=never\"],\n-        [\"--paging=never\", \"-p\"],\n-        [\"-p\", \"--paging=never\"],\n-    ] {\n-        let OpenptyResult { master: _master, slave } =\n-            openpty(None, None).expect(\"Couldn't open pty.\");\n+    let cases: &[&[&str]] = &[\n+        &[\"--paging=never\", \"--plain\"],\n+        &[\"--plain\", \"--paging=never\"],\n+        &[\"--paging=never\", \"-p\"],\n+        &[\"-p\", \"--paging=never\"],\n+        &[\"--plain\"],\n+        &[\"-p\"],\n+    ];\n+    for &args in cases {\n+        let OpenptyResult {\n+            master: _master,\n+            slave,\n+        } = openpty(None, None).expect(\"Couldn't open pty.\");\n \n         // Using bat as a pager fails if paging is accidentally enabled.\n         bat_raw_command()\n+            .env(\"BAT_PAGING\", \"never\")\n             .args(args)\n             .arg(\"--pager=bat\")\n             .arg(\"--color=never\")\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package bat --test integration_tests pag && git diff --check && git status --short"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "The bug came from mutual argument overrides: `--plain` discarded `--paging=never`, restoring automatic paging. Removed those overrides and resolved `-pp` paging precedence by argument order, while preserving plain styling. All 28 paging integration tests and 8 CLI unit tests pass.",
+ "assistant_messages": [
+  "I\u2019ll trace how `--plain` and `--paging` interact, fix the precedence issue, and add a regression test.\n",
+  "`--plain` and `--paging` currently erase each other during argument parsing\u2014even a single `--plain` resets `--paging=never` to automatic paging. I\u2019ll separate style selection from paging precedence while preserving the last-argument behavior for `-pp`.\n",
+  "The bug came from mutual argument overrides: `--plain` discarded `--paging=never`, restoring automatic paging. Removed those overrides and resolved `-pp` paging precedence by argument order, while preserving plain styling. All 28 paging integration tests and 8 CLI unit tests pass."
+ ],
+ "assistant_reasoning": [
+  "**Verifying test configurations**\n\nI need to verify the clap indices stored in the details through unit tests for the matrix bin tests app. I'll be adding tests to the config unit for four scenarios regarding paging: never plain, auto plain, always plain order, and \"pp always auto\" order for single repeated scenarios. I might consider creating 20 combinations with interactive output as true and using a plain style, along with variations that have no paging. I'll also conduct an integration test with robust commands.\n\n**Setting up pager tests**\n\nI need to set `--pager=bat` when success isn't expected, as stdout in the terminal can produce irrelevant output. I\u2019ll use `bat_raw_command().stdout(File slave).output()` and assert that stdout is empty and stderr returns an empty string. If the configuration is wrong, it invokes bat, causing an invalid pager error, which leads to failure. The test must confirm the output shape, and possibly reading pseudo output would help. Using `--pager=bat` can complicate things when it accidentally paginates output.",
+  "**Evaluating testing strategies**\n\nThe user seems to be focusing on integration tests, indicating they want to assess unit tests specifically for a bin cargo test\u2014likely testing \"bat.\" It makes sense to run the tests until they fail before making any source modifications using patch tests. Maybe I could batch all tests, the changelog, and the source together after a failure to keep everything coherent. So, I\u2019ll prioritize running the tests first, then handle any failures and source coherence afterward.",
+  "**Testing environment configurations**\n\nI need to add a test for the environment variable `pager_never_with_plain_from_env`. To avoid duplication, I should use a small helper function. The easiest test could involve setting the PTY environment variable `.env(\"BAT_PAGING\", \"never\")` using arrays like [\"--plain\", \"--color=never\"] and [\"-p\", \"--color=never\"]. I'll convert these arrays into slices and set the env to never for all variations. Additionally, I want to ensure the CLI handles these cases correctly without failing."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 209.9
+}

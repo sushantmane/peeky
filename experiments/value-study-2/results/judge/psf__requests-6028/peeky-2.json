@@ -1,0 +1,7 @@
+{
+ "judge_id": "a009",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The root cause was proxy URL normalization using urllib3's `netloc`, which excludes credentials.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

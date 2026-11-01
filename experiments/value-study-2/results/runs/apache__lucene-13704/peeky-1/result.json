@@ -1,0 +1,237 @@
+{
+ "bug": "apache__lucene-13704",
+ "arm": "peeky",
+ "rep": 1,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__lucene-13704:peeky-r2",
+ "image_digest": "sha256:79c4f46c6eaf57ab73fcfe6d02cdd74ce46546e4bffced258a0c0728c16bf414",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-apache__lucene-13704-peeky-1-e4b35f",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T11:38:05+00:00",
+ "ended": "2026-11-01T11:41:36+00:00",
+ "wall_seconds": 210.4,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "TestLatLonDocValuesQueries > testNarrowPolygonCloseToNorthPole": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 16.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "55c492b1cb5fe2932206b3aaedb3d85397a2247a1aa1495f12c0801b16b11ab9",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "lucene/CHANGES.txt",
+  "lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java",
+  "lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java",
+  "lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java"
+ ],
+ "patch_bytes": 8270,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 40
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 15,
+ "ai_credits": 22.8412,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 438018,
+  "output": 8210,
+  "cache_read": 395296,
+  "cache_write": 42677,
+  "reasoning": 2130
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 19,
+ "tool_calls_by_name": {
+  "bash": 19
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -la; if [ -d /testbed ]; then cd /testbed && git status --short && rg -n 'class ComponentPredicate|createComponentPredicate|class TestLatLonDocValues|class TestLatLonPoint' lucene --glob '*.java'; fi; if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'class ComponentPredicate|createComponentPredicate|class TestLatLonDocValues|class TestLatLonPoint' lucene --glob '*.java' && sed -n '1,260p' lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -R -n --include='*.java' -E 'class ComponentPredicate|createComponentPredicate|class TestLatLonDocValues|class TestLatLonPoint' lucene/core lucene/test-framework && sed -n '1,300p' lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,170p' /opt/peeky/docs/AGENT_GUIDE.md; cat /opt/peeky/docs/PROJECT.md; cd /testbed && ls lucene/core/src/test/org/apache/lucene/geo && ls lucene/core/src/test/org/apache/lucene/document/*LatLon*",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '300,510p' lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java && cat lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java && sed -n '1,240p' lucene/core/src/java/org/apache/lucene/document/LatLonDocValuesQuery.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java && cat lucene/core/src/test/org/apache/lucene/search/TestLatLonPointQueries.java && grep -n -E 'Polygon|Narrow|Pole' lucene/test-framework/src/java/org/apache/lucene/tests/search/BaseGeoPointTestCase.java | head -60 && ls -l /usr/lib/jvm && command -v apply_patch && git status --short && head -80 gradle.properties",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,130p' lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java && grep -n -E 'Polygon|Narrow|Pole' lucene/test-framework/src/java/org/apache/lucene/tests/geo/BaseGeoPointTestCase.java | head -55 && head -150 lucene/CHANGES.txt && head -95 gradle.properties && java -version && command -v patch; ls /usr/local/bin/*patch* /usr/bin/*patch* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && sed -n '1,190p' lucene/core/src/java/org/apache/lucene/geo/LatLonGeometry.java && grep -n -E 'newSlowPolygonQuery|newSlowDistanceQuery|newSlowGeometryQuery' lucene/core/src/java/org/apache/lucene/document/LatLonDocValuesField.java && grep -n -E 'JAVA_HOME|java-21|org.gradle.java|version' build.gradle settings.gradle gradlew | head -45",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java\n--- a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java\n+++ b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java\n@@ -34,6 +34,7 @@\n import org.apache.lucene.tests.util.LuceneTestCase;\n import org.apache.lucene.tests.util.TestUtil;\n import org.apache.lucene.util.NumericUtils;\n+import org.apache.lucene.util.SloppyMath;\n@@ -151,6 +152,70 @@\n-  // check edge/interesting cases explicitly\n+  public void testNarrowPolygonPredicateAtEncodingBoundaries() {\n+    int[] minima = {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 4, Integer.MAX_VALUE - 3};\n+    for (int minLat : minima) {\n+      for (int minLon : minima) {\n+        double minLatitude = decodeLatitude(minLat);\n+        double maxLatitude = decodeLatitude(minLat + 3);\n+        double minLongitude = decodeLongitude(minLon);\n+        double maxLongitude = decodeLongitude(minLon + 3);\n+        Component2D component =\n+            LatLonGeometry.create(\n+                new Polygon(\n+                    new double[] {\n+                      minLatitude, minLatitude, maxLatitude, maxLatitude, minLatitude\n+                    },\n+                    new double[] {\n+                      minLongitude, maxLongitude, maxLongitude, minLongitude, minLongitude\n+                    }));\n+        GeoEncodingUtils.Component2DPredicate predicate =\n+            GeoEncodingUtils.createComponentPredicate(component);\n+        assertTrue(component.contains(decodeLongitude(minLon + 1), decodeLatitude(minLat + 1)));\n+        for (long lat = Math.max(Integer.MIN_VALUE, (long) minLat - 1);\n+            lat <= Math.min(Integer.MAX_VALUE, (long) minLat + 4);\n+            lat++) {\n+          for (long lon = Math.max(Integer.MIN_VALUE, (long) minLon - 1);\n+              lon <= Math.min(Integer.MAX_VALUE, (long) minLon + 4);\n+              lon++) {\n+            assertEquals(\n+                \"lat=\" + lat + \", lon=\" + lon,\n+                component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),\n+                predicate.test((int) lat, (int) lon));\n+          }\n+        }\n+      }\n+    }\n+  }\n+\n+  public void testDistancePredicateNearNorthPole() {\n+    int latitude = Integer.MAX_VALUE - 2;\n+    for (int longitude : new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 2}) {\n+      double lat = decodeLatitude(latitude);\n+      double lon = decodeLongitude(longitude);\n+      for (double radius : new double[] {0.01, 0.1, 1.0, 10.0}) {\n+        GeoEncodingUtils.DistancePredicate predicate =\n+            GeoEncodingUtils.createDistancePredicate(lat, lon, radius);\n+        assertTrue(predicate.test(latitude, longitude));\n+        double distanceKey = GeoUtils.distanceQuerySortKey(radius);\n+        for (int pointLat :\n+            new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 100, latitude, Integer.MAX_VALUE}) {\n+          for (int pointLon : new int[] {Integer.MIN_VALUE, 0, longitude, Integer.MAX_VALUE}) {\n+            assertEquals(\n+                SloppyMath.haversinSortKey(\n+                        decodeLatitude(pointLat), decodeLongitude(pointLon), lat, lon)\n+                    <= distanceKey,\n+                predicate.test(pointLat, pointLon));\n+          }\n+        }\n+      }\n+    }\n+  }\n+\n+  // check edge/interesting cases explicitly\n diff --git a/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java b/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java\n--- a/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java\n+++ b/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java\n@@ -18,12 +18,18 @@\n import org.apache.lucene.document.Document;\n import org.apache.lucene.document.LatLonDocValuesField;\n+import org.apache.lucene.document.LatLonPoint;\n import org.apache.lucene.document.ShapeField;\n import org.apache.lucene.geo.GeoEncodingUtils;\n import org.apache.lucene.geo.LatLonGeometry;\n import org.apache.lucene.geo.Polygon;\n+import org.apache.lucene.index.DirectoryReader;\n+import org.apache.lucene.index.IndexReader;\n+import org.apache.lucene.index.IndexWriter;\n+import org.apache.lucene.store.Directory;\n import org.apache.lucene.tests.geo.BaseGeoPointTestCase;\n@@ -28,6 +34,39 @@\n public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {\n \n+  public void testNarrowPolygonCloseToNorthPole() throws Exception {\n+    double lat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 2);\n+    double lon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 2);\n+    double minLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 3);\n+    double maxLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE);\n+    double minLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 3);\n+    double maxLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE);\n+    Polygon polygon =\n+        new Polygon(\n+            new double[] {minLat, minLat, maxLat, maxLat, minLat},\n+            new double[] {minLon, maxLon, maxLon, minLon, minLon});\n+\n+    try (Directory dir = newDirectory();\n+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig())) {\n+      Document doc = new Document();\n+      addPointToDoc(FIELD_NAME, doc, lat, lon);\n+      doc.add(new LatLonPoint(FIELD_NAME, lat, lon));\n+      writer.addDocument(doc);\n+      try (IndexReader reader = DirectoryReader.open(writer)) {\n+        IndexSearcher searcher = newSearcher(reader);\n+        assertEquals(1, searcher.count(LatLonPoint.newPolygonQuery(FIELD_NAME, polygon)));\n+        assertEquals(1, searcher.count(newPolygonQuery(FIELD_NAME, polygon)));\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonDocValuesField.newSlowGeometryQuery(\n+                    FIELD_NAME, ShapeField.QueryRelation.WITHIN, polygon)));\n+        assertEquals(\n+            0,\n+            searcher.count(\n+                LatLonDocValuesField.newSlowGeometryQuery(\n+                    FIELD_NAME, ShapeField.QueryRelation.DISJOINT, polygon)));\n+      }\n+    }\n+  }\n+\n   @Override\n   protected void addPointToDoc(String field, Document doc, double lat, double lon) {\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils.testNarrowPolygonPredicateAtEncodingBoundaries --tests org.apache.lucene.geo.TestGeoEncodingUtils.testDistancePredicateNearNorthPole --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --console=plain > /tmp/lucene-polar-baseline.log 2>&1; result=$?; tail -90 /tmp/lucene-polar-baseline.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\n\ndef replace(path, old, new):\n    p = Path(path)\n    text = p.read_text()\n    assert text.count(old) == 1, (path, old)\n    p.write_text(text.replace(old, new))\n\nreplace('lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java',\n        'import org.apache.lucene.util.NumericUtils;\\n',\n        'import org.apache.lucene.util.NumericUtils;\\nimport org.apache.lucene.util.SloppyMath;\\n')\nreplace('lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java',\n        '  // check edge/interesting cases explicitly\\n', '''  public void testNarrowPolygonPredicateAtEncodingBoundaries() {\n    int[] minima = {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 4, Integer.MAX_VALUE - 3};\n    for (int minLat : minima) {\n      for (int minLon : minima) {\n        double minLatitude = decodeLatitude(minLat);\n        double maxLatitude = decodeLatitude(minLat + 3);\n        double minLongitude = decodeLongitude(minLon);\n        double maxLongitude = decodeLongitude(minLon + 3);\n        Component2D component =\n            LatLonGeometry.create(\n                new Polygon(\n                    new double[] {\n                      minLatitude, minLatitude, maxLatitude, maxLatitude, minLatitude\n                    },\n                    new double[] {\n                      minLongitude, maxLongitude, maxLongitude, minLongitude, minLongitude\n                    }));\n        GeoEncodingUtils.Component2DPredicate predicate =\n            GeoEncodingUtils.createComponentPredicate(component);\n        assertTrue(component.contains(decodeLongitude(minLon + 1), decodeLatitude(minLat + 1)));\n        for (long lat = Math.max(Integer.MIN_VALUE, (long) minLat - 1);\n            lat <= Math.min(Integer.MAX_VALUE, (long) minLat + 4);\n            lat++) {\n          for (long lon = Math.max(Integer.MIN_VALUE, (long) minLon - 1);\n              lon <= Math.min(Integer.MAX_VALUE, (long) minLon + 4);\n              lon++) {\n            assertEquals(\n                \"lat=\" + lat + \", lon=\" + lon,\n                component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),\n                predicate.test((int) lat, (int) lon));\n          }\n        }\n      }\n    }\n  }\n\n  public void testDistancePredicateNearNorthPole() {\n    int latitude = Integer.MAX_VALUE - 2;\n    for (int longitude : new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 2}) {\n      double lat = decodeLatitude(latitude);\n      double lon = decodeLongitude(longitude);\n      for (double radius : new double[] {0.01, 0.1, 1.0, 10.0}) {\n        GeoEncodingUtils.DistancePredicate predicate =\n            GeoEncodingUtils.createDistancePredicate(lat, lon, radius);\n        assertTrue(predicate.test(latitude, longitude));\n        double distanceKey = GeoUtils.distanceQuerySortKey(radius);\n        for (int pointLat :\n            new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 100, latitude, Integer.MAX_VALUE}) {\n          for (int pointLon : new int[] {Integer.MIN_VALUE, 0, longitude, Integer.MAX_VALUE}) {\n            assertEquals(\n                SloppyMath.haversinSortKey(\n                        decodeLatitude(pointLat), decodeLongitude(pointLon), lat, lon)\n                    <= distanceKey,\n                predicate.test(pointLat, pointLon));\n          }\n        }\n      }\n    }\n  }\n\n  // check edge/interesting cases explicitly\n''')\nreplace('lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java',\n        'import org.apache.lucene.document.LatLonDocValuesField;\\n',\n        'import org.apache.lucene.document.LatLonDocValuesField;\\nimport org.apache.lucene.document.LatLonPoint;\\n')\nreplace('lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java',\n        'import org.apache.lucene.tests.geo.BaseGeoPointTestCase;\\n',\n        '''import org.apache.lucene.index.DirectoryReader;\nimport org.apache.lucene.index.IndexReader;\nimport org.apache.lucene.index.IndexWriter;\nimport org.apache.lucene.store.Directory;\nimport org.apache.lucene.tests.geo.BaseGeoPointTestCase;\n''')\nreplace('lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java',\n        'public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {\\n',\n        '''public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {\n\n  public void testNarrowPolygonCloseToNorthPole() throws Exception {\n    double lat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 2);\n    double lon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 2);\n    double minLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 3);\n    double maxLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE);\n    double minLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 3);\n    double maxLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE);\n    Polygon polygon =\n        new Polygon(\n            new double[] {minLat, minLat, maxLat, maxLat, minLat},\n            new double[] {minLon, maxLon, maxLon, minLon, minLon});\n\n    try (Directory dir = newDirectory();\n        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig())) {\n      Document doc = new Document();\n      addPointToDoc(FIELD_NAME, doc, lat, lon);\n      doc.add(new LatLonPoint(FIELD_NAME, lat, lon));\n      writer.addDocument(doc);\n      try (IndexReader reader = DirectoryReader.open(writer)) {\n        IndexSearcher searcher = newSearcher(reader);\n        assertEquals(1, searcher.count(LatLonPoint.newPolygonQuery(FIELD_NAME, polygon)));\n        assertEquals(1, searcher.count(newPolygonQuery(FIELD_NAME, polygon)));\n        assertEquals(\n            1,\n            searcher.count(\n                LatLonDocValuesField.newSlowGeometryQuery(\n                    FIELD_NAME, ShapeField.QueryRelation.WITHIN, polygon)));\n        assertEquals(\n            0,\n            searcher.count(\n                LatLonDocValuesField.newSlowGeometryQuery(\n                    FIELD_NAME, ShapeField.QueryRelation.DISJOINT, polygon)));\n      }\n    }\n  }\n''')\nPY\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils.testNarrowPolygonPredicateAtEncodingBoundaries --tests org.apache.lucene.geo.TestGeoEncodingUtils.testDistancePredicateNearNorthPole --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --console=plain > /tmp/lucene-polar-baseline.log 2>&1; result=$?; tail -100 /tmp/lucene-polar-baseline.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -A 32 '^Bug Fixes' lucene/CHANGES.txt | head -38 && grep -n -E 'AssertionError|TestGeoEncodingUtils.java:' /tmp/lucene-polar-baseline.log | head -16 && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java\n--- a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java\n+++ b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java\n@@ -362,7 +362,7 @@\n     public boolean test(int lat, int lon) {\n       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);\n-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {\n+      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {\n         return false;\n       }\n       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);\n@@ -416,7 +416,7 @@\n     public boolean test(int lat, int lon) {\n       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);\n-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {\n+      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {\n         return false;\n       }\n       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils.testNarrowPolygonPredicateAtEncodingBoundaries --tests org.apache.lucene.geo.TestGeoEncodingUtils.testDistancePredicateNearNorthPole --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --console=plain > /tmp/lucene-polar-fixed.log 2>&1; result=$?; tail -65 /tmp/lucene-polar-fixed.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E 'spotless|rat|format' lucene/core/build.gradle && grep -R -n --include='*.gradle' -E 'spotlessFiles|spotlessJava|spotless.*Apply' gradle | head -45 && git diff --stat && git diff -- lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/CHANGES.txt b/lucene/CHANGES.txt\n--- a/lucene/CHANGES.txt\n+++ b/lucene/CHANGES.txt\n@@ -184,6 +184,9 @@\n Bug Fixes\n ---------------------\n \n+* Fix latitude-grid integer overflow that caused narrow polygon and distance\n+  queries near the north pole to reject matching points.\n+\n * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until\n   they reach the maximum merge size. (Adrien Grand)\n \nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,145p' gradle/validation/spotless.gradle && grep -R -n --include='*.gradle' -E 'validation.includes|validation.excludes|propertyOrDefault.*spotless' gradle/validation | head -30",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./gradlew :lucene:core:test :lucene:core:spotlessJavaCheck --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils --tests org.apache.lucene.search.TestLatLonDocValuesQueries --tests org.apache.lucene.search.TestLatLonPointQueries --console=plain > /tmp/lucene-polar-validation.log 2>&1; result=$?; tail -100 /tmp/lucene-polar-validation.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./gradlew :lucene:core:test --tests org.apache.lucene.geo.TestGeoEncodingUtils --tests org.apache.lucene.search.TestLatLonDocValuesQueries --tests org.apache.lucene.search.TestLatLonPointQueries :lucene:core:spotlessJavaCheck --offline --console=plain > /tmp/lucene-polar-validation.log 2>&1; result=$?; tail -100 /tmp/lucene-polar-validation.log; exit \"$result\"",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./gradlew :lucene:core:spotlessJavaApply --offline --console=plain > /tmp/lucene-polar-format.log 2>&1 && ./gradlew :lucene:core:test --tests org.apache.lucene.geo.TestGeoEncodingUtils --tests org.apache.lucene.search.TestLatLonDocValuesQueries --tests org.apache.lucene.search.TestLatLonPointQueries :lucene:core:spotlessJavaCheck --offline --console=plain > /tmp/lucene-polar-validation.log 2>&1; result=$?; tail -65 /tmp/lucene-polar-validation.log; if [ \"$result\" -eq 0 ]; then git diff --check && git status --short && git diff --stat; else tail -40 /tmp/lucene-polar-format.log; fi; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "rm /tmp/lucene-polar-baseline.log /tmp/lucene-polar-fixed.log /tmp/lucene-polar-validation.log /tmp/lucene-polar-format.log && cd /testbed && git diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 6,
+ "build_or_test_commands": [
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java\n--- a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java\n+++ b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java\n@@ -34,6 +34,7 @@\n import org.apache.lucene.tests.util.LuceneTestCase;\n import org.apache.lucene.tests.util.TestUtil;\n import org.apache.lucene.util.NumericUtils;\n+import org.apache.lucene.util.SloppyMath;\n@@ -151,6 +152,70 @@\n-  // check edge/interesting cases explicitly\n+  public void testNarrowPolygonPredicateAtEncodingBoundaries() {\n+    int[] minima = {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 4, Integer.MAX_VALUE - 3};\n+    for (int minLat : minima) {\n+      for (int minLon : minima) {\n+        double minLatitude = decodeLatitude(minLat);\n+        double maxLatitude = decodeLatitude(minLat + 3);\n+        double minLongitude = decodeLongitude(minLon);\n+        double maxLongitude = decodeLongitude(minLon + 3);\n+        Component2D component =\n+            LatLonGeometry.create(\n+                new Polygon(\n+                    new double[] {\n+                      minLatitude, minLatitude, maxLatitude, maxLatitude, minLatitude\n+                    },\n+                    new double[] {\n+                      minLongitude, maxLongitude, maxLongitude, minLongitude, minLongitude\n+                    }));\n+        GeoEncodingUtils.Component2DPredicate predicate =\n+            GeoEncodingUtils.createComponentPredicate(component);\n+        assertTrue(component.contains(decodeLongitude(minLon + 1), decodeLatitude(minLat + 1)));\n+        for (long lat = Math.max(Integer.MIN_VALUE, (long) minLat - 1);\n+            lat <= Math.min(Integer.MAX_VALUE, (long) minLat + 4);\n+            lat++) {\n+          for (long lon = Math.max(Integer.MIN_VALUE, (long) minLon - 1);\n+              lon <= Math.min(Integer.MAX_VALUE, (long) minLon + 4);\n+              lon++) {\n+            assertEquals(\n+                \"lat=\" + lat + \", lon=\" + lon,\n+                component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),\n+                predicate.test((int) lat, (int) lon));\n+          }\n+        }\n+      }\n+    }\n+  }\n+\n+  public void testDistancePredicateNearNorthPole() {\n+    int latitude = Integer.MAX_VALUE - 2;\n+    for (int longitude : new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 2}) {\n+      double lat = decodeLatitude(latitude);\n+      double lon = decodeLongitude(longitude);\n+      for (double radius : new double[] {0.01, 0.1, 1.0, 10.0}) {\n+        GeoEncodingUtils.DistancePredicate predicate =\n+            GeoEncodingUtils.createDistancePredicate(lat, lon, radius);\n+        assertTrue(predicate.test(latitude, longitude));\n+        double distanceKey = GeoUtils.distanceQuerySortKey(radius);\n+        for (int pointLat :\n+            new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 100, latitude, Integer.MAX_VALUE}) {\n+          for (int pointLon : new int[] {Integer.MIN_VALUE, 0, longitude, Integer.MAX_VALUE}) {\n+            assertEquals(\n+                SloppyMath.haversinSortKey(\n+                        decodeLatitude(pointLat), decodeLongitude(pointLon), lat, lon)\n+                    <= distanceKey,\n+                predicate.test(pointLat, pointLon));\n+          }\n+        }\n+      }\n+    }\n+  }\n+\n+  // check edge/interesting cases explicitly\n diff --git a/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java b/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java\n--- a/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java\n+++ b/lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java\n@@ -18,12 +18,18 @@\n import org.apache.lucene.document.Document;\n import org.apache.lucene.document.LatLonDocValuesField;\n+import org.apache.lucene.document.LatLonPoint;\n import org.apache.lucene.document.ShapeField;\n import org.apache.lucene.geo.GeoEncodingUtils;\n import org.apache.lucene.geo.LatLonGeometry;\n import org.apache.lucene.geo.Polygon;\n+import org.apache.lucene.index.DirectoryReader;\n+import org.apache.lucene.index.IndexReader;\n+import org.apache.lucene.index.IndexWriter;\n+import org.apache.lucene.store.Directory;\n import org.apache.lucene.tests.geo.BaseGeoPointTestCase;\n@@ -28,6 +34,39 @@\n public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {\n \n+  public void testNarrowPolygonCloseToNorthPole() throws Exception {\n+    double lat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 2);\n+    double lon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 2);\n+    double minLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 3);\n+    double maxLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE);\n+    double minLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 3);\n+    double maxLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE);\n+    Polygon polygon =\n+        new Polygon(\n+            new double[] {minLat, minLat, maxLat, maxLat, minLat},\n+            new double[] {minLon, maxLon, maxLon, minLon, minLon});\n+\n+    try (Directory dir = newDirectory();\n+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig())) {\n+      Document doc = new Document();\n+      addPointToDoc(FIELD_NAME, doc, lat, lon);\n+      doc.add(new LatLonPoint(FIELD_NAME, lat, lon));\n+      writer.addDocument(doc);\n+      try (IndexReader reader = DirectoryReader.open(writer)) {\n+        IndexSearcher searcher = newSearcher(reader);\n+        assertEquals(1, searcher.count(LatLonPoint.newPolygonQuery(FIELD_NAME, polygon)));\n+        assertEquals(1, searcher.count(newPolygonQuery(FIELD_NAME, polygon)));\n+        assertEquals(\n+            1,\n+            searcher.count(\n+                LatLonDocValuesField.newSlowGeometryQuery(\n+                    FIELD_NAME, ShapeField.QueryRelation.WITHIN, polygon)));\n+        assertEquals(\n+            0,\n+            searcher.count(\n+                LatLonDocValuesField.newSlowGeometryQuery(\n+                    FIELD_NAME, ShapeField.QueryRelation.DISJOINT, polygon)));\n+      }\n+    }\n+  }\n+\n   @Override\n   protected void addPointToDoc(String field, Document doc, double lat, double lon) {\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils.testNarrowPolygonPredicateAtEncodingBoundaries --tests org.apache.lucene.geo.TestGeoEncodingUtils.testDistancePredicateNearNorthPole --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --console=plain > /tmp/lucene-polar-baseline.log 2>&1; result=$?; tail -90 /tmp/lucene-polar-baseline.log; exit \"$result\"",
+  "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\n\ndef replace(path, old, new):\n    p = Path(path)\n    text = p.read_text()\n    assert text.count(old) == 1, (path, old)\n    p.write_text(text.replace(old, new))\n\nreplace('lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java',\n        'import org.apache.lucene.util.NumericUtils;\\n',\n        'import org.apache.lucene.util.NumericUtils;\\nimport org.apache.lucene.util.SloppyMath;\\n')\nreplace('lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java',\n        '  // check edge/interesting cases explicitly\\n', '''  public void testNarrowPolygonPredicateAtEncodingBoundaries() {\n    int[] minima = {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 4, Integer.MAX_VALUE - 3};\n    for (int minLat : minima) {\n      for (int minLon : minima) {\n        double minLatitude = decodeLatitude(minLat);\n        double maxLatitude = decodeLatitude(minLat + 3);\n        double minLongitude = decodeLongitude(minLon);\n        double maxLongitude = decodeLongitude(minLon + 3);\n        Component2D component =\n            LatLonGeometry.create(\n                new Polygon(\n                    new double[] {\n                      minLatitude, minLatitude, maxLatitude, maxLatitude, minLatitude\n                    },\n                    new double[] {\n                      minLongitude, maxLongitude, maxLongitude, minLongitude, minLongitude\n                    }));\n        GeoEncodingUtils.Component2DPredicate predicate =\n            GeoEncodingUtils.createComponentPredicate(component);\n        assertTrue(component.contains(decodeLongitude(minLon + 1), decodeLatitude(minLat + 1)));\n        for (long lat = Math.max(Integer.MIN_VALUE, (long) minLat - 1);\n            lat <= Math.min(Integer.MAX_VALUE, (long) minLat + 4);\n            lat++) {\n          for (long lon = Math.max(Integer.MIN_VALUE, (long) minLon - 1);\n              lon <= Math.min(Integer.MAX_VALUE, (long) minLon + 4);\n              lon++) {\n            assertEquals(\n                \"lat=\" + lat + \", lon=\" + lon,\n                component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),\n                predicate.test((int) lat, (int) lon));\n          }\n        }\n      }\n    }\n  }\n\n  public void testDistancePredicateNearNorthPole() {\n    int latitude = Integer.MAX_VALUE - 2;\n    for (int longitude : new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 2}) {\n      double lat = decodeLatitude(latitude);\n      double lon = decodeLongitude(longitude);\n      for (double radius : new double[] {0.01, 0.1, 1.0, 10.0}) {\n        GeoEncodingUtils.DistancePredicate predicate =\n            GeoEncodingUtils.createDistancePredicate(lat, lon, radius);\n        assertTrue(predicate.test(latitude, longitude));\n        double distanceKey = GeoUtils.distanceQuerySortKey(radius);\n        for (int pointLat :\n            new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE - 100, latitude, Integer.MAX_VALUE}) {\n          for (int pointLon : new int[] {Integer.MIN_VALUE, 0, longitude, Integer.MAX_VALUE}) {\n            assertEquals(\n                SloppyMath.haversinSortKey(\n                        decodeLatitude(pointLat), decodeLongitude(pointLon), lat, lon)\n                    <= distanceKey,\n                predicate.test(pointLat, pointLon));\n          }\n        }\n      }\n    }\n  }\n\n  // check edge/interesting cases explicitly\n''')\nreplace('lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java',\n        'import org.apache.lucene.document.LatLonDocValuesField;\\n',\n        'import org.apache.lucene.document.LatLonDocValuesField;\\nimport org.apache.lucene.document.LatLonPoint;\\n')\nreplace('lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java',\n        'import org.apache.lucene.tests.geo.BaseGeoPointTestCase;\\n',\n        '''import org.apache.lucene.index.DirectoryReader;\nimport org.apache.lucene.index.IndexReader;\nimport org.apache.lucene.index.IndexWriter;\nimport org.apache.lucene.store.Directory;\nimport org.apache.lucene.tests.geo.BaseGeoPointTestCase;\n''')\nreplace('lucene/core/src/test/org/apache/lucene/search/TestLatLonDocValuesQueries.java',\n        'public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {\\n',\n        '''public class TestLatLonDocValuesQueries extends BaseGeoPointTestCase {\n\n  public void testNarrowPolygonCloseToNorthPole() throws Exception {\n    double lat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 2);\n    double lon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 2);\n    double minLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE - 3);\n    double maxLat = GeoEncodingUtils.decodeLatitude(Integer.MAX_VALUE);\n    double minLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE - 3);\n    double maxLon = GeoEncodingUtils.decodeLongitude(Integer.MAX_VALUE);\n    Polygon polygon =\n        new Polygon(\n            new double[] {minLat, minLat, maxLat, maxLat, minLat},\n            new double[] {minLon, maxLon, maxLon, minLon, minLon});\n\n    try (Directory dir = newDirectory();\n        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig())) {\n      Document doc = new Document();\n      addPointToDoc(FIELD_NAME, doc, lat, lon);\n      doc.add(new LatLonPoint(FIELD_NAME, lat, lon));\n      writer.addDocument(doc);\n      try (IndexReader reader = DirectoryReader.open(writer)) {\n        IndexSearcher searcher = newSearcher(reader);\n        assertEquals(1, searcher.count(LatLonPoint.newPolygonQuery(FIELD_NAME, polygon)));\n        assertEquals(1, searcher.count(newPolygonQuery(FIELD_NAME, polygon)));\n        assertEquals(\n            1,\n            searcher.count(\n                LatLonDocValuesField.newSlowGeometryQuery(\n                    FIELD_NAME, ShapeField.QueryRelation.WITHIN, polygon)));\n        assertEquals(\n            0,\n            searcher.count(\n                LatLonDocValuesField.newSlowGeometryQuery(\n                    FIELD_NAME, ShapeField.QueryRelation.DISJOINT, polygon)));\n      }\n    }\n  }\n''')\nPY\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils.testNarrowPolygonPredicateAtEncodingBoundaries --tests org.apache.lucene.geo.TestGeoEncodingUtils.testDistancePredicateNearNorthPole --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --console=plain > /tmp/lucene-polar-baseline.log 2>&1; result=$?; tail -100 /tmp/lucene-polar-baseline.log; exit \"$result\"",
+  "cd /testbed && grep -n -A 32 '^Bug Fixes' lucene/CHANGES.txt | head -38 && grep -n -E 'AssertionError|TestGeoEncodingUtils.java:' /tmp/lucene-polar-baseline.log | head -16 && git apply --recount <<'PATCH'\ndiff --git a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java\n--- a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java\n+++ b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java\n@@ -362,7 +362,7 @@\n     public boolean test(int lat, int lon) {\n       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);\n-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {\n+      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {\n         return false;\n       }\n       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);\n@@ -416,7 +416,7 @@\n     public boolean test(int lat, int lon) {\n       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);\n-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {\n+      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {\n         return false;\n       }\n       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);\nPATCH\n./gradlew :lucene:core:test --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils.testNarrowPolygonPredicateAtEncodingBoundaries --tests org.apache.lucene.geo.TestGeoEncodingUtils.testDistancePredicateNearNorthPole --tests org.apache.lucene.search.TestLatLonDocValuesQueries.testNarrowPolygonCloseToNorthPole --console=plain > /tmp/lucene-polar-fixed.log 2>&1; result=$?; tail -65 /tmp/lucene-polar-fixed.log; exit \"$result\"",
+  "cd /testbed && ./gradlew :lucene:core:test :lucene:core:spotlessJavaCheck --offline --tests org.apache.lucene.geo.TestGeoEncodingUtils --tests org.apache.lucene.search.TestLatLonDocValuesQueries --tests org.apache.lucene.search.TestLatLonPointQueries --console=plain > /tmp/lucene-polar-validation.log 2>&1; result=$?; tail -100 /tmp/lucene-polar-validation.log; exit \"$result\"",
+  "cd /testbed && ./gradlew :lucene:core:test --tests org.apache.lucene.geo.TestGeoEncodingUtils --tests org.apache.lucene.search.TestLatLonDocValuesQueries --tests org.apache.lucene.search.TestLatLonPointQueries :lucene:core:spotlessJavaCheck --offline --console=plain > /tmp/lucene-polar-validation.log 2>&1; result=$?; tail -100 /tmp/lucene-polar-validation.log; exit \"$result\"",
+  "cd /testbed && ./gradlew :lucene:core:spotlessJavaApply --offline --console=plain > /tmp/lucene-polar-format.log 2>&1 && ./gradlew :lucene:core:test --tests org.apache.lucene.geo.TestGeoEncodingUtils --tests org.apache.lucene.search.TestLatLonDocValuesQueries --tests org.apache.lucene.search.TestLatLonPointQueries :lucene:core:spotlessJavaCheck --offline --console=plain > /tmp/lucene-polar-validation.log 2>&1; result=$?; tail -65 /tmp/lucene-polar-validation.log; if [ \"$result\" -eq 0 ]; then git diff --check && git status --short && git diff --stat; else tail -40 /tmp/lucene-polar-format.log; fi; exit \"$result\""
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 5,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed integer overflow in the latitude-grid upper-bound check, which rejected valid points near +90\u00b0. Geometry and distance predicates now use subtraction-based bounds checks, restoring narrow-polygon matches. Added regression coverage without changing existing tests.",
+ "assistant_messages": [
+  "I\u2019ll trace the polygon predicate\u2019s grid calculation, fix the edge case, and add a regression test.\n",
+  "The latitude grid\u2019s upper-bound check can overflow near +90\u00b0, rejecting valid points. The same check appears in both geometry and distance predicates; I\u2019ll replace it with a subtraction-based check and cover both paths.\n",
+  "Fixed integer overflow in the latitude-grid upper-bound check, which rejected valid points near +90\u00b0. Geometry and distance predicates now use subtraction-based bounds checks, restoring narrow-polygon matches. Added regression coverage without changing existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Inspecting build manifest**\n\nI need to inspect the build manifest, but it seems the apply tool is absent, so using the patch command might be my best option since apply_patch is unavailable. I notice that if there's no output from command -v, that means it's missing, and patch is only available in bash, not shell redirection. I need to read relevant documentation to understand how to invoke this correctly. I'll focus on clarifying how to work with it.",
+  "**Verifying commands**\n\nI\u2019m thinking about whether I should avoid adding any duplications from earlier commands, especially when applying changes with Git. I want to verify that nothing has changed before I run any tests. I should check the test names and possibly use grep to find specific ones, just to be sure everything is in order. I want to have my helper checks ready before actually using the command. It\u2019s all about being thorough!",
+  "**Evaluating Spotless integration**\n\nI\u2019m considering if the Spotless property can be built in and how to handle it with the plugin. I need to support the plugin without speculation. I\u2019ll run the `spotlessJavaCheck` and apply changes as needed. It's also important to run full classes with the `spotlessCheck` within the same test runner, making sure tasks and dependencies compile properly first. I should validate the main and three classes involved."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 228.0
+}
