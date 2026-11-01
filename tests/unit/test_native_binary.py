@@ -402,6 +402,23 @@ def test_a_header_only_units_peeky_doesnt_judge_name_is_refused_naming_them(root
     assert _unread_file("src/z.h", "prog", units, root, tables).startswith(
         "No unit of prog Peeky judges has code in src/z.h: `peeky describe` lists each unit"
     )
+    # Several units name it, unjudged for different reasons: each under its own.
+    header = tables[0]
+    tables = {
+        0: header,
+        8: LineHeader(8, 5, header.directories, header.files),
+        16: LineHeader(16, 5, header.directories, header.files),
+    }
+    units = [
+        Judged(_unit(root), "src/main.c", NOT_JUDGED, "its line table records no MD5s"),
+        Judged(_unit(root, stmt_list=8), "src/b.c", NOT_JUDGED, "built with -O2"),
+        Judged(_unit(root, stmt_list=16), "src/c.c", NOT_JUDGED, "its line table records no MD5s"),
+    ]
+    assert _unread_file("src/a.h", "prog", units, root, tables) == (
+        "No unit of prog Peeky judges has code in src/a.h. Units Peeky doesn't judge name it "
+        "in their line tables: src/main.c and 1 more: its line table records no MD5s; "
+        "src/b.c: built with -O2"
+    )
 
 
 def test_a_binary_target_s_config(tmp_path):

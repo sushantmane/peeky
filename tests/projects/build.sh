@@ -7,8 +7,8 @@
 # Variants: nomacro (no -fdebug-macro), libstdcxx (C++ with libstdc++), lines (jq's grammar
 # and lexer with their `#line`), gcc (GCC 13), dwarf4 (-gdwarf-4), optimized (the project's own
 # -O level). Prints the binary's path, relative to the project ($TESTBED, /testbed by default).
-# Needs nothing else of Peeky's: a Dockerfile can prebuild an image with it (README.md). Runs
-# as root, as the images do: it may install libc++ (apt) and writes its log to /.
+# Needs nothing else of Peeky's, nor a network: the C++ projects need libc++ 18 installed, as
+# tests/projects/Dockerfile installs it. Its log is in a scratch directory it removes.
 set -u
 project=$1 variant=${2:-}
 flags="-g -gdwarf-5 -grecord-command-line"
@@ -22,9 +22,10 @@ fi
 cxxlib=() link=()
 if [ "$variant" != libstdcxx ] && [ "$variant" != gcc ] && [[ $project == fmt* || $project == json ]]; then
   # libstdc++'s headers all have `#pragma GCC system_header`, which drops every MD5.
-  if ! dpkg -s libc++-18-dev >/dev/null 2>&1; then
-    apt-get update -qq >/dev/null 2>&1
-    apt-get install -y -qq --no-install-recommends libc++-18-dev libc++abi-18-dev >/dev/null 2>&1
+  if ! dpkg -s libc++-18-dev libc++abi-18-dev >/dev/null 2>&1; then
+    echo "libc++-18-dev and libc++abi-18-dev aren't installed: build the acceptance image" \
+      "(tests/projects/Dockerfile), or install them" >&2
+    exit 1
   fi
   cxxlib=(-stdlib=libc++ -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER) link=(-stdlib=libc++)
 fi
@@ -39,7 +40,9 @@ case $project in
 esac
 opt=-O0
 [ "$variant" = optimized ] && opt=$level
-log=/build-$project${variant:+-$variant}.log
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/peeky-build.XXXXXX") || exit 1
+trap 'rm -rf "$scratch"' EXIT
+log=$scratch/build.log
 cd "${TESTBED:-/testbed}" || exit 1
 build() {
   case $project in

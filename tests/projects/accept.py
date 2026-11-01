@@ -1,10 +1,16 @@
 """ADR 0008 phase 1's acceptance of one study project, in its image (accept.sh runs it).
 
 It builds the project as the phase asks (build.sh), measures the binary against Peeky's symbol
-bounds (measure.py), and runs Peeky on it as an agent would: each value read must match the
-program's own print of it, each refusal must say why. Then it checks the refusals every
-project shares: a file edited without a rebuild, the project's own optimized build, GCC's and
-DWARF 4's. Each check records how long Peeky took.
+bounds (measure.py), and runs Peeky on it as an agent would. It checks how many units Peeky
+judges and reads. Each value read is checked against an oracle outside Peeky, named in its
+check: the program's output (jq's, valkey's CLIENT LIST, gtest's), the source the build
+generated (jq's parser.c), another tool's output (mpy-cross's, read by mpy-tool), or the
+program's arguments (fmt's argc). Each refusal must say why. Then it checks the refusals
+projects share: GCC's and DWARF 4's builds, and the project's optimized build. A file edited
+without a rebuild, and the optimized build read with "optimized": true, are checked where
+Peeky judges a unit: json's binary is refused whole, so neither applies. Each check records
+how long Peeky took. Fixtures, logs and Peeky's state are in one scratch directory
+(PEEKY_ACCEPT_SCRATCH, which accept.sh makes and removes).
 
 Usage: accept.py <jq|valkey|micropython|fmt3158|fmt3272|json>
 
@@ -21,7 +27,9 @@ from pathlib import Path
 
 TESTBED = Path("/testbed")
 HERE = Path(__file__).resolve().parent
-STATE = Path("/root/peeky-state")
+# Never `/` or `/root`: one directory only root can write, which accept.sh removes.
+SCRATCH = Path(os.environ.get("PEEKY_ACCEPT_SCRATCH") or HERE.parents[1] / "scratch")
+STATE = SCRATCH / "state"
 TOOLS = {
     "PEEKY_NATIVE_DAP": "/usr/bin/lldb-dap-18",
     "PEEKY_NATIVE_DWARFDUMP": "/usr/bin/llvm-dwarfdump-18",
@@ -35,6 +43,7 @@ class Acceptance:
         self.project = project
         self.checks, self.probes, self.builds = [], [], {}
         self.binary = None
+        SCRATCH.mkdir(mode=0o700, exist_ok=True)
         STATE.mkdir(mode=0o700, exist_ok=True)
         # Peeky builds and keeps its state only where no other user can write.
         self.env = {
@@ -235,30 +244,33 @@ class Acceptance:
                     seconds,
                 )
 
-    def units(self, manifest, expected=None):
+    def units(self, manifest, total, judged, unread=()):
         """Records how many units `describe` judges, whose text it reads, and why any call
-        may return twice; checks the count judged where ``expected`` gives it."""
+        may return twice; checks that it judges ``judged`` of ``total`` units, and reads the
+        text of every one of them but those ``unread`` gives a reason for, each its own."""
         units = manifest.get("units") or []
-        judged = [unit for unit in units if unit.get("judged")]
-        unread = [unit for unit in judged if unit.get("text")]
+        read = [unit for unit in units if unit.get("judged")]
+        withheld = [unit for unit in read if unit.get("text")]
         twice = manifest.get("returns_twice") or {}
+        said = [
+            re.sub(r"Peeky can't read \S+ as compiled: ", "", unit["text"]) for unit in withheld
+        ]
         detail = {
             "units": len(units),
-            "judged": len(judged),
-            "text unread": len(unread),
-            "why unread": sorted(
-                {re.sub(r"Peeky can't read \S+ as compiled: ", "", unit["text"]) for unit in unread}
-            )[:5],
+            "judged": len(read),
+            "text unread": len(withheld),
+            "why unread": sorted(set(said))[:5],
             "not judged": {
                 unit["unit"]: unit.get("why") for unit in units if not unit.get("judged")
             },
             "returns_twice": twice,
         }
         self.summary = detail
-        if expected is not None:
-            self.check(
-                f"{expected} of the {len(units)} units are judged", len(judged) == expected, detail
-            )
+        self.check(
+            f"{judged} of the {total} units are judged, and all but {len(unread)} of them read",
+            len(units) == total and len(read) == judged and sorted(said) == sorted(unread),
+            detail,
+        )
         return detail
 
     def report(self):
@@ -306,20 +318,15 @@ def jq(run):
     run.build()
     report = run.measure("clang-18")
     code, manifest, seconds = run.describe()
-    detail = run.units(manifest)
-    run.check(
-        "with bison -l and flex -L, every unit is judged, parser.c and lexer.c too",
-        detail["units"] and detail["judged"] == detail["units"],
-        detail,
-        seconds,
-    )
+    # With bison -l and flex -L, every unit is judged, parser.c and lexer.c too.
+    detail = run.units(manifest, 36, 36)
     run.check(
         "no code no unit covers is named: the toolchain's archive code is its own",
         "is code no unit's debug information covers" not in _no_uncovered(run, detail),
         detail["returns_twice"],
     )
-    (TESTBED.parent / "in.json").write_text('{"a": 7}\n')
-    data = str(TESTBED.parent / "in.json")
+    (SCRATCH / "in.json").write_text('{"a": 7}\n')
+    data = str(SCRATCH / "in.json")
     # The grammar's action for `Term: FIELD`, which `.a` reduces by.
     case = _line("src/parser.c", r"case \d+: /\* Term: FIELD  \*/")
     action = _line("src/parser.c", r"\(yyval\.blk\) = gen_index\(gen_noop\(\)", case)
@@ -363,20 +370,18 @@ def jq(run):
         {"rows": list(rows.values()), "output": result.get("output", "")[:300]},
         seconds,
     )
-    # Units whose text can't be read withhold the text rules, saying why.
+    # jv_print.c's text is read: the number it prints is the one jq prints.
     units = {unit["unit"]: unit for unit in manifest.get("units", [])}
     term = _line("src/jv_print.c", r"^\s*double d = jv_number_value\(x\);") + 1
     code, result, seconds = run.probe(f"src/jv_print.c:{term}", ["d"], "-M", ".a + 1", data)
     row = _rows(result).get((1, "d"), {})
     unread = units.get("src/jv_print.c", {}).get("text")
     run.check(
-        "a unit whose text Peeky can't read withholds, saying why (jv_print.c)",
-        (unread is None and row.get("value") == "8")
-        or (
-            unread is not None
-            and "Peeky can't read src/jv_print.c as compiled" in str(row.get("error"))
-        ),
-        {"text": unread, "row": row},
+        "jv_print.c's text is read, and its number is the one jq prints",
+        unread is None
+        and row.get("value") == "8"
+        and result.get("output", "").strip().splitlines()[:1] == ["8"],
+        {"text": unread, "row": row, "output": result.get("output", "")[:300]},
         seconds,
     )
     code, result, seconds = run.probe("src/parser.y:670", ["x"], ".a", data)
@@ -440,19 +445,19 @@ def valkey(run):
     run.build()
     report = run.measure("clang-18")
     code, manifest, seconds = run.describe()
-    run.units(manifest)
-    acl = TESTBED.parent / "valkey.acl"
+    run.units(manifest, 173, 106)
+    acl = SCRATCH / "valkey.acl"
     acl.write_text(
         "user default on nopass ~* &* +@all\n"
         "user foo on #551a821992d8592d71c26a4989e26ce1d39e90ba3c20e3eaf99eed4a2e64251f +@all "
         "~* resetchannels &*\n"
     )
     for name in ("primary", "replica"):
-        (TESTBED.parent / name).mkdir(exist_ok=True)
+        (SCRATCH / name).mkdir(exist_ok=True)
     server = str(TESTBED / run.binary)
     common = ["--aclfile", str(acl), "--save", "", "--appendonly", "no"]
     primary = subprocess.Popen(
-        [server, "--port", "6379", "--dir", str(TESTBED.parent / "primary"), *common],
+        [server, "--port", "6379", "--dir", str(SCRATCH / "primary"), *common],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -479,7 +484,7 @@ def valkey(run):
                 "--replicaof",
                 "127.0.0.1 6379",
                 "--dir",
-                str(TESTBED.parent / "replica"),
+                str(SCRATCH / "replica"),
                 *common,
             ],
         )
@@ -524,14 +529,17 @@ def valkey(run):
         primary_client is not None and primary_client[2] == "(superuser)",
         listed[:600],
     )
+    # `original` was set from c->user on the line before the stop: the program's own copy.
+    original = rows.get((1, "original"), {})
     run.check(
-        "the hit reads the primary's client's user as a null pointer, by its id",
+        "the hit reads the primary's client's user as a null pointer, by its id, as its copy",
         primary_client is not None
         and re.fullmatch(
             r"0x0+", str(user.get("value", "")).split()[0] if user.get("value") else ""
         )
+        and original.get("value") == user.get("value")
         and ident.get("value") == primary_client[1],
-        {"c.user": user, "c.id": ident, "original": rows.get((1, "original"))},
+        {"c.user": user, "c.id": ident, "original": original},
     )
     run.check(
         "the replica then crashes on it, as the bug report says",
@@ -576,7 +584,7 @@ def micropython(run):
     run.build()
     report = run.measure("clang-18")
     code, manifest, seconds = run.describe()
-    detail = run.units(manifest, expected=215)
+    detail = run.units(manifest, 218, 215)
     run.check(
         "nlr_push, assembly no unit covers, is named first why any call may return twice",
         _no_uncovered(run, detail).startswith(
@@ -584,9 +592,9 @@ def micropython(run):
         ),
         detail["returns_twice"],
     )
-    script = TESTBED.parent / "idgen.py"
+    script = SCRATCH / "idgen.py"
     script.write_text(IDGEN)
-    compiled = TESTBED.parent / "idgen.mpy"
+    compiled = SCRATCH / "idgen.mpy"
     subprocess.run(
         [str(TESTBED / "mpy-cross/build/mpy-cross"), str(script), "-o", str(compiled)],
         check=True,
@@ -639,14 +647,23 @@ def micropython(run):
     return report
 
 
-def fmt(run, binary_test, judged, filtered):
+# fmt's `#define FMT_HAS_INCLUDE(x) __has_include(x)`: a probe in a macro, whose operand Peeky
+# doesn't read (#479). fmt-3272's util.cc and os.cc use it.
+FMT_MACRO = (
+    "its preprocessing asks whether a file exists (__has_include, in include/fmt/core.h:73), "
+    "naming it in a way Peeky doesn't read"
+)
+
+
+def fmt(run, binary_test, total, judged, filtered, unread=()):
     """fmt-3158, fmt-3272: the test units' line tables record no MD5s and name <stdin>, so
     a probe in them, or in include/fmt/'s template code they instantiate, is refused
-    saying so. test-main.cc has MD5s: it is judged and read."""
+    saying so. test-main.cc has MD5s: it is judged and read. ``unread``: why the units
+    Peeky judges but can't read the text of aren't read."""
     run.build()
     report = run.measure("clang++-18")
     code, manifest, seconds = run.describe()
-    detail = run.units(manifest, expected=judged)
+    detail = run.units(manifest, total, judged, unread)
     test = f"test/{binary_test}.cc"
     reason = "its line table records no MD5s, and names <stdin>"
     run.check(
@@ -690,11 +707,13 @@ def fmt(run, binary_test, judged, filtered):
         ),
         None,
     )
-    # argv is a pointer, which carries no length: Peeky reads no element past what it points
-    # at, and says where to index the array instead. The filter is gtest's own print.
+    # argc is the program's arguments' count: its path and the filter. argv is a pointer,
+    # which carries no length: Peeky reads no element past what it points at, and says where
+    # to index the array instead. The filter is gtest's own print.
     run.check(
         "test-main.cc is read: argc is 2, and argv[1] is refused as a pointer's element",
-        argc == "2"
+        unread is None
+        and argc == "2"
         and "argv is a pointer, which carries no length" in refused
         and f"Note: Google Test filter = {filtered}" in result.get("output", ""),
         {"rows": list(rows.values()), "text": unread, "output": result.get("output", "")[:300]},
@@ -712,10 +731,16 @@ def json_(run):
     code, manifest, seconds = run.describe()
     error = _error(manifest)
     reason = "its line table records no MD5s, and names <stdin>"
+    # describe refuses the binary whole: its 2 units are counted from measure.py's read.
+    run.summary = {"units": report["count"]["units"], "judged": 0, "not judged": report["summary"]}
     run.check(
-        "no unit is judged: describe refuses, saying why",
-        code == 2 and error.get("code") == "UNSUPPORTED" and reason in error.get("message", ""),
-        error,
+        "neither of the 2 units is judged: describe refuses, saying why",
+        code == 2
+        and error.get("code") == "UNSUPPORTED"
+        and reason in error.get("message", "")
+        and report["count"]["units"] == 2
+        and "judged" not in report["summary"],
+        {"error": error, "units": report["count"], "summary": report["summary"]},
         seconds,
     )
     header = "include/nlohmann/detail/conversions/to_json.hpp"
@@ -740,8 +765,8 @@ PROJECTS = {
     "jq": jq,
     "valkey": valkey,
     "micropython": micropython,
-    "fmt3158": lambda run: fmt(run, "ranges-test", 1, "ranges_test.format_map"),
-    "fmt3272": lambda run: fmt(run, "xchar-test", 3, "xchar_test.format"),
+    "fmt3158": lambda run: fmt(run, "ranges-test", 5, 1, "ranges_test.format_map"),
+    "fmt3272": lambda run: fmt(run, "xchar-test", 6, 3, "xchar_test.format", (FMT_MACRO,) * 2),
     "json": json_,
 }
 

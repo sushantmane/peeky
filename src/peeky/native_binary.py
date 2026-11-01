@@ -2713,10 +2713,18 @@ def _unread_file(wanted, shown, judged, root, tables=None):
         if any(found and os.path.realpath(found) == path for found in paths):
             naming.append(each)
     if naming:
-        more = f" and {len(naming) - 1} more" if len(naming) > 1 else ""
+        # Each reason with the units it holds for, the commonest first, as _none_read says.
+        reasons = {}
+        for each in naming:
+            reasons.setdefault(each.why, []).append(each.name)
+        ranked = sorted(reasons.items(), key=lambda item: -len(item[1]))
+        listed = "; ".join(
+            f"{names[0]}" + (f" and {len(names) - 1} more" if len(names) > 1 else "") + f": {why}"
+            for why, names in ranked[:LISTED_REASONS]
+        )
         return (
             f"No unit of {shown} Peeky judges has code in {wanted}. Units Peeky doesn't judge "
-            f"name it in their line tables: {naming[0].name}{more}: {naming[0].why}"
+            f"name it in their line tables: {listed}"
         )
     return (
         f"No unit of {shown} Peeky judges has code in {wanted}: `peeky describe` lists each "
