@@ -4,7 +4,10 @@ and what a probe or session does with the build (rust_build)."""
 import hashlib
 import json
 import os
+import re
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -316,38 +319,502 @@ def test_what_a_workspace_doesnt_do_yet_is_refused(workspace, capsys, tmp_path):
     assert "--build is for a Rust workspace's configuration" in result["error"]["message"]
 
 
-@pytest.mark.timeout(300)
-def test_a_worker_loads_a_workspace_and_refuses_a_remote_clients_probe_of_it(workspace):
-    from peeky.cli import rust_tools
-    from peeky.errors import classify
-    from peeky.rust_build import RustWorkspaceTarget
-    from peeky.worker import DebugWorker, load_rust_target
+TOKEN = "rust-workspace-worker-token-0123456789abcdef"
 
-    config = workspace / "worker.json"
+
+@pytest.fixture
+def worker(workspace, tmp_path, monkeypatch):
+    """A worker on the workspace (its host's copy), started with the workspace's
+    `--rust-config`, and a client's checkout of the same files: (host, local, URL, the
+    worker's target)."""
+    import shutil
+    import threading
+
+    from peeky.cli import WORKER_TOKEN_ENV, rust_tools
+    from peeky.worker import load_rust_target, make_server
+
+    local = tmp_path / "local"
+    shutil.copytree(workspace, local)
+    config = tmp_path / "worker.json"
     data = {"analyse": ["util"], "run": {"bin": "app"}, "vendor": "vendor", **rust_tools()}
     config.write_text(json.dumps(data))
     target = load_rust_target(config, workspace)
-    assert isinstance(target, RustWorkspaceTarget)
-    # `peeky build` of the worker's root and its configuration, as a refusal names it.
-    assert target.build_command == f"peeky build {workspace} --config {config.resolve()}"
-    typed = "peeky build . --config rust.json"
-    assert load_rust_target(config, workspace, typed).build_command == typed
-    program = hashlib.sha256((workspace / "util/src/lib.rs").read_bytes()).hexdigest()
-    worker = DebugWorker(workspace, adapter=target)
-    with pytest.raises(ValueError) as caught:
-        worker.dispatch(
-            "launch",
-            {
-                "program": "util/src/lib.rs",
-                "breakpoints": [{"line": 3}],
-                "expect_sha256": {"program": program},
-                "expect_inputs": {"util/src/lib.rs": program},
-            },
-        )
-    assert str(caught.value).startswith(
-        "A worker doesn't probe a Rust workspace for a remote client yet"
+    monkeypatch.setenv(WORKER_TOKEN_ENV, TOKEN)
+    server = make_server(workspace, TOKEN, 0, adapter=target)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield workspace, local, f"http://127.0.0.1:{server.server_port}", target
+    finally:
+        server.builds.close()
+        server.worker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def remote_probe(capsys, local, url, *more):
+    return run(
+        capsys,
+        "probe",
+        str(local),
+        "--at",
+        "util/src/lib.rs:3",
+        "--capture",
+        "x",
+        "--quiet",
+        "--no-save",
+        "--worker",
+        url,
+        *more,
     )
-    assert classify(caught.value)["code"] == "UNSUPPORTED"
+
+
+@pytest.mark.timeout(600)
+def test_a_worker_builds_and_probes_a_workspace_for_a_remote_client(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, target = worker
+    # `peeky build` of the worker's root and its configuration, as a refusal on its host
+    # names it; a remote client is told its own command.
+    assert target.build_command.startswith(f"peeky build {host} --config ")
+    command = f"peeky build {local} --worker {url}"
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"] == (
+        "No current Peeky build of this workspace: none has been made for this configuration. "
+        f"Run `{command}` first, or add --build"
+    )
+    assert result["refused_before_launch"] is True
+    # A build names no tool, path or flag: the worker's own configuration only.
+    code, result = run(capsys, "build", str(local), "--worker", url, "--quiet", "--config", "x")
+    assert code == 2 and "leave out --config" in result["error"]["message"], result
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    assert summary["workspace"] == f"worker:{host}" and summary["analysed"] == ["util"]
+    assert summary["executable"].startswith("worker:")
+    # The worker compares the build's manifests, lockfile, every file of the workspace it
+    # compiled (the binary's too) and the vendored copy's checksum file with ours.
+    version = Client(url, TOKEN).call("version")
+    assert version["sources"] == {
+        "kind": "declared",
+        "names": [
+            "Cargo.lock",
+            "Cargo.toml",
+            "app/Cargo.toml",
+            "app/src/main.rs",
+            "util/Cargo.toml",
+            "util/src/lib.rs",
+            "vendor/smallnum/.cargo-checksum.json",
+        ],
+        # Each by its links too; no directory a build script watches, entry by entry.
+        "structured": True,
+        "trees": {},
+    }
+    assert "build" in version["operations"]
+    # The value read matches the program's own print.
+    read(*remote_probe(capsys, local, url))
+    # A manifest or source that differs on the client is refused by name, before anything
+    # runs.
+    manifest = local / "util/Cargo.toml"
+    manifest.write_text(manifest.read_text() + "# a comment\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "util/Cargo.toml (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    ) in (result["error"]["message"])
+    assert result["refused_before_launch"] is True
+    manifest.write_text((host / "util/Cargo.toml").read_text())
+    # The binary decides what reaches `util`: a run of the worker's isn't of the client's code.
+    main_rs = local / "app/src/main.rs"
+    main_rs.write_text(main_rs.read_text().replace("util::double(", "util::double(1 + "))
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "app/src/main.rs (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    ) in (result["error"]["message"])
+    assert result["refused_before_launch"] is True
+    main_rs.write_text((host / "app/src/main.rs").read_text())
+    (local / "util/src/lib.rs").write_text(UTIL.replace("x * 2", "x * 3"))
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "differs for the program util/src/lib.rs" in result["error"]["message"]
+    # The same change on the worker's host: the build is no longer current.
+    (host / "util/src/lib.rs").write_text(UTIL.replace("x * 2", "x * 3"))
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"] == (
+        "No current Peeky build of this workspace: util/src/lib.rs changed since `peeky build` "
+        f"ran. Run `{command}` again, or add --build"
+    )
+    # --build: the worker builds first, then the probe reads the new build.
+    read(*remote_probe(capsys, local, url, "--build"), printed="3")
+
+
+@pytest.mark.timeout(600)
+def test_a_remote_client_compares_what_a_build_script_reads_but_the_checkouts_metadata(
+    worker, capsys, tmp_path
+):
+    import time
+
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    script = BUILD_SCRIPT.replace(
+        "fn main() {\n",
+        'fn main() {\n    println!("cargo::rerun-if-changed=../.git/HEAD");\n',
+    )
+    for side, head in ((host, "ref: refs/heads/main\n"), (local, "ref: refs/heads/mine\n")):
+        (side / "util/build.rs").write_text(script)
+        (side / "util/schema.txt").write_text("one\n")
+        (side / ".git").mkdir()
+        (side / ".git/HEAD").write_text(head)
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    names = Client(url, TOKEN).call("version")["sources"]["names"]
+    assert {"util/build.rs", "util/schema.txt"} <= set(names), names
+    # `.git` is the checkout's: two checkouts of the same sources differ there.
+    assert not [name for name in names if ".git" in name], names
+    read(*remote_probe(capsys, local, url))
+    # What the script reads shapes the program: a client's copy that differs is refused.
+    (local / "util/schema.txt").write_text("two\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "util/schema.txt (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    ) in (result["error"]["message"])
+    (local / "util/schema.txt").write_text("one\n")
+    # An input outside the root: Peeky builds only what it records there, and no client has a
+    # copy of it.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("out\n")
+    script = script.replace(
+        "fn main() {\n", 'fn main() {\n    println!("cargo::rerun-if-changed=../../outside.txt");\n'
+    )
+    for side in (host, local):
+        (side / "util/build.rs").write_text(script)
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, result = remote_probe(capsys, local, url, "--build")
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    assert result["error"]["message"] == (
+        f"Peeky builds only files inside {host.resolve()}: `app`'s build read "
+        f"{outside.resolve()}, which no remote client could compare either. Move it into the "
+        "workspace, or drop what names it: an `include!`, a `#[path]`, or a build script's "
+        "`rerun-if-changed`"
+    )
+    assert result["refused_before_launch"] is True
+
+
+@pytest.mark.timeout(600)
+def test_a_remote_client_compares_a_watched_directorys_entries_and_links(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    script = BUILD_SCRIPT.replace(
+        "fn main() {\n", 'fn main() {\n    println!("cargo::rerun-if-changed=proto");\n'
+    )
+    for side in (host, local):
+        (side / "util/build.rs").write_text(script)
+        (side / "util/schema.txt").write_text("one\n")
+        (side / "util/data.txt").write_text("a\n")
+        (side / "util/proto").mkdir()
+        (side / "util/proto/a.txt").symlink_to("../data.txt")
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    sources = Client(url, TOKEN).call("version")["sources"]
+    assert sources["trees"] == {"util/proto": "exact"}, sources
+    assert "util/proto/a.txt" in sources["names"], sources
+    read(*remote_probe(capsys, local, url))
+    # An entry only the client has, in a directory the build script watches: Cargo would
+    # rerun the script, which may read it.
+    (local / "util/proto/extra.txt").write_text("x\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert result["error"]["message"] == (
+        "Worker source provenance differs for util/proto/ (its entries on the worker host "
+        "differ from your checkout's: an entry on one side only, one of another kind, or a link "
+        "that points elsewhere): refused before launching. Sync sources before debugging "
+        "remotely"
+    )
+    assert result["refused_before_launch"] is True
+    (local / "util/proto/extra.txt").unlink()
+    # The worker's is a link; the client's a file of the same bytes, or a link elsewhere.
+    linked = (
+        "util/proto/a.txt (the copy on the worker host differs from your checkout, in its "
+        "contents or in where a link is or points)"
+    )
+    (local / "util/proto/a.txt").unlink()
+    (local / "util/proto/a.txt").write_text("a\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert linked in result["error"]["message"], result
+    (local / "util/proto/a.txt").unlink()
+    (local / "util/copy.txt").write_text("a\n")
+    (local / "util/proto/a.txt").symlink_to("../copy.txt")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert linked in result["error"]["message"], result
+    (local / "util/proto/a.txt").unlink()
+    (local / "util/proto/a.txt").symlink_to("../data.txt")
+    read(*remote_probe(capsys, local, url))
+
+
+@pytest.mark.timeout(600)
+def test_a_package_cargo_watches_whole_is_compared_as_cargo_lists_it(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    # No `rerun-if-changed`: Cargo reruns the script for any file of its package, as
+    # `cargo package --list` lists them, which with git leaves out what git ignores.
+    for side in (host, local):
+        (side / "util/build.rs").write_text("fn main() {}\n")
+        (side / "util/data.txt").write_text("d\n")
+        (side / "util/.gitignore").write_text("*.log\n")
+    subprocess.run(["git", "init", "-q", str(host)], check=True)
+    subprocess.run(["git", "-C", str(host), "add", "-A"], check=True)
+    (host / "util/build.log").write_text("the worker's own\n")
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    sources = Client(url, TOKEN).call("version")["sources"]
+    assert sources["trees"] == {}, sources
+    names = set(sources["names"])
+    assert {"util/build.rs", "util/data.txt", "util/.gitignore"} <= names, names
+    assert "util/build.log" not in names, names
+    # What a client has that Cargo leaves out is no difference: a git-ignored file, or
+    # a .DS_Store.
+    (local / "util/client.log").write_text("the client's own\n")
+    (local / "util/.DS_Store").write_text("Finder's\n")
+    read(*remote_probe(capsys, local, url))
+    # A file Cargo lists that the client lacks is named.
+    (local / "util/data.txt").unlink()
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "util/data.txt (missing in your checkout)" in result["error"]["message"], result
+
+
+@pytest.mark.timeout(600)
+def test_a_name_cargo_lists_is_compared_as_cargo_writes_it(worker, capsys):
+    from peeky.client import Client
+
+    host, local, url, _ = worker
+    # Cargo lists ` leading.txt` as it is: Peeky compares that file, not `leading.txt`.
+    for side in (host, local):
+        (side / "util/build.rs").write_text("fn main() {}\n")
+        (side / "util/ leading.txt").write_text("l\n")
+    time.sleep(1.2)  # Older than a build's start: not a change while Cargo ran.
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    assert summary["notes"] == [], summary
+    names = Client(url, TOKEN).call("version")["sources"]["names"]
+    assert "util/ leading.txt" in names and "util/leading.txt" not in names, names
+    read(*remote_probe(capsys, local, url))
+    (local / "util/ leading.txt").write_text("the client's\n")
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "util/ leading.txt (the copy on the worker host differs" in result["error"]["message"]
+
+
+@pytest.mark.timeout(600)
+def test_a_link_out_of_the_root_is_never_followed_for_a_remote_client(worker, capsys, tmp_path):
+    host, local, url, _ = worker
+    code, summary = run(capsys, "build", str(local), "--worker", url, "--quiet")
+    assert code == 0, summary
+    # The client's app/src, which the build compiled, is a link out of its checkout, to a
+    # copy of the same files.
+    outside = tmp_path / "elsewhere"
+    (local / "app/src").rename(outside)
+    (local / "app/src").symlink_to(outside)
+    code, result = remote_probe(capsys, local, url)
+    assert code == 2 and result["error"]["code"] == "UNSUPPORTED", result
+    assert result["error"]["message"] == (
+        "Peeky compares only files inside the root: on your checkout, app/src/main.rs leads out "
+        f"of it through app/src, a link to {outside.resolve()}. Nothing there was read. Point "
+        "the link inside the root, or make it a file or directory there"
+    )
+
+
+# A build script that says where it runs, then outlives any test: what a worker's end must
+# stop.
+SLEEPER = """fn main() {{
+    std::fs::write({pid}, std::process::id().to_string()).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs({seconds}));
+}}
+"""
+
+
+def sleeper(root, tmp_path, seconds=600):
+    pid = tmp_path / "script.pid"
+    pid.unlink(missing_ok=True)
+    (root / "util/build.rs").write_text(SLEEPER.format(pid=json.dumps(str(pid)), seconds=seconds))
+    return pid
+
+
+def running(pid_file, timeout=180, process=None):
+    """The build script's pid, once it runs."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        assert process is None or process.poll() is None, process.stdout.read()
+        if pid_file.is_file() and pid_file.read_text().strip():
+            return int(pid_file.read_text())
+        time.sleep(0.2)
+    raise AssertionError("the build script never ran")
+
+
+def gone(pid, timeout=20):
+    """Whether the process ``pid`` ended within ``timeout`` (a zombie awaiting its reaper
+    counts as ended)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+        ).stdout.strip()
+        if not state or state.startswith("Z"):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def start_worker(root, config, *more):
+    """A worker process, as `peeky-worker` runs: (the process, its URL)."""
+    import sys
+
+    import peeky
+
+    source = str(Path(peeky.__file__).resolve().parents[1])
+    command = [
+        sys.executable,
+        "-c",
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); from peeky.worker import main; main()",
+        source,
+        "--root",
+        str(root),
+        "--rust-config",
+        str(config),
+        "--port",
+        "0",
+        *more,
+    ]
+    process = subprocess.Popen(
+        command,
+        env={**os.environ, "DEBUG_TOKEN": TOKEN},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    line = process.stdout.readline()
+    found = re.search(r"http://127\.0\.0\.1:([0-9]+)", line)
+    assert found, line
+    return process, f"http://127.0.0.1:{found[1]}"
+
+
+def worker_config(root, tmp_path):
+    from peeky.cli import rust_tools
+
+    config = tmp_path / "worker.json"
+    data = {"analyse": ["util"], "run": {"bin": "app"}, "vendor": "vendor", **rust_tools()}
+    config.write_text(json.dumps(data))
+    return config
+
+
+@pytest.mark.timeout(600)
+def test_a_workers_shutdown_stops_its_build(worker, tmp_path):
+    from peeky.client import Client
+
+    host, _, url, _ = worker
+    pid_file = sleeper(host, tmp_path)
+    client = Client(url, TOKEN)
+    assert client.call("build", wait=0)["status"] == "building"
+    pid = running(pid_file)
+    assert client.call("shutdown") == {"state": "shutdown"}
+    # The build script Cargo ran is gone with the build: none outlives the worker.
+    assert gone(pid)
+
+
+@pytest.mark.timeout(600)
+def test_a_terminated_worker_stops_its_build(workspace, tmp_path):
+    from peeky.client import Client
+
+    pid_file = sleeper(workspace, tmp_path)
+    process, url = start_worker(workspace, worker_config(workspace, tmp_path))
+    try:
+        assert Client(url, TOKEN).call("build", wait=0)["status"] == "building"
+        pid = running(pid_file)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=60) is not None
+        assert gone(pid)
+    finally:
+        process.kill()
+        process.wait()
+
+
+@pytest.mark.timeout(600)
+def test_an_idle_worker_waits_for_its_build_and_leaves_no_process(workspace, tmp_path):
+    from peeky.client import Client
+
+    pid_file = sleeper(workspace, tmp_path, seconds=8)
+    process, url = start_worker(
+        workspace, worker_config(workspace, tmp_path), "--idle-timeout", "1", "--exit-when-idle"
+    )
+    try:
+        assert Client(url, TOKEN).call("build", wait=0)["status"] == "building"
+        pid = running(pid_file)
+        # Past the idle timeout, unasked: the running build is the worker's activity.
+        time.sleep(3)
+        assert process.poll() is None
+        # Once the build ended, the idle worker exits, and leaves no process behind.
+        assert process.wait(timeout=120) is not None
+        assert gone(pid)
+    finally:
+        process.kill()
+        process.wait()
+
+
+@pytest.mark.timeout(600)
+def test_a_remote_session_on_a_workspace_reads_the_workers_build(worker, capsys):
+    host, local, url, _ = worker
+    code, result = run(
+        capsys,
+        "session",
+        "start",
+        str(local),
+        "--at",
+        "util/src/lib.rs:3",
+        "--name",
+        "remote-ws",
+        "--worker",
+        url,
+    )
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert f"Run `peeky build {local} --worker {url}` first" in result["error"]["message"]
+    code, result = run(
+        capsys,
+        "session",
+        "start",
+        str(local),
+        "--at",
+        "util/src/lib.rs:3",
+        "--name",
+        "remote-ws",
+        "--worker",
+        url,
+        "--build",
+    )
+    assert code == 0, result
+    try:
+        code, rows = run(capsys, "session", "get", "x", "--name", "remote-ws")
+        assert code == 0, rows
+        assert [row["value"] for row in rows] == ["1"], rows
+    finally:
+        run(capsys, "session", "close", "--name", "remote-ws")
 
 
 @pytest.mark.timeout(300)

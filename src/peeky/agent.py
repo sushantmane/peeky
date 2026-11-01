@@ -25,6 +25,7 @@ from peeky import add_version
 from peeky.client import LOOPBACK_URL, Client, client_token
 from peeky.errors import PeekyError
 from peeky.processes import without_credentials
+from peeky.stopping import _STOP, Stopped, check_stop, stopping  # noqa: F401 - the build's
 from peeky.textlines import read_source, source_lines, split_lines
 from peeky.verification import __file__ as verification_script
 from peeky.worker import load_java_target, load_native_target, load_rust_target, make_server
@@ -115,13 +116,30 @@ def execute(
     The first ``retain`` bytes of each stream are kept (with ``tail``, the last ones, from
     the first line that starts in them); more than ``output_limit`` bytes, both streams
     together, kills it.
-    Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code.
+    Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code, and
+    `stopped`. One set already starts nothing. Without one, ``stopping``'s applies, and its
+    end raises Stopped instead, once the group was killed and its leader reaped. Where the
+    group can't be killed, or its leader reaped, that error is raised, never hidden, with the
+    group in its ``process_group``.
     ``gate()``, a context manager, is held while the process is started; it may raise
     to keep the process from starting.
 
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
     """
+    contextual = stop is None
+    stop = _STOP.get() if contextual else stop
+    if stop is not None and stop.is_set():
+        if contextual:
+            raise Stopped(command, started=False)
+        return {
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "timed_out": False,
+            "output_limit_exceeded": False,
+            "stopped": True,
+        }
     child_env = without_credentials(os.environ if env is None else env)
     with gate() if gate is not None else contextlib.nullcontext():
         process = subprocess.Popen(
@@ -187,17 +205,25 @@ def execute(
                 break
             time.sleep(0.01)
     finally:
-        if os.name == "posix":
-            kill_process_group(process)
-        elif process.poll() is None:
-            process.kill()
-        process.wait(timeout=5)
+        try:
+            if os.name == "posix":
+                kill_process_group(process)
+            elif process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Processes of the group may still run: whoever reports it can name the group.
+            exc.process_group = process.pid
+            raise
         for reader in readers:
             reader.join(timeout=5)
         if writer:
             writer.join(timeout=5)
         process.stdout.close()
         process.stderr.close()
+    if stopped and contextual:
+        # Its group was killed and its leader reaped (the `finally` above).
+        raise Stopped(command, started=True)
     for slot, kept in enumerate(buffers):
         if not whole[slot] and (start := kept.find(b"\n")) >= 0:
             # The tail began part-way through a line.
@@ -208,6 +234,7 @@ def execute(
         "stderr": buffers[1].decode(errors="replace"),
         "timed_out": timed_out,
         "output_limit_exceeded": overflow.is_set(),
+        "stopped": stopped,
     }
 
 
@@ -721,6 +748,8 @@ def main():
                 sys.exit(1)
     finally:
         if server:
+            if problem := server.builds.close():
+                print(f"Peeky's worker: {problem}", file=sys.stderr, flush=True)
             server.worker.close()
             server.shutdown()
             server.server_close()

@@ -1817,7 +1817,7 @@ def application_symbols(
             functions = code_blocks(root, unit)
         except ValueError:
             # Only a refinement: without them every stop of a line counts.
-            functions = {}
+            functions = {UNREAD_UNIT: None}
         for hashed, function in functions.items():
             blocks[hashed] = None if hashed in blocks else function
         try:
@@ -1833,6 +1833,9 @@ def application_symbols(
 
 
 _LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")
+# ``code_blocks``' key, in application_symbols' blocks, for a unit whose functions weren't
+# read: no legacy hash.
+UNREAD_UNIT = ""
 _RANGE = re.compile(r"\[(0x[0-9a-f]+), (0x[0-9a-f]+)\)")
 # Linkers write these for discarded code (COMDAT copies, dead functions).
 _TOMBSTONE = 0xFFFF_FFFF_0000_0000

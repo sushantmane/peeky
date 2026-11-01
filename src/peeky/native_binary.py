@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from peeky import native_startup
+from peeky import native_macros, native_startup
 from peeky.adapters import PythonAdapter
 from peeky.assembler import _C_KEYWORD
 from peeky.build import (
@@ -69,9 +69,11 @@ from peeky.digest import sha256_file
 from peeky.errors import Refused
 from peeky.native import (
     _FOREIGN_TAGS,
+    MAX_DEBUG_INFO,
     MAX_LINE_TEXT,
     MAX_STATEMENT_SOURCE,
     MAX_UNIT,
+    SYMBOL_FAILURES,
     VERSION_TIMEOUT,
     CodeIndex,
     NativeSession,
@@ -614,9 +616,67 @@ def _found(probe, includer, lists):
     return None
 
 
-def _unproven_probe(read, lists, root, cache):
-    """Why a probe the replay's inputs (``read``: their paths as the compiler opened them)
-    hold may have been answered otherwise when the program was built, or None.
+@dataclass(frozen=True)
+class Unproven:
+    """Why a probe of the replay's inputs may have been answered otherwise when the
+    program was built (``why``, a phrase), or a file it reads its line table doesn't name:
+    the file holding the probe (``path``, as the compiler opened it) and the Probe, or
+    None; whether the build's record of its macros may prove it (``provable``); and
+    whether the file holding it is one the line table doesn't name (``hidden``), whose
+    probes ran only where the replay entered it."""
+
+    why: str
+    path: str | None = None
+    probe: Probe | None = None
+    provable: bool = False
+    hidden: bool = False
+
+
+def _unread_named(real, root):
+    return (
+        f"its preprocessing reads {_shown(real, root)}, which its line table doesn't name "
+        "(-fdebug-macro names each header, on Linux)"
+    )
+
+
+# A trigraph sequence: `??` and one of the nine characters -trigraphs replaces.
+_TRIGRAPH = re.compile(rb"\?\?[=/'()!<>-]")
+_LINE_END = re.compile(rb"\r\n|\r|\n")
+
+
+def trigraphs_on(words, cpp):
+    """What of a unit's recorded ``words`` may turn trigraphs on, or None where they are
+    surely off. As clang reads them, the last of a standard (`-std=c11`, `-ansi`),
+    `-trigraphs` and `-fno-trigraphs` decides: `-fno-trigraphs -std=c11` has them. A
+    standard has them but clang's default, a GNU one, and C++17 and later. A form Peeky
+    doesn't read (`-Wp,-trigraphs`, `-std c99`) may turn them on, wherever it is."""
+    later = ("c++17", "c++1z", "c++20", "c++2a", "c++23", "c++2b", "c++26", "c++2c")
+    last = None
+    for word in words[1:]:
+        if word in ("-trigraphs", "-ftrigraphs", "--trigraphs", "-ansi"):
+            last = word
+        elif word == "-fno-trigraphs":
+            last = None
+        elif word.startswith(("-std=", "--std=")):
+            value = word.split("=", 1)[1]
+            last = None if value.startswith("gnu") or (cpp and value in later) else word
+        elif word in ("-std", "--std") or (
+            "trigraphs" in word and word not in ("-Wtrigraphs", "-Wno-trigraphs")
+        ):
+            return word
+    return last
+
+
+def _unproven_probe(
+    read, lists, root, cache, unnamed=frozenset(), named=frozenset(), entered=None, trigraphs=None
+):
+    """Each Unproven of the replay's inputs (``read``: their paths as the compiler opened
+    them): a probe that may have been answered otherwise when the program was built, or a
+    file it reads that its line table doesn't name (``unnamed``: resolved).
+
+    Where the unit's command may turn trigraphs on (``trigraphs``: trigraphs_on's), a file
+    holding a trigraph sequence (``_TRIGRAPH``) counts whole: a trigraph may make a
+    directive or splice lines, hiding a probe from ``probes``.
 
     A probe that finds a file now (``_found``, never further than clang's own search)
     is proven, or never ran: where it runs, clang lists the file it finds among the
@@ -625,8 +685,13 @@ def _unproven_probe(read, lists, root, cache):
     environment only adds directories), so the build found it too. A probe that finds
     none may have been answered otherwise: the build's environment may have added a
     directory holding the file, or the file may since be gone. Peeky can't tell whether
-    it ran (its group may have been skipped), so it counts. A probe in a macro counts
-    where any input names the macro."""
+    it ran (its group may have been skipped), so it counts, unless an earlier branch of
+    its group asks for a file alone and finds one the line table names (``named``). That
+    branch is taken where reached: a later one never runs. A probe that finds a file of
+    ``unnamed`` counts too. Each of those two may be proven by the build's record of its
+    macros (``provable``). A probe in a macro counts where any input names the macro.
+    ``entered``: the files the replay entered, where known: the probes of others never
+    ran."""
     contents = {}
     for path in read:
         real = os.path.realpath(path)
@@ -637,8 +702,36 @@ def _unproven_probe(read, lists, root, cache):
                 listed = probes(data.decode("utf-8", "replace"))
             cache[real] = (data, listed)
         contents[str(path)] = cache[real]
+    found_by, issues = {}, []
     for path, (data, listed) in contents.items():
+        if entered is not None and not {path, os.path.realpath(path)} & entered:
+            continue
+        hidden = entered is None and os.path.realpath(path) in unnamed
+        key = ("trigraph", os.path.realpath(path))
+        if key not in cache:
+            cache[key] = _TRIGRAPH.search(data)
+        if trigraphs is not None and (trigraph := cache[key]) is not None:
+            # -trigraphs may make a directive or splice lines (`__has_inclu??/`), which
+            # Peeky's own reading of the file (probes, conditionals) doesn't follow.
+            # Lines end as the compilers count them (c_source.normalized): `\r\n`, `\n`, `\r`.
+            line = len(_LINE_END.findall(data, 0, trigraph.start())) + 1
+            issues.append(
+                Unproven(
+                    f"its preprocessing reads {_shown(path, root)}, which uses trigraph sequences "
+                    f"(`{trigraph[0].decode()}` on line {line}), and its command may turn them "
+                    f"on ({trigraphs}): Peeky doesn't read text that -trigraphs could change",
+                    path,
+                    None,
+                    False,
+                    hidden,
+                )
+            )
+            continue
         for probe in listed:
+
+            def add(why, provable=False, probe=probe, path=path, hidden=hidden):
+                issues.append(Unproven(why, path, probe, provable, hidden))
+
             where = f"{probe.kind}, in {_shown(path, root)}:{probe.line}"
             if probe.macro:
                 token = probe.macro.encode()
@@ -647,33 +740,79 @@ def _unproven_probe(read, lists, root, cache):
                 ):
                     continue
             if probe.kind in ("#embed", "__has_embed"):
-                return (
-                    f"its preprocessing reads a file to embed ({where}), which no line table names"
-                )
+                add(f"its preprocessing reads a file to embed ({where}), which no line table names")
+                continue
             if probe.header is None:
-                return (
+                add(
                     f"its preprocessing asks whether a file exists ({where}), naming it in a "
                     "way Peeky doesn't read"
                 )
+                continue
             asked = f"<{probe.header}>" if probe.angled else f'"{probe.header}"'
             if probe.macro is not None and (not probe.angled or probe.kind != "__has_include"):
                 # Where a macro's probe searches from depends on where it is expanded.
-                return (
+                add(
                     f"its preprocessing asks whether {asked} exists ({where}), in a macro, "
                     "whose search Peeky can't follow"
                 )
+                continue
             if lists is None:
-                return (
+                add(
                     f"its preprocessing asks whether {asked} exists ({where}), and Peeky "
                     "can't read the compiler's search path"
                 )
-            if _found(probe, path, lists) is None:
-                return (
-                    f"its preprocessing asks whether {asked} exists ({where}), and finds "
-                    "none: the build may have found one (its environment can add header "
-                    "paths, and a file may since be gone)"
-                )
-    return None
+                continue
+            found = _found(probe, path, lists)
+            if found is not None:
+                real = os.path.realpath(found)
+                if real in unnamed:
+                    found_by.setdefault(
+                        real, Unproven(_unread_named(real, root), path, probe, True, hidden)
+                    )
+                continue
+            if probe.macro is None and _moot(probe, path, listed, lists, named, cache):
+                continue
+            add(
+                f"its preprocessing asks whether {asked} exists ({where}), and finds none: "
+                "the build may have found one (its environment can add header paths, and a "
+                "file may since be gone)",
+                probe.macro is None,
+            )
+    first = [found_by.get(real) or Unproven(_unread_named(real, root)) for real in unnamed]
+    return first + [each for each in found_by.values() if each not in first] + issues
+
+
+def _groups(path, cache):
+    """native_macros.conditionals of the file at ``path``, kept in ``cache``."""
+    real = os.path.realpath(path)
+    if ("groups", real) not in cache:
+        data = cache[real][0] if real in cache else Path(real).read_bytes()
+        cache[("groups", real)] = native_macros.conditionals(data.decode("utf-8", "replace"))
+    return cache[("groups", real)]
+
+
+def _moot(probe, path, listed, lists, named, cache):
+    """Whether ``probe`` (of ``path``, whose probes are ``listed``) is in a branch of its
+    group after one whose condition is a probe alone that finds a file now that the line
+    table names (``named``): a probe the build answered so too, so that branch is taken
+    where reached, and the probe never runs."""
+    found = _groups(path, cache).get(probe.line)
+    if found is None:
+        return False
+    group, index = found
+    if group.trigraphed:
+        return False
+    for branch in group.branches[:index]:
+        kind = native_macros.lone(branch) if branch.kind in ("if", "elif") else None
+        asking = [
+            each for each in listed if branch.line <= each.line <= branch.end and each.kind == kind
+        ]
+        if len(asking) != 1 or asking[0].header is None or asking[0].macro is not None:
+            continue
+        found = _found(asking[0], path, lists)
+        if found is not None and os.path.realpath(found) in named:
+            return True
+    return False
 
 
 _ASM_QUALIFIERS = frozenset(
@@ -767,6 +906,18 @@ def _declares(blanked, at):
     return bool(_WORD.fullmatch(token)) and token not in _STATEMENT_WORDS
 
 
+def _before_cxx11(words):
+    """The option of a C++ unit's recorded ``words`` choosing a standard before C++11
+    (`-std=c++03`, `-ansi`), where it is the last to choose one; else None. clang's default
+    is later."""
+    chosen = None
+    for word in words[1:]:
+        if word == "-ansi" or word.startswith(("-std=", "--std=")):
+            chosen = word
+    value = chosen.split("=", 1)[1] if chosen and "=" in chosen else chosen
+    return chosen if value in ("-ansi", "c++98", "c++03", "gnu++98", "gnu++03") else None
+
+
 def replay_environment(scratch):
     """The environment of a unit's replay: Peeky's own. None of what may add options or
     header paths (CCC_*, CL, _CL_, CPATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH,
@@ -790,13 +941,27 @@ def _marked(text, at, root):
     return f"line {line}"
 
 
-def replay(judged, compiler, env, scratch, root, timeout, probed=None):
+@dataclass(frozen=True)
+class Pending:
+    """A unit whose text the build's record of its macros may prove readable: ``why`` it
+    can't be read otherwise (TEXT_UNREAD's)."""
+
+    why: str
+
+
+def replay(judged, compiler, env, scratch, root, timeout, probed=None, record=None):
     """The UnitText of ``judged`` (a read unit), or why it can't be read: its
     preprocessing replayed (`-E`, with its dependencies) by ``compiler``, in its
     compilation directory, with the options replay_arguments passes and
     `--no-default-config`. Every file it reads must be one the unit's line table names
     (and so checked against its MD5): a header of macros alone is named only with
-    `-fdebug-macro`."""
+    `-fdebug-macro`. Its probes must be proven (``_unproven_probe``).
+
+    Where all that isn't so is what the build's record of its macros may prove, a
+    Pending, unless ``record`` is that record (native_macros.build_records'). Then the
+    preprocessing is replayed with `-dD` too, and must leave the same record; the line
+    table must name only files it read; and each probe's group must be settled
+    (native_macros.unsettled)."""
     unit, name = judged.unit, judged.name
 
     def unread(why):
@@ -810,6 +975,11 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         return unread(str(exc))
     if (defined := _defined_probe(arguments)) is not None:
         return unread(defined)
+    if judged.language == "cpp" and (older := _before_cxx11(judged.words)) is not None:
+        return unread(
+            f"its command uses {older}: Peeky reads C++ as C++11 and later do (raw strings, "
+            "`<::` as `<` and `::`)"
+        )
     if unit.sysroot and not any(
         word in ("-isysroot", "--sysroot") or word.startswith("--sysroot=") for word in arguments
     ):
@@ -822,27 +992,13 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         output, depends, errors = work / "unit.i", work / "unit.d", work / "errors.txt"
         argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-v", "-MD", "-MF"]
         argv += [str(depends), arguments[-1], "-o", str(output)]
-        with errors.open("wb") as stderr:
-            process = subprocess.Popen(
-                argv,
-                cwd=comp_dir,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=stderr,
-                stderr=stderr,
-                start_new_session=True,
-            )
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    process.wait(timeout=5)
-                return unread(f"its preprocessing took over {timeout:.0f} s")
+        started = time.monotonic()
+        status = _preprocess(argv, comp_dir, env, timeout, errors)
+        if status is None:
+            return unread(f"its preprocessing took over {timeout:.0f} s")
         with errors.open("rb") as diagnostics:
             said = diagnostics.read(MAX_REPLAY_ERRORS).decode("utf-8", "replace")
-        if process.returncode:
+        if status:
             first = next((line for line in said.split("\n") if "error" in line), said)
             return unread(f"its preprocessing failed: {' '.join(first.split())[:200]}")
         if not output.is_file() or output.stat().st_size > MAX_UNIT:
@@ -863,24 +1019,33 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         settings = {
             os.path.realpath(posixpath.join(comp_dir, value, "SDKSettings.json")) for value in roots
         }
-        reads = []
+        reads, unnamed = [], []
         for path in read:
             real = os.path.realpath(path)
             if real in settings:
                 continue
             if real not in named:
-                return unread(
-                    f"its preprocessing reads {_shown(real, root)}, which its line table "
-                    "doesn't name (-fdebug-macro names each header, on Linux)"
-                )
-            if Path(real).is_relative_to(root):
+                unnamed.append(real)
+            elif Path(real).is_relative_to(root):
                 reads.append(Path(real).relative_to(root).as_posix())
         inputs = [path for path in read if os.path.realpath(path) not in settings]
-        unproven = _unproven_probe(
-            inputs, _search_lists(said), root, {} if probed is None else probed
-        )
-        if unproven is not None:
-            return unread(unproven)
+        lists = _search_lists(said)
+        probed = {} if probed is None else probed
+        trigraphs = trigraphs_on(judged.words, judged.language == "cpp")
+        issues = _unproven_probe(inputs, lists, root, probed, unnamed, named, None, trigraphs)
+        if issues and not all(issue.provable or issue.hidden for issue in issues):
+            return unread(next(each for each in issues if not (each.provable or each.hidden)).why)
+        if issues and record is None:
+            return Pending(unread(issues[0].why))
+        if issues:
+            argv = [compiler, "--no-default-config", *arguments[:-1], "-E", "-dD"]
+            argv += [arguments[-1], "-o", str(work / "unit.dd")]
+            left = timeout - (time.monotonic() - started)
+            reals = {os.path.realpath(each) for each in read}
+            facts = (inputs, lists, probed, unnamed, named, reals, trigraphs)
+            why = _proven(issues[0].why, record, argv, env, comp_dir, left, root, facts)
+            if why is not None:
+                return unread(why)
         own = set(reads)
 
         def program(path):
@@ -917,21 +1082,91 @@ def replay(judged, compiler, env, scratch, root, timeout, probed=None):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def replay_units(read, compiler, scratch, root, deadline):
+def _preprocess(argv, cwd, env, timeout, errors):
+    """The exit status of ``argv``, run in ``cwd`` with ``env``, its output and diagnostics
+    to the file ``errors``; None where it took over ``timeout`` seconds, killed."""
+    with errors.open("wb") as stderr:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stderr,
+            stderr=stderr,
+            start_new_session=True,
+        )
+        try:
+            return process.wait(timeout=max(timeout, 0.1))
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            return None
+
+
+def _proven(why, record, argv, env, comp_dir, timeout, root, facts):
+    """None where the build's record of its macros (``record``) proves the replay's
+    probes; else why not, after ``why``: the preprocessing replayed with `-dD` (``argv``,
+    in ``comp_dir``) must leave the same record, the line table must name only files the
+    replay read, and each probe left (``_unproven_probe`` of ``facts``, given the files the
+    replay entered) must be settled."""
+    inputs, lists, probed, unnamed, named, reals, trigraphs = facts
+    dumped = Path(argv[-1])
+    errors = dumped.with_suffix(".errors")
+    status = _preprocess(argv, comp_dir, env, timeout, errors)
+    if status is None:
+        return f"{why}; its preprocessing with -dD, to check the build's record, took too long"
+    if status or not dumped.is_file():
+        return f"{why}; its preprocessing with -dD, to check the build's record, failed"
+    if dumped.stat().st_size > 4 * MAX_UNIT:
+        return f"{why}; its preprocessing with -dD is over {4 * MAX_UNIT >> 20} MiB"
+    with dumped.open(encoding="utf-8", errors="replace") as lines:
+        replayed, entered = native_macros.replay_record(lines, comp_dir)
+    if replayed is None:
+        return f"{why}; Peeky can't follow the line markers of its preprocessing with -dD"
+    differs = native_macros.difference(record, replayed, lambda path: _shown(path, root))
+    if differs is not None:
+        return (
+            f"{why}; the build's record of its macros (-fdebug-macro) isn't the replay's: {differs}"
+        )
+    if missing := sorted(named - reals):
+        return (
+            f"{why}; its line table names {_shown(missing[0], root)}, which the replay doesn't read"
+        )
+    for issue in _unproven_probe(inputs, lists, root, probed, unnamed, named, entered, trigraphs):
+        if not issue.provable:
+            return issue.why
+        found = _groups(issue.path, probed).get(issue.probe.line)
+        if found is None:
+            return f"{issue.why}; Peeky finds no #if group the probe chooses a branch of"
+        if (why := native_macros.unsettled(found[0])) is not None:
+            return f"{issue.why}; {why}"
+    return None
+
+
+# What a unit whose probes the build's record of its macros may prove says without one.
+_RECORD_HINT = (
+    "; build it with -fdebug-macro, and Peeky checks it against the build's own record of "
+    "its macros"
+)
+
+
+def replay_units(read, compiler, scratch, root, deadline, records=None):
     """{unit name: UnitText, or why its text can't be read} of each unit read, replayed
     at most MAX_REPLAYS at once, while the launch's deadline leaves REPLAY_MARGIN
-    seconds."""
-    import time
-
+    seconds. A unit whose replay is Pending is replayed again with its record of macros:
+    ``records``, given the Pending units (Judged), gives {line table offset: record, or
+    why it can't be read} (native_macros.build_records)."""
     env = replay_environment(scratch)
 
-    def one(judged, probed):
+    def one(judged, probed, record=None):
         left = 15 if deadline is None else deadline - time.monotonic() - REPLAY_MARGIN
         if left <= 0:
             return TEXT_UNREAD.format(
                 unit=judged.name, why="there was no time left for it before the launch"
             )
-        return replay(judged, compiler, env, scratch, root, min(15, left), probed)
+        return replay(judged, compiler, env, scratch, root, min(15, left), probed, record)
 
     # Peeky reads a unit's text by its file's name: units built from one file with other
     # commands (`-D`s) would have one's text stand for all.
@@ -955,6 +1190,36 @@ def replay_units(read, compiler, scratch, root, deadline):
         texts.update(
             zip(
                 (each.name for each in replayed), pool.map(lambda each: one(each, probed), replayed)
+            )
+        )
+        pending = [each for each in replayed if isinstance(texts[each.name], Pending)]
+        found = {}
+        if pending and records is not None:
+            try:
+                found = records(pending)
+            except (*SYMBOL_FAILURES, OSError, ValueError) as exc:
+                said = f"; Peeky can't read the build's record of its macros ({exc})"
+                found = {each.unit.stmt_list: said for each in pending}
+        again = []
+        for each in pending:
+            record = found.get(each.unit.stmt_list)
+            if isinstance(record, list):
+                again.append((each, record))
+                continue
+            why = texts[each.name].why
+            if record is None:
+                asked = [word for word in each.words if word.endswith("debug-macro")]
+                if asked and asked[-1] == "-fdebug-macro":
+                    why += "; Peeky finds no record of its macros in the binary"
+                elif sys.platform == "linux":
+                    why += _RECORD_HINT
+            else:
+                why += record if record.startswith(";") else f"; {record}"
+            texts[each.name] = why
+        texts.update(
+            zip(
+                (each.name for each, _ in again),
+                pool.map(lambda pair: one(pair[0], probed, pair[1]), again),
             )
         )
     return texts
@@ -1023,10 +1288,12 @@ class CodeSymbol:
 @dataclass(frozen=True)
 class CodeMap:
     """What code_symbols reads of an executable: its symbols at code (None where it has
-    no symbol table) and its CodeSections."""
+    no symbol table), its CodeSections, and whether it is Mach-O, whose code Peeky
+    compares with no toolchain object or archive (they are ELF's alone)."""
 
     symbols: list | None
     sections: list
+    macho: bool = False
 
 
 # Sections of stubs the linker makes: never the program's code.
@@ -1131,7 +1398,7 @@ def _macho_symbols(stream, header):
         cursor += extent
     code = [section for section, is_code in sections if is_code]
     if table is None:
-        return CodeMap(None, code)
+        return CodeMap(None, code, macho=True)
     offset, symbols, strings, strings_size = table
     if symbols > MAX_SYMBOLS or offset + symbols * 16 > size or strings + strings_size > size:
         raise ValueError("Invalid Mach-O symbol table")
@@ -1152,7 +1419,7 @@ def _macho_symbols(stream, header):
         text = os.fsdecode(names[start:end]) if end >= 0 else ""
         if text and not text.startswith(("ltmp", "l_", "L")):
             found.append(CodeSymbol(text.removeprefix("_"), value, 0, not kind & 0x01))  # N_EXT
-    return CodeMap(found, code)
+    return CodeMap(found, code, macho=True)
 
 
 # What fills the space between functions: zeros, AArch64's `nop`, x86's `nop`s and `int3`.
@@ -1211,7 +1478,53 @@ def _code_between(stream, section, low, high):
     return None
 
 
-def uncovered_code(binary, units, startup=None):
+# What a unit's recorded words say of where the compiler finds the toolchain's startup
+# objects and archives, by the name clang's driver takes with `=`: a link may say more.
+_TOOLCHAIN_OPTIONS = {
+    "--target": "--target",
+    "-target": "--target",
+    "--sysroot": "--sysroot",
+    "-rtlib": "--rtlib",
+    "--rtlib": "--rtlib",
+    "--gcc-toolchain": "--gcc-toolchain",
+    "--gcc-install-dir": "--gcc-install-dir",
+}
+# Of those, the ones naming a directory, relative to the unit's.
+_TOOLCHAIN_PATHS = frozenset(("--sysroot", "--gcc-toolchain", "--gcc-install-dir"))
+
+
+def toolchain_options(read):
+    """(options, unsure): what every unit of ``read`` (Judged) records of where the
+    toolchain's startup objects and archives are (_TOOLCHAIN_OPTIONS), as `--name=value`
+    words for asking the compiler; or, where the units record different ones, none, and
+    why the archives Peeky reads may not be the ones linked."""
+    seen = {}
+    for each in read:
+        words, found = list(each.words[1:]), {}
+        for at, word in enumerate(words):
+            name, equals, value = word.partition("=")
+            if name not in _TOOLCHAIN_OPTIONS:
+                continue
+            if not equals:
+                if word not in ("-target", "--sysroot", "--rtlib") or at + 1 >= len(words):
+                    continue
+                value = words[at + 1]
+            name = _TOOLCHAIN_OPTIONS[name]
+            if name in _TOOLCHAIN_PATHS:
+                value = posixpath.normpath(posixpath.join(each.unit.comp_dir or "/", value))
+            found[name] = value
+        seen.setdefault(tuple(sorted(found.items())), each.name)
+    if len(seen) > 1:
+        differ = sorted({name for options in seen for name, _ in options})
+        return (), (
+            f"the units record different {', '.join(differ)}, so the toolchain's code Peeky "
+            "compared it with may not be what was linked"
+        )
+    options = next(iter(seen), ())
+    return tuple(f"{name}={value}" for name, value in options), None
+
+
+def uncovered_code(binary, units, startup=None, unsure=None):
     """What of ``binary``'s code no unit of its debug information covers (``units``:
     native_units.Unit, each with its code ranges), but the toolchain's own: each symbol
     there (hand-written assembly built without -g, a library linked without debug
@@ -1219,10 +1532,15 @@ def uncovered_code(binary, units, startup=None):
     it), but what pads the space between functions. The toolchain's own: the linker's
     stubs (``_TOOLCHAIN_SECTIONS``); startup code by a name reserved to the
     implementation (``_RESERVED_STARTUP``, ``_ATOMICS``), to its size, or to the next
-    symbol where it has none; and code whose bytes are a startup object's
-    (``startup``: a callable giving toolchain_startup's), as other startup names and
-    crti.o's and crtn.o's parts of `.init` and `.fini` must be. Each as a phrase, for a
-    note; where the binary has no symbol table, or one Peeky can't read, that instead."""
+    symbol where it has none; and code whose bytes are a startup object's or a toolchain
+    archive member's (``startup``: a callable given the names to look for, giving
+    toolchain_startup's), as other startup names, crti.o's and crtn.o's parts of `.init`
+    and `.fini`, and functions linked from libgcc's archive or libc_nonshared.a
+    (`__extenddftf2`, `atexit`) must be. Such code is the toolchain's only where the code
+    its relocations reach by the binary's symbols is too. Never a symbol of
+    the returns-twice family. Each as a phrase, for a note; where the binary has no symbol
+    table, or one Peeky can't read, that instead. ``unsure``: why the toolchain's archives
+    Peeky reads may not be the ones linked, said with each phrase they bear on."""
     import bisect
 
     try:
@@ -1241,41 +1559,84 @@ def uncovered_code(binary, units, startup=None):
         for section in sections
         if section.name in _FRAMED_SECTIONS and section.high > section.low
     }
-    matched, unframed, pieces, why = set(), {}, [], None
-    if framed or any(symbol.name in _MATCHED_STARTUP for symbol in symbols):
-        pieces, why = startup() if startup is not None else ([], "Peeky has no compiler to ask")
+
+    def reserved(symbol):
+        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
+
+    def family(symbol):
+        return bool(_RETURNS_TWICE.fullmatch(symbol.name))
+
+    units_hold = _holder(covered)
+    # Symbols whose code may be the toolchain's: startup names, and any other no unit
+    # covers, but the returns-twice family's, which are never taken for the toolchain's.
+    wanted = [
+        symbol
+        for symbol in symbols
+        if not reserved(symbol)
+        and not family(symbol)
+        and (symbol.name in _MATCHED_STARTUP or not units_hold(symbol.address))
+    ]
+    unframed, pieces, why, unsearched = {}, [], None, None
+    if code.macho:
+        wanted = []
+    if framed or wanted:
+        names = sorted({symbol.name for symbol in wanted} - _MATCHED_STARTUP)
+        if startup is None:
+            why = unsearched = "Peeky has no compiler to ask"
+        else:
+            pieces, why, unsearched = startup(names)
     image = None
     if pieces:
         try:
             image = native_startup.Image(binary)
         except (OSError, ValueError, struct.error) as exc:
             pieces, why = [], f"Peeky can't read the binary's sections ({exc})"
-    for symbol in symbols:
-        if symbol.name not in _MATCHED_STARTUP or symbol.address in matched:
-            continue
-        for piece in pieces:
-            if symbol.name not in piece.symbols:
-                continue
-            base = symbol.address - piece.symbols[symbol.name]
-            if native_startup.place(piece, base, image):
-                covered.append((base, base + len(piece.data)))
-                matched |= {base + at for at in piece.symbols.values()}
-                break
+            unsearched = why
+    # Each piece placed where a wanted symbol of it says: {(piece, base): Placed}; and
+    # each framed section's crti.o head and crtn.o tail.
+    placed, tried, ends = {}, {}, {}
+    for symbol in wanted:
+        for index, piece in enumerate(pieces):
+            if symbol.name in piece.symbols:
+                key = (index, symbol.address - piece.symbols[symbol.name])
+                if key not in placed:
+                    placed[key] = native_startup.place(piece, key[1], image)
+                tried.setdefault(symbol, []).append(key)
     for name, section in framed.items():
         # crti.o begins the section and crtn.o ends it; others add what lies between.
-        head = [piece for piece in pieces if piece.origin == "crti.o" and piece.section == name]
-        tail = [piece for piece in pieces if piece.origin == "crtn.o" and piece.section == name]
+        head = [at for at, piece in enumerate(pieces) if piece.origin == "crti.o"]
+        tail = [at for at, piece in enumerate(pieces) if piece.origin == "crtn.o"]
+        head = [at for at in head if pieces[at].section == name]
+        tail = [at for at in tail if pieces[at].section == name]
         if not head or not tail:
             unframed[name] = why or "Peeky found no crti.o or crtn.o"
             continue
-        start, end = len(head[0].data), len(tail[0].data)
-        if native_startup.place(head[0], section.low, image):
-            covered.append((section.low, section.low + start))
-        if native_startup.place(tail[0], section.high - end, image):
-            covered.append((section.high - end, section.high))
-
-    def reserved(symbol):
-        return symbol.name in _RESERVED_STARTUP or bool(_ATOMICS.fullmatch(symbol.name))
+        ends[name] = ((head[0], section.low), (tail[0], section.high - len(pieces[tail[0]].data)))
+        for key in ends[name]:
+            placed[key] = native_startup.place(pieces[key[0]], key[1], image)
+    # Startup and archive code is the toolchain's only where what it reaches by the
+    # binary's symbols is too: code the toolchain's by name or bytes, or the linker's
+    # stubs. crtbegin.o's weak hooks (`__cxa_finalize`, `_ITM_registerTMCloneTable`) and
+    # libc's `__cxa_atexit` may be the program's own. Until none changes.
+    alive = {key for key, outcome in placed.items() if outcome}
+    named_by_toolchain = {symbol.address for symbol in symbols if reserved(symbol)}
+    reaching = {}
+    while True:
+        holds = _holder([(base, base + len(pieces[at].data)) for at, base in alive])
+        dead = {}
+        for key in alive:
+            for address, name in placed[key].reaches:
+                if address not in named_by_toolchain and not holds(address):
+                    dead[key] = name
+                    break
+        if not dead:
+            break
+        alive -= dead.keys()
+        reaching.update(dead)
+    matched = set()
+    for at, base in alive:
+        covered.append((base, base + len(pieces[at].data)))
+        matched |= {base + offset for offset in pieces[at].symbols.values()}
 
     starts = sorted(symbol.address for symbol in symbols)
     for symbol in symbols:
@@ -1288,37 +1649,63 @@ def uncovered_code(binary, units, startup=None):
         end = starts[at] if at < len(starts) else section.high if section else symbol.address
         end = symbol.address + symbol.size if symbol.size else end
         covered.append((symbol.address, min(end, section.high) if section else end))
-    spans = []
-    for low, high in sorted(covered):
-        if spans and low <= spans[-1][1]:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], high))
-        else:
-            spans.append((low, high))
-    lows = [low for low, _ in spans]
-
-    def held(address):
-        at = bisect.bisect_right(lows, address) - 1
-        return at >= 0 and address < spans[at][1]
-
+    spans = _merged(covered)
+    held = _holder(covered)
+    doubt = f"; {unsure}" if unsure else ""
     named, found = [], []
     for symbol in symbols:
-        if reserved(symbol) or symbol.address in matched or held(symbol.address):
+        if reserved(symbol):
+            continue
+        said = f"{symbol.name} is code no unit's debug information covers"
+        if family(symbol):
+            # Whatever code holds it, the toolchain's or not.
+            if not units_hold(symbol.address):
+                named.append(symbol)
+                found.append(
+                    f"{said} (one of the returns-twice family, which Peeky never takes for "
+                    "the toolchain's code)"
+                )
+            continue
+        if symbol.address in matched or held(symbol.address):
             continue
         named.append(symbol)
-        said = f"{symbol.name} is code no unit's debug information covers"
-        if symbol.name not in _MATCHED_STARTUP:
-            found.append(f"{said} (assembly built without -g?)")
+        keys = tried.get(symbol, [])
+        if not keys:
+            if code.macho:
+                found.append(
+                    f"{said} (code built without debug information: the program's own, a "
+                    "library's or the toolchain's, which Peeky compares on Linux only)"
+                )
+            elif symbol.name in _MATCHED_STARTUP:
+                found.append(
+                    f"{said}, and Peeky found no toolchain startup object holding it "
+                    f"({why or 'none names it'}){doubt}"
+                )
+            elif unsearched:
+                found.append(
+                    f"{said}, and Peeky can't tell whether it is the toolchain's: it can't "
+                    f"search all the toolchain's archives ({unsearched}){doubt}"
+                )
+            else:
+                found.append(f"{said} (assembly built without -g?){doubt}")
             continue
-        origins = sorted({piece.origin for piece in pieces if symbol.name in piece.symbols})
-        if origins:
-            found.append(
-                f"{said}, and its bytes are none of the toolchain's ({', '.join(origins)})"
-            )
-        else:
-            found.append(
-                f"{said}, and Peeky found no toolchain startup object holding it "
-                f"({why or 'none names it'})"
-            )
+        differ = sorted(
+            {
+                pieces[at].origin
+                for at, base in keys
+                if placed[(at, base)].kind == native_startup.BYTES
+            }
+        )
+        parts = [f"its bytes are none of the toolchain's ({', '.join(differ)})"] if differ else []
+        for key in keys:
+            if key in reaching:
+                parts.append(
+                    f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
+                    f"{reaching[key]}, code that isn't the toolchain's"
+                )
+            elif placed[key].kind not in (None, native_startup.BYTES):
+                parts.append(placed[key].why)
+        found.append(f"{said}, and {'; '.join(dict.fromkeys(parts))}{doubt}")
     with open(binary, "rb") as stream:
         for section in sections:
             if section.name in _TOOLCHAIN_SECTIONS or section.high <= section.low:
@@ -1333,11 +1720,25 @@ def uncovered_code(binary, units, startup=None):
                     at = None if inside else _code_between(stream, section, cursor, gap_end)
                     if at is not None and section.name in framed:
                         reason = unframed.get(section.name)
+                        # Why crti.o's head or crtn.o's tail, where the gap holds it, isn't
+                        # the toolchain's.
+                        missed = [
+                            f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
+                            f"{reaching[key]}, code that isn't the toolchain's"
+                            if key in reaching
+                            else placed[key].why
+                            for key in ends.get(section.name, ())
+                            if key not in alive
+                            and key[1] < gap_end
+                            and cursor < key[1] + len(pieces[key[0]].data)
+                        ]
                         found.append(
                             f"the code at 0x{at:x}, in {section.name}, may be the program's: "
                             + (
                                 f"Peeky can't compare it with crti.o's and crtn.o's ({reason})"
                                 if reason
+                                else "; ".join(missed)
+                                if missed
                                 else "it isn't crti.o's or crtn.o's"
                             )
                         )
@@ -1350,6 +1751,31 @@ def uncovered_code(binary, units, startup=None):
                 if cursor >= section.high:
                     break
     return list(dict.fromkeys(found))
+
+
+def _merged(spans):
+    """``spans`` ([low, high) pairs) sorted, those that meet or overlap joined."""
+    joined = []
+    for low, high in sorted(spans):
+        if joined and low <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], high))
+        else:
+            joined.append((low, high))
+    return joined
+
+
+def _holder(spans):
+    """Whether an address is in one of ``spans``, as a function."""
+    import bisect
+
+    joined = _merged(spans)
+    lows = [low for low, _ in joined]
+
+    def holds(address):
+        at = bisect.bisect_right(lows, address) - 1
+        return at >= 0 and address < joined[at][1]
+
+    return holds
 
 
 def any_call_returns_twice(judged, texts, uncovered=()):
@@ -1721,6 +2147,7 @@ class BinaryTarget:
             read=read,
             language=language,
             files=files,
+            tables=tables,
         )
 
     def remote_inputs(self, root):
@@ -1906,15 +2333,40 @@ class BinaryTarget:
                 "UNSUPPORTED",
                 f"{shown} has no build ID Peeky can read ({exc}): link it with {flag}",
             ) from None
-        texts = replay_units(read, compiler, scratch, root, deadline)
+
+        def records(pending):
+            # Each pending unit's line table's files, resolved, by index.
+            files = {}
+            for each in pending:
+                table = found.tables[each.unit.stmt_list]
+                paths = {index: table.path(index, each.unit.comp_dir) for index in table.files}
+                files[each.unit.stmt_list] = {
+                    index: os.path.realpath(path) for index, path in paths.items() if path
+                }
+            with _symbol_text(
+                dwarfdump,
+                [["--debug-macro", str(symbols)]],
+                scratch,
+                env,
+                limit=MAX_DEBUG_INFO,
+                timeout=_remaining(deadline),
+                what="records of macros",
+            ) as lines:
+                return native_macros.build_records(lines, files)
+
+        texts = replay_units(read, compiler, scratch, root, deadline, records)
         any_call = None
         if self.returns_twice is None:
             # The toolchain's own environment, never the program's (``env``).
             tools = replay_environment(scratch)
+            options, unsure = toolchain_options(read)
             uncovered = uncovered_code(
                 binary,
                 units,
-                lambda: native_startup.toolchain_startup(compiler, tools, _remaining(deadline, 10)),
+                lambda names: native_startup.toolchain_startup(
+                    compiler, tools, _remaining(deadline, 10), names, options
+                ),
+                unsure,
             )
             any_call = any_call_returns_twice(judged, texts, uncovered)
         returns_twice = ()
