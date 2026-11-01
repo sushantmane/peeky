@@ -185,12 +185,14 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
     aren't recorded: a binary linked with another runtime library shows its functions as code
     no unit covers.
   - `.init` and `.fini` hold what every object puts there. Only crti.o's head and crtn.o's
-    tail, matched byte for byte, are the toolchain's. Anything else there counts.
+    tail, matched byte for byte, are the toolchain's. Anything else there counts. Where the
+    head or tail isn't matched, the note says why (`Placed.why`): other bytes, a relocation
+    pointing elsewhere or Peeky doesn't read, another machine, or what it reaches.
   - Peeky asks the compiler in its own environment (`replay_environment`), never the one the
     program launches with.
   - A Mach-O binary's code is compared with nothing (`CodeMap.macho`): the objects and archives
-    Peeky reads are ELF's. A symbol no unit covers there says it may be assembly built without
-    `-g` or the toolchain's own code.
+    Peeky reads are ELF's. A symbol no unit covers there is code built without debug
+    information: the program's own, a library's or the toolchain's.
 - The session's workspace is the target directory. Its `scratch` is Peeky's own: the dSYM,
   lldb's home and the tools' scratch. `BinaryRun.cleanup` removes only that.
 

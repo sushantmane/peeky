@@ -1365,8 +1365,8 @@ def uncovered_code(binary, units, startup=None, unsure=None):
         if not keys:
             if code.macho:
                 found.append(
-                    f"{said} (assembly built without -g, or the toolchain's own code, which "
-                    "Peeky compares on Linux only)"
+                    f"{said} (code built without debug information: the program's own, a "
+                    "library's or the toolchain's, which Peeky compares on Linux only)"
                 )
             elif symbol.name in _MATCHED_STARTUP:
                 found.append(
@@ -1412,19 +1412,25 @@ def uncovered_code(binary, units, startup=None, unsure=None):
                     at = None if inside else _code_between(stream, section, cursor, gap_end)
                     if at is not None and section.name in framed:
                         reason = unframed.get(section.name)
-                        reached = [
+                        # Why crti.o's head or crtn.o's tail, where the gap holds it, isn't
+                        # the toolchain's.
+                        missed = [
                             f"its bytes are {pieces[key[0]].origin}'s, but it reaches "
                             f"{reaching[key]}, code that isn't the toolchain's"
-                            for key in ends.get(section.name, ())
                             if key in reaching
+                            else placed[key].why
+                            for key in ends.get(section.name, ())
+                            if key not in alive
+                            and key[1] < gap_end
+                            and cursor < key[1] + len(pieces[key[0]].data)
                         ]
                         found.append(
                             f"the code at 0x{at:x}, in {section.name}, may be the program's: "
                             + (
                                 f"Peeky can't compare it with crti.o's and crtn.o's ({reason})"
                                 if reason
-                                else reached[0]
-                                if reached
+                                else "; ".join(missed)
+                                if missed
                                 else "it isn't crti.o's or crtn.o's"
                             )
                         )

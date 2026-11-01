@@ -873,11 +873,18 @@ def test_code_no_unit_covers_is_named(root, monkeypatch):
         native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections, macho=True)
     )
     asked = []
-    assert uncovered_code(binary, units, lambda names=(): asked.append(names))[0] == (
-        "nlr_push is code no unit's debug information covers (assembly built without -g, or the "
-        "toolchain's own code, which Peeky compares on Linux only)"
+    # Not only assembly: `helper` is ordinary C, built without -g.
+    units.pop()
+    mach = (
+        "{} is code no unit's debug information covers (code built without debug information: "
+        "the program's own, a library's or the toolchain's, which Peeky compares on Linux only)"
     )
+    assert uncovered_code(binary, units, lambda names=(): asked.append(names)) == [
+        mach.format("nlr_push"),
+        mach.format("helper"),
+    ]
     assert asked == []
+    units.append(SimpleNamespace(ranges=[(0x1080, 0x10A0)]))
     monkeypatch.setattr(native_binary, "code_symbols", lambda binary: CodeMap(symbols, sections))
     # Where Peeky can't search them, it can't tell.
     assert uncovered_code(binary, units)[0] == (
@@ -1554,11 +1561,34 @@ def test_init_is_the_toolchain_s_only_where_crti_and_crtn_s_code_is(root, monkey
     assert found(MOV + call + MOV + RET) == [
         "the code at 0x2008, in .init, may be the program's: it isn't crti.o's or crtn.o's"
     ]
-    # Not crti.o's head at all, or its call elsewhere.
-    for other in (RET + call, MOV + _bl(0x2004, 0x3100)):
-        assert found(other + RET) == [
-            "the code at 0x2000, in .init, may be the program's: it isn't crti.o's or crtn.o's"
-        ]
+    # Not crti.o's head, or its call elsewhere: each says which.
+    said = "the code at 0x2000, in .init, may be the program's: "
+    assert found(RET + call + RET) == [said + "its bytes are none of the toolchain's (crti.o)"]
+    assert found(MOV + _bl(0x2004, 0x3100) + RET) == [
+        said + "its bytes are crti.o's, but its relocation at +0x4, to call_weak_fn, points "
+        "elsewhere"
+    ]
+    # crti.o built for another machine, or holding a relocation Peeky doesn't read: Peeky
+    # can't compare them, and says so.
+    from peeky.native_startup import EM_X86_64, StartupPiece
+
+    x86 = StartupPiece("crti.o", ".init", head.data, EM_X86_64, head.relocations, {})
+    assert found(MOV + call + RET, pieces=(x86, tail)) == [
+        said + "Peeky can't compare it with crti.o, built for x86-64, not AArch64"
+    ]
+    unread = "a relocation of kind 257 at 0x4 of its .init"
+    odd = StartupPiece("crti.o", ".init", head.data, head.machine, (), {}, unread)
+    assert found(MOV + call + RET, pieces=(odd, tail)) == [
+        said + f"Peeky can't compare it with crti.o, which holds {unread}, a kind Peeky "
+        "doesn't read"
+    ]
+    # crtn.o's tail likewise, where the gap holds it.
+    odd_tail = StartupPiece("crtn.o", ".init", RET, head.machine, (), {}, unread.replace("4", "0"))
+    assert found(MOV + call + RET, pieces=(head, odd_tail)) == [
+        "the code at 0x2008, in .init, may be the program's: Peeky can't compare it with "
+        "crtn.o, which holds a relocation of kind 257 at 0x0 of its .init, a kind Peeky doesn't "
+        "read"
+    ]
     assert found(MOV + call + RET, pieces=(), why="clang finds no crti.o") == [
         "the code at 0x2000, in .init, may be the program's: Peeky can't compare it with "
         "crti.o's and crtn.o's (clang finds no crti.o)"
