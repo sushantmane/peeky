@@ -4,13 +4,16 @@ recorded commands, and its refusals' codes."""
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from peeky import gitindex
 from peeky import rust_build as rb
 from peeky.errors import ERROR_CODES, classify
 
@@ -204,12 +207,16 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
         (deps / name).write_text("")
     (tmp_path / "debug/app").write_text("")
     (tmp_path / "debug/app.d").write_text("")
+    (tmp_path / "debug/other").write_text("not rustc's")
+    (tmp_path / "debug/other.d").write_text("")
     assert rb._dependency_file([str(deps / "libutil-0123.rlib")]) == (deps / "util-0123.d", "rustc")
     assert rb._dependency_file([str(deps / "app-4567")]) == (deps / "app-4567.d", "rustc")
-    # A binary Cargo copies up names only its copy: Cargo's own file, in make's form.
-    assert rb._dependency_file([str(tmp_path / "debug/app")]) == (
-        tmp_path / "debug/app.d",
-        "make",
+    # A binary Cargo copies up names only its copy: rustc's own file, beside the output it
+    # copied; else Cargo's own, in make's form.
+    assert rb._dependency_file([str(tmp_path / "debug/app")]) == (deps / "app-4567.d", "rustc")
+    assert rb._dependency_file([str(tmp_path / "debug/other")]) == (
+        tmp_path / "debug/other.d",
+        "cargo",
     )
     assert rb._dependency_file([str(tmp_path / "debug/none")]) == (None, None)
     # A build script: Cargo names its copy, beside rustc's output and dependency file.
@@ -225,6 +232,46 @@ def test_a_compiles_files_lead_to_rustcs_dependency_file(tmp_path):
     assert rb._stem("app-4567.dSYM") == "app-4567"
 
 
+def test_an_output_cargo_linked_or_copied_up_leads_to_rustcs_dependency_file(tmp_path):
+    # `build = "build/main.rs"` (bat): rustc writes `build_script_main-<hash>`, which Cargo
+    # names `build-script-main`. And a binary an integration test runs (ripgrep's `rg`):
+    # Cargo links it (Linux) or copies it (macOS) up from `deps`, and writes no make-form
+    # file beside it (#481).
+    script = tmp_path / "debug/build/bat-89ab"
+    script.mkdir(parents=True)
+    for name in ("build-script-main", "build_script_main-cdef", "build_script_main-cdef.d"):
+        (script / name).write_text("")
+    assert rb._dependency_file([str(script / "build-script-main")]) == (
+        script / "build_script_main-cdef.d",
+        "rustc",
+    )
+    deps = tmp_path / "debug/deps"
+    deps.mkdir()
+    for name in ("rg-0123", "rg-4567", "rg_x-89ab"):
+        (deps / name).write_text(name)
+        (deps / f"{name}.d").write_text("")
+    os.link(deps / "rg-4567", tmp_path / "debug/rg")
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (deps / "rg-4567.d", "rustc")
+    # A copy: the one of the same bytes. A binary with `-` in its name is `rg_x-<hash>`.
+    (tmp_path / "debug/rg-x").write_text("rg_x-89ab")
+    assert rb._dependency_file([str(tmp_path / "debug/rg-x")]) == (deps / "rg_x-89ab.d", "rustc")
+    # Before Cargo's own make-form file, which may list a directory (bat's).
+    (tmp_path / "debug/rg.d").write_text("rg: /testbed/assets/completions/\n")
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (deps / "rg-4567.d", "rustc")
+    # None of the same bytes: none.
+    (tmp_path / "debug/other").write_text("rg-4567")
+    assert rb._dependency_file([str(tmp_path / "debug/other")]) == (None, None)
+    # Two of the same bytes: Peeky can't tell which compile it is.
+    (deps / "rg-cdef").write_text("rg-4567x")
+    (tmp_path / "debug/twice").write_text("rg-4567x")
+    (deps / "twice-0001").write_text("rg-4567x")
+    (deps / "twice-0002").write_text("rg-4567x")
+    assert rb._dependency_file([str(tmp_path / "debug/twice")]) == (None, None)
+    # rustc's output without its dependency file: Cargo's own.
+    (deps / "rg-4567.d").unlink()
+    assert rb._dependency_file([str(tmp_path / "debug/rg")]) == (tmp_path / "debug/rg.d", "cargo")
+
+
 def test_a_watched_directory_cargo_lists_is_recorded_by_its_entries_not_hashed(tmp_path):
     # Cargo's own dependency file lists a build script's `rerun-if-changed` paths: a
     # directory too, which isn't a file to hash (a build watching one failed, "Expected a
@@ -236,7 +283,7 @@ def test_a_watched_directory_cargo_lists_is_recorded_by_its_entries_not_hashed(t
     target.mkdir()
     depfile = tmp_path / "app.d"
     depfile.write_text(f"{target}/debug/app: {root}/util/src/lib.rs {root}/util/proto\n")
-    read = rb._read_dependencies(depfile, root, root, target, "app", "make")
+    read = rb._read_dependencies(depfile, root, root, target, "app", "cargo")
     assert read["sources"] == ["util/src/lib.rs"]
     assert read["directories"] == [root / "util/proto"]
     # Recorded entry by entry where a local build script watches it, or a vendored copy's
@@ -1882,3 +1929,110 @@ def test_an_input_through_a_link_to_nothing_is_refused(tmp_path):
         "`util`'s build script watches util/link, a link to util/target.txt that didn't exist "
         "before the build"
     )
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_git_index_the_build_reads_is_compared_by_its_bytes_saying_when_its_entries_are_same(
+    tmp_path, monkeypatch
+):
+    # git-version's macro (bat's) `include_bytes!` `.git/index` and runs `git describe
+    # --dirty` while the crate compiles; a build script may watch the index too. A crate may
+    # use its bytes, so they are what is compared. Where they changed and the entries didn't,
+    # the refusal says so, and no more: git may have refreshed its cached file status.
+    root = tmp_path / "ws"
+    write(root, {"util/build.rs": "", "util/src/lib.rs": "", "notes.txt": "n\n"})
+    index = root / ".git/index"
+    ago = iter(range(1000, 10**6, 100))
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    def refreshed():
+        # A modification time the index doesn't cache (earlier, so not racily clean).
+        earlier = time.time() - next(ago)
+        os.utime(root / "notes.txt", (earlier, earlier))
+        written = index.read_bytes()
+        git("describe", "--always", "--dirty")
+        assert index.read_bytes() != written
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    shape = fake_shape(tmp_path, local=("util",))
+    read = {"sources": [".git/index"], "generated": []}
+    messages = [build_script_run(tmp_path, "util", "cargo:rerun-if-changed=../.git/index\n")]
+    same = (
+        "Provenance: .git/index changed while Peeky built the workspace, but its entries are "
+        "the same (git may have refreshed its cached file status). Build again"
+    )
+    changed = (
+        "Provenance: .git/index changed while Peeky built the workspace, so the build may not "
+        "be of it. Build again"
+    )
+
+    def refused(before):
+        """What a compile's source and a build script's input are refused with."""
+        found = []
+        for check in (
+            lambda: rb._record_read(read, root, tmp_path / "target", before, 0, {}, {}),
+            lambda: rb._build_inputs(shape, root, messages, {}, before, 0, None),
+        ):
+            with pytest.raises(RuntimeError) as caught:
+                check()
+            assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+            found.append(str(caught.value))
+        assert found[0] == found[1]
+        return found[0]
+
+    # Refreshed by `git describe --dirty`: bytes changed, entries the same.
+    before = rb._snapshot(shape, None)
+    assert before["s:" + str(index)] == rb.sha256_file(index)
+    refreshed()
+    assert refused(before) == same
+    # Written in another version: bytes changed, entries the same. Said as it is.
+    before = rb._snapshot(shape, None)
+    git("update-index", "--index-version", "4")
+    assert refused(before) == same
+    # Touched only: its status changed, not its bytes. The change as any.
+    before = rb._snapshot(shape, None)
+    later = time.time() + 100
+    os.utime(index, (later, later))
+    assert refused(before) == changed
+    # A staged change: entries changed too.
+    before = rb._snapshot(shape, None)
+    (root / "notes.txt").write_text("staged\n")
+    git("add", "notes.txt")
+    assert refused(before) == changed
+    # At a probe: by its bytes, and the same said where its entries are as the build's.
+    before = rb._snapshot(shape, None)
+    sources = {}
+    rb._record_read(read, root, tmp_path / "target", before, 0, sources, {})
+    found = rb._build_inputs(shape, root, messages, {}, before, 0, None)
+    manifest = {"build_inputs": found, "sources": sources, "watch": {}, "rustflags": []}
+    manifest["index_entries"] = rb._index_entries(root, manifest)
+    assert manifest["index_entries"] == {
+        ".git/index": gitindex.digest(index),
+        str(index): gitindex.digest(index),
+    }
+    target = SimpleNamespace(build_command="peeky build . --config rust.json")
+    monkeypatch.setattr(rb, "_environment", lambda *args: {})
+    os.utime(index, (later + 100, later + 100))
+    rb._check_build_inputs(target, root, tmp_path, manifest)
+    refreshed()
+    with pytest.raises(rb.BuildRequired) as caught:
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    assert str(caught.value) == (
+        "No current Peeky build of this workspace: .git/index, which a build script reads, "
+        "changed since `peeky build` ran, but its entries are the same (git may have refreshed "
+        "its cached file status). Run `peeky build . --config rust.json` again, or add --build"
+    )
+    (root / "notes.txt").write_text("staged again\n")
+    git("add", "notes.txt")
+    with pytest.raises(rb.BuildRequired) as caught:
+        rb._check_build_inputs(target, root, tmp_path, manifest)
+    assert "changed since `peeky build` ran. Run" in str(caught.value)

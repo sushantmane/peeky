@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -1154,6 +1155,99 @@ def test_a_procedural_macros_generated_source_is_scanned_too(workspace, capsys, 
     assert "/out/generated.rs (generated) mentions RUSTC_BOOTSTRAP" in message
 
 
+def lock(root):
+    """Cargo.lock written again for the workspace's changed manifests."""
+    subprocess.run(
+        [os.environ["PEEKY_RUST_CARGO"], "generate-lockfile", "--offline"]
+        + list(rw.vendor_arguments(root, "vendor")),
+        cwd=root,
+        env=rw.cargo_environment(os.environ["PEEKY_RUST_RUSTC"], root.parent / "cargo-home"),
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.timeout(300)
+def test_a_build_script_by_another_name_and_a_binary_a_test_runs_are_read(workspace, capsys):
+    # `build = "build/main.rs"` (bat): rustc names it `build_script_main-<hash>`, and Cargo
+    # its copy `build-script-main`. An integration test that runs the package's binary
+    # (ripgrep's): Cargo links or copies `deps/app-<hash>` up as `target/debug/app` and
+    # writes no dependency file beside it. Both were "Cargo wrote no dependency file"
+    # (#481). rustc's own file is read for the binary now, in both builds.
+    manifest = workspace / "util/Cargo.toml"
+    manifest.write_text(manifest.read_text() + 'build = "build/main.rs"\n')
+    (workspace / "util/build").mkdir()
+    (workspace / "util/build/main.rs").write_text(
+        'fn main() {\n    println!("cargo::rerun-if-changed=build/main.rs");\n}\n'
+    )
+    # The program's build script watches a directory: Cargo's make-form file beside the
+    # binary lists it as `app/assets/`, which Peeky doesn't read unambiguously (bat's).
+    (workspace / "app/assets").mkdir()
+    (workspace / "app/assets/notes.txt").write_text("notes\n")
+    (workspace / "app/build.rs").write_text(
+        'fn main() {\n    println!("cargo::rerun-if-changed=assets/");\n}\n'
+    )
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(
+        "#[test]\nfn runs() {\n"
+        '    let out = std::process::Command::new(env!("CARGO_BIN_EXE_app")).output().unwrap();\n'
+        '    assert_eq!(out.stdout, b"2\\n");\n'
+        "}\n"
+    )
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    _, recorded = manifest_of(summary)
+    assert "util/build/main.rs" in recorded["sources"]
+    read(*probe(capsys, workspace, config))
+    tested = configure(workspace, run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(tested), "--quiet")
+    assert code == 0, summary
+    _, recorded = manifest_of(summary)
+    assert "app/src/main.rs" in recorded["sources"]
+    shown = subprocess.run([summary["executable"]], capture_output=True, text=True)
+    assert shown.returncode == 0 and "test result: ok. 1 passed" in shown.stdout, shown.stdout
+
+
+@pytest.mark.timeout(300)
+def test_units_alike_but_for_their_dependencies_build_every_time(workspace, capsys):
+    # `twin` is a dependency and a build dependency of `app`, and `leaf` has feature `a` in
+    # one and `b` in the other: two `twin` units alike but for which `leaf` they use (bat's
+    # two `regex` units). Cargo lists them in either order, run to run, and Peeky took a
+    # second listing in the other order for a change: "Cargo's unit graph of the build
+    # changed" (#481).
+    for name, manifest, text in (
+        ("leaf", "\n[features]\na = []\nb = []\n", "pub fn one() -> u32 {\n    1\n}\n"),
+        (
+            "twin",
+            '\n[dependencies]\nleaf = { path = "../leaf" }\n',
+            "pub fn two() -> u32 {\n    leaf::one() + 1\n}\n",
+        ),
+    ):
+        (workspace / name / "src").mkdir(parents=True)
+        (workspace / name / "Cargo.toml").write_text(
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n{manifest}'
+        )
+        (workspace / name / "src/lib.rs").write_text(text)
+    (workspace / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["app", "util", "leaf", "twin"]\nresolver = "2"\n'
+    )
+    manifest = workspace / "app/Cargo.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + 'twin = { path = "../twin" }\nleaf = { path = "../leaf", features = ["a"] }\n\n'
+        '[build-dependencies]\ntwin = { path = "../twin" }\n'
+        'leaf = { path = "../leaf", features = ["b"] }\n'
+    )
+    (workspace / "app/build.rs").write_text("fn main() {\n    assert_eq!(twin::two(), 2);\n}\n")
+    lock(workspace)
+    config = configure(workspace)
+    for _ in range(6):
+        code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+        assert code == 0, summary
+    read(*probe(capsys, workspace, config))
+
+
 @pytest.mark.timeout(300)
 def test_cargos_configuration_a_build_script_watches_is_peekys_environments(workspace, capsys):
     # portable-atomic's build script (coreutils') watches CARGO_BUILD_RUSTFLAGS and
@@ -1233,3 +1327,130 @@ def test_a_build_script_run_twice_reads_what_both_runs_are_given(workspace, caps
         (each["name"], each["value"], each["from"]) for each in recorded["build_inputs"]["env"]
     ] == [("CARGO_FEATURE_USE_LIBC", None, "cargo")]
     read(*probe(capsys, workspace, config))
+
+
+DESCRIBE = """fn main() {
+    println!("cargo::rerun-if-changed=build.rs");
+    let described = std::process::Command::new("git")
+        .args(["describe", "--always", "--dirty"])
+        .output()
+        .unwrap();
+    assert!(described.status.success());
+}
+"""
+
+
+def git_workspace(workspace):
+    """``workspace`` as a git repository whose `util` reads `.git/index` as git-version's
+    `git_version!()` (bat's) does: `include_bytes!` of it, and `git describe --dirty` while
+    the crate compiles (here, its build script). A function that sums the index's bytes."""
+    (workspace / "util/build.rs").write_text(DESCRIBE)
+    (workspace / "util/src/lib.rs").write_text(
+        UTIL + '\nconst INDEX: &[u8] = include_bytes!("../../.git/index");\n\n'
+        "pub fn index_sum() -> u64 {\n    INDEX.iter().map(|&b| b as u64).sum()\n}\n"
+    )
+    main = workspace / "app/src/main.rs"
+    main.write_text(
+        main.read_text().replace('println!("{x}");', 'println!("{x} {}", util::index_sum());')
+    )
+    (workspace / "notes.txt").write_text("notes\n")
+    ago = iter(range(1000, 10**6, 100))
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+        )
+
+    def stale_status():
+        # A modification time the index doesn't cache: `git describe --dirty` refreshes it.
+        earlier = time.time() - next(ago)
+        os.utime(workspace / "notes.txt", (earlier, earlier))
+
+    # Files older than the index git writes: none racily clean, which git would check, and
+    # rewrite the index for, at every `git describe --dirty`.
+    earlier = time.time() - 100
+    for path in workspace.rglob("*"):
+        if path.is_file():
+            os.utime(path, (earlier, earlier))
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    return git, stale_status
+
+
+SAME_ENTRIES = (
+    ".git/index changed while Peeky built the workspace, but its entries are the same (git may "
+    "have refreshed its cached file status)"
+)
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_build_during_which_git_refreshes_its_index_is_refused_saying_so(workspace, capsys):
+    # bat's first build in a fresh checkout: `git describe --dirty` rewrites the index while
+    # the crate compiles, its entries the same. The crate read its bytes: refused, saying
+    # what is known. Built again, git has nothing to refresh.
+    git, stale_status = git_workspace(workspace)
+    stale_status()
+    index = workspace / ".git/index"
+    written = index.read_bytes()
+    config = configure(workspace)
+    code, result = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert result["error"]["message"] == f"Provenance: {SAME_ENTRIES}. Build again"
+    assert index.read_bytes() != written
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    _, manifest = manifest_of(summary)
+    assert manifest["sources"][".git/index"] == hashlib.sha256(index.read_bytes()).hexdigest()
+    read(*probe(capsys, workspace, config))
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_build_that_used_the_index_bytes_is_stale_when_they_change(workspace, capsys):
+    # A crate that uses the index's bytes (here, their sum): after git refreshes the index's
+    # cached file status, its entries the same, a rebuild differs. So the build is stale, and
+    # the refusal says what is known.
+    git, stale_status = git_workspace(workspace)
+    config = configure(workspace)
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    first = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
+    read(*probe(capsys, workspace, config))
+    index = workspace / ".git/index"
+    # Touched: its status changed, not its bytes. Still current.
+    later = time.time() + 100
+    os.utime(index, (later, later))
+    read(*probe(capsys, workspace, config))
+    same = (
+        "No current Peeky build of this workspace: .git/index changed since `peeky build` ran, "
+        "but its entries are the same (git may have refreshed its cached file status). Run"
+    )
+    for change in (
+        lambda: (stale_status(), git("describe", "--always", "--dirty")),
+        lambda: git("update-index", "--index-version", "4"),
+    ):
+        change()
+        code, result = probe(capsys, workspace, config)
+        assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+        assert result["error"]["message"].startswith(same), result["error"]["message"]
+        # Built again, the program prints another sum: the old build was stale.
+        code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+        assert code == 0, summary
+        again = subprocess.run([summary["executable"]], capture_output=True, text=True, check=True)
+        assert again.stdout.split()[0] == first.stdout.split()[0] == "2"
+        assert again.stdout != first.stdout
+        first = again
+        read(*probe(capsys, workspace, config))
+    # A staged change: entries changed too, said as any change.
+    (workspace / "notes.txt").write_text("staged\n")
+    git("add", "notes.txt")
+    code, result = probe(capsys, workspace, config)
+    assert code == 2 and result["error"]["code"] == "BUILD_REQUIRED", result
+    assert result["error"]["message"].startswith(
+        "No current Peeky build of this workspace: .git/index changed since `peeky build` ran. Run"
+    )

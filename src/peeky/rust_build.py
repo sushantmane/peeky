@@ -20,6 +20,7 @@ the program runs. Not a sandbox.
 
 import contextlib
 import fcntl
+import filecmp
 import fnmatch
 import hashlib
 import json
@@ -34,7 +35,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
-from peeky import rust_workspace
+from peeky import gitindex, rust_workspace
 from peeky.build import BuildCommandError, UnreadDependencies, dependency_paths, real_tool
 from peeky.digest import sha256_file
 from peeky.stopping import Stopped, check_stop
@@ -630,12 +631,13 @@ def _snapshot(shape, vendor):
     """What is there before Cargo runs, to tell what changed while it ran from what changed
     before: {"l:" path: (mtime, ctime, size), not followed} of every entry, directories
     and links too, and {"f:" path: the same, followed} of each link; {"d:" directory:
-    True} of each directory listed whole. Everything under the workspace, hidden
-    directories (`.git`) included, and under each local package outside it; not a
-    `target` directory at their tops. What its absence of an entry proves
-    (_absent_before) depends on ":tops", ":skipped", ":uncovered" (each path Peeky
-    couldn't list or read, and why) and ":limit" (where it stopped, at _MAX_SNAPSHOT
-    entries)."""
+    True} of each directory listed whole; {"s:" path: its SHA-256} and {"g:" path: its
+    entries (gitindex.digest)} of each git index, to say a change of it for what it is
+    (_same_entries). Everything under the workspace, hidden directories (`.git`) included,
+    and under each local package outside it; not a `target` directory at their tops. What
+    its absence of an entry proves (_absent_before) depends on ":tops", ":skipped",
+    ":uncovered" (each path Peeky couldn't list or read, and why) and ":limit" (where it
+    stopped, at _MAX_SNAPSHOT entries)."""
     tops = [shape.workspace.resolve()]
     for package in shape.local:
         top = (shape.root / package.directory).resolve()
@@ -667,6 +669,12 @@ def _snapshot(shape, vendor):
             return True
         found["l:" + path] = (info.st_mtime_ns, info.st_ctime_ns, info.st_size)
         count += 1
+        if stat.S_ISREG(info.st_mode) and gitindex.is_index(path):
+            try:
+                found["s:" + path] = sha256_file(path)
+            except OSError as error:
+                failed(error)
+            found["g:" + path] = gitindex.digest(path)
         if stat.S_ISLNK(info.st_mode):
             try:
                 info = os.stat(path)
@@ -891,9 +899,10 @@ def check_codegen(package, crate, args):
 
 def _dependency_file(filenames):
     """(the dependency file of a compile with these output files, its form): rustc's own,
-    beside an output in `deps` or a build script's directory; else the one Cargo writes
-    beside a binary it copies up (`target/debug/app.d`, make's form, which also lists the
-    local packages it uses)."""
+    beside an output in `deps` or a build script's directory, or beside the output Cargo
+    copied up (``_copied_from``); else the one Cargo writes beside a binary it copies up
+    (``_cargo_dependency_file``), "cargo". Cargo writes that one only for what the command
+    names, not for a binary an integration test runs (#481)."""
     paths = [Path(filename) for filename in filenames]
     for path in paths:
         candidate = path.with_name(_stem(path.name) + ".d")
@@ -901,23 +910,122 @@ def _dependency_file(filenames):
             candidate.is_file()
         ):
             return candidate, "rustc"
-        if path.parent.parent.name == "build" and path.name == "build-script-build":
-            # A build script, which Cargo names `build-script-build` beside rustc's own
-            # `build_script_build-<hash>` and its dependency file.
+        if path.parent.parent.name == "build" and path.name.startswith("build-script-"):
+            # A build script, which Cargo names `build-script-build` (`build-script-main`
+            # for `build = "build/main.rs"`) beside rustc's own `build_script_main-<hash>`
+            # and its dependency file, alone in the compile's directory.
             found = [
                 Path(entry.path)
                 for entry in _listed(
                     path.parent, [4096], f"Cargo's {path.parent} holds more than 4096 entries"
                 )
-                if fnmatch.fnmatchcase(entry.name, "build_script_build-*.d")
+                if fnmatch.fnmatchcase(entry.name, "build_script_*-*.d")
             ]
             if len(found) == 1:
                 return found[0], "rustc"
     for path in paths:
+        copied = _copied_from(path)
+        if copied is not None and (candidate := copied.with_name(copied.name + ".d")).is_file():
+            return candidate, "rustc"
+    if (candidate := _cargo_dependency_file(filenames)) is not None:
+        return candidate, "cargo"
+    return None, None
+
+
+def _cargo_dependency_file(filenames):
+    """The dependency file Cargo writes, in make's form, beside a binary it copies up
+    (`target/debug/app.d`), or None. It lists its build scripts' `rerun-if-changed`
+    paths too, which rustc's doesn't."""
+    for path in (Path(filename) for filename in filenames):
+        if path.parent.name == "deps" or path.parent.parent.name == "build":
+            continue
         candidate = path.with_name(_stem(path.name) + ".d")
         if candidate.is_file():
-            return candidate, "make"
-    return None, None
+            return candidate
+    return None
+
+
+def _copied_from(path):
+    """rustc's own output in `deps` that Cargo copied up as ``path`` (`deps/rg-<hash>` as
+    `target/debug/rg`), or None: the one `<crate>-<hash>` there of the same inode (a hard
+    link, as on Linux), else of the same bytes (a copy, as on macOS) (#481)."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or path.parent.name == "deps":
+        return None
+    named = re.compile(re.escape(path.name.replace("-", "_")) + r"-[0-9a-f]+")
+    deps = path.parent / "deps"
+    try:
+        candidates = [
+            entry
+            for entry in _listed(
+                deps, [MAX_RECORDED], f"Cargo's {deps} holds more than {MAX_RECORDED:,} entries"
+            )
+            if named.fullmatch(entry.name) and entry.is_file(follow_symlinks=False)
+        ]
+    except OSError:
+        return None
+    linked = [entry for entry in candidates if entry.inode() == info.st_ino]
+    if len(linked) == 1 and linked[0].stat(follow_symlinks=False).st_dev == info.st_dev:
+        return Path(linked[0].path)
+    same = []
+    for entry in candidates:
+        check_stop()
+        if entry.stat(follow_symlinks=False).st_size == info.st_size and filecmp.cmp(
+            entry.path, path, shallow=False
+        ):
+            same.append(entry)
+    return Path(same[0].path) if len(same) == 1 else None
+
+
+# What is known of a git index whose bytes changed, its entries as they were. It is
+# compared by its bytes all the same, which a crate may use (`include_bytes!`).
+_SAME_ENTRIES = ", but its entries are the same (git may have refreshed its cached file status)"
+
+
+def _same_entries(path, raw, entries):
+    """Whether ``path`` is a git index whose bytes differ from ``raw`` (a SHA-256; None:
+    known to differ) and whose entries (gitindex.digest) are ``entries``."""
+    if entries is None or not gitindex.is_index(path):
+        return False
+    try:
+        if raw is not None and sha256_file(path) == raw:
+            return False
+    except OSError:
+        return False
+    return gitindex.digest(path) == entries
+
+
+def _changed_while_built(shown, path, before):
+    """The refusal of ``path`` (named ``shown``), which changed while Cargo ran."""
+    key = os.path.normpath(path)
+    if before.get("s:" + key) is not None and _same_entries(
+        path, before["s:" + key], before.get("g:" + key)
+    ):
+        return RuntimeError(
+            f"Provenance: {shown} changed while Peeky built the workspace{_SAME_ENTRIES}. "
+            "Build again"
+        )
+    return RuntimeError(
+        f"Provenance: {shown} changed while Peeky built the workspace, so the build may not "
+        "be of it. Build again"
+    )
+
+
+def _index_entries(root, manifest):
+    """{key: entries (gitindex.digest)} of each git index the build recorded by its bytes:
+    a compile's source, by its name under the root, and a build script's input, by its
+    path. At a probe, one whose bytes changed and entries didn't is said so
+    (_SAME_ENTRIES)."""
+    keys = [(name, Path(root) / name) for name in manifest["sources"]]
+    keys += [(each, Path(each)) for each in manifest.get("build_inputs", {}).get("files", {})]
+    return {
+        key: entries
+        for key, path in keys
+        if gitindex.is_index(path) and (entries := gitindex.digest(path)) is not None
+    }
 
 
 def _changed_during(path, before, started_ns):
@@ -1081,6 +1189,7 @@ def _build(target, root, *, deadline=None, progress=None):
             _watched_directories(manifest.pop("directories_read"), manifest, shape, vendor)
             # What Cargo read, as Peeky hashed it before Cargo ran: unchanged after the build.
             rust_workspace.changed(shape.watch, digest, "while Peeky built the workspace")
+            manifest["index_entries"] = _index_entries(root, manifest)
         except BaseException:
             # Never removed here: a stopped build ends at once, however much its run holds.
             # A later build removes it, a bounded part at a time (``_empty_trash``).
@@ -1211,6 +1320,14 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         )
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         directories.update(read["directories"])
+        if (cargo := _cargo_dependency_file(filenames)) not in (None, depfile):
+            # Cargo's own too, beside the binary it copied up: its build scripts'
+            # `rerun-if-changed` paths, directories among them (``_watched_directories``).
+            also = _read_dependencies(
+                cargo, shape.workspace, root, target_dir, package.name, "cargo"
+            )
+            _record_read(also, root, target_dir, before, started_ns, sources, generated)
+            directories.update(also["directories"])
         if macro:
             _check_bootstrap_mentions(
                 read, root, target_dir, f"the procedural macro `{artifact.get('name')}`"
@@ -1754,10 +1871,7 @@ def _build_inputs(
             and not Path(path).is_symlink()
             and _changed_during(path, before, started_ns)
         ):
-            raise RuntimeError(
-                f"Provenance: {_shown(path, root)} changed while Peeky built the "
-                "workspace, so the build may not be of it. Build again"
-            )
+            raise _changed_while_built(_shown(path, root), path, before)
 
     def watch_tree(directory, package=None):
         """Walk ``directory`` (a package's), and list its files a client's are compared
@@ -1925,10 +2039,7 @@ def _record_read(read, root, target_dir, before, started_ns, sources, generated)
     for path in read["sources"]:
         if path not in sources:
             if _changed_during(root / path, before, started_ns):
-                raise RuntimeError(
-                    f"Provenance: {path} changed while Peeky built the workspace, so the build "
-                    "may not be of it. Build again"
-                )
+                raise _changed_while_built(path, root / path, before)
             sources[path] = _hash(root / path)
     for path in read["generated"]:
         if path not in generated:
@@ -1963,13 +2074,13 @@ def _read_dependencies(depfile, workspace, root, target_dir, package, producer="
         resolved = path.resolve()
         if resolved.is_relative_to(target_dir):
             found["generated"].append(resolved.relative_to(target_dir).as_posix())
-        elif producer == "make" and resolved.is_relative_to(root) and resolved.is_dir():
+        elif producer == "cargo" and resolved.is_relative_to(root) and resolved.is_dir():
             # A build script's `rerun-if-changed` directory, which Cargo lists too: what it
             # holds is recorded entry by entry (``_build_inputs``), not hashed as a file.
             found["directories"].append(resolved)
         elif resolved.is_relative_to(root):
             found["sources"].append(resolved.relative_to(root).as_posix())
-        elif producer == "make":
+        elif producer == "cargo":
             # Cargo's own dependency file lists its build scripts' `rerun-if-changed` paths too.
             raise ValueError(
                 f"Peeky builds only files inside {root}: `{package}`'s build read "
@@ -2335,11 +2446,12 @@ def _required(target, why):
     )
 
 
-def _edited(target, what):
-    """A source or manifest edited since the build: the normal edit cycle, BUILD_REQUIRED."""
+def _edited(target, what, aside=""):
+    """A source or manifest edited since the build: the normal edit cycle, BUILD_REQUIRED.
+    ``aside``: what more is known of it (_SAME_ENTRIES)."""
     return BuildRequired(
-        f"No current Peeky build of this workspace: {what} since `peeky build` ran. Run "
-        f"`{target.build_command}` again, or add --build"
+        f"No current Peeky build of this workspace: {what} since `peeky build` ran{aside}. "
+        f"Run `{target.build_command}` again, or add --build"
     )
 
 
@@ -2413,7 +2525,9 @@ def verify(target, root, directory, manifest):
         except OSError:
             same = False
         if not same:
-            raise _edited(target, f"{name} changed")
+            entries = (manifest.get("index_entries") or {}).get(name)
+            aside = _SAME_ENTRIES if _same_entries(root / name, None, entries) else ""
+            raise _edited(target, f"{name} changed", aside)
     state = manifest["watch"]
     for path, recorded in state["files"].items():
         if (
@@ -2452,8 +2566,14 @@ def _check_build_inputs(target, root, directory, manifest):
     would give it now."""
     inputs = manifest["build_inputs"]
     for path, recorded in inputs["files"].items():
-        if rust_workspace.identity(path) != recorded:
-            raise _edited(target, f"{_shown(path, root)}, which a build script reads, changed")
+        if (now := rust_workspace.identity(path)) != recorded:
+            entries = (manifest.get("index_entries") or {}).get(path)
+            same = now[:2] == recorded[:2] and _same_entries(Path(path), None, entries)
+            raise _edited(
+                target,
+                f"{_shown(path, root)}, which a build script reads, changed",
+                _SAME_ENTRIES if same else "",
+            )
     for top, recorded in inputs["dirs"].items():
         try:
             now = _watched_directory(Path(top), root, [MAX_RECORDED])
