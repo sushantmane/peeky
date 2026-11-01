@@ -23,6 +23,10 @@
   - In a caller's frame, a struct or array whose declaration's lines have run, in an unoptimized
     build (#366).
   - C++ structured bindings by reference, where Peeky proves what they refer to is alive (#368).
+  - C++ parameters, and locals with an `#include` between their declaration and the stop, in a
+    unit holding `<::` (gtest's `PrintTo<::std::type_info>`). C++11 reads it as `<` and `::`, but
+    Peeky read it as C's digraph `<:` and could tell no block in the unit. A binary target's C++
+    unit built before C++11 (`-std=c++03`) has its text unread.
 - **Rust:** a `NonNull<T>` local's address, as a raw pointer's. It is never followed (#420).
 
 ### Other changes

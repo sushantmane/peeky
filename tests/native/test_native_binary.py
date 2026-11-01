@@ -472,6 +472,50 @@ def test_cpp_units_are_judged_by_their_md5s_and_refused_with_what_the_table_show
     ), error
 
 
+CPP_LT_COLON = """struct Item { long v; };
+static int argc = 2;
+
+template <class T> int size_of() { return sizeof(T); }
+int width = size_of<::Item>() + argc;
+
+int scale(int argc) {
+    int doubled = argc * 2;
+    return doubled; // STOP
+}
+
+int main(int argc, char **) {
+    return scale(argc) == 2 ? 0 : 1;
+}
+"""
+
+
+@pytest.mark.cpp
+@pytest.mark.timeout(300)
+def test_a_cpp_unit_with_lt_colon_colon_reads_its_parameters(project):
+    # gtest.h's `PrintTo<::std::type_info>(value, os)`: C++11 reads `<` and `::`. Peeky
+    # read `<::` as C does, could tell no block in the unit, and withheld a parameter
+    # wherever the unit may declare its name elsewhere (here a file's `static int argc`).
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    compiler = default_cxx()
+    if not compiler or is_gcc(compiler):
+        pytest.skip("needs clang++")
+    (project / "main.cpp").write_text(CPP_LT_COLON)
+    subprocess.run(
+        [compiler, *TEXT_FLAGS, "-O0", *_sysroot(), "-c", "main.cpp"], cwd=project, check=True
+    )
+    subprocess.run(
+        [compiler, "--driver-mode=g++", *_sysroot(), "main.o", "-o", "prog"],
+        cwd=project,
+        check=True,
+    )
+    line = next(n for n, text in enumerate(CPP_LT_COLON.splitlines(), 1) if "// STOP" in text)
+    result = run_probe(project, Probe("main.cpp", line, ("argc",)), adapter=_target(compiler))
+    assert result["status"] == "completed", result.get("error")
+    (row,) = result["rows"]
+    assert row.get("value") == "1", json.dumps(row)
+
+
 @pytest.mark.timeout(120)
 def test_a_binary_config_with_sources_is_refused(project, capsys):
     config = project / "binary.json"
