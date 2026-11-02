@@ -265,10 +265,9 @@ def _python(words, assignments, root, environment, cwd):
             else:
                 raise _unsupported(
                     f"--test runs `python -m pytest` only, not `-m {module}`: Peeky runs "
-                    "pytest as a module and no other. Run the module from a script "
-                    "(run.py: `import runpy, sys; sys.argv = ['x', *ARGS]; "
-                    f"runpy.run_module('{module}', run_name='__main__', alter_sys=True)`), "
-                    "and give `--test -- python run.py`"
+                    "pytest as a module and no other. Run the module from a script: run.py "
+                    f"holding `import runpy; runpy.run_module({module!r}, run_name='__main__', "
+                    "alter_sys=True)`, then `--test -- python run.py ARGS`"
                 )
             return TestCommand(
                 "python",

@@ -80,7 +80,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   `mvn test -Dtest='FooTest#bar' -Dmaven.surefire.debug`. Its classes are in `target/classes`
   ([guide](../AGENT_GUIDE.md#your-first-command)).
   With an attached JVM:
-  - The config gives `port` and `class_roots` instead of `main_class`.
+  - The config gives `port` and `class_roots` instead of `main_class`. Its paths are relative
+    to the target directory; an absolute path inside it is taken as one.
   - `--arg` is refused.
   - Candidates and `verify` don't work, so `describe` lists neither. Try and verify edits with a
     launched target.

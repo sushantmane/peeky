@@ -139,8 +139,8 @@ def test_a_python_script_runs_with_run(project):
 
 def test_python_forms_peeky_cant_run_are_refused_with_the_next_step(project, tmp_path):
     error = refused(["python3", "-m", "sphinx.cmd.build", "-b", "html"], project)
-    assert "runpy.run_module('sphinx.cmd.build'" in str(error)
-    assert "--test -- python run.py" in str(error)
+    assert "runpy.run_module('sphinx.cmd.build', run_name='__main__'" in str(error)
+    assert "--test -- python run.py ARGS" in str(error)
     assert "PYTHONWARNINGS=error" in str(
         refused(["python3", "-W", "error", "-m", "pytest"], project)
     )

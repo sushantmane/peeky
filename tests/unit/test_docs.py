@@ -44,18 +44,30 @@ def test_the_guide_opens_with_when_to_use_peeky_and_the_first_command():
     assert guide.index("## The loop") < 6 * 1024
     first = " ".join(guide.split("## Your first command")[1].split("\n## ")[0].split())
     for text in (
-        "--run-module pytest -- -q tests/test_x.py::test_y",
+        # Round 2's agents spent most of their set-up before the first stop (ADR 0009): the
+        # first command takes the project's own test command.
+        "--test -- pytest -q tests/test_x.py::test_y",
+        "--run-module pytest -- …",
         "installed without `-e` runs its `site-packages` copy",
-        "--python python",
         "-Dmaven.surefire.debug",
         "--debug-jvm",
         '"main_class": "pkg.Main"',
-        "With a project's own build (Make, CMake, autotools), build with clang",
-        "--binary ./prog",
-        "A crate with dependencies",
-        "peeky build . --config rust.json",
+        "built with clang `-O0 -g -gdwarf-5 -grecord-command-line` (`--binary ./prog`)",
+        "`cargo test …` or `cargo run …`: Peeky makes the workspace config and builds it",
+        "cargo vendor --locked vendor",
     ):
         assert text in first, text
+
+
+def test_the_first_question_page_fits_a_glance_and_the_guide_opens_with_it():
+    # Every round 2 attempt read the 20 KB guide and a language page before its first probe.
+    page = (DOCS / "FIRST.md").read_text()
+    assert len(page.encode()) <= 2 * 1024
+    guide = (DOCS / "AGENT_GUIDE.md").read_text()
+    assert "[FIRST.md](FIRST.md)" in guide[:400]
+    for text in ("--test -- <the test command>", "mvn test", "./gradlew test", "cargo test"):
+        assert text in page, text
+    assert "pytest -q tests/test_x.py::test_y" in page and "./build/prog ARGS" in page
 
 
 def _slugs(headings):

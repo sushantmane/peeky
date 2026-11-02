@@ -31,6 +31,16 @@
 
 ### Other changes
 
+- **The first question on one page (ADR 0009).** `docs/FIRST.md`, 1.2 KB, gives the one
+  `--test` command per language and three rules; the guide, `peeky --help`, `peeky probe --help`,
+  the README and the skill open with it. Every round 2 attempt read the 20 KB guide and a
+  language page first. The refusals they met most now take the input or name the next command:
+  - `--set-at '966@1 url=x'`, one word, is taken as its two (9 refusals in round 2).
+  - A Java config's absolute path inside the target directory is taken (6); one outside is
+    refused naming the directory.
+  - `--run-module` with another module gives the `runpy` script to run it from (7).
+  - `NO_STOP` on a JVM you attached to says the JVM may not run the line, and gives `--test`
+    (30).
 - **`--test`: the project's own test command names what Peeky runs (ADR 0009).** `peeky probe .
   --at FILE:LINE --capture a --test -- <command>`, and `session start` and `describe` too. Peeky
   reads the command, runs the target it names, and says where that run differs:
