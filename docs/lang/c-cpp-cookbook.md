@@ -1216,6 +1216,14 @@ peeky describe . --binary ./prog          # each unit, judged or not, and why
 peeky probe . --binary ./prog --at src/x.c:LINE --capture a,b -- ARGS
 ```
 
+Or give the command that runs the test, from the target directory, after `--test --`
+([ADR 0009](../adr/0009-first-question.md)). A binary inside the target directory, with its
+arguments, is `--binary` with them: `peeky probe . --at src/x.c:LINE --capture a,b --test --
+./prog ARGS`. `ctest [--test-dir build] -R NAME` runs the one test `ctest --show-only=json-v1`
+lists for it, with a warning where ctest would run it in another directory (its
+`WORKING_DIRECTORY`, else the build directory that defines it), or set its `ENVIRONMENT`. A
+script, `make test`, or a selection of several tests is refused: give the test's binary.
+
 The flags, for every compile:
 
 ```sh

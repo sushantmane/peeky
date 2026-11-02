@@ -53,8 +53,11 @@ The words after `--` are the test command, as the agent would type it, from the 
 runs in. Peeky reads it, picks the target it names, and runs it under the debugger. `--test`
 takes the place of `--config`, `--run`, `--run-module`, `--python`, `--binary` and `--arg`; with
 any of them it is refused, naming the one to drop. `session start` takes it too.
-Environment assignments before the command (`RUSTFLAGS=-Awarnings cargo test …`) are set for the
-run, as they would be in front of `peeky`.
+Environment assignments before the command are set for a Python or Java run, as they would be in
+front of `peeky`. Peeky runs Cargo and a native binary in an environment of its own, so there an
+assignment that wouldn't reach them is refused, but for `PATH`, `HOME`, `TMPDIR` and the locale.
+A `RUSTFLAGS` of lints alone (`-Awarnings`, as the study's hints give) changes no code: it gets a
+note.
 
 | Command | Peeky runs | Refused, and the next step |
 | --- | --- | --- |
@@ -124,15 +127,20 @@ Peeky makes the workspace config ([ADR 0008](0008-native-project-reach.md), phas
 command and `cargo metadata`:
 
 - **analyse:** the package whose directory holds the `--at` file.
-- **run:** `--test T`, `--bin B` or `--lib`, in `-p`'s package, or in the one package with that
-  target. Without one, the `--at` file decides: `tests/T.rs` runs `T`. A library file with no
-  target named is refused, listing the package's test targets to choose from.
-- **features:** `--features` and `-F`; `--all-features` lists the package's own.
+- **run:** `--test T`, `--bin B` or `--lib`, in `-p`'s package. Without `-p`, in the packages
+  Cargo selects: the root's package, or `default-members`, or else every member; the one with
+  that target. Without a target, the `--at` file decides: `tests/T.rs` runs `T`. A library file
+  with no target named is refused, listing the package's test targets to choose from. So is an
+  `--at` file outside the packages Cargo selects: add `-p`.
+- **features:** `--features` and `-F`. `--all-features` lists the package's own, and those its
+  optional dependencies give, as Cargo turns them on.
 - **arguments:** the test name filter and the words after cargo's `--`.
 - **vendor:** `vendor` when it exists. Otherwise the refusal names `cargo vendor --locked vendor`.
 
 Peeky saves the config in its state directory and names it. It builds when no build of that
-config is current, as `--build` does, and says so; otherwise it probes. A command without `-p`
+config is current, as `--build` does, and says so; otherwise it probes. A build refused because
+git refreshed `.git/index` while it ran, its entries the same (#486), is built once more: that
+refusal's own next step, which `--test` takes for the agent. A command without `-p`
 in a workspace of several packages gets a note: Peeky builds one package, so Cargo may unify
 fewer features than the command would.
 

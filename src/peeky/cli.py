@@ -765,6 +765,7 @@ def _default_program(program, data, command):
 
 
 def describe(args):
+    _apply_test(args, "describe")
     root, program, _, language, data = resolve(
         args.target, args.at, args.config, binary=args.binary
     )
@@ -879,7 +880,9 @@ def describe(args):
             "Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them"
         )
     else:
-        target = adapter_for(language, data)
+        built = {"build": _build_command(args)} if getattr(args, "build_needed", False) else {}
+        target = adapter_for(language, data, **built)
+        _build_first(args, root, target)
         manifest["target_identity"] = target.target_identity
         runtime = target.prepare(root / program, root)
         try:
@@ -1366,6 +1369,7 @@ def probe(args):
             launch_marker=args.launch_marker,
             pycache_base=args.pycache_dir,
         )
+    result = _test_warnings(result, getattr(args, "test_command", None))
     return _probe_result(args, root, result, edit, original, request.program, language)
 
 
@@ -1374,6 +1378,7 @@ def _probe_request(args):
     binary a worker must debug or None) for `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
+    args.test_command = _apply_test(args, "probe")
     root, program, line, language, data = resolve(
         args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
     )
@@ -1414,6 +1419,79 @@ def _probe_request(args):
     return root, request, edit, original, language, adapter, binary
 
 
+def _apply_test(args, command):
+    """`--test`: the test command after `--` names the target (test_command, ADR 0009). It
+    sets the options the command stands for on ``args``, and its environment assignments
+    in this process's, as if typed before `peeky`. The TestCommand, or None."""
+    from peeky.errors import Refused
+
+    words = getattr(args, "test_word", None) or []
+    if not getattr(args, "test", False):
+        return None
+    from peeky.test_command import REPLACED, plan, save_config
+
+    given = [
+        "--" + name.replace("_", "-")
+        for name in REPLACED
+        if getattr(args, name, None) not in (None, [], ())
+    ]
+    if given:
+        raise Refused(
+            "INVALID_REQUEST",
+            f"--test names what runs from the test command: drop {', '.join(given)}",
+        )
+    if getattr(args, "worker", None) is not None:
+        raise Refused(
+            "UNSUPPORTED",
+            "--test runs the test here; a worker runs only what its own configuration names. "
+            "Probe on the worker with the options its configuration takes",
+            "Nothing ran. Drop --worker to run the test here, or drop --test.",
+        )
+    root = Path(args.target).resolve(strict=True)
+    if not root.is_dir():
+        raise Refused(
+            "INVALID_REQUEST",
+            "With --test, the target is the project's directory, where the test command runs",
+        )
+    at = str(getattr(args, "at", None) or "")
+    program = at.rpartition(":")[0] if re.fullmatch(r".+:[1-9][0-9]{0,6}", at) else at or None
+    test = plan(words, root, program)
+    if test.kind == "java":
+        raise Refused(
+            "UNSUPPORTED",
+            f"--test can't start a Java test yet ({test.words[0]}): start it waiting for a "
+            "debugger, and attach with a config, as docs/lang/java.md says",
+            "Nothing ran. Attach as docs/lang/java.md says.",
+        )
+    os.environ.update(dict(test.environment))
+    if test.kind == "python":
+        args.python, args.run, args.run_module = test.python, test.run, test.module
+    elif test.kind == "binary":
+        args.binary = test.binary
+    elif test.kind == "rust":
+        args.config = str(save_config(test.config, _private_dir("tests")))
+        args.build_needed = True
+    args.arg = list(test.arguments)
+    progress = _progress(args)
+    if progress is not None and command != "describe":
+        progress(f"test: {test.shown}")
+    return test
+
+
+def _test_warnings(result, test):
+    """The test command's notes among a result's warnings, and what it ran as."""
+    if test is None or not isinstance(result, dict):
+        return result
+    result["test"] = {
+        "command": test.shown,
+        "kind": test.kind,
+        **({"config": test.config} if test.config is not None else {}),
+    }
+    if test.notes:
+        result["warnings"] = [*(result.get("warnings") or []), *test.notes]
+    return result
+
+
 def _build_command(args):
     """The `peeky build` command for this command's target and --config, as typed."""
     from peeky.rust_build import build_command
@@ -1424,9 +1502,19 @@ def _build_command(args):
 def _build_first(args, root, adapter):
     """`--build`: build a Rust workspace (`peeky build`) under the build's own deadline,
     before anything else runs. Without it, a probe or session never builds."""
+    from peeky.rust_build import BUILD_TIMEOUT_S, BuildRequired, RustWorkspaceTarget
+
+    if getattr(args, "build_needed", False) and isinstance(adapter, RustWorkspaceTarget):
+        # `--test`: build only when no build of its configuration is current.
+        try:
+            adapter.current(root)
+            return None
+        except BuildRequired as exc:
+            if progress := _progress(args):
+                progress(f"building: {str(exc).split(':')[0]}")
+        args.build = True
     if not getattr(args, "build", False):
         return None
-    from peeky.rust_build import BUILD_TIMEOUT_S, RustWorkspaceTarget
 
     if getattr(args, "worker", None) is not None:
         # The worker builds from its own configuration, as `peeky build --worker` does.
@@ -1437,9 +1525,23 @@ def _build_first(args, root, adapter):
             "targets are built by every probe"
         )
     else:
-        result = adapter.build(
-            root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
-        )
+        try:
+            result = adapter.build(
+                root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
+            )
+        except RuntimeError as exc:
+            from peeky.rust_build import _SAME_ENTRIES
+
+            # `--test` builds for you, so it takes the refusal's own next step once: a git
+            # index refreshed while the build ran (git-version's `git describe`), its entries
+            # the same, is built again from the start, as `peeky build` would be.
+            if not getattr(args, "build_needed", False) or _SAME_ENTRIES not in str(exc):
+                raise
+            if progress := _progress(args):
+                progress(f"building again: {str(exc).removeprefix('Provenance: ')}")
+            result = adapter.build(
+                root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
+            )
     # The probe's or session's own output is its result: the build's notes go beside it.
     for note in result.get("notes") or ():
         print(f"peeky: note: {note}", file=sys.stderr, flush=True)
@@ -3544,6 +3646,7 @@ def _stop_worker(process):
 
 
 def _start(args):
+    test = _apply_test(args, "session start")
     root, program, line, language, data = resolve(
         args.target, args.at, args.config, tools=args.worker is None, binary=args.binary
     )
@@ -3560,6 +3663,7 @@ def _start(args):
                 args, root, program, line, language, max_pause, _binary_of(root, data)
             )
         state = _start_local(args, root, program, line, language, data, max_pause)
+        state = _test_warnings(state, test)
     except BaseException:
         # Failed or interrupted (e.g. SIGTERM from a tool timeout) before the session
         # existed: give the name back. Once saved, the session stays for `session wait`.
@@ -5758,7 +5862,15 @@ def _main(argv, _job, _edits):
 
     keep_children_waitable()  # An inherited ignored SIGCHLD reaps adapters
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
+    if (
+        "--" in argv
+        and (argv[:1] in (["probe"], ["describe"]) or argv[:2] == ["session", "start"])
+        and "--test" in argv[: argv.index("--")]
+    ):
+        # `peeky probe . --at f.py:5 --test -- pytest t.py`: the test command's words.
+        split = argv.index("--")
+        argv = argv[:split] + [f"--test-word={value}" for value in argv[split + 1 :]]
+    elif "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
@@ -5812,6 +5924,16 @@ def _main(argv, _job, _edits):
             "(900 s); without it, nothing is built",
         )
 
+    def test_option(sub):
+        sub.add_argument(
+            "--test",
+            action="store_true",
+            help="The words after `--` are the command that runs the failing test, as you "
+            "would type it here (pytest …, cargo test …, mvn test …, ./prog ARGS): Peeky runs "
+            "it under the debugger, with no config",
+        )
+        sub.add_argument("--test-word", action="append", default=[], help=argparse.SUPPRESS)
+
     def evidence_store(sub):
         sub.add_argument(
             "--store", help="Evidence database (default: $PEEKY_STATE_DIR/evidence/evidence.db)"
@@ -5837,6 +5959,7 @@ def _main(argv, _job, _edits):
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     binary_option(sub)
     python_option(sub)
+    test_option(sub)
     # Accepted everywhere: describe prints no progress, so it changes nothing here.
     sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
@@ -5938,6 +6061,7 @@ def _main(argv, _job, _edits):
         "--quiet", action="store_true", help="No progress messages on stderr, nor one-time notes"
     )
     build_option(sub)
+    test_option(sub)
     sub.add_argument("--label", help="Tag this run in the evidence store (e.g. input=empty)")
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
@@ -6013,6 +6137,7 @@ def _main(argv, _job, _edits):
         help="Run on to the Nth stop at the breakpoint (state lines show `hit N`)",
     )
     build_option(start)
+    test_option(start)
     start.add_argument(
         "--max-pause",
         type=float,
