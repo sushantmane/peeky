@@ -1,0 +1,39 @@
+{
+ "dropped": {
+  "public rate above 0.5": 526,
+  "rounds 1 and 2": 29,
+  "no public submission resolved it": 350
+ },
+ "languages": {
+  "python": {
+   "eligible": 86,
+   "tier 1": 44,
+   "tagged": 34,
+   "pool": 20
+  },
+  "java": {
+   "eligible": 48,
+   "tier 1": 18,
+   "tagged": 29,
+   "pool": 16
+  },
+  "c": {
+   "eligible": 71,
+   "tier 1": 49,
+   "tagged": 25,
+   "pool": 8
+  },
+  "cpp": {
+   "eligible": 52,
+   "tier 1": 21,
+   "tagged": 27,
+   "pool": 8
+  },
+  "rust": {
+   "eligible": 75,
+   "tier 1": 31,
+   "tagged": 28,
+   "pool": 16
+  }
+ }
+}

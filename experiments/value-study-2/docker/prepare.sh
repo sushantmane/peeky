@@ -74,9 +74,9 @@ rust_config() {  # rust_config <bug_id>: the image's config's analyse, run and f
   esac
 }
 
-rust_prebuild() {  # rust_prebuild <bug_id>: Peeky's build of the image's config, and PROJECT.md
+rust_prebuild() {  # rust_prebuild <config fields>: Peeky's build of the image's config, and PROJECT.md
   local config=/opt/peeky/study/rust.json status=failed
-  printf '{"workspace": ".", %s, "vendor": "vendor"}\n' "$(rust_config "$1")" > "$config"
+  printf '{"workspace": ".", %s, "vendor": "vendor"}\n' "$1" > "$config"
   # A failed build leaves the image without one, and PROJECT.md says nothing of it. A build
   # refused with "Build again" is run once more, as its message says. So is one refused for a
   # version 2 Cargo.lock, once the line its message asks for is added (tokio-4867, ripgrep-2209).
@@ -133,6 +133,17 @@ $5
 EOF
 }
 
+# A later round's bug brings its own steps (value-study-3): bug/peeky.sh, sourced here with these
+# functions, for a C or C++ project's Peeky build; or bug/rust.json, the fields of its Rust config
+# ({"analyse": ..., "run": ..., "features": ...}), made by round 2's rule from its test hint.
+BUG=/opt/peeky/study/bug
+if [ -f "$BUG/peeky.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$BUG/peeky.sh"
+elif [ -f "$BUG/rust.json" ]; then
+  vendor
+  rust_prebuild "$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1])))[1:-1])' "$BUG/rust.json")"
+else
 case $id in
   jqlang__jq-2650)
     make distclean >/dev/null 2>&1 || true
@@ -185,7 +196,7 @@ case $id in
     ;;
   burntsushi__ripgrep-2209 | sharkdp__bat-3108 | tokio-rs__* | uutils__coreutils-6690)
     vendor
-    rust_prebuild "$id"
+    rust_prebuild "$(rust_config "$id")"
     ;;
   *)
     if [ -d /opt/venv ]; then
@@ -205,6 +216,7 @@ EOF
     fi
     ;;
 esac
+fi
 
 # The guide's copy points to PROJECT.md, in one line under its title.
 sed -i '1a\

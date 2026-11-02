@@ -1,0 +1,120 @@
+{
+ "verified": {
+  "submissions": 175,
+  "frontier": [
+   "20251205_sonar-foundation-agent_claude-opus-4-5",
+   "20251215_livesweagent_claude-opus-4-5",
+   "20250928_trae_doubao_seed_code",
+   "20251127_openhands_claude-opus-4-5",
+   "20251120_livesweagent_gemini-3-pro-preview",
+   "20250804_epam-ai-run-claude-4-sonnet",
+   "20250902_atlassian-rovo-dev",
+   "20260217_mini-v2.0.0_claude-4-5-opus-high",
+   "20250819_ACoder",
+   "20260217_mini-v2.0.0_gemini-3-flash-high",
+   "20260217_mini-v2.0.0_minimax-2-5-high",
+   "20250901_warp",
+   "20260217_mini-v2.0.0_claude-4-6-opus",
+   "20250612_trae",
+   "20250731_harness_ai",
+   "20251103_sonar-foundation-agent_claude-sonnet-4-5",
+   "20250720_Lingxi-v1.5_claude-4-sonnet-20250514",
+   "20250915_JoyCode",
+   "20250603_Refact_Agent_claude-4-sonnet",
+   "20251015_Prometheus_v1.2.1_gpt5",
+   "20251124_mini-v1.16.0_claude-opus-4-5-20251101",
+   "20251118_mini-v1.15.0_gemini-3-pro-preview-20251118",
+   "20251103_SalesforceAIResearch_SAGE_OpenHands",
+   "20250522_tools_claude-4-opus",
+   "20251021_SalesforceAIResearch_SAGE_bash_only",
+   "20260217_mini-v2.0.0_glm-5-high",
+   "20260217_mini-v2.0.0_gpt-5-2-high",
+   "20250522_tools_claude-4-sonnet",
+   "20250807_openhands_gpt5",
+   "20251211_mini-v1.17.2_gpt-5.2-2025-12-11-high",
+   "20260901_mini-v2.4.2_gemini-3-5-flash",
+   "20260217_mini-v2.0.0_claude-4-5-sonnet-high",
+   "20250710_bloop",
+   "20250715_qodo_command",
+   "20250929_Prometheus_v1.2_gpt5",
+   "20251014_Lingxi_kimi_k2",
+   "20250623_warp",
+   "20250611_moatless_claude-4-sonnet-20250514",
+   "20260217_mini-v2.0.0_kimi-k2-5-high",
+   "20250519_trae",
+   "20250929_mini-v1.13.3_sonnet-4-5-20250929",
+   "20250515_Refact_Agent",
+   "20250524_openhands_claude_4_sonnet"
+  ]
+ },
+ "multilingual": {
+  "submissions": 14,
+  "frontier": [
+   "20260213_mini-v2.0.0a0_gemini-3-flash",
+   "20260213_mini-v2.0.0a0_claude-4-6-opus",
+   "20260213_mini-v2.0.0a0_claude-4-5-opus",
+   "20260213_mini-v2.0.0a0_glm-5",
+   "20260213_mini-v2.0.0a0_gemini-3-pro",
+   "20260216_mini-v2.0.0a0_minimax-2-5",
+   "20260213_mini-v2.0.0a0_kimi-k2-5",
+   "20260213_mini-v2.0.0a0_claude-4-5-sonnet"
+  ]
+ },
+ "mswe-c": {
+  "submissions": 38,
+  "frontier": [
+   "20260624_CodeArts-Agent_CodeArts-GLM-5.1",
+   "20251226_RepoRepair_Claude-4-Sonnet",
+   "20250426_MSWE-agent_Gemini-2.5-Pro",
+   "20250426_MagentLess_Gemini-2.5-Pro",
+   "20250329_MSWE-agent_Claude-3.7-Sonnet",
+   "20250329_MopenHands_Claude-3.7-Sonnet",
+   "20250329_MagentLess_Claude-3.7-Sonnet",
+   "20250426_MopenHands_Gemini-2.5-Pro",
+   "20250329_MSWE-agent_Claude-3.5-Sonnet(Oct)"
+  ]
+ },
+ "mswe-c++": {
+  "submissions": 38,
+  "frontier": [
+   "20260714_CodeArts-Agent_CodeArts-GLM-5.1",
+   "20251110_InfCode_GPT-5",
+   "20250329_MopenHands_Claude-3.7-Sonnet",
+   "20250329_MopenHands_Claude-3.5-Sonnet(Oct)",
+   "20250329_MSWE-agent_Claude-3.7-Sonnet",
+   "20250426_MopenHands_Gemini-2.5-Pro",
+   "20250426_MSWE-agent_Gemini-2.5-Pro",
+   "20250329_MSWE-agent_DeepSeek-V3",
+   "20250329_MopenHands_DeepSeek-V3"
+  ]
+ },
+ "mswe-java": {
+  "submissions": 41,
+  "frontier": [
+   "20260327_CodeArts-Agent_CodeArts-MiniMax-M2.5",
+   "20260131_InfCode_GPT-5.2",
+   "20251201_iSWE_Agent",
+   "20251027_iSWE-OpenModels",
+   "20250426_MSWE-agent_Gemini-2.5-Pro",
+   "20260327_MSWE-Agent_CodeArts-MiniMax-M2.5",
+   "20250329_MSWE-agent_Claude-3.7-Sonnet",
+   "20250329_MagentLess_DeepSeek-R1",
+   "20250329_MSWE-agent_OpenAI-o1",
+   "20250329_MopenHands_Claude-3.7-Sonnet"
+  ]
+ },
+ "mswe-rust": {
+  "submissions": 36,
+  "frontier": [
+   "20250329_MopenHands_Claude-3.7-Sonnet",
+   "20250426_MopenHands_Gemini-2.5-Pro",
+   "20250329_MopenHands_Claude-3.5-Sonnet(Oct)",
+   "20250426_MSWE-agent_Gemini-2.5-Pro",
+   "20250329_MagentLess_OpenAI-o3-mini-high",
+   "20250329_MagentLess_OpenAI-o1",
+   "20250426_MagentLess_Doubao-1.5-thinking",
+   "20250329_MSWE-agent_Claude-3.5-Sonnet(Oct)",
+   "20250329_MSWE-agent_Claude-3.7-Sonnet"
+  ]
+ }
+}

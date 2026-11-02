@@ -350,8 +350,8 @@ def attempt_point(container, spec, point):
     return record
 
 
-def check_bug(bug_id, spec, tag, out_dir):
-    bug = studylib.load_bug(bug_id, ROUND1 / "bugs")
+def check_bug(bug_id, spec, tag, out_dir, bugs=ROUND1 / "bugs"):
+    bug = studylib.load_bug(bug_id, bugs)
     image = bug["control_image"].rsplit(":", 1)[0] + ":" + tag
     info = studylib.image_info(image)
     container = "reach-{}-{}".format(bug_id, secrets.token_hex(3))
@@ -486,26 +486,38 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("bugs", nargs="*")
     parser.add_argument("--specs", default=str(SPECS))
+    parser.add_argument(
+        "--bugs-dir",
+        default=str(ROUND1 / "bugs"),
+        help="the bugs' directories; a bug's reach.json there is its spec when --specs has none",
+    )
     parser.add_argument("--tag", default="peeky-r2")
-    parser.add_argument("--out", help="default: results/reach/<peeky sha, 12>")
+    parser.add_argument(
+        "--out", help="default: results/reach/<peeky sha, 12>, beside the bugs' directory"
+    )
     parser.add_argument("--report", metavar="DIR")
     args = parser.parse_args()
     if args.report:
         report(args.report)
         return
-    specs = json.loads(Path(args.specs).read_text())
+    bugs_dir = Path(args.bugs_dir)
+    specs = json.loads(Path(args.specs).read_text()) if Path(args.specs).is_file() else {}
     specs.pop("_comment", None)
+    # A later round keeps each bug's spec beside it (value-study-3/bugs/<id>/reach.json).
+    for path in sorted(bugs_dir.glob("*/reach.json")):
+        specs.setdefault(path.parent.name, json.loads(path.read_text()))
     ids = args.bugs or sorted(specs)
     for bug_id in ids:
         spec = specs[bug_id]
         out = args.out
         if not out:
-            bug = studylib.load_bug(bug_id, ROUND1 / "bugs")
+            bug = studylib.load_bug(bug_id, bugs_dir)
             image = bug["control_image"].rsplit(":", 1)[0] + ":" + args.tag
             sha = studylib.image_info(image)["peeky_sha"] or "unknown"
-            out = ROUND2 / "results" / "reach" / sha[:12]
+            results = ROUND2 if bugs_dir == ROUND1 / "bugs" else bugs_dir.parent
+            out = results / "results" / "reach" / sha[:12]
         print("{}: {}".format(bug_id, now()), file=sys.stderr, flush=True)
-        check_bug(bug_id, spec, args.tag, Path(out))
+        check_bug(bug_id, spec, args.tag, Path(out), bugs_dir)
 
 
 if __name__ == "__main__":

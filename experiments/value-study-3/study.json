@@ -1,0 +1,19 @@
+{
+ "name": "value-study-3",
+ "bugs": "bugs",
+ "results": "results",
+ "seed": 20261102,
+ "arms": {
+  "control": {
+   "image_tag": "control",
+   "prompts": ["../value-study/harness/prompt.md"],
+   "peeky": false
+  },
+  "peeky-first": {
+   "image_tag": "peeky-r3",
+   "prompts": ["../value-study/harness/prompt.md", "../value-study-2/prompts/prompt-peeky-first.md"],
+   "peeky": true
+  }
+ },
+ "comparisons": [["peeky-first", "control"]]
+}

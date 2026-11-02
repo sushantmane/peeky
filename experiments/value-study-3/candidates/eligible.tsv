@@ -1,0 +1,333 @@
+instance	language	repo	benchmark	public_rate	frontier	tags	pool
+astropy__astropy-14598	python	astropy/astropy	verified	0.12	43	numbers	pool
+django__django-11820	python	django/django	verified	0.02	43	concurrency and ordering	pool
+matplotlib__matplotlib-23476	python	matplotlib/matplotlib	verified	0.00	43	loops and values,numbers	pool
+sympy__sympy-17318	python	sympy/sympy	verified	0.09	43	loops and values	pool
+pylint-dev__pylint-8898	python	pylint-dev/pylint	verified	0.12	43	state across calls	pool
+pytest-dev__pytest-10356	python	pytest-dev/pytest	verified	0.07	43	concurrency and ordering	pool
+sphinx-doc__sphinx-7985	python	sphinx-doc/sphinx	verified	0.09	43	loops and values	pool
+astropy__astropy-8707	python	astropy/astropy	verified	0.12	43	serialization	pool
+django__django-12325	python	django/django	verified	0.07	43	concurrency and ordering	pool
+matplotlib__matplotlib-26208	python	matplotlib/matplotlib	verified	0.05	43	concurrency and ordering	pool
+sphinx-doc__sphinx-9229	python	sphinx-doc/sphinx	verified	0.02	43	loops and values,state across calls	pool
+astropy__astropy-13977	python	astropy/astropy	verified	0.07	43	numbers	pool
+django__django-13195	python	django/django	verified	0.05	43	serialization	pool
+matplotlib__matplotlib-24870	python	matplotlib/matplotlib	verified	0.07	43	numbers	pool
+sphinx-doc__sphinx-10435	python	sphinx-doc/sphinx	verified	0.09	43	loops and values	pool
+astropy__astropy-13236	python	astropy/astropy	verified	0.12	43	serialization	pool
+django__django-12406	python	django/django	verified	0.05	43	state across calls	pool
+astropy__astropy-8872	python	astropy/astropy	verified	0.12	43	numbers	pool
+django__django-11400	python	django/django	verified	0.02	43	concurrency and ordering	pool
+pytest-dev__pytest-5840	python	pytest-dev/pytest	verified	0.05	43		pool
+matplotlib__matplotlib-23299	python	matplotlib/matplotlib	verified	0.00	43		reserve
+django__django-11734	python	django/django	verified	0.07	43		reserve
+astropy__astropy-7606	python	astropy/astropy	verified	0.02	43		reserve
+sympy__sympy-22080	python	sympy/sympy	verified	0.05	43		reserve
+scikit-learn__scikit-learn-26194	python	scikit-learn/scikit-learn	verified	0.05	43		reserve
+sphinx-doc__sphinx-7462	python	sphinx-doc/sphinx	verified	0.02	43		reserve
+matplotlib__matplotlib-21568	python	matplotlib/matplotlib	verified	0.05	43		reserve
+django__django-14170	python	django/django	verified	0.05	43		reserve
+astropy__astropy-13033	python	astropy/astropy	verified	0.05	43		reserve
+sympy__sympy-21596	python	sympy/sympy	verified	0.02	43		reserve
+sphinx-doc__sphinx-9461	python	sphinx-doc/sphinx	verified	0.05	43		reserve
+django__django-13794	python	django/django	verified	0.05	43		reserve
+sympy__sympy-16597	python	sympy/sympy	verified	0.02	43		reserve
+sphinx-doc__sphinx-7590	python	sphinx-doc/sphinx	verified	0.02	43		reserve
+django__django-14315	python	django/django	verified	0.02	43		reserve
+sympy__sympy-13798	python	sympy/sympy	verified	0.09	43		reserve
+django__django-15098	python	django/django	verified	0.05	43		reserve
+sympy__sympy-18199	python	sympy/sympy	verified	0.02	43		reserve
+django__django-15252	python	django/django	verified	0.02	43		reserve
+sympy__sympy-18763	python	sympy/sympy	verified	0.12	43		reserve
+django__django-14792	python	django/django	verified	0.00	43		reserve
+sympy__sympy-17630	python	sympy/sympy	verified	0.09	43		reserve
+django__django-11477	python	django/django	verified	0.00	43		reserve
+sympy__sympy-13852	python	sympy/sympy	verified	0.02	43		reserve
+matplotlib__matplotlib-20676	python	matplotlib/matplotlib	verified	0.23	43	concurrency and ordering	reserve
+django__django-11885	python	django/django	verified	0.28	43	serialization	reserve
+sphinx-doc__sphinx-8548	python	sphinx-doc/sphinx	verified	0.30	43	state across calls	reserve
+sympy__sympy-14248	python	sympy/sympy	verified	0.21	43	numbers	reserve
+astropy__astropy-14369	python	astropy/astropy	verified	0.44	43	concurrency and ordering	reserve
+scikit-learn__scikit-learn-25102	python	scikit-learn/scikit-learn	verified	0.44	43	numbers	reserve
+django__django-15695	python	django/django	verified	0.19	43	loops and values	reserve
+sympy__sympy-13877	python	sympy/sympy	verified	0.49	43	numbers,state across calls	reserve
+scikit-learn__scikit-learn-25747	python	scikit-learn/scikit-learn	verified	0.14	43	concurrency and ordering,loops and values	reserve
+django__django-16256	python	django/django	verified	0.14	43	concurrency and ordering,loops and values	reserve
+django__django-16950	python	django/django	verified	0.49	43	concurrency and ordering	reserve
+django__django-15732	python	django/django	verified	0.33	43	loops and values	reserve
+django__django-15973	python	django/django	verified	0.14	43	serialization,state across calls	reserve
+django__django-14534	python	django/django	verified	0.35	43	loops and values	reserve
+django__django-13344	python	django/django	verified	0.16	43	concurrency and ordering	reserve
+django__django-11964	python	django/django	verified	0.40	43		reserve
+matplotlib__matplotlib-24177	python	matplotlib/matplotlib	verified	0.49	43		reserve
+sphinx-doc__sphinx-9602	python	sphinx-doc/sphinx	verified	0.16	43		reserve
+astropy__astropy-14182	python	astropy/astropy	verified	0.28	43		reserve
+sympy__sympy-13974	python	sympy/sympy	verified	0.23	43		reserve
+pylint-dev__pylint-7080	python	pylint-dev/pylint	verified	0.30	43		reserve
+pydata__xarray-6938	python	pydata/xarray	verified	0.37	43		reserve
+django__django-16454	python	django/django	verified	0.44	43		reserve
+matplotlib__matplotlib-25960	python	matplotlib/matplotlib	verified	0.40	43		reserve
+sphinx-doc__sphinx-8638	python	sphinx-doc/sphinx	verified	0.37	43		reserve
+astropy__astropy-14365	python	astropy/astropy	verified	0.35	43		reserve
+sympy__sympy-21612	python	sympy/sympy	verified	0.28	43		reserve
+pylint-dev__pylint-4970	python	pylint-dev/pylint	verified	0.28	43		reserve
+django__django-11141	python	django/django	verified	0.28	43		reserve
+sphinx-doc__sphinx-8056	python	sphinx-doc/sphinx	verified	0.47	43		reserve
+sympy__sympy-23950	python	sympy/sympy	verified	0.42	43		reserve
+django__django-11790	python	django/django	verified	0.21	43		reserve
+sympy__sympy-20916	python	sympy/sympy	verified	0.14	43		reserve
+django__django-15563	python	django/django	verified	0.23	43		reserve
+django__django-14725	python	django/django	verified	0.33	43		reserve
+django__django-12308	python	django/django	verified	0.23	43		reserve
+django__django-11728	python	django/django	verified	0.49	43		reserve
+django__django-11265	python	django/django	verified	0.49	43		reserve
+django__django-15957	python	django/django	verified	0.33	43		reserve
+django__django-11433	python	django/django	verified	0.49	43		reserve
+django__django-12273	python	django/django	verified	0.26	43		reserve
+django__django-14140	python	django/django	verified	0.30	43		reserve
+fasterxml__jackson-databind-4087	java	fasterxml/jackson-databind	mswe-java	0.10	10	serialization	pool
+alibaba__fastjson2-1245	java	alibaba/fastjson2	mswe-java	0.10	10	loops and values,serialization	pool
+elastic__logstash-16579	java	elastic/logstash	mswe-java	0.10	10	serialization	pool
+fasterxml__jackson-databind-3716	java	fasterxml/jackson-databind	mswe-java	0.10	10	concurrency and ordering,serialization	pool
+elastic__logstash-16094	java	elastic/logstash	mswe-java	0.10	10	concurrency and ordering	pool
+fasterxml__jackson-databind-2036	java	fasterxml/jackson-databind	mswe-java	0.10	10	serialization	pool
+elastic__logstash-15928	java	elastic/logstash	mswe-java	0.10	10	concurrency and ordering	pool
+fasterxml__jackson-databind-4159	java	fasterxml/jackson-databind	mswe-java	0.10	10	concurrency and ordering,loops and values,serialization	pool
+elastic__logstash-15964	java	elastic/logstash	mswe-java	0.10	10	concurrency and ordering	pool
+fasterxml__jackson-databind-3666	java	fasterxml/jackson-databind	mswe-java	0.10	10	serialization	pool
+fasterxml__jackson-databind-3509	java	fasterxml/jackson-databind	mswe-java	0.00	10	numbers	pool
+alibaba__fastjson2-82	java	alibaba/fastjson2	mswe-java	0.10	10		pool
+mockito__mockito-3133	java	mockito/mockito	mswe-java	0.10	10		pool
+fasterxml__jackson-databind-4131	java	fasterxml/jackson-databind	mswe-java	0.10	10		pool
+projectlombok__lombok-3215	java	projectlombok/lombok	multilingual	0.12	8		pool
+apache__dubbo-7041	java	apache/dubbo	mswe-java	0.10	10		pool
+fasterxml__jackson-core-1016	java	fasterxml/jackson-core	mswe-java	0.10	10		reserve
+mockito__mockito-3173	java	mockito/mockito	mswe-java	0.10	10		reserve
+elastic__logstash-16681	java	elastic/logstash	mswe-java	0.30	10	concurrency and ordering,state across calls	reserve
+fasterxml__jackson-dataformat-xml-590	java	fasterxml/jackson-dataformat-xml	mswe-java	0.20	10	serialization	reserve
+apache__druid-14092	java	apache/druid	multilingual	0.25	8	state across calls	reserve
+apache__dubbo-10638	java	apache/dubbo	mswe-java	0.30	10	serialization	reserve
+projectlombok__lombok-2792	java	projectlombok/lombok	multilingual	0.38	8	concurrency and ordering	reserve
+fasterxml__jackson-core-1182	java	fasterxml/jackson-core	mswe-java	0.40	10	numbers,serialization	reserve
+fasterxml__jackson-databind-3851	java	fasterxml/jackson-databind	mswe-java	0.50	10	serialization	reserve
+alibaba__fastjson2-2285	java	alibaba/fastjson2	mswe-java	0.30	10	serialization	reserve
+google__gson-1100	java	google/gson	multilingual	0.38	8	concurrency and ordering	reserve
+projectlombok__lombok-3674	java	projectlombok/lombok	multilingual	0.38	8	concurrency and ordering	reserve
+fasterxml__jackson-databind-4048	java	fasterxml/jackson-databind	mswe-java	0.50	10	serialization	reserve
+google__gson-1703	java	google/gson	mswe-java	0.40	10	concurrency and ordering	reserve
+fasterxml__jackson-databind-4257	java	fasterxml/jackson-databind	mswe-java	0.40	10	serialization	reserve
+fasterxml__jackson-databind-4072	java	fasterxml/jackson-databind	mswe-java	0.50	10	serialization	reserve
+fasterxml__jackson-databind-4338	java	fasterxml/jackson-databind	mswe-java	0.50	10	concurrency and ordering,serialization	reserve
+fasterxml__jackson-databind-4469	java	fasterxml/jackson-databind	mswe-java	0.30	10	concurrency and ordering	reserve
+fasterxml__jackson-databind-4186	java	fasterxml/jackson-databind	mswe-java	0.40	10	serialization	reserve
+fasterxml__jackson-databind-4189	java	fasterxml/jackson-databind	mswe-java	0.50	10	concurrency and ordering,serialization	reserve
+fasterxml__jackson-dataformat-xml-544	java	fasterxml/jackson-dataformat-xml	mswe-java	0.40	10		reserve
+google__gson-2479	java	google/gson	multilingual	0.38	8		reserve
+apache__dubbo-11781	java	apache/dubbo	mswe-java	0.40	10		reserve
+apache__druid-14136	java	apache/druid	multilingual	0.38	8		reserve
+mockito__mockito-3129	java	mockito/mockito	mswe-java	0.20	10		reserve
+googlecontainertools__jib-4144	java	googlecontainertools/jib	mswe-java	0.20	10		reserve
+elastic__logstash-14058	java	elastic/logstash	mswe-java	0.30	10		reserve
+fasterxml__jackson-databind-4228	java	fasterxml/jackson-databind	mswe-java	0.20	10		reserve
+fasterxml__jackson-core-1263	java	fasterxml/jackson-core	mswe-java	0.40	10		reserve
+fasterxml__jackson-databind-4426	java	fasterxml/jackson-databind	mswe-java	0.50	10		reserve
+fasterxml__jackson-core-922	java	fasterxml/jackson-core	mswe-java	0.50	10		reserve
+fasterxml__jackson-core-1208	java	fasterxml/jackson-core	mswe-java	0.40	10		reserve
+ponylang__ponyc-3763	c	ponylang/ponyc	mswe-c	0.11	9	concurrency and ordering	pool
+facebook__zstd-836	c	facebook/zstd	mswe-c	0.11	9	state across calls	pool
+jqlang__jq-2840	c	jqlang/jq	mswe-c	0.11	9	loops and values	pool
+ponylang__ponyc-4583	c	ponylang/ponyc	mswe-c	0.11	9	concurrency and ordering	pool
+facebook__zstd-1530	c	facebook/zstd	mswe-c	0.11	9	concurrency and ordering,state across calls	pool
+ponylang__ponyc-3777	c	ponylang/ponyc	mswe-c	0.11	9	loops and values,state across calls	pool
+facebook__zstd-1107	c	facebook/zstd	mswe-c	0.11	9	state across calls	pool
+ponylang__ponyc-4057	c	ponylang/ponyc	mswe-c	0.11	9	concurrency and ordering	pool
+facebook__zstd-2130	c	facebook/zstd	mswe-c	0.11	9	state across calls	reserve
+ponylang__ponyc-4017	c	ponylang/ponyc	mswe-c	0.11	9	loops and values	reserve
+facebook__zstd-1080	c	facebook/zstd	mswe-c	0.11	9	state across calls	reserve
+ponylang__ponyc-4067	c	ponylang/ponyc	mswe-c	0.11	9	concurrency and ordering	reserve
+facebook__zstd-3362	c	facebook/zstd	mswe-c	0.11	9	numbers	reserve
+facebook__zstd-1008	c	facebook/zstd	mswe-c	0.11	9	numbers	reserve
+facebook__zstd-1243	c	facebook/zstd	mswe-c	0.11	9	state across calls	reserve
+facebook__zstd-1416	c	facebook/zstd	mswe-c	0.11	9		reserve
+redis__redis-13338	c	redis/redis	multilingual	0.12	8		reserve
+jqlang__jq-2750	c	jqlang/jq	multilingual	0.00	8		reserve
+ponylang__ponyc-3962	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-983	c	facebook/zstd	mswe-c	0.11	9		reserve
+redis__redis-11734	c	redis/redis	multilingual	0.12	8		reserve
+jqlang__jq-2728	c	jqlang/jq	multilingual	0.12	8		reserve
+ponylang__ponyc-4061	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-1726	c	facebook/zstd	mswe-c	0.11	9		reserve
+ponylang__ponyc-3758	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-1532	c	facebook/zstd	mswe-c	0.11	9		reserve
+ponylang__ponyc-2504	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-3530	c	facebook/zstd	mswe-c	0.11	9		reserve
+ponylang__ponyc-3725	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-1106	c	facebook/zstd	mswe-c	0.11	9		reserve
+ponylang__ponyc-2950	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-1540	c	facebook/zstd	mswe-c	0.11	9		reserve
+ponylang__ponyc-1035	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+facebook__zstd-1733	c	facebook/zstd	mswe-c	0.11	9		reserve
+ponylang__ponyc-4593	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-1852	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-2342	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-3586	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-1726	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-1981	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-1095	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-4588	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-4506	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-3442	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-3675	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-3293	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-3971	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-3723	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+ponylang__ponyc-4263	c	ponylang/ponyc	mswe-c	0.11	9		reserve
+jqlang__jq-2133	c	jqlang/jq	mswe-c	0.22	9	numbers	reserve
+ponylang__ponyc-2247	c	ponylang/ponyc	mswe-c	0.33	9	serialization	reserve
+redis__redis-12272	c	redis/redis	multilingual	0.50	8	loops and values	reserve
+micropython__micropython-12158	c	micropython/micropython	multilingual	0.38	8	concurrency and ordering	reserve
+facebook__zstd-1105	c	facebook/zstd	mswe-c	0.22	9	concurrency and ordering,state across calls	reserve
+jqlang__jq-2824	c	jqlang/jq	mswe-c	0.22	9	numbers	reserve
+ponylang__ponyc-2664	c	ponylang/ponyc	mswe-c	0.22	9	loops and values	reserve
+facebook__zstd-3438	c	facebook/zstd	mswe-c	0.22	9	state across calls	reserve
+ponylang__ponyc-2176	c	ponylang/ponyc	mswe-c	0.22	9	concurrency and ordering	reserve
+ponylang__ponyc-4288	c	ponylang/ponyc	mswe-c	0.22	9	concurrency and ordering,state across calls	reserve
+facebook__zstd-1459	c	facebook/zstd	mswe-c	0.44	9		reserve
+ponylang__ponyc-1536	c	ponylang/ponyc	mswe-c	0.33	9		reserve
+jqlang__jq-2235	c	jqlang/jq	multilingual	0.38	8		reserve
+facebook__zstd-1458	c	facebook/zstd	mswe-c	0.33	9		reserve
+ponylang__ponyc-4182	c	ponylang/ponyc	mswe-c	0.22	9		reserve
+jqlang__jq-2654	c	jqlang/jq	mswe-c	0.44	9		reserve
+ponylang__ponyc-2586	c	ponylang/ponyc	mswe-c	0.33	9		reserve
+jqlang__jq-3238	c	jqlang/jq	mswe-c	0.44	9		reserve
+ponylang__ponyc-1867	c	ponylang/ponyc	mswe-c	0.22	9		reserve
+ponylang__ponyc-2532	c	ponylang/ponyc	mswe-c	0.22	9		reserve
+ponylang__ponyc-4087	c	ponylang/ponyc	mswe-c	0.22	9		reserve
+ponylang__ponyc-2007	c	ponylang/ponyc	mswe-c	0.22	9		reserve
+nlohmann__json-2866	cpp	nlohmann/json	mswe-c++	0.11	9	numbers,state across calls	pool
+simdjson__simdjson-1615	cpp	simdjson/simdjson	mswe-c++	0.11	9	loops and values	pool
+fmtlib__fmt-1390	cpp	fmtlib/fmt	mswe-c++	0.11	9	numbers	pool
+catchorg__Catch2-2723	cpp	catchorg/Catch2	mswe-c++	0.11	9	serialization	pool
+nlohmann__json-2576	cpp	nlohmann/json	mswe-c++	0.11	9	serialization,state across calls	pool
+fmtlib__fmt-3260	cpp	fmtlib/fmt	mswe-c++	0.11	9	numbers	pool
+nlohmann__json-1138	cpp	nlohmann/json	mswe-c++	0.11	9	serialization	pool
+fmtlib__fmt-3537	cpp	fmtlib/fmt	mswe-c++	0.11	9	state across calls	pool
+nlohmann__json-3008	cpp	nlohmann/json	mswe-c++	0.11	9	serialization,state across calls	reserve
+fmtlib__fmt-2610	cpp	fmtlib/fmt	mswe-c++	0.11	9	numbers	reserve
+nlohmann__json-2989	cpp	nlohmann/json	mswe-c++	0.11	9	serialization	reserve
+nlohmann__json-4512	cpp	nlohmann/json	mswe-c++	0.11	9	loops and values	reserve
+simdjson__simdjson-1899	cpp	simdjson/simdjson	mswe-c++	0.00	9		reserve
+nlohmann__json-2225	cpp	nlohmann/json	mswe-c++	0.11	9		reserve
+fmtlib__fmt-3824	cpp	fmtlib/fmt	mswe-c++	0.00	9		reserve
+simdjson__simdjson-644	cpp	simdjson/simdjson	mswe-c++	0.11	9		reserve
+nlohmann__json-1301	cpp	nlohmann/json	mswe-c++	0.11	9		reserve
+simdjson__simdjson-1712	cpp	simdjson/simdjson	mswe-c++	0.11	9		reserve
+nlohmann__json-3543	cpp	nlohmann/json	mswe-c++	0.11	9		reserve
+simdjson__simdjson-958	cpp	simdjson/simdjson	mswe-c++	0.11	9		reserve
+nlohmann__json-3605	cpp	nlohmann/json	mswe-c++	0.11	9		reserve
+fmtlib__fmt-2310	cpp	fmtlib/fmt	multilingual	0.25	8	numbers	reserve
+catchorg__Catch2-2288	cpp	catchorg/Catch2	mswe-c++	0.44	9	numbers	reserve
+nlohmann__json-1446	cpp	nlohmann/json	mswe-c++	0.33	9	loops and values,numbers,serialization,state across calls	reserve
+fmtlib__fmt-3750	cpp	fmtlib/fmt	multilingual	0.25	8	numbers	reserve
+nlohmann__json-2332	cpp	nlohmann/json	mswe-c++	0.44	9	state across calls	reserve
+fmtlib__fmt-2292	cpp	fmtlib/fmt	mswe-c++	0.22	9	numbers	reserve
+nlohmann__json-4525	cpp	nlohmann/json	mswe-c++	0.33	9	state across calls	reserve
+fmtlib__fmt-3732	cpp	fmtlib/fmt	mswe-c++	0.44	9	numbers,state across calls	reserve
+nlohmann__json-18	cpp	nlohmann/json	mswe-c++	0.33	9	numbers,state across calls	reserve
+nlohmann__json-807	cpp	nlohmann/json	mswe-c++	0.33	9	concurrency and ordering	reserve
+nlohmann__json-3037	cpp	nlohmann/json	mswe-c++	0.33	9	loops and values,numbers,state across calls	reserve
+nlohmann__json-4537	cpp	nlohmann/json	mswe-c++	0.44	9	numbers	reserve
+nlohmann__json-545	cpp	nlohmann/json	mswe-c++	0.44	9	serialization	reserve
+nlohmann__json-3073	cpp	nlohmann/json	mswe-c++	0.22	9	concurrency and ordering,numbers,state across calls	reserve
+nlohmann__json-3109	cpp	nlohmann/json	mswe-c++	0.33	9	loops and values	reserve
+simdjson__simdjson-524	cpp	simdjson/simdjson	mswe-c++	0.33	9		reserve
+fmtlib__fmt-493	cpp	fmtlib/fmt	mswe-c++	0.33	9		reserve
+nlohmann__json-1769	cpp	nlohmann/json	mswe-c++	0.22	9		reserve
+fmtlib__fmt-4055	cpp	fmtlib/fmt	mswe-c++	0.22	9		reserve
+nlohmann__json-969	cpp	nlohmann/json	mswe-c++	0.22	9		reserve
+fmtlib__fmt-1171	cpp	fmtlib/fmt	mswe-c++	0.22	9		reserve
+nlohmann__json-2963	cpp	nlohmann/json	mswe-c++	0.33	9		reserve
+fmtlib__fmt-1837	cpp	fmtlib/fmt	mswe-c++	0.44	9		reserve
+nlohmann__json-1343	cpp	nlohmann/json	mswe-c++	0.22	9		reserve
+fmtlib__fmt-2940	cpp	fmtlib/fmt	mswe-c++	0.22	9		reserve
+nlohmann__json-2019	cpp	nlohmann/json	mswe-c++	0.33	9		reserve
+fmtlib__fmt-4057	cpp	fmtlib/fmt	mswe-c++	0.44	9		reserve
+nlohmann__json-508	cpp	nlohmann/json	mswe-c++	0.22	9		reserve
+fmtlib__fmt-3734	cpp	fmtlib/fmt	mswe-c++	0.22	9		reserve
+fmtlib__fmt-3863	cpp	fmtlib/fmt	multilingual	0.38	8		reserve
+fmtlib__fmt-3569	cpp	fmtlib/fmt	mswe-c++	0.33	9		reserve
+nushell__nushell-10629	rust	nushell/nushell	mswe-rust	0.11	9	concurrency and ordering	pool
+BurntSushi__ripgrep-2295	rust	BurntSushi/ripgrep	mswe-rust	0.00	9	loops and values	pool
+clap-rs__clap-2161	rust	clap-rs/clap	mswe-rust	0.11	9	concurrency and ordering	pool
+tokio-rs__tokio-5781	rust	tokio-rs/tokio	mswe-rust	0.11	9	concurrency and ordering,loops and values	pool
+clap-rs__clap-2696	rust	clap-rs/clap	mswe-rust	0.00	9	concurrency and ordering	pool
+tokio-rs__tokio-6252	rust	tokio-rs/tokio	mswe-rust	0.11	9	concurrency and ordering,loops and values	pool
+clap-rs__clap-3391	rust	clap-rs/clap	mswe-rust	0.11	9	concurrency and ordering	pool
+tokio-rs__tokio-6339	rust	tokio-rs/tokio	mswe-rust	0.11	9	concurrency and ordering	pool
+clap-rs__clap-5873	rust	clap-rs/clap	mswe-rust	0.11	9	concurrency and ordering,loops and values	pool
+tokio-rs__tokio-5179	rust	tokio-rs/tokio	mswe-rust	0.11	9	concurrency and ordering	pool
+tokio-rs__tokio-4384	rust	tokio-rs/tokio	multilingual	0.00	8	concurrency and ordering	pool
+nushell__nushell-11292	rust	nushell/nushell	mswe-rust	0.00	9		pool
+tokio-rs__tokio-7124	rust	tokio-rs/tokio	mswe-rust	0.11	9		pool
+tokio-rs__tracing-1045	rust	tokio-rs/tracing	mswe-rust	0.00	9		pool
+clap-rs__clap-4005	rust	clap-rs/clap	mswe-rust	0.11	9		pool
+BurntSushi__ripgrep-2576	rust	BurntSushi/ripgrep	mswe-rust	0.11	9		pool
+nushell__nushell-13870	rust	nushell/nushell	mswe-rust	0.11	9		reserve
+tokio-rs__tracing-2001	rust	tokio-rs/tracing	mswe-rust	0.00	9		reserve
+clap-rs__clap-2642	rust	clap-rs/clap	mswe-rust	0.00	9		reserve
+BurntSushi__ripgrep-1294	rust	BurntSushi/ripgrep	mswe-rust	0.11	9		reserve
+clap-rs__clap-2085	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+BurntSushi__ripgrep-2209	rust	BurntSushi/ripgrep	mswe-rust	0.11	9		reserve
+clap-rs__clap-2882	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+BurntSushi__ripgrep-1980	rust	BurntSushi/ripgrep	mswe-rust	0.11	9		reserve
+clap-rs__clap-4006	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+clap-rs__clap-3968	rust	clap-rs/clap	mswe-rust	0.00	9		reserve
+clap-rs__clap-2653	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+clap-rs__clap-2669	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+clap-rs__clap-1869	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+clap-rs__clap-2058	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+clap-rs__clap-2611	rust	clap-rs/clap	mswe-rust	0.11	9		reserve
+sharkdp__bat-2260	rust	sharkdp/bat	multilingual	0.38	8	state across calls	reserve
+tokio-rs__tokio-4519	rust	tokio-rs/tokio	mswe-rust	0.44	9	concurrency and ordering	reserve
+tokio-rs__axum-2096	rust	tokio-rs/axum	multilingual	0.25	8	concurrency and ordering	reserve
+tokio-rs__bytes-732	rust	tokio-rs/bytes	mswe-rust	0.22	9	concurrency and ordering	reserve
+sharkdp__fd-1162	rust	sharkdp/fd	mswe-rust	0.44	9	concurrency and ordering	reserve
+nushell__nushell-10381	rust	nushell/nushell	mswe-rust	0.33	9	concurrency and ordering,loops and values,numbers	reserve
+tokio-rs__tracing-2090	rust	tokio-rs/tracing	mswe-rust	0.44	9	concurrency and ordering	reserve
+clap-rs__clap-2771	rust	clap-rs/clap	mswe-rust	0.44	9	loops and values	reserve
+tokio-rs__tokio-5244	rust	tokio-rs/tokio	mswe-rust	0.44	9	concurrency and ordering	reserve
+tokio-rs__axum-1730	rust	tokio-rs/axum	multilingual	0.38	8	state across calls	reserve
+tokio-rs__bytes-547	rust	tokio-rs/bytes	mswe-rust	0.33	9	concurrency and ordering	reserve
+clap-rs__clap-5527	rust	clap-rs/clap	mswe-rust	0.33	9	loops and values	reserve
+tokio-rs__tokio-6618	rust	tokio-rs/tokio	mswe-rust	0.44	9	concurrency and ordering	reserve
+clap-rs__clap-3334	rust	clap-rs/clap	mswe-rust	0.22	9	loops and values	reserve
+clap-rs__clap-3670	rust	clap-rs/clap	mswe-rust	0.22	9	concurrency and ordering,loops and values	reserve
+clap-rs__clap-2804	rust	clap-rs/clap	mswe-rust	0.22	9	concurrency and ordering	reserve
+clap-rs__clap-3311	rust	clap-rs/clap	mswe-rust	0.22	9	concurrency and ordering	reserve
+astral-sh__ruff-15309	rust	astral-sh/ruff	multilingual	0.25	8		reserve
+sharkdp__fd-555	rust	sharkdp/fd	mswe-rust	0.22	9		reserve
+tokio-rs__tokio-6280	rust	tokio-rs/tokio	mswe-rust	0.22	9		reserve
+tokio-rs__tracing-2892	rust	tokio-rs/tracing	mswe-rust	0.33	9		reserve
+clap-rs__clap-1624	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+BurntSushi__ripgrep-454	rust	BurntSushi/ripgrep	mswe-rust	0.44	9		reserve
+sharkdp__fd-986	rust	sharkdp/fd	mswe-rust	0.22	9		reserve
+tokio-rs__tracing-2897	rust	tokio-rs/tracing	mswe-rust	0.44	9		reserve
+clap-rs__clap-4902	rust	clap-rs/clap	mswe-rust	0.44	9		reserve
+BurntSushi__ripgrep-954	rust	BurntSushi/ripgrep	mswe-rust	0.33	9		reserve
+sharkdp__fd-658	rust	sharkdp/fd	mswe-rust	0.33	9		reserve
+clap-rs__clap-2358	rust	clap-rs/clap	mswe-rust	0.33	9		reserve
+BurntSushi__ripgrep-1367	rust	BurntSushi/ripgrep	mswe-rust	0.33	9		reserve
+clap-rs__clap-1972	rust	clap-rs/clap	mswe-rust	0.44	9		reserve
+BurntSushi__ripgrep-1642	rust	BurntSushi/ripgrep	mswe-rust	0.22	9		reserve
+clap-rs__clap-4101	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-2534	rust	clap-rs/clap	mswe-rust	0.44	9		reserve
+clap-rs__clap-2895	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-4248	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-2329	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-2310	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-4667	rust	clap-rs/clap	mswe-rust	0.33	9		reserve
+clap-rs__clap-3421	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-941	rust	clap-rs/clap	mswe-rust	0.22	9		reserve
+clap-rs__clap-5520	rust	clap-rs/clap	mswe-rust	0.33	9		reserve
+clap-rs__clap-3974	rust	clap-rs/clap	mswe-rust	0.44	9		reserve
+clap-rs__clap-2643	rust	clap-rs/clap	mswe-rust	0.22	9		reserve

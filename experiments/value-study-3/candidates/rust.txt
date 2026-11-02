@@ -1,0 +1,16 @@
+nushell__nushell-10629
+BurntSushi__ripgrep-2295
+clap-rs__clap-2161
+tokio-rs__tokio-5781
+clap-rs__clap-2696
+tokio-rs__tokio-6252
+clap-rs__clap-3391
+tokio-rs__tokio-6339
+clap-rs__clap-5873
+tokio-rs__tokio-5179
+tokio-rs__tokio-4384
+nushell__nushell-11292
+tokio-rs__tokio-7124
+tokio-rs__tracing-1045
+clap-rs__clap-4005
+BurntSushi__ripgrep-2576

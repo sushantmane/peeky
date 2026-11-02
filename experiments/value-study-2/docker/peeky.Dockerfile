@@ -54,7 +54,10 @@ ENV PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-18 \
     PEEKY_RUST_LINKER=/usr/bin/clang-18 \
     PEEKY_RUST_CARGO=/root/.rustup/toolchains/1.96.0-aarch64-unknown-linux-gnu/bin/cargo \
     PEEKY_RUST_RUSTC=/root/.rustup/toolchains/1.96.0-aarch64-unknown-linux-gnu/bin/rustc
-COPY prepare.sh /opt/peeky/study/prepare.sh
+# The build context: prepare.sh, and for a later round's bug (value-study-3) a bug/ directory
+# with its own Peeky build (peeky.sh) or Rust config fields (rust.json).
+COPY . /opt/peeky/study/
 RUN bash /opt/peeky/study/prepare.sh "$BUG_ID"
 ARG PEEKY_SHA=unknown
-LABEL peeky-study.peeky-sha=$PEEKY_SHA peeky-study.round=2 peeky-study.bug=$BUG_ID
+ARG STUDY_ROUND=2
+LABEL peeky-study.peeky-sha=$PEEKY_SHA peeky-study.round=$STUDY_ROUND peeky-study.bug=$BUG_ID
