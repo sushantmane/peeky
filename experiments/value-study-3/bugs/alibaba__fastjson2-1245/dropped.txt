@@ -1,0 +1,11 @@
+stage: 3 (reach check)
+reason: not reached. The only gold point, ObjectReaderImplList.java:387 (the statement after the
+inserted EnumSet branch in readJSONBObject), gives "no stop": the program terminated (exit 0)
+without stopping there, because at base the test's read fails earlier in the same method, at the
+auto-type check (line 304: "autoType not support input java.util.RegularEnumSet"). The assertion
+point DubboTest6.java:76 was reached (9 values read). Record:
+results/reach/3e51ccd7232d/alibaba__fastjson2-1245.json.
+Also: the Peeky image built, but build_images.sh's Java check failed on this JDK 8 image (Peeky
+refuses to launch a program on JDK 8: "[UNSUPPORTED] Peeky runs a Java program on another JDK than
+the adapter's only from that JDK's own bin/java: a native executable in a JDK 9 or later ...").
+Attaching to the JDK 8 test JVM worked. Gold solved and noop unsolved in the Peeky image.

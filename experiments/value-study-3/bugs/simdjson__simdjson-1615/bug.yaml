@@ -1,0 +1,43 @@
+id: simdjson__simdjson-1615
+language: cpp
+repo: simdjson/simdjson
+source: Multi-SWE-bench
+base_commit: 40cba172ed66584cf670c98202ed474a316667e3
+upstream: https://github.com/simdjson/simdjson/pull/1615
+category: E
+categories_applicable: [E, C]
+category_rationale: >-
+  The report says what is missing (JSON Pointer in the On Demand API) and points at the DOM
+  implementation to port. The port has to respect On Demand's forward-only iteration, whose state
+  is less simple.
+traits: []
+traits_rationale: >-
+  It is an API addition, not a wrong value or crash, so not runtime-state. The build and test take
+  seconds, and the new code runs a call or two below the test.
+root_cause: >-
+  The On Demand front end (include/simdjson/generic/ondemand/) has no JSON Pointer support:
+  document, value, object and array have no at_pointer(std::string_view) method, and their
+  simdjson_result wrappers don't forward one. The fix adds them, porting the DOM's RFC 6901 logic:
+  object::at_pointer unescapes ~0 and ~1 in the key and finds the field, array::at_pointer parses
+  a decimal index (no leading zeros, "-" is out of bounds) and walks to the element through a new
+  array::at, and document and value dispatch on the JSON type, an empty pointer meaning the whole
+  document. Malformed pointers give INVALID_JSON_POINTER, and indexes past the end
+  INDEX_OUT_OF_BOUNDS.
+test_hint: |-
+  Configure with `cd /testbed && cmake -S . -B build -DSIMDJSON_DEVELOPER_MODE=ON` (GCC 11 is the default compiler here), then build a test with `cmake --build build --parallel 4 --target <name>` (sources in tests/, tests/dom/ and tests/ondemand/, each listed in its CMakeLists.txt).
+  Run it with `ctest --test-dir build -R '^<name>$' --output-on-failure`.
+image: peeky-study/simdjson__simdjson-1615:control
+build_minutes: 0.25
+grade_minutes: 0.07
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's simdjson recipe (cmake -DSIMDJSON_DEVELOPER_MODE=ON in build/,
+  ctest) with GCC 11 (Ubuntu's gcc-11 for its gcc:11 image; developer mode compiles with -Werror),
+  limited to the test binary the test patch adds. fail_to_pass is that n2p test,
+  ondemand_json_pointer_tests (it doesn't compile at base). The test patch also re-indents the
+  add_cpp_test lines of ondemand_tostring_tests and ondemand_misc_tests (whitespace only): those
+  tests aren't changed, so they aren't fail_to_pass. PASS_TO_PASS is empty. Configure downloads
+  dependencies (benchmarks, competitors, simdjson-data) into /opt/simdjson-deps
+  (simdjson_DEPENDENCY_CACHE_DIR), so later configures need no network; eval.sh builds from a fresh
+  build/. Peeky's build (peeky.sh) leaves out Google Benchmark (its configure checks fail with
+  libc++) and appends -Wno-error after the project's -Werror, as clang 18 warns in a header.

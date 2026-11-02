@@ -1,0 +1,76 @@
+{
+ "bug": "tokio-rs__tracing-1045",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/tokio-rs__tracing-1045:peeky-r3",
+ "image_id": "sha256:c0bc64434d44e1dd8a7200c6cd745e3f83e1e9f89dd0a995ac7fd85275d6ccac",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:44:48+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed match in dispatcher::set_global_default (first code hunk; line 310 is the signature)",
+   "at": "tracing-core/src/dispatcher.rs:315",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/core.json --build --at tracing-core/src/dispatcher.rs:315 --name reach --timeout 300 --json -- --exact set_default_dispatch --test-threads=1",
+     "exit": 2,
+     "seconds": 3.8
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntracing-core/tests/dispatch.rs:12:24: error[E0308]: mismatched types: expected `Dispatch`, found `&Dispatch`\nwarning: /testbed/tracing/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition\n(in the `criterion` dependency)\nwarning: /testbed/tracing-subscriber/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition\n(in the `criterion` dependency)\nerror: could not compile `tracing-core` (test \"dispatch\") due to 1 previous error",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the changed call in tracing's subscriber::set_global_default, a generic function (last code hunk)",
+   "at": "tracing/src/subscriber.rs:45",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/core-and-tracing.json --build --at tracing/src/subscriber.rs:45 --name reach --timeout 300 --json -- --exact set_default_dispatch --test-threads=1",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "Peeky analyses only packages the run compiles: `cargo test --no-run -p tracing-core --test dispatch` doesn't compile `tracing`. Analyse a package it uses, or change \"run\" or \"features\"",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tracing-core/tests/dispatch.rs:14",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/core.json --build --at tracing-core/tests/dispatch.rs:14 --name reach --timeout 300 --json -- --exact set_default_dispatch --test-threads=1",
+     "exit": 2,
+     "seconds": 2.9
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntracing-core/tests/dispatch.rs:12:24: error[E0308]: mismatched types: expected `Dispatch`, found `&Dispatch`\nwarning: /testbed/tracing-subscriber/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition\n(in the `criterion` dependency)\nwarning: /testbed/tracing/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition\n(in the `criterion` dependency)\nerror: could not compile `tracing-core` (test \"dispatch\") due to 1 previous error",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:44:57+00:00"
+}

@@ -1,0 +1,83 @@
+{
+ "bug": "facebook__zstd-1107",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/facebook__zstd-1107:peeky-r3",
+ "image_id": "sha256:9811d16b30e35c6f51384c2a552c3000610b75e1d8b9391c8df12d7717dc8e80",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T19:39:42+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests fuzzer CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 0.2,
+   "output": "1 error generated.\nmake: *** [Makefile:156: fuzzer] Error 1\nmake: Leaving directory '/testbed/tests'\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "first hunk: its first removed line, the compression level's initialisation in ZSTD_createCCtx_advanced",
+   "at": "lib/compress/zstd_compress.c:75",
+   "commands": [
+    {
+     "command": "peeky session start . --binary tests/fuzzer --at lib/compress/zstd_compress.c:75 --name reach --timeout 300 --json -- -T1mn",
+     "exit": 2,
+     "seconds": 0.3
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "PROVENANCE_CHANGED",
+    "message": "Provenance: the binary is stale: tests/fuzzer.c changed, since it was built (its line tables record each file's MD5). Rebuild it (make), then probe again",
+    "hint": "Nothing ran. Rebuild the binary, then probe again: Peeky reads a binary only while its sources and objects are as they were built.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "last hunk: the changed call that ends a multithreaded compression in ZSTD_compress_generic",
+   "at": "lib/compress/zstd_compress.c:3362",
+   "commands": [
+    {
+     "command": "peeky session start . --binary tests/fuzzer --at lib/compress/zstd_compress.c:3362 --name reach --timeout 300 --json -- -T1mn",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "PROVENANCE_CHANGED",
+    "message": "Provenance: the binary is stale: tests/fuzzer.c changed, since it was built (its line tables record each file's MD5). Rebuild it (make), then probe again",
+    "hint": "Nothing ran. Rebuild the binary, then probe again: Peeky reads a binary only while its sources and objects are as they were built.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "the test is the fuzzer program (test-fuzzer); its first check, in basicUnitTests, which main runs first",
+   "at": "tests/fuzzer.c:316",
+   "commands": [
+    {
+     "command": "peeky session start . --binary tests/fuzzer --at tests/fuzzer.c:316 --name reach --timeout 300 --json -- -T1mn",
+     "exit": 2,
+     "seconds": 0.3
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "PROVENANCE_CHANGED",
+    "message": "Provenance: the binary is stale: tests/fuzzer.c changed, since it was built (its line tables record each file's MD5). Rebuild it (make), then probe again",
+    "hint": "Nothing ran. Rebuild the binary, then probe again: Peeky reads a binary only while its sources and objects are as they were built.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T19:39:43+00:00"
+}

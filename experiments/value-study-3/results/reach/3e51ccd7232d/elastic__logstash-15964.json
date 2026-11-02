@@ -1,0 +1,44 @@
+{
+ "bug": "elastic__logstash-15964",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/elastic__logstash-15964:peeky-r3",
+ "image_id": "sha256:0a5f160b1872e708b95cfa7ec21125bcf2d92ea8f3de6d35a44a34ab6fc6e473",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:19:34+00:00",
+ "needs": [],
+ "notes": "One gold point: the fix's other code hunks add an interface method and two new shutdown() methods, with no base statement after them in a function.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted flusherService.shutdown() in close(): the first statement of the try that follows",
+   "at": "logstash-core/src/main/java/org/logstash/common/io/DeadLetterQueueWriter.java:316",
+   "launch": {
+    "failed": true,
+    "log_tail": " Task :logstash-core:sourcesJar UP-TO-DATE\n> Task :logstash-core:copyGemjar\n> Task :logstash-core:javadoc UP-TO-DATE\n> Task :logstash-core:javadocJar UP-TO-DATE\n> Task :compileJava NO-SOURCE\n> Task :processResources NO-SOURCE\n> Task :classes UP-TO-DATE\n> Task :jar UP-TO-DATE\n> Task :assemble UP-TO-DATE\n> Task :benchmark-cli:compileJava UP-TO-DATE\n> Task :benchmark-cli:processResources UP-TO-DATE\n> Task :benchmark-cli:classes UP-TO-DATE\n> Task :benchmark-cli:jar UP-TO-DATE\n> Task :benchmark-cli:shadowJar UP-TO-DATE\n> Task :benchmark-cli:assemble UP-TO-DATE\n> Task :dependencies-report:compileJava UP-TO-DATE\n> Task :dependencies-report:processResources UP-TO-DATE\n> Task :dependencies-report:classes UP-TO-DATE\n> Task :dependencies-report:jar UP-TO-DATE\n> Task :dependencies-report:shadowJar UP-TO-DATE\n> Task :dependencies-report:assemble UP-TO-DATE\n> Task :ingest-converter:compileJava UP-TO-DATE\n> Task :ingest-converter:processResources NO-SOURCE\n> Task :ingest-converter:classes UP-TO-DATE\n> Task :ingest-converter:jar UP-TO-DATE\n> Task :ingest-converter:shadowJar UP-TO-DATE\n> Task :ingest-converter:assemble UP-TO-DATE\n> Task :jvm-options-parser:assemble UP-TO-DATE\n> Task :logstash-core:assemble\n> Task :logstash-core-benchmarks:compileJava UP-TO-DATE\n> Task :logstash-core-benchmarks:processResources UP-TO-DATE\n> Task :logstash-core-benchmarks:classes UP-TO-DATE\n> Task :logstash-core-benchmarks:jar UP-TO-DATE\n> Task :logstash-core-benchmarks:assemble UP-TO-DATE\n> Task :logstash-integration-tests:compileJava NO-SOURCE\n> Task :logstash-integration-tests:processResources NO-SOURCE\n> Task :logstash-integration-tests:classes UP-TO-DATE\n> Task :logstash-integration-tests:jar UP-TO-DATE\n> Task :logstash-integration-tests:assemble UP-TO-DATE\n> Task :logstash-xpack:compileJava NO-SOURCE\n> Task :logstash-xpack:processResources NO-SOURCE\n> Task :logstash-xpack:classes UP-TO-DATE\n> Task :logstash-xpack:jar UP-TO-DATE\n> Task :logstash-xpack:assemble UP-TO-DATE\n> Task :bootstrap SKIPPED\n\n> Task :logstash-core:compileTestJava FAILED\n/testbed/logstash-core/src/test/java/org/logstash/common/io/DeadLetterQueueWriterAgeRetentionTest.java:80: error: method does not override or implement a method from a supertype\n        @Override\n        ^\n1 error\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':logstash-core:compileTestJava'.\n> Compilation failed; see the compiler error output for details.\n\n* Try:\n> Run with --info option to get more log output.\n> Run with --scan to get full insights.\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\n\nYou can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.\n\nFor more on this, please refer to https://docs.gradle.org/8.5/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.\n\nBUILD FAILED in 4s\n35 actionable tasks: 3 executed, 32 up-to-date\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testDLQWriterCloseRemovesExpiredSegmentWhenCurrentWriterIsUntouched",
+   "at": "logstash-core/src/test/java/org/logstash/common/io/DeadLetterQueueWriterAgeRetentionTest.java:271",
+   "launch": {
+    "failed": true,
+    "log_tail": " Task :logstash-core:sourcesJar UP-TO-DATE\n> Task :logstash-core:copyGemjar\n> Task :logstash-core:javadoc UP-TO-DATE\n> Task :logstash-core:javadocJar UP-TO-DATE\n> Task :compileJava NO-SOURCE\n> Task :processResources NO-SOURCE\n> Task :classes UP-TO-DATE\n> Task :jar UP-TO-DATE\n> Task :assemble UP-TO-DATE\n> Task :benchmark-cli:compileJava UP-TO-DATE\n> Task :benchmark-cli:processResources UP-TO-DATE\n> Task :benchmark-cli:classes UP-TO-DATE\n> Task :benchmark-cli:jar UP-TO-DATE\n> Task :benchmark-cli:shadowJar UP-TO-DATE\n> Task :benchmark-cli:assemble UP-TO-DATE\n> Task :dependencies-report:compileJava UP-TO-DATE\n> Task :dependencies-report:processResources UP-TO-DATE\n> Task :dependencies-report:classes UP-TO-DATE\n> Task :dependencies-report:jar UP-TO-DATE\n> Task :dependencies-report:shadowJar UP-TO-DATE\n> Task :dependencies-report:assemble UP-TO-DATE\n> Task :ingest-converter:compileJava UP-TO-DATE\n> Task :ingest-converter:processResources NO-SOURCE\n> Task :ingest-converter:classes UP-TO-DATE\n> Task :ingest-converter:jar UP-TO-DATE\n> Task :ingest-converter:shadowJar UP-TO-DATE\n> Task :ingest-converter:assemble UP-TO-DATE\n> Task :jvm-options-parser:assemble UP-TO-DATE\n> Task :logstash-core:assemble\n> Task :logstash-core-benchmarks:compileJava UP-TO-DATE\n> Task :logstash-core-benchmarks:processResources UP-TO-DATE\n> Task :logstash-core-benchmarks:classes UP-TO-DATE\n> Task :logstash-core-benchmarks:jar UP-TO-DATE\n> Task :logstash-core-benchmarks:assemble UP-TO-DATE\n> Task :logstash-integration-tests:compileJava NO-SOURCE\n> Task :logstash-integration-tests:processResources NO-SOURCE\n> Task :logstash-integration-tests:classes UP-TO-DATE\n> Task :logstash-integration-tests:jar UP-TO-DATE\n> Task :logstash-integration-tests:assemble UP-TO-DATE\n> Task :logstash-xpack:compileJava NO-SOURCE\n> Task :logstash-xpack:processResources NO-SOURCE\n> Task :logstash-xpack:classes UP-TO-DATE\n> Task :logstash-xpack:jar UP-TO-DATE\n> Task :logstash-xpack:assemble UP-TO-DATE\n> Task :bootstrap SKIPPED\n\n> Task :logstash-core:compileTestJava FAILED\n/testbed/logstash-core/src/test/java/org/logstash/common/io/DeadLetterQueueWriterAgeRetentionTest.java:80: error: method does not override or implement a method from a supertype\n        @Override\n        ^\n1 error\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':logstash-core:compileTestJava'.\n> Compilation failed; see the compiler error output for details.\n\n* Try:\n> Run with --info option to get more log output.\n> Run with --scan to get full insights.\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\n\nYou can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.\n\nFor more on this, please refer to https://docs.gradle.org/8.5/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.\n\nBUILD FAILED in 3s\n35 actionable tasks: 3 executed, 32 up-to-date\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:29:41+00:00"
+}

@@ -1,0 +1,31 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/full-program-tests/regression-4582"
+ ],
+ "program": [],
+ "prepare": [
+  "mkdir -p build-peeky/full-program-tests && build-peeky/debug/ponyc --debug -o build-peeky/full-program-tests test/full-program-tests/regression-4582 > /root/reach/compile.log 2>&1; echo exit $?; tail -3 /root/reach/compile.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/libponyrt/sched/scheduler.c",
+   "line": 510,
+   "why": "first hunk that changes a statement (the one before it changes read_msg's signature): the ACK sent for a CNF in read_msg (509 is a comment)"
+  },
+  {
+   "role": "gold",
+   "file": "src/libponyrt/sched/scheduler.c",
+   "line": 1422,
+   "why": "last hunk: the changed read_msg call in run_pinned_actors"
+  },
+  {
+   "role": "assertion",
+   "not_attempted": "the test is a Pony program (test/full-program-tests/regression-4582) whose exit code the full-program runner, itself a Pony program, compares with expected-exit-code.txt; neither is the project's C code"
+  }
+ ]
+}

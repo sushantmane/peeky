@@ -1,0 +1,44 @@
+{
+ "bug": "tokio-rs__tokio-4384",
+ "language": "rust",
+ "category": "B",
+ "image": "peeky-study/tokio-rs__tokio-4384:peeky-r3",
+ "image_id": "sha256:d7418d19f594a0f6b992aef7ef3c591a630d6478383863d0e2bf415571484c29",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:16:27+00:00",
+ "needs": [],
+ "notes": "The fix adds two marker-trait impls (declarations) and an import; no hunk changes an executable statement, so there is no gold point. The test is a compile-time check: the first is_unwind_safe call stands for its assertion.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "no hunk of the fix changes an executable statement: it adds an import and `impl UnwindSafe`/`impl RefUnwindSafe for PollEvented<E> {}` declarations"
+   }
+  },
+  {
+   "role": "assertion",
+   "why": "the first is_unwind_safe check, a compile-time bound",
+   "at": "tokio/tests/net_types_unwind.rs:8",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/net_types_unwind.rs:8 --name reach --timeout 300 --json -- --exact net_types_are_unwind_safe --test-threads=1",
+     "exit": 2,
+     "seconds": 12.8
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/net_types_unwind.rs:8:22: error[E0277]: the type `UnsafeCell<Atomic<usize>>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary: `UnsafeCell<Atomic<usize>>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary\ntokio/tests/net_types_unwind.rs:8:22: error[E0277]: the type `UnsafeCell<tokio::io::driver::scheduled_io::Waiters>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary: `UnsafeCell<tokio::io::driver::scheduled_io::Waiters>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary\ntokio/tests/net_types_unwind.rs:8:22: error[E0277]: the type `UnsafeCell<Option<tokio::util::slab::Slab<tokio::io::driver::scheduled_io::ScheduledIo>>>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary: `UnsafeCell<Option<tokio::util::slab::Slab<tokio::io::driver::scheduled_io::ScheduledIo>>>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary\ntokio/tests/net_types_unwind.rs:8:22: error[E0277]: the type `UnsafeCell<tokio::util::slab::Slots<tokio::io::driver::scheduled_io::ScheduledIo>>` may contain interior mutability and a reference may not be safely transferable across a catch_unwind boundary: `UnsafeCell<tokio::util::slab::Slots<tokio::io:\n... (output truncated)",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:16:41+00:00"
+}

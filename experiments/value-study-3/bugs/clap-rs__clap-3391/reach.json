@@ -1,0 +1,68 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/parse/errors.rs",
+   "line": 645,
+   "why": "the changed `let mut sorted` binding in Error::invalid_value (first code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "possible_values::escaped_possible_values_output",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "src/parse/errors.rs",
+   "line": 684,
+   "why": "the changed info.extend(sorted) in Error::invalid_value (last code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "possible_values::escaped_possible_values_output",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/builder/utils.rs",
+   "line": 42,
+   "why": "compare_output's assert_eq, the first assertion: the test's assert! calls compare_output first",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "possible_values::escaped_possible_values_output",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap"
+   ],
+   "run": {
+    "package": "clap",
+    "test": "builder"
+   },
+   "vendor": "vendor"
+  }
+ }
+}

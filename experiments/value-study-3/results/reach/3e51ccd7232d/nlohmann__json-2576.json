@@ -1,0 +1,83 @@
+{
+ "bug": "nlohmann__json-2576",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/nlohmann__json-2576:peeky-r3",
+ "image_id": "sha256:f41c61b097ad3f8bb695e3215cdae8219e8699edea896510454d9b56010fdf83",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:43:03+00:00",
+ "needs": [],
+ "notes": "The failing test is the ctest test test-regression2: the binary with ctest's argument (--no-skip), in /testbed (its WORKING_DIRECTORY). At base, with the test patch, it doesn't compile (get<std::array<NonDefaultConstructible, 2>>() has no overload); prepare then removes the binary built before the test patch, which doesn't run the failing test.",
+ "prepare": [
+  {
+   "command": "(cmake --build build-peeky --parallel 4 --target test-regression2 > /root/reach/rebuild.log 2>&1 || rm -f build-peeky/test/test-regression2); tail -5 /root/reach/rebuild.log; ls build-peeky/test/test-regression2",
+   "exit": 2,
+   "seconds": 1.4,
+   "output": "12 errors generated.\ngmake[3]: *** [test/CMakeFiles/test-regression2.dir/build.make:76: test/CMakeFiles/test-regression2.dir/src/unit-regression2.cpp.o] Error 1\ngmake[2]: *** [CMakeFiles/Makefile2:2137: test/CMakeFiles/test-regression2.dir/all] Error 2\ngmake[1]: *** [CMakeFiles/Makefile2:2144: test/CMakeFiles/test-regression2.dir/rule] Error 2\ngmake: *** [Makefile:1089: test-regression2] Error 2\nls: cannot access 'build-peeky/test/test-regression2': No such file or directory\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed to_json call in adl_serializer::to_json (first hunk changing a base statement)",
+   "at": "include/nlohmann/adl_serializer.hpp:45",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/test/test-regression2 --at include/nlohmann/adl_serializer.hpp:45 --name reach --timeout 300 --json -- --no-skip",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/test/test-regression2 in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the removed return of the pointer get() const in basic_json, in the single header the tests include (last hunk)",
+   "at": "single_include/nlohmann/json.hpp:20047",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/test/test-regression2 --at single_include/nlohmann/json.hpp:20047 --name reach --timeout 300 --json -- --no-skip",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/test/test-regression2 in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "the first CHECK of the issue #2574 section, std::array, the binary's failing section",
+   "at": "test/src/unit-regression2.cpp:535",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/test/test-regression2 --at test/src/unit-regression2.cpp:535 --name reach --timeout 300 --json -- --no-skip",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/test/test-regression2 in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:43:06+00:00"
+}

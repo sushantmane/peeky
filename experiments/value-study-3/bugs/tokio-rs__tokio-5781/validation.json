@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "await_error_readiness_invalid_address": "MISSING",
+   "await_error_readiness_timestamping": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "await_error_readiness_invalid_address": "PASSED",
+   "await_error_readiness_timestamping": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.8
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "await_error_readiness_invalid_address": "PASSED",
+   "await_error_readiness_timestamping": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.6
+ }
+]

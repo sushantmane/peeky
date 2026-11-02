@@ -1,0 +1,61 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "The fix only inserts a new method (Receiver::mark_unchanged) between two methods, so no statement follows the insertion in its function. The gold point is the first statement after the insertion in the file, in Receiver::changed, which the test calls.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "tokio/src/sync/watch.rs",
+   "line": 715,
+   "why": "the fix's only hunk inserts a new method; no statement follows it in the same function, so the first statement after it (in Receiver::changed, which the test calls)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "rx_mark_unchanged",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tokio/tests/sync_watch.rs",
+   "line": 112,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "rx_mark_unchanged",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tokio"
+   ],
+   "run": {
+    "package": "tokio",
+    "test": "sync_watch"
+   },
+   "vendor": "vendor",
+   "features": [
+    "full"
+   ]
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

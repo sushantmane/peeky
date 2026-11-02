@@ -1,0 +1,38 @@
+id: astropy__astropy-14598
+language: python
+repo: astropy/astropy
+source: SWE-bench Verified
+base_commit: 80c3854a5f4f4a6ab86c03d9db7854767fcd83c1
+upstream: https://github.com/astropy/astropy/pull/14598
+category: D
+categories_applicable: [D, E]
+category_rationale: >-
+  The value only comes back wrong when a long string is split over CONTINUE cards and a '' pair
+  falls at or near a sub-card boundary, so it shows only for particular value lengths; the cause
+  is a lazy regex match and a second unescaping that interact across sub-cards.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a wrong value after a round trip through Card.fromstring, and the fix changes
+  how the string value is parsed and unescaped. The fixed code runs a few calls below Card.value,
+  in the same process.
+root_cause: >-
+  In astropy/io/fits/card.py, Card._split rebuilds a long (CONTINUE) string value from its
+  sub-cards and already turns each sub-card's '' into ', so the later parse of the joined value
+  unescapes it a second time and a null string '' becomes '. Also, the _strg_comment_RE regex
+  isn't anchored at the end, so its lazy string group can stop at an inner quote and drop the
+  rest of a sub-card's value. The fix anchors the regex with $ and keeps '' in each sub-card value.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with astropy installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest astropy/<subpackage>/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/astropy__astropy-14598:control
+build_minutes: 0.9
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Follows round 1's astropy__astropy-13398 recipe with the SWE-bench spec for astropy 5.2 (same
+  pins as 5.0). Python 3.11 rather than 3.12: the spec's pinned numpy 1.25.2 has no 3.12 build.
+  The spec's setuptools==68.0.0 build pin is applied as a uv build constraint rather than by
+  editing pyproject.toml; unpinned packages resolve as of 2024-08-01 (uv --exclude-newer).
+  Grading runs astropy/io/fits/tests/test_header.py (the only file the test patch touches), which
+  holds every FAIL_TO_PASS and PASS_TO_PASS test.

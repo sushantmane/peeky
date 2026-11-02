@@ -1,0 +1,76 @@
+{
+ "bug": "clap-rs__clap-2161",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/clap-rs__clap-2161:peeky-r3",
+ "image_id": "sha256:9fcbef791f5b7d699b3eeeecb8c94ef0406ad412e373603bca94146d4242004c",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:14:44+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed help-heading filter in App::get_flags_with_no_heading (first code hunk; its doc comment and signature lines don't count)",
+   "at": "src/build/app/mod.rs:221",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/build/app/mod.rs:221 --name reach --timeout 300 --json -- --exact issue_2022_get_flags_misuse --test-threads=1",
+     "exit": 2,
+     "seconds": 2.7
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.2",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the changed loop over get_opts_with_no_heading in Parser::add_defaults (last code hunk)",
+   "at": "src/parse/parser.rs:1563",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/parse/parser.rs:1563 --name reach --timeout 300 --json -- --exact issue_2022_get_flags_misuse --test-threads=1",
+     "exit": 2,
+     "seconds": 1.7
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.2",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/opts.rs:520",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/opts.rs:520 --name reach --timeout 300 --json -- --exact issue_2022_get_flags_misuse --test-threads=1",
+     "exit": 2,
+     "seconds": 1.7
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: specification `clap` is ambiguous\nhelp: re-run this command with one of the following specifications\n  clap@2.34.0\n  clap@3.0.0-beta.2",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:14:51+00:00"
+}

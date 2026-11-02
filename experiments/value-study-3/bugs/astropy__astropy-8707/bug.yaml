@@ -1,0 +1,45 @@
+id: astropy__astropy-8707
+language: python
+repo: astropy/astropy
+source: SWE-bench Verified
+base_commit: a85a0747c54bac75e9c3b2fe436b105ea029d6cf
+upstream: https://github.com/astropy/astropy/pull/8707
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report says what is missing (bytes input to Header.fromstring and Card.fromstring), and
+  both methods are short; the state involved is a single string or bytes argument.
+traits: []
+traits_rationale: >-
+  The fix adds support for a new input type (bytes) rather than changing how an existing value is
+  computed. Card.fromstring is called directly by the test, in the same process.
+root_cause: >-
+  Card.fromstring in astropy/io/fits/card.py and Header.fromstring in astropy/io/fits/header.py
+  assume a str: Card pads and parses the image as text, and Header compares slices with str
+  constants ('CONTINUE', 'END', END_CARD) and joins with ''. Given bytes, Card.fromstring breaks
+  and Header.fromstring can't split the cards. The fix decodes bytes as latin-1 in Card.fromstring
+  and makes Header.fromstring use bytes constants, separator and joiner when given bytes.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with astropy installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest astropy/<subpackage>/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/astropy__astropy-8707:control
+build_minutes: 3.1
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for astropy 3.1 (its pins; the checkout is 4.0.dev, built by setup.py through the
+  astropy_helpers submodule, which the image checks out and strips of its remote and refs).
+  Python 3.11 rather than 3.12: the pinned numpy 1.25.2 has no 3.12 build and astropy_helpers
+  needs distutils. Deviation: pytest 7.1.3 instead of the spec's 7.4.0. From pytest 7.2 a
+  nose-style setup() method warns (PytestRemovedIn8Warning, a DeprecationWarning), and this
+  astropy's header plugin (astropy/tests/plugins/display.py, via ignore_warnings) turns
+  DeprecationWarnings into errors before the first test, so with 7.4.0 every TestHeaderFunctions
+  test errored at setup, the fail_to_pass one with gold too; SWE-bench's lists show them passing
+  there. Cython is pinned below 3 (0.29.37) for the build, which the spec leaves unpinned; the
+  [test] extras resolve as of 2024-08-01. Grading runs SWE-bench's astropy command (pytest -rA -vv
+  -o console_output_style=classic --tb=no) on astropy/io/fits/tests/test_header.py, the only
+  file the test patch touches; five tests there fail at base and with gold and aren't in
+  PASS_TO_PASS. The test patch also adds test_header_fromstring_bytes, which isn't in either
+  list; the first failing test doesn't call Header.fromstring, so the header.py point isn't run
+  (no stop).

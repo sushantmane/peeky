@@ -1,0 +1,9 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, tokio)",
+ "fail_to_pass": [
+  "await_error_readiness_timestamping",
+  "await_error_readiness_invalid_address"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

@@ -1,0 +1,35 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "junit-jupiter:compileTestJava": "FAILED",
+   "junit-jupiter:test": "MISSING",
+   "junit-jupiter:testClasses": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 5.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "junit-jupiter:compileTestJava": "PASSED",
+   "junit-jupiter:test": "PASSED",
+   "junit-jupiter:testClasses": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 7.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "junit-jupiter:compileTestJava": "PASSED",
+   "junit-jupiter:test": "PASSED",
+   "junit-jupiter:testClasses": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 7.4
+ }
+]

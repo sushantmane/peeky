@@ -1,0 +1,7 @@
+stage: 3 (reach check)
+reason: not reached. Both points were refused with BUILD_FAILED: the hidden tests don't compile
+at the base commit (select! has no rule for an else-only invocation; the fix adds it), so
+Peeky's build of the macros_select test fails ("The build failed: cargo exited with code 101 ...
+tokio/tests/macros_select.rs:28:9: error: expected identifier, found keyword `else` ... no rules
+expected `=>`"). Not retryable; no remedy applies.
+Record: results/reach/3e51ccd7232d/tokio-rs__tokio-6339.json.

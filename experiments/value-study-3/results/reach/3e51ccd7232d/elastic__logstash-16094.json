@@ -1,0 +1,136 @@
+{
+ "bug": "elastic__logstash-16094",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/elastic__logstash-16094:peeky-r3",
+ "image_id": "sha256:ddf54ead66bccc34e440fb992fdb0d25f6d5fb613c8c1f62464e15c483e70a96",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:44:25+00:00",
+ "needs": [],
+ "notes": "Gold points: the first code hunk is Ruby (environment.rb's inserted setProperty; its setting-table entry and runner.rb's option are declarations); the last is the changed paramName line in CustomLogEventSerializer (the serializer's other hunk adds a new method, with no base statement after it).",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted setProperty in the settings post-process block (first code hunk)",
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "Ruby code that runs when Logstash starts: the failing Java test never runs it, and a Java session can't stop in JRuby code"
+   }
+  },
+  {
+   "role": "gold",
+   "why": "the changed paramName line in writeStructuredMessage's loop over params (last code hunk)",
+   "at": "logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java:72",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java:72 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java:72",
+    "function": "CustomLogEventSerializer.writeStructuredMessage(StructuredMessage,JsonGenerator)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "message",
+      "value": "StructuredMessage@2556"
+     },
+     {
+      "name": "generator",
+      "value": "WriterBasedJsonGenerator@2557"
+     },
+     {
+      "name": "entry",
+      "value": "AbstractMap$SimpleImmutableEntry@2558"
+     },
+     {
+      "name": "this",
+      "value": "CustomLogEventSerializer@2559"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testJSONLayoutWhenParamsContainsAnotherMessageField",
+   "at": "logstash-core/src/test/java/org/logstash/log/CustomLogEventTests.java:193",
+   "launch": {
+    "ready_seconds": 6.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/test/java/org/logstash/log/CustomLogEventTests.java:193 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/logstash-core/src/test/java/org/logstash/log/CustomLogEventTests.java:193",
+    "function": "CustomLogEventTests.testJSONLayoutWhenParamsContainsAnotherMessageField()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "prevSetting",
+      "value": "null"
+     },
+     {
+      "name": "appender",
+      "value": "ListAppender@2563"
+     },
+     {
+      "name": "logger",
+      "value": "Logger@2564"
+     },
+     {
+      "name": "paramsWithAnotherMessageField",
+      "value": "Collections$SingletonMap@2565"
+     },
+     {
+      "name": "messages",
+      "value": "Collections$UnmodifiableRandomAccessList@2566"
+     },
+     {
+      "name": "this",
+      "value": "CustomLogEventTests@2567"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:44:44+00:00"
+}

@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "jvm-options-parser:test": "FAILED",
+   "org.logstash.launchers.JvmOptionsParserTest > testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "jvm-options-parser:test": "PASSED",
+   "org.logstash.launchers.JvmOptionsParserTest > testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.3
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "jvm-options-parser:test": "PASSED",
+   "org.logstash.launchers.JvmOptionsParserTest > testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.8
+ }
+]

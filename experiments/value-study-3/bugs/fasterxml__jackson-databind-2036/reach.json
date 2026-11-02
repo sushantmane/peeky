@@ -1,0 +1,47 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java",
+    "src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.jsontype.TestBaseTypeAsDefault#testPositiveForParent -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 240,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java",
+   "line": 126,
+   "why": "first code hunk in buildTypeDeserializer: its first changed executable line, defaultImpl = null (the changed declaration above it has no code)"
+  },
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java",
+   "line": 161,
+   "why": "last code hunk: the removed switch on _includeAs in buildTypeDeserializer (moved up by the fix); the middle hunk only re-indents a condition, and DeserializationFeature only declares a constant"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java",
+   "line": 24,
+   "why": "the first assertion of testPositiveForParent, the first test in the new class"
+  }
+ ]
+}

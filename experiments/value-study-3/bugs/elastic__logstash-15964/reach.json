@@ -1,0 +1,42 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "logstash-core/src/main/java/org/logstash/common/io/DeadLetterQueueWriter.java",
+    "logstash-core/src/test/java/org/logstash/common/io/DeadLetterQueueWriterAgeRetentionTest.java"
+   ],
+   "class_roots": [
+    "logstash-core/build/classes/java/main",
+    "logstash-core/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest.testDLQWriterCloseRemovesExpiredSegmentWhenCurrentWriterIsUntouched --debug-jvm & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "One gold point: the fix's other code hunks add an interface method and two new shutdown() methods, with no base statement after them in a function.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "logstash-core/src/main/java/org/logstash/common/io/DeadLetterQueueWriter.java",
+   "line": 316,
+   "why": "the statement after the inserted flusherService.shutdown() in close(): the first statement of the try that follows"
+  },
+  {
+   "role": "assertion",
+   "file": "logstash-core/src/test/java/org/logstash/common/io/DeadLetterQueueWriterAgeRetentionTest.java",
+   "line": 271,
+   "why": "the first assertion of testDLQWriterCloseRemovesExpiredSegmentWhenCurrentWriterIsUntouched"
+  }
+ ]
+}

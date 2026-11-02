@@ -1,0 +1,29 @@
+# peeky-study/r3-ponyc-llvm:13.0.1: the libraries ponyc's `make libs` builds (its vendored LLVM
+# 13.0.1 with ponyc's patches, Google Test 1.11.0, Google Benchmark 1.5.6, blake2), installed in
+# /opt/ponyc-libs, for ponylang__ponyc-4057 (base bc0d988f), whose control image uses it as its
+# build/libs. Only the install tree is kept: no ponyc source or history. Unlike LLVM 9.0.1 and
+# 15.0.7, built for the Makefile's default targets (X86, ARM, AArch64): this ponyc's CMakeLists.txt
+# links all three.
+#   docker build -t peeky-study/r3-ponyc-llvm:13.0.1 -f Dockerfile.llvm <empty dir>
+FROM peeky-study/base:1 AS build
+ARG PONYC_COMMIT=bc0d988f909d6bb2698b836bb5f592aa567f6fb6
+# The base's compilers are newer than the ones ponyc's LLVM was written for: it may need
+# <cstdint> and <limits> included, and no -Werror may fail on today's warnings. These wrappers
+# are used for the libraries' build only (as for LLVM 9.0.1). A C++03 unit (Google Benchmark's
+# cxx03_test) gets no includes: <cstdint> needs C++11.
+RUN mkdir -p /opt/ponyc-cc && \
+    printf '#!/bin/sh\nexec clang-18 "$@" -Wno-error\n' > /opt/ponyc-cc/clang && \
+    printf '#!/bin/sh\ncase " $* " in *" -std=c++98 "*|*" -std=c++03 "*|*" -std=gnu++98 "*|*" -std=gnu++03 "*) exec clang++-18 "$@" -Wno-error ;; *" -c "*) exec clang++-18 -include cstdint -include limits "$@" -Wno-error -Wno-enum-constexpr-conversion ;; esac\nexec clang++-18 "$@"\n' > /opt/ponyc-cc/clang++ && \
+    chmod +x /opt/ponyc-cc/clang /opt/ponyc-cc/clang++
+RUN git clone -q https://github.com/ponylang/ponyc.git /testbed && cd /testbed && \
+    git checkout -q $PONYC_COMMIT && git submodule update --init --depth 1 lib/llvm/src
+WORKDIR /testbed
+# ponyc's own recipe (`make libs`), with its default targets.
+RUN make libs CC=/opt/ponyc-cc/clang CXX=/opt/ponyc-cc/clang++ build_flags=-j4 \
+      > /root/libs.log 2>&1; status=$?; tail -40 /root/libs.log; \
+    grep -E "error:|Error [0-9]" /root/libs.log | head -40; exit $status
+RUN ls build/libs build/libs/lib | head -80 && test -f build/libs/lib/cmake/llvm/LLVMConfig.cmake && \
+    build/libs/bin/llvm-config --version
+
+FROM peeky-study/base:1
+COPY --from=build /testbed/build/libs /opt/ponyc-libs

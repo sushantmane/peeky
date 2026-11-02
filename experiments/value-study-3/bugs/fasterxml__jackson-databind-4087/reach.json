@@ -1,0 +1,41 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java",
+    "src/test/java/com/fasterxml/jackson/databind/interop/OptionalJava8Fallbacks4082Test.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.interop.OptionalJava8Fallbacks4082Test#testPreventSerialization -Dmaven.surefire.debug & until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 900,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java",
+   "line": 313,
+   "why": "the statement after the inserted Optional branch in checkUnsupportedType (the only hunk that changes an executable statement; the others add new methods and comments)"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/interop/OptionalJava8Fallbacks4082Test.java",
+   "line": 35,
+   "why": "the first assertion the test runs: fail() in _testPreventSerialization, which testPreventSerialization calls first"
+  }
+ ]
+}

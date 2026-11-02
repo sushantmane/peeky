@@ -1,0 +1,43 @@
+id: ponylang__ponyc-4583
+language: c
+repo: ponylang/ponyc
+source: Multi-SWE-bench
+base_commit: 115143f6bc5a90ff19c3af2bee68f3077fc5f1a3
+upstream: https://github.com/ponylang/ponyc/pull/4583
+category: D
+categories_applicable: [C, D]
+category_rationale: >-
+  The early exit needs the runtime's quiescence protocol (CNF/ACK messages between scheduler
+  threads) to run while only a pinned actor has work, a concurrent state that the scheduler
+  threads' structures and message queues hold.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The program terminates while an actor still has work, and the fix changes when a scheduler
+  thread acknowledges the termination protocol. The fixed code runs in the runtime's scheduler
+  threads, inside a Pony program that the test compiles and runs as a child process.
+root_cause: >-
+  In src/libponyrt/sched/scheduler.c, read_msg answers the quiescence protocol's SCHED_CNF
+  message by always echoing a SCHED_ACK. A scheduler thread that has an actor waiting to run
+  (such as the pinned-actor thread in run_pinned_actors) still acknowledges, so scheduler 0
+  counts every thread as idle and the program terminates while a pinned actor still has
+  messages. The fix passes each caller's current actor to read_msg and sends the ACK only when
+  there is none.
+test_hint: |-
+  The project is configured (debug) and built in /testbed: rebuild with `cd /testbed && make build config=debug` (outputs in build/debug; `make configure config=debug` reconfigures).
+  Run the tests with `cd /testbed && make test config=debug`; it runs, in turn, the make targets test-libponyrt, test-libponyc, test-full-programs-debug, test-full-programs-release, test-stdlib-release and test-examples, each of which runs alone too.
+image: peeky-study/ponylang__ponyc-4583:control
+build_minutes: 4.3
+grade_minutes: 1.5
+pass_to_pass_removed: []
+notes: >-
+  fail_to_pass is FAIL_TO_PASS (regression-4582, a full-program test the test patch adds);
+  pass_to_pass is limited to the 137 full-program tests of PASS_TO_PASS, the part of `make test`
+  that eval.sh runs (test-full-programs-debug and -release; the rest of PASS_TO_PASS are gtest
+  tests). Build follows Multi-SWE-bench's ponyc recipe with clang 18 (CC/CXX set in the image,
+  as ponyc's Makefile looks for `clang` only) and `-Wno-error` in the debug C flags through the
+  CMAKE_FLAGS variable its Makefile passes to cmake. `make libs` (LLVM 15.0.7 for AArch64,
+  Google Test 1.12.1, Google Benchmark 1.7.1) is prebuilt in peeky-study/r3-ponyc-llvm:15.0.7
+  (Dockerfile.llvm here, FROM peeky-study/base:1; make libs 7.9 min after a 7.4 min LLVM clone);
+  build/libs links to it. The Peeky build (peeky.sh) is ponyc and its runtime at -O0 in
+  build-peeky; the reach check compiles the test program with that ponyc, so the program links
+  the -O0 runtime.

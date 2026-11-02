@@ -1,0 +1,83 @@
+{
+ "bug": "catchorg__Catch2-2723",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/catchorg__catch2-2723:peeky-r3",
+ "image_id": "sha256:9281e5ec9de646202792fd7f5752ddd6d923a42aa2a6cab607a13a743fe6ecc0",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:33:34+00:00",
+ "needs": [],
+ "notes": "The first failing test is the ctest test RunTests: SelfTest with its arguments (--order rand --rng-seed time). Its failing cases are the test patch's Testing checked-if 4 and 5 ([!shouldfail], which pass at base). The fix's last hunk inserts a call at the end of handleNonExpr: no statement follows it there, so its point is the function's closing brace, where execution goes next.",
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky --parallel 4 --target SelfTest > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 1.3,
+   "output": "[ 65%] Building CXX object tests/CMakeFiles/SelfTest.dir/SelfTest/UsageTests/Misc.tests.cpp.o\n[ 66%] Linking CXX executable SelfTest\n[100%] Built target SelfTest\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed resetAssertionInfo() call in RunContext::assertionEnded (first hunk)",
+   "at": "src/catch2/internal/catch_run_context.cpp:297",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/tests/SelfTest --at src/catch2/internal/catch_run_context.cpp:297 --name reach --timeout 300 --json -- --order rand --rng-seed time",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "src/catch2/internal/catch_run_context.cpp is a unit Peeky doesn't judge: its file has no absolute path (-fdebug-compilation-dir): rebuild without it",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the closing brace of RunContext::handleNonExpr, just after the inserted resetAssertionInfo() (last hunk)",
+   "at": "src/catch2/internal/catch_run_context.cpp:675",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/tests/SelfTest --at src/catch2/internal/catch_run_context.cpp:675 --name reach --timeout 300 --json -- --order rand --rng-seed time",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "src/catch2/internal/catch_run_context.cpp is a unit Peeky doesn't judge: its file has no absolute path (-fdebug-compilation-dir): rebuild without it",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "the CHECKED_ELSE of Testing checked-if 4, the first failing case's first assertion",
+   "at": "tests/SelfTest/UsageTests/Misc.tests.cpp:222",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/tests/SelfTest --at tests/SelfTest/UsageTests/Misc.tests.cpp:222 --name reach --timeout 300 --json -- --order rand --rng-seed time",
+     "exit": 2,
+     "seconds": 1.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "tests/SelfTest/UsageTests/Misc.tests.cpp is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:33:41+00:00"
+}

@@ -1,0 +1,41 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "core/src/main/java/com/alibaba/fastjson2/reader/ObjectReaderImplList.java",
+    "core/src/test/java/com/alibaba/fastjson2/dubbo/DubboTest6.java"
+   ],
+   "class_roots": [
+    "core/target/classes",
+    "core/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=DubboTest6#testEnumSet -Dmaven.surefire.debug & until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 900,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "core/src/main/java/com/alibaba/fastjson2/reader/ObjectReaderImplList.java",
+   "line": 387,
+   "why": "the statement after the inserted EnumSet branch in readJSONBObject (the only code hunk: the other hunk adds an entry to ContextAutoTypeBeforeHandler's static BASIC_TYPES field declaration, which doesn't count)"
+  },
+  {
+   "role": "assertion",
+   "file": "core/src/test/java/com/alibaba/fastjson2/dubbo/DubboTest6.java",
+   "line": 76,
+   "why": "the first assertion testEnumSet runs (assertSame of the two proxies' writers)"
+  }
+ ]
+}

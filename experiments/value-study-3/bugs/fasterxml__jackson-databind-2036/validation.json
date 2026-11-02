@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.databind.jsontype.TestBaseTypeAsDefault": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.databind.jsontype.TestBaseTypeAsDefault": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.0
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.databind.jsontype.TestBaseTypeAsDefault": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.2
+ }
+]

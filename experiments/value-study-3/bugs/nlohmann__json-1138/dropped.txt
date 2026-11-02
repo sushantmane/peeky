@@ -1,0 +1,8 @@
+Stage: step 3 (reach check), on Peeky 3e51ccd7232d.
+Reason: not reached. With the test patch, the failing tests' binary doesn't compile at base (get<std::unordered_map<int, int>>() from an array of pairs: the fix adds the overload), so there is no binary to run. Every point was refused:
+- gold include/nlohmann/detail/conversions/from_json.hpp:286: refused, INVALID_REQUEST "No binary build-peeky/test/test-conversions in /testbed"
+- gold single_include/nlohmann/json.hpp:9784: refused, the same message
+- assertion test/src/unit-conversions.cpp:1239: refused, the same message
+(prepare removes the binary built before the test patch when the rebuild fails, as that binary doesn't run the failing test.)
+Record: results/reach/3e51ccd7232d/nlohmann__json-1138.json
+Steps 1 and 2 passed: validation base not solved, gold-1 and gold-2 solved; Peeky image built (after peeky.sh added two defines for Catch 1.x with libc++ 18), fake gold solved, noop not solved.

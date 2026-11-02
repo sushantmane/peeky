@@ -1,0 +1,56 @@
+{
+ "bug": "tokio-rs__tokio-6252",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/tokio-rs__tokio-6252:peeky-r3",
+ "image_id": "sha256:d7aac9b64780ee9e58eacacfd8f3002ece2adf70f6387b2c010e1f4d1f25fd2e",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T16:57:34+00:00",
+ "needs": [],
+ "notes": "The fix only inserts a new method (Receiver::mark_unchanged) between two methods, so no statement follows the insertion in its function. The gold point is the first statement after the insertion in the file, in Receiver::changed, which the test calls.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the fix's only hunk inserts a new method; no statement follows it in the same function, so the first statement after it (in Receiver::changed, which the test calls)",
+   "at": "tokio/src/sync/watch.rs:715",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/watch.rs:715 --name reach --timeout 300 --json -- --exact rx_mark_unchanged --test-threads=1",
+     "exit": 2,
+     "seconds": 10.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/sync_watch.rs:117:12: error[E0599]: no method named `mark_unchanged` found for struct `tokio::sync::watch::Receiver<T>` in the current scope\ntokio/tests/sync_watch.rs:130:13: error[E0599]: no method named `mark_unchanged` found for struct `tokio::sync::watch::Receiver<T>` in the current scope\nerror: could not compile `tokio` (test \"sync_watch\") due to 2 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/sync_watch.rs:112",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/sync_watch.rs:112 --name reach --timeout 300 --json -- --exact rx_mark_unchanged --test-threads=1",
+     "exit": 2,
+     "seconds": 5.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/sync_watch.rs:117:12: error[E0599]: no method named `mark_unchanged` found for struct `tokio::sync::watch::Receiver<T>` in the current scope\ntokio/tests/sync_watch.rs:130:13: error[E0599]: no method named `mark_unchanged` found for struct `tokio::sync::watch::Receiver<T>` in the current scope\nerror: could not compile `tokio` (test \"sync_watch\") due to 2 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T16:57:51+00:00"
+}

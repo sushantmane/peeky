@@ -1,0 +1,47 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java",
+    "logstash-core/src/test/java/org/logstash/common/BufferedTokenizerExtWithSizeLimitTest.java"
+   ],
+   "class_roots": [
+    "logstash-core/build/classes/java/main",
+    "logstash-core/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.common.BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization --debug-jvm & until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 900,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java",
+   "line": 81,
+   "why": "the first line the extract hunk changes: the size of the incoming first segment, in the size-limit check"
+  },
+  {
+   "role": "gold",
+   "file": "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java",
+   "line": 107,
+   "why": "the first line the last code hunk changes: flush's join of the accumulated input"
+  },
+  {
+   "role": "assertion",
+   "file": "logstash-core/src/test/java/org/logstash/common/BufferedTokenizerExtWithSizeLimitTest.java",
+   "line": 95,
+   "why": "the first assertion of the first failing test (assertThrows of the first buffer-full error)"
+  }
+ ]
+}

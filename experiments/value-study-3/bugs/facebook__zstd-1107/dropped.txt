@@ -1,0 +1,10 @@
+stage: 3 (reach check), on Peeky 3e51ccd7232d
+reason: not reached, by the coordinator's ruling after the first filter pass. The only failing
+test, test-fuzzer, can't be built at base with the hidden test patch: its new lines call
+ZSTD_CCtx_resetParameters, which the fix adds. So the failing test can't run at base, and every
+point of the first run was refused (PROVENANCE_CHANGED). The corrected run, the fuzzer built from
+base's tests/fuzzer.c, reached a gold point, but it doesn't run the failing test, so the README's
+rule ("The no-LLM filter": a gold point's run is one of the bug's failing tests) doesn't count it.
+The same rule dropped jackson-databind-2036 and -4159, mockito-3133, logstash-15964, tokio-5781,
+-6252, -6339 and tracing-1045. Both runs' records are kept: reach-first-run.json here, and
+results/reach/3e51ccd7232d/facebook__zstd-1107.json.

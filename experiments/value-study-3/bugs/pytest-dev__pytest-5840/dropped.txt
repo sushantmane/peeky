@@ -1,0 +1,10 @@
+Dropped at step 1: the Python project doesn't run on CPython 3.11 or 3.12.
+This pytest (5.1, base 73c5b7f4) builds the import lines of its assertion rewriting with
+ast.alias(...) nodes that have no lineno (src/_pytest/assertion/rewrite.py, lines 585-586). From
+Python 3.10, compile() requires it, so rewriting any module fails with
+`TypeError: required field "lineno" missing from alias`. tox.ini's addopts load `-p pytester`,
+which pytest rewrites, so even `python -m pytest --version` fails in /testbed on Python 3.11 (the
+image build stopped there; log in py-b's scratch build-pytest-dev__pytest-5840.log), and every
+test module would fail the same way. 3.12 has the same problem (and deprecates the ast.Str the
+rewriting uses). Upstream fixed it only in pytest 6.2.5. Making it run would need a change to the
+project's source, not a package pin. No image was produced.

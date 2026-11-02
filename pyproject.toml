@@ -86,7 +86,7 @@ target-version = "py311"
 line-length = 100
 # Third-party programs kept byte-for-byte as real debugging targets, and the value study's bug
 # inputs: upstream reports verbatim and parsers vendored from SWE-bench.
-extend-exclude = ["examples/real/*/ipaddress39.py", "experiments/value-study/bugs"]
+extend-exclude = ["examples/real/*/ipaddress39.py", "experiments/value-study/bugs", "experiments/value-study-3/bugs"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]

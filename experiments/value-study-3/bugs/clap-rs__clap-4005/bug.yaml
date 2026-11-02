@@ -1,0 +1,39 @@
+id: clap-rs__clap-4005
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: edc7ac359fda218f82bedbdfe519ca57b8fe155c
+upstream: https://github.com/clap-rs/clap/pull/4005
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The empty list needs a particular configuration: a flag that requires an argument which is also
+  a member of a required multiple group that another argument already satisfies. The faulty values
+  are the sets of required ids, groups and group members the usage code builds.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong output (the missing argument isn't listed), and the fix changes how the
+  list of missing required arguments is computed. That list is built in the usage code on the
+  parser's error path, five or more calls below try_get_matches_from.
+root_cause: >-
+  In src/output/usage.rs, Usage::get_required_usage_from removes every argument that belongs to a
+  required group (args_in_groups) from the required arguments it lists, whether or not the group is
+  already satisfied, and skips a group that has an argument present. So when --require-first
+  requires --first, and --first is in a required group that --second satisfies, --first is
+  filtered out and the group is skipped, leaving the "required arguments were not provided" list
+  empty. The fix rewrites the loop: each required id is checked for presence, and only the members
+  of groups that are still missing are dropped from the listed options.
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test builder -- <filter>`
+  (e.g. `-- flags::`); other test targets: `--test derive`, `--test macros`; the workspace's other
+  crates: `cargo test -p <crate>`. The build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-4005:control
+build_minutes: 1.1
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain; MSRV 1.56.1) builds and tests it with the repo's
+  Cargo.lock (version 3). Test command: Multi-SWE-bench runs `cargo
+  test`; eval.sh runs the builder test target filtered to require:: (the hidden test file),
+  offline. pass_to_pass is limited to the 68 dataset PASS_TO_PASS tests under require::. The n2p
+  tests are in other files the patch doesn't change. Parser: Multi-SWE-bench's Rust parse_log.

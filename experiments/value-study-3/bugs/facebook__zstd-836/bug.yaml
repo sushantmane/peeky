@@ -1,0 +1,45 @@
+id: facebook__zstd-836
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: 3128e03be69b9d3db054a3765ae1310c7b3666f6
+upstream: https://github.com/facebook/zstd/pull/836
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A request for a public function returning the decoding buffer size that ZSTD_decompressStream
+  computes inline; the computation and where it lives are plain from the report and the code.
+traits: [slow-build]
+traits_rationale: >-
+  An API addition, not a wrong value: not runtime-state. Building and running the failing test
+  programs (fuzzer, then zstreamtest's four runs) took 3.2 minutes in grading, even with their
+  times shortened.
+root_cause: >-
+  zstd offered no public way to size the round buffer a streaming decoder needs for a frame:
+  ZSTD_decompressStream and ZSTD_estimateDStreamSize in lib/decompress/zstd_decompress.c computed
+  windowSize + blockSize + 2*WILDCOPY_OVERLENGTH inline, from a constant that isn't public. The
+  fix adds ZSTD_decodingBufferSize_min(windowSize, frameContentSize) to the advanced API (lib/zstd.h),
+  capped at the frame's content size, and uses it in both places; it also adds blockSizeMax to
+  ZSTD_frameHeader, sizes the input buffer from it, and has ZSTD_decompressContinue check the
+  decoded size against the frame's declared content size.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (library and CLI). The test programs are in tests/: `cd /testbed && make -C tests test` builds and runs them all, or run one `test-<name>` target of tests/Makefile.
+  The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-836:control
+build_minutes: 1.6
+grade_minutes: 3.2
+pass_to_pass_removed: []
+notes: >-
+  Multi-SWE-bench's FAIL_TO_PASS and PASS_TO_PASS are empty, and its n2p tests (the pool tests
+  testInvalid, testOrder) aren't touched by the test patch, so fail_to_pass is the two tests the
+  test patch changes: test-fuzzer (tests/fuzzer.c) and test-zstream (tests/zstreamtest.c), make
+  targets that eval.sh runs in `make test`'s order, stopping at the first failure as `make test`
+  does (so at base, where fuzzer.c doesn't link without the new function, test-zstream doesn't
+  run, as in Multi-SWE-bench's test-patch run). Their times are shortened (-T1mn, -T30s from -T5mn,
+  -T2mn). GCC 13 replaces Ubuntu 20.04's GCC 9. The Peeky build (peeky.sh) builds fuzzer and
+  zstreamtest in place with clang 18 at -O0, through tests/Makefile, which compiles and links each
+  program in one clang command. Reach: the first run (fuzzer) was refused as stale, since the test
+  patch's fuzzer.c can't be built at base; the corrected run (zstreamtest, the other failing test)
+  stopped at both gold points but read no value (see dropped.txt). eval.sh prints its result lines
+  with bash's tracing on, so the trace of the end marker (stderr) can race them (stdout); the
+  validation runs parsed, and facebook__zstd-1107's eval.sh turns tracing off there.

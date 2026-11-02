@@ -1,0 +1,9 @@
+{
+ "parser": "multi_swe_bench_ctest",
+ "fail_to_pass": [
+  "test-conversions_all",
+  "test-conversions_default"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 900
+}

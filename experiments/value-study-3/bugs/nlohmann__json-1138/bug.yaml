@@ -1,0 +1,42 @@
+id: nlohmann__json-1138
+language: cpp
+repo: nlohmann/json
+source: Multi-SWE-bench
+base_commit: e830bc502fe38852654a1f03f963001fecb54a86
+upstream: https://github.com/nlohmann/json/pull/1138
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report pins the failing call (get<std::unordered_map<int, T>>()) and the compile error, and
+  the std::map overload it lacks sits in one short file. It is a compile error, with no runtime
+  state.
+traits: []
+traits_rationale: >-
+  The failure is a compile error, not a wrong value, crash or hang, so not runtime-state. The build
+  takes seconds, and the fix is a template overload the test instantiates directly.
+root_cause: >-
+  from_json in include/nlohmann/detail/conversions/from_json.hpp (amalgamated in
+  single_include/nlohmann/json.hpp) reads a map with non-string keys from an array of [key, value]
+  pairs only for std::map<Key, Value> with the default comparator and allocator. A
+  std::unordered_map<int, T> falls to the generic array conversion instead, which assigns
+  std::pair<const int, T> elements and doesn't compile. The fix generalizes the std::map overload
+  to any comparator and allocator and adds the same overload for std::unordered_map, emplacing
+  each pair; the regenerated single header also picks up the serializer's and lexer's earlier
+  switch from stringstream to snprintf.
+test_hint: |-
+  Build a test with `cd /testbed && cmake -S . -B build && cmake --build build --parallel 4 --target test-<name>` (one target per test/src/unit-<name>.cpp; binaries in build/test/). CXXFLAGS in this image sets CATCH_CONFIG_NO_POSIX_SIGNALS, which the bundled Catch needs with this glibc; keep it when configuring.
+  Run it with `ctest --test-dir build -R '^test-<name>_' --output-on-failure` (each binary runs as <name>_default and <name>_all).
+image: peeky-study/nlohmann__json-1138:control
+build_minutes: 0.06
+grade_minutes: 0.06
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's nlohmann/json recipe (cmake in build/, ctest) with the base
+  image's GCC 13 in place of its gcc:7, limited to test-conversions, the binary of the test file
+  the test patch changes, which ctest runs as test-conversions_default and test-conversions_all.
+  fail_to_pass is those two n2p tests (with the test patch the binary doesn't compile at base).
+  PASS_TO_PASS is empty. The bundled Catch 1.x sizes an array with SIGSTKSZ, which glibc 2.39 no
+  longer defines as a constant: the image sets CXXFLAGS=-DCATCH_CONFIG_NO_POSIX_SIGNALS and eval.sh
+  passes it to CMake, so Catch installs no crash handlers. Peeky's build (peeky.sh) also defines
+  CATCH_CONFIG_CPP11_NO_SHUFFLE and _LIBCPP_ENABLE_CXX17_REMOVED_RANDOM_SHUFFLE: Catch's test
+  shuffling doesn't compile with libc++ 18 otherwise. eval.sh builds from a fresh build/.

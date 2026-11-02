@@ -1,0 +1,51 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/parse/parser.rs",
+   "line": 1614,
+   "why": "the removed MultipleValues condition of the self-override check in Parser::remove_overrides (the only code hunk; src/build/arg/mod.rs's hunks are docs)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "issue_1374_overrides_self_with_multiple_values",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/posix_compatible.rs",
+   "line": 322,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "issue_1374_overrides_self_with_multiple_values",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap"
+   ],
+   "run": {
+    "package": "clap",
+    "test": "posix_compatible"
+   },
+   "vendor": "vendor"
+  }
+ }
+}

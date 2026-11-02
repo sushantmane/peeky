@@ -1,0 +1,56 @@
+{
+ "bug": "tokio-rs__tokio-6339",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/tokio-rs__tokio-6339:peeky-r3",
+ "image_id": "sha256:e6e79abb0f6ee6031a3ed625a7bbed5ddd2582d05e63e3f500694731f4e635ef",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:00:09+00:00",
+ "needs": [],
+ "notes": "The fix only inserts a select! macro arm (and a blank line). The gold point is the expansion that follows the insertion in the macro, the biased entry point's body; macro code runs only where the test expands it.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the fix's only code hunk inserts a macro arm; the expansion just after it (the biased entry point's body)",
+   "at": "tokio/src/macros/select.rs:612",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/macros/select.rs:612 --name reach --timeout 300 --json -- --exact no_branch_else_only --test-threads=1",
+     "exit": 2,
+     "seconds": 10.3
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/macros_select.rs:28:9: error: expected identifier, found keyword `else`: expected identifier, found keyword\ntokio/tests/macros_select.rs:28:14: error: no rules expected `=>`: no rules expected this token in macro call\ntokio/tests/macros_select.rs:38:9: error: expected identifier, found keyword `else`: expected identifier, found keyword\ntokio/tests/macros_select.rs:38:14: error: no rules expected `=>`: no rules expected this token in macro call\nerror: could not compile `tokio` (test \"macros_select\") due to 4 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/macros_select.rs:31",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/macros_select.rs:31 --name reach --timeout 300 --json -- --exact no_branch_else_only --test-threads=1",
+     "exit": 2,
+     "seconds": 6.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/macros_select.rs:28:9: error: expected identifier, found keyword `else`: expected identifier, found keyword\ntokio/tests/macros_select.rs:28:14: error: no rules expected `=>`: no rules expected this token in macro call\ntokio/tests/macros_select.rs:38:9: error: expected identifier, found keyword `else`: expected identifier, found keyword\ntokio/tests/macros_select.rs:38:14: error: no rules expected `=>`: no rules expected this token in macro call\nerror: could not compile `tokio` (test \"macros_select\") due to 4 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:00:26+00:00"
+}

@@ -1,0 +1,27 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, Rust)",
+ "fail_to_pass": [
+  "possible_values::escaped_possible_values_output",
+  "possible_values::possible_values_alias_output",
+  "possible_values::possible_values_hidden_output",
+  "possible_values::possible_values_output"
+ ],
+ "pass_to_pass": [
+  "possible_values::alias",
+  "possible_values::aliases",
+  "possible_values::ignore_case",
+  "possible_values::ignore_case_fail",
+  "possible_values::ignore_case_multiple",
+  "possible_values::ignore_case_multiple_fail",
+  "possible_values::possible_value_arg_value",
+  "possible_values::possible_values_of_option",
+  "possible_values::possible_values_of_option_fail",
+  "possible_values::possible_values_of_option_multiple",
+  "possible_values::possible_values_of_option_multiple_fail",
+  "possible_values::possible_values_of_positional",
+  "possible_values::possible_values_of_positional_fail",
+  "possible_values::possible_values_of_positional_multiple",
+  "possible_values::possible_values_of_positional_multiple_fail"
+ ],
+ "timeout_s": 1200
+}

@@ -157,6 +157,8 @@ PRIVATE_NOTE_EXCLUSIONS = {
     "tests/unit/test_docs.py",
     # An upstream bug report, kept verbatim: its stack trace names the reporter's own path.
     "experiments/value-study/bugs/tokio-rs__axum-1934/problem.md",
+    "experiments/value-study-3/bugs/matplotlib__matplotlib-23476/problem.md",
+    "experiments/value-study-3/bugs/ponylang__ponyc-3763/problem.md",
     # Copilot CLI's own folder name for a session (`session-state`), not a note.
     "experiments/value-study/harness/run_one.py",
     # A study agent's own reasoning, kept verbatim: it names the CLI's session folder.

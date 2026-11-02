@@ -1,0 +1,7 @@
+Stage: step 3 (reach check), on Peeky 3e51ccd7232d.
+Reason: not reached. The fix's one hunk inserts a new function template (to_string_view) outside any base function, so no gold point exists in the base file ("not attempted"). With the test patch, the failing test doesn't compile at base, so there is no binary to run:
+- gold: not attempted (no base line holds a changed executable statement)
+- assertion test/color-test.cc:64: refused, INVALID_REQUEST "No binary build-peeky/bin/color-test in /testbed"
+(prepare removes the binary built before the test patch when the rebuild fails, as that binary doesn't run the failing test.)
+Record: results/reach/3e51ccd7232d/fmtlib__fmt-3537.json
+Steps 1 and 2 passed: validation base not solved, gold-1 and gold-2 solved; Peeky image built, fake gold solved, noop not solved.

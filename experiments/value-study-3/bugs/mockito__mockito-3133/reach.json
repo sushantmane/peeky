@@ -1,0 +1,50 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/org/mockito/internal/util/reflection/GenericMaster.java",
+    "subprojects/junit-jupiter/src/main/java/org/mockito/junit/jupiter/MockitoExtension.java",
+    "subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java"
+   ],
+   "class_roots": [
+    "build/classes/java/main",
+    "subprojects/junit-jupiter/build/classes/java/main",
+    "subprojects/junit-jupiter/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline --no-build-cache :junit-jupiter:test --tests org.mockitousage.JunitJupiterTest.initializes_parameters --debug-jvm & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "Gold points: Captor.java's hunk changes an annotation's declaration, and CaptorAnnotationProcessor's adds a new method (no base statement after it in a function), so the first code hunk is GenericMaster's insertion; the last is MockitoExtension's supportsParameter/resolveParameter hunk (the resolver classes are new files). The failing test: Multi-SWE-bench's fail_to_pass are Gradle tasks; the run is initializes_parameters, the first test in the hidden test file that injects a @Captor parameter.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/org/mockito/internal/util/reflection/GenericMaster.java",
+   "line": 20,
+   "why": "the statement after the insertion in getGenericType(Field) (first code hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "subprojects/junit-jupiter/src/main/java/org/mockito/junit/jupiter/MockitoExtension.java",
+   "line": 191,
+   "why": "the changed return in MockitoExtension.supportsParameter (first change of the last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java",
+   "line": 61,
+   "why": "the first assertion of initializes_parameters"
+  }
+ ]
+}

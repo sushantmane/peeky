@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_clash_parent_link (invalid_models_tests.test_relative_fields.ComplexClashTests)": "ERROR",
+   "test_onetoone_with_parent_model (invalid_models_tests.test_models.OtherModelTests)": "ERROR"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_clash_parent_link (invalid_models_tests.test_relative_fields.ComplexClashTests)": "PASSED",
+   "test_onetoone_with_parent_model (invalid_models_tests.test_models.OtherModelTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_clash_parent_link (invalid_models_tests.test_relative_fields.ComplexClashTests)": "PASSED",
+   "test_onetoone_with_parent_model (invalid_models_tests.test_models.OtherModelTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ }
+]

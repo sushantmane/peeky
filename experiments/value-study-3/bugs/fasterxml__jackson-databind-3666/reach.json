@@ -1,0 +1,48 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java",
+    "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java",
+    "src/test/java/com/fasterxml/jackson/databind/deser/creators/EnumCreatorTest.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.deser.creators.EnumCreatorTest#testEnumsFromStringUnwrapped -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/deser/BeanDeserializer.java",
+   "line": 619,
+   "why": "first code hunk: the changed nextToken() read in _deserializeFromArray"
+  },
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java",
+   "line": 171,
+   "why": "last code hunk: an insertion at the end of the _hasArgs branch of deserialize; the statement that runs just after it is the creator call _factory.callOnWith (the next line in the text, p.skipChildren(), is in the other branch)"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/deser/creators/EnumCreatorTest.java",
+   "line": 373,
+   "why": "the first assertion of testEnumsFromStringUnwrapped, the first failing test (testEnumsFromIntsUnwrapped passes at base)"
+  }
+ ]
+}

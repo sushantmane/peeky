@@ -1,0 +1,72 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "can_get_help::case_3 runs the nu binary (target/debug/nu, via assert_cmd) as `nu --no-std-lib <file>` with the script in /root/reach/help_t.nu; the gold points run that program. The test itself is a unit test of the nu binary, which a Peeky config can't run.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "crates/nu-cli/src/menus/help_completions.rs",
+   "line": 60,
+   "why": "the changed call in NuHelpCompleter's flags-section closure (first code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/nu-cli.json",
+    "--build"
+   ],
+   "program": [
+    "--no-std-lib",
+    "/root/reach/help_t.nu"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "crates/nu-protocol/src/value/mod.rs",
+   "line": 826,
+   "why": "the first statement of Value::into_string_parsable, which the fix deletes (last code hunk; the lines above are docs and the signature)",
+   "options": [
+    "--config",
+    "/root/reach/nu-protocol.json",
+    "--build"
+   ],
+   "program": [
+    "--no-std-lib",
+    "/root/reach/help_t.nu"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "src/tests.rs",
+   "not_attempted": "the test is a unit test of the nu binary (src/tests.rs's run_cmd_and_assert, line 95); a Peeky config runs a binary, an integration test or a library's unit tests"
+  }
+ ],
+ "files": {
+  "/root/reach/help_t.nu": "def t [a:string, # arga help\n            b:int=20, # argb help\n            --f1, # f1 switch help\n            --f2:string, # f2 named no default\n            --f3:int=33 # f3 named default 3\n            ] { true };\n            help t | ansi strip | find `optional, default: `20`` | get 0 | str replace --all --regex '^(.*(optional, default: `20`).*)$' '$2'\n",
+  "/root/reach/nu-cli.json": {
+   "workspace": ".",
+   "analyse": [
+    "nu-cli"
+   ],
+   "run": {
+    "bin": "nu"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/nu-protocol.json": {
+   "workspace": ".",
+   "analyse": [
+    "nu-protocol"
+   ],
+   "run": {
+    "bin": "nu"
+   },
+   "vendor": "vendor"
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

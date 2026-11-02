@@ -1,0 +1,17 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, Rust)",
+ "fail_to_pass": [
+  "ignore_errors::did_you_mean"
+ ],
+ "pass_to_pass": [
+  "ignore_errors::help_command",
+  "ignore_errors::multiple_args_and_final_arg_without_value",
+  "ignore_errors::multiple_args_and_intermittent_arg_without_value",
+  "ignore_errors::single_long_arg_without_value",
+  "ignore_errors::single_short_arg_without_value",
+  "ignore_errors::subcommand",
+  "ignore_errors::unexpected_argument",
+  "ignore_errors::version_command"
+ ],
+ "timeout_s": 1200
+}

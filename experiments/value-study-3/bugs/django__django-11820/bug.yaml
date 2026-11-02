@@ -1,0 +1,38 @@
+id: django__django-11820
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: c2678e49759e5c4c329bff0eeca2886267005d21
+upstream: https://github.com/django/django/pull/11820
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the system check (models.E015) and the input that triggers it (an ordering
+  ending in a related field's __pk); the check lives in Model._check_ordering, whose loop over the
+  lookup parts is short and holds simple state.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a wrong result (a spurious E015 error for a valid ordering), and the fix changes
+  how the loop in _check_ordering resolves each part to a field and the model it moves to.
+root_cause: >-
+  Model._check_ordering in django/db/models/base.py resolves each part of a related ordering
+  ("parent__pk") with _meta.get_field(part), but "pk" is an alias that get_field doesn't know, so a
+  valid ordering ending in __pk is reported as models.E015. The same loop also keeps the previous
+  related model after reaching a non-relational field, so a lookup that continues past a plain field
+  (parent__field1__field2) isn't reported. The fix maps "pk" to _meta.pk and clears the current
+  model after a non-relational field.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-11820:control
+build_minutes: 0.8
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Dependencies are tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached
+  and a native build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale
+  as the spec does. parse.py is round 1's Django parser (SWE-bench's, with the documented Python
+  3.11 test-name adaptation). eval.sh runs invalid_models_tests.test_models only, the file the
+  hidden tests change, and sends stderr to stdout because Django's runner reports on stderr.

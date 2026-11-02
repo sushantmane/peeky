@@ -1,0 +1,39 @@
+id: tokio-rs__tokio-5781
+language: rust
+repo: tokio-rs/tokio
+source: Multi-SWE-bench
+base_commit: 38d1bcd9df6af2de436c5f898829d071f8e46988
+upstream: https://github.com/tokio-rs/tokio/pull/5781
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report asks for an error interest and readiness, and itself explains the obstacle: tokio's
+  Interest wraps mio::Interest, which has no error interest. The state is two small bit sets.
+traits: [hard-to-reach]
+traits_rationale: >-
+  A missing feature (an API addition), so not runtime-state. The changed conversions run when an
+  AsyncFd registers with the I/O driver and when the driver turns mio events into readiness,
+  5 or more calls below the test.
+root_cause: >-
+  In tokio/src/io/interest.rs, Interest is a thin wrapper around mio::Interest, which has no error
+  interest, so tokio can't offer Interest::ERROR; tokio/src/io/ready.rs has no ERROR readiness and
+  Ready::from_mio ignores mio's error events. The fix makes Interest tokio's own bit set (with
+  READABLE, WRITABLE, PRIORITY, AIO, LIO and a new ERROR bit), converts it to mio in to_mio
+  (registering ERROR as READABLE, as mio always reports errors), and adds Ready::ERROR, set from
+  event.is_error() and from an ERROR interest, with is_error() on both types.
+test_hint: >-
+  Run an integration test file with `cd /testbed && cargo test --test <file stem>` (integration
+  tests are in tokio/tests/, e.g. `cargo test --test sync_mpsc`); tokio's unit tests with
+  `cargo test -p tokio --lib --features full`.
+image: peeky-study/tokio-rs__tokio-5781:control
+build_minutes: 0.5
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tokio doesn't commit Cargo.lock;
+  Multi-SWE-bench resolves afresh, so the image pins SWE-bench's lock file for tokio-6551,
+  completed by Cargo 1.96 for this commit (Cargo.lock here; git ignores it). The dataset's
+  FAIL_TO_PASS and PASS_TO_PASS are empty and its n2p tests are all from other test binaries
+  (its run stopped at the first failing binary), so fail_to_pass is the two tests the test patch
+  adds and pass_to_pass is empty, as the dataset gives it. eval.sh runs the io_async_fd binary
+  alone, offline. The hidden tests don't compile at base (they use Interest::ERROR).

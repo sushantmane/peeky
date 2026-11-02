@@ -1,0 +1,131 @@
+{
+ "bug": "ponylang__ponyc-4057",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/ponylang__ponyc-4057:peeky-r3",
+ "image_id": "sha256:3222a109099e9442a7af43a7b9851abdf36a6eef7957983e12138fe20beb67cd",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T20:11:10+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "mkdir -p build-peeky/out",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": ""
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the fix's only hunk: the branch to next_block in gen_match (824 is a comment)",
+   "at": "src/libponyc/codegen/genmatch.c:825",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/debug/ponyc --at src/libponyc/codegen/genmatch.c:825 --name reach --timeout 300 --json -- --path=build/debug/test_lib --output=build-peeky/out test/libponyc-run/regression-3447",
+     "exit": 0,
+     "seconds": 9.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.6
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/libponyc/codegen/genmatch.c:825",
+    "function": "gen_match"
+   },
+   "moved": false,
+   "values": {
+    "shown": 18,
+    "withheld": 6,
+    "sample": [
+     {
+      "name": "c",
+      "value": "0x0000fffffffff548"
+     },
+     {
+      "name": "ast",
+      "value": "0x0000fffff72635c0"
+     },
+     {
+      "name": "needed",
+      "value": "false"
+     },
+     {
+      "name": "phi_type",
+      "value": "0x0000000000000000"
+     },
+     {
+      "name": "reify",
+      "value": "0x0000fffff37cb7c0"
+     },
+     {
+      "name": "expr_type",
+      "value": "0x0000fffff1364d80"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "match_expr",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 749, and Peeky cannot tell from the source where its declaration ends (a directive, a macro or a line splice can hide it), so this stop may be inside it: it may not be initialized yet, and its storage may hold leftovers"
+     },
+     {
+      "name": "cases",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 749, and Peeky cannot tell from the source where its declaration ends (a directive, a macro or a line splice can hide it), so this stop may be inside it: it may not be initialized yet, and its storage may hold leftovers"
+     },
+     {
+      "name": "else_expr",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 749, and Peeky cannot tell from the source where its declaration ends (a directive, a macro or a line splice can hide it), so this stop may be inside it: it may not be initialized yet, and its storage may hold leftovers"
+     },
+     {
+      "name": "pattern",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 811, and Peeky cannot tell from the source where its declaration ends (a directive, a macro or a line splice can hide it), so this stop may be inside it: it may not be initialized yet, and its storage may hold leftovers"
+     },
+     {
+      "name": "guard",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 811, and Peeky cannot tell from the source where its declaration ends (a directive, a macro or a line splice can hide it), so this stop may be inside it: it may not be initialized yet, and its storage may hold leftovers"
+     },
+     {
+      "name": "body",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 811, and Peeky cannot tell from the source where its declaration ends (a directive, a macro or a line splice can hide it), so this stop may be inside it: it may not be initialized yet, and its storage may hold leftovers"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is a Pony program (test/libponyc-run/regression-3447) that the libponyc-run runner, itself a Pony program, builds with ponyc and runs, checking both; neither is the project's C code"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T20:11:20+00:00"
+}

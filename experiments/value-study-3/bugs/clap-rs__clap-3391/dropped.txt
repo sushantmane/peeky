@@ -1,0 +1,9 @@
+stage: 3 (reach)
+reason: not reached. Every point (gold src/parse/errors.rs:645 and :684, assertion tests/builder/utils.rs:42) was refused at the build:
+  [BUILD_FAILED] The build failed: cargo exited with code 101
+  error: specification `clap` is ambiguous
+  help: re-run this command with one of the following specifications
+    clap@2.34.0
+    clap@3.0.14
+  (The dev-dependency criterion 0.3 brings clap 2 into Cargo.lock, so Peeky's `-p clap` is ambiguous. The image's prebuild failed the same way.)
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: gold solved, noop not solved.

@@ -1,0 +1,76 @@
+{
+ "bug": "pytest-dev__pytest-10356",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/pytest-dev__pytest-10356:peeky-r3",
+ "image_id": "sha256:6fd6468015ab88c0d824ea9c747bc4c899c9b375e3b5be90de6495df2fa26803",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T16:53:43+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed lookup of pytestmark in get_unpacked_marks (the first hunk)",
+   "at": "src/_pytest/mark/structures.py:360",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at src/_pytest/mark/structures.py:360 --name reach --timeout 300 --json -- -q -p no:cacheprovider testing/test_mark.py::test_mark_mro",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "--run-module pytest runs the pytest package installed for the program's interpreter, and there `python -m pytest` would run /testbed/src/pytest/__init__.py: it is not in a site-packages directory of that interpreter. Rename it, or use --run with a script",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the changed assignment in store_mark (the last hunk)",
+   "at": "src/_pytest/mark/structures.py:391",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at src/_pytest/mark/structures.py:391 --name reach --timeout 300 --json -- -q -p no:cacheprovider testing/test_mark.py::test_mark_mro",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "--run-module pytest runs the pytest package installed for the program's interpreter, and there `python -m pytest` would run /testbed/src/pytest/__init__.py: it is not in a site-packages directory of that interpreter. Rename it, or use --run with a script",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "testing/test_mark.py:1133",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at testing/test_mark.py:1133 --name reach --timeout 300 --json -- -q -p no:cacheprovider testing/test_mark.py::test_mark_mro",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "--run-module pytest runs the pytest package installed for the program's interpreter, and there `python -m pytest` would run /testbed/src/pytest/__init__.py: it is not in a site-packages directory of that interpreter. Rename it, or use --run with a script",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T16:53:45+00:00"
+}

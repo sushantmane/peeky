@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "src/pytest/__main__.py"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "testing/test_mark.py::test_mark_mro"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/_pytest/mark/structures.py",
+   "line": 360,
+   "why": "the changed lookup of pytestmark in get_unpacked_marks (the first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "src/_pytest/mark/structures.py",
+   "line": 391,
+   "why": "the changed assignment in store_mark (the last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "testing/test_mark.py",
+   "line": 1133
+  }
+ ]
+}

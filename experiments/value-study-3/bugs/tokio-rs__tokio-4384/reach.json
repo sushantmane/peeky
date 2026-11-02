@@ -1,0 +1,61 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "The fix adds two marker-trait impls (declarations) and an import; no hunk changes an executable statement, so there is no gold point. The test is a compile-time check: the first is_unwind_safe call stands for its assertion.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "tokio/src/io/poll_evented.rs",
+   "not_attempted": "no hunk of the fix changes an executable statement: it adds an import and `impl UnwindSafe`/`impl RefUnwindSafe for PollEvented<E> {}` declarations",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "net_types_are_unwind_safe",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tokio/tests/net_types_unwind.rs",
+   "line": 8,
+   "why": "the first is_unwind_safe check, a compile-time bound",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "net_types_are_unwind_safe",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tokio"
+   ],
+   "run": {
+    "package": "tokio",
+    "test": "net_types_unwind"
+   },
+   "vendor": "vendor",
+   "features": [
+    "full"
+   ]
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

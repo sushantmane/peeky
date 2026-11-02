@@ -1,0 +1,58 @@
+{
+ "bug": "mockito__mockito-3133",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/mockito__mockito-3133:peeky-r3",
+ "image_id": "sha256:659ceb262c6ec1bda3fc21f51a4abbd398faa1068ff5ba4d6b22ca5f58048b8d",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:40:58+00:00",
+ "needs": [],
+ "notes": "Gold points: Captor.java's hunk changes an annotation's declaration, and CaptorAnnotationProcessor's adds a new method (no base statement after it in a function), so the first code hunk is GenericMaster's insertion; the last is MockitoExtension's supportsParameter/resolveParameter hunk (the resolver classes are new files). The failing test: Multi-SWE-bench's fail_to_pass are Gradle tasks; the run is initializes_parameters, the first test in the hidden test file that injects a @Captor parameter.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in getGenericType(Field) (first code hunk)",
+   "at": "src/main/java/org/mockito/internal/util/reflection/GenericMaster.java:20",
+   "launch": {
+    "failed": true,
+    "log_tail": "To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.\nDaemon will be stopped at the end of the build \n\n> Configure project :\nBuilding version '0.0.1-SNAPSHOT'\n  - reason: shipkit-auto-version couldn't run 'git describe --tags' (assuming there are no tags)\n\n> Task :junit-jupiter:processResources NO-SOURCE\n> Task :junit-jupiter:processTestResources NO-SOURCE\n> Task :compileJava UP-TO-DATE\n> Task :copyMockMethodDispatcher UP-TO-DATE\n> Task :processResources NO-SOURCE\n> Task :classes UP-TO-DATE\n> Task :jar UP-TO-DATE\n> Task :junit-jupiter:compileJava UP-TO-DATE\n> Task :junit-jupiter:classes UP-TO-DATE\n\n> Task :junit-jupiter:compileTestJava FAILED\n/testbed/subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:59: error: annotation interface not applicable to this kind of declaration\n                                @Captor ArgumentCaptor<String> localCaptor) {\n                                ^\n/testbed/subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:77: error: annotation interface not applicable to this kind of declaration\n                                           @Captor ArgumentCaptor<String> constructorCaptor) {\n                                           ^\n2 errors\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':junit-jupiter:compileTestJava'.\n> Compilation failed; see the compiler error output for details.\n\n* Try:\n> Run with --info option to get more log output.\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\n\nYou can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.\n\nFor more on this, please refer to https://docs.gradle.org/8.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.\n\nBUILD FAILED in 4s\n5 actionable tasks: 1 executed, 4 up-to-date\nThe build is running offline. A build scan will not be published at this time, but it can be published if you run the 'buildScanPublishPrevious' task in the next build.\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed return in MockitoExtension.supportsParameter (first change of the last code hunk)",
+   "at": "subprojects/junit-jupiter/src/main/java/org/mockito/junit/jupiter/MockitoExtension.java:191",
+   "launch": {
+    "failed": true,
+    "log_tail": "To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.\nDaemon will be stopped at the end of the build \n\n> Configure project :\nBuilding version '0.0.1-SNAPSHOT'\n  - reason: shipkit-auto-version couldn't run 'git describe --tags' (assuming there are no tags)\n\n> Task :junit-jupiter:processResources NO-SOURCE\n> Task :junit-jupiter:processTestResources NO-SOURCE\n> Task :compileJava UP-TO-DATE\n> Task :copyMockMethodDispatcher UP-TO-DATE\n> Task :processResources NO-SOURCE\n> Task :classes UP-TO-DATE\n> Task :jar UP-TO-DATE\n> Task :junit-jupiter:compileJava UP-TO-DATE\n> Task :junit-jupiter:classes UP-TO-DATE\n\n> Task :junit-jupiter:compileTestJava FAILED\n/testbed/subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:59: error: annotation interface not applicable to this kind of declaration\n                                @Captor ArgumentCaptor<String> localCaptor) {\n                                ^\n/testbed/subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:77: error: annotation interface not applicable to this kind of declaration\n                                           @Captor ArgumentCaptor<String> constructorCaptor) {\n                                           ^\n2 errors\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':junit-jupiter:compileTestJava'.\n> Compilation failed; see the compiler error output for details.\n\n* Try:\n> Run with --info option to get more log output.\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\n\nYou can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.\n\nFor more on this, please refer to https://docs.gradle.org/8.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.\n\nBUILD FAILED in 4s\n5 actionable tasks: 1 executed, 4 up-to-date\nThe build is running offline. A build scan will not be published at this time, but it can be published if you run the 'buildScanPublishPrevious' task in the next build.\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of initializes_parameters",
+   "at": "subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:61",
+   "launch": {
+    "failed": true,
+    "log_tail": "To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.\nDaemon will be stopped at the end of the build \n\n> Configure project :\nBuilding version '0.0.1-SNAPSHOT'\n  - reason: shipkit-auto-version couldn't run 'git describe --tags' (assuming there are no tags)\n\n> Task :junit-jupiter:processResources NO-SOURCE\n> Task :junit-jupiter:processTestResources NO-SOURCE\n> Task :compileJava UP-TO-DATE\n> Task :copyMockMethodDispatcher UP-TO-DATE\n> Task :processResources NO-SOURCE\n> Task :classes UP-TO-DATE\n> Task :jar UP-TO-DATE\n> Task :junit-jupiter:compileJava UP-TO-DATE\n> Task :junit-jupiter:classes UP-TO-DATE\n\n> Task :junit-jupiter:compileTestJava FAILED\n/testbed/subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:59: error: annotation interface not applicable to this kind of declaration\n                                @Captor ArgumentCaptor<String> localCaptor) {\n                                ^\n/testbed/subprojects/junit-jupiter/src/test/java/org/mockitousage/JunitJupiterTest.java:77: error: annotation interface not applicable to this kind of declaration\n                                           @Captor ArgumentCaptor<String> constructorCaptor) {\n                                           ^\n2 errors\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':junit-jupiter:compileTestJava'.\n> Compilation failed; see the compiler error output for details.\n\n* Try:\n> Run with --info option to get more log output.\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\n\nYou can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.\n\nFor more on this, please refer to https://docs.gradle.org/8.2/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.\n\nBUILD FAILED in 3s\n5 actionable tasks: 1 executed, 4 up-to-date\nThe build is running offline. A build scan will not be published at this time, but it can be published if you run the 'buildScanPublishPrevious' task in the next build.\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 5
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:56:15+00:00"
+}

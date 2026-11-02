@@ -1,0 +1,7 @@
+Dropped at step 1: a fail_to_pass test doesn't fail at base.
+FAIL_TO_PASS lists test_clean_model_instance (model_forms.test_modelchoicefield.ModelChoiceFieldTests),
+which the test patch doesn't change; it passes at base (validation.json "base": PASSED), as well as
+with gold. Likely a SWE-bench log artifact: on Python 3.6 the subtest errors of the new
+test_choices_radio_blank, printed just before it, would hide its "ok" line at base. The rules make
+such a candidate ineligible and forbid editing the test out. The other two fail_to_pass tests fail
+at base and pass with gold (twice). Control image built (Python 3.11, Django 3.1 spec) and removed.

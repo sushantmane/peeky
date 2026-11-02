@@ -1,0 +1,38 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "logstash-core:javaTests": "FAILED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization": "FAILED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > givenExtractInvokedWithDifferentFramingAfterBufferFullErrorTWhenFeedFreshDataThenReturnTokenStartingFromEndOfOffendingToken": "FAILED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > givenExtractedThrownLimitErrorWhenFeedFreshDataThenReturnTokenStartingFromEndOfOffendingToken": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 8.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "logstash-core:javaTests": "PASSED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization": "PASSED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > givenExtractInvokedWithDifferentFramingAfterBufferFullErrorTWhenFeedFreshDataThenReturnTokenStartingFromEndOfOffendingToken": "PASSED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > givenExtractedThrownLimitErrorWhenFeedFreshDataThenReturnTokenStartingFromEndOfOffendingToken": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "logstash-core:javaTests": "PASSED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization": "PASSED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > givenExtractInvokedWithDifferentFramingAfterBufferFullErrorTWhenFeedFreshDataThenReturnTokenStartingFromEndOfOffendingToken": "PASSED",
+   "org.logstash.common.BufferedTokenizerExtWithSizeLimitTest > givenExtractedThrownLimitErrorWhenFeedFreshDataThenReturnTokenStartingFromEndOfOffendingToken": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.2
+ }
+]

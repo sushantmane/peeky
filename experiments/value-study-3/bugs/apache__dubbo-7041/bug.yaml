@@ -1,0 +1,36 @@
+id: apache__dubbo-7041
+language: java
+repo: apache/dubbo
+source: Multi-SWE-bench
+base_commit: e84cdc217a93f4628415ea0a7d8a9d0090e2c940
+upstream: https://github.com/apache/dubbo/pull/7041
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report's stack trace points at ReflectUtils.getReturnTypes and the cast that fails; the
+  state is one method's generic return type, though it takes java.lang.reflect's TypeVariable to
+  see why.
+traits: [runtime-state]
+traits_rationale: >-
+  getReturnTypes crashes with a ClassCastException for a CompletableFuture of a type variable, and
+  the fix changes how it computes the return types in that case.
+root_cause: >-
+  ReflectUtils.getReturnTypes (dubbo-common) unwraps a Future's type argument and casts it to
+  Class unless it is a ParameterizedType, so for a method returning CompletableFuture<T> the
+  argument is a TypeVariable and the cast throws ClassCastException. The fix adds a TypeVariable
+  branch: the raw return type is the variable's first bound (Object by default), and the generic
+  return type is the variable itself.
+test_hint: >-
+  Dubbo builds with Maven on JDK 17, offline (dubbo-common and the poms it needs are installed in
+  ~/.m2): run a test of dubbo-common with
+  `cd /testbed && mvn test -o -pl dubbo-common -Dtest=<TestClass>` (or `-Dtest=<TestClass>#<method>`).
+image: peeky-study/apache__dubbo-7041:control
+build_minutes: 2
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 17 and Maven as in Multi-SWE-bench's image (the base's OpenJDK 17 and Maven 3.8 instead of
+  Ubuntu 22.04's), offline via /root/.m2/settings.xml. eval.sh runs a clean `test` of the
+  dubbo-common module only, limited to the hidden test class (ReflectUtilsTest), instead of the
+  whole project's `clean test`; pass_to_pass is therefore empty (the dataset's are other classes).
+  Test names are classes, as in Multi-SWE-bench's parser.

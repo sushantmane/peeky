@@ -1,0 +1,38 @@
+id: BurntSushi__ripgrep-2295
+language: rust
+repo: BurntSushi/ripgrep
+source: Multi-SWE-bench
+base_commit: 1d35859861fa4710cee94cf0e0b2e114b152b946
+upstream: https://github.com/BurntSushi/ripgrep/pull/2295
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The wrong output needs a particular setup: a sub-directory searched by a relative path, with a
+  path-anchored rule in an ignore file of a directory above the search root. The faulty values
+  are paths built from the Ignore matcher's chain of parent directories and its absolute base.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong output (an ignored file is listed), and the fix changes how the path
+  matched against parent ignore files is computed. The tests run the rg binary as a child
+  process, and the fixed code is in the ignore crate's directory walk, several calls below main.
+root_cause: >-
+  In crates/ignore/src/dir.rs, Ignore::matched_ignore checks the ignore files of directories above
+  the search root (opts.parents) against abs_parent_path.join(path), where abs_parent_path is the
+  canonicalized search root and path is the walked path, which already starts with that root's
+  relative directory (e.g. rust/target). The joined path repeats the directory (.../rust/rust/target),
+  so a pattern such as `rust/target` in the parent's .ignore never matches. The fix strips the
+  search root's directory (and a leading ./) from the path before joining, and consults the parent
+  ignore files only when no ignore file below matched.
+test_hint: >-
+  Run the integration tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --package
+  ripgrep --test integration -- <filter>` (e.g. `-- misc::`); the build cache was made with these
+  RUSTFLAGS. Crate tests: `cargo test -p grep-printer`. The debug binary is target/debug/rg.
+image: peeky-study/burntsushi__ripgrep-2295:control
+build_minutes: 0.6
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it with the repo's Cargo.lock (version
+  3). Test command: Multi-SWE-bench runs `cargo test`; eval.sh runs the integration test binary
+  filtered to regression:: (the hidden test file), offline. pass_to_pass is limited to the 85
+  dataset PASS_TO_PASS tests under regression::. Parser: Multi-SWE-bench's Rust parse_log.

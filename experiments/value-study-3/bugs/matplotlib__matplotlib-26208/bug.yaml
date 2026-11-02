@@ -1,0 +1,43 @@
+id: matplotlib__matplotlib-26208
+language: python
+repo: matplotlib/matplotlib
+source: SWE-bench Verified
+base_commit: f0f133943d3e4f1e2e665291fe1c8f658a84cc09
+upstream: https://github.com/matplotlib/matplotlib/pull/26208
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The first axes' data limits only turn to ±inf after a particular sequence: categorical (string)
+  data plotted on ax1, then twinx, then a plot on the twin, which reaches ax1 through the shared
+  x axis and the unit machinery; other orders don't show it.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows wrong values (ax1's dataLim becomes ±inf), and the fix changes which unit
+  converter the twin axis keeps. The fixed code is twinx/twiny itself, called directly by the test.
+root_cause: >-
+  _AxesBase.twinx and twiny in lib/matplotlib/axes/_base.py create the twin sharing one axis
+  with the original but don't give the twin's shared axis the original's units. So when data is
+  later plotted on the twin, its shared axis has no unit converter, the categorical data are
+  converted afresh, and the shared data limits are updated wrongly (to ±inf). The fix copies the
+  original axis' units to the twin's shared axis in both methods.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with matplotlib installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest lib/matplotlib/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/matplotlib__matplotlib-26208:control
+build_minutes: 3.4
+grade_minutes: 0.4
+pass_to_pass_removed:
+  - test: lib/matplotlib/tests/test_axes.py::test_contour_colorbar[pdf]
+    reason: Fails at base and with gold in the image: the image comparison is off by RMS 0.532 on arm64 (baselines made on x86-64).
+  - test: lib/matplotlib/tests/test_axes.py::test_preset_clip_paths[png]
+    reason: Fails at base and with gold in the image: the image comparison is off by RMS 0.015 on arm64.
+notes: >-
+  SWE-bench spec for matplotlib 3.7 (Python 3.11, its pip pins), installed with uv into a venv;
+  environment.yml's conda packages (environment setup commit) are replaced by their PyPI test
+  subset (no GUI toolkits, docs or lint tools), plus ghostscript and libcairo2 from apt instead of
+  the spec's texlive/imagemagick install. The C extensions build against the bundled FreeType
+  2.6.1, downloaded at image build; the build requirements (pybind11, certifi, setuptools-scm) are
+  installed first and the checkout is built without isolation, against the pinned numpy 1.25.2.
+  Grading runs lib/matplotlib/tests/test_axes.py, the only file the test patch touches. The first
+  failing test (test_twin_units[x]) calls twinx only, so the twiny point isn't run (no stop).

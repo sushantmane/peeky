@@ -1,0 +1,37 @@
+id: tokio-rs__tokio-6339
+language: rust
+repo: tokio-rs/tokio
+source: Multi-SWE-bench
+base_commit: 84e41d4affe2f94d892c5ab2320db6d695fca536
+upstream: https://github.com/tokio-rs/tokio/pull/6339
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows the exact input that doesn't compile (a select! with only an else branch) and
+  proposes the fix; it is a missing macro rule, with no runtime state.
+traits: [hard-to-reach]
+traits_rationale: >-
+  A compile error for a missing macro form, so not runtime-state; builds fast. The fixed code is a
+  macro_rules arm, which runs only in its expansion at the call site.
+root_cause: >-
+  tokio's select! macro (tokio/src/macros/select.rs) has entry rules only for one or more
+  `pattern = future => handler` branches, optionally after `biased;`, and an empty-input rule that
+  raises a compile error; an invocation with only an `else => expr` branch matches none of them.
+  The fix adds an entry rule `($(biased;)? else => $else:expr $(,)?)` that expands to the else
+  expression.
+test_hint: >-
+  Run an integration test file with `cd /testbed && cargo test --test <file stem>` (integration
+  tests are in tokio/tests/, e.g. `cargo test --test sync_mpsc`); tokio's unit tests with
+  `cargo test -p tokio --lib --features full`.
+image: peeky-study/tokio-rs__tokio-6339:control
+build_minutes: 0.4
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tokio doesn't commit Cargo.lock;
+  Multi-SWE-bench resolves afresh, so the image pins SWE-bench's lock file for tokio-6551,
+  completed by Cargo 1.96 for this commit (Cargo.lock here; git ignores it). The dataset's
+  FAIL_TO_PASS and PASS_TO_PASS are empty and its n2p tests are all from other test binaries
+  (its run stopped at the first failing binary), so fail_to_pass is the two tests the test patch
+  adds and pass_to_pass is empty, as the dataset gives it. eval.sh runs the macros_select binary
+  alone, offline. The hidden tests don't compile at base (no rule matches an else-only select!).

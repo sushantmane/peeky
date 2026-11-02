@@ -1,0 +1,29 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "astropy/units/quantity.py",
+   "line": 643,
+   "why": "the first statement the fix changes (wraps in try) in Quantity.__array_ufunc__: the converters_and_unit call (the only hunk; its first changed lines are docstring)"
+  },
+  {
+   "role": "assertion",
+   "file": "astropy/units/tests/test_quantity_ufuncs.py",
+   "line": 1414,
+   "why": "with out=None the test skips `assert result is out` (line 1411), so its first assertion run is this one"
+  }
+ ]
+}

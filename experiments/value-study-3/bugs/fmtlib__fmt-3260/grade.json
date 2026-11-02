@@ -1,0 +1,8 @@
+{
+ "parser": "multi_swe_bench_ctest",
+ "fail_to_pass": [
+  "chrono-test"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

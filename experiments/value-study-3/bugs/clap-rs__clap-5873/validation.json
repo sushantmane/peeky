@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "ignore_errors::did_you_mean": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "ignore_errors::did_you_mean": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 2.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "ignore_errors::did_you_mean": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 2.1
+ }
+]

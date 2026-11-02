@@ -1,0 +1,52 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/output/usage.rs",
+   "line": 382,
+   "why": "the removed args_in_groups binding in Usage::get_required_usage_from (the only hunk)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "require::required_require_with_group_shows_flag",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/builder/utils.rs",
+   "line": 27,
+   "why": "assert_output's assert_eq, the first assertion: the test calls utils::assert_output",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "require::required_require_with_group_shows_flag",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap"
+   ],
+   "run": {
+    "package": "clap",
+    "test": "builder"
+   },
+   "vendor": "vendor"
+  }
+ }
+}

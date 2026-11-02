@@ -1,0 +1,40 @@
+id: catchorg__Catch2-2723
+language: cpp
+repo: catchorg/Catch2
+source: Multi-SWE-bench
+base_commit: 4acc51828f7f93f3b2058a63f54d112af4034503
+upstream: https://github.com/catchorg/Catch2/pull/2723
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The failure needs a sequence: a CHECKED_ELSE, then an exception thrown later in the same test,
+  and it differs between reporters. The stale state is a field of the run context's last assertion
+  info, a nested struct.
+traits: [runtime-state]
+traits_rationale: >-
+  The report is wrong output (an exception counted as passing or suppressed), and the fix changes
+  how the last assertion's info is kept across assertions. The fixed code runs a few calls below
+  the test's assertion macros, in a build and test run of seconds.
+root_cause: >-
+  RunContext (src/catch2/internal/catch_run_context.cpp) keeps the last assertion's info in
+  m_lastAssertionInfo, and resetAssertionInfo() resets its macro name and expression but not its
+  resultDisposition. After CHECKED_ELSE, whose disposition suppresses failures, that disposition
+  stays, so an exception thrown later in the test is handled with it and is suppressed or counted
+  as passing. The fix also resets resultDisposition to Normal, and resets the info after each
+  assertion is fully handled (handleExpr, handleMessage, handleNonExpr, handleIncomplete, the
+  unexpected-exception paths) instead of inside assertionEnded, before populateReaction ran.
+test_hint: |-
+  Build with `cd /testbed && cmake -S . -B build -DCATCH_DEVELOPMENT_BUILD=ON && cmake --build build --parallel 4` (the tests' sources are in tests/SelfTest/, built into build/tests/SelfTest).
+  Run the tests with `ctest --test-dir build --output-on-failure` (one with `-R <name>`), or run `build/tests/SelfTest` with Catch2's options.
+image: peeky-study/catchorg__catch2-2723:control
+build_minutes: 0.16
+grade_minutes: 0.36
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's catchorg/Catch2 recipe (cmake -DCATCH_DEVELOPMENT_BUILD=ON in
+  build/, make, ctest) with the base image's GCC 13 and Python 3.12 for its gcc:latest. Test names
+  are lower-cased as Multi-SWE-bench's parser does. pass_to_pass is PASS_TO_PASS without its 33
+  have_flag__* entries: those are CMake's compiler-flag checks in the configure output, not tests
+  that eval.sh's test output holds (one names Multi-SWE-bench's /home/Catch2 path). eval.sh builds
+  from a fresh build/, which .git/info/exclude lists. Peeky's build (peeky.sh) sets the project's
+  CATCH_ENABLE_WERROR=OFF.

@@ -1,0 +1,41 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_delete_cookie_samesite (responses.test_cookie.DeleteCookieTests)": "ERROR",
+   "test_delete_cookie_secure_samesite_none (responses.test_cookie.DeleteCookieTests)": "ERROR",
+   "test_session_delete_on_end (sessions_tests.tests.SessionMiddlewareTests)": "FAILED",
+   "test_session_delete_on_end_with_custom_domain_and_path (sessions_tests.tests.SessionMiddlewareTests)": "FAILED",
+   "test_cookie_setings (messages_tests.test_cookie.CookieTests)": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_delete_cookie_samesite (responses.test_cookie.DeleteCookieTests)": "PASSED",
+   "test_delete_cookie_secure_samesite_none (responses.test_cookie.DeleteCookieTests)": "PASSED",
+   "test_session_delete_on_end (sessions_tests.tests.SessionMiddlewareTests)": "PASSED",
+   "test_session_delete_on_end_with_custom_domain_and_path (sessions_tests.tests.SessionMiddlewareTests)": "PASSED",
+   "test_cookie_setings (messages_tests.test_cookie.CookieTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_delete_cookie_samesite (responses.test_cookie.DeleteCookieTests)": "PASSED",
+   "test_delete_cookie_secure_samesite_none (responses.test_cookie.DeleteCookieTests)": "PASSED",
+   "test_session_delete_on_end (sessions_tests.tests.SessionMiddlewareTests)": "PASSED",
+   "test_session_delete_on_end_with_custom_domain_and_path (sessions_tests.tests.SessionMiddlewareTests)": "PASSED",
+   "test_cookie_setings (messages_tests.test_cookie.CookieTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ }
+]

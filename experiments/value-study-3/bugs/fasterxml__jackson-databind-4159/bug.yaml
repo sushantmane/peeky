@@ -1,0 +1,40 @@
+id: fasterxml__jackson-databind-4159
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: 8146fa8191176b5d463fb0d445bc313d777a1483
+upstream: https://github.com/FasterXML/jackson-databind/pull/4159
+category: D
+categories_applicable: [D, B]
+category_rationale: >-
+  The failure needs a particular configuration: default typing with wrapper-array type ids, an enum
+  with a @JsonCreator factory, and a value written through a generic (Object) property but read
+  as the enum type. The writing side in the report is Spring's serializer, outside the project.
+traits: [hard-to-reach]
+traits_rationale: >-
+  The fix adds a new DefaultTyping mode (an API addition), so not runtime-state; the mode is
+  consulted in DefaultTypeResolverBuilder.useForType, which the serializer and deserializer
+  factories call more than 5 calls below ObjectMapper.writeValueAsString/readValue.
+root_cause: >-
+  With default typing NON_FINAL, DefaultTypeResolverBuilder.useForType gives type ids only to
+  non-final types. A value held in a generic (Object) property is written with a wrapper-array type
+  id, but reading it back as its enum type uses no type deserializer, because enums are final, so
+  the enum's creator-based deserializer (FactoryBasedEnumDeserializer) meets the START_ARRAY
+  wrapper and fails. The fix adds DefaultTyping.NON_FINAL_AND_ENUMS, which useForType treats like
+  NON_FINAL but also applies to enum types, so the type id is written and read alike.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 2 minutes).
+image: peeky-study/fasterxml__jackson-databind-4159:control
+build_minutes: 2.6
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base; the full suite passes at base on 11,
+  3943 tests). The parent pom jackson-base:2.16.0-rc1-SNAPSHOT is gone from every repository, so
+  the image installs a stand-in in ~/.m2 (the 2.16.2 release pom under the snapshot version; core
+  and annotations 2.16.2) and leaves pom.xml unchanged. FAIL_TO_PASS is empty in the dataset (the
+  test patch doesn't compile at base: it uses the new DefaultTyping constant); fail_to_pass is the
+  class the test patch changes, which is in n2p_tests. eval.sh runs `mvn -o clean test` on that
+  class only; PASS_TO_PASS is empty.

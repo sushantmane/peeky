@@ -1,0 +1,9 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, tracing)",
+ "fail_to_pass": [
+  "set_default_dispatch",
+  "global_dispatch"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

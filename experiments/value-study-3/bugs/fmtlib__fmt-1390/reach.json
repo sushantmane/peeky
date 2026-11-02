@@ -1,0 +1,27 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/bin/format-test"
+ ],
+ "prepare": [
+  "cmake --build build-peeky --parallel 4 --target format-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "notes": "The failing test is the ctest test format-test: the binary with no arguments, as ctest runs it. Its failing case is FormatTest.FormatUTF8Precision, which the test patch adds. The fix's first hunk only adds new functions (code_point_index) outside any base function, so the one gold point is its second hunk.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/fmt/format.h",
+   "line": 1732,
+   "why": "the changed size computation for a precision in basic_writer::write(basic_string_view) (the only hunk changing a base statement)"
+  },
+  {
+   "role": "assertion",
+   "file": "test/format-test.cc",
+   "line": 2630,
+   "why": "the first EXPECT_EQ of FormatTest.FormatUTF8Precision, the binary's failing case"
+  }
+ ]
+}

@@ -1,0 +1,10 @@
+{
+ "parser": "multi_swe_bench_ctest",
+ "fail_to_pass": [
+  "test-diagnostics"
+ ],
+ "pass_to_pass": [
+  "download_test_data"
+ ],
+ "timeout_s": 900
+}

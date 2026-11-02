@@ -1,0 +1,38 @@
+{
+ "bug": "fasterxml__jackson-databind-4131",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-databind-4131:peeky-r3",
+ "image_id": "sha256:1f3fd1714d5e35744f0b0cb534e2ed107a56a6cf3c958aa5498f593223be1acf",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:14:47+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the fix changes no executable statement in a base file: it adds new methods (JsonNode.withObjectProperty/withArrayProperty and their ObjectNode overrides), and its BaseJsonNode hunk changes a comment"
+   }
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testWithObjectProperty, the first test the patch adds",
+   "at": "src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:211",
+   "launch": {
+    "failed": true,
+    "log_tail": "------------------------------------------------------------------------\n[INFO] BUILD FAILURE\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  4.494 s\n[INFO] Finished at: 2026-11-02T18:14:52Z\n[INFO] ------------------------------------------------------------------------\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:testCompile (default-testCompile) on project jackson-databind: Compilation failure: Compilation failure: \n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[210,32] cannot find symbol\n[ERROR]   symbol:   method withObjectProperty(java.lang.String)\n[ERROR]   location: variable root of type com.fasterxml.jackson.databind.node.ObjectNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[217,33] cannot find symbol\n[ERROR]   symbol:   method withObjectProperty(java.lang.String)\n[ERROR]   location: variable root of type com.fasterxml.jackson.databind.node.ObjectNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[226,34] cannot find symbol\n[ERROR]   symbol:   method withObjectProperty(java.lang.String)\n[ERROR]   location: variable root2 of type com.fasterxml.jackson.databind.JsonNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[233,18] cannot find symbol\n[ERROR]   symbol:   method withObjectProperty(java.lang.String)\n[ERROR]   location: variable root3 of type com.fasterxml.jackson.databind.JsonNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[371,31] cannot find symbol\n[ERROR]   symbol:   method withArrayProperty(java.lang.String)\n[ERROR]   location: variable root of type com.fasterxml.jackson.databind.node.ObjectNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[378,32] cannot find symbol\n[ERROR]   symbol:   method withArrayProperty(java.lang.String)\n[ERROR]   location: variable root of type com.fasterxml.jackson.databind.node.ObjectNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[386,33] cannot find symbol\n[ERROR]   symbol:   method withArrayProperty(java.lang.String)\n[ERROR]   location: variable root2 of type com.fasterxml.jackson.databind.JsonNode\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java:[393,18] cannot find symbol\n[ERROR]   symbol:   method withArrayProperty(java.lang.String)\n[ERROR]   location: variable root3 of type com.fasterxml.jackson.databind.JsonNode\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:19:51+00:00"
+}

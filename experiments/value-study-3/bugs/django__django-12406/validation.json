@@ -1,0 +1,35 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_non_blank_foreign_key_with_radio (model_forms.tests.ModelFormBaseTest)": "FAILED",
+   "test_choices_radio_blank (model_forms.test_modelchoicefield.ModelChoiceFieldTests)": "MISSING",
+   "test_clean_model_instance (model_forms.test_modelchoicefield.ModelChoiceFieldTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.6
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_non_blank_foreign_key_with_radio (model_forms.tests.ModelFormBaseTest)": "PASSED",
+   "test_choices_radio_blank (model_forms.test_modelchoicefield.ModelChoiceFieldTests)": "PASSED",
+   "test_clean_model_instance (model_forms.test_modelchoicefield.ModelChoiceFieldTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_non_blank_foreign_key_with_radio (model_forms.tests.ModelFormBaseTest)": "PASSED",
+   "test_choices_radio_blank (model_forms.test_modelchoicefield.ModelChoiceFieldTests)": "PASSED",
+   "test_clean_model_instance (model_forms.test_modelchoicefield.ModelChoiceFieldTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.6
+ }
+]

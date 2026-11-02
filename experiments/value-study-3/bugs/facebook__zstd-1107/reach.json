@@ -1,0 +1,36 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "tests/fuzzer"
+ ],
+ "program": [
+  "-T1mn"
+ ],
+ "prepare": [
+  "cp tests/fuzzer.c /root/reach/fuzzer.c.test-patch && git checkout HEAD -- tests/fuzzer.c && CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests fuzzer CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/compress/zstd_compress.c",
+   "line": 75,
+   "why": "first hunk: its first removed line, the compression level's initialisation in ZSTD_createCCtx_advanced"
+  },
+  {
+   "role": "gold",
+   "file": "lib/compress/zstd_compress.c",
+   "line": 3362,
+   "why": "last hunk: the changed call that ends a multithreaded compression in ZSTD_compress_generic"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/fuzzer.c",
+   "line": 316,
+   "why": "the test is the fuzzer program (test-fuzzer); its first check, in basicUnitTests, which main runs first"
+  }
+ ],
+ "notes": "Run corrected after the first run (19:39Z, kept in reach-first-run.json): the only failing test, test-fuzzer, can't be built at base with the test patch (its new lines call ZSTD_CCtx_resetParameters, which the fix adds), so the prepare rebuilt nothing and every point was refused as PROVENANCE_CHANGED (tests/fuzzer.c changed since the binary was built). The run is now the same test program built from base's tests/fuzzer.c (the test patch's copy set aside), with the test's time (-T1mn): the program the failing test runs, without the hidden lines, which can't be built at base. Points unchanged."
+}

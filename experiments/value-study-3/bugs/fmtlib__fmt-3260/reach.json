@@ -1,0 +1,33 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/bin/chrono-test"
+ ],
+ "prepare": [
+  "cmake --build build-peeky --parallel 4 --target chrono-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "notes": "The failing test is the ctest test chrono-test: the binary with no arguments, as ctest runs it. Its failing cases are chrono_test.tm_align and tp_align, which the test patch adds.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/fmt/chrono.h",
+   "line": 2118,
+   "why": "the removed default-spec initialization in the system_clock time_point formatter's constructor (first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "include/fmt/chrono.h",
+   "line": 2203,
+   "why": "the first removed statement of formatter<std::tm>::do_parse (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "test/chrono-test.cc",
+   "line": 483,
+   "why": "the first EXPECT_EQ of chrono_test.tm_align, the binary's first failing case"
+  }
+ ]
+}

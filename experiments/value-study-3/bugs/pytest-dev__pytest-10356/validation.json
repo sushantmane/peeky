@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "testing/test_mark.py::test_mark_mro": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.8
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "testing/test_mark.py::test_mark_mro": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.8
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "testing/test_mark.py::test_mark_mro": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.9
+ }
+]

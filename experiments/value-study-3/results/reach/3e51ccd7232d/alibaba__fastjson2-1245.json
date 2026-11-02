@@ -1,0 +1,104 @@
+{
+ "bug": "alibaba__fastjson2-1245",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/alibaba__fastjson2-1245:peeky-r3",
+ "image_id": "sha256:d8254a293938395e981779bc739568638a750ce1f6cc3a0a4c13600c4a3ed4a5",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:13:59+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted EnumSet branch in readJSONBObject (the only code hunk: the other hunk adds an entry to ContextAutoTypeBeforeHandler's static BASIC_TYPES field declaration, which doesn't count)",
+   "at": "core/src/main/java/com/alibaba/fastjson2/reader/ObjectReaderImplList.java:387",
+   "launch": {
+    "ready_seconds": 21.5
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/main/java/com/alibaba/fastjson2/reader/ObjectReaderImplList.java:387 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 3.3
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion testEnumSet runs (assertSame of the two proxies' writers)",
+   "at": "core/src/test/java/com/alibaba/fastjson2/dubbo/DubboTest6.java:76",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at core/src/test/java/com/alibaba/fastjson2/dubbo/DubboTest6.java:76 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 3.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/core/src/test/java/com/alibaba/fastjson2/dubbo/DubboTest6.java:76",
+    "function": "DubboTest6.testEnumSet()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 9,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "paramsDTO",
+      "value": "ParamsDTO@2681"
+     },
+     {
+      "name": "timeUnitSet",
+      "value": "RegularEnumSet@2682"
+     },
+     {
+      "name": "config",
+      "value": "AdvisedSupport@2683"
+     },
+     {
+      "name": "factory",
+      "value": "DefaultAopProxyFactory@2684"
+     },
+     {
+      "name": "proxy",
+      "value": "ParamsDTO$$EnhancerBySpringCGLIB$$9571b7c9@2685"
+     },
+     {
+      "name": "proxy1",
+      "value": "ParamsDTO$$EnhancerBySpringCGLIB$$9571b7c9@2686"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:14:39+00:00"
+}

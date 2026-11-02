@@ -1,0 +1,41 @@
+id: fmtlib__fmt-3260
+language: cpp
+repo: fmtlib/fmt
+source: Multi-SWE-bench
+base_commit: 2622cd23e69b67316cf678a97c268a874774c0e1
+upstream: https://github.com/fmtlib/fmt/pull/3260
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows the wrong output and quotes the documented grammar it breaks, and the std::tm
+  formatter's parse is short. The state is a format spec and a string.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report is wrong output, and the fix changes how the formatter parses its spec and pads its
+  result. The formatter's parse and format run several calls below the test's fmt::format, through
+  the format-string parser and the argument visitor.
+root_cause: >-
+  formatter<std::tm> in include/fmt/chrono.h, which the time_point formatters derive from, treats
+  the whole format spec as a chrono format: do_parse hands everything after ':' to
+  parse_chrono_format, so fill, align and width (">30" in "{:>30%H:%M}") are printed as literal
+  text instead of padding the result. The fix parses fill and align and a (possibly dynamic) width
+  into format_specs first, formats the time into a buffer, and writes it padded with
+  detail::write; the time_point formatters' constructors now set the default "%F %T" format string
+  directly.
+test_hint: |-
+  Build a test with `cd /testbed && cmake -S . -B build && cmake --build build --parallel 4 --target <name>-test` (sources in test/<name>-test.cc; binaries in build/bin/). CXXFLAGS in this image sets -fsigned-char, as the tests expect; keep it when configuring.
+  Run it with `ctest --test-dir build -R '^<name>-test$' --output-on-failure`.
+image: peeky-study/fmtlib__fmt-3260:control
+build_minutes: 0.2
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's fmtlib/fmt recipe (cmake in build/, ctest) with the base image's
+  GCC 13 for its gcc:latest, limited to chrono-test, the binary of the test file the test patch
+  changes. fail_to_pass is that n2p test (at base its new cases chrono_test.tm_align and tp_align
+  fail). pass_to_pass is limited to the tests eval.sh runs, so it is empty. chrono-test's
+  cpp20_duration_subsecond_support assumes a signed char (duration<char>(0x80) prints "-01.28"),
+  as on x86 where Multi-SWE-bench ran; arm64's char is unsigned, and that case failed at base and
+  with gold. The image sets CXXFLAGS=-fsigned-char and eval.sh passes it to CMake, so the tests
+  build with x86's char; Peeky's build gets it from CXXFLAGS too. eval.sh builds from a fresh
+  build/.

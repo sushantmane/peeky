@@ -1,0 +1,58 @@
+{
+ "bug": "fasterxml__jackson-databind-2036",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-databind-2036:peeky-r3",
+ "image_id": "sha256:e1f0c7f4d6b89ef60e38282939ee4e3ff363edc7723eca6e97bc1885c49a382c",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:26:56+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "first code hunk in buildTypeDeserializer: its first changed executable line, defaultImpl = null (the changed declaration above it has no code)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:126",
+   "launch": {
+    "failed": true,
+    "log_tail": "stantiator.java:[131,27] newInstance() in java.lang.Class has been deprecated\n[WARNING] /testbed/src/test/java/com/fasterxml/jackson/databind/deser/creators/TestCreators.java:[318,22] Double(java.lang.String) in java.lang.Double has been deprecated\n[INFO] 6 warnings \n[INFO] -------------------------------------------------------------\n[INFO] -------------------------------------------------------------\n[ERROR] COMPILATION ERROR : \n[INFO] -------------------------------------------------------------\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[18,51] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[34,52] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[44,52] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[INFO] 3 errors \n[INFO] -------------------------------------------------------------\n[INFO] ------------------------------------------------------------------------\n[INFO] BUILD FAILURE\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  2.917 s\n[INFO] Finished at: 2026-11-02T17:27:00Z\n[INFO] ------------------------------------------------------------------------\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.2:testCompile (default-testCompile) on project jackson-databind: Compilation failure: Compilation failure: \n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[18,51] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[34,52] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[44,52] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "gold",
+   "why": "last code hunk: the removed switch on _includeAs in buildTypeDeserializer (moved up by the fix); the middle hunk only re-indents a condition, and DeserializationFeature only declares a constant",
+   "at": "src/main/java/com/fasterxml/jackson/databind/jsontype/impl/StdTypeResolverBuilder.java:161",
+   "launch": {
+    "failed": true,
+    "log_tail": "stantiator.java:[131,27] newInstance() in java.lang.Class has been deprecated\n[WARNING] /testbed/src/test/java/com/fasterxml/jackson/databind/deser/creators/TestCreators.java:[318,22] Double(java.lang.String) in java.lang.Double has been deprecated\n[INFO] 6 warnings \n[INFO] -------------------------------------------------------------\n[INFO] -------------------------------------------------------------\n[ERROR] COMPILATION ERROR : \n[INFO] -------------------------------------------------------------\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[18,51] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[34,52] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[44,52] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[INFO] 3 errors \n[INFO] -------------------------------------------------------------\n[INFO] ------------------------------------------------------------------------\n[INFO] BUILD FAILURE\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  2.628 s\n[INFO] Finished at: 2026-11-02T17:31:04Z\n[INFO] ------------------------------------------------------------------------\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.2:testCompile (default-testCompile) on project jackson-databind: Compilation failure: Compilation failure: \n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[18,51] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[34,52] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[44,52] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testPositiveForParent, the first test in the new class",
+   "at": "src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:24",
+   "launch": {
+    "failed": true,
+    "log_tail": "stantiator.java:[131,27] newInstance() in java.lang.Class has been deprecated\n[WARNING] /testbed/src/test/java/com/fasterxml/jackson/databind/deser/creators/TestCreators.java:[318,22] Double(java.lang.String) in java.lang.Double has been deprecated\n[INFO] 6 warnings \n[INFO] -------------------------------------------------------------\n[INFO] -------------------------------------------------------------\n[ERROR] COMPILATION ERROR : \n[INFO] -------------------------------------------------------------\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[18,51] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[34,52] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[44,52] cannot find symbol\n  symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n  location: class com.fasterxml.jackson.databind.DeserializationFeature\n[INFO] 3 errors \n[INFO] -------------------------------------------------------------\n[INFO] ------------------------------------------------------------------------\n[INFO] BUILD FAILURE\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  3.112 s\n[INFO] Finished at: 2026-11-02T17:35:09Z\n[INFO] ------------------------------------------------------------------------\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.2:testCompile (default-testCompile) on project jackson-databind: Compilation failure: Compilation failure: \n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[18,51] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[34,52] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/TestBaseTypeAsDefault.java:[44,52] cannot find symbol\n[ERROR]   symbol:   variable USE_BASE_TYPE_AS_DEFAULT\n[ERROR]   location: class com.fasterxml.jackson.databind.DeserializationFeature\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 3
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:39:10+00:00"
+}

@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_long_string_value_with_quotes"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "astropy/io/fits/card.py",
+   "line": 862,
+   "why": "the changed unescaping of a CONTINUE sub-card's string in Card._split (the only code hunk; the other changes the class-level regex constant _strg_comment_RE, a declaration)"
+  },
+  {
+   "role": "assertion",
+   "file": "astropy/io/fits/tests/test_header.py",
+   "line": 589
+  }
+ ]
+}

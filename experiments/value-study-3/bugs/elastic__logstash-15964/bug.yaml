@@ -1,0 +1,48 @@
+id: elastic__logstash-15964
+language: java
+repo: elastic/logstash
+source: Multi-SWE-bench
+base_commit: ff37e1e0d3d19b605951c94263b72c5e5a053112
+upstream: https://github.com/elastic/logstash/pull/15964
+category: D
+categories_applicable: [D, E]
+category_rationale: >-
+  The symptom comes from another thread: the DLQ writer's scheduled flush check keeps running
+  after the writer is closed and fails on files a test already removed. The report itself says
+  what to add, which makes E applicable too.
+traits: []
+traits_rationale: >-
+  The fix adds a shutdown method to the scheduler interface and calls it on close; it changes a
+  resource's lifecycle, not how a value is computed or kept.
+root_cause: >-
+  DeadLetterQueueWriter's flusher service (FixedRateScheduler, a single-thread scheduled executor
+  running scheduledFlushCheck every second) is never stopped: close() releases the lock and the
+  flush scheduler but leaves that executor running, so after a writer is closed the dlq-flush-check
+  thread keeps trying to finalize segments and logs errors (e.g. when a test removed the
+  directory). The fix adds shutdown() to the SchedulerService interface (FixedRateScheduler shuts
+  its executor down, NoopScheduler does nothing) and calls flusherService.shutdown() in close().
+test_hint: >-
+  Logstash builds with its Gradle wrapper on JDK 11, offline (JRuby and the gems are already
+  installed): run logstash-core's Java tests with
+  `cd /testbed && ./gradlew --offline :logstash-core:javaTests --tests <fully.qualified.TestClass>`.
+  Don't run the root project's `clean`: it deletes vendor/, which can't be fetched again offline.
+image: peeky-study/elastic__logstash-15964:control
+build_minutes: 2
+grade_minutes: 0.2
+pass_to_pass_removed:
+  - test: bootstrap
+    reason: >-
+      SKIPPED in this image: its own action (bundler install and lock) needs rubygems.org, so an
+      init script skips it once the gems are installed.
+  - test: downloadJRuby
+    reason: SKIPPED offline (the JRuby archive is already downloaded).
+notes: >-
+  JDK 11 as in Multi-SWE-bench's image (the base's OpenJDK instead of Zulu 11), TZ and locale for
+  its JAVA_TOOL_OPTIONS. Gradle is offline via /root/.gradle/init.d/offline.gradle, and
+  /root/.gradle/init.d/bootstrapped.gradle skips the bootstrap task's own action (bundler, which
+  needs the network) while vendor/bundle holds the gems. Multi-SWE-bench's fail_to_pass is only
+  logstash-core:compileTestJava (the hidden test's scheduler stub overrides shutdown(), which the
+  interface lacks at base); fail_to_pass adds the six tests of the changed test class
+  (DeadLetterQueueWriterAgeRetentionTest, n2p in the dataset). eval.sh runs only logstash-core's
+  javaTests task, filtered to that class; pass_to_pass is limited to the Gradle tasks that run
+  executes (the dataset's pass_to_pass holds no test of that class).

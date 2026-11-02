@@ -1,0 +1,26 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/test_build_linkcheck.py::test_defaults": "FAILED",
+   "tests/test_build_linkcheck.py::test_anchors_ignored": "FAILED"
+  },
+  "p2p_failed": [
+   "tests/test_build_linkcheck.py::test_defaults_json"
+  ],
+  "solved": false,
+  "seconds": 0.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/test_build_linkcheck.py::test_defaults": "FAILED",
+   "tests/test_build_linkcheck.py::test_anchors_ignored": "FAILED"
+  },
+  "p2p_failed": [
+   "tests/test_build_linkcheck.py::test_defaults_json"
+  ],
+  "solved": false,
+  "seconds": 0.4
+ }
+]

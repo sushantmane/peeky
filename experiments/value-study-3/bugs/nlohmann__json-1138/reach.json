@@ -1,0 +1,33 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/test/test-conversions"
+ ],
+ "prepare": [
+  "(cmake --build build-peeky --parallel 4 --target test-conversions > /root/reach/rebuild.log 2>&1 || rm -f build-peeky/test/test-conversions); tail -5 /root/reach/rebuild.log; ls build-peeky/test/test-conversions"
+ ],
+ "timeout": 300,
+ "notes": "The first failing test is the ctest test test-conversions_default: the binary with no arguments, in /testbed (its WORKING_DIRECTORY). At base, with the test patch, it doesn't compile (get<std::unordered_map<int, int>>() from an array of pairs); prepare then removes the binary built before the test patch, which doesn't run the failing test.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/nlohmann/detail/conversions/from_json.hpp",
+   "line": 286,
+   "why": "from_json(std::map): the statement after the inserted map overload's body (first hunk changing a statement)"
+  },
+  {
+   "role": "gold",
+   "file": "single_include/nlohmann/json.hpp",
+   "line": 9784,
+   "why": "the removed stringstream of the serializer's incomplete-UTF-8 error, in the single header the tests include (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "test/src/unit-conversions.cpp",
+   "line": 1239,
+   "why": "the first CHECK of the section std::unordered_map (array of pairs), which the test patch adds and which fails to compile at base"
+  }
+ ]
+}

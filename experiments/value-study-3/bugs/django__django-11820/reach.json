@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "tests/runtests.py"
+ ],
+ "program": [
+  "--settings=test_sqlite",
+  "--parallel",
+  "1",
+  "invalid_models_tests.test_models.OtherModelTests.test_ordering_pointing_multiple_times_to_model_fields"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "django/db/models/base.py",
+   "line": 1711,
+   "why": "the changed field lookup in Model._check_ordering's loop over related parts"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/invalid_models_tests/test_models.py",
+   "line": 828
+  }
+ ]
+}

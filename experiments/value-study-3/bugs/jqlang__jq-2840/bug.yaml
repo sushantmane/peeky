@@ -1,0 +1,33 @@
+id: jqlang__jq-2840
+language: c
+repo: jqlang/jq
+source: Multi-SWE-bench
+base_commit: 4cf1408e0bbac8fc714b051fe420921905128efd
+upstream: https://github.com/jqlang/jq/pull/2840
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A wrong value with simple state: the report gives the input and the expected null, and the
+  extra wrap of a negative index is visible in the INDEX opcode's code in jq_next.
+traits: [runtime-state]
+traits_rationale: >-
+  `.[-5]` on a 3-element array returns 1 instead of null, and the fix changes how the index is
+  computed. jq_next is two or three calls from main or the test runner, in the same thread.
+root_cause: >-
+  In src/execute.c, jq_next's INDEX/INDEX_OPT case turns a negative numeric index on an array
+  into length + index before calling jv_get, and jv_get (src/jv_aux.c) wraps a negative index
+  again, so an index below -length wraps twice (`[0,1,2] | .[-5]` gives 1, not null). The fix
+  removes the conversion from jq_next, leaving the single wrap to jv_get; in path expressions the
+  raw negative index is then kept, so pick(last) on an array is an out-of-bounds error.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (bison regenerates src/parser.c from src/parser.y; the binary is ./jq).
+  Run the test suite with `cd /testbed && make check`, or run individual test scripts under tests/.
+image: peeky-study/jqlang__jq-2840:control
+build_minutes: 0.4
+grade_minutes: 0.3
+pass_to_pass_removed: []
+notes: >-
+  Build and test command follow the Multi-SWE-bench recipe (submodules, autoreconf -fi, configure
+  --with-oniguruma=builtin, make, make check), as round 1's jqlang__jq-2650. FAIL_TO_PASS and
+  PASS_TO_PASS as given. The Peeky build (peeky.sh) is round 2's for jq-2650: in place, clang 18
+  at -O0, bison -l and flex -L.

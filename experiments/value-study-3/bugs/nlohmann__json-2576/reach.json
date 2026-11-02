@@ -1,0 +1,36 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/test/test-regression2"
+ ],
+ "program": [
+  "--no-skip"
+ ],
+ "prepare": [
+  "(cmake --build build-peeky --parallel 4 --target test-regression2 > /root/reach/rebuild.log 2>&1 || rm -f build-peeky/test/test-regression2); tail -5 /root/reach/rebuild.log; ls build-peeky/test/test-regression2"
+ ],
+ "timeout": 300,
+ "notes": "The failing test is the ctest test test-regression2: the binary with ctest's argument (--no-skip), in /testbed (its WORKING_DIRECTORY). At base, with the test patch, it doesn't compile (get<std::array<NonDefaultConstructible, 2>>() has no overload); prepare then removes the binary built before the test patch, which doesn't run the failing test.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/nlohmann/adl_serializer.hpp",
+   "line": 45,
+   "why": "the changed to_json call in adl_serializer::to_json (first hunk changing a base statement)"
+  },
+  {
+   "role": "gold",
+   "file": "single_include/nlohmann/json.hpp",
+   "line": 20047,
+   "why": "the removed return of the pointer get() const in basic_json, in the single header the tests include (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "test/src/unit-regression2.cpp",
+   "line": 535,
+   "why": "the first CHECK of the issue #2574 section, std::array, the binary's failing section"
+  }
+ ]
+}

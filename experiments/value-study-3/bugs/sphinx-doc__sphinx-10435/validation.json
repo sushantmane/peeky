@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/test_build_latex.py::test_latex_code_role": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/test_build_latex.py::test_latex_code_role": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.1
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/test_build_latex.py::test_latex_code_role": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.1
+ }
+]

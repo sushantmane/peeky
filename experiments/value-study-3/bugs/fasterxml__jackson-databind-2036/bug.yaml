@@ -1,0 +1,40 @@
+id: fasterxml__jackson-databind-2036
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: bfeb1fa9dc4c889f8027b80abb2f77996efd9b70
+upstream: https://github.com/FasterXML/jackson-databind/pull/2036
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A feature request: the report says what should happen when the type property is missing and a
+  concrete class is requested, and the default implementation is chosen in one place
+  (StdTypeResolverBuilder.buildTypeDeserializer), with simple state.
+traits: [hard-to-reach]
+traits_rationale: >-
+  The fix adds a new DeserializationFeature, a missing feature rather than a wrongly computed
+  value, so not runtime-state; the type deserializer is built in StdTypeResolverBuilder, reached
+  through the deserializer factory more than 5 calls below ObjectReader.readValue.
+root_cause: >-
+  With @JsonTypeInfo, StdTypeResolverBuilder.buildTypeDeserializer picks a default implementation
+  only when the annotation's defaultImpl names one; otherwise there is none, so JSON without the
+  type id fails even when the caller asked for a concrete class. The fix adds
+  DeserializationFeature.USE_BASE_TYPE_AS_DEFAULT (off by default) and moves the choice into a new
+  defineDefaultImpl method, which uses the requested base type as the default implementation when
+  the feature is on, no defaultImpl is given and the base type isn't abstract.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 1.5 minutes; two test classes already fail at the base commit on JDK 11).
+image: peeky-study/fasterxml__jackson-databind-2036:control
+build_minutes: 1.8
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base). At base on JDK 11 the full suite has
+  2109 tests with 2 failing classes (IllegalTypesCheckTest: a JDK class it expects is gone;
+  TestTypeFactoryWithClassLoader: Objenesis), neither in grading. The parent pom is the released
+  jackson-base 2.9.5, so no stand-in is needed. FAIL_TO_PASS is empty in the dataset (the test
+  patch doesn't compile at base, so every test was "none"); fail_to_pass is the class the test
+  patch adds, which is in n2p_tests. eval.sh runs `mvn -o clean test` on that class only;
+  PASS_TO_PASS is empty.

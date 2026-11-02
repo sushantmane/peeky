@@ -1,0 +1,36 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "tests/fuzzer"
+ ],
+ "program": [
+  "-T1mn"
+ ],
+ "prepare": [
+  "CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests fuzzer CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/compress/zstd_compress.c",
+   "line": 442,
+   "why": "first hunk that changes a statement (the one before it adds a new function): the removed `return` of ZSTD_CCtx_setParameter's `case ZSTD_c_format` (441 is the case label)"
+  },
+  {
+   "role": "gold",
+   "file": "lib/compress/zstdmt_compress.c",
+   "line": 1024,
+   "why": "last hunk: its first removed line, the assert in ZSTDMT_getMTCtxParameter's jobSize case"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/fuzzer.c",
+   "line": 344,
+   "why": "\"all tests\" first fails in test-fuzzer (the test patch's checks are in fuzzer.c); the fuzzer program's first check, in basicUnitTests, which main runs first"
+  }
+ ],
+ "notes": "Rerun after a Peeky-image fix (19:10Z first run, kept in reach-first-run.json): tests/Makefile builds the library's objects separately here, and the image's warm-up `make test` had left GCC's objects in tests/, which the Peeky build relinked, so both gold points were refused (UNSUPPORTED: built by GCC). peeky.sh now cleans tests/ first. Points and run unchanged."
+}

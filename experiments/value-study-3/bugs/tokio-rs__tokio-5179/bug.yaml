@@ -1,0 +1,44 @@
+id: tokio-rs__tokio-5179
+language: rust
+repo: tokio-rs/tokio
+source: Multi-SWE-bench
+base_commit: 9e3fb1673a73046363af64c09a040eeed67f2a4c
+upstream: https://github.com/tokio-rs/tokio/pull/5179
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The panic needs a particular sequence: a Runtime and a LocalSet stored together in a
+  thread_local, a task spawned on the LocalSet, then the thread's locals destroyed in an order
+  where tokio's own thread-locals are already gone. The state spans the LocalSet's Rc'd context,
+  its shared queue and task list, and the coop budget's thread-local.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  A crash ("cannot access a Thread Local Storage value during or after destruction"); the fix
+  changes where the LocalSet keeps its task list and queue and how the budget is read when the
+  thread-local is gone. The failing code runs in Drop impls during thread-local destruction at
+  thread exit, after the test body returns.
+root_cause: >-
+  When a LocalSet (with a Runtime) lives in a thread_local, it is dropped during thread-local
+  destruction. tokio/src/task/local.rs keeps the LocalSet's owned-task list in its Context and
+  reaches it on task release through the CURRENT thread-local (CURRENT.with), and
+  tokio/src/runtime/coop.rs reads the task budget through context::budget, which uses
+  CONTEXT.with (tokio/src/runtime/context.rs); with those thread-locals already destroyed, .with
+  panics with AccessError. The fix makes context::budget use try_with and has coop fall back to
+  an unconstrained budget, and moves the owned tasks and local queue into a LocalState inside
+  Shared, so release and drop no longer go through the CURRENT thread-local.
+test_hint: >-
+  Run an integration test file with `cd /testbed && cargo test --test <file stem>` (integration
+  tests are in tokio/tests/, e.g. `cargo test --test sync_mpsc`); tokio's unit tests with
+  `cargo test -p tokio --lib --features full`.
+image: peeky-study/tokio-rs__tokio-5179:control
+build_minutes: 0.4
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tokio doesn't commit Cargo.lock;
+  Multi-SWE-bench resolves afresh, so the image pins SWE-bench's lock file for tokio-4898
+  (a version 2 lock file, as round 2's tokio-4867), completed by Cargo 1.96 for this commit
+  (Cargo.lock here; git ignores it). The dataset's FAIL_TO_PASS is empty; fail_to_pass is the
+  n2p test the test patch adds. pass_to_pass is the dataset's PASS_TO_PASS limited to the tests
+  eval.sh runs (the task_local_set binary, 6 tests). At base the test binary aborts (SIGABRT) when
+  the new test's thread exits; base was graded 3 times, the new test never reported.

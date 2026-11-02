@@ -1,0 +1,40 @@
+id: fasterxml__jackson-databind-3509
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: e7ab4559e75c38eae89adcc74b8c54bd053a049f
+upstream: https://github.com/FasterXML/jackson-databind/pull/3509
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report names StdDeserializer._parseFloatPrimitive and the missing int-to-float check; the
+  same shortcut sits in the other float, double and BigDecimal parse methods, which a reading of
+  the code finds. The state is a coercion setting and one token.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows a value read where the configured coercion should fail, and the fix changes
+  how integer tokens become float, double and BigDecimal values; the parse methods run inside the
+  number and bean deserializers, 5 or more calls below ObjectMapper.readValue.
+root_cause: >-
+  The coercion config (coercionConfigFor(LogicalType.Float) with CoercionInputShape.Integer) is
+  never consulted when an integer token is read as a floating-point value. In
+  NumberDeserializers (Float, Double, BigDecimal) and in StdDeserializer._parseFloatPrimitive and
+  _parseDoublePrimitive, the ID_NUMBER_INT case falls straight into the float case and converts
+  the number. The fix adds _checkIntToFloatCoercion, which looks up the action and fails, returns
+  null or the empty value, or lets the conversion go ahead, and calls it for integer tokens there.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 2.5 minutes).
+image: peeky-study/fasterxml__jackson-databind-3509:control
+build_minutes: 3.1
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base; the full suite passes at base on 11,
+  2712 tests). The parent pom jackson-base:2.14.0-SNAPSHOT is gone from every repository, so the
+  image installs a stand-in in ~/.m2 (the 2.14.3 release pom under the snapshot version; core and
+  annotations 2.14.3) and leaves pom.xml unchanged. The test patch also adds a helper to
+  BaseMapTest (an abstract base, no tests of its own); eval.sh runs `mvn -o clean test` on the new
+  test class only; pass_to_pass is empty because PASS_TO_PASS holds no class from the hidden test
+  files.

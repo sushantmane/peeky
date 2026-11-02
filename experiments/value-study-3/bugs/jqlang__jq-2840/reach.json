@@ -1,0 +1,29 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "./jq"
+ ],
+ "program": [
+  "-L",
+  "tests/modules",
+  "--run-tests",
+  "tests/jq.test"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/execute.c",
+   "line": 698,
+   "why": "the fix's only hunk removes lines 697-704 of jq_next's INDEX case; 697 is a comment, so the point is its first statement, the `if` at 698"
+  },
+  {
+   "role": "assertion",
+   "file": "src/jq_test.c",
+   "line": 204,
+   "why": "the harness's comparison of a case's expected and actual output (the test is a case in tests/jq.test, run by tests/jqtest)"
+  }
+ ]
+}

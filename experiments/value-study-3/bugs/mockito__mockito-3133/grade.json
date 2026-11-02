@@ -1,0 +1,17 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, mockito)",
+ "fail_to_pass": [
+  "junit-jupiter:compileTestJava",
+  "junit-jupiter:test",
+  "junit-jupiter:testClasses"
+ ],
+ "pass_to_pass": [
+  "classes",
+  "compileJava",
+  "copyMockMethodDispatcher",
+  "jar",
+  "junit-jupiter:classes",
+  "junit-jupiter:compileJava"
+ ],
+ "timeout_s": 1200
+}

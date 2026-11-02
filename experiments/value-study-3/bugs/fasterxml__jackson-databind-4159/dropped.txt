@@ -1,0 +1,8 @@
+Dropped at step 3 (reach): not reached.
+The hidden test patch doesn't compile at the base commit: TestDefaultForEnums uses
+ObjectMapper.DefaultTyping.NON_FINAL_AND_ENUMS, which only the fix adds. So the failing test's
+JVM never starts, and both points (ObjectMapper.java:361, the assertion
+TestDefaultForEnums.java:129) ended "error: the launch never got ready" (javac: cannot find
+symbol NON_FINAL_AND_ENUMS). No Peeky session started, so there is no refusal message.
+Steps 1 and 2 passed (validation and Peeky-image gold/noop as expected).
+Record: results/reach/3e51ccd7232d/fasterxml__jackson-databind-4159.json

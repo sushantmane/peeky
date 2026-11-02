@@ -1,0 +1,53 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "logstash-core:compileTestJava": "FAILED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterCloseRemovesExpiredSegmentWhenCurrentWriterIsUntouched": "MISSING",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterFlusherRemovesExpiredSegmentWhenCurrentHeadSegmentIsEmpty": "MISSING",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterFlusherRemovesExpiredSegmentWhenCurrentWriterIsStale": "MISSING",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemoveMultipleOldestSegmentsWhenRetainedAgeIsExceeded": "MISSING",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemovesOlderSegmentsWhenWriteOnReopenedDLQContainingExpiredSegments": "MISSING",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemovesOlderSegmentsWhenWritesIntoDLQContainingExpiredSegments": "MISSING"
+  },
+  "p2p_failed": [
+   "copyPluginTestAlias",
+   "copyPluginTestAlias_java",
+   "copyPluginTestAlias_ruby",
+   "logstash-core:processTestResources",
+   "markTestAliasDefinitions"
+  ],
+  "solved": false,
+  "seconds": 4.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "logstash-core:compileTestJava": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterCloseRemovesExpiredSegmentWhenCurrentWriterIsUntouched": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterFlusherRemovesExpiredSegmentWhenCurrentHeadSegmentIsEmpty": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterFlusherRemovesExpiredSegmentWhenCurrentWriterIsStale": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemoveMultipleOldestSegmentsWhenRetainedAgeIsExceeded": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemovesOlderSegmentsWhenWriteOnReopenedDLQContainingExpiredSegments": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemovesOlderSegmentsWhenWritesIntoDLQContainingExpiredSegments": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 10.1
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "logstash-core:compileTestJava": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterCloseRemovesExpiredSegmentWhenCurrentWriterIsUntouched": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterFlusherRemovesExpiredSegmentWhenCurrentHeadSegmentIsEmpty": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testDLQWriterFlusherRemovesExpiredSegmentWhenCurrentWriterIsStale": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemoveMultipleOldestSegmentsWhenRetainedAgeIsExceeded": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemovesOlderSegmentsWhenWriteOnReopenedDLQContainingExpiredSegments": "PASSED",
+   "org.logstash.common.io.DeadLetterQueueWriterAgeRetentionTest > testRemovesOlderSegmentsWhenWritesIntoDLQContainingExpiredSegments": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 13.0
+ }
+]

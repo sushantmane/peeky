@@ -1,0 +1,9 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, tokio)",
+ "fail_to_pass": [
+  "no_branch_else_only",
+  "no_branch_else_only_biased"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

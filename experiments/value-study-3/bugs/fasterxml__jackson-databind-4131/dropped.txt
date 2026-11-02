@@ -1,0 +1,9 @@
+Dropped at step 3 (reach): not reached.
+The fix changes no executable statement in a base file (it adds new methods,
+JsonNode.withObjectProperty/withArrayProperty and their ObjectNode overrides, plus a comment), so
+there is no gold point: it was recorded "not attempted". The hidden test patch also doesn't
+compile at the base commit (WithPathTest calls the new methods), so the assertion point
+(WithPathTest.java:211) ended "error: the launch never got ready" (javac: cannot find symbol).
+No Peeky session started, so there is no refusal message.
+Steps 1 and 2 passed (validation and Peeky-image gold/noop as expected).
+Record: results/reach/3e51ccd7232d/fasterxml__jackson-databind-4131.json

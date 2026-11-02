@@ -1,0 +1,38 @@
+id: clap-rs__clap-5873
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: 1d5c6798dc16db0b8130a0c73c8a5d818ec22131
+upstream: https://github.com/clap-rs/clap/pull/5873
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The wrong value needs a particular configuration and input: ignore_errors set, and a partial long
+  flag close enough to a real one to trigger the "did you mean" error. The faulty state is the
+  parser's ArgMatcher entry for the suggested argument and its value source.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows a wrong value (value_source is CommandLine, and the default is never filled in),
+  and the fix changes what the parser records for the suggested argument. The fixed code runs in
+  the parser's error path, five or more calls below try_get_matches_from, in the clap_builder crate.
+root_cause: >-
+  In clap_builder/src/parser/parser.rs, Parser::did_you_mean_error, when an unknown long flag has a
+  close match, starts the suggested argument in the matcher (start_custom_arg with
+  ValueSource::CommandLine) so that the error's usage string shows it. With ignore_errors set,
+  parsing carries on past that error with the argument recorded as given on the command line but
+  with no value, so its default value is never filled in. The fix starts the suggested argument
+  only when ignore_errors isn't set.
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test builder -- <filter>`
+  (e.g. `-- flags::`); other test targets: `--test derive`, `--test macros`; the workspace's other
+  crates: `cargo test -p <crate>`. The build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-5873:control
+build_minutes: 2.4
+grade_minutes: 0.04
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it with the repo's Cargo.lock (version
+  3). Test command: Multi-SWE-bench runs `cargo test`; eval.sh runs the builder
+  test target filtered to ignore_errors:: (the hidden test file), offline. pass_to_pass is limited
+  to the 8 dataset PASS_TO_PASS tests under ignore_errors::. The n2p tests are in other files the
+  patch doesn't change. Parser: Multi-SWE-bench's Rust parse_log.

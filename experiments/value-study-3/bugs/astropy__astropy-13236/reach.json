@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "astropy/table/tests/test_mixin.py::test_ndarray_mixin[False]"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "astropy/table/table.py",
+   "line": 1244,
+   "why": "the removed structured-ndarray check in Table._convert_data_to_col (the only hunk; its first removed lines are comments)"
+  },
+  {
+   "role": "assertion",
+   "file": "astropy/table/tests/test_mixin.py",
+   "line": 731
+  }
+ ]
+}

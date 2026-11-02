@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "notes": "Run correction 1 (after the first reach run): `--run bin/test` was refused with INVALID_REQUEST 'entry must be a .py file inside the root' (bin/test has no .py suffix), so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, and the run uses that with the same arguments.",
+ "prepare": [
+  "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py"
+ ],
+ "options": [
+  "--run",
+  "bin/reach_test.py"
+ ],
+ "program": [
+  "-C",
+  "--verbose",
+  "--no-subprocess",
+  "sympy/simplify/tests/test_sqrtdenest.py",
+  "-k",
+  "test_issue_12420"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sympy/simplify/sqrtdenest.py",
+   "line": 159,
+   "why": "the changed condition in _sqrt_match (the only code hunk; radsimp.py's hunks are docstrings)"
+  },
+  {
+   "role": "assertion",
+   "file": "sympy/simplify/tests/test_sqrtdenest.py",
+   "line": 187
+  }
+ ]
+}

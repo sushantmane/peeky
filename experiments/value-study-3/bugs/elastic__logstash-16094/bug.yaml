@@ -1,0 +1,47 @@
+id: elastic__logstash-16094
+language: java
+repo: elastic/logstash
+source: Multi-SWE-bench
+base_commit: 18583787b3cc1095a002f4a8e1f4d9436e712c54
+upstream: https://github.com/elastic/logstash/pull/16094
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the cause (log call params written at the top level of logEvent, beside the
+  message), and the serializer's loop over params shows it; the state is a small map.
+traits: []
+traits_rationale: >-
+  The output is wrong (two `message` keys), but the fix is an opt-in setting: a new
+  log.format.json.fix_duplicate_message_fields option that renames the clashing key.
+root_cause: >-
+  CustomLogEventSerializer.writeStructuredMessage writes the log message as `message` and then
+  each of the structured message's params under its own key, so a param named `message` yields a
+  second `message` field in the JSON log event. The fix adds a setting,
+  log.format.json.fix_duplicate_message_fields, passed to Java as the system property
+  ls.log.format.json.fix_duplicate_message_fields; when it is true, the serializer writes a param
+  named `message` as `message_1`.
+test_hint: >-
+  Logstash builds with its Gradle wrapper on JDK 11, offline (JRuby and the gems are already
+  installed): run logstash-core's Java tests with
+  `cd /testbed && ./gradlew --offline :logstash-core:javaTests --tests <fully.qualified.TestClass>`.
+  Don't run the root project's `clean`: it deletes vendor/, which can't be fetched again offline.
+image: peeky-study/elastic__logstash-16094:control
+build_minutes: 1.5
+grade_minutes: 0.2
+pass_to_pass_removed:
+  - test: bootstrap
+    reason: >-
+      SKIPPED in this image: its own action (bundler install and lock) needs rubygems.org, so an
+      init script skips it once the gems are installed.
+  - test: downloadJRuby
+    reason: SKIPPED offline (the JRuby archive is already downloaded).
+notes: >-
+  JDK 11 as in Multi-SWE-bench's image (the base's OpenJDK instead of Zulu 11), TZ and locale for
+  its JAVA_TOOL_OPTIONS. Gradle is offline via /root/.gradle/init.d/offline.gradle, and
+  /root/.gradle/init.d/bootstrapped.gradle skips the bootstrap task's own action (bundler, which
+  needs the network) while vendor/bundle holds the gems; its dependencies still run. eval.sh runs
+  only logstash-core's javaTests task, filtered to the hidden test class (CustomLogEventTests),
+  instead of `clean test`; pass_to_pass is limited to what that runs: the class's other tests and
+  the Gradle tasks the run executes (task names are test names in Multi-SWE-bench's parser). The
+  hidden test sets the new system property and expects the key `message_1`; neither name is in the
+  problem statement.

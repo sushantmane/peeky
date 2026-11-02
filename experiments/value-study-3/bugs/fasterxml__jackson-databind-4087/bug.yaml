@@ -1,0 +1,39 @@
+id: fasterxml__jackson-databind-4087
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: 45e6fa63c412bb47e32693f7b0348b8bc7b246af
+upstream: https://github.com/FasterXML/jackson-databind/pull/4087
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report names the type (OptionalInt) and the reflective access path; databind already has a
+  check that turns unsupported JDK types (java.time, Joda) into a clear error, and the fix extends
+  it, with simple state. The JDK 17 refusal itself is the JDK's module rule (B).
+traits: [hard-to-reach]
+traits_rationale: >-
+  The fix adds a type check and an error message rather than changing how a value is computed, so
+  not runtime-state; the check runs in BeanUtil.checkUnsupportedType, which the serializer and
+  deserializer factories call well over 5 calls below ObjectMapper.writeValueAsString/readValue.
+root_cause: >-
+  BeanUtil.checkUnsupportedType, which databind consults before treating a type as a plain bean,
+  recognises only Java 8 date/time and Joda types. java.util.Optional, OptionalInt, OptionalLong
+  and OptionalDouble fall through, so without the jdk8 module databind handles them as POJOs: it
+  serializes their getters and, to deserialize, makes their private constructors accessible, which
+  JDK 17 refuses. The fix adds a check for class names starting with "java.util.Optional" that
+  reports them as an unsupported "Java 8 optional" type and names the jackson-datatype-jdk8 module.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 3 minutes).
+image: peeky-study/fasterxml__jackson-databind-4087:control
+build_minutes: 3.4
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base; the full suite passes at base on 11,
+  3901 tests). The parent pom jackson-base:2.16.0-SNAPSHOT is gone from every repository, so the
+  image installs a stand-in in ~/.m2 (the 2.16.2 release pom under the snapshot version; core and
+  annotations 2.16.2) and leaves pom.xml unchanged. eval.sh runs `mvn -o clean test` on the hidden
+  test file's class only; pass_to_pass is empty because PASS_TO_PASS holds no class from the
+  hidden test file (the class is new).

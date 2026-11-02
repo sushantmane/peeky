@@ -1,0 +1,39 @@
+id: fasterxml__jackson-databind-3716
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: 0020fcbe578f40810f8e6dea1c89ad48f5e70c15
+upstream: https://github.com/FasterXML/jackson-databind/pull/3716
+category: B
+categories_applicable: [B, E]
+category_rationale: >-
+  The wrong output (a ["class","VALUE"] wrapper array) is written by jackson-core's
+  JsonGenerator.writeTypePrefix, which falls back to a wrapper array for scalar values; the faulty
+  choice of type serializer is in databind, so the failure needs the dependency's behaviour.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong serialized output and the fix changes which type serializer writes the
+  value; the serializer is built in StdTypeResolverBuilder.buildTypeSerializer, reached through the
+  serializer factory and provider more than 5 calls below ObjectMapper.writeValueAsString.
+root_cause: >-
+  For @JsonTypeInfo(use = DEDUCTION), StdTypeResolverBuilder.buildTypeSerializer builds a type-id
+  resolver and returns an AsExistingPropertyTypeSerializer. That writes nothing extra for a POJO
+  written as an object, but for a value written as a scalar (an enum, or a POJO with @JsonValue)
+  the type prefix falls back to a wrapper array, so the output becomes ["<class name>","VALUE"]
+  and deduction can't read it back. The fix returns a new AsDeductionTypeSerializer for DEDUCTION,
+  which never writes a type id, only the surrounding object or array markers.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 2.5 minutes).
+image: peeky-study/fasterxml__jackson-databind-3716:control
+build_minutes: 3.4
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base; the full suite passes at base on 11,
+  3717 tests). The parent pom jackson-base:2.14.2-SNAPSHOT is gone from every repository, so the
+  image installs a stand-in in ~/.m2 (the 2.14.3 release pom under the snapshot version; core and
+  annotations 2.14.3) and leaves pom.xml unchanged. eval.sh runs `mvn -o clean test` on the hidden
+  test file's class only; pass_to_pass is empty because PASS_TO_PASS holds no class from the
+  hidden test file (the class itself is fail_to_pass).

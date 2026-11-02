@@ -1,0 +1,35 @@
+id: fmtlib__fmt-3537
+language: cpp
+repo: fmtlib/fmt
+source: Multi-SWE-bench
+base_commit: 661b23edeb52d400cf5812e7330f14f05c072fab
+upstream: https://github.com/fmtlib/fmt/pull/3537
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report quotes the compiler's candidates and names the cause, detail::is_string rejecting
+  fmt::basic_format_string. It is a compile error, with no runtime state.
+traits: []
+traits_rationale: >-
+  The failure is a compile error (an overload set), not a wrong value, crash or hang, so not
+  runtime-state. The build takes seconds, and the fix is a function template the test instantiates
+  directly.
+root_cause: >-
+  The text_style overloads of fmt::format, format_to and print (include/fmt/color.h) are enabled
+  only when detail::is_string<S> holds, which checks that detail::to_string_view(S) returns a string
+  view. include/fmt/core.h has to_string_view overloads for character pointers, standard and fmt
+  string views and compile strings, but none for fmt::basic_format_string, so passing a
+  format_string<Args...> to those overloads doesn't compile. The fix adds a to_string_view overload
+  for any non-compile-string S with a get() member, returning s.get().
+test_hint: |-
+  Build a test with `cd /testbed && cmake -S . -B build && cmake --build build --parallel 4 --target <name>-test` (sources in test/<name>-test.cc; binaries in build/bin/).
+  Run it with `ctest --test-dir build -R '^<name>-test$' --output-on-failure`.
+image: peeky-study/fmtlib__fmt-3537:control
+build_minutes: 0.1
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's fmtlib/fmt recipe (cmake in build/, ctest) with the base image's
+  GCC 13 for its gcc:latest, limited to color-test, the binary of the test file the test patch
+  changes. fail_to_pass is that n2p test (with the test patch it doesn't compile at base).
+  PASS_TO_PASS is empty. eval.sh builds from a fresh build/.

@@ -1,0 +1,38 @@
+id: pylint-dev__pylint-8898
+language: python
+repo: pylint-dev/pylint
+source: SWE-bench Verified
+base_commit: 1f8c4d9eb185c16a2c1d881c054f015e1c2eb334
+upstream: https://github.com/pylint-dev/pylint/pull/8898
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report already says the option's value is split on commas before each piece is compiled,
+  and the transformer that does it is a few lines; argparse only calls it as the option's type.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows a crash, and the fix changes how the option string is split into regular
+  expressions. The transformer runs as argparse's type function while Run parses the options,
+  well over five calls below the test.
+root_cause: >-
+  _regexp_csv_transfomer in pylint/config/argument.py splits the option value with the plain CSV
+  splitter, so a comma inside a regex quantifier such as {1,3} cuts the regex in two and each
+  half is compiled on its own (crashing, or silently making two patterns). The fix splits with a
+  new pylint.utils._check_regexp_csv that ignores commas inside braces.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with pylint installed in editable mode. Run tests
+  with `cd /testbed && pytest tests/<path>/<file>.py`.
+python: "3.12"
+image: peeky-study/pylint-dev__pylint-8898:control
+build_minutes: 0.2
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for pylint 3.0 (requirements_test.txt of the environment setup commit, then
+  astroid==3.0.0a6 and setuptools, then the editable install, which moves astroid to 3.0.3 within
+  pyproject's range), with the spec's Python 3.9 raised to 3.12, where the tests run.
+  requirements_test_min.txt's setuptools==41.6.0 is installed as there (the editable build uses
+  its own isolated setuptools). Grading runs tests/config/test_config.py, the only file the test
+  patch touches. SWE-bench's parser names both test_csv_regex_comma_in_quantifier cases with a
+  space in their id "...[foo,"; that name is in PASS_TO_PASS and passes with gold (at base the
+  new case fails under the same name).

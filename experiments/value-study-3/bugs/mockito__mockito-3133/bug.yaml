@@ -1,0 +1,39 @@
+id: mockito__mockito-3133
+language: java
+repo: mockito/mockito
+source: Multi-SWE-bench
+base_commit: edc624371009ce981bbc11b7d125ff4e359cff7e
+upstream: https://github.com/mockito/mockito/pull/3133
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A feature request with a clear model: the JUnit 5 extension already resolves @Mock parameters,
+  and @Captor needs the same; the state involved is simple.
+traits: []
+traits_rationale: >-
+  The fix adds support for a new use of an annotation (a missing feature), not a corrected value.
+root_cause: >-
+  Mockito's JUnit 5 MockitoExtension resolves only @Mock-annotated parameters (supportsParameter
+  checks for Mock), and @Captor is declared with @Target(FIELD), so a test-method or constructor
+  parameter `@Captor ArgumentCaptor<T>` neither compiles nor gets injected. The fix allows @Captor
+  on parameters, adds CaptorAnnotationProcessor.process(Parameter) and
+  GenericMaster.getGenericType(Parameter), and has MockitoExtension delegate parameter resolution to
+  a composite of a @Mock and a @Captor parameter resolver.
+test_hint: >-
+  Mockito builds with its Gradle wrapper on JDK 21, offline: run a project's tests with
+  `cd /testbed && ./gradlew --offline :<project>:test --tests <fully.qualified.TestClass>` (the core
+  library is the root project, `:test`; `./gradlew --offline projects` lists the others).
+image: peeky-study/mockito__mockito-3133:control
+build_minutes: 3
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  JDK 21 as in Multi-SWE-bench's image (the base's OpenJDK instead of Zulu 21), TZ and locale for
+  its JAVA_TOOL_OPTIONS. Gradle is offline via /root/.gradle/init.d/offline.gradle; eval.sh also
+  passes --no-build-cache (the project enables Gradle's build cache, and a FROM-CACHE task isn't a
+  pass in Multi-SWE-bench's parser). Multi-SWE-bench's fail_to_pass is junit-jupiter:compileTestJava
+  (the hidden test puts @Captor on parameters); fail_to_pass adds the dataset's n2p tasks of the
+  changed test's project, junit-jupiter:testClasses and junit-jupiter:test (this project's build
+  prints no per-test lines, so its test task stands for the tests). eval.sh runs only
+  :junit-jupiter:test, filtered to the hidden test class, instead of `test`; pass_to_pass is
+  limited to the Gradle tasks that run executes.

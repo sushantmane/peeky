@@ -1,0 +1,9 @@
+stage: 3 (reach check)
+reason: not reached. With the hidden test patch at base, logstash-core's test sources don't
+compile (DeadLetterQueueWriterAgeRetentionTest.java:80: "error: method does not override or
+implement a method from a supertype": the test's scheduler stub overrides shutdown(), which
+SchedulerService lacks until the fix), so the failing test's JVM never starts. Both points,
+DeadLetterQueueWriter.java:316 (gold) and DeadLetterQueueWriterAgeRetentionTest.java:271
+(assertion), are "error: the launch never got ready"; no Peeky refusal. Record:
+results/reach/3e51ccd7232d/elastic__logstash-15964.json.
+Steps 1 and 2 passed (validation base/gold-1/gold-2 ok; Peeky image ok, gold solved, noop not).

@@ -1,0 +1,8 @@
+Stage: step 3 (reach check), on Peeky 3e51ccd7232d.
+Reason: not reached. Every point was refused, before anything ran:
+- gold include/nlohmann/json.hpp:1310: refused
+- gold single_include/nlohmann/json.hpp:22873: refused
+- assertion test/src/unit-diagnostics.cpp:47: refused
+Peeky's message (UNSUPPORTED, not retryable), the same for each: "Peeky judges no unit of build-peeky/test/test-diagnostics: test/src/unit-diagnostics.cpp and 1 more: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)"
+Record: results/reach/3e51ccd7232d/nlohmann__json-2866.json
+Steps 1 and 2 passed: validation base not solved, gold-1 and gold-2 solved; Peeky image built, fake gold solved, noop not solved.

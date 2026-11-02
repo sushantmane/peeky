@@ -1,0 +1,8 @@
+{
+ "parser": "Zstd.parse_log (Multi-SWE-bench, PRs 1230-1748)",
+ "fail_to_pass": [
+  "all tests"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

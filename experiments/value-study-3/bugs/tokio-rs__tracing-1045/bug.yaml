@@ -1,0 +1,37 @@
+id: tokio-rs__tracing-1045
+language: rust
+repo: tokio-rs/tracing
+source: Multi-SWE-bench
+base_commit: 0dc8ef2da97f605689fff17f6c38b69e105a5281
+upstream: https://github.com/tokio-rs/tracing/pull/1045
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  An API consistency request: set_global_default takes a Dispatch by value while set_default and
+  with_default take &Dispatch. The change is clear from the report and the three signatures.
+traits: []
+traits_rationale: >-
+  An API change (a parameter type), not a wrong runtime value; it builds and tests in well under
+  3 minutes, and the changed function runs directly in the test.
+root_cause: >-
+  tracing_core::dispatcher::set_global_default (tracing-core/src/dispatcher.rs) takes its
+  Dispatch by value, unlike set_default and with_default, which take &Dispatch. The fix makes it
+  take &Dispatch and clone the subscriber it stores (match dispatcher.subscriber.clone()), and
+  updates its callers in tracing (subscriber::set_global_default) and tracing-subscriber
+  (fmt's try_init and util's try_init) and the doc examples to pass a reference.
+test_hint: >-
+  Run a crate's tests with `cd /testbed && cargo test -p <crate>` (e.g. `cargo test -p
+  tracing`); one integration test file with `cargo test -p <crate> --test <file stem>` (in
+  <crate>/tests/).
+image: peeky-study/tokio-rs__tracing-1045:control
+build_minutes: 0.4
+grade_minutes: 0.01
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tracing doesn't commit Cargo.lock
+  and Multi-SWE-bench resolves afresh, so the image pins one resolution (Cargo 1.96,
+  generate-lockfile, 2 November 2026; Cargo.lock here, version 4; git ignores it). The dataset's
+  FAIL_TO_PASS and PASS_TO_PASS are empty and its n2p tests are from other binaries, so
+  fail_to_pass is the two tests the test patch changes and pass_to_pass is empty, as the dataset
+  gives it. eval.sh runs tracing-core's dispatch and global_dispatch tests, offline. The hidden
+  tests don't compile at base (they pass &Dispatch).

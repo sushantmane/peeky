@@ -1,0 +1,37 @@
+id: alibaba__fastjson2-1245
+language: java
+repo: alibaba/fastjson2
+source: Multi-SWE-bench
+base_commit: 6648b96c0162c222467eb44bac30a9d59392c7ff
+upstream: https://github.com/alibaba/fastjson2/pull/1245
+category: D
+categories_applicable: [D, B]
+category_rationale: >-
+  The failure needs a particular configuration: a JSONB round trip with WriteClassName and
+  FieldBased features, a context auto-type allow-list handler, and an EnumSet field, whose runtime
+  class is the JDK's package-private RegularEnumSet with no public constructor.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a crash when reading back an EnumSet field, and the fix changes how the
+  collection instance for that field is chosen and built.
+root_cause: >-
+  When fastjson2 reads a JSONB collection whose written class name is java.util.RegularEnumSet,
+  ContextAutoTypeBeforeHandler's table of basic types has only EnumSet itself, so the auto-type
+  check rejects the concrete class; and ObjectReaderImplList.readJSONBObject then tries
+  listType.newInstance() on it, which fails because RegularEnumSet has no no-arg constructor. The
+  fix adds the concrete enum-set class to the handler's basic types and, in readJSONBObject, reads
+  any EnumSet subtype into a HashSet and builds the result with EnumSet.copyOf.
+test_hint: >-
+  fastjson2 builds with its Maven wrapper on JDK 8, offline: run tests of the core module with
+  `cd /testbed && ./mvnw -o -pl core test -Dtest=<TestClass>` (or `-Dtest=<TestClass>#<method>`).
+image: peeky-study/alibaba__fastjson2-1245:control
+build_minutes: 2
+grade_minutes: 0.5
+pass_to_pass_removed: []
+notes: >-
+  JDK 8 as in Multi-SWE-bench's image (Ubuntu's OpenJDK 8 instead of Zulu 8), with TZ and locale
+  for its UTF-8 and Asia/Shanghai JAVA_TOOL_OPTIONS. eval.sh runs a clean `test` of the core module
+  only, limited to the tests in the hidden test file's package (com.alibaba.fastjson2.dubbo, which
+  also holds the other test using the changed ParamsDTO); pass_to_pass is limited to those 10
+  classes. Test names are classes, as in Multi-SWE-bench's parser. The changed test file has an
+  existing test (test1) that passes at base; the class fails at base through the added testEnumSet.

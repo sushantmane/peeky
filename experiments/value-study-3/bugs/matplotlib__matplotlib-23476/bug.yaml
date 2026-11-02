@@ -1,0 +1,40 @@
+id: matplotlib__matplotlib-23476
+language: python
+repo: matplotlib/matplotlib
+source: SWE-bench Verified
+base_commit: 33a0599711d26dc2b79f851c6daed4947df7c167
+upstream: https://github.com/matplotlib/matplotlib/pull/23476
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The dpi only doubles when a HiDPI backend has set a device pixel ratio on the canvas before the
+  figure is pickled, and only grows over repeated pickle round trips, so it shows only after that
+  sequence (the reporter saw it only on M1 Macs).
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a wrong value (the dpi doubles on each unpickle), and the fix changes which dpi
+  value is kept in the pickled state. Figure.__getstate__ runs directly under pickle.dumps from the
+  test, in the same process.
+root_cause: >-
+  With a device pixel ratio above 1, the figure's _dpi is the original dpi times that ratio, while
+  _original_dpi keeps the user's value. Figure.__getstate__ in lib/matplotlib/figure.py pickles
+  the scaled _dpi, so the unpickled figure starts from the scaled dpi and the new canvas scales it
+  again. The fix stores _original_dpi as _dpi in the pickled state.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with matplotlib installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest lib/matplotlib/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/matplotlib__matplotlib-23476:control
+build_minutes: 3.3
+grade_minutes: 0.1
+pass_to_pass_removed:
+  - test: lib/matplotlib/tests/test_figure.py::test_subfigure_ss[png]
+    reason: Fails at base and with gold in the image: the image comparison is off by RMS 0.012 on arm64 (the baseline was made on x86-64).
+notes: >-
+  SWE-bench spec for matplotlib 3.5 (Python 3.11, its pip pins), installed with uv into a venv;
+  environment.yml's conda packages are replaced by their PyPI test subset (no GUI toolkits, docs or
+  lint tools), plus ghostscript and libcairo2 from apt instead of the spec's texlive/imagemagick
+  install. The C extensions build against the bundled FreeType 2.6.1, which setup.py downloads at
+  image build. Installed with --no-build-isolation against the pinned setuptools 68.1.2 (the
+  checkout has no pyproject.toml). Grading runs lib/matplotlib/tests/test_figure.py, the only
+  file the test patch touches.

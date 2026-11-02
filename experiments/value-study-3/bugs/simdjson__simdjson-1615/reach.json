@@ -1,0 +1,26 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/tests/ondemand/ondemand_json_pointer_tests"
+ ],
+ "prepare": [
+  "(cmake -S . -B build-peeky && cmake --build build-peeky --parallel 4 --target ondemand_json_pointer_tests) > /root/reach/rebuild.log 2>&1; tail -5 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "notes": "The failing test is the ctest test ondemand_json_pointer_tests, which the test patch adds: the binary with no arguments. At base it doesn't compile (the at_pointer methods it calls don't exist yet), so the run has no binary. The fix only adds new declarations and new functions at namespace or class scope: no executable statement of a base file changes, so no gold point exists in the base files.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/simdjson/generic/ondemand/array-inl.h",
+   "not_attempted": "no gold point: every hunk of the fix inserts new declarations or whole new functions (at_pointer) outside any base function, so no base line holds a changed executable statement"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/ondemand/ondemand_json_pointer_tests.cpp",
+   "line": 74,
+   "why": "the first ASSERT_SUCCESS of demo_test, which run() calls first"
+  }
+ ]
+}

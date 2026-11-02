@@ -1,0 +1,39 @@
+id: matplotlib__matplotlib-24870
+language: python
+repo: matplotlib/matplotlib
+source: SWE-bench Verified
+base_commit: 6091437be9776139d3672cde28a19cbe6c09dcd5
+upstream: https://github.com/matplotlib/matplotlib/pull/24870
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  An enhancement request: the report states the wanted default (one level at 0.5 for boolean
+  input), and the level defaults are chosen in one short method; the only state is the input's dtype.
+traits: [hard-to-reach]
+traits_rationale: >-
+  The change adds a new default for boolean input (a missing feature) rather than fixing how an
+  existing value is computed. The level defaults are chosen about six calls below plt.contour
+  (Axes.contour, QuadContourSet.__init__, _process_args, _contour_args, _process_contour_level_args).
+root_cause: >-
+  ContourSet._contour_args and _check_xyz in lib/matplotlib/contour.py convert z to float64 before
+  the levels are chosen, and _process_contour_level_args picks 7 auto levels whenever no levels
+  are given, so a boolean array gets eight overlapping lines. The fix keeps z's dtype, passes it
+  to _process_contour_level_args, and defaults boolean input to [0.5] (or [0, .5, 1] for filled
+  contours), in TriContourSet._contour_args (tri/_tricontour.py) too.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with matplotlib installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest lib/matplotlib/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/matplotlib__matplotlib-24870:control
+build_minutes: 4.2
+grade_minutes: 0.03
+pass_to_pass_removed:
+  - test: lib/matplotlib/tests/test_contour.py::test_contour_addlines[png]
+    reason: Fails at base and with gold in the image: the image comparison is off by RMS 0.146 on arm64 (baselines made on x86-64).
+notes: >-
+  Same recipe as matplotlib__matplotlib-26208 (SWE-bench spec for matplotlib 3.6, the same pins
+  as 3.7; Python 3.11; environment.yml's PyPI test subset plus ghostscript and libcairo2 from
+  apt; bundled FreeType 2.6.1; built without isolation against numpy 1.25.2). Grading runs
+  lib/matplotlib/tests/test_contour.py, the only file the test patch touches. At base the test
+  fails at its first assertion, before it calls tricontour, so the _tricontour.py point isn't run
+  (no stop).

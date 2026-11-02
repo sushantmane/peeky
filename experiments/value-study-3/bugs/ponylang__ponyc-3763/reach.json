@@ -1,0 +1,29 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/debug/libponyc.tests"
+ ],
+ "program": [
+  "--gtest_filter=IftypeTest.InsideLambda"
+ ],
+ "prepare": [
+  "cmake --build build-peeky/cmake --parallel 4 --target libponyc.tests > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/libponyc/pass/scope.c",
+   "line": 212,
+   "why": "the statement after the fix's only hunk, an insertion in scope_iftype"
+  },
+  {
+   "role": "assertion",
+   "file": "test/libponyc/iftype.cc",
+   "line": 390,
+   "why": "the test body's TEST_COMPILE, an ASSERT_NO_FATAL_FAILURE around the compile; it is the test's first statement"
+  }
+ ]
+}

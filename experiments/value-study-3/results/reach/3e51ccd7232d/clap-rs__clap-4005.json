@@ -1,0 +1,155 @@
+{
+ "bug": "clap-rs__clap-4005",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/clap-rs__clap-4005:peeky-r3",
+ "image_id": "sha256:019bc04030852ef4f6fd4907a7dafe5a50dca4b2c083816f244e11daf559b4a6",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:45:08+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed args_in_groups binding in Usage::get_required_usage_from (the only hunk)",
+   "at": "src/output/usage.rs:382",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at src/output/usage.rs:382 --name reach --timeout 300 --json -- --exact require::required_require_with_group_shows_flag --test-threads=1",
+     "exit": 0,
+     "seconds": 24.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 6.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/output/usage.rs:382",
+    "function": "clap::output::usage::Usage::get_required_usage_from::h57ba290f27b20dd0"
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 2,
+    "sample": [
+     {
+      "name": "self",
+      "value": "0x0000fffff7db4fc0"
+     },
+     {
+      "name": "incls",
+      "value": "&[clap::util::id::Id] @ 0xfffff7db4eb8"
+     },
+     {
+      "name": "incl_last",
+      "value": "true"
+     },
+     {
+      "name": "ret_val",
+      "value": "indexmap::set::IndexSet<alloc::string::String, std::hash::random::RandomState> @ 0xfffff7db47b0"
+     },
+     {
+      "name": "unrolled_reqs",
+      "value": "indexmap::set::IndexSet<clap::util::id::Id, std::hash::random::RandomState> @ 0xfffff7db47f8"
+     },
+     {
+      "name": "required",
+      "value": "0x0000fffff7db7248"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "matcher",
+      "value": "<unqualified Rust enum layout>"
+     },
+     {
+      "name": "required_owned",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "not assigned on every path to here (a `let` without a value, or a loop's next pass before its `let`): its slot may hold what an earlier call or pass left; read it once it is assigned"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": "assert_output's assert_eq, the first assertion: the test calls utils::assert_output",
+   "at": "tests/builder/utils.rs:27",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/builder/utils.rs:27 --name reach --timeout 300 --json -- --exact require::required_require_with_group_shows_flag --test-threads=1",
+     "exit": 0,
+     "seconds": 25.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 2.8
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/builder/utils.rs:27",
+    "function": "builder::utils::assert_output::h83304ddda6eca4cb",
+    "warnings": [
+     "Line 27 stops up to 5 times per pass in builder::utils::assert_output (5 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 5, in address order) says which location."
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 8,
+    "sample": [
+     {
+      "name": "stderr",
+      "value": "true"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "l",
+      "value": "clap::builder::command::Command @ 0xfffff7dbdbc8",
+      "stale": "True"
+     },
+     {
+      "name": "args",
+      "value": "&str @ 0xfffff7db8018",
+      "stale": "True"
+     },
+     {
+      "name": "expected",
+      "value": "&str @ 0xfffff7db8028",
+      "stale": "True"
+     },
+     {
+      "name": "buf",
+      "value": "std::io::cursor::Cursor<alloc::vec::Vec<unsigned char, alloc::alloc::Global> > @ 0xfffff7db7a88",
+      "stale": "True"
+     },
+     {
+      "name": "res",
+      "value": "<unqualified Rust enum layout>"
+     },
+     {
+      "name": "err",
+      "value": "clap::error::Error @ 0xfffff7db7e68",
+      "stale": "True"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:46:07+00:00"
+}

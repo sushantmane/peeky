@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_build_latex.py::test_latex_code_role"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sphinx/writers/latex.py",
+   "line": 1713,
+   "why": "the changed replacement string in LaTeXTranslator.visit_literal (the fix's one hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/test_build_latex.py",
+   "line": 1626
+  }
+ ]
+}

@@ -1,0 +1,6 @@
+stage: 3 (reach)
+reason: not reached. The only gold point (crates/nu-parser/src/type_check.rs:13) was refused before launch:
+  [UNSUPPORTED] Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency inside the workspace
+  (Cargo.toml has [patch.crates-io] reedline from git.) The image's prebuild failed with the same refusal.
+The assertion point (src/tests.rs:93) was not attempted: the test is a unit test of the nu binary, which a Peeky config can't run.
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: gold solved, noop not solved.

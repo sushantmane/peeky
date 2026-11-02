@@ -1,0 +1,42 @@
+id: nlohmann__json-2576
+language: cpp
+repo: nlohmann/json
+source: Multi-SWE-bench
+base_commit: 6f551930e5c7ef397056de121c0da82f77573cca
+upstream: https://github.com/nlohmann/json/pull/2576
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report pins the failing call (get<std::array<T, N>>() for a T with no default constructor)
+  and guesses the cause, the way std::array is deserialized. It is a compile error, with no
+  runtime state.
+traits: []
+traits_rationale: >-
+  The failure is a compile error, not a wrong value, crash or hang, so not runtime-state. The
+  build takes seconds, and the fix is template code the test instantiates directly.
+root_cause: >-
+  basic_json::get<T>() deserializes through from_json(j, T& val) overloads in
+  include/nlohmann/detail/conversions/from_json.hpp (amalgamated in
+  single_include/nlohmann/json.hpp), which fill an existing value, so the target must be
+  default-constructible; for std::array, std::pair and std::tuple of elements without a default
+  constructor no overload is viable, and the code doesn't compile. The fix adds from_json
+  overloads taking an identity_tag<T> that return the value (an std::array built element by
+  element through an index_sequence, pairs and tuples from their elements' get<>()),
+  adl_serializer::from_json(j) that calls them, and the get() and type-trait changes that select
+  them.
+test_hint: |-
+  Build a test with `cd /testbed && cmake -S . -B build && cmake --build build --parallel 4 --target test-<name>` (one target per test/src/unit-<name>.cpp; binaries in build/test/). CXXFLAGS in this image sets DOCTEST_CONFIG_NO_POSIX_SIGNALS, which the bundled doctest needs with this glibc; keep it when configuring.
+  Run it with `ctest --test-dir build -R '^test-<name>$' --output-on-failure`.
+image: peeky-study/nlohmann__json-2576:control
+build_minutes: 0.06
+grade_minutes: 0.06
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's nlohmann/json recipe (cmake in build/, json_test_data in build/,
+  ctest) with the base image's GCC 13 in place of its gcc:7, limited to test-regression2, the
+  binary of the test file the test patch changes. fail_to_pass is that n2p test (with the test
+  patch it doesn't compile at base). PASS_TO_PASS is empty. The bundled doctest 2.4.4 sizes an
+  array with SIGSTKSZ, which glibc 2.39 no longer defines as a constant: the image sets
+  CXXFLAGS=-DDOCTEST_CONFIG_NO_POSIX_SIGNALS and eval.sh passes it to CMake, so doctest installs no
+  crash handlers (a crash still fails the ctest test). The test data (v3.0.0) is pre-cloned in
+  /opt/json_test_data, and eval.sh builds from a fresh build/.

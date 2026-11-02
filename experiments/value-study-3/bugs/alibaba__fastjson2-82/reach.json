@@ -1,0 +1,47 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "core/src/main/java/com/alibaba/fastjson2/JSON.java",
+    "core/src/test/java/com/alibaba/fastjson2/issues/Issue81.java"
+   ],
+   "class_roots": [
+    "core/target/classes",
+    "core/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=Issue81 -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "core/src/main/java/com/alibaba/fastjson2/JSON.java",
+   "line": 602,
+   "why": "the statement after the inserted check in isValid(String) (first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "core/src/main/java/com/alibaba/fastjson2/JSON.java",
+   "line": 621,
+   "why": "the statement after the inserted check in isValidArray(String) (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "core/src/test/java/com/alibaba/fastjson2/issues/Issue81.java",
+   "line": 15,
+   "why": "the first assertion of Issue81.test_issue"
+  }
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "tests/zstreamtest"
+ ],
+ "program": [
+  "-T30s"
+ ],
+ "prepare": [
+  "CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests zstreamtest CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/decompress/zstd_decompress.c",
+   "line": 156,
+   "why": "first hunk that changes a statement: the statement after the insertion of `dctx->decodedSize = 0;` in ZSTD_decompressBegin"
+  },
+  {
+   "role": "gold",
+   "file": "lib/decompress/zstd_decompress.c",
+   "line": 2434,
+   "why": "last hunk: the changed condition for restarting the output buffer in ZSTD_decompressStream's flush stage"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/fuzzer.c",
+   "line": 300,
+   "why": "the test is the fuzzer program (test-fuzzer); its first check, in basicUnitTests, which main runs first"
+  }
+ ],
+ "notes": "Run corrected after the first run (17:39Z): the first failing test, test-fuzzer, can't be built at base with the test patch (its new check calls ZSTD_decodingBufferSize_min, which the fix adds), so the prepare rebuilt nothing and every point was refused as PROVENANCE_CHANGED (tests/fuzzer.c changed since the binary was built). The run is now the other failing test, test-zstream: tests/zstreamtest built for Peeky after the test patch, run with the test's time (-T30s). Points unchanged."
+}

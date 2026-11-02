@@ -1,0 +1,49 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java",
+    "logstash-core/src/test/java/org/logstash/log/CustomLogEventTests.java"
+   ],
+   "class_roots": [
+    "logstash-core/build/classes/java/main",
+    "logstash-core/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests org.logstash.log.CustomLogEventTests.testJSONLayoutWhenParamsContainsAnotherMessageField --debug-jvm & until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 900,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "Gold points: the first code hunk is Ruby (environment.rb's inserted setProperty; its setting-table entry and runner.rb's option are declarations); the last is the changed paramName line in CustomLogEventSerializer (the serializer's other hunk adds a new method, with no base statement after it).",
+ "points": [
+  {
+   "role": "gold",
+   "file": "logstash-core/lib/logstash/environment.rb",
+   "line": 127,
+   "why": "the statement after the inserted setProperty in the settings post-process block (first code hunk)",
+   "not_attempted": "Ruby code that runs when Logstash starts: the failing Java test never runs it, and a Java session can't stop in JRuby code"
+  },
+  {
+   "role": "gold",
+   "file": "logstash-core/src/main/java/org/logstash/log/CustomLogEventSerializer.java",
+   "line": 72,
+   "why": "the changed paramName line in writeStructuredMessage's loop over params (last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "logstash-core/src/test/java/org/logstash/log/CustomLogEventTests.java",
+   "line": 193,
+   "why": "the first assertion of testJSONLayoutWhenParamsContainsAnotherMessageField"
+  }
+ ]
+}

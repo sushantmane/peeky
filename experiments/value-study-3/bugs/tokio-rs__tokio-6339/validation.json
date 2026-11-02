@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "no_branch_else_only": "MISSING",
+   "no_branch_else_only_biased": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.2
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "no_branch_else_only": "PASSED",
+   "no_branch_else_only_biased": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.5
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "no_branch_else_only": "PASSED",
+   "no_branch_else_only_biased": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.7
+ }
+]

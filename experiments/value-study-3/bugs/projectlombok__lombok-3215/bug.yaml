@@ -1,0 +1,38 @@
+id: projectlombok__lombok-3215
+language: java
+repo: projectlombok/lombok
+source: SWE-bench Multilingual
+base_commit: f090e50d0d5d75c121b6170927b1e776160eb37d
+upstream: https://github.com/projectlombok/lombok/pull/3215
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report shows that renaming the superclass B to B1 makes the error go away, which points at a
+  clash with @SuperBuilder's generated type parameter B; the names to avoid are gathered in one
+  method per handler, with simple state.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The generated code is wrong because the set of names to avoid is computed without the extends
+  and implements clauses, which the fix changes; the handler runs inside javac's annotation
+  processing of the test input, which the test harness drives, far below the test method.
+root_cause: >-
+  HandleSuperBuilder (both the javac and the Eclipse handler) picks names for the builder's type
+  parameters, B and C by default, that must not clash with type names the class uses; its
+  gatherUsedTypeNames collects the class's type parameters, its name and its field types, but not
+  the types in its extends and implements clauses. So for `class A extends B`, the builder declares
+  a type parameter named B that shadows the superclass B, and the generated code no longer
+  compiles. The fix adds the first name token of the extends clause and of each implements clause
+  to the used names.
+test_hint: >-
+  Lombok builds with ant on JDK 11, offline: `cd /testbed && ant test.compile` compiles lombok and
+  its tests, and `ant test.javacCurrent` runs the javac test suites.
+image: peeky-study/projectlombok__lombok-3215:control
+build_minutes: 2.7
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec (version 3215). Same recipe as round 1's lombok bugs: the image
+  adds Ubuntu's ant-optional (the base's ant lacks the junit task), and eval.sh adds SWE-bench's
+  test.instance target (TestWithDelombok) to buildScripts/tests.ant.xml at grading time, so the
+  image's working tree is clean. pass_to_pass is the dataset's PASS_TO_PASS (311 TestWithDelombok
+  cases), all of which pass at base and with gold.

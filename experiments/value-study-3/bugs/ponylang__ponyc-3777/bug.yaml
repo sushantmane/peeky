@@ -1,0 +1,39 @@
+id: ponylang__ponyc-3777
+language: c
+repo: ponylang/ponyc
+source: Multi-SWE-bench
+base_commit: 89b03703acfebf6ee6d1b92298f6b671ce14d556
+upstream: https://github.com/ponylang/ponyc/pull/3777
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report gives the inputs and the wrong result of Flags.remove, and the one-line cause (xor
+  where and-not is meant) is plain in packages/collections/flag.pony.
+traits: [runtime-state]
+traits_rationale: >-
+  Flags.remove leaves a wrong value (0b0110 for 0b0011 minus 0b0101), and the fix changes how it
+  is computed. The code runs directly from the test, in Pony.
+root_cause: >-
+  In the standard library's packages/collections/flag.pony, Flags.remove computes
+  `_value xor that._value`, which turns on every flag of `that` that wasn't set, instead of only
+  turning set flags off. The fix computes `_value and not that._value`.
+test_hint: |-
+  The project is configured (debug) and built in /testbed: rebuild the compiler with `cd /testbed && make build config=debug` (outputs in build/debug; `make configure config=debug` reconfigures).
+  Run the tests with `cd /testbed && make test config=debug`, or one of its parts: the make targets test-core (the compiler's and runtime's unit tests), test-stdlib-release (the standard library's tests, built with build/debug/ponyc) and test-examples.
+image: peeky-study/ponylang__ponyc-3777:control
+build_minutes: 0.8
+grade_minutes: 0.7
+pass_to_pass_removed:
+  - net/Broadcast: fails at base and with the fix in the no-network grading container ("Couldn't make broadcast address")
+notes: >-
+  fail_to_pass is FAIL_TO_PASS (collections/Flags); the test patch adds no n2p test. pass_to_pass
+  is limited to the standard library's tests in PASS_TO_PASS (262 of them, after net/Broadcast),
+  the part of `make test` that eval.sh runs (test-stdlib-release; the rest are gtest tests). The
+  fix is Pony code, compiled into the standard library's test program at test time; eval.sh
+  still rebuilds ponyc from a clean configure. Build as ponylang__ponyc-3763: Multi-SWE-bench's
+  ponyc recipe with clang 18, -Wno-error in the debug C flags, the shared image
+  peeky-study/r3-ponyc-llvm:9.0.1 (../ponylang__ponyc-3763/Dockerfile.llvm) as build/libs, and an
+  empty <linux/dn.h>. The image's warm `make test` stops at CodegenTest.CycleDetector (as in
+  ponylang__ponyc-3763); no gtest test is graded here. The Peeky build (peeky.sh) is ponyc and its
+  runtime at -O0 in build-peeky; the reach check compiles the standard library's tests with that
+  ponyc (-d), so only the runtime's units are clang's.

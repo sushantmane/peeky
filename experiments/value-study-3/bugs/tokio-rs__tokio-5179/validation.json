@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "store_local_set_in_thread_local_with_runtime": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.2
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "store_local_set_in_thread_local_with_runtime": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.8
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "store_local_set_in_thread_local_with_runtime": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.8
+ }
+]

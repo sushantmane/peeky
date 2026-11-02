@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.1
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.0
+ }
+]

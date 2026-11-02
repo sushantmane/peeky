@@ -1,0 +1,50 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "The fix changes Cargo manifests (a [workspace.lints.rust] check-cfg list, [lints] workspace = true), CI files, crate attributes and doc comments; no hunk changes an executable statement, so there is no gold point. The fail_to_pass tests are those of the test binaries the test patch changes; the first is macros_select's sync_one_lit_expr_comma.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "Cargo.toml",
+   "not_attempted": "no hunk of the fix changes an executable statement: it changes manifests, CI configuration, crate-level attributes, a cfg_attr and doc comments"
+  },
+  {
+   "role": "assertion",
+   "file": "tokio/tests/macros_select.rs",
+   "line": 22,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "sync_one_lit_expr_comma",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tokio"
+   ],
+   "run": {
+    "package": "tokio",
+    "test": "macros_select"
+   },
+   "vendor": "vendor",
+   "features": [
+    "full"
+   ]
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

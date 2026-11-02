@@ -1,0 +1,6 @@
+stage: 3 (reach check)
+reason: not reached. Both points were refused with BUILD_FAILED: the hidden test doesn't compile
+at the base commit (it calls Receiver::mark_unchanged, which the fix adds), so Peeky's build of
+the sync_watch test fails ("The build failed: cargo exited with code 101 ... error[E0599]: no
+method named `mark_unchanged` found for struct `tokio::sync::watch::Receiver<T>` ...").
+Not retryable; no remedy applies. Record: results/reach/3e51ccd7232d/tokio-rs__tokio-6252.json.

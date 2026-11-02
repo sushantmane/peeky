@@ -1,0 +1,41 @@
+id: facebook__zstd-1107
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: 3c3f59e68f1771dabeb020c0aa0f30b8c9c59936
+upstream: https://github.com/facebook/zstd/pull/1107
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report quotes both the documentation of ZSTD_CCtx_reset and the code that resets only the
+  stream stage, the pledged size and the dictionary; the missing reset of parameters is plain.
+traits: []
+traits_rationale: >-
+  An API addition for a documentation mismatch, not a wrong computed value: not runtime-state.
+  Building and running the failing test program takes about 1.3 minutes; ZSTD_createCCtx_advanced
+  runs directly from the test's first call.
+root_cause: >-
+  lib/zstd.h documents ZSTD_CCtx_reset as returning all parameters to their defaults, but in
+  lib/compress/zstd_compress.c it only resets the stream stage and the pledged source size (through
+  ZSTD_startNewCompression) and drops the dictionary, so no call restores the default parameters.
+  The fix adds ZSTD_CCtx_resetParameters, which (refused during a compression) drops the
+  dictionary and resets requestedParams with ZSTD_CCtxParams_reset; ZSTD_createCCtx_advanced
+  initialises its parameters through it, ZSTD_CCtx_reset only ends the current compression (taking
+  ZSTD_startNewCompression's place), and zstd.h documents both.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (library and CLI). The test programs are in tests/: `cd /testbed && make -C tests test` builds and runs them all, or run one `test-<name>` target of tests/Makefile.
+  The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-1107:control
+build_minutes: 0.6
+grade_minutes: 1.4
+pass_to_pass_removed: []
+notes: >-
+  Multi-SWE-bench's FAIL_TO_PASS and PASS_TO_PASS are empty, and its n2p tests (the pool tests
+  testInvalid, testOrder) aren't touched by the test patch, so fail_to_pass is the test the test
+  patch changes: test-fuzzer (tests/fuzzer.c), the make target eval.sh runs, its time shortened
+  (-T1mn from -T200s). At base the test patch's fuzzer.c doesn't build (it calls the function the
+  fix adds). GCC 13 replaces Ubuntu 20.04's GCC 9. The Peeky build (peeky.sh) builds
+  tests/fuzzer in place with clang 18 at -O0, through tests/Makefile (which compiles the library's
+  objects one by one and fuzzer.c in its link command). Reach: run corrected once, since the test
+  patch's fuzzer.c can't be built at base; the corrected run is the fuzzer built from base's
+  fuzzer.c (see reach.json's notes): a decision for the study, as the hidden lines don't run.

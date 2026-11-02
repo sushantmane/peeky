@@ -1,0 +1,48 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "tests/runtests.py"
+ ],
+ "program": [
+  "--settings=test_sqlite",
+  "--parallel",
+  "1",
+  "responses.test_cookie.DeleteCookieTests.test_delete_cookie_samesite"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "django/contrib/messages/storage/cookie.py",
+   "line": 95,
+   "why": "the changed delete_cookie call in CookieStorage._update_cookie (the first hunk)",
+   "program": [
+    "--settings=test_sqlite",
+    "--parallel",
+    "1",
+    "messages_tests.test_cookie.CookieTests.test_cookie_setings"
+   ],
+   "run_note": "the first failing test, in grade.json's order, that runs this line at base (README, 'The no-LLM filter'); the bug's first failing test doesn't"
+  },
+  {
+   "role": "gold",
+   "file": "django/http/response.py",
+   "line": 216,
+   "why": "the changed secure computation in HttpResponseBase.delete_cookie (the last hunk)",
+   "program": [
+    "--settings=test_sqlite",
+    "--parallel",
+    "1",
+    "sessions_tests.tests.SessionMiddlewareTests.test_session_delete_on_end"
+   ],
+   "run_note": "the first failing test, in grade.json's order, that runs this line at base (README, 'The no-LLM filter'); the bug's first failing test doesn't"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/responses/test_cookie.py",
+   "line": 132
+  }
+ ]
+}

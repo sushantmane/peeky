@@ -1,0 +1,135 @@
+{
+ "bug": "django__django-13195",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/django__django-13195:peeky-r3",
+ "image_id": "sha256:d748ef7e29ac135159f68d59c72e242d5a1bd7d8e70664d159be4c3b73bf26a6",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T20:19:55+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed delete_cookie call in CookieStorage._update_cookie (the first hunk)",
+   "at": "django/contrib/messages/storage/cookie.py:95",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/contrib/messages/storage/cookie.py:95 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 messages_tests.test_cookie.CookieTests.test_cookie_setings",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/contrib/messages/storage/cookie.py:95",
+    "function": "_update_cookie"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "encoded_data",
+      "value": "None"
+     },
+     {
+      "name": "response",
+      "value": "<HttpResponse status_code=200, \"text/html; charset=utf-8\">"
+     },
+     {
+      "name": "self",
+      "value": "<django.contrib.messages.storage.cookie.CookieStorage object at 0xffffb1574c90>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed secure computation in HttpResponseBase.delete_cookie (the last hunk)",
+   "at": "django/http/response.py:216",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/http/response.py:216 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 sessions_tests.tests.SessionMiddlewareTests.test_session_delete_on_end",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/http/response.py:216",
+    "function": "delete_cookie"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "domain",
+      "value": "None"
+     },
+     {
+      "name": "key",
+      "value": "'sessionid'"
+     },
+     {
+      "name": "path",
+      "value": "'/'"
+     },
+     {
+      "name": "self",
+      "value": "<HttpResponse status_code=200, \"text/html; charset=utf-8\">"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/responses/test_cookie.py:132",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at tests/responses/test_cookie.py:132 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 responses.test_cookie.DeleteCookieTests.test_delete_cookie_samesite",
+     "exit": 0,
+     "seconds": 1.4
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "Testing against Django installed in '/testbed/django'\nSystem check identified no issues (0 silenced).\nE\n======================================================================\nERROR: test_delete_cookie_samesite (responses.test_cookie.DeleteCookieTests.test_delete_cookie_samesite)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/testbed/tests/responses/test_cookie.py\", line 131, in test_delete_cookie_samesite\n    response.delete_cookie('c', samesite='lax')\nTypeError: HttpResponseBase.delete_cookie() got an unexpected keyword argument 'samesite'\n\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nFAILED (errors=1)\n"
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T20:20:00+00:00"
+}

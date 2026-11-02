@@ -1,0 +1,7 @@
+stage: 3 (reach check)
+reason: not reached. The fix changes no executable statement (it adds an import and two
+marker-trait impl declarations), so there is no gold point (not attempted). The hidden test is a
+compile-time check that doesn't compile at base; its point was refused with BUILD_FAILED ("The
+build failed: cargo exited with code 101 ... tokio/tests/net_types_unwind.rs:8:22:
+error[E0277]: the type `UnsafeCell<Atomic<usize>>` may contain interior mutability ...").
+Record: results/reach/3e51ccd7232d/tokio-rs__tokio-4384.json.

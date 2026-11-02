@@ -1,0 +1,35 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests::test_type_check::record_subtyping_allows_general_inner": "FAILED",
+   "tests::test_type_check::record_subtyping_allows_general_record": "FAILED",
+   "tests::test_type_check::record_subtyping_allows_record_after_general_command": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 7.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests::test_type_check::record_subtyping_allows_general_inner": "PASSED",
+   "tests::test_type_check::record_subtyping_allows_general_record": "PASSED",
+   "tests::test_type_check::record_subtyping_allows_record_after_general_command": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.5
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests::test_type_check::record_subtyping_allows_general_inner": "PASSED",
+   "tests::test_type_check::record_subtyping_allows_general_record": "PASSED",
+   "tests::test_type_check::record_subtyping_allows_record_after_general_command": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.9
+ }
+]

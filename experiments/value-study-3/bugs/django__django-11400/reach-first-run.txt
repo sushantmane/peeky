@@ -1,0 +1,16 @@
+The first filter pass dropped this candidate; the coordinator's rule (README, 'The no-LLM filter': a gold point runs the first failing test that runs its line) then reached it. py-b's note on the first run, whose record the second run replaced:
+
+Dropped at step 3: not reached.
+The run is the first failing test, model_fields.tests.GetChoicesOrderingTests.test_get_choices_default_ordering,
+which calls Field.get_choices directly (the fix's middle hunk, fields/__init__.py, not a point).
+The gold points are the first and last hunks, in admin/filters.py and reverse_related.py, which
+that test doesn't run. Outcomes (results/reach/3e51ccd7232d/django__django-11400.json):
+  gold django/contrib/admin/filters.py:197             no stop (the test ran and failed, exit 1)
+  gold django/db/models/fields/reverse_related.py:126  no stop (same)
+  assertion tests/model_fields/tests.py:232            reached, 3 values
+Peeky refused nothing. For the coordinator: in an informational run outside the record (py-b's
+scratch reach-alt/), with other failing tests as the run, both gold points were reached (4 values
+each): filters.py:197 with admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering,
+reverse_related.py:126 with model_fields.tests.GetChoicesOrderingTests.test_get_choices_reverse_related_field_default_ordering.
+Step 1 and step 2 passed (validation.json; Peeky image solved with gold, not with noop).
+Images removed after the drop.

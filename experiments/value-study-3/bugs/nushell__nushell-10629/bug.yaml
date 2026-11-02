@@ -1,0 +1,42 @@
+id: nushell__nushell-10629
+language: rust
+repo: nushell/nushell
+source: Multi-SWE-bench
+base_commit: 399319476aa4decd7cced93488180d96e56bad64
+upstream: https://github.com/nushell/nushell/pull/10629
+category: C
+categories_applicable: [C]
+category_rationale: >-
+  Rust where the faulty decision is made on nested data: nu_protocol::Type values, enums whose
+  record and table variants hold vectors of (field name, Type) pairs, compared recursively by the
+  parser's type check.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows an error where the annotated command should work, and the fix changes how type
+  compatibility is computed. The tests write a script and run the nu binary on it (assert_cmd), so
+  the fixed code runs in a child process.
+root_cause: >-
+  In crates/nu-parser/src/type_check.rs, type_compatible's structural-subtyping closure for records
+  and tables accepts any found type when the expected type lists no fields, but rejects a found
+  type that lists no fields whenever specific fields are expected (expected.len() > found.len()).
+  So a value typed only as `record` or `table` (from a command declared `-> record`, or a built-in
+  such as `select` or `merge` whose signature names no fields) fails the parse-time check against
+  an annotated `record<...>` or `table<...>`, with input_type_mismatch or output_type_mismatch.
+  The fix also treats an empty found field list as compatible, leaving any rejection to runtime.
+test_hint: >-
+  Build the binary the tests run, then run them: `cd /testbed && RUSTFLAGS=-Awarnings cargo build
+  --package nu --bin nu && RUSTFLAGS=-Awarnings cargo test --package nu --bin nu -- <filter>` (e.g.
+  `-- tests::test_math::`); the build cache was made with these RUSTFLAGS. Crate tests: `cargo test
+  -p <crate>` (crates/*). The debug binary is target/debug/nu.
+image: peeky-study/nushell__nushell-10629:control
+build_minutes: 3.2
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  rust-toolchain.toml pins Rust 1.70.0, which the image installs (rustup, minimal profile): the
+  locked time 0.3.22 doesn't compile on the base image's 1.96 (E0282, as on any Rust from 1.80), so
+  the tests don't build with 1.96. Test command: Multi-SWE-bench runs `cargo test`; eval.sh builds
+  the nu binary (the tests run it) and runs the nu binary's unit tests filtered to
+  tests::test_type_check:: (the hidden test file), offline. pass_to_pass is limited to the 14
+  dataset PASS_TO_PASS tests in that module. fail_to_pass is the dataset's FAIL_TO_PASS (no n2p
+  test is in the changed file). Parser: Multi-SWE-bench's Rust parse_log.

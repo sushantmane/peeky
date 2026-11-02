@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "tests/runtests.py"
+ ],
+ "program": [
+  "--settings=test_sqlite",
+  "--parallel",
+  "1",
+  "invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "django/db/models/base.py",
+   "line": 205,
+   "why": "the changed OneToOneField condition where ModelBase.__new__ collects parent links (the first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "django/db/models/options.py",
+   "line": 254,
+   "why": "the removed parent_link check in Options._prepare (the last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/invalid_models_tests/test_relative_fields.py",
+   "line": 1307
+  }
+ ]
+}

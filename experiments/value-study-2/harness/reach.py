@@ -223,7 +223,14 @@ def launch(container, spec, record):
         if spec["ready"] in out:
             record["launch"] = {"ready_seconds": round(time.monotonic() - started, 1)}
             return True
-        alive, _, _, _ = run(container, "kill -0 $(cat {}) 2>/dev/null".format(pid_file), 30)
+        # A launch that died is a zombie until something reaps it (PID 1 is `sleep`), and
+        # `kill -0` still finds a zombie.
+        alive, _, _, _ = run(
+            container,
+            "p=$(cat {}) && kill -0 $p 2>/dev/null && ! grep -qs '^State:[[:space:]]*Z' "
+            "/proc/$p/status".format(pid_file),
+            30,
+        )
         if alive != 0:
             break
         time.sleep(3)

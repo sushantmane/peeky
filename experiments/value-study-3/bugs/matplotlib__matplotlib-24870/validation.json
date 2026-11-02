@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "lib/matplotlib/tests/test_contour.py::test_bool_autolevel": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 2.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "lib/matplotlib/tests/test_contour.py::test_bool_autolevel": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "lib/matplotlib/tests/test_contour.py::test_bool_autolevel": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.9
+ }
+]

@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "astropy/table/tests/test_mixin.py::test_ndarray_mixin[False]": "FAILED",
+   "astropy/table/tests/test_table.py::test_structured_masked_column": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "astropy/table/tests/test_mixin.py::test_ndarray_mixin[False]": "PASSED",
+   "astropy/table/tests/test_table.py::test_structured_masked_column": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "astropy/table/tests/test_mixin.py::test_ndarray_mixin[False]": "PASSED",
+   "astropy/table/tests/test_table.py::test_structured_masked_column": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.5
+ }
+]

@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "lib/matplotlib/tests/test_figure.py::test_unpickle_with_device_pixel_ratio": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 6.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "lib/matplotlib/tests/test_figure.py::test_unpickle_with_device_pixel_ratio": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "lib/matplotlib/tests/test_figure.py::test_unpickle_with_device_pixel_ratio": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.7
+ }
+]

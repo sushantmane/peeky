@@ -1,0 +1,39 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/tests/SelfTest"
+ ],
+ "program": [
+  "--order",
+  "rand",
+  "--rng-seed",
+  "time"
+ ],
+ "prepare": [
+  "cmake --build build-peeky --parallel 4 --target SelfTest > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "notes": "The first failing test is the ctest test RunTests: SelfTest with its arguments (--order rand --rng-seed time). Its failing cases are the test patch's Testing checked-if 4 and 5 ([!shouldfail], which pass at base). The fix's last hunk inserts a call at the end of handleNonExpr: no statement follows it there, so its point is the function's closing brace, where execution goes next.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/catch2/internal/catch_run_context.cpp",
+   "line": 297,
+   "why": "the removed resetAssertionInfo() call in RunContext::assertionEnded (first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "src/catch2/internal/catch_run_context.cpp",
+   "line": 675,
+   "why": "the closing brace of RunContext::handleNonExpr, just after the inserted resetAssertionInfo() (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/SelfTest/UsageTests/Misc.tests.cpp",
+   "line": 222,
+   "why": "the CHECKED_ELSE of Testing checked-if 4, the first failing case's first assertion"
+  }
+ ]
+}

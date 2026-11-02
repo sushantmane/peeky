@@ -1,0 +1,38 @@
+id: astropy__astropy-13977
+language: python
+repo: astropy/astropy
+source: SWE-bench Verified
+base_commit: 5250b2442501e6c671c6b380536f1edb352602d1
+upstream: https://github.com/astropy/astropy/pull/13977
+category: B
+categories_applicable: [B, D]
+category_rationale: >-
+  Whether the duck type's reflected operation gets a chance depends on numpy's __array_ufunc__
+  dispatch, which only tries the other operand's override when Quantity returns NotImplemented;
+  the failure needs a third-party duck array with different but convertible units.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a ValueError where NotImplemented was expected, and the fix changes what
+  Quantity.__array_ufunc__ returns when converting its inputs fails. numpy calls it directly from
+  the test's ufunc call, in the same process.
+root_cause: >-
+  Quantity.__array_ufunc__ in astropy/units/quantity.py converts every input to the needed unit
+  before calling numpy. An input it can't handle, such as a duck array with its own
+  __array_ufunc__, makes the conversion raise ValueError or TypeError, so numpy never tries the
+  other operand's __array_ufunc__. The fix wraps the conversion and call in try/except and returns
+  NotImplemented when any input or output defines its own __array_ufunc__, re-raising otherwise.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with astropy installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest astropy/<subpackage>/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/astropy__astropy-13977:control
+build_minutes: 2.7
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Same recipe as astropy__astropy-14598 (SWE-bench spec for astropy 5.1, the same pins as 5.2; the
+  setuptools==68.0.0 build pin applied as a uv build constraint). Python 3.11 rather than 3.12:
+  the pinned numpy 1.25.2 has no 3.12 build. Grading runs astropy/units/tests/test_quantity.py and
+  test_quantity_ufuncs.py, the files the test patch touches. The single code hunk's first changed
+  lines are docstring, so its point is its first changed statement. At base the test raises before
+  its assertion (no stop there).

@@ -1,0 +1,143 @@
+{
+ "bug": "django__django-12325",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/django__django-12325:peeky-r3",
+ "image_id": "sha256:fdb4f79ad08ad286912f598f1d7766fccbf6bc589b4a0800d9e6cca2c8f38bc7",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:00:56+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed OneToOneField condition where ModelBase.__new__ collects parent links (the first hunk)",
+   "at": "django/db/models/base.py:205",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/base.py:205 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/base.py:205",
+    "function": "__new__"
+   },
+   "moved": false,
+   "values": {
+    "shown": 20,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "abstract",
+      "value": "False"
+     },
+     {
+      "name": "app_config",
+      "value": "<ContentTypesConfig: contenttypes>"
+     },
+     {
+      "name": "app_label",
+      "value": "'contenttypes'"
+     },
+     {
+      "name": "attrs",
+      "value": "{'__qualname__': 'ContentType', 'app_label': <django.db.models.fields.CharField: app_label>, 'model': <django.db.models.fields.CharField: model>, 'objects': <dj"
+     },
+     {
+      "name": "base_meta",
+      "value": "None"
+     },
+     {
+      "name": "bases",
+      "value": "(<class 'django.db.models.base.Model'>,)"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the removed parent_link check in Options._prepare (the last hunk)",
+   "at": "django/db/models/options.py:254",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/options.py:254 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/options.py:254",
+    "function": "_prepare"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "already_created",
+      "value": "[<django.db.models.fields.related.OneToOneField: other_parent>]"
+     },
+     {
+      "name": "field",
+      "value": "<django.db.models.fields.related.OneToOneField: other_parent>"
+     },
+     {
+      "name": "self",
+      "value": "<Options for Child>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/invalid_models_tests/test_relative_fields.py:1307",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at tests/invalid_models_tests/test_relative_fields.py:1307 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link",
+     "exit": 0,
+     "seconds": 1.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "Testing against Django installed in '/testbed/django'\nSystem check identified no issues (0 silenced).\nE\n======================================================================\nERROR: test_clash_parent_link (invalid_models_tests.test_relative_fields.ComplexClashTests.test_clash_parent_link)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/testbed/tests/invalid_models_tests/test_relative_fields.py\", line 1298, in test_clash_parent_link\n    class Child(Parent):\n  File \"/testbed/django/db/models/base.py\", line 320, in __new__\n    new_class._prepare()\n  File \"/testbed/django/db/models/base.py\", line 333, in _prepare\n    opts._prepare(cls)\n  File \"/testbed/django/db/models/options.py\", line 255, in _prepare\n    raise ImproperlyConfigured(\ndjango.core.exceptions.ImproperlyConfigured: Add parent_link=True to invalid_models_tests.Child.other_parent.\n\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nFAILED (errors=1)\n"
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:01:00+00:00"
+}

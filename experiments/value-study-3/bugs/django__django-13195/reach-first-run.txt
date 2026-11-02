@@ -1,0 +1,16 @@
+The first filter pass dropped this candidate; the coordinator's rule (README, 'The no-LLM filter': a gold point runs the first failing test that runs its line) then reached it. py-b's note on the first run, whose record the second run replaced:
+
+Dropped at step 3: not reached.
+The run is the first failing test, responses.test_cookie.DeleteCookieTests.test_delete_cookie_samesite.
+At base it calls response.delete_cookie('c', samesite='lax'), which raises TypeError ("got an
+unexpected keyword argument 'samesite'") at the call, so no line of delete_cookie runs. Outcomes
+(results/reach/3e51ccd7232d/django__django-13195.json):
+  gold django/contrib/messages/storage/cookie.py:95  no stop (program exited 1 after the test's TypeError)
+  gold django/http/response.py:216                    no stop (same)
+  assertion tests/responses/test_cookie.py:132         no stop (same)
+Peeky refused nothing. For the coordinator: in an informational run outside the record (py-b's
+scratch reach-alt/), with other failing tests as the run, both gold points were reached:
+cookie.py:95 with messages_tests.test_cookie.CookieTests.test_cookie_setings (3 values) and
+response.py:216 with sessions_tests.tests.SessionMiddlewareTests.test_session_delete_on_end (4 values).
+Step 1 and step 2 passed (validation.json; Peeky image solved with gold, not with noop).
+Images removed after the drop.

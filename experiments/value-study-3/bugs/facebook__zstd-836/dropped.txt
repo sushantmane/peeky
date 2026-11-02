@@ -1,0 +1,9 @@
+stage: 3 (reach check), on Peeky 3e51ccd7232d
+reason: not reached (no value read at a gold point).
+first run (tests/fuzzer -T1mn, record kept in reach-first-run.json): every point refused, PROVENANCE_CHANGED "Provenance: the binary is stale: tests/fuzzer.c changed, since it was built (its line tables record each file's MD5). Rebuild it (make), then probe again". The prepare's rebuild failed: the test patch's fuzzer.c calls ZSTD_decodingBufferSize_min, which only the fix adds.
+corrected run (tests/zstreamtest -T30s, the other failing test, built for Peeky after the test patch; results/reach/3e51ccd7232d/facebook__zstd-836.json):
+- gold lib/decompress/zstd_decompress.c:156 (ZSTD_decompressBegin): reached; 0 values read, 1 withheld: "a block around line 156 may declare `dctx` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read lib/decompress/zstd_decompress.c as compiled: its command uses -dumpdir, whic…" (cut at 300 characters by reach.py).
+- gold lib/decompress/zstd_decompress.c:2434 (ZSTD_decompressStream): reached; 0 values read, 12 withheld, same note.
+- assertion tests/fuzzer.c:300: refused UNSUPPORTED "No unit of tests/zstreamtest Peeky judges has code in tests/fuzzer.c: `peeky describe` lists each unit, judged or not and why".
+cause: tests/Makefile compiles and links each test program in one clang command; clang 18 then gives each unit's recorded command a -dumpdir, and Peeky doesn't replay such a command, so it reads no unit's text and withholds every local. A per-object Peeky build would avoid it; not tried (a workaround of the refusal).
+steps 1 and 2 passed: base unsolved (fuzzer doesn't link), gold-1 and gold-2 solved; Peeky image gold solved, noop not solved.

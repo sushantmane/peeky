@@ -1,0 +1,8 @@
+Stage: step 3 (reach check), on Peeky 3e51ccd7232d.
+Reason: not reached. Every point was refused, before anything ran:
+- gold src/catch2/internal/catch_run_context.cpp:297: refused, UNSUPPORTED "src/catch2/internal/catch_run_context.cpp is a unit Peeky doesn't judge: its file has no absolute path (-fdebug-compilation-dir): rebuild without it"
+- gold src/catch2/internal/catch_run_context.cpp:675: refused, the same message
+- assertion tests/SelfTest/UsageTests/Misc.tests.cpp:222: refused, UNSUPPORTED "tests/SelfTest/UsageTests/Misc.tests.cpp is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)"
+The first message comes from the Catch2 library's own -ffile-prefix-map=/testbed/= (add_build_reproducibility_settings, applied to every build). A side check outside the record, with that flag's CMake check pre-set off, found the same unit refused for the <stdin> reason instead, so removing the flag wouldn't reach it.
+Record: results/reach/3e51ccd7232d/catchorg__Catch2-2723.json
+Steps 1 and 2 passed: validation base not solved, gold-1 and gold-2 solved; Peeky image built, fake gold solved, noop not solved.

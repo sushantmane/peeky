@@ -1,0 +1,85 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "tracing-core/src/dispatcher.rs",
+   "line": 315,
+   "why": "the changed match in dispatcher::set_global_default (first code hunk; line 310 is the signature)",
+   "options": [
+    "--config",
+    "/root/reach/core.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "set_default_dispatch",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "tracing/src/subscriber.rs",
+   "line": 45,
+   "why": "the changed call in tracing's subscriber::set_global_default, a generic function (last code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/core-and-tracing.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "set_default_dispatch",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tracing-core/tests/dispatch.rs",
+   "line": 14,
+   "options": [
+    "--config",
+    "/root/reach/core.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "set_default_dispatch",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/core.json": {
+   "workspace": ".",
+   "analyse": [
+    "tracing-core"
+   ],
+   "run": {
+    "package": "tracing-core",
+    "test": "dispatch"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/core-and-tracing.json": {
+   "workspace": ".",
+   "analyse": [
+    "tracing-core",
+    "tracing"
+   ],
+   "run": {
+    "package": "tracing-core",
+    "test": "dispatch"
+   },
+   "vendor": "vendor"
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

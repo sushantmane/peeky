@@ -1,0 +1,8 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, dubbo)",
+ "fail_to_pass": [
+  "org.apache.dubbo.common.utils.ReflectUtilsTest"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

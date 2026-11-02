@@ -1,0 +1,100 @@
+{
+ "bug": "astropy__astropy-13977",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/astropy__astropy-13977:peeky-r3",
+ "image_id": "sha256:5c1452b8eb78dbcf789966b24936c74d6bda5ee9332a296a1ae43f75671e8c54",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:18:47+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first statement the fix changes (wraps in try) in Quantity.__array_ufunc__: the converters_and_unit call (the only hunk; its first changed lines are docstring)",
+   "at": "astropy/units/quantity.py:643",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/units/quantity.py:643 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]'",
+     "exit": 0,
+     "seconds": 1.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/astropy/units/quantity.py:643",
+    "function": "__array_ufunc__",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "function",
+      "value": "<ufunc 'multiply'>"
+     },
+     {
+      "name": "inputs",
+      "value": "(<Quantity 1. Bq>, 37000000000.0)"
+     },
+     {
+      "name": "kwargs",
+      "value": "{}"
+     },
+     {
+      "name": "method",
+      "value": "'__call__'"
+     },
+     {
+      "name": "self",
+      "value": "<Quantity 1. Bq>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": "with out=None the test skips `assert result is out` (line 1411), so its first assertion run is this one",
+   "at": "astropy/units/tests/test_quantity_ufuncs.py:1414",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at astropy/units/tests/test_quantity_ufuncs.py:1414 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'astropy/units/tests/test_quantity_ufuncs.py::TestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]'",
+     "exit": 0,
+     "seconds": 2.1
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026kQuantity3(data=<Quantity 1. mm>), out = None\n\n    @pytest.mark.parametrize(\n        \"duck_quantity\",\n        [DuckQuantity3(1 * u.mm), DuckQuantity3([1, 2] * u.mm)],\n    )\n    @pytest.mark.parametrize(\"out\", [None, \"empty\"])\n    def test_full(self, ufunc, quantity, duck_quantity, out):\n        out_expected = out\n        if out == \"empty\":\n            out = type(duck_quantity)(\n                np.empty_like(ufunc(quantity, duck_quantity.data))\n            )\n            out_expected = np.empty_like(ufunc(quantity, duck_quantity.data))\n    \n>       result = ufunc(quantity, duck_quantity, out=out)\n\n\u001b[1m\u001b[31mastropy/units/tests/test_quantity_ufuncs.py\u001b[0m:1409: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\u001b[1m\u001b[31mastropy/units/quantity.py\u001b[0m:670: in __array_ufunc__\n    arrays.append(converter(input_) if converter else input_)\n\u001b[1m\u001b[31mastropy/units/core.py\u001b[0m:1073: in <lambda>\n    return lambda val: scale * _condition_arg(val)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nvalue = DuckQuantity3(data=<Quantity 1. mm>)\n\n    def _condition_arg(value):\n        \"\"\"\n        Validate value is acceptable for conversion purposes.\n    \n        Will convert into an array if not a scalar, and can be converted\n        into an array\n    \n        Parameters\n        ----------\n        value : int or float value, or sequence of such values\n    \n        Returns\n        -------\n        Scalar value or numpy array\n    \n        Raises\n        ------\n        ValueError\n            If value is not as expected\n        \"\"\"\n        if isinstance(value, (np.ndarray, float, int, complex, np.void)):\n            return value\n    \n        avalue = np.array(value)\n        if avalue.dtype.kind not in [\"i\", \"f\", \"c\"]:\n>           raise ValueError(\n                \"Value not scalar compatible or convertible to \"\n                \"an int, float, or complex array\"\n            )\n\u001b[1m\u001b[31mE           ValueError: Value not scalar compatible or convertible to an int, float, or complex array\u001b[0m\n\n\u001b[1m\u001b[31mastropy/units/core.py\u001b[0m:2629: ValueError\n\u001b[36m\u001b[1m=========================== short test summary info ============================\u001b[0m\n\u001b[31mFAILED\u001b[0m astropy/units/tests/test_quantity_ufuncs.py::\u001b[1mTestUfuncReturnsNotImplemented::TestBinaryUfuncs::test_full[None-duck_quantity0-quantity0-add]\u001b[0m - ValueError: Value not scalar compatible or convertible to an int, float, or...\n\u001b[31m\u001b[31m\u001b[1m1 failed\u001b[0m\u001b[31m in 0.11s\u001b[0m\u001b[0m\n"
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:18:51+00:00"
+}

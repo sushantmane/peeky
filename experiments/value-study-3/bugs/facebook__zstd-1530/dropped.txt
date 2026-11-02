@@ -1,0 +1,7 @@
+stage: 3 (reach check), on Peeky 3e51ccd7232d
+reason: not reached. Run: tests/fuzzer -T1mn (the program of the first failing part of "all tests", test-fuzzer), Peeky's build after the test patch.
+- gold lib/compress/zstd_compress.c:442 (ZSTD_CCtx_setParameter, case ZSTD_c_format): no stop; the program terminated, exit code 1, output "Error L843 => FAILED cSize1 < cSize2 Error detected in Unit tests !" (the hidden test's first check fails, and basicUnitTests ends before the magic-less format test that sets ZSTD_c_format).
+- gold lib/compress/zstdmt_compress.c:1024 (ZSTDMT_getMTCtxParameter): no stop; same exit and output.
+- assertion tests/fuzzer.c:344: reached, 0 values read (11 withheld: "a block around line 344 may declare `seed` (...), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky…" — fuzzer.c is compiled in tests/Makefile's link command, which gives its unit a -dumpdir, as in facebook__zstd-836).
+first run (reach-first-run.json): gold points refused UNSUPPORTED "lib/compress/zstd_compress.c is a unit Peeky doesn't judge: built by GCC, which writes no checksum of its files: rebuild with clang (CC=clang CXX=clang++)": the Peeky build had relinked GCC's objects left in tests/ by the image's warm-up; peeky.sh now cleans tests/ first, and the image was rebuilt (gold solved, noop not, again) before the second run.
+steps 1 and 2 passed: base unsolved (fuzzer's new check fails), gold-1 and gold-2 solved; Peeky image gold solved, noop not solved.

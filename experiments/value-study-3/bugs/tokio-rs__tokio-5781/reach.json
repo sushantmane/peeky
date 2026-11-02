@@ -1,0 +1,76 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "tokio/src/io/interest.rs",
+   "line": 66,
+   "why": "the changed expression in Interest::is_readable (first code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "await_error_readiness_timestamping",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "tokio/src/io/ready.rs",
+   "line": 286,
+   "why": "the changed field chain in Ready's Debug impl (last code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "await_error_readiness_timestamping",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tokio/tests/io_async_fd.rs",
+   "line": 720,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "await_error_readiness_timestamping",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tokio"
+   ],
+   "run": {
+    "package": "tokio",
+    "test": "io_async_fd"
+   },
+   "vendor": "vendor",
+   "features": [
+    "full"
+   ]
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

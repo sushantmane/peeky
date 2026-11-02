@@ -1,0 +1,37 @@
+id: fmtlib__fmt-1390
+language: cpp
+repo: fmtlib/fmt
+source: Multi-SWE-bench
+base_commit: d6eede9e085f0b36edcf0a2f6dff5f7875181019
+upstream: https://github.com/fmtlib/fmt/pull/1390
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows the truncated output, and the string writer's precision handling is a few
+  readable lines. The state is a size and a string.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report is wrong output, and the fix changes how the truncated size is computed. The fixed
+  line runs in basic_writer::write, about eight calls below the test's fmt::format, through the
+  format-string parser and the argument visitor.
+root_cause: >-
+  basic_writer::write(basic_string_view<Char>, specs) in include/fmt/format.h applies a precision
+  by cutting the string to that many code units, so for a UTF-8 (char8_t) string it can cut a
+  multi-byte code point in half: "{:.4}" of "cafés" gives "caf\xc3". The fix adds
+  code_point_index(), which for char8_t strings finds the byte index of the nth code point (other
+  character types keep min(n, size)), and truncates there.
+test_hint: |-
+  Build a test with `cd /testbed && cmake -S . -B build && cmake --build build --parallel 4 --target <name>-test` (sources in test/<name>-test.cc; binaries in build/bin/).
+  Run it with `ctest --test-dir build -R '^<name>-test$' --output-on-failure`.
+image: peeky-study/fmtlib__fmt-1390:control
+build_minutes: 0.45
+grade_minutes: 0.5
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's fmtlib/fmt recipe (cmake in build/, ctest; fmt defaults to a
+  Release build as C++11) with the base image's GCC 13 for its gcc:latest, limited to format-test,
+  the binary of the test file the test patch changes. fail_to_pass is that n2p test (at base its
+  new case FormatTest.FormatUTF8Precision fails; the other 125 pass). pass_to_pass is limited to
+  the tests eval.sh runs, so it is empty. eval.sh builds from a fresh build/. Peeky's build
+  (peeky.sh) passes the tests' system include directories with -idirafter: libc++'s <ostream>
+  includes <format>, and test/format would stand in for it.

@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "astropy/io/fits/tests/test_header.py::TestHeaderFunctions::test_card_from_bytes"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "astropy/io/fits/card.py",
+   "line": 557,
+   "why": "the statement after the insertion in Card.fromstring (first code hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "astropy/io/fits/header.py",
+   "line": 395,
+   "why": "the changed append of the last card in Header.fromstring (last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "astropy/io/fits/tests/test_header.py",
+   "line": 94
+  }
+ ]
+}

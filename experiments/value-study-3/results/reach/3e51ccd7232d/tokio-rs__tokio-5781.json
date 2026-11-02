@@ -1,0 +1,76 @@
+{
+ "bug": "tokio-rs__tokio-5781",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/tokio-rs__tokio-5781:peeky-r3",
+ "image_id": "sha256:8fc9020ca7cd6f9e319c28f85c396556e0869b68832206ee544068b13715017a",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T16:53:33+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed expression in Interest::is_readable (first code hunk)",
+   "at": "tokio/src/io/interest.rs:66",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/io/interest.rs:66 --name reach --timeout 300 --json -- --exact await_error_readiness_timestamping --test-threads=1",
+     "exit": 2,
+     "seconds": 12.3
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/io_async_fd.rs:711:32: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:719:36: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:720:38: error[E0599]: no associated function or constant named `ERROR` found for struct `tokio::io::Ready` in the current scope: associated function or constant not found in `tokio::io::Ready`\ntokio/tests/io_async_fd.rs:810:36: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:811:38: error[E0599]: no associated function or constant named `ERROR` found for struct `tokio::io::Ready` in the current scope: associated function or constant not found in `tokio::io::Ready`\nerror: could not compile `tokio` (test \"io_async_fd\") due to 5 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the changed field chain in Ready's Debug impl (last code hunk)",
+   "at": "tokio/src/io/ready.rs:286",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/io/ready.rs:286 --name reach --timeout 300 --json -- --exact await_error_readiness_timestamping --test-threads=1",
+     "exit": 2,
+     "seconds": 6.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/io_async_fd.rs:711:32: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:719:36: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:720:38: error[E0599]: no associated function or constant named `ERROR` found for struct `tokio::io::Ready` in the current scope: associated function or constant not found in `tokio::io::Ready`\ntokio/tests/io_async_fd.rs:810:36: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:811:38: error[E0599]: no associated function or constant named `ERROR` found for struct `tokio::io::Ready` in the current scope: associated function or constant not found in `tokio::io::Ready`\nerror: could not compile `tokio` (test \"io_async_fd\") due to 5 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/io_async_fd.rs:720",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/io_async_fd.rs:720 --name reach --timeout 300 --json -- --exact await_error_readiness_timestamping --test-threads=1",
+     "exit": 2,
+     "seconds": 7.3
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\ntokio/tests/io_async_fd.rs:711:32: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:719:36: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:720:38: error[E0599]: no associated function or constant named `ERROR` found for struct `tokio::io::Ready` in the current scope: associated function or constant not found in `tokio::io::Ready`\ntokio/tests/io_async_fd.rs:810:36: error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` in the current scope: associated function or constant not found in `Interest`\ntokio/tests/io_async_fd.rs:811:38: error[E0599]: no associated function or constant named `ERROR` found for struct `tokio::io::Ready` in the current scope: associated function or constant not found in `tokio::io::Ready`\nerror: could not compile `tokio` (test \"io_async_fd\") due to 5 previous errors",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T16:54:01+00:00"
+}

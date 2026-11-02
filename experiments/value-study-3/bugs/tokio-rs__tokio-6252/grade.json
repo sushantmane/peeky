@@ -1,0 +1,8 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, tokio)",
+ "fail_to_pass": [
+  "rx_mark_unchanged"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

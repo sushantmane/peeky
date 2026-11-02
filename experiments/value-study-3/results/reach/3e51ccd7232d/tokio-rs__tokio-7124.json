@@ -1,0 +1,44 @@
+{
+ "bug": "tokio-rs__tokio-7124",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/tokio-rs__tokio-7124:peeky-r3",
+ "image_id": "sha256:d4a70ce9f30a6ef42aed7eb9cd141838b71b99cccba9dae1177cec9b226dc859",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:41:53+00:00",
+ "needs": [],
+ "notes": "The fix changes Cargo manifests (a [workspace.lints.rust] check-cfg list, [lints] workspace = true), CI files, crate attributes and doc comments; no hunk changes an executable statement, so there is no gold point. The fail_to_pass tests are those of the test binaries the test patch changes; the first is macros_select's sync_one_lit_expr_comma.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "no hunk of the fix changes an executable statement: it changes manifests, CI configuration, crate-level attributes, a cfg_attr and doc comments"
+   }
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/macros_select.rs:22",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/macros_select.rs:22 --name reach --timeout 300 --json -- --exact sync_one_lit_expr_comma --test-threads=1",
+     "exit": 2,
+     "seconds": 1.7
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "BUILD_FAILED",
+    "message": "The build failed: cargo exited with code 101\nerror: failed to load manifest for workspace member `/testbed/tokio`\nreferenced by workspace at `/testbed/Cargo.toml`\n\nCaused by:\n  failed to load manifest for dependency `tokio-stream`\n\nCaused by:\n  failed to load manifest for dependency `tokio-util`\n\nCaused by:\n  failed to load manifest for dependency `tokio-test`\n\nCaused by:\n  failed to parse manifest at `/testbed/tokio-test/Cargo.toml`\n\nCaused by:\n  error inheriting `lints` from workspace root manifest's `workspace.lints`\n\nCaused by:\n  `workspace.lints` was not defined",
+    "hint": "Fix the error the compiler reports and run again. With --old/--new it is the edit that does not build; your files were not changed.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:41:55+00:00"
+}

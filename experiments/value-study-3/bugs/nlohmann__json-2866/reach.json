@@ -1,0 +1,36 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/test/test-diagnostics"
+ ],
+ "program": [
+  "--no-skip"
+ ],
+ "prepare": [
+  "cmake --build build-peeky --parallel 4 --target test-diagnostics > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "notes": "The failing test is the ctest test test-diagnostics: the binary with ctest's argument (--no-skip), in /testbed (its WORKING_DIRECTORY).",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/nlohmann/json.hpp",
+   "line": 1310,
+   "why": "set_parent: the statement after the inserted capacity check (first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "single_include/nlohmann/json.hpp",
+   "line": 22873,
+   "why": "the changed return of insert(pos, initializer_list) in the single header, which the tests include (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "test/src/unit-diagnostics.cpp",
+   "line": 47,
+   "why": "the first CHECK of the test case Better diagnostics, the binary's first assertion"
+  }
+ ]
+}

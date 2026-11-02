@@ -1,0 +1,51 @@
+{
+ "bug": "simdjson__simdjson-1615",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/simdjson__simdjson-1615:peeky-r3",
+ "image_id": "sha256:baa19694ce9e417cc6d6dae376a4a3e57352af58121cdb0126a87df0e23a9de5",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:09:45+00:00",
+ "needs": [],
+ "notes": "The failing test is the ctest test ondemand_json_pointer_tests, which the test patch adds: the binary with no arguments. At base it doesn't compile (the at_pointer methods it calls don't exist yet), so the run has no binary. The fix only adds new declarations and new functions at namespace or class scope: no executable statement of a base file changes, so no gold point exists in the base files.",
+ "prepare": [
+  {
+   "command": "(cmake -S . -B build-peeky && cmake --build build-peeky --parallel 4 --target ondemand_json_pointer_tests) > /root/reach/rebuild.log 2>&1; tail -5 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 0.7,
+   "output": "7 warnings and 5 errors generated.\ngmake[3]: *** [tests/ondemand/CMakeFiles/ondemand_json_pointer_tests.dir/build.make:76: tests/ondemand/CMakeFiles/ondemand_json_pointer_tests.dir/ondemand_json_pointer_tests.cpp.o] Error 1\ngmake[2]: *** [CMakeFiles/Makefile2:2024: tests/ondemand/CMakeFiles/ondemand_json_pointer_tests.dir/all] Error 2\ngmake[1]: *** [CMakeFiles/Makefile2:2031: tests/ondemand/CMakeFiles/ondemand_json_pointer_tests.dir/rule] Error 2\ngmake: *** [Makefile:823: ondemand_json_pointer_tests] Error 2\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "no gold point: every hunk of the fix inserts new declarations or whole new functions (at_pointer) outside any base function, so no base line holds a changed executable statement"
+   }
+  },
+  {
+   "role": "assertion",
+   "why": "the first ASSERT_SUCCESS of demo_test, which run() calls first",
+   "at": "tests/ondemand/ondemand_json_pointer_tests.cpp:74",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/tests/ondemand/ondemand_json_pointer_tests --at tests/ondemand/ondemand_json_pointer_tests.cpp:74 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/tests/ondemand/ondemand_json_pointer_tests in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:09:46+00:00"
+}

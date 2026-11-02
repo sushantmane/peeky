@@ -1,0 +1,1 @@
+{"analyse": ["tokio"], "run": {"package": "tokio", "test": "sync_mpsc"}, "features": ["full"]}

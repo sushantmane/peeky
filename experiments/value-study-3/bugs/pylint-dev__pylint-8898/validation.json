@@ -1,0 +1,31 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/config/test_config.py::test_csv_regex_error": "FAILED"
+  },
+  "p2p_failed": [
+   "tests/config/test_config.py::test_csv_regex_comma_in_quantifier[foo,"
+  ],
+  "solved": false,
+  "seconds": 1.2
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/config/test_config.py::test_csv_regex_error": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.3
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/config/test_config.py::test_csv_regex_error": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.3
+ }
+]

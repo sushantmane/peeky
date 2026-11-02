@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "logstash-core:javaTests": "FAILED",
+   "org.logstash.log.CustomLogEventTests > testJSONLayoutWhenParamsContainsAnotherMessageField": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 8.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "logstash-core:javaTests": "PASSED",
+   "org.logstash.log.CustomLogEventTests > testJSONLayoutWhenParamsContainsAnotherMessageField": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 11.5
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "logstash-core:javaTests": "PASSED",
+   "org.logstash.log.CustomLogEventTests > testJSONLayoutWhenParamsContainsAnotherMessageField": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 10.9
+ }
+]

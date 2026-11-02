@@ -1,0 +1,8 @@
+stage: 3 (reach check)
+reason: not reached. With the hidden test patch at base, the junit-jupiter project's test sources
+don't compile (the test puts @Captor on method and constructor parameters; @Captor is
+@Target(FIELD) until the fix), so the failing test's JVM never starts. All three points,
+GenericMaster.java:20 and MockitoExtension.java:191 (gold) and JunitJupiterTest.java:61
+(assertion), are "error: the launch never got ready"; no Peeky refusal. Record:
+results/reach/3e51ccd7232d/mockito__mockito-3133.json.
+Steps 1 and 2 passed (validation base/gold-1/gold-2 ok; Peeky image ok, gold solved, noop not).

@@ -1,0 +1,6 @@
+stage: 3 (reach check), on Peeky 3e51ccd7232d
+reason: not reached. Run: build-peeky/stdlib/stdlib-debug --sequential --only=collections/Flags (the standard library's tests, compiled with Peeky's -O0 ponyc, -d, after the test patch).
+- gold packages/collections/flag.pony:94: refused UNSUPPORTED "No unit of build-peeky/stdlib/stdlib-debug Peeky judges has code in packages/collections/flag.pony. Units Peeky doesn't judge name it in their line tables: packages/stdlib/stdlib: built by ponyc-0.41.2-89b03703: rebuild with clang".
+- assertion packages/collections/_test.pony:773: refused, the same message for _test.pony.
+cause: the fix and the test are Pony code, which ponyc compiles; Peeky reads only clang's units.
+steps 1 and 2 passed: base unsolved (collections/Flags fails), gold-1 and gold-2 solved (net/Broadcast removed from pass_to_pass: no network); Peeky image gold solved, noop not solved.

@@ -1,0 +1,41 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/ObjectMapper.java",
+    "src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.jsontype.deftyping.TestDefaultForEnums#testEnumAsWrapperArrayWithCreator -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/ObjectMapper.java",
+   "line": 361,
+   "why": "the statement after the inserted NON_FINAL_AND_ENUMS case in DefaultTypeResolverBuilder.useForType (return true of case EVERYTHING); the other hunk only declares the enum constant"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java",
+   "line": 129,
+   "why": "the first assertion of testEnumAsWrapperArrayWithCreator, the test the patch adds"
+  }
+ ]
+}

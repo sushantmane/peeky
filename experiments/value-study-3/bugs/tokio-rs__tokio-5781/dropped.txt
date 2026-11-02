@@ -1,0 +1,6 @@
+stage: 3 (reach check)
+reason: not reached. Every point was refused with BUILD_FAILED: the hidden test patch doesn't
+compile at the base commit (it uses Interest::ERROR and Ready::ERROR, which the fix adds), so
+Peeky's build of the io_async_fd test fails ("The build failed: cargo exited with code 101 ...
+error[E0599]: no associated function or constant named `ERROR` found for struct `Interest` ...").
+Not retryable; no remedy applies. Record: results/reach/3e51ccd7232d/tokio-rs__tokio-5781.json.

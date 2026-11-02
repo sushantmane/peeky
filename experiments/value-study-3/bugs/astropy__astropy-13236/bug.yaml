@@ -1,0 +1,37 @@
+id: astropy__astropy-13236
+language: python
+repo: astropy/astropy
+source: SWE-bench Verified
+base_commit: 6ed769d58d89380ebaa1ef52b300691eefda8928
+upstream: https://github.com/astropy/astropy/pull/13236
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report quotes the exact clause that views structured arrays as NdarrayMixin and proposes
+  removing it; the state involved is one array's dtype.
+traits: []
+traits_rationale: >-
+  A design change proposed in the report (structured arrays become plain Columns), not a reported
+  wrong value or crash. The clause runs in Table._convert_data_to_col, a few calls below the
+  test's Table construction and column assignment.
+root_cause: >-
+  Table._convert_data_to_col in astropy/table/table.py views any structured numpy array that
+  isn't already a Column or mixin as an NdarrayMixin, a workaround from before structured Columns
+  were fully supported; so such data never becomes a Column (or a MaskedColumn for a masked
+  structured array). The fix deletes that clause.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with astropy installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest astropy/<subpackage>/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/astropy__astropy-13236:control
+build_minutes: 0.9
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for astropy 5.0 (its pins, setuptools 68.0.0). To build on Python 3.11 the build
+  requirements are installed first with Cython 0.29.30 instead of pyproject's cython==0.29.22
+  (whose generated C needs longintrepr.h, moved in 3.11), and the checkout is built without
+  isolation against the pinned numpy 1.25.2. Python 3.11 rather than 3.12: the pinned numpy
+  1.25.2 has no 3.12 build. Grading runs astropy/table/tests/test_mixin.py and test_table.py, the
+  files the test patch touches; test_skycoord_representation and test_values_equal_part1 fail at
+  base and with gold and aren't in PASS_TO_PASS.

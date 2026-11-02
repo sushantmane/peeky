@@ -1,0 +1,136 @@
+{
+ "bug": "elastic__logstash-16579",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/elastic__logstash-16579:peeky-r3",
+ "image_id": "sha256:428799ae332e0207038446f8f1aaa0c9c2bba854b64cbdfa077e438956107b34",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:32:02+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first line the extract hunk changes: the size of the incoming first segment, in the size-limit check",
+   "at": "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:81",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:81 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:81",
+    "function": "BufferedTokenizerExt.extract(ThreadContext,IRubyObject)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "context",
+      "value": "ThreadContext@7946"
+     },
+     {
+      "name": "data",
+      "value": "RubyString@7947"
+     },
+     {
+      "name": "entities",
+      "value": "RubyArray@7948"
+     },
+     {
+      "name": "this",
+      "value": "BufferedTokenizerExt@7949"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "gold",
+   "why": "the first line the last code hunk changes: flush's join of the accumulated input",
+   "at": "logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:107",
+   "launch": {
+    "ready_seconds": 6.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/main/java/org/logstash/common/BufferedTokenizerExt.java:107 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.5
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 8
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of the first failing test (assertThrows of the first buffer-full error)",
+   "at": "logstash-core/src/test/java/org/logstash/common/BufferedTokenizerExtWithSizeLimitTest.java:95",
+   "launch": {
+    "ready_seconds": 6.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at logstash-core/src/test/java/org/logstash/common/BufferedTokenizerExtWithSizeLimitTest.java:95 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.4
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/logstash-core/src/test/java/org/logstash/common/BufferedTokenizerExtWithSizeLimitTest.java:95",
+    "function": "BufferedTokenizerExtWithSizeLimitTest.giveMultipleSegmentsThatGeneratesMultipleBufferFullErrorsThenIsAbleToRecoverTokenization()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "this",
+      "value": "BufferedTokenizerExtWithSizeLimitTest@7946"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 12
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:32:35+00:00"
+}

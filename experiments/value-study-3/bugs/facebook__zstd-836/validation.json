@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test-fuzzer": "FAILED",
+   "test-zstream": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 14.4
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test-fuzzer": "PASSED",
+   "test-zstream": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 192.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test-fuzzer": "PASSED",
+   "test-zstream": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 194.2
+ }
+]

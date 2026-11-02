@@ -1,0 +1,62 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "clap_builder/src/parser/parser.rs",
+   "line": 1574,
+   "why": "the changed `if let Some((name, _)) = did_you_mean` in Parser::did_you_mean_error, which the fix wraps (the only hunk)",
+   "options": [
+    "--config",
+    "/root/reach/gold.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "ignore_errors::did_you_mean",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/builder/ignore_errors.rs",
+   "line": 127,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "ignore_errors::did_you_mean",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/gold.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap_builder"
+   ],
+   "run": {
+    "package": "clap",
+    "test": "builder"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap"
+   ],
+   "run": {
+    "package": "clap",
+    "test": "builder"
+   },
+   "vendor": "vendor"
+  }
+ }
+}

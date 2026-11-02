@@ -1,0 +1,37 @@
+id: clap-rs__clap-3391
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: 7c79e76f2f55b1aab083fa201a86bbc8c8c35711
+upstream: https://github.com/clap-rs/clap/pull/3391
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows the reordered list in the invalid-value error, and the function that formats
+  that error sorts the values; the state is a plain vector of strings.
+traits: [hard-to-reach]
+traits_rationale: >-
+  The change is to the text of an error message (the order of the listed values), which the
+  reporter asks to control, so not runtime-state. The message is built in the parser's error
+  path, five or more calls below the test's try_get_matches_from.
+root_cause: >-
+  In src/parse/errors.rs, Error::invalid_value copies the argument's possible values into a vector
+  and sorts it (sorted.sort()) before listing them in the error's "[possible values: ...]" line and
+  in the error's info. So the values appear in lexicographic order (0, 1, 12, 2) rather than in the
+  order the argument declares them. The fix drops the sort and keeps the declared order.
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test builder -- <filter>`
+  (e.g. `-- flags::`); other test targets: `--test derive`, `--test macros`; the library's unit
+  tests: `cargo test --lib`. The build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-3391:control
+build_minutes: 0.9
+grade_minutes: 0.07
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain). The repo has no Cargo.lock (git ignores it): the image's
+  cargo fetch resolved one at build time, as Multi-SWE-bench's image did. `--package clap` is
+  ambiguous (criterion's clap 2), so commands name the test target. Test command: Multi-SWE-bench
+  runs `cargo test`; eval.sh runs the builder test target filtered to possible_values:: (the hidden
+  test file), offline. pass_to_pass is limited to the 15 dataset PASS_TO_PASS tests under
+  possible_values::. The n2p tests are in other files the patch doesn't change. Parser:
+  Multi-SWE-bench's Rust parse_log.

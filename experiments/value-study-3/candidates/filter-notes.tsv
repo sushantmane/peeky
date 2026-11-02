@@ -1,0 +1,40 @@
+instance	note
+sphinx-doc__sphinx-7985	step 1: its failing tests check external links, so they need the network
+sphinx-doc__sphinx-9229	step 1: doesn't run on CPython 3.11 or 3.12 (imports `types.Union`)
+django__django-12406	step 1: a failing test already passes at base
+pytest-dev__pytest-5840	step 1: doesn't run on CPython 3.10 or later (assertion rewriting)
+django__django-11400	reached after the coordinator's fix: each gold point now runs the first failing test that runs it
+django__django-13195	reached after the coordinator's fix: each gold point now runs the first failing test that runs it
+alibaba__fastjson2-82	rebuilt on JDK 11 by the coordinator: Peeky launches Java on JDK 9 or later only
+pytest-dev__pytest-10356	run corrected as Peeky's message says: `--run src/pytest/__main__.py` (pytest is the project)
+sympy__sympy-17318	run corrected as Peeky's message says: `bin/test` copied to a `.py` entry point
+fasterxml__jackson-databind-2036	the failing test doesn't compile at base (uses what the fix adds)
+fasterxml__jackson-databind-4159	the failing test doesn't compile at base (uses what the fix adds)
+fasterxml__jackson-databind-4131	no gold point (the fix only adds methods), and the test doesn't compile at base
+elastic__logstash-15964	the failing test doesn't compile at base
+mockito__mockito-3133	the failing test doesn't compile at base
+alibaba__fastjson2-1245	no stop: at base the test fails earlier in the same method, before the gold line
+facebook__zstd-1107	the failing test doesn't compile at base (calls what the fix adds); a run of base's fuzzer reached a gold point, but it isn't the failing test
+facebook__zstd-836	reached with no value read: units built in one compile-and-link command (`-dumpdir`)
+facebook__zstd-1530	no stop: the fuzzer fails at the hidden check before the gold lines
+ponylang__ponyc-3763	reached with no value read: the test binary's debug information is over Peeky's 300 MiB limit
+ponylang__ponyc-3777	refused: the fix is Pony code, which Peeky doesn't read
+nlohmann__json-2866	refused: no unit of the test binary is judged (a `<stdin>` line table)
+fmtlib__fmt-1390	refused: INVALID_BREAKPOINT at the gold line; the test unit has a `<stdin>` line table
+fmtlib__fmt-3260	refused: a `<stdin>` line table
+catchorg__Catch2-2723	refused: Catch2's `-ffile-prefix-map` leaves no absolute path
+nlohmann__json-2576	the failing test doesn't compile at base
+nlohmann__json-1138	the failing test doesn't compile at base
+simdjson__simdjson-1615	no gold point (the fix only adds functions), and the test doesn't compile at base
+fmtlib__fmt-3537	no gold point (the fix only adds a function template)
+tokio-rs__tokio-5781	the failing test doesn't compile at base (BUILD_FAILED)
+tokio-rs__tokio-6252	the failing test doesn't compile at base (BUILD_FAILED)
+tokio-rs__tokio-6339	the failing test doesn't compile at base (BUILD_FAILED)
+tokio-rs__tokio-4384	no gold point (the fix only adds trait impls)
+tokio-rs__tokio-7124	no gold point (manifests and attributes only)
+tokio-rs__tracing-1045	the failing test doesn't compile at base (BUILD_FAILED)
+nushell__nushell-10629	refused: UNSUPPORTED, a `[patch]` table in Cargo.toml
+nushell__nushell-11292	refused: UNSUPPORTED, a `[patch]` table in Cargo.toml
+clap-rs__clap-2161	refused: BUILD_FAILED, `-p clap` is ambiguous (a dev-dependency brings clap 2.34)
+clap-rs__clap-2696	refused: BUILD_FAILED, `-p clap` is ambiguous (a dev-dependency brings clap 2.34)
+clap-rs__clap-3391	refused: BUILD_FAILED, `-p clap` is ambiguous (a dev-dependency brings clap 2.34)

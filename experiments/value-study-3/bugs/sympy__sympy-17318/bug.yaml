@@ -1,0 +1,38 @@
+id: sympy__sympy-17318
+language: python
+repo: sympy/sympy
+source: SWE-bench Verified
+base_commit: d4e0231b08147337745dcf601e62de7eefe2fb2d
+upstream: https://github.com/sympy/sympy/pull/17318
+category: D
+categories_applicable: [D, E]
+category_rationale: >-
+  The IndexError surfaces seven frames down a recursive denesting (sqrtdenest, _sqrtdenest0,
+  _sqrtdenest1, _sqrt_match, split_surds, _split_gcd), and only for an Add holding an imaginary
+  term whose square is a negative rational, so the faulty decision is far above the crash site.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a crash, and the fix changes the condition that decides whether an expression's
+  terms are split as surds. The fixed code runs in the test's own process, called directly by the
+  test's first assertion.
+root_cause: >-
+  _sqrt_match in sympy/simplify/sqrtdenest.py sends an Add to split_surds whenever every term
+  squared is rational. A term like I squares to the rational -1, so split_surds gets an expression
+  with no real surds and _split_gcd indexes an empty tuple (IndexError). The fix requires each
+  squared term to be a positive rational, so such expressions aren't split and come back unchanged.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with sympy installed in editable mode. Run tests
+  with `cd /testbed && bin/test -C --verbose sympy/<subpackage>/tests/<file>.py` (pytest isn't
+  installed; `bin/test -k <name>` selects tests by name).
+python: "3.12"
+image: peeky-study/sympy__sympy-17318:control
+build_minutes: 1.7
+grade_minutes: 0.06
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for sympy 1.5 (mpmath 1.3.0, flake8, flake8-comprehensions, editable install;
+  the spec's Python 3.9 raised to 3.12, where the tests run). Grading runs the spec's test command
+  (bin/test -C --verbose with UserWarning/SyntaxWarning ignored) on
+  sympy/simplify/tests/test_sqrtdenest.py, the only file the test patch touches. The reach run
+  copies bin/test to bin/reach_test.py (Peeky's --run needs a .py file) and passes
+  --no-subprocess so the test runs in that process.

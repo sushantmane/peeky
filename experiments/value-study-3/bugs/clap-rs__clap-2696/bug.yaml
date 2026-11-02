@@ -1,0 +1,44 @@
+id: clap-rs__clap-2696
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: 441ff68c2d63536f0e2fd7e171d6fa7d76b2f4c3
+upstream: https://github.com/clap-rs/clap/pull/2696
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The wrong result needs a particular configuration and sequence: an option that takes multiple
+  values, overrides itself, and is given twice. The faulty values are the parser's matched
+  occurrences and their value vectors.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong values (or an error) for repeated occurrences, and the fix changes which
+  values are kept when an option overrides itself. The fixed code runs in the parser's override
+  pass, five or more calls below get_matches_from.
+root_cause: >-
+  In src/parse/parser.rs, Parser::remove_overrides skips the self-override for any argument with
+  ArgSettings::MultipleValues, as well as for MultipleOccurrences and positional arguments. So an
+  option that takes multiple values and lists itself in overrides_with is not reset when it occurs
+  again: its earlier values are kept, or the second occurrence is rejected as an argument provided
+  more than once. The fix drops the MultipleValues condition, so only MultipleOccurrences and
+  positional arguments skip the self-override (src/build/arg/mod.rs's docs are updated to match).
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test <name>` (e.g. `--test
+  flags`; one test target per file in tests/), and the library's unit tests with `cargo test --lib`;
+  the build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-2696:control
+build_minutes: 2.4
+grade_minutes: 0.25
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain). The repo has no Cargo.lock (git ignores it): the image's
+  cargo fetch resolved one at build time, as Multi-SWE-bench's image did. `--package clap` is
+  ambiguous (criterion's clap 2). The dataset's FAIL_TO_PASS is empty; fail_to_pass is the n2p test
+  the test patch adds (issue_1374_overrides_self_with_multiple_values). The other n2p tests are
+  every test of the run (the dataset's base-plus-test-patch run has no result for any test: the
+  new test makes the posix_compatible binary exit, status 2); the patch doesn't add or change them.
+  At base the f2p test is MISSING for the same reason. eval.sh runs all test targets of the
+  workspace's default members (`cargo test --tests --no-fail-fast`, Multi-SWE-bench's `cargo test`
+  without doc tests, whose names its parser doesn't read), so pass_to_pass is the dataset's full
+  PASS_TO_PASS (601); posix_compatible's own existing tests aren't in it. Parser:
+  Multi-SWE-bench's Rust parse_log.

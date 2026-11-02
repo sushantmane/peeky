@@ -1,0 +1,16 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, nushell)",
+ "fail_to_pass": [
+  "tests::test_help::can_get_help::case_3"
+ ],
+ "pass_to_pass": [
+  "tests::test_help::can_get_help::case_1",
+  "tests::test_help::can_get_help::case_2",
+  "tests::test_help::can_get_help::case_4",
+  "tests::test_help::can_get_help::case_5",
+  "tests::test_help::can_get_help::case_6",
+  "tests::test_help::can_get_help::case_7",
+  "tests::test_help::can_get_help::case_8"
+ ],
+ "timeout_s": 1200
+}

@@ -1,0 +1,38 @@
+id: fasterxml__jackson-databind-3666
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: 960b91c981fed3ea3ce9901e31954b76809ead2f
+upstream: https://github.com/FasterXML/jackson-databind/pull/3666
+category: D
+categories_applicable: [D, E]
+category_rationale: >-
+  The wrong value shows only with UNWRAP_SINGLE_VALUE_ARRAYS on, an enum with a single-argument
+  @JsonCreator and a value wrapped in a one-element array; what goes wrong is the parser's token
+  position as the deserializer reads the array.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows the creator receiving null instead of the wrapped value, and the fix changes
+  which token the value is read from; the enum deserializer runs 5 calls below
+  ObjectMapper.readValue, and BeanDeserializer._deserializeFromArray deeper still.
+root_cause: >-
+  With UNWRAP_SINGLE_VALUE_ARRAYS, FactoryBasedEnumDeserializer.deserialize treats a START_ARRAY
+  as a structured value and passes an empty string to a single-argument @JsonCreator instead of
+  unwrapping the one element. BeanDeserializer._deserializeFromArray has a similar slip: after
+  reading the token inside the array, its nested-array check calls nextToken() again, skipping the
+  wrapped value. The fix makes the enum deserializer step into the array, read the value and
+  expect END_ARRAY, and makes BeanDeserializer check the token it already read.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 2.5 minutes).
+image: peeky-study/fasterxml__jackson-databind-3666:control
+build_minutes: 3.4
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base; the full suite passes at base on 11,
+  3710 tests). The parent pom jackson-base:2.14.1-SNAPSHOT is gone from every repository, so the
+  image installs a stand-in in ~/.m2 (the 2.14.3 release pom under the snapshot version; core and
+  annotations 2.14.3) and leaves pom.xml unchanged. eval.sh runs `mvn -o clean test` on the two
+  hidden test files' classes only, which are both fail_to_pass; pass_to_pass is empty.

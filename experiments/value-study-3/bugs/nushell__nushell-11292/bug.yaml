@@ -1,0 +1,38 @@
+id: nushell__nushell-11292
+language: rust
+repo: nushell/nushell
+source: Multi-SWE-bench
+base_commit: ecb3b3a364b3332ac9df51dbecd780f1f73e21e8
+upstream: https://github.com/nushell/nushell/pull/11292
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the function to remove (into_string_parsable), its two callers and the new
+  format (backtick-delimited default values); the state is a Value rendered to a string.
+traits: [hard-to-reach]
+traits_rationale: >-
+  A requested change of help text format, not a wrong computed value, so not runtime-state. The
+  test runs the nu binary as a child process, where the help text is built.
+root_cause: >-
+  The help text for a command's parameters renders default values with
+  Value::into_string_parsable (crates/nu-protocol/src/value/mod.rs), which quotes strings with
+  single quotes and otherwise matches into_string; it is used by get_documentation in
+  crates/nu-engine/src/documentation.rs and by the help menu in
+  crates/nu-cli/src/menus/help_completions.rs. The fix removes into_string_parsable, renders
+  defaults with into_string, and wraps an optional positional's default in backticks:
+  "(optional, default: `20`)".
+test_hint: >-
+  Run the nu package's tests with `cd /testbed && cargo build --bin nu && cargo test --bin nu --
+  <filter>` (unit tests in src/; they run the debug binary target/debug/nu, so build it first) or
+  `cargo test --test main -- <filter>` (tests/); a crate's tests with `cargo test -p <crate>`
+  (crates/). rust-toolchain.toml selects Rust 1.72.1.
+image: peeky-study/nushell__nushell-11292:control
+build_minutes: 1.8
+grade_minutes: 0.4
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 doesn't build it: the locked `time` 0.3.30 fails with E0282 (type annotations
+  needed), so the image installs the toolchain rust-toolchain.toml pins, 1.72.1 (rustup, minimal
+  profile), and the project's cargo uses it. Cargo.lock is tracked. Test command limited to the
+  changed test module (cargo build --bin nu, then cargo test --bin nu -- tests::test_help), run
+  offline; pass_to_pass is the dataset's PASS_TO_PASS limited to that module (7 cases).

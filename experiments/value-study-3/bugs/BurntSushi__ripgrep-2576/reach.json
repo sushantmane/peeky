@@ -1,0 +1,65 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "crates/regex/src/word.rs",
+   "line": 139,
+   "why": "the changed decode_utf8 line in WordMatcher::fast_find (the only code hunk; the first hunk adds a comment); the test's haystack is under /root/reach/rg, which rg searches as the test's directory",
+   "options": [
+    "--config",
+    "/root/reach/bin.json",
+    "--build"
+   ],
+   "program": [
+    "--no-filename",
+    "--no-unicode",
+    "-w",
+    "-o",
+    "(\\w+\\.)*domain\\.(\\w+)",
+    "/root/reach/rg"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/regression.rs",
+   "line": 1189,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "regression::r2574",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/bin.json": {
+   "workspace": ".",
+   "analyse": [
+    "grep-regex"
+   ],
+   "run": {
+    "bin": "rg"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "ripgrep"
+   ],
+   "run": {
+    "package": "ripgrep",
+    "test": "integration"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/rg/haystack": "some.domain.com\nsome.domain.com/x\n"
+ }
+}

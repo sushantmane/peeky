@@ -1,0 +1,27 @@
+# peeky-study/r3-ponyc-llvm:9.0.1: the libraries ponyc's `make libs` builds (its vendored LLVM
+# 9.0.1 with ponyc's patches, Google Test 1.8.1, Google Benchmark 1.5.2, blake2), installed in
+# /opt/ponyc-libs. Shared by ponylang__ponyc-3763 (base 847c8343) and ponylang__ponyc-3777
+# (base 89b03703), whose lib/ trees are identical; built from the earlier base. Their control
+# images use it as their build/libs. Only the install tree is kept: no ponyc source or history.
+#   docker build -t peeky-study/r3-ponyc-llvm:9.0.1 -f Dockerfile.llvm <empty dir>
+FROM peeky-study/base:1 AS build
+ARG PONYC_COMMIT=847c83430e8dfa645ba753a84754004134a9ca60
+# The base's compilers are newer than ponyc's (clang 6 to 10, in 2021): LLVM 9 and the test
+# libraries need <cstdint> and <limits> included, and Google Benchmark's -Werror must not fail
+# on today's warnings. These wrappers are used for the libraries' build only.
+RUN mkdir -p /opt/ponyc-cc && \
+    printf '#!/bin/sh\nexec clang-18 "$@" -Wno-error\n' > /opt/ponyc-cc/clang && \
+    printf '#!/bin/sh\ncase " $* " in *" -c "*) exec clang++-18 -include cstdint -include limits "$@" -Wno-error -Wno-enum-constexpr-conversion ;; esac\nexec clang++-18 "$@"\n' > /opt/ponyc-cc/clang++ && \
+    chmod +x /opt/ponyc-cc/clang /opt/ponyc-cc/clang++
+RUN git clone -q https://github.com/ponylang/ponyc.git /testbed && cd /testbed && \
+    git checkout -q $PONYC_COMMIT && git submodule update --init --depth 1 lib/llvm/src
+WORKDIR /testbed
+# ponyc's own recipe (`make libs`), for the host's target (llvm_archs defaults to X86).
+RUN make libs CC=/opt/ponyc-cc/clang CXX=/opt/ponyc-cc/clang++ llvm_archs=AArch64 build_flags=-j4 \
+      > /root/libs.log 2>&1; status=$?; tail -40 /root/libs.log; \
+    grep -E "error:|Error [0-9]" /root/libs.log | head -40; exit $status
+RUN ls build/libs build/libs/lib | head -80 && test -f build/libs/lib/cmake/llvm/LLVMConfig.cmake && \
+    build/libs/bin/llvm-config --version
+
+FROM peeky-study/base:1
+COPY --from=build /testbed/build/libs /opt/ponyc-libs

@@ -1,0 +1,9 @@
+stage: 3 (reach check)
+reason: not reached. Both gold points were refused with UNSUPPORTED: "Peeky doesn't build a
+workspace with [patch] (in /testbed/Cargo.toml): Cargo would build other sources than Cargo.lock
+names. Remove it, or make the patched crate a path dependency inside the workspace". The
+workspace's [patch.crates-io] table is empty (its three entries are commented out). The image's
+prebuild failed the same way (/opt/peeky/study/prebuild.status: failed). The assertion point
+wasn't attempted (a unit test of the nu binary, which a Peeky config can't run). Note too that
+Peeky builds with Rust 1.96, which doesn't compile the locked `time` 0.3.30 (the control image
+uses 1.72.1). Record: results/reach/3e51ccd7232d/nushell__nushell-11292.json.

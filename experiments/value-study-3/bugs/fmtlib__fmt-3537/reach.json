@@ -1,0 +1,26 @@
+{
+ "kind": "cpp",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/bin/color-test"
+ ],
+ "prepare": [
+  "(cmake --build build-peeky --parallel 4 --target color-test > /root/reach/rebuild.log 2>&1 || rm -f build-peeky/bin/color-test); tail -5 /root/reach/rebuild.log; ls build-peeky/bin/color-test"
+ ],
+ "timeout": 300,
+ "notes": "The failing test is the ctest test color-test: the binary with no arguments, as ctest runs it. At base, with the test patch, it doesn't compile (to_string_view and the color overloads don't accept a format_string); prepare then removes the binary built before the test patch, which doesn't run the failing test. The fix only inserts a new function template (to_string_view) at namespace scope, so no gold point exists in the base file.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "include/fmt/core.h",
+   "not_attempted": "no gold point: the fix's one hunk inserts a new to_string_view overload outside any base function, so no base line holds a changed executable statement"
+  },
+  {
+   "role": "assertion",
+   "file": "test/color-test.cc",
+   "line": 64,
+   "why": "the first EXPECT_EQ of color_test.format_forwarding, the binary's first failing case"
+  }
+ ]
+}

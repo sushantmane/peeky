@@ -1,0 +1,39 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java",
+    "src/main/java/com/fasterxml/jackson/databind/node/ObjectNode.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.node.WithPathTest#testWithObjectProperty -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "not_attempted": "the fix changes no executable statement in a base file: it adds new methods (JsonNode.withObjectProperty/withArrayProperty and their ObjectNode overrides), and its BaseJsonNode hunk changes a comment"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/node/WithPathTest.java",
+   "line": 211,
+   "why": "the first assertion of testWithObjectProperty, the first test the patch adds"
+  }
+ ]
+}

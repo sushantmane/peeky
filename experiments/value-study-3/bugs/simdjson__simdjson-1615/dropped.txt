@@ -1,0 +1,6 @@
+Stage: step 3 (reach check), on Peeky 3e51ccd7232d.
+Reason: not reached. The fix only adds new declarations and whole new functions (at_pointer, array::at), outside any base function, so no gold point exists in the base files ("not attempted"). The failing test, which the test patch adds, doesn't compile at base (it calls the missing at_pointer), so there is no binary to run:
+- gold: not attempted (no base line holds a changed executable statement)
+- assertion tests/ondemand/ondemand_json_pointer_tests.cpp:74: refused, INVALID_REQUEST "No binary build-peeky/tests/ondemand/ondemand_json_pointer_tests in /testbed" (its build failed in prepare: 5 errors)
+Record: results/reach/3e51ccd7232d/simdjson__simdjson-1615.json
+Steps 1 and 2 passed: validation base not solved, gold-1 and gold-2 solved; Peeky image built (after peeky.sh dropped Google Benchmark and appended -Wno-error for clang 18), fake gold solved, noop not solved.

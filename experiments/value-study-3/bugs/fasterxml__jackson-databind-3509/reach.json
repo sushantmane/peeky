@@ -1,0 +1,48 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java",
+    "src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java",
+    "src/test/java/com/fasterxml/jackson/databind/convert/CoerceIntToFloatTest.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.convert.CoerceIntToFloatTest#testCoerceConfigToNull -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java",
+   "line": 616,
+   "why": "first code hunk, in FloatDeserializer._parseFloat: the statement after the inserted ID_NUMBER_INT case (the hunk also removes the old case label at 615, which holds no statement)"
+  },
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java",
+   "line": 1109,
+   "why": "last code hunk, in _parseDoublePrimitive: the statement after the inserted coercion check (the hunk after it adds a new method; LogicalType.java changes a comment)"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/convert/CoerceIntToFloatTest.java",
+   "line": 49,
+   "why": "the first assertion of testCoerceConfigToNull, the first failing test in the file"
+  }
+ ]
+}

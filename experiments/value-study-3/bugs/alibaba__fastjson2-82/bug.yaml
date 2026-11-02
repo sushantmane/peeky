@@ -1,0 +1,36 @@
+id: alibaba__fastjson2-82
+language: java
+repo: alibaba/fastjson2
+source: Multi-SWE-bench
+base_commit: 3aed80608b36c310d0fe5f240f49d670b3638698
+upstream: https://github.com/alibaba/fastjson2/pull/82
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  JSON.isValid is documented to check for a JSON object but accepts any JSON value; the cause is
+  clear from reading the two short methods, with a single string as state.
+traits: [runtime-state]
+traits_rationale: >-
+  The validity checks return the wrong answer for a scalar such as "1111", and the fix changes how
+  that answer is computed.
+root_cause: >-
+  JSON.isValid(String) in fastjson2's core only checks that the text parses as one JSON value
+  (JSONReader.skipValue), so a scalar such as "1111" counts as valid although the method is meant
+  for JSON objects (and arrays). The fix returns false from isValid unless the text starts with
+  '{' or '[', and from isValidArray unless it starts with '['.
+test_hint: >-
+  fastjson2 builds with its Maven wrapper on JDK 11, offline: run tests of the core module with
+  `cd /testbed && ./mvnw -o -pl core test -Dtest=<TestClass>` (or `-Dtest=<TestClass>#<method>`).
+image: peeky-study/alibaba__fastjson2-82:control
+build_minutes: 2
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11, the base image's: Multi-SWE-bench's image uses Zulu 8, but Peeky launches Java programs
+  on JDK 9 or later only, and the coordinator moved it to JDK 11 after its first filter pass on
+  JDK 8 (grading gave the same results on both). TZ and locale stand in for Multi-SWE-bench's UTF-8
+  and Asia/Shanghai JAVA_TOOL_OPTIONS. eval.sh runs a clean `test` of the core module
+  only, limited to the tests in the hidden test file's package (com.alibaba.fastjson2.issues);
+  pass_to_pass is limited to those 5 classes. Test names are classes, as in Multi-SWE-bench's
+  parser. The hidden test file is new; eval.sh removes it before applying the patch. The problem
+  statement is only a title and a screenshot link.

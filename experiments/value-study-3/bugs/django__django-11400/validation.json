@@ -1,0 +1,44 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_get_choices_default_ordering (model_fields.tests.GetChoicesOrderingTests)": "FAILED",
+   "test_get_choices_reverse_related_field_default_ordering (model_fields.tests.GetChoicesOrderingTests)": "FAILED",
+   "RelatedFieldListFilter ordering respects Model.ordering.": "FAILED",
+   "test_relatedfieldlistfilter_reverse_relationships_default_ordering (admin_filters.tests.ListFiltersTests)": "FAILED",
+   "RelatedOnlyFieldListFilter ordering respects Meta.ordering.": "FAILED",
+   "RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering.": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_get_choices_default_ordering (model_fields.tests.GetChoicesOrderingTests)": "PASSED",
+   "test_get_choices_reverse_related_field_default_ordering (model_fields.tests.GetChoicesOrderingTests)": "PASSED",
+   "RelatedFieldListFilter ordering respects Model.ordering.": "PASSED",
+   "test_relatedfieldlistfilter_reverse_relationships_default_ordering (admin_filters.tests.ListFiltersTests)": "PASSED",
+   "RelatedOnlyFieldListFilter ordering respects Meta.ordering.": "PASSED",
+   "RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering.": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.5
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_get_choices_default_ordering (model_fields.tests.GetChoicesOrderingTests)": "PASSED",
+   "test_get_choices_reverse_related_field_default_ordering (model_fields.tests.GetChoicesOrderingTests)": "PASSED",
+   "RelatedFieldListFilter ordering respects Model.ordering.": "PASSED",
+   "test_relatedfieldlistfilter_reverse_relationships_default_ordering (admin_filters.tests.ListFiltersTests)": "PASSED",
+   "RelatedOnlyFieldListFilter ordering respects Meta.ordering.": "PASSED",
+   "RelatedOnlyFieldListFilter ordering respects ModelAdmin.ordering.": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.5
+ }
+]

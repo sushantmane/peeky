@@ -1,0 +1,110 @@
+{
+ "bug": "django__django-11820",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/django__django-11820:peeky-r3",
+ "image_id": "sha256:fafd49782c8b5e252375d01dfedf44ea95d9ef688adf9da1f2e1301d3d910251",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T16:45:56+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed field lookup in Model._check_ordering's loop over related parts",
+   "at": "django/db/models/base.py:1711",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/base.py:1711 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 invalid_models_tests.test_models.OtherModelTests.test_ordering_pointing_multiple_times_to_model_fields",
+     "exit": 0,
+     "seconds": 1.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/base.py:1711",
+    "function": "_check_ordering"
+   },
+   "moved": false,
+   "values": {
+    "shown": 9,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "errors",
+      "value": "[]"
+     },
+     {
+      "name": "f",
+      "value": "'codename'"
+     },
+     {
+      "name": "field",
+      "value": "'content_type__app_label'"
+     },
+     {
+      "name": "fields",
+      "value": "['codename']"
+     },
+     {
+      "name": "fld",
+      "value": "None"
+     },
+     {
+      "name": "part",
+      "value": "'content_type'"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/invalid_models_tests/test_models.py:828",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at tests/invalid_models_tests/test_models.py:828 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 invalid_models_tests.test_models.OtherModelTests.test_ordering_pointing_multiple_times_to_model_fields",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/invalid_models_tests/test_models.py:828",
+    "function": "test_ordering_pointing_multiple_times_to_model_fields"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "self",
+      "value": "<invalid_models_tests.test_models.OtherModelTests testMethod=test_ordering_pointing_multiple_times_to_model_fields>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T16:46:00+00:00"
+}

@@ -1,0 +1,8 @@
+stage: 3 (reach check)
+reason: not reached. The fix changes no executable statement (manifests, CI configuration,
+crate-level attributes, a cfg_attr, doc comments), so there is no gold point (not attempted).
+The assertion point was refused with BUILD_FAILED: with the test patch at base, the workspace's
+manifests don't load ("The build failed: cargo exited with code 101 / error: failed to load
+manifest for workspace member `/testbed/tokio` ... error inheriting `lints` from workspace root
+manifest's `workspace.lints` ... `workspace.lints` was not defined").
+Record: results/reach/3e51ccd7232d/tokio-rs__tokio-7124.json.

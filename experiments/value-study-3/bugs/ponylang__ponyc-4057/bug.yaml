@@ -1,0 +1,45 @@
+id: ponylang__ponyc-4057
+language: c
+repo: ponylang/ponyc
+source: Multi-SWE-bench
+base_commit: bc0d988f909d6bb2698b836bb5f592aa567f6fb6
+upstream: https://github.com/ponylang/ponyc/pull/4057
+category: D
+categories_applicable: [C, D]
+category_rationale: >-
+  The segfault needs a generic constructor whose match is exhaustive, reified with a type for
+  which a case can't match, so code generation meets a last case with no next block; that state
+  lives in the compiler's reified AST and LLVM builder.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  ponyc crashes (segfault) while generating code, and the fix changes the branch it builds for a
+  case that can't match. gen_match runs deep in code generation, many calls below the compiler's
+  main.
+root_cause: >-
+  In src/libponyc/codegen/genmatch.c, gen_match builds, for a case whose pattern type can never
+  match the matched value's type, a branch straight to the next case's block. For the last case of
+  an exhaustive match there is no next block (next_block is NULL), so LLVMBuildBr gets a null
+  block and ponyc segfaults; it happens when a generic method's match is reified with a type that
+  makes its last case impossible (`from[U8]` with a `| let u': Dealer val` case). The fix builds an
+  unreachable instruction when there is no next block.
+test_hint: |-
+  The project is configured (debug) and built in /testbed: rebuild with `cd /testbed && make build config=debug` (outputs in build/debug, the compiler is build/debug/ponyc; `make configure config=debug` reconfigures).
+  Run the tests with `cd /testbed && make test config=debug`; it runs the make targets test-core (the gtest binaries, then the runner over test/libponyc-run's programs), test-stdlib-release and test-examples, each of which runs alone too.
+image: peeky-study/ponylang__ponyc-4057:control
+build_minutes: 3.6
+grade_minutes: 1.3
+pass_to_pass_removed: []
+notes: >-
+  fail_to_pass is FAIL_TO_PASS (regression-3447, a program the test patch adds under
+  test/libponyc-run); pass_to_pass is limited to the 114 libponyc-run tests of PASS_TO_PASS, the
+  part of `make test` that eval.sh runs (test-core's runner command; the rest are gtest tests).
+  Build follows Multi-SWE-bench's ponyc recipe with clang 18 (CC/CXX set in the image, as ponyc's
+  Makefile looks for `clang` only), `-Wno-error` in the debug C flags through the CMAKE_FLAGS
+  variable its Makefile passes to cmake, and an empty <linux/dn.h> (Linux 6.x has none; socket.c
+  uses its constants only under #ifdef; Multi-SWE-bench's recipe for these PRs comments the
+  include out). `make libs` (LLVM 13.0.1 for the Makefile's targets X86, ARM and AArch64, which
+  this ponyc links; Google Test 1.11.0, Google Benchmark 1.5.6) is prebuilt in
+  peeky-study/r3-ponyc-llvm:13.0.1 (Dockerfile.llvm here, FROM peeky-study/base:1; make libs 7.8
+  min after a 2.7 min LLVM clone); build/libs links to it. The Peeky build (peeky.sh) is ponyc and
+  its runtime at -O0 in build-peeky, its C++ units with libstdc++ as the prebuilt LLVM; the reach
+  check runs that ponyc on the test's program, as the runner does.

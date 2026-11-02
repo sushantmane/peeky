@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.databind.interop.OptionalJava8Fallbacks4082Test": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 8.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.databind.interop.OptionalJava8Fallbacks4082Test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 7.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.databind.interop.OptionalJava8Fallbacks4082Test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 8.1
+ }
+]

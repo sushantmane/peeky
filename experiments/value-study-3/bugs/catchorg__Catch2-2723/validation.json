@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "approvaltests": "FAILED",
+   "runtests": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 21.8
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "approvaltests": "PASSED",
+   "runtests": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 21.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "approvaltests": "PASSED",
+   "runtests": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 21.0
+ }
+]

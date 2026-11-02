@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "tests/jqtest": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 16.6
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "tests/jqtest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 17.1
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "tests/jqtest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 16.5
+ }
+]

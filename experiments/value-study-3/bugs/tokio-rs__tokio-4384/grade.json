@@ -1,0 +1,9 @@
+{
+ "parser": "parse_log_cargo",
+ "fail_to_pass": [
+  "net_types_are_unwind_safe",
+  "unix_net_types_are_unwind_safe"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

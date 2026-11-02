@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "astropy/units/quantity.py",
+   "line": 299,
+   "why": "the changed float-cast condition for Quantity input in Quantity.__new__ (first code hunk; the first hunk is docstring)"
+  },
+  {
+   "role": "gold",
+   "file": "astropy/units/quantity.py",
+   "line": 380,
+   "why": "the changed default float-cast condition at the end of Quantity.__new__ (last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "astropy/units/tests/test_quantity.py",
+   "line": 134
+  }
+ ]
+}

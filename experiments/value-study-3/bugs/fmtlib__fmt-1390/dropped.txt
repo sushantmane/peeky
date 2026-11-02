@@ -1,0 +1,6 @@
+Stage: step 3 (reach check), on Peeky 3e51ccd7232d.
+Reason: not reached. Both points were refused, before anything ran:
+- gold include/fmt/format.h:1732: refused, INVALID_BREAKPOINT "Line 1732 of include/fmt/format.h is not among the breakpoint lines of the units Peeky judges (`peeky describe` lists them): it has no code, or only a unit Peeky doesn't judge has code there"
+- assertion test/format-test.cc:2630: refused, UNSUPPORTED "test/format-test.cc is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)"
+Record: results/reach/3e51ccd7232d/fmtlib__fmt-1390.json
+Steps 1 and 2 passed: validation base not solved, gold-1 and gold-2 solved; Peeky image built (peeky.sh: -idirafter for the tests' system include directories, as libc++'s <ostream> includes <format>), fake gold solved, noop not solved.

@@ -1,0 +1,30 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/stdlib/stdlib-debug"
+ ],
+ "program": [
+  "--sequential",
+  "--only=collections/Flags"
+ ],
+ "prepare": [
+  "mkdir -p build-peeky/stdlib && build-peeky/debug/ponyc -d -b stdlib-debug -o build-peeky/stdlib --pic packages/stdlib > /root/reach/compile.log 2>&1; echo exit $?; tail -3 /root/reach/compile.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "packages/collections/flag.pony",
+   "line": 94,
+   "why": "the fix's only hunk: Flags.remove's assignment (Pony code in the standard library, which the test program compiles in)"
+  },
+  {
+   "role": "assertion",
+   "file": "packages/collections/_test.pony",
+   "line": 773,
+   "why": "the test's first assertion (h.assert_eq in _TestFlags.apply)"
+  }
+ ]
+}

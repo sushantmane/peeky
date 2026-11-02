@@ -1,0 +1,41 @@
+id: elastic__logstash-15928
+language: java
+repo: elastic/logstash
+source: Multi-SWE-bench
+base_commit: 1cca6bcb2c769db169260a30531c4f2bd2f184c3
+upstream: https://github.com/elastic/logstash/pull/15928
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report says what is missing (Netty's maxOrder back to 11 unless the user sets it), and the
+  parser's assembly of the final option set is short and simple.
+traits: []
+traits_rationale: >-
+  The fix adds a new default option rather than correcting a value the code computes wrongly.
+root_cause: >-
+  JvmOptionsParser.handleJvmOptions (tools/jvm-options-parser) prints the final JVM options (the
+  options file's, LS_JAVA_OPTS and the mandatory ones) with no Netty maxOrder setting, so Logstash
+  runs with Netty's newer default of 9 (4 MB chunks). The fix post-processes the option set before
+  printing: unless an -Dio.netty.allocator.maxOrder option is already there, it adds
+  -Dio.netty.allocator.maxOrder=11. It also moves the parser's build to Java 11 and JUnit 4.13.1.
+test_hint: >-
+  Logstash builds with its Gradle wrapper on JDK 11, offline (JRuby and the gems are already
+  installed): run a project's tests with
+  `cd /testbed && ./gradlew --offline :<project>:test --tests <fully.qualified.TestClass>`
+  (`./gradlew --offline projects` lists them; logstash-core's Java tests are its `javaTests` task).
+  Don't run the root project's `clean`: it deletes vendor/, which can't be fetched again offline.
+image: peeky-study/elastic__logstash-15928:control
+build_minutes: 1.5
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 as in Multi-SWE-bench's image (the base's OpenJDK instead of Zulu 11), TZ and locale for
+  its JAVA_TOOL_OPTIONS. Gradle is offline via /root/.gradle/init.d/offline.gradle, and
+  /root/.gradle/init.d/bootstrapped.gradle skips the bootstrap task's own action (bundler, which
+  needs the network) while vendor/bundle holds the gems. The upstream fix's build.gradle change moves
+  the parser's tests to JUnit 4.13.1, so the image's Gradle cache also holds junit 4.13.1 (fetched by
+  a throwaway build; nothing else of the fix is in the image), or gold couldn't build offline; the
+  hidden tests pass on 4.12 too. eval.sh runs only the :jvm-options-parser:test task, filtered to
+  the hidden test class, instead of `clean test`; pass_to_pass is limited to what that runs: the
+  class's other tests and the Gradle tasks the run executes (task names are test names in
+  Multi-SWE-bench's parser).

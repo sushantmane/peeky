@@ -1,0 +1,37 @@
+id: fasterxml__jackson-databind-4131
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: ebf2a82760fda04fdfd20cb1c3f3e7adf9f6b3b2
+upstream: https://github.com/FasterXML/jackson-databind/pull/4131
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  An API addition the report spells out (withObjectProperty(String), withArrayProperty(String));
+  the existing with/withArray methods in JsonNode and ObjectNode show how, with simple state.
+traits: []
+traits_rationale: >-
+  New API methods rather than a wrong value, so not runtime-state; the new methods are called
+  directly by the test, and building plus running the test takes well under 3 minutes.
+root_cause: >-
+  JsonNode has no methods that get or create an Object or Array value for one immediate property
+  only; with(String) and withArray(String) also accept JSON Pointer expressions. The fix adds
+  JsonNode.withObjectProperty and withArrayProperty, which fail on non-Object nodes, and
+  ObjectNode overrides that return the existing Object (or Array) value, replace a missing or
+  null value with a new one, and report an error for any other existing value.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 2 minutes).
+image: peeky-study/fasterxml__jackson-databind-4131:control
+build_minutes: 3.1
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base; the full suite passes at base on
+  11). The parent pom jackson-base:2.16.0-SNAPSHOT is gone from every repository, so the image
+  installs a stand-in in ~/.m2 (the 2.16.2 release pom under the snapshot version; core and
+  annotations 2.16.2) and leaves pom.xml unchanged. FAIL_TO_PASS is empty in the dataset (the test
+  patch doesn't compile at base: it calls the new methods); fail_to_pass is the class the test
+  patch changes, which is in n2p_tests. eval.sh runs `mvn -o clean test` on that class only;
+  PASS_TO_PASS is empty.

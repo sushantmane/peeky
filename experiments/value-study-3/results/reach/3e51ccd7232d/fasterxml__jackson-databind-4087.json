@@ -1,0 +1,108 @@
+{
+ "bug": "fasterxml__jackson-databind-4087",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-databind-4087:peeky-r3",
+ "image_id": "sha256:866c2fbef543a7f1b2d8cb512d4c06c7172c7a08a1aabafa51ba000d4ef66c73",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:10:05+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted Optional branch in checkUnsupportedType (the only hunk that changes an executable statement; the others add new methods and comments)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java:313",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java:313 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/com/fasterxml/jackson/databind/util/BeanUtil.java:313",
+    "function": "BeanUtil.checkUnsupportedType(JavaType)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "type",
+      "value": "SimpleType@1387"
+     },
+     {
+      "name": "className",
+      "value": "\"java.util.Optional\""
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion the test runs: fail() in _testPreventSerialization, which testPreventSerialization calls first",
+   "at": "src/test/java/com/fasterxml/jackson/databind/interop/OptionalJava8Fallbacks4082Test.java:35",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/com/fasterxml/jackson/databind/interop/OptionalJava8Fallbacks4082Test.java:35 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/test/java/com/fasterxml/jackson/databind/interop/OptionalJava8Fallbacks4082Test.java:35",
+    "function": "OptionalJava8Fallbacks4082Test._testPreventSerialization(Object)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "value",
+      "value": "Optional@1408"
+     },
+     {
+      "name": "json",
+      "value": "\"{\"empty\":true,\"present\":false}\""
+     },
+     {
+      "name": "this",
+      "value": "OptionalJava8Fallbacks4082Test@1410"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:10:24+00:00"
+}

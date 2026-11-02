@@ -1,0 +1,159 @@
+{
+ "bug": "django__django-11400",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/django__django-11400:peeky-r3",
+ "image_id": "sha256:a5b897f893685c959f0a53243f6e9b2e3bb144f6586651b437332e19c5b4b5eb",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T20:19:23+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed empty ordering in RelatedFieldListFilter.field_choices (the first hunk)",
+   "at": "django/contrib/admin/filters.py:197",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/contrib/admin/filters.py:197 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/contrib/admin/filters.py:197",
+    "function": "field_choices"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "field",
+      "value": "<django.db.models.fields.related.ForeignKey: employee>"
+     },
+     {
+      "name": "model_admin",
+      "value": "<admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering.<locals>.BookAdmin object at 0xffff73c771d0>"
+     },
+     {
+      "name": "request",
+      "value": "<WSGIRequest: GET '/'>"
+     },
+     {
+      "name": "self",
+      "value": "<django.contrib.admin.filters.RelatedFieldListFilter object at 0xffff73c8d4d0>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed comprehension source in ForeignObjectRel.get_choices (the last hunk)",
+   "at": "django/db/models/fields/reverse_related.py:126",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/fields/reverse_related.py:126 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 model_fields.tests.GetChoicesOrderingTests.test_get_choices_reverse_related_field_default_ordering",
+     "exit": 0,
+     "seconds": 1.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/fields/reverse_related.py:126",
+    "function": "get_choices"
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "blank_choice",
+      "value": "[('', '---------')]"
+     },
+     {
+      "name": "include_blank",
+      "value": "False"
+     },
+     {
+      "name": "ordering",
+      "value": "()"
+     },
+     {
+      "name": "self",
+      "value": "<ManyToOneRel: model_fields.bar>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of assertChoicesEqual, the helper the test calls first",
+   "at": "tests/model_fields/tests.py:232",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at tests/model_fields/tests.py:232 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 model_fields.tests.GetChoicesOrderingTests.test_get_choices_default_ordering",
+     "exit": 0,
+     "seconds": 1.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/model_fields/tests.py:232",
+    "function": "assertChoicesEqual"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "choices",
+      "value": "[(1, 'Foo object (1)'), (2, 'Foo object (2)')]"
+     },
+     {
+      "name": "objs",
+      "value": "[<Foo: Foo object (2)>, <Foo: Foo object (1)>]"
+     },
+     {
+      "name": "self",
+      "value": "<model_fields.tests.GetChoicesOrderingTests testMethod=test_get_choices_default_ordering>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T20:19:28+00:00"
+}

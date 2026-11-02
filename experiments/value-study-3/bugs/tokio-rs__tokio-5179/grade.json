@@ -1,0 +1,15 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, tokio)",
+ "fail_to_pass": [
+  "store_local_set_in_thread_local_with_runtime"
+ ],
+ "pass_to_pass": [
+  "local_current_thread_scheduler",
+  "localset_future_drives_all_local_futs",
+  "enter_guard_spawn",
+  "drop_cancels_tasks",
+  "acquire_mutex_in_drop",
+  "spawn_wakes_localset"
+ ],
+ "timeout_s": 1200
+}

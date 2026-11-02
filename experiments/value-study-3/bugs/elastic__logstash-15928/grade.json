@@ -1,0 +1,33 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, logstash)",
+ "fail_to_pass": [
+  "jvm-options-parser:test",
+  "org.logstash.launchers.JvmOptionsParserTest > testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser"
+ ],
+ "pass_to_pass": [
+  "buildSrc:assemble",
+  "buildSrc:build",
+  "buildSrc:check",
+  "buildSrc:classes",
+  "buildSrc:compileGroovy",
+  "buildSrc:compileTestGroovy",
+  "buildSrc:jar",
+  "buildSrc:test",
+  "buildSrc:testClasses",
+  "jvm-options-parser:classes",
+  "jvm-options-parser:compileJava",
+  "jvm-options-parser:compileTestJava",
+  "jvm-options-parser:testClasses",
+  "org.logstash.launchers.JvmOptionsParserTest > testAlwaysMandatoryJvmPresent",
+  "org.logstash.launchers.JvmOptionsParserTest > testErrorLinesAreReportedCorrectly",
+  "org.logstash.launchers.JvmOptionsParserTest > testMandatoryJvmOptionApplicableJvmPresent",
+  "org.logstash.launchers.JvmOptionsParserTest > testMandatoryJvmOptionNonApplicableJvmNotPresent",
+  "org.logstash.launchers.JvmOptionsParserTest > testNettyMaxOrderRuleDoNotAppliesIfAlreadyDefinedExplicitlyByUser",
+  "org.logstash.launchers.JvmOptionsParserTest > testParseCommentLine",
+  "org.logstash.launchers.JvmOptionsParserTest > testParseOptionGreaterThanVersion",
+  "org.logstash.launchers.JvmOptionsParserTest > testParseOptionVersionRange",
+  "org.logstash.launchers.JvmOptionsParserTest > testParseOptionWithFixedVersion",
+  "org.logstash.launchers.JvmOptionsParserTest > test_LS_JAVA_OPTS_isUsedWhenNoJvmOptionsIsAvailable"
+ ],
+ "timeout_s": 1200
+}

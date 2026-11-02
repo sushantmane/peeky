@@ -1,0 +1,38 @@
+id: django__django-12325
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: 29c126bb349526b5f1cd78facbe9f25906f18563
+upstream: https://github.com/django/django/pull/12325
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The error shows only for a multi-table-inheritance child with a second OneToOneField to its
+  parent, and depends on the fields' order; it is raised in Options._prepare while the wrong
+  choice of parent link is made earlier, in the ModelBase metaclass.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a crash (ImproperlyConfigured) that depends on field order, and the fix changes
+  how the metaclass computes the mapping from parent model to parent-link field.
+root_cause: >-
+  ModelBase.__new__ in django/db/models/base.py records every OneToOneField to a parent model as
+  that parent's link, so a later non-parent-link OneToOneField to the same parent overwrites the
+  real parent_link field; Options._prepare in django/db/models/options.py then promotes the wrong
+  field to primary key and raises "Add parent_link=True". The fix collects only OneToOneFields
+  with parent_link=True as parent links, and drops the ImproperlyConfigured check from _prepare.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-12325:control
+build_minutes: 1.5
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Dependencies are tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached
+  and a native build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale
+  as the spec does. parse.py is round 1's Django parser (SWE-bench's, with the documented Python
+  3.11 test-name adaptation; it also reports the docstring test "Ref #22047."). eval.sh runs the
+  three test modules the hidden tests change, and sends stderr to stdout because Django's runner
+  reports on stderr.

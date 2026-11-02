@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/config/test_config.py::test_csv_regex_error"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "pylint/config/argument.py",
+   "line": 117,
+   "why": "the changed loop header in _regexp_csv_transfomer (the only hunk changing a statement; utils/__init__.py's hunks are imports and __all__, utils.py's add an import and a new function between functions)"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/config/test_config.py",
+   "line": 171
+  }
+ ]
+}

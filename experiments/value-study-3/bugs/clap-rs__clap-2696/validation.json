@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "issue_1374_overrides_self_with_multiple_values": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.9
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "issue_1374_overrides_self_with_multiple_values": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 14.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "issue_1374_overrides_self_with_multiple_values": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 13.5
+ }
+]

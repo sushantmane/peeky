@@ -1,0 +1,63 @@
+{
+ "bug": "fmtlib__fmt-1390",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/fmtlib__fmt-1390:peeky-r3",
+ "image_id": "sha256:5aaa1a321893c4ba1903c9800345892ae9f0991a422e3a8ec29f7f6c48e29d53",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:22:17+00:00",
+ "needs": [],
+ "notes": "The failing test is the ctest test format-test: the binary with no arguments, as ctest runs it. Its failing case is FormatTest.FormatUTF8Precision, which the test patch adds. The fix's first hunk only adds new functions (code_point_index) outside any base function, so the one gold point is its second hunk.",
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky --parallel 4 --target format-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 4.7,
+   "output": "6 warnings generated.\n[100%] Linking CXX executable ../bin/format-test\n[100%] Built target format-test\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed size computation for a precision in basic_writer::write(basic_string_view) (the only hunk changing a base statement)",
+   "at": "include/fmt/format.h:1732",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/format-test --at include/fmt/format.h:1732 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 5.0
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 1732 of include/fmt/format.h is not among the breakpoint lines of the units Peeky judges (`peeky describe` lists them): it has no code, or only a unit Peeky doesn't judge has code there",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "the first EXPECT_EQ of FormatTest.FormatUTF8Precision, the binary's failing case",
+   "at": "test/format-test.cc:2630",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/format-test --at test/format-test.cc:2630 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "test/format-test.cc is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:22:29+00:00"
+}

@@ -1,0 +1,43 @@
+id: facebook__zstd-1530
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: 54e9412ddd02ca4c6663d09dbf44f5a209a9a7ce
+upstream: https://github.com/facebook/zstd/pull/1530
+category: E
+categories_applicable: [D, E]
+category_rationale: >-
+  The report names the cause: setting ZSTD_c_nbWorkers goes through
+  ZSTDMT_CCtxParam_setNbWorkers, which resets overlapLog and jobSize. The hidden test also needs
+  the multithreaded jobs to keep the other parameters (literal compression), a sequence of
+  settings across contexts.
+traits: [runtime-state, slow-build]
+traits_rationale: >-
+  A parameter read back after setting another has the wrong value, and the fix changes how the
+  parameters are kept. `make test`, the failing test, takes over 7 minutes to build and run.
+root_cause: >-
+  In lib/compress/zstdmt_compress.c, ZSTDMT_CCtxParam_setNbWorkers (which
+  ZSTD_CCtxParam_setParameter calls for ZSTD_c_nbWorkers) resets params->overlapLog and
+  params->jobSize, so setting the number of workers after them discards them; and
+  ZSTDMT_initJobCCtxParams builds each job's parameters from zero, keeping only cParams, fParams
+  and the level, so other settings such as the literal compression mode never reach the jobs.
+  The fix sets nbWorkers, jobSize, overlapLog and rsyncable directly in
+  ZSTD_CCtxParam_setParameter (lib/compress/zstd_compress.c), clamped to their bounds, routes the
+  ZSTDMT setters and getters through it, and copies the whole parameter set into each job,
+  clearing only the multithreading fields.
+test_hint: |-
+  Build with `cd /testbed && make -j4 HAVE_PTHREAD=1` (library and CLI; this make misreads programs/Makefile's thread check, so pass HAVE_PTHREAD=1 to every make that builds the CLI).
+  The test programs are in tests/: `cd /testbed && make test HAVE_PTHREAD=1` builds and runs them all, or run one `test-<name>` target of tests/Makefile. The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-1530:control
+build_minutes: 7.6
+grade_minutes: 8
+pass_to_pass_removed: []
+notes: >-
+  FAIL_TO_PASS as given ("all tests": Multi-SWE-bench's parser for its PRs 1230-1748 passes it
+  when the log holds the pool tests' "PASS: all POOL tests" once, i.e. `make test` ran to its
+  end); PASS_TO_PASS is empty. eval.sh runs Multi-SWE-bench's `make; make test`, with the fuzzers'
+  times shortened and two environment adaptations: -Wno-error=strict-aliasing (GCC 13 warns where
+  Ubuntu 20.04's GCC 9 didn't, and `make test` builds the programs with -Werror) and
+  HAVE_PTHREAD=1 (GNU make 4.3 breaks programs/Makefile's pthread check, so zstd lost threads and
+  playTests.sh's --adapt test failed at base and with the fix alike). The Peeky build
+  (peeky.sh) builds tests/fuzzer in place with clang 18 at -O0, through tests/Makefile.

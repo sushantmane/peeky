@@ -1,0 +1,42 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java",
+    "tools/jvm-options-parser/src/test/java/org/logstash/launchers/JvmOptionsParserTest.java"
+   ],
+   "class_roots": [
+    "tools/jvm-options-parser/build/classes/java/main",
+    "tools/jvm-options-parser/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline :jvm-options-parser:test --tests org.logstash.launchers.JvmOptionsParserTest.testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser --debug-jvm & until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 900,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "One code hunk: the fix's other changes are the parser's build.gradle (Java and JUnit versions) and an import.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "tools/jvm-options-parser/src/main/java/org/logstash/launchers/JvmOptionsParser.java",
+   "line": 183,
+   "why": "the changed println of the final options in handleJvmOptions (the only code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "tools/jvm-options-parser/src/test/java/org/logstash/launchers/JvmOptionsParserTest.java",
+   "line": 138,
+   "why": "the first assertion of testNettyMaxOrderRuleAppliesIfNotAlreadyDefinedExplicitlyByUser"
+  }
+ ]
+}

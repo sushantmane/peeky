@@ -1,0 +1,41 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java",
+    "dubbo-common/src/test/java/org/apache/dubbo/common/utils/ReflectUtilsTest.java"
+   ],
+   "class_roots": [
+    "dubbo-common/target/classes",
+    "dubbo-common/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false -Dtest=ReflectUtilsTest#testGetReturnTypes -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/ReflectUtils.java",
+   "line": 1206,
+   "why": "the statement after the inserted TypeVariable branch in getReturnTypes (the else branch's cast; the only code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "dubbo-common/src/test/java/org/apache/dubbo/common/utils/ReflectUtilsTest.java",
+   "line": 412,
+   "why": "the first assertion of testGetReturnTypes"
+  }
+ ]
+}

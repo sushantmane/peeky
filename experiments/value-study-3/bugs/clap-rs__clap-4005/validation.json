@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "require::required_require_with_group_shows_flag": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 2.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "require::required_require_with_group_shows_flag": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "require::required_require_with_group_shows_flag": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.7
+ }
+]

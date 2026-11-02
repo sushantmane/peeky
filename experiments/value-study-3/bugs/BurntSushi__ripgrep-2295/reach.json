@@ -1,0 +1,64 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "crates/ignore/src/dir.rs",
+   "line": 443,
+   "why": "the changed `if self.0.opts.parents` in Ignore::matched_ignore (the only code hunk); the test's files are under /root/reach/rg, so the searched directory is given by its absolute path",
+   "options": [
+    "--config",
+    "/root/reach/bin.json",
+    "--build"
+   ],
+   "program": [
+    "--files-with-matches",
+    "needle",
+    "/root/reach/rg/rust"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/regression.rs",
+   "line": 963,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "regression::f1757",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/bin.json": {
+   "workspace": ".",
+   "analyse": [
+    "ignore"
+   ],
+   "run": {
+    "bin": "rg"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "ripgrep"
+   ],
+   "run": {
+    "package": "ripgrep",
+    "test": "integration"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/rg/.ignore": "rust/target",
+  "/root/reach/rg/rust/source.rs": "needle",
+  "/root/reach/rg/rust/target/rustdoc-output.html": "needle"
+ }
+}

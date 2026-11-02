@@ -1,0 +1,76 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "tokio/src/runtime/context.rs",
+   "line": 67,
+   "why": "the changed call in context::budget (first code hunk; the line above it is the signature)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "store_local_set_in_thread_local_with_runtime",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "tokio/src/util/vec_deque_cell.rs",
+   "line": 18,
+   "why": "the first statement of the file the fix deletes, in VecDequeCell::with_capacity (last code hunk; the lines above it are imports and declarations)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "store_local_set_in_thread_local_with_runtime",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tokio/tests/task_local_set.rs",
+   "not_attempted": "the test has no assertion: it fails by panicking in a thread-local destructor when its thread exits",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "store_local_set_in_thread_local_with_runtime",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tokio"
+   ],
+   "run": {
+    "package": "tokio",
+    "test": "task_local_set"
+   },
+   "vendor": "vendor",
+   "features": [
+    "full"
+   ]
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

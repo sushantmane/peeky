@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.alibaba.fastjson2.issues.Issue81": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 5.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.alibaba.fastjson2.issues.Issue81": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.alibaba.fastjson2.issues.Issue81": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.8
+ }
+]

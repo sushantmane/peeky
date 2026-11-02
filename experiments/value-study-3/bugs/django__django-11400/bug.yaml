@@ -1,0 +1,40 @@
+id: django__django-11400
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: 1f8382d34d54061eddc41df6994e20ee38c60907
+upstream: https://github.com/django/django/pull/11400
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report points at the two lines in admin/filters.py: the empty ordering in
+  RelatedFieldListFilter.field_choices and the missing ordering in RelatedOnlyFieldListFilter. The
+  ordering shows only with a Meta.ordering or a registered ModelAdmin's ordering configured (D).
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows wrong output (filter choices not in the related model's order), and the fix
+  changes how the choices' ordering is computed: no order_by() call when no ordering is given.
+root_cause: >-
+  RelatedFieldListFilter.field_choices in django/contrib/admin/filters.py passes ordering=() when
+  the related model has no registered ModelAdmin, and Field.get_choices
+  (django/db/models/fields/__init__.py) and ForeignObjectRel.get_choices (reverse_related.py) call
+  order_by(*ordering), which with no fields clears the model's Meta.ordering;
+  RelatedOnlyFieldListFilter passes no ordering at all. The fix calls order_by only for a non-empty
+  ordering, and has both filters take the related ModelAdmin's ordering through a new
+  field_admin_ordering helper.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-11400:control
+build_minutes: 0.8
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Dependencies are tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached
+  and a native build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale
+  as the spec does. parse.py is round 1's Django parser (SWE-bench's, with the documented Python
+  3.11 test-name adaptation and docstring tests). eval.sh runs the two test modules the hidden
+  tests change, and sends stderr to stdout because Django's runner reports on stderr. Dropped at
+  the reach check (see dropped.txt).

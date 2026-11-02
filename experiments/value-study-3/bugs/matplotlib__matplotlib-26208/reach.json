@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "lib/matplotlib/tests/test_axes.py::test_twin_units[x]"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/matplotlib/axes/_base.py",
+   "line": 4444,
+   "why": "the statement after the insertion in _AxesBase.twinx (first code hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "lib/matplotlib/axes/_base.py",
+   "line": 4473,
+   "why": "the statement after the insertion in _AxesBase.twiny (last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "lib/matplotlib/tests/test_axes.py",
+   "line": 390
+  }
+ ]
+}

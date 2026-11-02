@@ -1,0 +1,140 @@
+{
+ "bug": "matplotlib__matplotlib-24870",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/matplotlib__matplotlib-24870:peeky-r3",
+ "image_id": "sha256:921fcbed2c35137b927d385a5be5aa9975f1e5cbb84e2761a302d1f6fa0ca1ed",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:18:51+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed default-levels condition in ContourSet._process_contour_level_args (first code hunk; its first changed line is the signature)",
+   "at": "lib/matplotlib/contour.py:1125",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/contour.py:1125 --name reach --timeout 300 --json -- -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+     "exit": 0,
+     "seconds": 1.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/matplotlib/contour.py:1125",
+    "function": "_process_contour_level_args",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "args",
+      "value": "()"
+     },
+     {
+      "name": "self",
+      "value": "<matplotlib.contour.QuadContourSet object at 0xffff4a067390>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed _process_contour_level_args call in TriContourSet._contour_args (last code hunk)",
+   "at": "lib/matplotlib/tri/_tricontour.py:77",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/tri/_tricontour.py:77 --name reach --timeout 300 --json -- -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+     "exit": 0,
+     "seconds": 1.9
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_____________________________ test_bool_autolevel ______________________________\n\n    def test_bool_autolevel():\n        x, y = np.random.rand(2, 9)\n        z = (np.arange(9) % 2).reshape((3, 3)).astype(bool)\n        m = [[False, False, False], [False, True, False], [False, False, False]]\n>       assert plt.contour(z.tolist()).levels.tolist() == [.5]\nE       AssertionError\n\nlib/matplotlib/tests/test_contour.py:702: AssertionError\n------------------------------ Captured log setup ------------------------------\nWARNING  matplotlib.testing:__init__.py:38 Could not set locale to English/United States. Some date-related tests may fail.\n=========================== short test summary info ============================\nFAILED lib/matplotlib/tests/test_contour.py::test_bool_autolevel - AssertionE...\n1 failed in 0.25s\n"
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "lib/matplotlib/tests/test_contour.py:702",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/tests/test_contour.py:702 --name reach --timeout 300 --json -- -q -p no:cacheprovider lib/matplotlib/tests/test_contour.py::test_bool_autolevel",
+     "exit": 0,
+     "seconds": 1.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/matplotlib/tests/test_contour.py:702",
+    "function": "test_bool_autolevel",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "m",
+      "value": "[[False, False, False], [False, True, False], [False, False, False]]"
+     },
+     {
+      "name": "x",
+      "value": "array([0.9146167 , 0.55957328, 0.98498188, 0.18904715, 0.80954466,\n       0.24432908, 0.93109857, 0.85202392, 0.97524308])"
+     },
+     {
+      "name": "y",
+      "value": "array([0.10318366, 0.06425032, 0.75129578, 0.91644063, 0.30191702,\n       0.52886141, 0.72994582, 0.00985192, 0.13768484])"
+     },
+     {
+      "name": "z",
+      "value": "array([[False,  True, False],\n       [ True, False,  True],\n       [False,  True, False]])"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:18:57+00:00"
+}

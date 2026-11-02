@@ -1,0 +1,61 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "The fix only inserts a select! macro arm (and a blank line). The gold point is the expansion that follows the insertion in the macro, the biased entry point's body; macro code runs only where the test expands it.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "tokio/src/macros/select.rs",
+   "line": 612,
+   "why": "the fix's only code hunk inserts a macro arm; the expansion just after it (the biased entry point's body)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "no_branch_else_only",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tokio/tests/macros_select.rs",
+   "line": 31,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "no_branch_else_only",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tokio"
+   ],
+   "run": {
+    "package": "tokio",
+    "test": "macros_select"
+   },
+   "vendor": "vendor",
+   "features": [
+    "full"
+   ]
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

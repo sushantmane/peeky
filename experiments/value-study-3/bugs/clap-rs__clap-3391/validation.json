@@ -1,0 +1,38 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "possible_values::escaped_possible_values_output": "FAILED",
+   "possible_values::possible_values_alias_output": "FAILED",
+   "possible_values::possible_values_hidden_output": "FAILED",
+   "possible_values::possible_values_output": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "possible_values::escaped_possible_values_output": "PASSED",
+   "possible_values::possible_values_alias_output": "PASSED",
+   "possible_values::possible_values_hidden_output": "PASSED",
+   "possible_values::possible_values_output": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.8
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "possible_values::escaped_possible_values_output": "PASSED",
+   "possible_values::possible_values_alias_output": "PASSED",
+   "possible_values::possible_values_hidden_output": "PASSED",
+   "possible_values::possible_values_output": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.3
+ }
+]

@@ -1,0 +1,38 @@
+id: BurntSushi__ripgrep-2576
+language: rust
+repo: BurntSushi/ripgrep
+source: SWE-bench Multilingual
+base_commit: fed4fea217abbc502f2e823465de903c8f2b623d
+upstream: https://github.com/BurntSushi/ripgrep/pull/2576
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The wrong offsets need a particular pattern and haystack: a -w search where the word-boundary
+  wrapper matches a line start or end inside the searched buffer rather than a non-word character.
+  The faulty values are byte offsets of the regex's candidate match and the decoded characters at
+  its ends.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong output (a match missing its first character), and the fix changes how the
+  match offsets are computed. The tests run the rg binary as a child process, and the fixed code is
+  in the grep-regex crate's word matcher, several calls below the searcher.
+root_cause: >-
+  In crates/regex/src/word.rs, WordMatcher::fast_find runs the pattern wrapped as
+  (?:^|\W)(...)(?:$|\W) and then trims one character from each end of the candidate match
+  (bstr::decode_utf8 and decode_last_utf8), assuming the wrapper matched a non-word character there.
+  When the wrapper matched ^ or $ at a line boundary inside the haystack instead, the trimmed
+  character belongs to the match itself, so the reported match loses its first (or last)
+  character, e.g. ome.domain.com. The fix checks the decoded characters and falls back to the
+  slower path when either is a word character.
+test_hint: >-
+  Run the integration tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --package
+  ripgrep --test integration -- <filter>` (e.g. `-- misc::`); the build cache was made with these
+  RUSTFLAGS. Crate tests: `cargo test -p grep-printer`. The debug binary is target/debug/rg.
+image: peeky-study/burntsushi__ripgrep-2576:control
+build_minutes: 1.1
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it with the repo's Cargo.lock (version
+  3). Test command from the dataset's eval_script (the integration tests filtered to regression),
+  run offline. Parser: SWE-bench's parse_log_cargo.

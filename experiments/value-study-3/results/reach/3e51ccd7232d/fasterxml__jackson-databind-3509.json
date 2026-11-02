@@ -1,0 +1,132 @@
+{
+ "bug": "fasterxml__jackson-databind-3509",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-databind-3509:peeky-r3",
+ "image_id": "sha256:8afd16715adc41f5a6b23373b2a66f2b30dfb2297fc6c5b26daaa625ef5bb97c",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:09:41+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "first code hunk, in FloatDeserializer._parseFloat: the statement after the inserted ID_NUMBER_INT case (the hunk also removes the old case label at 615, which holds no statement)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java:616",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java:616 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/com/fasterxml/jackson/databind/deser/std/NumberDeserializers.java:616",
+    "function": "NumberDeserializers$FloatDeserializer._parseFloat(JsonParser,DeserializationContext)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "p",
+      "value": "ReaderBasedJsonParser@823"
+     },
+     {
+      "name": "ctxt",
+      "value": "DefaultDeserializationContext$Impl@824"
+     },
+     {
+      "name": "this",
+      "value": "NumberDeserializers$FloatDeserializer@825"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "gold",
+   "why": "last code hunk, in _parseDoublePrimitive: the statement after the inserted coercion check (the hunk after it adds a new method; LogicalType.java changes a comment)",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java:1109",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/databind/deser/std/StdDeserializer.java:1109 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.8
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 8
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testCoerceConfigToNull, the first failing test in the file",
+   "at": "src/test/java/com/fasterxml/jackson/databind/convert/CoerceIntToFloatTest.java:49",
+   "launch": {
+    "ready_seconds": 6.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/com/fasterxml/jackson/databind/convert/CoerceIntToFloatTest.java:49 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/test/java/com/fasterxml/jackson/databind/convert/CoerceIntToFloatTest.java:49",
+    "function": "CoerceIntToFloatTest.testCoerceConfigToNull()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "this",
+      "value": "CoerceIntToFloatTest@781"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 12
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:10:10+00:00"
+}

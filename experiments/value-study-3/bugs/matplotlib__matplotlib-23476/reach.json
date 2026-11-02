@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "lib/matplotlib/tests/test_figure.py::test_unpickle_with_device_pixel_ratio"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/matplotlib/figure.py",
+   "line": 3027,
+   "why": "the statement after the insertion in Figure.__getstate__ (the only code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "lib/matplotlib/tests/test_figure.py",
+   "line": 1389
+  }
+ ]
+}

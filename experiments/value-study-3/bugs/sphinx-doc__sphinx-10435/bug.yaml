@@ -1,0 +1,43 @@
+id: sphinx-doc__sphinx-10435
+language: python
+repo: sphinx-doc/sphinx
+source: SWE-bench Verified
+base_commit: f1061c012e214f16fd8790dec3c283d787e3daa8
+upstream: https://github.com/sphinx-doc/sphinx/pull/10435
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report shows the generated LaTeX and the expected markup (a % after the opening and before
+  the closing braces), which points at the LaTeX writer's handling of highlighted inline code.
+  Why the newlines are there comes from Pygments' LaTeX formatter output (B).
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong output (spaces around highlighted inline code in the PDF), and the fix
+  changes how the writer computes the LaTeX string. The code runs in the LaTeX translator's
+  visit_literal, which a build reaches through the builder and docutils' tree walk, well over 5
+  calls below the test.
+root_cause: >-
+  LaTeXTranslator.visit_literal in sphinx/writers/latex.py turns Pygments' Verbatim output into
+  inline \sphinxcode{\sphinxupquote{...}} markup by replacing the \begin{Verbatim} line and
+  stripping \end{Verbatim}, but keeps the newline after the opening and before the closing braces,
+  and LaTeX renders each newline as a space. The fix ends the opening with a % comment, strips the
+  newline before \end{Verbatim} too, and closes with "%\n}}".
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with Sphinx installed in editable mode. Run tests
+  with `cd /testbed && python -m pytest tests/<file>.py` (the whole suite is `python -m pytest tests`).
+python: "3.12"
+image: peeky-study/sphinx-doc__sphinx-10435:control
+build_minutes: 0.4
+grade_minutes: 0.1
+pass_to_pass_removed:
+  - test: tests/test_build_latex.py::test_latex_images
+    reason: >-
+      Fails at base and with gold in the no-network container: the test document includes a
+      remote image (https://www.python.org/static/img/python-logo.png) that the LaTeX builder
+      can't fetch, so its \sphinxincludegraphics line is missing.
+notes: >-
+  SWE-bench runs these tests through tox --current-env; eval.sh runs tox.ini's command directly
+  (`python -X dev -X warn_default_encoding -m pytest -rA --durations 25` with PYTHONWARNINGS=all and
+  PYTEST_ADDOPTS=--color yes). Packages are the spec's (Jinja2 3.0.3, the [test] extra), the others
+  resolving as of 2024-08-01. No LaTeX is installed, as in the SWE-bench image, so the tests that
+  compile with LaTeX skip. The build took 0.4 min (it waited 4 more for a slot).

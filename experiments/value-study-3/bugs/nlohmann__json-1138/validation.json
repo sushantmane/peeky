@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test-conversions_all": "MISSING",
+   "test-conversions_default": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 2.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test-conversions_all": "PASSED",
+   "test-conversions_default": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test-conversions_all": "PASSED",
+   "test-conversions_default": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.7
+ }
+]

@@ -1,0 +1,44 @@
+{
+ "bug": "fasterxml__jackson-databind-4159",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/fasterxml__jackson-databind-4159:peeky-r3",
+ "image_id": "sha256:378eefc9e5719d1691720bf50a91463fe76fb7ee22929faef22390ba411df31e",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:43:49+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted NON_FINAL_AND_ENUMS case in DefaultTypeResolverBuilder.useForType (return true of case EVERYTHING); the other hunk only declares the enum constant",
+   "at": "src/main/java/com/fasterxml/jackson/databind/ObjectMapper.java:361",
+   "launch": {
+    "failed": true,
+    "log_tail": "l/jackson/databind/util/ClassUtil.java:[999,19] [deprecation] isAccessible() in AccessibleObject has been deprecated\n[INFO] \n[INFO] --- maven-bundle-plugin:5.1.9:manifest (bundle-manifest) @ jackson-databind ---\n[INFO] Writing manifest: /testbed/target/classes/META-INF/MANIFEST.MF\n[INFO] \n[INFO] --- build-helper-maven-plugin:3.4.0:add-test-source (add-test-source) @ jackson-databind ---\n[INFO] Test Source directory: /testbed/src/test-jdk11/java added.\n[INFO] \n[INFO] --- maven-resources-plugin:3.3.1:testResources (default-testResources) @ jackson-databind ---\n[INFO] Copying 5 resources from src/test/resources to target/test-classes\n[INFO] \n[INFO] --- maven-compiler-plugin:3.11.0:testCompile (default-testCompile) @ jackson-databind ---\n[INFO] Changes detected - recompiling the module! :dependency\n[INFO] Compiling 657 source files with javac [forked debug:lines,source,vars deprecation release 11] to target/test-classes\n[INFO] -------------------------------------------------------------\n[WARNING] COMPILATION WARNING : \n[INFO] -------------------------------------------------------------\n[WARNING] /testbed/src/test/java/com/fasterxml/jackson/databind/introspect/TestJacksonAnnotationIntrospector.java:[140,25] [deprecation] findEnumValues(Class<?>,Enum<?>[],String[]) in JacksonAnnotationIntrospector has been deprecated\n[INFO] 1 warning\n[INFO] -------------------------------------------------------------\n[INFO] -------------------------------------------------------------\n[ERROR] COMPILATION ERROR : \n[INFO] -------------------------------------------------------------\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java:[118,50] error: cannot find symbol\n  symbol:   variable NON_FINAL_AND_ENUMS\n  location: class DefaultTyping\n[INFO] 1 error\n[INFO] -------------------------------------------------------------\n[INFO] ------------------------------------------------------------------------\n[INFO] BUILD FAILURE\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  5.608 s\n[INFO] Finished at: 2026-11-02T17:43:55Z\n[INFO] ------------------------------------------------------------------------\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:testCompile (default-testCompile) on project jackson-databind: Compilation failure\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java:[118,50] error: cannot find symbol\n[ERROR]   symbol:   variable NON_FINAL_AND_ENUMS\n[ERROR]   location: class DefaultTyping\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testEnumAsWrapperArrayWithCreator, the test the patch adds",
+   "at": "src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java:129",
+   "launch": {
+    "failed": true,
+    "log_tail": "l/jackson/databind/util/ClassUtil.java:[999,19] [deprecation] isAccessible() in AccessibleObject has been deprecated\n[INFO] \n[INFO] --- maven-bundle-plugin:5.1.9:manifest (bundle-manifest) @ jackson-databind ---\n[INFO] Writing manifest: /testbed/target/classes/META-INF/MANIFEST.MF\n[INFO] \n[INFO] --- build-helper-maven-plugin:3.4.0:add-test-source (add-test-source) @ jackson-databind ---\n[INFO] Test Source directory: /testbed/src/test-jdk11/java added.\n[INFO] \n[INFO] --- maven-resources-plugin:3.3.1:testResources (default-testResources) @ jackson-databind ---\n[INFO] Copying 5 resources from src/test/resources to target/test-classes\n[INFO] \n[INFO] --- maven-compiler-plugin:3.11.0:testCompile (default-testCompile) @ jackson-databind ---\n[INFO] Changes detected - recompiling the module! :dependency\n[INFO] Compiling 657 source files with javac [forked debug:lines,source,vars deprecation release 11] to target/test-classes\n[INFO] -------------------------------------------------------------\n[WARNING] COMPILATION WARNING : \n[INFO] -------------------------------------------------------------\n[WARNING] /testbed/src/test/java/com/fasterxml/jackson/databind/introspect/TestJacksonAnnotationIntrospector.java:[140,25] [deprecation] findEnumValues(Class<?>,Enum<?>[],String[]) in JacksonAnnotationIntrospector has been deprecated\n[INFO] 1 warning\n[INFO] -------------------------------------------------------------\n[INFO] -------------------------------------------------------------\n[ERROR] COMPILATION ERROR : \n[INFO] -------------------------------------------------------------\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java:[118,50] error: cannot find symbol\n  symbol:   variable NON_FINAL_AND_ENUMS\n  location: class DefaultTyping\n[INFO] 1 error\n[INFO] -------------------------------------------------------------\n[INFO] ------------------------------------------------------------------------\n[INFO] BUILD FAILURE\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  6.183 s\n[INFO] Finished at: 2026-11-02T17:48:58Z\n[INFO] ------------------------------------------------------------------------\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:testCompile (default-testCompile) on project jackson-databind: Compilation failure\n[ERROR] /testbed/src/test/java/com/fasterxml/jackson/databind/jsontype/deftyping/TestDefaultForEnums.java:[118,50] error: cannot find symbol\n[ERROR]   symbol:   variable NON_FINAL_AND_ENUMS\n[ERROR]   location: class DefaultTyping\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+   },
+   "outcome": "error",
+   "detail": {
+    "message": "the launch never got ready"
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:53:54+00:00"
+}

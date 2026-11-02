@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "format-test": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 29.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "format-test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 29.7
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "format-test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 27.7
+ }
+]

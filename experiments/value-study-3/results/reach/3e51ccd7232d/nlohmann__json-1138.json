@@ -1,0 +1,83 @@
+{
+ "bug": "nlohmann__json-1138",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/nlohmann__json-1138:peeky-r3",
+ "image_id": "sha256:0ce159eedc5dd92c704d82ffbac52db8032bab5a62efcb90c59a1786bd404658",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T17:56:45+00:00",
+ "needs": [],
+ "notes": "The first failing test is the ctest test test-conversions_default: the binary with no arguments, in /testbed (its WORKING_DIRECTORY). At base, with the test patch, it doesn't compile (get<std::unordered_map<int, int>>() from an array of pairs); prepare then removes the binary built before the test patch, which doesn't run the failing test.",
+ "prepare": [
+  {
+   "command": "(cmake --build build-peeky --parallel 4 --target test-conversions > /root/reach/rebuild.log 2>&1 || rm -f build-peeky/test/test-conversions); tail -5 /root/reach/rebuild.log; ls build-peeky/test/test-conversions",
+   "exit": 2,
+   "seconds": 2.0,
+   "output": "1 error generated.\ngmake[3]: *** [test/CMakeFiles/test-conversions.dir/build.make:76: test/CMakeFiles/test-conversions.dir/src/unit-conversions.cpp.o] Error 1\ngmake[2]: *** [CMakeFiles/Makefile2:1324: test/CMakeFiles/test-conversions.dir/all] Error 2\ngmake[1]: *** [CMakeFiles/Makefile2:1331: test/CMakeFiles/test-conversions.dir/rule] Error 2\ngmake: *** [Makefile:738: test-conversions] Error 2\nls: cannot access 'build-peeky/test/test-conversions': No such file or directory\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "from_json(std::map): the statement after the inserted map overload's body (first hunk changing a statement)",
+   "at": "include/nlohmann/detail/conversions/from_json.hpp:286",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/test/test-conversions --at include/nlohmann/detail/conversions/from_json.hpp:286 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/test/test-conversions in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the removed stringstream of the serializer's incomplete-UTF-8 error, in the single header the tests include (last hunk)",
+   "at": "single_include/nlohmann/json.hpp:9784",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/test/test-conversions --at single_include/nlohmann/json.hpp:9784 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/test/test-conversions in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": "the first CHECK of the section std::unordered_map (array of pairs), which the test patch adds and which fails to compile at base",
+   "at": "test/src/unit-conversions.cpp:1239",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/test/test-conversions --at test/src/unit-conversions.cpp:1239 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/test/test-conversions in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T17:56:49+00:00"
+}

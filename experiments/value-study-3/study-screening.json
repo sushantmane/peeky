@@ -1,0 +1,14 @@
+{
+ "name": "value-study-3-screening",
+ "bugs": "bugs",
+ "results": "results/screening",
+ "seed": 20261102,
+ "arms": {
+  "control": {
+   "image_tag": "control",
+   "prompts": ["../value-study/harness/prompt.md"],
+   "peeky": false
+  }
+ },
+ "comparisons": []
+}

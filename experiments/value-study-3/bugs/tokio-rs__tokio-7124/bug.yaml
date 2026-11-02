@@ -1,0 +1,43 @@
+id: tokio-rs__tokio-7124
+language: rust
+repo: tokio-rs/tokio
+source: Multi-SWE-bench
+base_commit: fb7dec0e952d0d796b98650998c44a21d6775564
+upstream: https://github.com/tokio-rs/tokio/pull/7124
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report says exactly what to do: declare the custom cfgs in Cargo's
+  [lints.rust.unexpected_cfgs] check-cfg list instead of allowing unexpected_cfgs in each file.
+  It is build configuration, with no runtime state.
+traits: []
+traits_rationale: >-
+  A build-configuration change (lint settings in manifests), not a runtime value; it builds and
+  tests in well under 3 minutes, and no fixed code runs at runtime.
+root_cause: >-
+  tokio silences warnings about its custom cfgs (tokio_unstable, loom, tokio_taskdump and others)
+  with `#![allow(unknown_lints, unexpected_cfgs)]` in each crate root and test file. The fix
+  declares them once in the root Cargo.toml's [workspace.lints.rust] unexpected_cfgs check-cfg
+  list, opts every member into it with `[lints] workspace = true`, removes the allow attributes,
+  and replaces a `cfg_attr(not(fs), ...)` in tokio/src/runtime/blocking/pool.rs with
+  `not(feature = "fs")`. Without [workspace.lints], a member manifest with
+  `[lints] workspace = true` fails to load.
+test_hint: >-
+  Run an integration test file with `cd /testbed && cargo test --test <file stem>` (integration
+  tests are in tokio/tests/, e.g. `cargo test --test sync_mpsc`); tokio's unit tests with
+  `cargo test -p tokio --lib --features full`.
+image: peeky-study/tokio-rs__tokio-7124:control
+build_minutes: 0.6
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tokio doesn't commit Cargo.lock;
+  Multi-SWE-bench resolves afresh, so the image pins SWE-bench's lock file for tokio-7139 (Cargo
+  needed no change for this commit; Cargo.lock here; git ignores it). The dataset's
+  FAIL_TO_PASS and PASS_TO_PASS are empty; its n2p tests are all from binaries the test patch
+  doesn't change (its run stopped at the first failing binary), and the test patch adds or edits
+  no test function: it removes the allow attributes from 25 test files and tokio-test's lib.rs,
+  and adds `[lints] workspace = true` to 4 manifests. So fail_to_pass is every test of the
+  changed test files that hold tests without --cfg tokio_unstable (10 binaries, 246 tests, as
+  the gold run lists them); pass_to_pass is empty, as the dataset gives it. At base the test
+  patch's manifests don't load ("failed to load manifest for workspace member"), so nothing runs.

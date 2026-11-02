@@ -1,0 +1,40 @@
+id: nlohmann__json-2866
+language: cpp
+repo: nlohmann/json
+source: Multi-SWE-bench
+base_commit: 9426074ce85da2121c315cae8574d8eaca520cb7
+upstream: https://github.com/nlohmann/json/pull/2866
+category: C
+categories_applicable: [C, D]
+category_rationale: >-
+  The faulty data is the parent pointer of each element of the std::vector inside a json array,
+  which goes stale when the vector reallocates. It shows only after a sequence of appends that
+  outgrows the vector's capacity, followed by a copy that checks the invariant.
+traits: [runtime-state]
+traits_rationale: >-
+  The report is an assertion failure (a crash), and the fix changes how the elements' parent
+  pointers are kept across appends and inserts. The fixed code runs one call below the test's
+  push_back, emplace_back and insert calls, in a fast build.
+root_cause: >-
+  With JSON_DIAGNOSTICS on, each element of a json array keeps a pointer to its parent
+  (m_parent). basic_json::push_back and emplace_back (single_include/nlohmann/json.hpp, generated
+  from include/nlohmann/json.hpp) set the parent of the appended element only, but when the
+  std::vector reallocates, the moved elements lose theirs (the move constructor doesn't copy it),
+  and insert() fixed up only the inserted range; a later invariant check, e.g. on copying the
+  array, then fails its assertion. The fix records the capacity before an append and resets every
+  element's parent when it changed, and makes insert_iterator reset all parents.
+test_hint: |-
+  Build a test with `cd /testbed && cmake -S . -B build && cmake --build build --parallel 4 --target test-<name>` (one target per test/src/unit-<name>.cpp; binaries in build/test/).
+  Run it with `ctest --test-dir build -R '^test-<name>$' --output-on-failure`.
+image: peeky-study/nlohmann__json-2866:control
+build_minutes: 0.03
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Build follows Multi-SWE-bench's nlohmann/json recipe (cmake in build/, json_test_data in build/,
+  ctest) with the base image's GCC 13 in place of its gcc:12, limited to test-diagnostics, the
+  binary of the test file the test patch changes. fail_to_pass is that n2p test (it aborts at base
+  with the test patch: the JSON_ASSERT in assert_invariant). pass_to_pass is limited to the tests
+  eval.sh runs: download_test_data (ctest's fixture). The test data (v3.0.0, as
+  cmake/download_test_data.cmake names) is pre-cloned in /opt/json_test_data, and eval.sh builds
+  from a fresh build/. The image builds in about 1 minute, most of it cloning.

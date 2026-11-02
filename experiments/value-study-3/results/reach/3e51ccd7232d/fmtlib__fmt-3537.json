@@ -1,0 +1,51 @@
+{
+ "bug": "fmtlib__fmt-3537",
+ "language": null,
+ "category": null,
+ "image": "peeky-study/fmtlib__fmt-3537:peeky-r3",
+ "image_id": "sha256:1c2866434fd3fbaf8fa50b5c458f47719b3f8727d2622ae2f4a25fcb4e6bce80",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-02T18:04:10+00:00",
+ "needs": [],
+ "notes": "The failing test is the ctest test color-test: the binary with no arguments, as ctest runs it. At base, with the test patch, it doesn't compile (to_string_view and the color overloads don't accept a format_string); prepare then removes the binary built before the test patch, which doesn't run the failing test. The fix only inserts a new function template (to_string_view) at namespace scope, so no gold point exists in the base file.",
+ "prepare": [
+  {
+   "command": "(cmake --build build-peeky --parallel 4 --target color-test > /root/reach/rebuild.log 2>&1 || rm -f build-peeky/bin/color-test); tail -5 /root/reach/rebuild.log; ls build-peeky/bin/color-test",
+   "exit": 2,
+   "seconds": 0.6,
+   "output": "1 warning and 5 errors generated.\ngmake[3]: *** [test/CMakeFiles/color-test.dir/build.make:76: test/CMakeFiles/color-test.dir/color-test.cc.o] Error 1\ngmake[2]: *** [CMakeFiles/Makefile2:314: test/CMakeFiles/color-test.dir/all] Error 2\ngmake[1]: *** [CMakeFiles/Makefile2:321: test/CMakeFiles/color-test.dir/rule] Error 2\ngmake: *** [Makefile:264: color-test] Error 2\nls: cannot access 'build-peeky/bin/color-test': No such file or directory\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "no gold point: the fix's one hunk inserts a new to_string_view overload outside any base function, so no base line holds a changed executable statement"
+   }
+  },
+  {
+   "role": "assertion",
+   "why": "the first EXPECT_EQ of color_test.format_forwarding, the binary's first failing case",
+   "at": "test/color-test.cc:64",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/color-test --at test/color-test.cc:64 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_REQUEST",
+    "message": "No binary build-peeky/bin/color-test in /testbed",
+    "hint": "Fix the request arguments; see `peeky <command> --help`.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-02T18:04:11+00:00"
+}

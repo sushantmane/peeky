@@ -1,0 +1,39 @@
+id: pytest-dev__pytest-10356
+language: python
+repo: pytest-dev/pytest
+source: SWE-bench Verified
+base_commit: 3c1534944cbd34e8a41bc9e76818018fadefc9a1
+upstream: https://github.com/pytest-dev/pytest/pull/10356
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report itself explains that a class's marks live in one pytestmark attribute, so a class
+  with two marked bases sees only the first base's marks; the code that reads that attribute is
+  one short function. The multiple-inheritance setup is a particular configuration (D).
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a wrong result (one base class's marks are lost), and the fix changes how a
+  class's marks are computed: from every class in its MRO rather than from one inherited attribute.
+root_cause: >-
+  get_unpacked_marks in src/_pytest/mark/structures.py reads a class's marks with
+  getattr(obj, "pytestmark"), which finds only the first pytestmark along the MRO, so marks applied
+  to other base classes are lost. The fix, for a class, collects the pytestmark stored in each
+  class's own __dict__ along the MRO, and store_mark uses only the class's own marks
+  (consider_mro=False) so inherited marks aren't copied into a subclass.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with pytest installed in editable mode. Run tests
+  with `cd /testbed && python -m pytest testing/<file>.py` (the whole suite is
+  `python -m pytest testing`).
+python: "3.11"
+image: peeky-study/pytest-dev__pytest-10356:control
+build_minutes: 0.4
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Python 3.11, not 3.12: this pytest's assertion rewriting uses ast.Str and ast.Num, deprecated in
+  3.12, and pyproject.toml turns warnings into errors. The SWE-bench spec's pinned packages
+  (attrs 23.1.0, iniconfig 2.0.0, packaging 23.1, pluggy 0.13.1, py 1.11.0, tomli 2.0.1), then
+  `pip install -e .`; other packages resolve as of 2024-08-01. The checkout has no tags, so the
+  install sets SETUPTOOLS_SCM_PRETEND_VERSION=7.2.0.dev0 (pyproject.toml's minversion is 2.0, which
+  setuptools_scm's untagged 0.1.devN fails). eval.sh runs testing/test_mark.py, the file the hidden
+  tests change, with SWE-bench's `pytest -rA`; parse.py is SWE-bench's pytest parser.

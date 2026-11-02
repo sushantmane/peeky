@@ -1,0 +1,49 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "tests/runtests.py"
+ ],
+ "program": [
+  "--settings=test_sqlite",
+  "--parallel",
+  "1",
+  "model_fields.tests.GetChoicesOrderingTests.test_get_choices_default_ordering"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "django/contrib/admin/filters.py",
+   "line": 197,
+   "why": "the removed empty ordering in RelatedFieldListFilter.field_choices (the first hunk)",
+   "program": [
+    "--settings=test_sqlite",
+    "--parallel",
+    "1",
+    "admin_filters.tests.ListFiltersTests.test_relatedfieldlistfilter_foreignkey_default_ordering"
+   ],
+   "run_note": "the first failing test, in grade.json's order, that runs this line at base (README, 'The no-LLM filter'); the bug's first failing test doesn't"
+  },
+  {
+   "role": "gold",
+   "file": "django/db/models/fields/reverse_related.py",
+   "line": 126,
+   "why": "the changed comprehension source in ForeignObjectRel.get_choices (the last hunk)",
+   "program": [
+    "--settings=test_sqlite",
+    "--parallel",
+    "1",
+    "model_fields.tests.GetChoicesOrderingTests.test_get_choices_reverse_related_field_default_ordering"
+   ],
+   "run_note": "the first failing test, in grade.json's order, that runs this line at base (README, 'The no-LLM filter'); the bug's first failing test doesn't"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/model_fields/tests.py",
+   "line": 232,
+   "why": "the first assertion of assertChoicesEqual, the helper the test calls first"
+  }
+ ]
+}

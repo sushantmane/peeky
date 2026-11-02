@@ -1,0 +1,42 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "crates/nu-parser/src/type_check.rs",
+   "line": 13,
+   "why": "the changed empty-fields check in type_compatible's is_compatible closure (the only hunk)",
+   "options": [
+    "--config",
+    "/root/reach/bin.json",
+    "--build"
+   ],
+   "program": [
+    "--no-std-lib",
+    "/root/reach/test.nu"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "src/tests.rs",
+   "line": 93,
+   "why": "run_cmd_and_assert's first assertion, which the first failing test reaches through run_test",
+   "not_attempted": "the test is a unit test of the nu binary (src/main.rs); a Peeky config runs a binary, an integration test or a library's unit tests, not a binary's unit tests"
+  }
+ ],
+ "files": {
+  "/root/reach/bin.json": {
+   "workspace": ".",
+   "analyse": [
+    "nu-parser"
+   ],
+   "run": {
+    "bin": "nu"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/test.nu": "def merge_records [other: record<bar: int>]: record<foo: string> -> record<foo: string, bar: int> { merge $other }\n"
+ }
+}

@@ -1,0 +1,47 @@
+id: ponylang__ponyc-3763
+language: c
+repo: ponylang/ponyc
+source: Multi-SWE-bench
+base_commit: 847c83430e8dfa645ba753a84754004134a9ca60
+upstream: https://github.com/ponylang/ponyc/pull/3763
+category: D
+categories_applicable: [C, D]
+category_rationale: >-
+  The assertion fires only when an iftype sits inside a lambda or object literal, whose body the
+  expr pass sends through the earlier passes again, so the scope pass sees the same iftype node a
+  second time with state from the first visit; the failing state lives in the compiler's AST.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  A compiler crash (assertion) whose fix stops scope_iftype from redoing work on a node that
+  already holds its type parameters from an earlier pass. scope_iftype runs about 30 calls deep
+  from the test, under program_load, the expr pass's lambda catch-up and the AST visitor.
+root_cause: >-
+  In src/libponyc/pass/scope.c, scope_iftype moves the iftype's type parameters into a
+  typeparam_store child and asserts that the store is still empty. For an iftype inside a lambda
+  or object literal, the expr pass runs the earlier passes again over the generated object (a
+  "catch up"), so scope_iftype runs a second time on the same node, finds the store already
+  filled (TK_TYPEPARAMS) and the assertion fails. The fix returns AST_IGNORE when the store is
+  already set, so the pass doesn't run twice on an iftype.
+test_hint: |-
+  The project is configured (debug) and built in /testbed: rebuild with `cd /testbed && make build config=debug` (outputs in build/debug; `make configure config=debug` reconfigures).
+  Run the compiler's unit tests with `cd /testbed/build/debug && ./libponyc.tests` (Google Test; `--gtest_filter=Suite.Name` runs one), or all of `make test config=debug`.
+image: peeky-study/ponylang__ponyc-3763:control
+build_minutes: 1.8
+grade_minutes: 0.5
+pass_to_pass_removed:
+  - CodegenTest.CycleDetector: crashes (segfault, or the runtime's assertion `!ponyint_is_muted(actor)`) or runs out of time in this environment, at base and with the fix alike; eval.sh leaves it out, because a crash takes the rest of libponyc.tests with it
+notes: >-
+  Multi-SWE-bench's FAIL_TO_PASS is empty (its test-patch run crashed, so every test was NONE);
+  fail_to_pass is the n2p test the test patch adds, IftypeTest.InsideLambda. pass_to_pass is
+  PASS_TO_PASS (all of it gtest tests, which eval.sh runs) less CycleDetector. The build follows
+  Multi-SWE-bench's ponyc recipe with clang 18 (CC/CXX set in the image, since ponyc's Makefile
+  looks for `clang` only) and `-Wno-error` in the debug C flags (clang 18's new
+  unused-but-set-variable warnings meet ponyc's -Werror), set through the CMAKE_FLAGS variable
+  its Makefile passes to cmake. `make libs` (LLVM 9.0.1 for AArch64, Google Test 1.8.1,
+  Google Benchmark 1.5.2) is prebuilt in the shared image peeky-study/r3-ponyc-llvm:9.0.1
+  (Dockerfile.llvm here, FROM peeky-study/base:1, 6.3 min, also used by ponylang__ponyc-3777);
+  build/libs links to it. Linux 6.x has no <linux/dn.h>; an empty one stands in (socket.c uses
+  its constants only under #ifdef). eval.sh runs the two gtest binaries of `make test-core`
+  without --gtest_shuffle and without CycleDetector (see pass_to_pass_removed). The Peeky
+  build (peeky.sh) compiles C++ units against libstdc++, not libc++, because the prebuilt LLVM
+  and Google Test it links with use libstdc++; the fix and its probe points are in C.

@@ -1,0 +1,37 @@
+{
+ "parser": "parse_log_jq (Multi-SWE-bench)",
+ "fail_to_pass": [
+  "tests/jqtest"
+ ],
+ "pass_to_pass": [
+  "bug_fix",
+  "callback_each_match",
+  "callout",
+  "count",
+  "echo",
+  "encode",
+  "listcap",
+  "names",
+  "regset",
+  "scan",
+  "simple",
+  "sql",
+  "syntax",
+  "test_back",
+  "test_options",
+  "test_regset",
+  "test_syntax",
+  "test_utf8",
+  "testc",
+  "testcu",
+  "tests/base64test",
+  "tests/manonigtest",
+  "tests/mantest",
+  "tests/onigtest",
+  "tests/optionaltest",
+  "tests/shtest",
+  "tests/utf8test",
+  "user_property"
+ ],
+ "timeout_s": 600
+}

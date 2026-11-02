@@ -1,0 +1,8 @@
+{
+  "parser": "parse_log_jackson_databind",
+  "fail_to_pass": [
+    "com.fasterxml.jackson.databind.node.WithPathTest"
+  ],
+  "pass_to_pass": [],
+  "timeout_s": 1200
+}

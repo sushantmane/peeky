@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "regression-4582": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 92.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "regression-4582": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 78.3
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "regression-4582": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 81.0
+ }
+]

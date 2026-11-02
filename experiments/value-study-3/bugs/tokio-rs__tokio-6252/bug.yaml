@@ -1,0 +1,37 @@
+id: tokio-rs__tokio-6252
+language: rust
+repo: tokio-rs/tokio
+source: Multi-SWE-bench
+base_commit: 48345d6e4822b4c0ea00d5c1c075a6b5ac663acf
+upstream: https://github.com/tokio-rs/tokio/pull/6252
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A feature request: a method that marks a watch receiver's current value as seen. What it must
+  do is clear from the report and from mark_changed and borrow_and_update; the state is one
+  version number.
+traits: []
+traits_rationale: >-
+  An API addition, so not runtime-state; it builds and tests in well under 3 minutes, and the new
+  method runs directly in the test.
+root_cause: >-
+  tokio/src/sync/watch.rs has no way to mark a Receiver's current value as seen without taking
+  the value's read lock (borrow_and_update). The fix adds Receiver::mark_unchanged, which loads
+  the shared state's current version and stores it as the receiver's version, so has_changed()
+  returns false and changed() waits for the next send.
+test_hint: >-
+  Run an integration test file with `cd /testbed && cargo test --test <file stem>` (integration
+  tests are in tokio/tests/, e.g. `cargo test --test sync_mpsc`); tokio's unit tests with
+  `cargo test -p tokio --lib --features full`.
+image: peeky-study/tokio-rs__tokio-6252:control
+build_minutes: 0.4
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tokio doesn't commit Cargo.lock;
+  Multi-SWE-bench resolves afresh, so the image pins SWE-bench's lock file for tokio-6551,
+  completed by Cargo 1.96 for this commit (Cargo.lock here; git ignores it). The dataset's
+  FAIL_TO_PASS and PASS_TO_PASS are empty and its n2p tests are all from other test binaries
+  (its run stopped at the first failing binary), so fail_to_pass is the test the test patch adds
+  and pass_to_pass is empty, as the dataset gives it. eval.sh runs the sync_watch binary alone,
+  offline. The hidden test doesn't compile at base (it calls mark_unchanged).

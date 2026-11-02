@@ -1,0 +1,39 @@
+id: django__django-13195
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: 156a2138db20abc89933121e4ff2ee2ce56a173a
+upstream: https://github.com/django/django/pull/13195
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names HttpResponseBase.delete_cookie and shows that it sets neither SameSite nor
+  Secure (except for __Secure-/__Host- names); its callers in the messages and sessions apps are
+  one grep away, and the state is a cookie's attributes.
+traits: []
+traits_rationale: >-
+  The report shows wrong output (a deleting Set-Cookie header without SameSite), but the fix is
+  mainly an API addition: delete_cookie gains a samesite argument, which its callers now pass.
+root_cause: >-
+  HttpResponseBase.delete_cookie in django/http/response.py takes no samesite argument and sets
+  secure only for __Secure-/__Host- names, so the header that expires a cookie drops the cookie's
+  SameSite attribute (and lacks Secure when SameSite is None), and the messages cookie storage and
+  the session middleware delete their cookies that way. The fix adds samesite to delete_cookie
+  (also setting secure when it is "none") and passes SESSION_COOKIE_SAMESITE from
+  CookieStorage._update_cookie and SessionMiddleware.process_response.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-13195:control
+build_minutes: 1.9
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Dependencies are tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached
+  and a native build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale
+  as the spec does. parse.py is round 1's Django parser (SWE-bench's, with the documented Python
+  3.11 test-name adaptation and docstring tests). eval.sh runs the three test modules the hidden
+  tests change, and sends stderr to stdout because Django's runner reports on stderr. Dropped at
+  the reach check (see dropped.txt).

@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "astropy/units/tests/test_quantity.py::TestQuantityCreation::test_preserve_dtype": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.2
+ }
+]

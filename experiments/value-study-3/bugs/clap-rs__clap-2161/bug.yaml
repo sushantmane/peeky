@@ -1,0 +1,38 @@
+id: clap-rs__clap-2161
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: 4f90f3e4bb09cc596aa10243fc1791fc574a5d0e
+upstream: https://github.com/clap-rs/clap/pull/2161
+category: D
+categories_applicable: [D, E]
+category_rationale: >-
+  The panic needs a particular configuration: an option with a default value that sits under a
+  custom help heading (App::help_heading, or a flattened derive struct with help_heading). The
+  report's debug output points at the parser's default-value pass.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows a crash (unwrap of a missing value), and the fix changes which options get
+  their default values. The fixed code runs in the parser's default-value pass, five or more calls
+  below get_matches_from.
+root_cause: >-
+  In src/parse/parser.rs, Parser::add_defaults iterates self.app.get_opts_with_no_heading(), which
+  (src/build/app/mod.rs) yields only the options without a custom help heading. So an option
+  declared under a help heading never receives its default value, value_of returns None, and the
+  derive's generated code panics on unwrap. The fix adds App::get_opts and App::get_flags, which
+  yield all options and flags, and add_defaults iterates get_opts().
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test <name>` (e.g. `--test
+  flags`; one test target per file in tests/), and the library's unit tests with `cargo test --lib`;
+  the build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-2161:control
+build_minutes: 2.9
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain). The repo has no Cargo.lock (git ignores it): the image's
+  cargo fetch resolved one at build time, as Multi-SWE-bench's image did. `--package clap` is
+  ambiguous (criterion's clap 2), so commands name the test target. Test command: Multi-SWE-bench
+  runs `cargo test`; eval.sh runs the opts test target (the hidden test file), offline.
+  pass_to_pass is limited to the 37 dataset PASS_TO_PASS tests in tests/opts.rs. The test patch
+  adds only the FAIL_TO_PASS test (no n2p test). Parser: Multi-SWE-bench's Rust parse_log.

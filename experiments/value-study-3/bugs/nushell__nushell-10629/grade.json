@@ -1,0 +1,25 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, Rust)",
+ "fail_to_pass": [
+  "tests::test_type_check::record_subtyping_allows_general_inner",
+  "tests::test_type_check::record_subtyping_allows_general_record",
+  "tests::test_type_check::record_subtyping_allows_record_after_general_command"
+ ],
+ "pass_to_pass": [
+  "tests::test_type_check::block_not_first_class_def",
+  "tests::test_type_check::block_not_first_class_let",
+  "tests::test_type_check::chained_operator_typecheck",
+  "tests::test_type_check::date_minus_duration",
+  "tests::test_type_check::date_plus_duration",
+  "tests::test_type_check::int_record_mismatch",
+  "tests::test_type_check::number_float",
+  "tests::test_type_check::number_int",
+  "tests::test_type_check::record_subtyping",
+  "tests::test_type_check::record_subtyping_2",
+  "tests::test_type_check::record_subtyping_3",
+  "tests::test_type_check::transpose_into_load_env",
+  "tests::test_type_check::type_in_list_of_non_this_type",
+  "tests::test_type_check::type_in_list_of_this_type"
+ ],
+ "timeout_s": 1200
+}
