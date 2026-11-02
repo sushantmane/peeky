@@ -1,0 +1,109 @@
+{
+ "bug": "valkey-io__valkey-1842",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-1842:peeky-r2",
+ "image_id": "sha256:763965ef26218c12d3a285ffc6878233b0d05bb7a7ae0d58201d7899c70e6090",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:22:05+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted check in ACLLoadFromFile's loop over clients (the test's ACL LOAD on a replica)",
+   "at": "src/acl.c:2380",
+   "commands": [
+    {
+     "command": "peeky session start . --binary src/valkey-server --at src/acl.c:2380 --name reach --timeout 5 --json -- --port 7001 --save '' --appendonly no --aclfile /root/reach/users.acl",
+     "exit": 0,
+     "seconds": 14.7
+    },
+    {
+     "command": "peeky session wait --name reach --timeout 119 --json",
+     "exit": 0,
+     "seconds": 0.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.3
+    }
+   ],
+   "trigger": {
+    "exit": 0,
+    "seconds": 24.0,
+    "output": "OK\n"
+   },
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/acl.c:2380",
+    "function": "ACLLoadFromFile"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 16,
+    "sample": [],
+    "withheld_sample": [
+     {
+      "name": "filename",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 2380 may declare `filename` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/acl.c as compiled: its preprocessing asks whether <stdatomic.h> exis"
+     },
+     {
+      "name": "fp",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 2380 may declare `fp` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/acl.c as compiled: its preprocessing asks whether <stdatomic.h> exists (__"
+     },
+     {
+      "name": "buf",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 2380 may declare `buf` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/acl.c as compiled: its preprocessing asks whether <stdatomic.h> exists (_"
+     },
+     {
+      "name": "acls",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 2380 may declare `acls` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/acl.c as compiled: its preprocessing asks whether <stdatomic.h> exists ("
+     },
+     {
+      "name": "totlines",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 2380 may declare `totlines` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/acl.c as compiled: its preprocessing asks whether <stdatomic.h> exis"
+     },
+     {
+      "name": "lines",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 2380 may declare `lines` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/acl.c as compiled: its preprocessing asks whether <stdatomic.h> exists "
+     }
+    ]
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is Tcl (tests/unit/acl.tcl), which Peeky doesn't debug"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:22:45+00:00"
+}

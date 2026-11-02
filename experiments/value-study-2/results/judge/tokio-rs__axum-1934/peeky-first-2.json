@@ -1,0 +1,7 @@
+{
+ "judge_id": "a244",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed the panic: synthetic fallback routes were setting `MatchedPath`, conflicting with nested-service tracking.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Both Peeky probes (cmds 13 and 15, at axum/src/extract/matched_path.rs:146) failed with error BUDGET_EXHAUSTED; Peeky printed no values."
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a099",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed the bug: nested formatters skipped default parsing, and mutable range formatters accepted only lvalues.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Every probe was refused (cmds 13, 15, 18, 19, 21: UNSUPPORTED/PROVENANCE_CHANGED errors; cmd 17 never reached peeky) and cmd 24 was `peeky describe` listing lines/names only; Peeky printed no program value."
+}

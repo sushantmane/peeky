@@ -1,0 +1,88 @@
+{
+ "bug": "reactivex__rxjava-7597",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/reactivex__rxjava-7597:peeky-r2",
+ "image_id": "sha256:34a447d1f89dd7f97630ca32ccb12d7c7854f27b23d217e5d6ec4f6f8f69804f",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:18:41+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed condition in SwitchMapInnerObserver.onNext",
+   "at": "src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:352",
+   "launch": {
+    "ready_seconds": 6.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:352 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:352",
+    "function": "ObservableSwitchMap$SwitchMapInnerObserver.onNext(Object)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "t",
+      "value": "Integer@2243"
+     },
+     {
+      "name": "this",
+      "value": "ObservableSwitchMap$SwitchMapInnerObserver@2244"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java:1454",
+   "launch": {
+    "ready_seconds": 6.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java:1454 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.3
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:19:00+00:00"
+}

@@ -1,0 +1,61 @@
+diff --git a/src/cluster_legacy.c b/src/cluster_legacy.c
+index 892c722b0..8f9821177 100644
+--- a/src/cluster_legacy.c
++++ b/src/cluster_legacy.c
+@@ -5662,28 +5662,36 @@ void addNodeDetailsToShardReply(client *c, clusterNode *node) {
+     setDeferredMapLen(c, node_replylen, reply_count);
+ }
+ 
+-/* Add the shard reply of a single shard based off the given primary node. */
++/* Add the shard reply for the given list of nodes. */
+ void addShardReplyForClusterShards(client *c, list *nodes) {
+     serverAssert(listLength(nodes) > 0);
+-    clusterNode *n = listNodeValue(listFirst(nodes));
+     addReplyMapLen(c, 2);
+     addReplyBulkCString(c, "slots");
+ 
+-    /* Use slot_info_pairs from the primary only */
+-    n = clusterNodeGetPrimary(n);
++    /* After failover, the old primary may still be listed as a primary.
++     * Use the node that actually owns slots instead. */
++    clusterNode *n = NULL;
++    listIter li;
++    listRewind(nodes, &li);
++    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
++        clusterNode *node = listNodeValue(ln);
++        if (node->slot_info_pairs != NULL) {
++            n = node;
++            break;
++        }
++    }
+ 
+-    if (n->slot_info_pairs != NULL) {
++    if (n != NULL) {
+         serverAssert((n->slot_info_pairs_count % 2) == 0);
+         addReplyArrayLen(c, n->slot_info_pairs_count);
+         for (int i = 0; i < n->slot_info_pairs_count; i++) addReplyLongLong(c, (unsigned long)n->slot_info_pairs[i]);
+     } else {
+-        /* If no slot info pair is provided, the node owns no slots */
++        /* If no node has slot info pairs, the shard owns no slots. */
+         addReplyArrayLen(c, 0);
+     }
+ 
+     addReplyBulkCString(c, "nodes");
+     addReplyArrayLen(c, listLength(nodes));
+-    listIter li;
+     listRewind(nodes, &li);
+     for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {
+         clusterNode *n = listNodeValue(ln);
+diff --git a/src/commands/cluster-shards.json b/src/commands/cluster-shards.json
+index e63c129ea..40b0a0d63 100644
+--- a/src/commands/cluster-shards.json
++++ b/src/commands/cluster-shards.json
+@@ -22,7 +22,7 @@
+                 "additionalProperties": false,
+                 "properties": {
+                     "slots": {
+-                        "description": "An even number element array specifying the start and end slot numbers for slot ranges owned by this shard.",
++                        "description": "An even number element array specifying the start and end slot numbers for slot ranges owned by this shard, including after failover while the previous primary is unavailable.",
+                         "type": "array",
+                         "items": {
+                             "type": "integer"

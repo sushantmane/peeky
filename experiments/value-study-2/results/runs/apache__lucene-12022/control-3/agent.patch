@@ -1,0 +1,98 @@
+diff --git a/lucene/CHANGES.txt b/lucene/CHANGES.txt
+index 132ce5cf82..b6b69da3d0 100644
+--- a/lucene/CHANGES.txt
++++ b/lucene/CHANGES.txt
+@@ -65,6 +65,9 @@ Optimizations
+ Bug Fixes
+ ---------------------
+ 
++* Shape queries with CONTAINS no longer report false positives for polygons whose triangles
++  collapse to lines after coordinate quantization.
++
+ * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until
+   they reach the maximum merge size. (Adrien Grand)
+ 
+diff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+index bd85a5771f..08bf23a4d8 100644
+--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
++++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+@@ -371,6 +371,10 @@ public final class ShapeField {
+     resolveTriangleType(triangle);
+   }
+ 
++  /**
++   * Resolves the triangle type, marking a collapsed line as a polygon edge if either of its
++   * non-collapsed edges belongs to the polygon.
++   */
+   static void resolveTriangleType(DecodedTriangle triangle) {
+     if (triangle.aX == triangle.bX && triangle.aY == triangle.bY) {
+       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {
+@@ -378,15 +382,18 @@ public final class ShapeField {
+       } else {
+         triangle.bX = triangle.cX;
+         triangle.bY = triangle.cY;
++        triangle.ab = triangle.bc || triangle.ca;
+         triangle.cX = triangle.aX;
+         triangle.cY = triangle.aY;
+         triangle.type = DecodedTriangle.TYPE.LINE;
+       }
+     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {
++      triangle.ab = triangle.ab || triangle.bc;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {
+       triangle.cX = triangle.aX;
+       triangle.cY = triangle.aY;
++      triangle.ab = triangle.ab || triangle.ca;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else {
+       triangle.type = DecodedTriangle.TYPE.TRIANGLE;
+diff --git a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
+index 3beafb44bd..ac7a108050 100644
+--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
++++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
+@@ -472,6 +472,45 @@ public abstract class BaseShapeEncodingTestCase extends LuceneTestCase {
+     assertEquals(encoded.cX, axEnc);
+   }
+ 
++  public void testCollapsedTriangleEdgeFlags() {
++    int[][] vertices = {{encodeX(0), encodeY(0)}, {encodeX(2), encodeY(2)}};
++    int[][] permutations = {
++      {0, 0, 1}, {0, 1, 0}, {1, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 1, 1}
++    };
++    byte[] bytes = new byte[7 * ShapeField.BYTES];
++    ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();
++    for (int[] permutation : permutations) {
++      int[] a = vertices[permutation[0]];
++      int[] b = vertices[permutation[1]];
++      int[] c = vertices[permutation[2]];
++      for (int flags = 0; flags < 8; flags++) {
++        boolean ab = (flags & 1) != 0;
++        boolean bc = (flags & 2) != 0;
++        boolean ca = (flags & 4) != 0;
++        boolean fromPolygon =
++            (ab && permutation[0] != permutation[1])
++                || (bc && permutation[1] != permutation[2])
++                || (ca && permutation[2] != permutation[0]);
++
++        triangle.setValues(a[0], a[1], ab, b[0], b[1], bc, c[0], c[1], ca);
++        ShapeField.resolveTriangleType(triangle);
++        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);
++        assertEquals(fromPolygon, triangle.ab);
++        assertEquals(triangle.aX, triangle.cX);
++        assertEquals(triangle.aY, triangle.cY);
++
++        ShapeField.encodeTriangle(bytes, a[1], a[0], ab, b[1], b[0], bc, c[1], c[0], ca);
++        ShapeField.decodeTriangle(bytes, triangle);
++        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);
++        assertEquals(fromPolygon, triangle.ab);
++        assertEquals(vertices[0][0], triangle.aX);
++        assertEquals(vertices[0][1], triangle.aY);
++        assertEquals(vertices[1][0], triangle.bX);
++        assertEquals(vertices[1][1], triangle.bY);
++      }
++    }
++  }
++
+   public void testRandomPointEncoding() {
+     double ay = nextY();
+     double ax = nextX();

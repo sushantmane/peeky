@@ -1,0 +1,7 @@
+{
+ "judge_id": "a040",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Cancellation before the inner `onSubscribe` leaves its queue uninitialized, but seeded `scan` can still emit afterward.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

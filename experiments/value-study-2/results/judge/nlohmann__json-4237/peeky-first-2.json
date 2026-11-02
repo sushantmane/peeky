@@ -1,0 +1,7 @@
+{
+ "judge_id": "a114",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"The serializer always used signed storage for enums.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "All four Peeky probes (commands 13, 16, 17, 19) ended in errors (PROVENANCE_CHANGED, UNSUPPORTED: no MD5s); nothing ran and no value was printed."
+}

@@ -1,0 +1,45 @@
+diff --git a/docs/mkdocs/docs/features/enum_conversion.md b/docs/mkdocs/docs/features/enum_conversion.md
+index 1755bca2..d3dea4cc 100644
+--- a/docs/mkdocs/docs/features/enum_conversion.md
++++ b/docs/mkdocs/docs/features/enum_conversion.md
+@@ -1,8 +1,9 @@
+ # Specializing enum conversion
+ 
+-By default, enum values are serialized to JSON as integers. In some cases this could result in undesired behavior. If an
+-enum is modified or re-ordered after data has been serialized to JSON, the later de-serialized JSON data may be
+-undefined or a different enum value than was originally intended.
++By default, enum values are serialized to JSON as integers. The signedness of the JSON integer matches the enum's
++underlying type. In some cases this could result in undesired behavior. If an enum is modified or re-ordered after data has
++been serialized to JSON, the later de-serialized JSON data may be undefined or a different enum value than was originally
++intended.
+ 
+ It is possible to more precisely specify how a given enum is mapped to and from JSON as shown below:
+ 
+diff --git a/include/nlohmann/detail/conversions/to_json.hpp b/include/nlohmann/detail/conversions/to_json.hpp
+index e39b7797..4b59d587 100644
+--- a/include/nlohmann/detail/conversions/to_json.hpp
++++ b/include/nlohmann/detail/conversions/to_json.hpp
+@@ -320,7 +320,8 @@ template<typename BasicJsonType, typename EnumType,
+ inline void to_json(BasicJsonType& j, EnumType e) noexcept
+ {
+     using underlying_type = typename std::underlying_type<EnumType>::type;
+-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
++    constexpr auto type = std::is_signed<underlying_type>::value ? value_t::number_integer : value_t::number_unsigned;
++    external_constructor<type>::construct(j, static_cast<underlying_type>(e));
+ }
+ #endif  // JSON_DISABLE_ENUM_SERIALIZATION
+ 
+diff --git a/single_include/nlohmann/json.hpp b/single_include/nlohmann/json.hpp
+index 8b72ea65..fda8cffd 100644
+--- a/single_include/nlohmann/json.hpp
++++ b/single_include/nlohmann/json.hpp
+@@ -5697,7 +5697,8 @@ template<typename BasicJsonType, typename EnumType,
+ inline void to_json(BasicJsonType& j, EnumType e) noexcept
+ {
+     using underlying_type = typename std::underlying_type<EnumType>::type;
+-    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
++    constexpr auto type = std::is_signed<underlying_type>::value ? value_t::number_integer : value_t::number_unsigned;
++    external_constructor<type>::construct(j, static_cast<underlying_type>(e));
+ }
+ #endif  // JSON_DISABLE_ENUM_SERIALIZATION
+ 

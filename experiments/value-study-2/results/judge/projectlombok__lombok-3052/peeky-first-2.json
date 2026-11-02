@@ -1,0 +1,7 @@
+{
+ "judge_id": "a082",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Lombok previously assigned nested calls the same position, colliding with javac 11\u2019s position-based type cache.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 annotationNode.node.pos 45 and cmd 25 node.pos 45 (hits 9/11/14) are the offset of '@Builder' in MyTest.java written in cmd 9, matching javac's error at line 4 '@Builder' (cmds 9/13/16). Cmd 25 node.meth.pos 114/127/144 match the source offsets of doSth and the two '.' selects on line 7; cmd 20 hit-1 node.pos 80 is the '@Builder.Default' offset. No contradiction."
+}

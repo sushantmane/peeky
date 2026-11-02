@@ -1,0 +1,104 @@
+{
+ "bug": "apache__druid-15402",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__druid-15402:peeky-r2",
+ "image_id": "sha256:dd45e4b12c78e50dceca1a498ed7e0b156f87625c93b068351ba8685859f2e1b",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:14:09+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed iterator over post-aggregators in the cache strategy's pullFromCache",
+   "at": "processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:654",
+   "launch": {
+    "ready_seconds": 24.6
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:654 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.3
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:654",
+    "function": "GroupByQueryQueryToolChest$6$2.apply(Object)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 8,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "input",
+      "value": "ArrayList@3496"
+     },
+     {
+      "name": "results",
+      "value": "ArrayList$Itr@3497"
+     },
+     {
+      "name": "timestamp",
+      "value": "DateTime@3498"
+     },
+     {
+      "name": "size",
+      "value": "6"
+     },
+     {
+      "name": "resultRow",
+      "value": "ResultRow@3499"
+     },
+     {
+      "name": "dimsIter",
+      "value": "ArrayList$Itr@3500"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java:573",
+   "launch": {
+    "ready_seconds": 9.3
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java:573 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.3
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:14:51+00:00"
+}

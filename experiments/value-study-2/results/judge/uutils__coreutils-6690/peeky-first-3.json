@@ -1,0 +1,7 @@
+{
+ "judge_id": "a235",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed `cp`\u2019s missing variadic argument metadata with `.num_args(1..)`, restoring path completion after the first operand\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 8 (and cmd 19 query of the same run) at coreutils.rs:180 shows shell = Zsh for args 'completion cp zsh'; the program's own output in the same command is a zsh completion script (compdef _cp cp), and cmd 20 output is zsh too. Other rows are pointers/summaries. Cmd 15 was an error. No contradiction."
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a011",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The code relies on the first shard member\u2019s role, even though both nodes can remain marked as masters after failover. I\u2019ll select the member that actually owns slots\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Only Peeky values are in cmd 14 (python-launched probe at cluster_legacy.c:5675: n.numslots, n.slot_info_pairs, n.flags etc.), and every row is marked [unproven] with a liveness warning, so none is a value. Marked PEEKY cmds 9, 10, 13 printed help/describe only. Nothing checkable."
+}

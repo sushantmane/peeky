@@ -1,0 +1,7 @@
+{
+ "judge_id": "a152",
+ "wrong_root_cause": true,
+ "evidence": "Message 2: \"The panic comes from an invalid assertion: a nested service can receive a `MatchedPath` from an earlier routing step.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "The only PEEKY command (cmd 12) read rust.md docs and `peeky --help`; Peeky printed no program values."
+}

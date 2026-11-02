@@ -1,0 +1,7 @@
+{
+ "judge_id": "a147",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"The capture was correct; replacement processing mistakenly included trailing look-ahead context.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no program values: cmds 8, 12, 17, 18 were request/breakpoint/provenance errors, cmd 15 failed with DEBUGGER_ERROR at 0 hits, cmd 11 was help text and cmd 13 only a build report."
+}

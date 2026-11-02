@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_one  # noqa: E402
 import studylib  # noqa: E402
 
-SEED = 441
+SEED = studylib.SEED
 
 
 def log(handle, text):
@@ -66,23 +66,34 @@ def eligible_bugs(bugs_dir):
             excluded[directory.name] = "validation.json missing or not passing"
         elif not studylib.image_exists(bug["control_image"]):
             excluded[directory.name] = "no image " + bug["control_image"]
-        elif not studylib.image_exists(bug["peeky_image"]):
-            excluded[directory.name] = "no image " + bug["peeky_image"]
         else:
-            control = studylib.image_info(bug["control_image"])
-            peeky = studylib.image_info(bug["peeky_image"])
-            if control["peeky_sha"]:
-                excluded[directory.name] = "the control image holds Peeky"
-            elif not peeky["peeky_sha"]:
-                excluded[directory.name] = "the peeky image has no Peeky label"
-            elif peeky_control_id(bug["peeky_image"]) not in (None, control["id"]):
-                excluded[directory.name] = (
-                    "the peeky image was built from an older control image;"
-                    " rerun build_peeky_images.sh"
-                )
+            reason = image_problem(bug)
+            if reason:
+                excluded[directory.name] = reason
             else:
                 chosen[directory.name] = bug
     return chosen, excluded
+
+
+def image_problem(bug):
+    """Why the bug's images can't run (None if they can): each Peeky arm's image must exist,
+    hold Peeky, and come from the current control image, which must hold none."""
+    control = studylib.image_info(bug["control_image"])
+    if control["peeky_sha"]:
+        return "the control image holds Peeky"
+    images = sorted(
+        {studylib.image_for(bug, a) for a in studylib.ARMS if studylib.arm_uses_peeky(a)}
+    )
+    for image in images:
+        if not studylib.image_exists(image):
+            return "no image " + image
+        if not studylib.image_info(image)["peeky_sha"]:
+            return "the peeky image has no Peeky label"
+        if peeky_control_id(image) not in (None, control["id"]):
+            return (
+                "the peeky image was built from an older control image; rerun build_peeky_images.sh"
+            )
+    return None
 
 
 def peeky_control_id(image):

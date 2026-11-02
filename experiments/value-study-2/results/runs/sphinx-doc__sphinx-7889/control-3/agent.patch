@@ -1,0 +1,71 @@
+diff --git a/CHANGES b/CHANGES
+index e6888146c..622a86d6a 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -19,6 +19,7 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* autodoc: Fix TypeError when subscribing mocked classes with generic types
+ * #7839: autosummary: cannot handle umlauts in function names
+ * #7865: autosummary: Failed to extract summary line when abbreviations found
+ * #7866: autosummary: Failed to extract correct summary line when docstring
+diff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py
+index 98a3a3a96..40258a135 100644
+--- a/sphinx/ext/autodoc/mock.py
++++ b/sphinx/ext/autodoc/mock.py
+@@ -52,8 +52,8 @@ class _MockObject:
+     def __mro_entries__(self, bases: Tuple) -> Tuple:
+         return (self.__class__,)
+ 
+-    def __getitem__(self, key: str) -> "_MockObject":
+-        return _make_subclass(key, self.__display_name__, self.__class__)()
++    def __getitem__(self, key: Any) -> "_MockObject":
++        return _make_subclass(str(key), self.__display_name__, self.__class__)()
+ 
+     def __getattr__(self, key: str) -> "_MockObject":
+         return _make_subclass(key, self.__display_name__, self.__class__)()
+diff --git a/tests/roots/test-ext-autodoc/target/need_generic_mocks.py b/tests/roots/test-ext-autodoc/target/need_generic_mocks.py
+new file mode 100644
+index 000000000..2ce5d579f
+--- /dev/null
++++ b/tests/roots/test-ext-autodoc/target/need_generic_mocks.py
+@@ -0,0 +1,9 @@
++from typing import TypeVar
++
++from missing_module import Base
++
++T = TypeVar('T')
++
++
++class Derived(Base[T]):
++    """A class with a mocked generic base."""
+diff --git a/tests/test_ext_autodoc_configs.py b/tests/test_ext_autodoc_configs.py
+index 674620df0..d68c50e04 100644
+--- a/tests/test_ext_autodoc_configs.py
++++ b/tests/test_ext_autodoc_configs.py
+@@ -477,6 +477,24 @@ def test_mocked_module_imports(app, warning):
+     assert warning.getvalue() == ''
+ 
+ 
++@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')
++@pytest.mark.sphinx('html', testroot='ext-autodoc',
++                    confoverrides={'autodoc_mock_imports': ['missing_module']})
++def test_mocked_generic_class(app, warning):
++    warning.seek(0)
++    warning.truncate(0)
++    actual = do_autodoc(app, 'class', 'target.need_generic_mocks.Derived')
++    assert list(actual) == [
++        '',
++        '.. py:class:: Derived(*args: Any, **kwargs: Any)',
++        '   :module: target.need_generic_mocks',
++        '',
++        '   A class with a mocked generic base.',
++        '',
++    ]
++    assert warning.getvalue() == ''
++
++
+ @pytest.mark.sphinx('html', testroot='ext-autodoc',
+                     confoverrides={'autodoc_typehints': "signature"})
+ def test_autodoc_typehints_signature(app):

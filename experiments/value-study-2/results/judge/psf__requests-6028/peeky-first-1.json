@@ -1,0 +1,7 @@
+{
+ "judge_id": "a239",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"URL reconstruction used urllib3\u2019s `netloc`, which excludes authentication, so proxy credentials were dropped.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 15 probe at utils.py:982 (url set to the credentialed proxy URL): auth='user:pass', netloc='proxy.example:8080', scheme='http'. Cmd 17 parse_url of the same URL prints auth='user:pass' netloc='proxy.example:8080' scheme='http', and cmd 13 shows the normalized proxy losing credentials, so these values agree. Cmd 21 after fix: netloc='user:pass@proxy.example:8080' matches the added `netloc = '@'.join([auth, netloc])` and passing tests (cmd 20/21). None contradicted."
+}

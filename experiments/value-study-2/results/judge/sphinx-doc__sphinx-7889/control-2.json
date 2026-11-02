@@ -1,0 +1,7 @@
+{
+ "judge_id": "a131",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"mocked objects assumed subscription keys were strings, but generics supply `TypeVar` objects or tuples.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

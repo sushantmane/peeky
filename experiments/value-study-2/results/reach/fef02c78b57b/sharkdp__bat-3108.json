@@ -1,0 +1,150 @@
+{
+ "bug": "sharkdp__bat-3108",
+ "language": "rust",
+ "category": "B",
+ "image": "peeky-study/sharkdp__bat-3108:peeky-r2",
+ "image_id": "sha256:8598884cc34205220892befdc210e4e38e880915694c32a3763d1e4fba13951f",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:01:10+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in App::config (first code hunk)",
+   "at": "src/bin/bat/app.rs:101",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/bin/bat/app.rs:101 --name reach --timeout 300 --json -- --decorations=always --plain --paging=never /root/reach/test.txt",
+     "exit": 0,
+     "seconds": 14.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 3.4
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/bin/bat/app.rs:101",
+    "function": "bat::app::App::config::h9ec18af532987c2e"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "self",
+      "value": "0x0000ffffffffde18"
+     },
+     {
+      "name": "inputs",
+      "value": "&[bat::input::Input] @ 0xffffffffdae0"
+     },
+     {
+      "name": "style_components",
+      "value": "bat::style::StyleComponents @ 0xffffffffcc08"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 1,
+   "first_try": {
+    "outcome": "refused",
+    "detail": {
+     "code": "PROVENANCE_CHANGED",
+     "message": "Provenance: .git/index changed while Peeky built the workspace, but its entries are the same (git may have refreshed its cached file status). Build again",
+     "hint": "Sources, build outputs or tools changed; start a new session on a fresh build.",
+     "retryable": false
+    },
+    "commands": [
+     {
+      "command": "peeky session start . --config /root/reach/bin.json --build --at src/bin/bat/app.rs:101 --name reach --timeout 300 --json -- --decorations=always --plain --paging=never /root/reach/test.txt",
+      "exit": 2,
+      "seconds": 5.9
+     }
+    ]
+   },
+   "retried": true
+  },
+  {
+   "role": "gold",
+   "why": "the removed overrides_with in build_app (last code hunk)",
+   "at": "src/bin/bat/clap_app.rs:325",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/bin/bat/clap_app.rs:325 --name reach --timeout 300 --json -- --decorations=always --plain --paging=never /root/reach/test.txt",
+     "exit": 0,
+     "seconds": 14.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 2.7
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/bin/bat/clap_app.rs:325",
+    "function": "bat::clap_app::build_app::hdc769b82c2b37f42"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "interactive_output",
+      "value": "true"
+     },
+     {
+      "name": "color_when",
+      "value": "Auto"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "app",
+      "value": "clap_builder::builder::command::Command @ 0xfffffffc5d80",
+      "stale": "True"
+     }
+    ]
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/integration_tests.rs:1030",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/integration_tests.rs:1030 --name reach --timeout 300 --json -- --exact paging_does_not_override_simple_plain --test-threads=1",
+     "exit": 0,
+     "seconds": 25.6
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 101,
+    "output_tail": "\r\nrunning 1 test\r\ntest paging_does_not_override_simple_plain ... FAILED\r\n\r\nfailures:\r\n\r\n---- paging_does_not_override_simple_plain stdout ----\r\n\r\nthread 'paging_does_not_override_simple_plain' (3669) panicked at tests/utils/command.rs:7:45:\r\ncalled `Result::unwrap()` on an `Err` value: CargoError { cause: Some(NotFoundError { path: \"/root/.peeky/rust-builds/e707ce2a4b3ffc3e33ee50b7/runs/b14c2791d1d1c66d/bin/bat\" }) }\r\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\r\n\r\n\r\nfailures:\r\n    paging_does_not_override_simple_plain\r\n\r\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 153 filtered out; finished in 0.00s\r\n\r\n"
+   },
+   "leftover_processes": 5
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:02:18+00:00"
+}

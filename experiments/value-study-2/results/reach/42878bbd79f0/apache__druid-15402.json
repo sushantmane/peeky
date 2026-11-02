@@ -1,0 +1,136 @@
+{
+ "bug": "apache__druid-15402",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__druid-15402:peeky-r2",
+ "image_id": "sha256:85e89dc93fef66a1812d51696fce35e2dc20d2b29cfae72fa3754aa3edf62f20",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:54:35+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed iterator over post-aggregators in the cache strategy's pullFromCache",
+   "at": "processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:654",
+   "launch": {
+    "ready_seconds": 34.0
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:654 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:654",
+    "function": "GroupByQueryQueryToolChest$6$2.apply(Object)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 8,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "input",
+      "value": "ArrayList@3496"
+     },
+     {
+      "name": "results",
+      "value": "ArrayList$Itr@3497"
+     },
+     {
+      "name": "timestamp",
+      "value": "DateTime@3498"
+     },
+     {
+      "name": "size",
+      "value": "6"
+     },
+     {
+      "name": "resultRow",
+      "value": "ResultRow@3499"
+     },
+     {
+      "name": "dimsIter",
+      "value": "ArrayList$Itr@3500"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion the test runs: in doTestCacheStrategy, which testCacheStrategy calls first",
+   "at": "processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java:1018",
+   "launch": {
+    "ready_seconds": 9.3
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java:1018 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java:1018",
+    "function": "GroupByQueryQueryToolChestTest.doTestCacheStrategy(ColumnType,Object)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 10,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "valueType",
+      "value": "ColumnType@3495"
+     },
+     {
+      "name": "dimValue",
+      "value": "\"val1\""
+     },
+     {
+      "name": "query1",
+      "value": "GroupByQuery@3497"
+     },
+     {
+      "name": "strategy",
+      "value": "GroupByQueryQueryToolChest$6@3498"
+     },
+     {
+      "name": "result1",
+      "value": "ResultRow@3499"
+     },
+     {
+      "name": "preparedValue",
+      "value": "ArrayList@3500"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:55:28+00:00"
+}

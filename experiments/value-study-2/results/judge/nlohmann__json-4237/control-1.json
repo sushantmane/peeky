@@ -1,0 +1,7 @@
+{
+ "judge_id": "a060",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed enum serialization: `to_json` always used signed integer storage, causing large unsigned enum values to become negative.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

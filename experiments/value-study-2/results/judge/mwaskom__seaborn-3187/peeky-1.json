@@ -1,0 +1,7 @@
+{
+ "judge_id": "a006",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`ScalarFormatter` generated labels with shared multipliers or additive offsets that legends never displayed.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

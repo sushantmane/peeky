@@ -1,0 +1,7 @@
+{
+ "judge_id": "a216",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Fixed the cache-reading loop: it never advanced `postPos`, so later post-aggregates overwrote the first.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 19 probe at GroupByQueryQueryToolChest.java:657: postPos=0 at both hits, results.cursor 4 then 5. Code (cmd 22 diff) 'int postPos = 0; while (postItr.hasNext() && results.hasNext()) { resultRow.set(postAggregatorStart + postPos, results.next()); }' never increments postPos, and cmd 18 'ACTUAL: [#en.wikipedia, null, 10516, 31548, null]' shows both post-aggs written to the same slot, matching postPos=0 twice. postAggregatorStart was <not found> (not a value). Cmds 15, 17 NO_STOP."
+}

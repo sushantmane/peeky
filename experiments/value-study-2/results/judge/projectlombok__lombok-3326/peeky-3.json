@@ -1,0 +1,7 @@
+{
+ "judge_id": "a185",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: `@UtilityClass` cleared a nested class's enclosing type but left its cached erasure unchanged, causing inconsistent types during generic inference.",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 20 probe at HandleUtilityClass.java:132 (the setEnclosingType line) showed innerClassSymbol.type.outer_field = Type$ClassType@1937 (still set before the call) and a cached innerClassSymbol.erasure_field = Type$ClassType@1925 (distinct from type @1933) whose outer_field is a ClassType @2566. Consistent with the code shown (cmd 23) and with the fix that also clears the erasure's enclosing type ending the NPE (cmd 25 delombok succeeds, cmds 35-36 javac 11/17 compile). Nothing contradicts."
+}

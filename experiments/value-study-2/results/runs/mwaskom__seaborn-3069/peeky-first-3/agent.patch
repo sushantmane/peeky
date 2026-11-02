@@ -1,0 +1,68 @@
+diff --git a/doc/whatsnew/v0.12.1.rst b/doc/whatsnew/v0.12.1.rst
+index 6ba57d5b..0ded25fc 100644
+--- a/doc/whatsnew/v0.12.1.rst
++++ b/doc/whatsnew/v0.12.1.rst
+@@ -12,6 +12,8 @@ v0.12.1 (Unreleased)
+ 
+ - |Enhancement| Marks that sort along the orient axis (e.g. :class:`Line`) now use a stable algorithm (:pr:`3064`).
+ 
++- |Fix| Coordinate axes with a :class:`objects.Nominal` scale now use categorical-style limits, suppress gridlines, and invert the y axis. Explicit plot limits still take precedence.
++
+ - |Fix| Make :class:`objects.PolyFit` robust to missing data (:pr:`3010`).
+ 
+ - |Fix| Fixed a bug that caused an exception when more than two layers with the same mappings were added (:pr:`3055`).
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..9bb9dd35 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1631,10 +1630,18 @@ class Plotter:
+             ax = sub["ax"]
+             for axis in "xy":
+                 axis_key = sub[axis]
++                axis_obj = getattr(ax, f"{axis}axis")
++
++                if isinstance(self._scales.get(axis_key), Nominal):
++                    axis_obj.grid(False, which="both")
++                    n = len(axis_obj.get_majorticklocs())
++                    if n:
++                        limits = (-.5, n - .5) if axis == "x" else (n - .5, -.5)
++                        getattr(ax, f"set_{axis}lim")(*limits, auto=None)
+ 
+                 # Axis limits
+                 if axis_key in p._limits:
+-                    convert_units = getattr(ax, f"{axis}axis").convert_units
++                    convert_units = axis_obj.convert_units
+                     a, b = p._limits[axis_key]
+                     lo = a if a is None else convert_units(a)
+                     hi = b if b is None else convert_units(b)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..742e96c1 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -138,6 +138,9 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    Coordinate axes use a half-unit padding at either end, have no gridlines,
++    and are inverted on the y axis. Explicit limits override these defaults.
+     """
+     # Categorical (convert to strings), un-sortable
+ 

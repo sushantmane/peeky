@@ -1,0 +1,7 @@
+{
+ "judge_id": "a022",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"`CLUSTER SHARDS` takes slots from the first shard member\u2019s primary. After failover, that can still be the failed former primary, which no longer owns slots.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a125",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: Resubscribing puts the receiver past the channel's closure marker, so the empty-buffer path misses closure.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

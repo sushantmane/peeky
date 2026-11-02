@@ -1,0 +1,178 @@
+{
+ "bug": "jqlang__jq-2650",
+ "language": "c",
+ "category": "E",
+ "image": "peeky-study/jqlang__jq-2650:peeky-r2",
+ "image_id": "sha256:f0100ff966058fbd6939d23498a3c89e99d9ea2dd8b55bd1999f2acc19ab1d86",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T08:58:50+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the action after the inserted grammar rules: the fix's own file (the generated parser.c holds its code)",
+   "at": "src/parser.y:714",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ./jq --at src/parser.y:714 --name reach --timeout 300 --json -- -L tests/modules --run-tests tests/jq.test",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of jq Peeky judges has code in src/parser.y: `peeky describe` lists each unit, judged or not and why",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the same action in the parser bison generated in the image (`bison -l`)",
+   "at": "src/parser.c:3236",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ./jq --at src/parser.c:3236 --name reach --timeout 300 --json -- -L tests/modules --run-tests tests/jq.test",
+     "exit": 0,
+     "seconds": 2.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.7
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/parser.c:3236",
+    "function": "yyparse"
+   },
+   "moved": false,
+   "values": {
+    "shown": 31,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "answer",
+      "value": "0x0000ffffffffc170"
+     },
+     {
+      "name": "errors",
+      "value": "0x0000ffffffffbfec"
+     },
+     {
+      "name": "locations",
+      "value": "0x0000aaaaaabca0f0"
+     },
+     {
+      "name": "lexer_param_ptr",
+      "value": "0x0000ffffffffbff8"
+     },
+     {
+      "name": "yychar",
+      "value": "-2"
+     },
+     {
+      "name": "yylval",
+      "value": "YYSTYPE @ 0xffffffffbf40"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "yymsg",
+      "value": "0x0000ffffffffa9e0 \"\u0430\\xff\\xff\\xff\\xff\"",
+      "note": "Peeky can't show that `yymsg` points at a live object, so its text may be left over: Peeky didn't place every local at this stop: the per-stop limit was reached; read the local it should point at by name"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": "the harness's comparison of a case's expected and actual output (the test is a case in tests/jq.test)",
+   "at": "src/jq_test.c:195",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ./jq --at src/jq_test.c:195 --name reach --timeout 300 --json -- -L tests/modules --run-tests tests/jq.test",
+     "exit": 0,
+     "seconds": 2.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.3
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/jq_test.c:195",
+    "function": "run_jq_tests"
+   },
+   "moved": false,
+   "values": {
+    "shown": 22,
+    "withheld": 3,
+    "sample": [
+     {
+      "name": "lib_dirs",
+      "value": "{kind_flags = '\\x86', pad_ = '\\0', offset = 0, size = 1, u = <union>}"
+     },
+     {
+      "name": "verbose",
+      "value": "0"
+     },
+     {
+      "name": "testdata",
+      "value": "0x0000aaaaaabbf760"
+     },
+     {
+      "name": "skip",
+      "value": "-1"
+     },
+     {
+      "name": "take",
+      "value": "-1"
+     },
+     {
+      "name": "prog",
+      "value": "\"true\" (then a NUL and 4091 bytes not shown)"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "total_skipped",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared at line 226, below this stop, so not initialized yet: its storage holds leftovers; stop after line 226 to read it"
+     },
+     {
+      "name": "as_string",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared at line 203, below this stop, so not initialized yet: its storage holds leftovers; stop after line 203 to read it"
+     },
+     {
+      "name": "reparsed",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared at line 204, below this stop, so not initialized yet: its storage holds leftovers; stop after line 204 to read it"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T08:58:56+00:00"
+}

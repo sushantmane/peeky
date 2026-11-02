@@ -1,0 +1,7 @@
+{
+ "judge_id": "a068",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed resubscription skipping the channel's close marker: closed-channel receivers now start at that marker, so both `recv` and `try_recv` return `Closed`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky commands 6, 8, 10 only read docs/--help; cmd 12 probe failed with INVALID_BREAKPOINT (line 669 in an inlined generic). Peeky printed no values."
+}

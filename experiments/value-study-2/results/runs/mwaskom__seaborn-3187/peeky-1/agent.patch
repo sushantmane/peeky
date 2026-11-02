@@ -1,0 +1,131 @@
+diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst
+index 8eeb8f19..e70a6ba9 100644
+--- a/doc/whatsnew/v0.12.2.rst
++++ b/doc/whatsnew/v0.12.2.rst
+@@ -11,3 +11,5 @@ v0.12.2 (Unreleased)
+ - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).
+ 
+ - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).
++
++- |Fix| Fixed numeric legend labels in the objects interface and relational plots to show complete values rather than omitting scientific multipliers or additive offsets.
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..0b70607f 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -378,7 +378,12 @@ class ContinuousBase(Scale):
+             axis.set_view_interval(vmin, vmax)
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+-            labels = axis.major.formatter.format_ticks(locs)
++            formatter = axis.major.formatter
++            if isinstance(formatter, ScalarFormatter):
++                # Legend labels cannot use a shared offset or multiplier.
++                formatter.set_useOffset(False)
++                formatter.set_scientific(False)
++            labels = formatter.format_ticks(locs)
+             new._legend = list(locs), list(labels)
+ 
+         return new
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..94db60b0 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -698,7 +698,8 @@ def locator_to_legend_entries(locator, limits, dtype):
+     if isinstance(locator, mpl.ticker.LogLocator):
+         formatter = mpl.ticker.LogFormatter()
+     else:
+-        formatter = mpl.ticker.ScalarFormatter()
++        formatter = mpl.ticker.ScalarFormatter(useOffset=False)
++        formatter.set_scientific(False)
+     formatter.axis = dummy_axis()
+ 
+     # TODO: The following two lines should be replaced
+diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py
+index c4b39f5d..0348ebf6 100644
+--- a/tests/_core/test_scales.py
++++ b/tests/_core/test_scales.py
+@@ -127,6 +127,52 @@ class TestContinuous:
+         s = Continuous(trans="log")._setup(x, Color())
+         assert_array_equal(s(x), cmap([0, .5, 1])[:, :3])  # FIXME RGBA
+ 
++    @pytest.mark.parametrize("prop", [Color(), IntervalProperty()])
++    @pytest.mark.parametrize("use_offset", [True, False])
++    @pytest.mark.parametrize("values, expected", [
++        ([2e6, 3e6, 4e6], ["2000000", "3000000", "4000000"]),
++        ([1e6, 1e6 + 1, 1e6 + 2], ["1000000", "1000001", "1000002"]),
++        ([2e-6, 3e-6, 4e-6], ["0.000002", "0.000003", "0.000004"]),
++        ([.8, .85, .9], ["0.80", "0.85", "0.90"]),
++    ])
++    def test_legend_without_offset(self, prop, use_offset, values, expected):
++
++        with mpl.rc_context({
++            "axes.formatter.useoffset": use_offset,
++            "axes.formatter.offset_threshold": 2,
++            "axes.formatter.use_mathtext": False,
++        }):
++            s = Continuous().tick(at=values)._setup(pd.Series(values), prop)
++
++        locs, labels = s._legend
++        assert_array_equal(locs, values)
++        assert labels == expected
++
++    def test_legend_custom_formatter(self, x):
++
++        s = (
++            Continuous().tick(at=x).label(like="value: {x:.1e}")
++            ._setup(x, Color())
++        )
++        locs, labels = s._legend
++        assert_array_equal(locs, x)
++        assert labels == [f"value: {v:.1e}" for v in x]
++
++    @pytest.mark.parametrize("values", [
++        [2e6, 3e6, 4e6],
++        [1e6, 1e6 + 1, 1e6 + 2],
++    ])
++    def test_coordinate_offset(self, values):
++
++        with mpl.rc_context({"axes.formatter.useoffset": True}):
++            s = Continuous()._setup(pd.Series(values), Coordinate())
++            a = PseudoAxis(s._matplotlib_scale)
++            a.set_view_interval(min(values), max(values))
++            formatter = a.major.formatter
++            formatter.format_ticks(values)
++
++        assert formatter.get_offset()
++
+     def test_tick_locator(self, x):
+ 
+         locs = [.2, .5, .8]
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 02839a02..8b636b43 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -335,6 +335,27 @@ def test_locator_to_legend_entries():
+         assert re.match(f"1e.0{exp}", str_levels[i])
+ 
+ 
++@pytest.mark.parametrize("use_offset", [True, False])
++@pytest.mark.parametrize("limits, expected", [
++    ((2e6, 4e6), ["2000000", "3000000", "4000000"]),
++    ((1e6, 1e6 + 2), ["1000000", "1000001", "1000002"]),
++    ((2e-6, 4e-6), ["0.000002", "0.000003", "0.000004"]),
++    ((.8, .9), ["0.80", "0.85", "0.90"]),
++])
++def test_locator_to_legend_entries_without_offset(use_offset, limits, expected):
++
++    locator = mpl.ticker.MaxNLocator(nbins=2)
++    with mpl.rc_context({
++        "axes.formatter.useoffset": use_offset,
++        "axes.formatter.offset_threshold": 2,
++        "axes.formatter.use_mathtext": False,
++    }):
++        levels, labels = utils.locator_to_legend_entries(locator, limits, float)
++
++    assert labels == expected
++    assert_array_equal(levels, [limits[0], sum(limits) / 2, limits[1]])
++
++
+ def test_move_legend_matplotlib_objects():
+ 
+     fig, ax = plt.subplots()

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a104",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The legends omitted `ScalarFormatter`'s scientific multiplier or additive offset, making large values appear incorrectly small.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

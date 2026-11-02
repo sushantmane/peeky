@@ -1,0 +1,287 @@
+{
+ "bug": "reactivex__rxjava-7597",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/reactivex__rxjava-7597:peeky-r2",
+ "image_digest": "sha256:d41a703a2e57d5f08231a7859eb834606878b5863ccc4f04d5a03e8421aa38af",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-reactivex__rxjava-7597-peeky-first-1-9999f2",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:07:38+00:00",
+ "ended": "2026-11-01T13:11:33+00:00",
+ "wall_seconds": 234.9,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest > innerOnSubscribeOuterCancelRace": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 8.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "943e80e249ea80b5516a6e754ec512142e94357113914d03db613e2ebbebe7af",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 3,
+ "patch_files": [
+  "src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java",
+  "src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java"
+ ],
+ "patch_bytes": 5361,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 57
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 23,
+ "ai_credits": 26.4908,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 729389,
+  "output": 8253,
+  "cache_read": 683775,
+  "cache_write": 45545,
+  "reasoning": 2895
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 30,
+ "tool_calls_by_name": {
+  "bash": 23,
+  "read_bash": 7
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -d /testbed /opt/peeky 2>/dev/null; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md && sed -n '1,230p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && sed -n '1,420p' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java && sed -n '1,150p' src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableScanSeed.java && rg -n 'race|dispose|onSubscribe|badSource' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java && ls -a | head -35",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,180p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java && grep -nE 'race|dispose|onSubscribe|badSource' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapTest.java && ls -a | head -35 && ls build/classes/java/main/io/reactivex/rxjava3/core/Observable.class 2>/dev/null; java -version; command -v apply_patch; command -v peeky; find . -maxdepth 3 -name '*gradle*' -o -name '*jar'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/lang/java.md && cd /testbed && sed -n '1,250p' build.gradle && cat gradle.properties",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find src/test -name '*SwitchMap*' && ls build/classes/java/main/io/reactivex/rxjava3/core/Observable.class 2>/dev/null; cd /testbed && sed -n '1,210p' build.gradle && cat gradle.properties && ls -a | head -35 && find . -maxdepth 3 -type d -name classes",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,205p' /opt/peeky/docs/lang/java.md && peeky probe --help | head -110",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find src/test/java/io/reactivex/rxjava3/internal/operators/observable -name '*Switch*' && ls build && find build -maxdepth 3 -type f | head -25 && grep -nE 'race|dispose|onSubscribe|badSource' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && sed -n '1,130p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && find . -name '*.jar'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '50,130p' src/main/java/io/reactivex/rxjava3/internal/operators/mixed/ObservableSwitchMapMaybe.java && sed -n '285,415p' src/main/java/io/reactivex/rxjava3/internal/operators/flowable/FlowableSwitchMap.java && git status --short && ls /usr/lib/jvm && ls /root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4 2>/dev/null",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-11-openjdk-arm64/bin/jshell --class-path \"build/classes/java/main:/root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4/3864a1320d97d7b045f729a326e1e077661f31b7/reactive-streams-1.0.4.jar\" <<'EOF'\nimport io.reactivex.rxjava3.core.Observable;\nimport io.reactivex.rxjava3.subjects.PublishSubject;\nimport io.reactivex.rxjava3.observers.TestObserver;\nvar refresh = PublishSubject.<Integer>create();\nvar dimensions = PublishSubject.<Integer>create();\nvar observer = new TestObserver<Integer>();\nrefresh.switchMap(v -> Observable.defer(() -> dimensions.scan(0, Integer::sum).map(w -> w).doOnSubscribe(d -> observer.dispose()))).subscribe(observer);\ntry { refresh.onNext(1); } catch (Throwable ex) { ex.printStackTrace(); }\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-11-openjdk-arm64/bin/jshell -R-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"build/classes/java/main:/root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4/3864a1320d97d7b045f729a326e1e077661f31b7/reactive-streams-1.0.4.jar\" <<'EOF'\nimport io.reactivex.rxjava3.core.Observable;\nimport io.reactivex.rxjava3.subjects.PublishSubject;\nimport io.reactivex.rxjava3.observers.TestObserver;\nvar refresh = PublishSubject.<Integer>create();\nvar dimensions = PublishSubject.<Integer>create();\nvar observer = new TestObserver<Integer>();\nrefresh.switchMap(v -> Observable.defer(() -> dimensions.scan(0, Integer::sum).map(w -> w).doOnSubscribe(d -> observer.dispose()))).subscribe(observer);\ntry { refresh.onNext(1); } catch (Throwable ex) { ex.printStackTrace(); }\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-11-openjdk-arm64/bin/jshell --execution local -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"build/classes/java/main:/root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4/3864a1320d97d7b045f729a326e1e077661f31b7/reactive-streams-1.0.4.jar\" <<'EOF'\nimport io.reactivex.rxjava3.core.Observable;\nimport io.reactivex.rxjava3.subjects.PublishSubject;\nimport io.reactivex.rxjava3.observers.TestObserver;\nvar refresh = PublishSubject.<Integer>create();\nvar dimensions = PublishSubject.<Integer>create();\nvar observer = new TestObserver<Integer>();\nrefresh.switchMap(v -> Observable.defer(() -> dimensions.scan(0, Integer::sum).map(w -> w).doOnSubscribe(d -> observer.dispose()))).subscribe(observer);\ntry { refresh.onNext(1); } catch (Throwable ex) { ex.printStackTrace(); }\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && sed -n '690,930p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && sed -n '1180,1455p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchTest.java && grep -n -A35 'boolean setOnce' src/main/java/io/reactivex/rxjava3/internal/disposables/DisposableHelper.java && grep -n -A35 'void onNext' src/main/java/io/reactivex/rxjava3/internal/observers/DisposableLambdaObserver.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\"],\"class_roots\":[\"build/classes/java/main\"]}') --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:354 --capture 'this.queue,this.index,this.parent.unique,this.parent.cancelled,this.value,t' --timeout 90",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-11-openjdk-arm64/bin/jshell --execution local -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"/testbed/build/classes/java/main:/root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4/3864a1320d97d7b045f729a326e1e077661f31b7/reactive-streams-1.0.4.jar\" <<'EOF'\nimport io.reactivex.rxjava3.core.Observable;\nimport io.reactivex.rxjava3.subjects.PublishSubject;\nimport io.reactivex.rxjava3.observers.TestObserver;\nvar refresh = PublishSubject.<Integer>create();\nvar dimensions = PublishSubject.<Integer>create();\nvar observer = new TestObserver<Integer>();\nrefresh.switchMap(v -> Observable.defer(() -> dimensions.scan(0, Integer::sum).map(w -> w).doOnSubscribe(d -> observer.dispose()))).subscribe(observer);\ntry { refresh.onNext(1); } catch (Throwable ex) { ex.printStackTrace(); }\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\"],\"class_roots\":[\"build/classes/java/main\"]}') --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:354 --capture 'this.queue,this.index,this.parent.unique,this.parent.cancelled,this.value,t' --timeout 90",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-11-openjdk-arm64/bin/jshell --execution local -J--class-path=/testbed/build/classes/java/main:/root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4/3864a1320d97d7b045f729a326e1e077661f31b7/reactive-streams-1.0.4.jar -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"/testbed/build/classes/java/main:/root/.gradle/caches/modules-2/files-2.1/org.reactivestreams/reactive-streams/1.0.4/3864a1320d97d7b045f729a326e1e077661f31b7/reactive-streams-1.0.4.jar\" <<'EOF'\nimport io.reactivex.rxjava3.core.Observable;\nimport io.reactivex.rxjava3.subjects.PublishSubject;\nimport io.reactivex.rxjava3.observers.TestObserver;\nvar refresh = PublishSubject.<Integer>create();\nvar dimensions = PublishSubject.<Integer>create();\nvar observer = new TestObserver<Integer>();\nrefresh.switchMap(v -> Observable.defer(() -> dimensions.scan(0, Integer::sum).map(w -> w).doOnSubscribe(d -> observer.dispose()))).subscribe(observer);\ntry { refresh.onNext(1); } catch (Throwable ex) { ex.printStackTrace(); }\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\"],\"class_roots\":[\"build/classes/java/main\"]}') --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:354 --capture 'this.queue,this.index,this.parent.unique,this.parent.cancelled,this.value,t' --timeout 90",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,120p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchIfEmptyTest.java && grep -n -A25 'withErrorTracking' src/test/java/io/reactivex/rxjava3/testsupport/TestHelper.java && sed -n '1,100p' src/test/java/io/reactivex/rxjava3/testsupport/RxJavaTest.java && sed -n '1,175p' config/checkstyle/checkstyle.xml && ls /usr/local/bin | grep -E 'patch|edit|apply'",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v apply_patch; command -v patch; command -v git; ls /opt; sed -n '1,180p' config/checkstyle/checkstyle.xml && find src/test -name RxJavaTest.java && grep -n 'RACE_DEFAULT_LOOPS' src/test/java/io/reactivex/rxjava3/testsupport/TestHelper.java | head -3",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java\nnew file mode 100644\n--- /dev/null\n+++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java\n@@ -0,0 +1,101 @@\n+/*\n+ * Copyright (c) 2016-present, RxJava Contributors.\n+ *\n+ * Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in\n+ * compliance with the License. You may obtain a copy of the License at\n+ *\n+ * http://www.apache.org/licenses/LICENSE-2.0\n+ *\n+ * Unless required by applicable law or agreed to in writing, software distributed under the License is\n+ * distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See\n+ * the License for the specific language governing permissions and limitations under the License.\n+ */\n+\n+package io.reactivex.rxjava3.internal.operators.observable;\n+\n+import static org.junit.Assert.*;\n+\n+import org.junit.Test;\n+\n+import io.reactivex.rxjava3.core.*;\n+import io.reactivex.rxjava3.observers.TestObserver;\n+import io.reactivex.rxjava3.subjects.PublishSubject;\n+import io.reactivex.rxjava3.testsupport.TestHelper;\n+\n+public class ObservableSwitchMapCancellationTest extends RxJavaTest {\n+\n+    @Test\n+    public void cancelBeforeInnerOnSubscribe() throws Throwable {\n+        cancelBeforeInnerOnSubscribe(false);\n+    }\n+\n+    @Test\n+    public void cancelBeforeInnerOnSubscribeDelayError() throws Throwable {\n+        cancelBeforeInnerOnSubscribe(true);\n+    }\n+\n+    void cancelBeforeInnerOnSubscribe(boolean delayErrors) throws Throwable {\n+        TestHelper.withErrorTracking(errors -> {\n+            PublishSubject<Integer> refresh = PublishSubject.create();\n+            PublishSubject<Integer> dimensions = PublishSubject.create();\n+            TestObserver<Integer> to = new TestObserver<>();\n+\n+            Observable<Integer> inner = Observable.defer(() -> dimensions\n+                    .scan(0, Integer::sum)\n+                    .map(v -> v)\n+                    .doOnSubscribe(d -> to.dispose()));\n+\n+            Observable<Integer> switched = delayErrors\n+                    ? refresh.switchMapDelayError(v -> inner)\n+                    : refresh.switchMap(v -> inner);\n+            switched.subscribe(to);\n+\n+            refresh.onNext(1);\n+\n+            to.assertEmpty();\n+            assertTrue(to.isDisposed());\n+            assertFalse(refresh.hasObservers());\n+            assertFalse(dimensions.hasObservers());\n+            assertTrue(errors.toString(), errors.isEmpty());\n+        });\n+    }\n+\n+    @Test\n+    public void cancelDuringInnerSubscriptionRace() throws Throwable {\n+        cancelDuringInnerSubscriptionRace(false);\n+    }\n+\n+    @Test\n+    public void cancelDuringInnerSubscriptionRaceDelayError() throws Throwable {\n+        cancelDuringInnerSubscriptionRace(true);\n+    }\n+\n+    void cancelDuringInnerSubscriptionRace(boolean delayErrors) throws Throwable {\n+        TestHelper.withErrorTracking(errors -> {\n+            for (int i = 0; i < TestHelper.RACE_DEFAULT_LOOPS; i++) {\n+                PublishSubject<Integer> refresh = PublishSubject.create();\n+                PublishSubject<Integer> dimensions = PublishSubject.create();\n+                Observable<Integer> inner = Observable.defer(() -> dimensions\n+                        .scan(0, Integer::sum)\n+                        .map(v -> v));\n+\n+                Observable<Integer> switched = delayErrors\n+                        ? refresh.switchMapDelayError(v -> inner)\n+                        : refresh.switchMap(v -> inner);\n+                TestObserver<Integer> to = switched.test();\n+\n+                TestHelper.race(() -> refresh.onNext(1), to::dispose);\n+\n+                to.assertNoErrors().assertNotComplete();\n+                assertTrue(to.values().size() <= 1);\n+                if (!to.values().isEmpty()) {\n+                    to.assertValue(0);\n+                }\n+                assertTrue(to.isDisposed());\n+                assertFalse(refresh.hasObservers());\n+                assertFalse(dimensions.hasObservers());\n+                assertTrue(errors.toString(), errors.isEmpty());\n+            }\n+        });\n+    }\n+}\nPATCH\n./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest.cancelBeforeInnerOnSubscribe --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest.cancelBeforeInnerOnSubscribeDelayError",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n+++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n@@ -350,8 +350,10 @@ public final class ObservableSwitchMap<T, R> extends AbstractObservableWithUpstrea\n         @Override\n         public void onNext(R t) {\n             if (index == parent.unique) {\n-                if (t != null) {\n-                    queue.offer(t);\n+                // Cancellation before onSubscribe may leave the queue uninitialized.\n+                SimpleQueue<R> q = queue;\n+                if (t != null && q != null) {\n+                    q.offer(t);\n                 }\n                 parent.drain();\n             }\nPATCH\n./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git status --short && git --no-pager diff -- src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java && head -3 build/test-results/test/TEST-io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest.xml && head -3 build/test-results/test/TEST-io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest.xml && sed -n '1,120p' src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 2,
+ "build_or_test_commands": [
+  "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java\nnew file mode 100644\n--- /dev/null\n+++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java\n@@ -0,0 +1,101 @@\n+/*\n+ * Copyright (c) 2016-present, RxJava Contributors.\n+ *\n+ * Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in\n+ * compliance with the License. You may obtain a copy of the License at\n+ *\n+ * http://www.apache.org/licenses/LICENSE-2.0\n+ *\n+ * Unless required by applicable law or agreed to in writing, software distributed under the License is\n+ * distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See\n+ * the License for the specific language governing permissions and limitations under the License.\n+ */\n+\n+package io.reactivex.rxjava3.internal.operators.observable;\n+\n+import static org.junit.Assert.*;\n+\n+import org.junit.Test;\n+\n+import io.reactivex.rxjava3.core.*;\n+import io.reactivex.rxjava3.observers.TestObserver;\n+import io.reactivex.rxjava3.subjects.PublishSubject;\n+import io.reactivex.rxjava3.testsupport.TestHelper;\n+\n+public class ObservableSwitchMapCancellationTest extends RxJavaTest {\n+\n+    @Test\n+    public void cancelBeforeInnerOnSubscribe() throws Throwable {\n+        cancelBeforeInnerOnSubscribe(false);\n+    }\n+\n+    @Test\n+    public void cancelBeforeInnerOnSubscribeDelayError() throws Throwable {\n+        cancelBeforeInnerOnSubscribe(true);\n+    }\n+\n+    void cancelBeforeInnerOnSubscribe(boolean delayErrors) throws Throwable {\n+        TestHelper.withErrorTracking(errors -> {\n+            PublishSubject<Integer> refresh = PublishSubject.create();\n+            PublishSubject<Integer> dimensions = PublishSubject.create();\n+            TestObserver<Integer> to = new TestObserver<>();\n+\n+            Observable<Integer> inner = Observable.defer(() -> dimensions\n+                    .scan(0, Integer::sum)\n+                    .map(v -> v)\n+                    .doOnSubscribe(d -> to.dispose()));\n+\n+            Observable<Integer> switched = delayErrors\n+                    ? refresh.switchMapDelayError(v -> inner)\n+                    : refresh.switchMap(v -> inner);\n+            switched.subscribe(to);\n+\n+            refresh.onNext(1);\n+\n+            to.assertEmpty();\n+            assertTrue(to.isDisposed());\n+            assertFalse(refresh.hasObservers());\n+            assertFalse(dimensions.hasObservers());\n+            assertTrue(errors.toString(), errors.isEmpty());\n+        });\n+    }\n+\n+    @Test\n+    public void cancelDuringInnerSubscriptionRace() throws Throwable {\n+        cancelDuringInnerSubscriptionRace(false);\n+    }\n+\n+    @Test\n+    public void cancelDuringInnerSubscriptionRaceDelayError() throws Throwable {\n+        cancelDuringInnerSubscriptionRace(true);\n+    }\n+\n+    void cancelDuringInnerSubscriptionRace(boolean delayErrors) throws Throwable {\n+        TestHelper.withErrorTracking(errors -> {\n+            for (int i = 0; i < TestHelper.RACE_DEFAULT_LOOPS; i++) {\n+                PublishSubject<Integer> refresh = PublishSubject.create();\n+                PublishSubject<Integer> dimensions = PublishSubject.create();\n+                Observable<Integer> inner = Observable.defer(() -> dimensions\n+                        .scan(0, Integer::sum)\n+                        .map(v -> v));\n+\n+                Observable<Integer> switched = delayErrors\n+                        ? refresh.switchMapDelayError(v -> inner)\n+                        : refresh.switchMap(v -> inner);\n+                TestObserver<Integer> to = switched.test();\n+\n+                TestHelper.race(() -> refresh.onNext(1), to::dispose);\n+\n+                to.assertNoErrors().assertNotComplete();\n+                assertTrue(to.values().size() <= 1);\n+                if (!to.values().isEmpty()) {\n+                    to.assertValue(0);\n+                }\n+                assertTrue(to.isDisposed());\n+                assertFalse(refresh.hasObservers());\n+                assertFalse(dimensions.hasObservers());\n+                assertTrue(errors.toString(), errors.isEmpty());\n+            }\n+        });\n+    }\n+}\nPATCH\n./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest.cancelBeforeInnerOnSubscribe --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest.cancelBeforeInnerOnSubscribeDelayError",
+  "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n+++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\n@@ -350,8 +350,10 @@ public final class ObservableSwitchMap<T, R> extends AbstractObservableWithUpstrea\n         @Override\n         public void onNext(R t) {\n             if (index == parent.unique) {\n-                if (t != null) {\n-                    queue.offer(t);\n+                // Cancellation before onSubscribe may leave the queue uninitialized.\n+                SimpleQueue<R> q = queue;\n+                if (t != null && q != null) {\n+                    q.offer(t);\n                 }\n                 parent.drain();\n             }\nPATCH\n./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchMapCancellationTest --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest"
+ ],
+ "peeky_commands": [
+  {
+   "command": "sed -n '1,205p' /opt/peeky/docs/lang/java.md && peeky probe --help | head -110",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\"],\"class_roots\":[\"build/classes/java/main\"]}') --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:354 --capture 'this.queue,this.index,this.parent.unique,this.parent.cancelled,this.value,t' --timeout 90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\"],\"class_roots\":[\"build/classes/java/main\"]}') --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:354 --capture 'this.queue,this.index,this.parent.unique,this.parent.cancelled,this.value,t' --timeout 90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java\"],\"class_roots\":[\"build/classes/java/main\"]}') --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:354 --capture 'this.queue,this.index,this.parent.unique,this.parent.cancelled,this.value,t' --timeout 90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 4
+ },
+ "peeky_doc_reads": 4,
+ "peeky_mentions_in_commands": 11,
+ "peeky_withheld_markers": 4,
+ "peeky_withheld_by_marker": {
+  "not settable": 4
+ },
+ "peeky_values_printed": 6,
+ "contaminated": false,
+ "final_message": "Fixed `ObservableSwitchMap` to guard the uninitialized inner queue. Cancellation before `onSubscribe` skips queue creation, but `scan` still emits its seed. `peeky probe \u2026ObservableSwitchMap.java:354` confirmed `queue=null`, `cancelled=true`, and matching indices. Added deterministic and race regressions for both error modes; they and the existing switch-map tests pass without changing existing tests.",
+ "assistant_messages": [
+  "I\u2019ll inspect the switch-map subscription path, reproduce the race, and use Peeky to inspect the failing state before changing source.\n",
+  "The seed emission reliably crashes when the downstream is disposed just before the inner `onSubscribe`. I\u2019ll attach Peeky at `queue.offer` to inspect the queue and cancellation state.\n",
+  "Fixed `ObservableSwitchMap` to guard the uninitialized inner queue. Cancellation before `onSubscribe` skips queue creation, but `scan` still emits its seed. `peeky probe \u2026ObservableSwitchMap.java:354` confirmed `queue=null`, `cancelled=true`, and matching indices. Added deterministic and race regressions for both error modes; they and the existing switch-map tests pass without changing existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Exploring jshell Usage**\n\nI'm considering how to use jshell scripts with standard input, but there are limitations on file editing. I need to confirm if I can run jshell with the classpath for the compiled build classes that exist. That's important because I want to leverage my current Java setup with JDK 11. I should look into any specific commands or settings I need to ensure everything works correctly. Let's figure this out step by step!",
+  "**Considering test dependencies**\n\nI'm thinking about the ObservableSwitchTest and whether the jshell classpath for reactive jars is set up properly. I wonder if I can find any dependencies outside the usual ones by checking the Gradle cache. It seems like I should be focusing on the build directory classpath file that's prepared. Maybe I'll just list the contents of the build directory to get a clearer picture of what I have.",
+  "**Considering JShell issues**\n\nI'm trying to figure out a bug in JShell related to local class definitions and relative paths. It seems like using an absolute class path might be the solution, alongside ensuring that the classloader is correctly specified. I should retry using absolute paths because the instructions suggest exploring those alternatives first. I\u2019ve observed that there might be some reporting issues, but I should ideally be able to get this to work.",
+  "**Debugging JShell Class Loading**\n\nI\u2019ve realized I might need to stop now since the local JShell can\u2019t load classes properly. The user\u2019s goal seems to be debugging, and they should use '-J--class-path' to resolve their system classes. It looks like the local JShell doesn\u2019t add classpath classloader commands during execution. So, I should mention the fix using '-J--class-path=/testbed/build/...' alongside '--class-path' for compilation. This should effectively load the classes via the parent AppClassLoader.",
+  "**Evaluating test implementations**\n\nI'm considering applying source fix tests to both classes along with scanning tests that specifically target the source impact switch. The entire SwitchTest covers the fusion, but there\u2019s no need for scan tests if the source remains unchanged. I\u2019ll focus on the behavior transitions that are already in place. Finally, I\u2019ll run the new class using the same runner as the existing one to maintain consistency in the testing process."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 244.1
+}

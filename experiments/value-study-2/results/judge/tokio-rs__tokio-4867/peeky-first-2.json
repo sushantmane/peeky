@@ -1,0 +1,7 @@
+{
+ "judge_id": "a226",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed: resubscription skipped the close marker, and receiving treated the channel as empty without checking closure.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "No probe rows: cmds 9/10 docs/help; cmd 11 and cmd 15 probes at broadcast.rs:794 ended [NO_STOP] with empty tables; cmd 12 [INVALID_REQUEST]; cmd 16 describe output only showed source via nl; cmd 17 [INVALID_BREAKPOINT]. Peeky printed no checkable value."
+}

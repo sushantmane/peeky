@@ -1,0 +1,7 @@
+{
+ "judge_id": "a087",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed the groupBy result-level cache reader: it never advanced the post-aggregator iterator or output index, so later metrics overwrote the first slot.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

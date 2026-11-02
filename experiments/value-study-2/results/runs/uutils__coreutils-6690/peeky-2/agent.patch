@@ -1,0 +1,25 @@
+diff --git a/src/uu/cp/README.md b/src/uu/cp/README.md
+index d40e29194..048222c95 100644
+--- a/src/uu/cp/README.md
++++ b/src/uu/cp/README.md
+@@ -28,7 +28,7 @@
+ - [x] no-target-directory
+ - [x] one-file-system
+ - [x] parents
+-- [x] paths
++- [x] paths (multiple sources and destination, with shell completion)
+ - [x] preserve
+ - [x] preserve-default-attributes
+ - [x] recursive
+diff --git a/src/uu/cp/src/cp.rs b/src/uu/cp/src/cp.rs
+index cce042bfa..0ee0bacfb 100644
+--- a/src/uu/cp/src/cp.rs
++++ b/src/uu/cp/src/cp.rs
+@@ -677,6 +677,7 @@ pub fn uu_app() -> Command {
+         .arg(
+             Arg::new(options::PATHS)
+                 .action(ArgAction::Append)
++                .num_args(1..)
+                 .value_hint(clap::ValueHint::AnyPath)
+                 .value_parser(ValueParser::os_string()),
+         )

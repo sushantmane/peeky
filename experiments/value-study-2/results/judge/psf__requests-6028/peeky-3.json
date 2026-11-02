@@ -1,0 +1,7 @@
+{
+ "judge_id": "a061",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"urllib3\u2019s `netloc` excludes authentication, so Requests discarded it and proxies returned 407.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,120 @@
+{
+ "bug": "psf__requests-6028",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/psf__requests-6028:peeky-r2",
+ "image_id": "sha256:dd01bc0bb05ff4af93e1fe0c4b872b40b272af54d523eaeec65f953be292ff33",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:00:39+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted lines in prepend_scheme_if_needed",
+   "at": "requests/utils.py:977",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at requests/utils.py:977 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]'",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/requests/utils.py:977",
+    "function": "prepend_scheme_if_needed",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 11,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "auth",
+      "value": "'user'"
+     },
+     {
+      "name": "fragment",
+      "value": "None"
+     },
+     {
+      "name": "host",
+      "value": "'example.com'"
+     },
+     {
+      "name": "netloc",
+      "value": "'example.com'"
+     },
+     {
+      "name": "new_scheme",
+      "value": "'http'"
+     },
+     {
+      "name": "parsed",
+      "value": "Url(scheme='http', auth='user', host='example.com', port=None, path='/path', query='query', fragment=None)"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/test_utils.py:615",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/test_utils.py:615 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'tests/test_utils.py::test_prepend_scheme_if_needed[http://user@example.com/path?query-http://user@example.com/path?query]'",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/test_utils.py:615",
+    "function": "test_prepend_scheme_if_needed",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "expected",
+      "value": "'http://user@example.com/path?query'"
+     },
+     {
+      "name": "value",
+      "value": "'http://user@example.com/path?query'"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:00:42+00:00"
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a228",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"it assumed string keys, so passing a `TypeVar` caused `_make_subclass` to raise `TypeError`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

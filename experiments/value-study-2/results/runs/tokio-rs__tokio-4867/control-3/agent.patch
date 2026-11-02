@@ -1,0 +1,40 @@
+diff --git a/tokio/src/sync/broadcast.rs b/tokio/src/sync/broadcast.rs
+index 69ede8f8..f3ffd062 100644
+--- a/tokio/src/sync/broadcast.rs
++++ b/tokio/src/sync/broadcast.rs
+@@ -784,14 +784,6 @@ impl<T> Receiver<T> {
+         let mut slot = self.shared.buffer[idx].read().unwrap();
+ 
+         if slot.pos != self.next {
+-            let next_pos = slot.pos.wrapping_add(self.shared.buffer.len() as u64);
+-
+-            // The receiver has read all current values in the channel and there
+-            // is no waiter to register
+-            if waiter.is_none() && next_pos == self.next {
+-                return Err(TryRecvError::Empty);
+-            }
+-
+             // Release the `slot` lock before attempting to acquire the `tail`
+             // lock. This is required because `send2` acquires the tail lock
+             // first followed by the slot lock. Acquiring the locks in reverse
+@@ -813,6 +805,10 @@ impl<T> Receiver<T> {
+                 let next_pos = slot.pos.wrapping_add(self.shared.buffer.len() as u64);
+ 
+                 if next_pos == self.next {
++                    if tail.closed {
++                        return Err(TryRecvError::Closed);
++                    }
++
+                     // Store the waker
+                     if let Some((waiter, waker)) = waiter {
+                         // Safety: called while locked.
+@@ -897,6 +893,9 @@ impl<T: Clone> Receiver<T> {
+     /// **after** it has resubscribed. This will not include elements that are
+     /// in the queue of the current receiver. Consider the following example.
+     ///
++    /// If the channel is closed, the returned receiver will immediately return
++    /// [`RecvError::Closed`] from [`recv`](Self::recv).
++    ///
+     /// # Examples
+     ///
+     /// ```

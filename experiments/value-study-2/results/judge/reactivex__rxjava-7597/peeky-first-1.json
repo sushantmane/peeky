@@ -1,0 +1,7 @@
+{
+ "judge_id": "a176",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Cancellation before `onSubscribe` skips queue creation, but `scan` still emits its seed.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 18 probe at ObservableSwitchMap.java:354 showed this.queue=null, this.index=1, this.parent.unique=1, this.parent.cancelled=true. Consistent with cmd 17's NullPointerException at ObservableSwitchMap.java:354 (line 354 is `queue.offer(t)` per the diff in cmd 22, inside `if (index == parent.unique)`), with the reproducer disposing in doOnSubscribe, and with the null-queue guard making the tests pass (cmd 22/23). Nothing contradicted."
+}

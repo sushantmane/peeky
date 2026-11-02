@@ -1,0 +1,73 @@
+{
+ "bug": "uutils__coreutils-6690",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/uutils__coreutils-6690:peeky-r2",
+ "image_id": "sha256:2f51971fa5879e111a539a6f756d35bc6c7f568256215749f970df0190966b0c",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:40:17+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the builder call after the insertion in uu_app's PATHS argument",
+   "at": "src/uu/cp/src/cp.rs:680",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/uu/cp/src/cp.rs:680 --name reach --timeout 300 --json -- cp",
+     "exit": 2,
+     "seconds": 17.6
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky can't tell the value Cargo gives `portable-atomic`'s build script of CARGO_BUILD_RUSTFLAGS, which it says it reads (`rerun-if-env-changed`), so not whether a later build would differ",
+    "hint": "Nothing was recorded. Change the build script as the message says, or move large data out of the package, then build again.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/by-util/test_cp.rs:5767",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/by-util/test_cp.rs:5767 --name reach --timeout 300 --json -- --exact test_cp::test_cp_no_file --test-threads=1",
+     "exit": 2,
+     "seconds": 1.9
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "PROVENANCE_CHANGED",
+    "message": "Provenance: Cargo's unit graph of the build changed while Peeky read the workspace and Cargo ran. Build again",
+    "hint": "Sources, build outputs or tools changed; start a new session on a fresh build.",
+    "retryable": false
+   },
+   "leftover_processes": 0,
+   "first_try": {
+    "outcome": "refused",
+    "detail": {
+     "code": "PROVENANCE_CHANGED",
+     "message": "Provenance: Cargo's unit graph of the build changed while Peeky read the workspace and Cargo ran. Build again",
+     "hint": "Sources, build outputs or tools changed; start a new session on a fresh build.",
+     "retryable": false
+    },
+    "commands": [
+     {
+      "command": "peeky session start . --config /root/reach/test.json --build --at tests/by-util/test_cp.rs:5767 --name reach --timeout 300 --json -- --exact test_cp::test_cp_no_file --test-threads=1",
+      "exit": 2,
+      "seconds": 1.9
+     }
+    ]
+   },
+   "retried": true
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:40:40+00:00"
+}

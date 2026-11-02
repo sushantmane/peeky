@@ -1,0 +1,7 @@
+{
+ "judge_id": "a010",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed: the replacement helper was printing and replacing look-ahead text beyond the matched lines\u2014not expanding the capture.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Cmd 7 refused (INVALID_REQUEST), cmd 9/15 describe manifests, cmd 12 help, cmd 14 build error (PROVENANCE_CHANGED), cmd 17 probe failed with DEBUGGER_ERROR before any hit. No values printed."
+}

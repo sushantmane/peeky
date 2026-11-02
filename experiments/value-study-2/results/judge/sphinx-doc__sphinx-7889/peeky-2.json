@@ -1,0 +1,7 @@
+{
+ "judge_id": "a160",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The failure comes from passing a `TypeVar` subscription key to `_make_subclass`, which requires a string name.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

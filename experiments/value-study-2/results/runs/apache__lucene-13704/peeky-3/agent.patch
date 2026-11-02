@@ -1,0 +1,85 @@
+diff --git a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+index d7ff62ba3b..520ad7f5c2 100644
+--- a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
++++ b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+@@ -363,7 +363,8 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      // Compare differences to avoid overflowing the upper bound at the north pole.
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+@@ -411,7 +412,8 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      // Compare differences to avoid overflowing the upper bound at the north pole.
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+diff --git a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
+index d654e44647..16bf80f338 100644
+--- a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
++++ b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
+@@ -147,4 +147,56 @@ public class TestGeoEncodingUtils extends LuceneTestCase {
+     assertEquals(Integer.MAX_VALUE, encodeLongitude(MAX_LON_INCL));
+     assertEquals(Integer.MAX_VALUE, encodeLongitudeCeil(MAX_LON_INCL));
+   }
++
++  public void testComponentPredicateLatitudeLimits() {
++    for (int maxLat :
++        new int[] {
++          Integer.MIN_VALUE + 3, 3, Integer.MAX_VALUE - 2, Integer.MAX_VALUE - 1, Integer.MAX_VALUE
++        }) {
++      int minLat = maxLat - 3;
++      int minLon = Integer.MAX_VALUE - 3;
++      int maxLon = Integer.MAX_VALUE;
++      Component2D component =
++          LatLonGeometry.create(
++              new Polygon(
++                  new double[] {
++                    decodeLatitude(minLat),
++                    decodeLatitude(minLat),
++                    decodeLatitude(maxLat),
++                    decodeLatitude(maxLat),
++                    decodeLatitude(minLat)
++                  },
++                  new double[] {
++                    decodeLongitude(minLon),
++                    decodeLongitude(maxLon),
++                    decodeLongitude(maxLon),
++                    decodeLongitude(minLon),
++                    decodeLongitude(minLon)
++                  }));
++      GeoEncodingUtils.Component2DPredicate predicate =
++          GeoEncodingUtils.createComponentPredicate(component);
++      for (long lat = Math.max(Integer.MIN_VALUE, (long) minLat - 2);
++          lat <= Math.min(Integer.MAX_VALUE, (long) maxLat + 2);
++          lat++) {
++        for (long lon = (long) minLon - 2; lon <= maxLon; lon++) {
++          assertEquals(
++              component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),
++              predicate.test((int) lat, (int) lon));
++        }
++      }
++    }
++  }
++
++  public void testDistancePredicateLatitudeLimits() {
++    for (int lat :
++        new int[] {
++          Integer.MIN_VALUE, Integer.MIN_VALUE + 2, 0, Integer.MAX_VALUE - 2, Integer.MAX_VALUE
++        }) {
++      int lon = Integer.MAX_VALUE - 2;
++      GeoEncodingUtils.DistancePredicate predicate =
++          GeoEncodingUtils.createDistancePredicate(decodeLatitude(lat), decodeLongitude(lon), 0.01);
++      assertTrue(predicate.test(lat, lon));
++      assertFalse(predicate.test(lat < 0 ? Integer.MAX_VALUE : Integer.MIN_VALUE, lon));
++    }
++  }
+ }

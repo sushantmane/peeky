@@ -1,0 +1,7 @@
+{
+ "judge_id": "a219",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"remaining chaining failures came from missing dotted iterator and slice grammar rules.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 10/11 probes at parser.c:3799 show yymsgp \"syntax error, unexpected ':'\" / \"unexpected ']'\", yychar 58 (':') / 93 (']'), yylloc start 7 / 6; these match jq's own error output in cmd 8 and in the probes' program output, and the column of ':' / ']' in '.foo.[1:2]' / '.foo.[]'. Nothing later contradicts them."
+}

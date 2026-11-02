@@ -1,0 +1,7 @@
+{
+ "judge_id": "a164",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The bug came from `ScalarFormatter` scaling legend labels while omitting the separate offset or exponent.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

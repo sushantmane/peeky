@@ -1,0 +1,7 @@
+{
+ "judge_id": "a075",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The Blueprint constructor validated dotted names but allowed empty names.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

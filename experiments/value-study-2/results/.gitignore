@@ -1,0 +1,5 @@
+# Only the per-attempt summaries, patches and verdicts are kept in git. The raw logs
+# (events, transcripts, CLI logs, grading logs) hold host paths and are kept outside it.
+runs/*/*/*
+!runs/*/*/result.json
+!runs/*/*/agent.patch

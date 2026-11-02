@@ -1,0 +1,7 @@
+{
+ "judge_id": "a145",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was missing categorical-axis handling during figure finalization.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 10 probe at plot.py:1636 (_finalize_figure loop): axis 'x' then 'y' matches the `for axis in \"xy\"` loop (cmd 5 code); ax.yaxis.units._mapping {'1':0,'2':1,'3':2} consistent with the test asserting convert_units('3')==2 passing (cmd 10 output: 1 passed); yaxis gridOn True consistent with cmd 8 showing grid=True before the fix; _ymargin 0.05 is the default. No later output contradicts any probe value."
+}

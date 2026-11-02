@@ -1,0 +1,151 @@
+diff --git a/axum/CHANGELOG.md b/axum/CHANGELOG.md
+index 8ad076d..f287b89 100644
+--- a/axum/CHANGELOG.md
++++ b/axum/CHANGELOG.md
+@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ # Unreleased
+ 
+-- None.
++- **fixed:** Don't set `MatchedPath` for fallback routes, fixing a panic when a
++  fallback service contains a nested service such as `ServeDir`.
+ 
+ # 0.6.15 (12. April, 2023)
+ 
+diff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs
+index 57a17be..bb3d141 100644
+--- a/axum/src/extract/matched_path.rs
++++ b/axum/src/extract/matched_path.rs
+@@ -6,6 +6,9 @@ use std::{collections::HashMap, sync::Arc};
+ 
+ /// Access the path in the router that matches the request.
+ ///
++/// Fallback routes do not set `MatchedPath`, since they are not associated with
++/// a matched route.
++///
+ /// ```
+ /// use axum::{
+ ///     Router,
+@@ -177,6 +180,63 @@ mod tests {
+     };
+     use http::{Request, StatusCode};
+ 
++    #[crate::test]
++    async fn cannot_extract_in_fallback() {
++        async fn handler(path: Option<MatchedPath>) {
++            assert!(path.is_none());
++        }
++
++        async fn assert_no_matched_path<B>(req: Request<B>) -> Request<B> {
++            assert!(req.extensions().get::<MatchedPath>().is_none());
++            req
++        }
++
++        let app = Router::new()
++            .nest("/nested", Router::new().fallback(handler))
++            .fallback(handler)
++            .layer(map_request(assert_no_matched_path));
++
++        let client = TestClient::new(app);
++
++        for path in ["/", "/missing", "/nested", "/nested/missing"] {
++            let res = client.get(path).send().await;
++            assert_eq!(res.status(), StatusCode::OK);
++        }
++    }
++
++    #[crate::test]
++    async fn router_as_fallback_reports_its_matched_path() {
++        let fallback = Router::new().route(
++            "/:id",
++            get(|path: MatchedPath| async move { path.as_str().to_owned() }),
++        );
++        let app = Router::new().fallback_service(fallback);
++
++        let client = TestClient::new(app);
++
++        let res = client.get("/foo").send().await;
++        assert_eq!(res.status(), StatusCode::OK);
++        assert_eq!(res.text().await, "/:id");
++    }
++
++    #[crate::test]
++    async fn nested_router_as_fallback_preserves_nested_matched_path() {
++        let fallback = Router::new().nest_service(
++            "/:b",
++            Router::new().route(
++                "/:c",
++                get(|path: MatchedPath| async move { path.as_str().to_owned() }),
++            ),
++        );
++        let app = Router::new().nest_service("/:a", Router::new().fallback_service(fallback));
++
++        let client = TestClient::new(app);
++
++        let res = client.get("/foo/bar/baz").send().await;
++        assert_eq!(res.status(), StatusCode::OK);
++        assert_eq!(res.text().await, "/:a/:b/:c");
++    }
++
+     #[crate::test]
+     async fn extracting_on_handler() {
+         let app = Router::new().route(
+diff --git a/axum/src/routing/mod.rs b/axum/src/routing/mod.rs
+index 52d2042..05ce8c7 100644
+--- a/axum/src/routing/mod.rs
++++ b/axum/src/routing/mod.rs
+@@ -298,7 +298,7 @@ where
+             )));
+         }
+ 
+-        match self.path_router.call_with_state(req, state) {
++        match self.path_router.call_with_state::<false>(req, state) {
+             Ok(future) => future,
+             Err((mut req, state)) => {
+                 let super_fallback = req
+@@ -308,11 +308,11 @@ where
+ 
+                 if let Some(mut super_fallback) = super_fallback {
+                     return super_fallback
+-                        .call_with_state(req, state)
++                        .call_with_state::<true>(req, state)
+                         .unwrap_or_else(|_| unreachable!());
+                 }
+ 
+-                match self.fallback_router.call_with_state(req, state) {
++                match self.fallback_router.call_with_state::<true>(req, state) {
+                     Ok(future) => future,
+                     Err((_req, _state)) => {
+                         unreachable!(
+diff --git a/axum/src/routing/path_router.rs b/axum/src/routing/path_router.rs
+index 1790b32..95dc731 100644
+--- a/axum/src/routing/path_router.rs
++++ b/axum/src/routing/path_router.rs
+@@ -272,7 +272,7 @@ where
+         }
+     }
+ 
+-    pub(super) fn call_with_state(
++    pub(super) fn call_with_state<const IS_FALLBACK: bool>(
+         &mut self,
+         mut req: Request<B>,
+         state: S,
+@@ -294,11 +294,13 @@ where
+                 let id = *match_.value;
+ 
+                 #[cfg(feature = "matched-path")]
+-                crate::extract::matched_path::set_matched_path_for_request(
+-                    id,
+-                    &self.node.route_id_to_path,
+-                    req.extensions_mut(),
+-                );
++                if !IS_FALLBACK {
++                    crate::extract::matched_path::set_matched_path_for_request(
++                        id,
++                        &self.node.route_id_to_path,
++                        req.extensions_mut(),
++                    );
++                }
+ 
+                 url_params::insert_url_params(req.extensions_mut(), match_.params);
+ 

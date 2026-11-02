@@ -1,0 +1,537 @@
+diff --git a/doc/changelog.markdown b/doc/changelog.markdown
+index a1938014..141950ea 100644
+--- a/doc/changelog.markdown
++++ b/doc/changelog.markdown
+@@ -2,6 +2,7 @@ Lombok Changelog
+ ----------------
+ 
+ ### v1.18.24 "Edgy Guinea Pig"
++* BUGFIX: `@Builder.Default` initializers with differently parameterized generic arguments now compile correctly on Java 11 and later, including with `@SuperBuilder`.
+ * FEATURE: Turning a field named `uShape` into a getter is tricky: `getUShape` or `getuShape`? The community is split on which style to use. Lombok does `getUShape`, but if you prefer the `getuShape` style, add to `lombok.config`: `lombok.accessors.capitalization = beanspec`. [Issue #2693](https://github.com/projectlombok/lombok/issues/2693) [Pull Request #2996](https://github.com/projectlombok/lombok/pull/2996). Thanks __@YonathanSherwin__!
+ * BUGFIX: Various save actions and refactor scripts in eclipse work better. [Issue #2995](https://github.com/projectlombok/lombok/issues/2995) [Issue #1309](https://github.com/projectlombok/lombok/issues/1309) [Issue #2985](https://github.com/projectlombok/lombok/issues/2985) [Issue #2509](https://github.com/projectlombok/lombok/issues/2509)
+ * NOTE: A widely reported security issue with log4j2 ([CVE-2021-44228](https://www.randori.com/blog/cve-2021-44228/)) has absolutely no effect on either lombok itself nor does usage of lombok on its own, or even the usage of lombok's `@Log4j2`, cause any issues whatsoever: You have to ship your own log4j2 dependency in your app - update that to 2.15 or otherwise mitigate this issue (see the CVE page). To avoid unneccessary warnings from dependency checkers, our dep on log4j2, which is used solely for testing and cannot be exploited in any way, has been updated to 2.15.0. [Issue #3063](https://github.com/projectlombok/lombok/issues/3063)
+diff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java
+index d8fdfb1b..ef4c5682 100644
+--- a/src/core/lombok/javac/handlers/HandleBuilder.java
++++ b/src/core/lombok/javac/handlers/HandleBuilder.java
+@@ -47,6 +47,7 @@ import com.sun.tools.javac.tree.JCTree.JCMethodInvocation;
+ import com.sun.tools.javac.tree.JCTree.JCModifiers;
+ import com.sun.tools.javac.tree.JCTree.JCNewClass;
+ import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;
++import com.sun.tools.javac.tree.JCTree.JCReturn;
+ import com.sun.tools.javac.tree.JCTree.JCStatement;
+ import com.sun.tools.javac.tree.JCTree.JCTypeApply;
+ import com.sun.tools.javac.tree.JCTree.JCTypeParameter;
+@@ -286,8 +287,7 @@ public class HandleBuilder extends JavacAnnotationHandler<Builder> {
+ 					bfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);
+ 					bfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);
+ 					bfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);
+-					JCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);
+-					recursiveSetGeneratedBy(md, annotationNode);
++					JCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);
+ 					if (md != null) injectMethod(parent, md);
+ 				}
+ 				addObtainVia(bfd, fieldNode);
+@@ -804,16 +804,21 @@ public class HandleBuilder extends JavacAnnotationHandler<Builder> {
+ 		return methodDef;
+ 	}
+ 	
+-	public static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {
++	public static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {
+ 		JavacTreeMaker maker = fieldNode.getTreeMaker();
+ 		JCVariableDecl field = (JCVariableDecl) fieldNode.get();
+ 		
+-		JCStatement statement = maker.Return(field.init);
++		JCExpression init = field.init;
+ 		field.init = null;
+ 		
++		JCReturn statement = maker.Return(null);
+ 		JCBlock body = maker.Block(0, List.<JCStatement>of(statement));
+ 		int modifiers = Flags.PRIVATE | Flags.STATIC;
+-		return maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);
++		JCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);
++		recursiveSetGeneratedBy(defaultProvider, source);
++		// Preserve initializer positions: javac caches argument types by source position.
++		statement.expr = init;
++		return defaultProvider;
+ 	}
+ 	
+ 	public JCMethodDecl generateBuilderMethod(BuilderJob job) {
+diff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java
+index b5bc73fb..4746d0ed 100644
+--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java
++++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java
+@@ -208,8 +208,7 @@ public class HandleSuperBuilder extends JavacAnnotationHandler<SuperBuilder> {
+ 				bfd.nameOfDefaultProvider = parent.toName(DEFAULT_PREFIX + bfd.name);
+ 				bfd.nameOfSetFlag = parent.toName(bfd.name + SET_PREFIX);
+ 				bfd.builderFieldName = parent.toName(bfd.name + VALUE_PREFIX);
+-				JCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);
+-				recursiveSetGeneratedBy(md, annotationNode);
++				JCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);
+ 				if (md != null) injectMethod(parent, md);
+ 			}
+ 			addObtainVia(bfd, fieldNode);
+diff --git a/test/transform/resource/after-delombok/BuilderDefaultsGenericsInference.java b/test/transform/resource/after-delombok/BuilderDefaultsGenericsInference.java
+new file mode 100644
+index 00000000..df0a1c11
+--- /dev/null
++++ b/test/transform/resource/after-delombok/BuilderDefaultsGenericsInference.java
+@@ -0,0 +1,68 @@
++public class BuilderDefaultsGenericsInference {
++	String foo;
++	static class MyClass<T> {
++		final T value;
++		MyClass(T value) {
++			this.value = value;
++		}
++		static MyClass<Integer> myInt() {
++			return new MyClass<Integer>(42);
++		}
++		static MyClass<Character> myChar() {
++			return new MyClass<Character>('A');
++		}
++	}
++	static String doSth(MyClass<Integer> i, MyClass<Character> c) {
++		return i.value.toString() + c.value.toString();
++	}
++	public static void main(String[] args) {
++		if (!"42A".equals(BuilderDefaultsGenericsInference.builder().build().foo)) {
++			throw new AssertionError("Incorrect default");
++		}
++		if (!"override".equals(BuilderDefaultsGenericsInference.builder().foo("override").build().foo)) {
++			throw new AssertionError("Default must not override an explicit value");
++		}
++	}
++	@java.lang.SuppressWarnings("all")
++	private static String $default$foo() {
++		return doSth(MyClass.myInt(), MyClass.myChar());
++	}
++	@java.lang.SuppressWarnings("all")
++	BuilderDefaultsGenericsInference(final String foo) {
++		this.foo = foo;
++	}
++	@java.lang.SuppressWarnings("all")
++	public static class BuilderDefaultsGenericsInferenceBuilder {
++		@java.lang.SuppressWarnings("all")
++		private boolean foo$set;
++		@java.lang.SuppressWarnings("all")
++		private String foo$value;
++		@java.lang.SuppressWarnings("all")
++		BuilderDefaultsGenericsInferenceBuilder() {
++		}
++		/**
++		 * @return {@code this}.
++		 */
++		@java.lang.SuppressWarnings("all")
++		public BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder foo(final String foo) {
++			this.foo$value = foo;
++			foo$set = true;
++			return this;
++		}
++		@java.lang.SuppressWarnings("all")
++		public BuilderDefaultsGenericsInference build() {
++			String foo$value = this.foo$value;
++			if (!this.foo$set) foo$value = BuilderDefaultsGenericsInference.$default$foo();
++			return new BuilderDefaultsGenericsInference(foo$value);
++		}
++		@java.lang.Override
++		@java.lang.SuppressWarnings("all")
++		public java.lang.String toString() {
++			return "BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder(foo$value=" + this.foo$value + ")";
++		}
++	}
++	@java.lang.SuppressWarnings("all")
++	public static BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder builder() {
++		return new BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder();
++	}
++}
+diff --git a/test/transform/resource/after-delombok/SuperBuilderDefaultsGenericsInference.java b/test/transform/resource/after-delombok/SuperBuilderDefaultsGenericsInference.java
+new file mode 100644
+index 00000000..57891549
+--- /dev/null
++++ b/test/transform/resource/after-delombok/SuperBuilderDefaultsGenericsInference.java
+@@ -0,0 +1,119 @@
++import lombok.Builder;
++public class SuperBuilderDefaultsGenericsInference {
++	String foo;
++	static class MyClass<T> {
++		final T value;
++		MyClass(T value) {
++			this.value = value;
++		}
++		static MyClass<Integer> myInt() {
++			return new MyClass<Integer>(42);
++		}
++		static MyClass<Character> myChar() {
++			return new MyClass<Character>('A');
++		}
++	}
++	static String doSth(MyClass<Integer> i, MyClass<Character> c) {
++		return i.value.toString() + c.value.toString();
++	}
++	static class Child extends SuperBuilderDefaultsGenericsInference {
++		@java.lang.SuppressWarnings("all")
++		public static abstract class ChildBuilder<C extends SuperBuilderDefaultsGenericsInference.Child, B extends SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<C, B>> extends SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<C, B> {
++			@java.lang.Override
++			@java.lang.SuppressWarnings("all")
++			protected abstract B self();
++			@java.lang.Override
++			@java.lang.SuppressWarnings("all")
++			public abstract C build();
++			@java.lang.Override
++			@java.lang.SuppressWarnings("all")
++			public java.lang.String toString() {
++				return "SuperBuilderDefaultsGenericsInference.Child.ChildBuilder(super=" + super.toString() + ")";
++			}
++		}
++		@java.lang.SuppressWarnings("all")
++		private static final class ChildBuilderImpl extends SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<SuperBuilderDefaultsGenericsInference.Child, SuperBuilderDefaultsGenericsInference.Child.ChildBuilderImpl> {
++			@java.lang.SuppressWarnings("all")
++			private ChildBuilderImpl() {
++			}
++			@java.lang.Override
++			@java.lang.SuppressWarnings("all")
++			protected SuperBuilderDefaultsGenericsInference.Child.ChildBuilderImpl self() {
++				return this;
++			}
++			@java.lang.Override
++			@java.lang.SuppressWarnings("all")
++			public SuperBuilderDefaultsGenericsInference.Child build() {
++				return new SuperBuilderDefaultsGenericsInference.Child(this);
++			}
++		}
++		@java.lang.SuppressWarnings("all")
++		protected Child(final SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<?, ?> b) {
++			super(b);
++		}
++		@java.lang.SuppressWarnings("all")
++		public static SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<?, ?> builder() {
++			return new SuperBuilderDefaultsGenericsInference.Child.ChildBuilderImpl();
++		}
++	}
++	public static void main(String[] args) {
++		if (!"42A".equals(Child.builder().build().foo)) throw new AssertionError("Incorrect inherited default");
++		if (!"override".equals(Child.builder().foo("override").build().foo)) {
++			throw new AssertionError("Default must not override an explicit value");
++		}
++	}
++	@java.lang.SuppressWarnings("all")
++	private static String $default$foo() {
++		return doSth(MyClass.myInt(), MyClass.myChar());
++	}
++	@java.lang.SuppressWarnings("all")
++	public static abstract class SuperBuilderDefaultsGenericsInferenceBuilder<C extends SuperBuilderDefaultsGenericsInference, B extends SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<C, B>> {
++		@java.lang.SuppressWarnings("all")
++		private boolean foo$set;
++		@java.lang.SuppressWarnings("all")
++		private String foo$value;
++		@java.lang.SuppressWarnings("all")
++		protected abstract B self();
++		@java.lang.SuppressWarnings("all")
++		public abstract C build();
++		/**
++		 * @return {@code this}.
++		 */
++		@java.lang.SuppressWarnings("all")
++		public B foo(final String foo) {
++			this.foo$value = foo;
++			foo$set = true;
++			return self();
++		}
++		@java.lang.Override
++		@java.lang.SuppressWarnings("all")
++		public java.lang.String toString() {
++			return "SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder(foo$value=" + this.foo$value + ")";
++		}
++	}
++	@java.lang.SuppressWarnings("all")
++	private static final class SuperBuilderDefaultsGenericsInferenceBuilderImpl extends SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<SuperBuilderDefaultsGenericsInference, SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilderImpl> {
++		@java.lang.SuppressWarnings("all")
++		private SuperBuilderDefaultsGenericsInferenceBuilderImpl() {
++		}
++		@java.lang.Override
++		@java.lang.SuppressWarnings("all")
++		protected SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilderImpl self() {
++			return this;
++		}
++		@java.lang.Override
++		@java.lang.SuppressWarnings("all")
++		public SuperBuilderDefaultsGenericsInference build() {
++			return new SuperBuilderDefaultsGenericsInference(this);
++		}
++	}
++	@java.lang.SuppressWarnings("all")
++	protected SuperBuilderDefaultsGenericsInference(final SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<?, ?> b) {
++		if (b.foo$set) this.foo = b.foo$value;
++		 else this.foo = SuperBuilderDefaultsGenericsInference.$default$foo();
++	}
++	@java.lang.SuppressWarnings("all")
++	public static SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<?, ?> builder() {
++		return new SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilderImpl();
++	}
++}
+diff --git a/test/transform/resource/after-ecj/BuilderDefaultsGenericsInference.java b/test/transform/resource/after-ecj/BuilderDefaultsGenericsInference.java
+new file mode 100644
+index 00000000..96ed5f3d
+--- /dev/null
++++ b/test/transform/resource/after-ecj/BuilderDefaultsGenericsInference.java
+@@ -0,0 +1,64 @@
++import lombok.Builder;
++public @Builder class BuilderDefaultsGenericsInference {
++  static class MyClass<T> {
++    final T value;
++    MyClass(T value) {
++      super();
++      this.value = value;
++    }
++    static MyClass<Integer> myInt() {
++      return new MyClass<Integer>(42);
++    }
++    static MyClass<Character> myChar() {
++      return new MyClass<Character>('A');
++    }
++  }
++  public static @java.lang.SuppressWarnings("all") class BuilderDefaultsGenericsInferenceBuilder {
++    private @java.lang.SuppressWarnings("all") String foo$value;
++    private @java.lang.SuppressWarnings("all") boolean foo$set;
++    @java.lang.SuppressWarnings("all") BuilderDefaultsGenericsInferenceBuilder() {
++      super();
++    }
++    /**
++     * @return {@code this}.
++     */
++    public @java.lang.SuppressWarnings("all") BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder foo(final String foo) {
++      this.foo$value = foo;
++      foo$set = true;
++      return this;
++    }
++    public @java.lang.SuppressWarnings("all") BuilderDefaultsGenericsInference build() {
++      String foo$value = this.foo$value;
++      if ((! this.foo$set))
++          foo$value = BuilderDefaultsGenericsInference.$default$foo();
++      return new BuilderDefaultsGenericsInference(foo$value);
++    }
++    public @java.lang.Override @java.lang.SuppressWarnings("all") java.lang.String toString() {
++      return (("BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder(foo$value=" + this.foo$value) + ")");
++    }
++  }
++  @Builder.Default String foo;
++  static String doSth(MyClass<Integer> i, MyClass<Character> c) {
++    return (i.value.toString() + c.value.toString());
++  }
++  public static void main(String[] args) {
++    if ((! "42A".equals(BuilderDefaultsGenericsInference.builder().build().foo)))
++        {
++          throw new AssertionError("Incorrect default");
++        }
++    if ((! "override".equals(BuilderDefaultsGenericsInference.builder().foo("override").build().foo)))
++        {
++          throw new AssertionError("Default must not override an explicit value");
++        }
++  }
++  private static @java.lang.SuppressWarnings("all") String $default$foo() {
++    return doSth(MyClass.myInt(), MyClass.myChar());
++  }
++  @java.lang.SuppressWarnings("all") BuilderDefaultsGenericsInference(final String foo) {
++    super();
++    this.foo = foo;
++  }
++  public static @java.lang.SuppressWarnings("all") BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder builder() {
++    return new BuilderDefaultsGenericsInference.BuilderDefaultsGenericsInferenceBuilder();
++  }
++}
+diff --git a/test/transform/resource/after-ecj/SuperBuilderDefaultsGenericsInference.java b/test/transform/resource/after-ecj/SuperBuilderDefaultsGenericsInference.java
+new file mode 100644
+index 00000000..46460156
+--- /dev/null
++++ b/test/transform/resource/after-ecj/SuperBuilderDefaultsGenericsInference.java
+@@ -0,0 +1,102 @@
++import lombok.Builder;
++import lombok.experimental.SuperBuilder;
++public @SuperBuilder class SuperBuilderDefaultsGenericsInference {
++  static class MyClass<T> {
++    final T value;
++    MyClass(T value) {
++      super();
++      this.value = value;
++    }
++    static MyClass<Integer> myInt() {
++      return new MyClass<Integer>(42);
++    }
++    static MyClass<Character> myChar() {
++      return new MyClass<Character>('A');
++    }
++  }
++  static @SuperBuilder class Child extends SuperBuilderDefaultsGenericsInference {
++    public static abstract @java.lang.SuppressWarnings("all") class ChildBuilder<C extends SuperBuilderDefaultsGenericsInference.Child, B extends SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<C, B>> extends SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<C, B> {
++      public ChildBuilder() {
++        super();
++      }
++      protected abstract @java.lang.Override @java.lang.SuppressWarnings("all") B self();
++      public abstract @java.lang.Override @java.lang.SuppressWarnings("all") C build();
++      public @java.lang.Override @java.lang.SuppressWarnings("all") java.lang.String toString() {
++        return (("SuperBuilderDefaultsGenericsInference.Child.ChildBuilder(super=" + super.toString()) + ")");
++      }
++    }
++    private static final @java.lang.SuppressWarnings("all") class ChildBuilderImpl extends SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<SuperBuilderDefaultsGenericsInference.Child, SuperBuilderDefaultsGenericsInference.Child.ChildBuilderImpl> {
++      private ChildBuilderImpl() {
++        super();
++      }
++      protected @java.lang.Override @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference.Child.ChildBuilderImpl self() {
++        return this;
++      }
++      public @java.lang.Override @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference.Child build() {
++        return new SuperBuilderDefaultsGenericsInference.Child(this);
++      }
++    }
++    protected @java.lang.SuppressWarnings("all") Child(final SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<?, ?> b) {
++      super(b);
++    }
++    public static @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference.Child.ChildBuilder<?, ?> builder() {
++      return new SuperBuilderDefaultsGenericsInference.Child.ChildBuilderImpl();
++    }
++  }
++  public static abstract @java.lang.SuppressWarnings("all") class SuperBuilderDefaultsGenericsInferenceBuilder<C extends SuperBuilderDefaultsGenericsInference, B extends SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<C, B>> {
++    private @java.lang.SuppressWarnings("all") String foo$value;
++    private @java.lang.SuppressWarnings("all") boolean foo$set;
++    public SuperBuilderDefaultsGenericsInferenceBuilder() {
++      super();
++    }
++    protected abstract @java.lang.SuppressWarnings("all") B self();
++    public abstract @java.lang.SuppressWarnings("all") C build();
++    /**
++     * @return {@code this}.
++     */
++    public @java.lang.SuppressWarnings("all") B foo(final String foo) {
++      this.foo$value = foo;
++      foo$set = true;
++      return self();
++    }
++    public @java.lang.Override @java.lang.SuppressWarnings("all") java.lang.String toString() {
++      return (("SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder(foo$value=" + this.foo$value) + ")");
++    }
++  }
++  private static final @java.lang.SuppressWarnings("all") class SuperBuilderDefaultsGenericsInferenceBuilderImpl extends SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<SuperBuilderDefaultsGenericsInference, SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilderImpl> {
++    private SuperBuilderDefaultsGenericsInferenceBuilderImpl() {
++      super();
++    }
++    protected @java.lang.Override @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilderImpl self() {
++      return this;
++    }
++    public @java.lang.Override @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference build() {
++      return new SuperBuilderDefaultsGenericsInference(this);
++    }
++  }
++  @Builder.Default String foo;
++  static String doSth(MyClass<Integer> i, MyClass<Character> c) {
++    return (i.value.toString() + c.value.toString());
++  }
++  public static void main(String[] args) {
++    if ((! "42A".equals(Child.builder().build().foo)))
++        throw new AssertionError("Incorrect inherited default");
++    if ((! "override".equals(Child.builder().foo("override").build().foo)))
++        {
++          throw new AssertionError("Default must not override an explicit value");
++        }
++  }
++  private static @java.lang.SuppressWarnings("all") String $default$foo() {
++    return doSth(MyClass.myInt(), MyClass.myChar());
++  }
++  protected @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference(final SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<?, ?> b) {
++    super();
++    if (b.foo$set)
++        this.foo = b.foo$value;
++    else
++        this.foo = SuperBuilderDefaultsGenericsInference.$default$foo();
++  }
++  public static @java.lang.SuppressWarnings("all") SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilder<?, ?> builder() {
++    return new SuperBuilderDefaultsGenericsInference.SuperBuilderDefaultsGenericsInferenceBuilderImpl();
++  }
++}
+diff --git a/test/transform/resource/before/BuilderDefaultsGenericsInference.java b/test/transform/resource/before/BuilderDefaultsGenericsInference.java
+new file mode 100644
+index 00000000..ec18d023
+--- /dev/null
++++ b/test/transform/resource/before/BuilderDefaultsGenericsInference.java
+@@ -0,0 +1,36 @@
++import lombok.Builder;
++
++@Builder
++public class BuilderDefaultsGenericsInference {
++	@Builder.Default
++	String foo = doSth(MyClass.myInt(), MyClass.myChar());
++
++	static class MyClass<T> {
++		final T value;
++
++		MyClass(T value) {
++			this.value = value;
++		}
++
++		static MyClass<Integer> myInt() {
++			return new MyClass<Integer>(42);
++		}
++
++		static MyClass<Character> myChar() {
++			return new MyClass<Character>('A');
++		}
++	}
++
++	static String doSth(MyClass<Integer> i, MyClass<Character> c) {
++		return i.value.toString() + c.value.toString();
++	}
++
++	public static void main(String[] args) {
++		if (!"42A".equals(BuilderDefaultsGenericsInference.builder().build().foo)) {
++			throw new AssertionError("Incorrect default");
++		}
++		if (!"override".equals(BuilderDefaultsGenericsInference.builder().foo("override").build().foo)) {
++			throw new AssertionError("Default must not override an explicit value");
++		}
++	}
++}
+diff --git a/test/transform/resource/before/SuperBuilderDefaultsGenericsInference.java b/test/transform/resource/before/SuperBuilderDefaultsGenericsInference.java
+new file mode 100644
+index 00000000..936bef62
+--- /dev/null
++++ b/test/transform/resource/before/SuperBuilderDefaultsGenericsInference.java
+@@ -0,0 +1,39 @@
++import lombok.Builder;
++import lombok.experimental.SuperBuilder;
++
++@SuperBuilder
++public class SuperBuilderDefaultsGenericsInference {
++	@Builder.Default
++	String foo = doSth(MyClass.myInt(), MyClass.myChar());
++
++	static class MyClass<T> {
++		final T value;
++
++		MyClass(T value) {
++			this.value = value;
++		}
++
++		static MyClass<Integer> myInt() {
++			return new MyClass<Integer>(42);
++		}
++
++		static MyClass<Character> myChar() {
++			return new MyClass<Character>('A');
++		}
++	}
++
++	static String doSth(MyClass<Integer> i, MyClass<Character> c) {
++		return i.value.toString() + c.value.toString();
++	}
++
++	@SuperBuilder
++	static class Child extends SuperBuilderDefaultsGenericsInference {
++	}
++
++	public static void main(String[] args) {
++		if (!"42A".equals(Child.builder().build().foo)) throw new AssertionError("Incorrect inherited default");
++		if (!"override".equals(Child.builder().foo("override").build().foo)) {
++			throw new AssertionError("Default must not override an explicit value");
++		}
++	}
++}

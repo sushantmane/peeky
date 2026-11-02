@@ -1,0 +1,7 @@
+{
+ "judge_id": "a227",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The new receiver starts past the closure marker.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no value: Cmds 7/10/11 were help/docs, Cmd 12 failed INVALID_REQUEST (candidate edit refused), Cmd 14 failed INVALID_BREAKPOINT at broadcast.rs:674 (generic new_receiver). No probe rows to check."
+}

@@ -1,0 +1,122 @@
+diff --git a/CHANGES b/CHANGES
+index e6888146c..57e608c1b 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -19,6 +19,7 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* autodoc: Fix TypeError when generic classes use mocked dependencies
+ * #7839: autosummary: cannot handle umlauts in function names
+ * #7865: autosummary: Failed to extract summary line when abbreviations found
+ * #7866: autosummary: Failed to extract correct summary line when docstring
+diff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py
+index 98a3a3a96..40258a135 100644
+--- a/sphinx/ext/autodoc/mock.py
++++ b/sphinx/ext/autodoc/mock.py
+@@ -52,8 +52,8 @@ class _MockObject:
+     def __mro_entries__(self, bases: Tuple) -> Tuple:
+         return (self.__class__,)
+ 
+-    def __getitem__(self, key: str) -> "_MockObject":
+-        return _make_subclass(key, self.__display_name__, self.__class__)()
++    def __getitem__(self, key: Any) -> "_MockObject":
++        return _make_subclass(str(key), self.__display_name__, self.__class__)()
+ 
+     def __getattr__(self, key: str) -> "_MockObject":
+         return _make_subclass(key, self.__display_name__, self.__class__)()
+diff --git a/tests/test_ext_autodoc_mock_generic.py b/tests/test_ext_autodoc_mock_generic.py
+new file mode 100644
+index 000000000..0adbd5d1b
+--- /dev/null
++++ b/tests/test_ext_autodoc_mock_generic.py
+@@ -0,0 +1,89 @@
++"""
++    test_ext_autodoc_mock_generic
++    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++    Test subscriptions and generic classes with mocked dependencies.
++
++    :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
++    :license: BSD, see LICENSE for details.
++"""
++
++import sys
++from importlib import import_module
++from typing import TypeVar
++
++import pytest
++
++from sphinx.ext.autodoc.mock import _MockObject, mock
++from test_ext_autodoc import do_autodoc
++
++T = TypeVar('T')
++U = TypeVar('U')
++
++
++@pytest.mark.parametrize('key', ['member', 0, None, slice(1, 3), int, T, (T, U)])
++def test_MockObject_getitem(key):
++    obj = _MockObject()
++    item = obj[key]
++
++    assert isinstance(item, _MockObject)
++    assert repr(item) == '_MockObject.' + str(key)
++    assert item.__class__.__name__ == str(key)
++    assert item.__class__.__module__ == '_MockObject'
++
++
++@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')
++def test_mock_generic_class():
++    with mock(['sphinx.unknown']):
++        module = import_module('sphinx.unknown')
++
++        class Derived(module.GenericBase[T]):
++            """A generic subclass of a mocked dependency."""
++
++            def method(self):
++                return 'value'
++
++        obj = Derived()
++        assert isinstance(obj, Derived)
++        assert isinstance(obj, _MockObject)
++        assert obj.method() == 'value'
++        assert isinstance(obj.other_method(), Derived)
++        assert Derived.__doc__ == 'A generic subclass of a mocked dependency.'
++        assert repr(Derived.__bases__[0]()) == 'sphinx.unknown.GenericBase.' + str(T)
++
++
++@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')
++@pytest.mark.sphinx('html', testroot='ext-autodoc',
++                    confoverrides={'autodoc_mock_imports': ['missing_generic_dependency']})
++@pytest.mark.parametrize('classname, docstring', [
++    ('Derived', 'A generic subclass.'),
++    ('Pair', 'A generic subclass with two parameters.'),
++])
++def test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch,
++                                     classname, docstring):
++    target = tmp_path / 'generic_mock_target.py'
++    target.write_text("""from typing import TypeVar
++from missing_generic_dependency import GenericBase
++
++T = TypeVar('T')
++U = TypeVar('U')
++
++class Derived(GenericBase[T]):
++    \"\"\"A generic subclass.\"\"\"
++
++class Pair(GenericBase[T, U]):
++    \"\"\"A generic subclass with two parameters.\"\"\"
++""")
++    monkeypatch.syspath_prepend(str(tmp_path))
++
++    warnings_before = warning.getvalue()
++    actual = do_autodoc(app, 'class', 'generic_mock_target.' + classname)
++    assert list(actual) == [
++        '',
++        '.. py:class:: %s(*args: Any, **kwargs: Any)' % classname,
++        '   :module: generic_mock_target',
++        '',
++        '   ' + docstring,
++        '',
++    ]
++    assert warning.getvalue() == warnings_before

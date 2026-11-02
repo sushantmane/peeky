@@ -1,0 +1,124 @@
+diff --git a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
+index e213352a0..ebb857766 100644
+--- a/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
++++ b/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java
+@@ -350,8 +350,10 @@ public final class ObservableSwitchMap<T, R> extends AbstractObservableWithUpstr
+         @Override
+         public void onNext(R t) {
+             if (index == parent.unique) {
+-                if (t != null) {
+-                    queue.offer(t);
++                // Cancellation before onSubscribe may leave the queue uninitialized.
++                SimpleQueue<R> q = queue;
++                if (t != null && q != null) {
++                    q.offer(t);
+                 }
+                 parent.drain();
+             }
+diff --git a/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java
+new file mode 100644
+index 000000000..cf296dd4b
+--- /dev/null
++++ b/src/test/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMapCancellationTest.java
+@@ -0,0 +1,101 @@
++/*
++ * Copyright (c) 2016-present, RxJava Contributors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in
++ * compliance with the License. You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software distributed under the License is
++ * distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See
++ * the License for the specific language governing permissions and limitations under the License.
++ */
++
++package io.reactivex.rxjava3.internal.operators.observable;
++
++import static org.junit.Assert.*;
++
++import org.junit.Test;
++
++import io.reactivex.rxjava3.core.*;
++import io.reactivex.rxjava3.observers.TestObserver;
++import io.reactivex.rxjava3.subjects.PublishSubject;
++import io.reactivex.rxjava3.testsupport.TestHelper;
++
++public class ObservableSwitchMapCancellationTest extends RxJavaTest {
++
++    @Test
++    public void cancelBeforeInnerOnSubscribe() throws Throwable {
++        cancelBeforeInnerOnSubscribe(false);
++    }
++
++    @Test
++    public void cancelBeforeInnerOnSubscribeDelayError() throws Throwable {
++        cancelBeforeInnerOnSubscribe(true);
++    }
++
++    void cancelBeforeInnerOnSubscribe(boolean delayErrors) throws Throwable {
++        TestHelper.withErrorTracking(errors -> {
++            PublishSubject<Integer> refresh = PublishSubject.create();
++            PublishSubject<Integer> dimensions = PublishSubject.create();
++            TestObserver<Integer> to = new TestObserver<>();
++
++            Observable<Integer> inner = Observable.defer(() -> dimensions
++                    .scan(0, Integer::sum)
++                    .map(v -> v)
++                    .doOnSubscribe(d -> to.dispose()));
++
++            Observable<Integer> switched = delayErrors
++                    ? refresh.switchMapDelayError(v -> inner)
++                    : refresh.switchMap(v -> inner);
++            switched.subscribe(to);
++
++            refresh.onNext(1);
++
++            to.assertEmpty();
++            assertTrue(to.isDisposed());
++            assertFalse(refresh.hasObservers());
++            assertFalse(dimensions.hasObservers());
++            assertTrue(errors.toString(), errors.isEmpty());
++        });
++    }
++
++    @Test
++    public void cancelDuringInnerSubscriptionRace() throws Throwable {
++        cancelDuringInnerSubscriptionRace(false);
++    }
++
++    @Test
++    public void cancelDuringInnerSubscriptionRaceDelayError() throws Throwable {
++        cancelDuringInnerSubscriptionRace(true);
++    }
++
++    void cancelDuringInnerSubscriptionRace(boolean delayErrors) throws Throwable {
++        TestHelper.withErrorTracking(errors -> {
++            for (int i = 0; i < TestHelper.RACE_DEFAULT_LOOPS; i++) {
++                PublishSubject<Integer> refresh = PublishSubject.create();
++                PublishSubject<Integer> dimensions = PublishSubject.create();
++                Observable<Integer> inner = Observable.defer(() -> dimensions
++                        .scan(0, Integer::sum)
++                        .map(v -> v));
++
++                Observable<Integer> switched = delayErrors
++                        ? refresh.switchMapDelayError(v -> inner)
++                        : refresh.switchMap(v -> inner);
++                TestObserver<Integer> to = switched.test();
++
++                TestHelper.race(() -> refresh.onNext(1), to::dispose);
++
++                to.assertNoErrors().assertNotComplete();
++                assertTrue(to.values().size() <= 1);
++                if (!to.values().isEmpty()) {
++                    to.assertValue(0);
++                }
++                assertTrue(to.isDisposed());
++                assertFalse(refresh.hasObservers());
++                assertFalse(dimensions.hasObservers());
++                assertTrue(errors.toString(), errors.isEmpty());
++            }
++        });
++    }
++}

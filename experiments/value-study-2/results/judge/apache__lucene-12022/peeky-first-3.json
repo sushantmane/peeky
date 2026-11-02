@@ -1,0 +1,7 @@
+{
+ "judge_id": "a046",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"triangle simplification now derives the boundary flag from the non-collapsed edges instead of retaining the first edge\u2019s flag.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 21 probe ShapeField.java:383: a=(0,0), b=(10,10), c=(0,0), ab=false, bc=true, ca=true; the same jshell run (Cmd 20) prints the decoded triangle '0, 0 10, 10 0, 0 [false,true,true]'. Cmd 31 at line 386 (a==c branch, values unchanged): a=(23860929,47721858), b=(23860929,71582788), c=a, flags false,true,true; Cmd 28 prints the same LINE '23860929, 47721858 23860929, 71582788 23860929, 47721858 [false,true,true]' for that polygon. Nothing contradicted; Cmd 16 was NO_STOP."
+}

@@ -1,0 +1,181 @@
+diff --git a/lucene/CHANGES.txt b/lucene/CHANGES.txt
+index ae15247ac2..3985a08cf3 100644
+--- a/lucene/CHANGES.txt
++++ b/lucene/CHANGES.txt
+@@ -184,6 +184,9 @@ Optimizations
+ Bug Fixes
+ ---------------------
+ 
++* Fix integer overflow in geo predicates that could reject points in narrow polygons
++  or tiny distance queries near the north pole.
++
+ * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until
+   they reach the maximum merge size. (Adrien Grand)
+ 
+diff --git a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+index d7ff62ba3b..08318b07a0 100644
+--- a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
++++ b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+@@ -363,7 +363,8 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      // Compare deltas to avoid overflow near the north pole.
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+@@ -411,7 +412,8 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      // Compare deltas to avoid overflow near the north pole.
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+diff --git a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtilsPredicates.java b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtilsPredicates.java
+new file mode 100644
+index 0000000000..d81b20fa29
+--- /dev/null
++++ b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtilsPredicates.java
+@@ -0,0 +1,137 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.lucene.geo;
++
++import static org.apache.lucene.geo.GeoEncodingUtils.decodeLatitude;
++import static org.apache.lucene.geo.GeoEncodingUtils.decodeLongitude;
++
++import org.apache.lucene.document.Document;
++import org.apache.lucene.document.LatLonDocValuesField;
++import org.apache.lucene.document.LatLonPoint;
++import org.apache.lucene.document.ShapeField;
++import org.apache.lucene.index.DirectoryReader;
++import org.apache.lucene.index.IndexWriter;
++import org.apache.lucene.index.IndexWriterConfig;
++import org.apache.lucene.index.SerialMergeScheduler;
++import org.apache.lucene.search.IndexSearcher;
++import org.apache.lucene.store.Directory;
++import org.apache.lucene.tests.util.LuceneTestCase;
++
++public class TestGeoEncodingUtilsPredicates extends LuceneTestCase {
++
++  public void testComponentPredicateAtEncodingLimits() {
++    for (int width : new int[] {1, 3, 63, 127}) {
++      for (int minLat : new int[] {Integer.MIN_VALUE, -width, Integer.MAX_VALUE - width}) {
++        for (int minLon : new int[] {Integer.MIN_VALUE, -width, Integer.MAX_VALUE - width}) {
++          double minY = decodeLatitude(minLat);
++          double maxY = decodeLatitude(minLat + width);
++          double minX = decodeLongitude(minLon);
++          double maxX = decodeLongitude(minLon + width);
++          Polygon polygon =
++              new Polygon(
++                  new double[] {minY, minY, maxY, maxY, minY},
++                  new double[] {minX, maxX, maxX, minX, minX});
++          for (LatLonGeometry geometry :
++              new LatLonGeometry[] {polygon, new Rectangle(minY, maxY, minX, maxX)}) {
++            Component2D component = LatLonGeometry.create(geometry);
++            GeoEncodingUtils.Component2DPredicate predicate =
++                GeoEncodingUtils.createComponentPredicate(component);
++            for (int latOffset : new int[] {-1, 0, 1, width - 1, width, width + 1}) {
++              long lat = (long) minLat + latOffset;
++              if (lat < Integer.MIN_VALUE || lat > Integer.MAX_VALUE) {
++                continue;
++              }
++              for (int lonOffset : new int[] {-1, 0, 1, width - 1, width, width + 1}) {
++                long lon = (long) minLon + lonOffset;
++                if (lon < Integer.MIN_VALUE || lon > Integer.MAX_VALUE) {
++                  continue;
++                }
++                assertEquals(
++                    component.contains(decodeLongitude((int) lon), decodeLatitude((int) lat)),
++                    predicate.test((int) lat, (int) lon));
++              }
++            }
++          }
++        }
++      }
++    }
++  }
++
++  public void testNarrowPolygonCloseToNorthPole() throws Exception {
++    IndexWriterConfig iwc = newIndexWriterConfig();
++    iwc.setMergeScheduler(new SerialMergeScheduler());
++    try (Directory dir = newDirectory();
++        IndexWriter writer = new IndexWriter(dir, iwc)) {
++      Document doc = new Document();
++      double lat = decodeLatitude(Integer.MAX_VALUE - 2);
++      double lon = decodeLongitude(Integer.MAX_VALUE - 2);
++      doc.add(new LatLonDocValuesField("point", lat, lon));
++      doc.add(new LatLonPoint("point", lat, lon));
++      writer.addDocument(doc);
++      writer.flush();
++
++      double minLat = decodeLatitude(Integer.MAX_VALUE - 3);
++      double maxLat = decodeLatitude(Integer.MAX_VALUE);
++      double minLon = decodeLongitude(Integer.MAX_VALUE - 3);
++      double maxLon = decodeLongitude(Integer.MAX_VALUE);
++      Polygon polygon =
++          new Polygon(
++              new double[] {minLat, minLat, maxLat, maxLat, minLat},
++              new double[] {minLon, maxLon, maxLon, minLon, minLon});
++      try (DirectoryReader reader = DirectoryReader.open(writer)) {
++        IndexSearcher searcher = newSearcher(reader);
++        assertEquals(1, searcher.count(LatLonPoint.newPolygonQuery("point", polygon)));
++        assertEquals(1, searcher.count(LatLonDocValuesField.newSlowPolygonQuery("point", polygon)));
++        assertEquals(
++            1,
++            searcher.count(
++                LatLonDocValuesField.newSlowGeometryQuery(
++                    "point", ShapeField.QueryRelation.WITHIN, polygon)));
++        assertEquals(
++            0,
++            searcher.count(
++                LatLonDocValuesField.newSlowGeometryQuery(
++                    "point", ShapeField.QueryRelation.DISJOINT, polygon)));
++      }
++    }
++  }
++
++  public void testTinyDistanceCloseToPoles() throws Exception {
++    for (int encodedLat : new int[] {Integer.MIN_VALUE, Integer.MAX_VALUE - 2, Integer.MAX_VALUE}) {
++      double lat = decodeLatitude(encodedLat);
++      double lon = decodeLongitude(Integer.MAX_VALUE - 2);
++      for (double radius : new double[] {0, 0.0001, 0.001, 1}) {
++        assertTrue(
++            GeoEncodingUtils.createDistancePredicate(lat, lon, radius)
++                .test(encodedLat, Integer.MAX_VALUE - 2));
++      }
++      try (Directory dir = newDirectory();
++          IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig())) {
++        Document doc = new Document();
++        doc.add(new LatLonDocValuesField("point", lat, lon));
++        doc.add(new LatLonPoint("point", lat, lon));
++        writer.addDocument(doc);
++        try (DirectoryReader reader = DirectoryReader.open(writer)) {
++          IndexSearcher searcher = newSearcher(reader);
++          assertEquals(1, searcher.count(LatLonPoint.newDistanceQuery("point", lat, lon, 0)));
++          assertEquals(
++              1, searcher.count(LatLonDocValuesField.newSlowDistanceQuery("point", lat, lon, 0)));
++        }
++      }
++    }
++  }
++}

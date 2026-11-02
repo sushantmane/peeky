@@ -1,0 +1,272 @@
+{
+ "bug": "mwaskom__seaborn-3069",
+ "arm": "peeky-first",
+ "rep": 2,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/mwaskom__seaborn-3069:peeky-r2",
+ "image_digest": "sha256:fc133b76ec6b91a681e66b75384ea32dca50aeb24187f98c0d81159830e93ffc",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-mwaskom__seaborn-3069-peeky-first-2-6c9d14",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T10:55:20+00:00",
+ "ended": "2026-11-01T10:59:48+00:00",
+ "wall_seconds": 268.1,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": false,
+ "f2p": {
+  "tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks": "PASSED",
+  "tests/_core/test_plot.py::TestScaling::test_nominal_y_axis_tweaks": "FAILED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 3.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "72d56ff8c72d80a4279c4c9d15df22926219d7dbb6726bfd858479ef7d767871",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "seaborn/_core/plot.py",
+  "seaborn/_core/scales.py",
+  "tests/_core/test_nominal_axis.py"
+ ],
+ "patch_bytes": 7682,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 170
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 16,
+ "ai_credits": 29.9122,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 546134,
+  "output": 12177,
+  "cache_read": 494983,
+  "cache_write": 51103,
+  "reasoning": 4152
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 23,
+ "tool_calls_by_name": {
+  "bash": 23
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -la && if [ -d /testbed ]; then ls -ld /testbed; fi && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,190p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short && rg -n 'class Nominal|def _finalize_figure|sticky_edges' seaborn tests && ls tests && rg -n 'Nominal' doc --glob '*.rst' --glob '*.py' | head -40",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md && sed -n '1,170p' /opt/peeky/docs/lang/python.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'class Nominal|def _finalize_figure|sticky_edges' seaborn/_core/*.py && ls tests && grep -R -n 'Nominal' doc --include='*.rst' --include='*.py' | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,290p' seaborn/_core/scales.py && sed -n '1530,1735p' seaborn/_core/plot.py && grep -nE '_finalize|_setup_scales|_scales|set_lim|set_[xy]lim' seaborn/_core/plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls tests/_core && grep -nE 'Nominal|limit|grid|invert|finaliz|scale|theme' tests/_core/test_plot.py | tail -100 && sed -n '1,120p' tests/_core/test_scales.py && cat setup.cfg && find doc -maxdepth 2 -type f | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python - <<'PY'\nimport matplotlib\nmatplotlib.use('Agg')\nimport seaborn as sns\nimport seaborn.objects as so\nfor axis in ['x', 'y']:\n    p = so.Plot(**{axis: ['a', 'b', 'c'], 'y' if axis == 'x' else 'x': [1, 2, 3]}).add(so.Dot()).theme(sns.axes_style('whitegrid')).plot()\n    ax = p._figure.axes[0]\n    print(axis, 'limits:', getattr(ax, f'get_{axis}lim')(), 'grid:', [l.get_visible() for l in getattr(ax, f'get_{axis}gridlines')()], 'inverted:', getattr(ax, f'{axis}axis_inverted')())\n    assert getattr(ax, f'get_{axis}lim')() == ((-.5, 2.5) if axis == 'x' else (2.5, -.5)), 'Nominal axis has continuous-style limits'\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,105p' tests/_core/test_plot.py && sed -n '300,375p' tests/_core/test_plot.py && sed -n '1110,1265p' seaborn/_core/plot.py && sed -n '1125,1175p' tests/_core/test_plot.py && grep -nE '^class Test|def test_' tests/_core/test_plot.py | head -40 && grep -n 'sticky_edges' seaborn/_marks/*.py seaborn/categorical.py && sed -n '810,860p' seaborn/_core/plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python - <<'PY'\nimport matplotlib\nmatplotlib.use('Agg')\nimport seaborn as sns\nimport seaborn.objects as so\nfor axis in ['x', 'y']:\n    p = so.Plot(**{axis: ['a', 'b', 'c'], 'y' if axis == 'x' else 'x': [1, 2, 3]}).add(so.Dot()).theme(sns.axes_style('whitegrid')).plot()\n    ax = p._figure.axes[0]\n    print(axis, 'limits:', getattr(ax, f'get_{axis}lim')(), 'grid:', [l.get_visible() for l in getattr(ax, f'get_{axis}gridlines')()], 'inverted:', getattr(ax, f'{axis}axis_inverted')())\nPY\npeeky describe . --at seaborn/_core/plot.py | tail -100",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "peeky probe . --at seaborn/_core/plot.py:1636 --capture \"axis,axis_key,self._scales,p._limits,ax.xaxis.units._mapping,ax.xaxis._major_tick_kw,ax.yaxis._major_tick_kw,ax._xmargin,ax._ymargin,ax._viewLim._points\" --hits all --run-module pytest -- -q tests/_core/test_plot.py::TestScaling::test_inferred_categorical_converter tests/_core/test_plot.py::TestScaling::test_explicit_categorical_converter",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1260,1290p' seaborn/_core/plot.py && sed -n '1,115p' seaborn/_core/subplots.py && sed -n '315,330p' seaborn/_core/plot.py && grep -nE 'def _adjust_cat_axis|set_[xy]lim|grid\\(False' seaborn/categorical.py | head -25 && sed -n '1,140p' tests/conftest.py && sed -n '1,80p' tests/_core/test_subplots.py && sed -n '650,674p' seaborn/_core/plot.py && ls tests/_marks && grep -n 'class Test' tests/_core/test_plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '14,34p' seaborn/_core/plot.py && sed -n '190,228p' seaborn/categorical.py && sed -n '1,130p' seaborn/_marks/bar.py && sed -n '1,110p' tests/_marks/test_dot.py && sed -n '1215,1320p' tests/_core/test_plot.py && sed -n '1610,1638p' tests/_core/test_plot.py && command -v apply_patch && grep -nE 'matplotlib|pytest|flake8|mypy' setup.py pyproject.toml Makefile 2>/dev/null",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "python - <<'PY'\nimport matplotlib\nmatplotlib.use('Agg')\nimport seaborn.objects as so\np = so.Plot(x=['a','b','c'], y=[1,2,3]).add(so.Dot()).plot()\na = p._figure.axes[0]\nfor name in 'xy':\n    axis=getattr(a,f'{name}axis')\n    print(name, 'ticks', axis.get_majorticklocs(), 'set_inverted', hasattr(axis,'set_inverted'))\nprint('matplotlib', matplotlib.__version__)\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p0 <<'PATCH'\n--- seaborn/_core/plot.py\n+++ seaborn/_core/plot.py\n@@ -27,7 +27,7 @@\n from seaborn._stats.base import Stat\n from seaborn._core.data import PlotData\n from seaborn._core.moves import Move\n-from seaborn._core.scales import Scale\n+from seaborn._core.scales import Scale, Nominal\n from seaborn._core.subplots import Subplots\n from seaborn._core.groupby import GroupBy\n from seaborn._core.properties import PROPERTIES, Property\n@@ -1237,7 +1237,6 @@\n             # This only affects us when sharing *paired* axes. This is a novel/niche\n             # behavior, so we will raise rather than hack together a workaround.\n             if axis is not None and Version(mpl.__version__) < Version(\"3.4.0\"):\n-                from seaborn._core.scales import Nominal\n                 paired_axis = axis in p._pair_spec.get(\"structure\", {})\n                 cat_scale = isinstance(scale, Nominal)\n                 ok_dim = {\"x\": \"col\", \"y\": \"row\"}[axis]\n@@ -1627,6 +1626,19 @@\n \n     def _finalize_figure(self, p: Plot) -> None:\n \n+        # Set categorical defaults before explicit limits on any shared axes.\n+        for sub in self._subplots:\n+            ax = sub[\"ax\"]\n+            for axis in \"xy\":\n+                if isinstance(self._scales.get(sub[axis]), Nominal):\n+                    axis_obj = getattr(ax, f\"{axis}axis\")\n+                    axis_obj.grid(False)\n+                    n = len(axis_obj.get_majorticklocs())\n+                    if n:\n+                        ax.set(**{f\"{axis}lim\": (-.5, n - .5)})\n+\n         for sub in self._subplots:\n             ax = sub[\"ax\"]\n             for axis in \"xy\":\n@@ -1644,6 +1656,9 @@\n                         hi = cast(float, hi) + 0.5\n                     ax.set(**{f\"{axis}lim\": (lo, hi)})\n \n+                if axis == \"y\" and isinstance(self._scales.get(axis_key), Nominal):\n+                    ax.yaxis.set_inverted(True)\n+\n         engine_default = None if p._target is not None else \"tight\"\n         layout_engine = p._layout_spec.get(\"engine\", engine_default)\n         set_layout_engine(self._figure, layout_engine)\n--- seaborn/_core/scales.py\n+++ seaborn/_core/scales.py\n@@ -138,6 +138,11 @@\n class Nominal(Scale):\n     \"\"\"\n     A categorical scale without relative importance / magnitude.\n+\n+    On a coordinate axis, the view limits extend half a category beyond the\n+    first and last ticks, unless overridden by :meth:`Plot.limit`. Grid lines\n+    are disabled, and the y axis is inverted so that categories run from top\n+    to bottom.\n     \"\"\"\nPATCH",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager diff -- seaborn/_core/plot.py && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py\n--- a/seaborn/_core/plot.py\n+++ b/seaborn/_core/plot.py\n@@ -1627,6 +1627,17 @@\n \n     def _finalize_figure(self, p: Plot) -> None:\n \n+        # Set categorical defaults before explicit limits on any shared axes.\n+        for sub in self._subplots:\n+            ax = sub[\"ax\"]\n+            for axis in \"xy\":\n+                if isinstance(self._scales.get(sub[axis]), Nominal):\n+                    axis_obj = getattr(ax, f\"{axis}axis\")\n+                    axis_obj.grid(False)\n+                    n = len(axis_obj.get_majorticklocs())\n+                    if n:\n+                        ax.set(**{f\"{axis}lim\": (-.5, n - .5)})\n+\n         for sub in self._subplots:\n             ax = sub[\"ax\"]\n             for axis in \"xy\":\n@@ -1644,6 +1655,9 @@\n                         hi = cast(float, hi) + 0.5\n                     ax.set(**{f\"{axis}lim\": (lo, hi)})\n \n+                if axis == \"y\" and isinstance(self._scales.get(axis_key), Nominal):\n+                    ax.yaxis.set_inverted(True)\n+\n         engine_default = None if p._target is not None else \"tight\"\n         layout_engine = p._layout_spec.get(\"engine\", engine_default)\n         set_layout_engine(self._figure, layout_engine)\ndiff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py\n--- a/seaborn/_core/scales.py\n+++ b/seaborn/_core/scales.py\n@@ -138,6 +138,11 @@\n class Nominal(Scale):\n     \"\"\"\n     A categorical scale without relative importance / magnitude.\n+\n+    On a coordinate axis, the view limits extend half a category beyond the\n+    first and last ticks, unless overridden by :meth:`Plot.limit`. Grid lines\n+    are disabled, and the y axis is inverted so that categories run from top\n+    to bottom.\n     \"\"\"\n     # Categorical (convert to strings), un-sortable\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager diff --stat && sed -n '24,31p' seaborn/_core/plot.py && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py\n--- a/seaborn/_core/plot.py\n+++ b/seaborn/_core/plot.py\n@@ -27,7 +27,7 @@\n from seaborn._stats.base import Stat\n from seaborn._core.data import PlotData\n from seaborn._core.moves import Move\n-from seaborn._core.scales import Scale\n+from seaborn._core.scales import Scale, Nominal\n from seaborn._core.subplots import Subplots\n from seaborn._core.groupby import GroupBy\n from seaborn._core.properties import PROPERTIES, Property\n@@ -1237,7 +1237,6 @@\n             # This only affects us when sharing *paired* axes. This is a novel/niche\n             # behavior, so we will raise rather than hack together a workaround.\n             if axis is not None and Version(mpl.__version__) < Version(\"3.4.0\"):\n-                from seaborn._core.scales import Nominal\n                 paired_axis = axis in p._pair_spec.get(\"structure\", {})\n                 cat_scale = isinstance(scale, Nominal)\n                 ok_dim = {\"x\": \"col\", \"y\": \"row\"}[axis]\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/_core/test_nominal_axis.py\n@@ -0,0 +1,150 @@\n+import matplotlib.pyplot as plt\n+import pytest\n+\n+from seaborn._core.plot import Plot\n+from seaborn._core.scales import Nominal\n+from seaborn._marks.bar import Bar\n+from seaborn._marks.dot import Dot\n+\n+\n+@pytest.fixture(params=[\"x\", \"y\"])\n+def axis(request):\n+    return request.param\n+\n+\n+def check_nominal_axis(ax, axis, limits):\n+\n+    expected = limits if axis == \"x\" else tuple(sorted(limits, reverse=True))\n+    assert getattr(ax, f\"get_{axis}lim\")() == expected\n+    assert not any(line.get_visible() for line in getattr(ax, f\"get_{axis}gridlines\")())\n+    assert getattr(ax, f\"{axis}axis_inverted\")() == (axis == \"y\")\n+\n+\n+@pytest.mark.parametrize(\"mark\", [Dot, Bar])\n+@pytest.mark.parametrize(\"scale_type\", [\"inferred\", \"explicit\", \"numeric\"])\n+def test_nominal_axis_defaults(axis, mark, scale_type):\n+\n+    values = [2, 1, 3] if scale_type == \"numeric\" else [\"b\", \"a\", \"c\"]\n+    other = \"y\" if axis == \"x\" else \"x\"\n+    p = Plot(**{axis: values, other: [1, 2, 3]}).add(mark(), orient=axis)\n+    if scale_type != \"inferred\":\n+        p = p.scale(**{axis: Nominal()})\n+    p = p.theme({\"axes.grid\": True, \"axes.xmargin\": .2, \"axes.ymargin\": .2})\n+    ax, = p.plot()._figure.axes\n+\n+    check_nominal_axis(ax, axis, (-.5, 2.5))\n+    assert any(line.get_visible() for line in getattr(ax, f\"get_{other}gridlines\")())\n+    assert not getattr(ax, f\"{other}axis_inverted\")()\n+\n+\n+@pytest.mark.parametrize(\"mark\", [None, Dot, Bar])\n+def test_nominal_axis_unused_categories(axis, mark):\n+\n+    other = \"y\" if axis == \"x\" else \"x\"\n+    p = Plot(**{axis: [\"a\", \"b\"], other: [1, 2]})\n+    p = p.scale(**{axis: Nominal(order=[\"c\", \"b\", \"a\", \"d\"])})\n+    if mark is not None:\n+        p = p.add(mark(), orient=axis)\n+    ax, = p.plot()._figure.axes\n+\n+    check_nominal_axis(ax, axis, (-.5, 3.5))\n+    labels = getattr(ax, f\"get_{axis}ticklabels\")()\n+    assert [label.get_text() for label in labels] == [\"c\", \"b\", \"a\", \"d\"]\n+\n+\n+def test_nominal_axis_single_category(axis):\n+\n+    ax, = Plot(**{axis: [\"a\"]}).plot()._figure.axes\n+    check_nominal_axis(ax, axis, (-.5, .5))\n+\n+\n+@pytest.mark.parametrize(\"limits,expected\", [\n+    ((None, None), (-.5, 3.5)),\n+    ((None, 2), (-.5, 2)),\n+    ((1, None), (1, 3.5)),\n+    ((.5, 2.5), (.5, 2.5)),\n+    ((\"b\", \"c\"), (.5, 2.5)),\n+    ((None, \"c\"), (-.5, 2.5)),\n+    ((\"b\", None), (.5, 3.5)),\n+])\n+def test_nominal_axis_explicit_limits(axis, limits, expected):\n+\n+    p = Plot(**{axis: [\"a\", \"b\", \"c\", \"d\"]}).limit(**{axis: limits})\n+    ax, = p.plot()._figure.axes\n+    check_nominal_axis(ax, axis, expected)\n+\n+\n+@pytest.mark.parametrize(\"share\", [True, False, \"col\", \"row\"])\n+def test_nominal_axis_facets(axis, share):\n+\n+    other = \"y\" if axis == \"x\" else \"x\"\n+    p = (\n+        Plot(**{axis: [\"a\", \"b\", \"c\", \"a\"], other: [1, 2, 3, 4]})\n+        .facet(col=[\"u\", \"u\", \"v\", \"v\"])\n+        .share(**{axis: share})\n+        .add(Dot())\n+        .plot()\n+    )\n+    for ax in p._figure.axes:\n+        n = len(getattr(ax, f\"get_{axis}ticks\")())\n+        check_nominal_axis(ax, axis, (-.5, n - .5))\n+\n+\n+@pytest.mark.parametrize(\"share\", [True, False])\n+def test_nominal_axis_paired(axis, share):\n+\n+    p = (\n+        Plot()\n+        .pair(**{axis: [[\"a\", \"b\", \"c\"], [\"a\", \"b\", \"c\"]]})\n+        .share(**{axis: share})\n+        .limit(**{f\"{axis}0\": (.5, 1.5)})\n+        .plot()\n+    )\n+    for i, ax in enumerate(p._figure.axes):\n+        limits = (.5, 1.5) if share or i == 0 else (-.5, 2.5)\n+        check_nominal_axis(ax, axis, limits)\n+\n+\n+def test_nominal_axis_preserves_other_paired_scales(axis):\n+\n+    p = Plot().pair(**{axis: [[\"a\", \"b\", \"c\"], [1, 2, 3]]}).plot()\n+    nominal, continuous = p._figure.axes\n+    check_nominal_axis(nominal, axis, (-.5, 2.5))\n+    assert any(line.get_visible() for line in getattr(continuous, f\"get_{axis}gridlines\")())\n+    assert not getattr(continuous, f\"{axis}axis_inverted\")()\n+\n+\n+def test_nominal_axis_existing_axes(axis):\n+\n+    _, ax = plt.subplots()\n+    ax.invert_yaxis()\n+    p = Plot(**{axis: [\"a\", \"b\", \"c\"]}).on(ax)\n+    p.plot()\n+    p.plot()\n+    check_nominal_axis(ax, axis, (-.5, 2.5))\n+\n+\n+def test_both_nominal_axes():\n+\n+    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\",]).add(Dot()).plot()._figure.axes\n+    for axis in \"xy\":\n+        check_nominal_axis(ax, axis, (-.5, 1.5))\nPATCH\npytest tests/_core/test_nominal_axis.py -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py\n--- a/seaborn/_core/plot.py\n+++ b/seaborn/_core/plot.py\n@@ -1655,9 +1655,10 @@\n                         hi = cast(float, hi) + 0.5\n                     ax.set(**{f\"{axis}lim\": (lo, hi)})\n \n-                if axis == \"y\" and isinstance(self._scales.get(axis_key), Nominal):\n-                    ax.yaxis.set_inverted(True)\n+        for sub in self._subplots:\n+            if isinstance(self._scales.get(sub[\"y\"]), Nominal):\n+                sub[\"ax\"].yaxis.set_inverted(True)\n \n         engine_default = None if p._target is not None else \"tight\"\n         layout_engine = p._layout_spec.get(\"engine\", engine_default)\n         set_layout_engine(self._figure, layout_engine)\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\n--- a/tests/_core/test_nominal_axis.py\n+++ b/tests/_core/test_nominal_axis.py\n@@ -74,8 +74,9 @@\n \n \n @pytest.mark.parametrize(\"share\", [True, False, \"col\", \"row\"])\n-def test_nominal_axis_facets(axis, share):\n+@pytest.mark.parametrize(\"limits\", [None, (None, 1.5), (.5, None)])\n+def test_nominal_axis_facets(axis, share, limits):\n \n     other = \"y\" if axis == \"x\" else \"x\"\n     p = (\n@@ -84,12 +85,17 @@\n         .facet(col=[\"u\", \"u\", \"v\", \"v\"])\n         .share(**{axis: share})\n         .add(Dot())\n-        .plot()\n     )\n+    if limits is not None:\n+        p = p.limit(**{axis: limits})\n+    p = p.plot()\n     for ax in p._figure.axes:\n         n = len(getattr(ax, f\"get_{axis}ticks\")())\n-        check_nominal_axis(ax, axis, (-.5, n - .5))\n+        lo, hi = -.5, n - .5\n+        if limits is not None:\n+            lo = lo if limits[0] is None else limits[0]\n+            hi = hi if limits[1] is None else limits[1]\n+        check_nominal_axis(ax, axis, (lo, hi))\n@@ -130,5 +136,5 @@\n def test_both_nominal_axes():\n \n-    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\",]).add(Dot()).plot()._figure.axes\n+    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\"]).add(Dot()).plot()._figure.axes\n     for axis in \"xy\":\n         check_nominal_axis(ax, axis, (-.5, 1.5))\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '70,143p' tests/_core/test_nominal_axis.py && sed -n '1645,1678p' seaborn/_core/plot.py && git --no-pager status --short && ls seaborn/_core/*.orig seaborn/_core/*.rej 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py\n--- a/seaborn/_core/plot.py\n+++ b/seaborn/_core/plot.py\n@@ -1655,9 +1655,10 @@\n                         hi = cast(float, hi) + 0.5\n                     ax.set(**{f\"{axis}lim\": (lo, hi)})\n \n-                if axis == \"y\" and isinstance(self._scales.get(axis_key), Nominal):\n-                    ax.yaxis.set_inverted(True)\n+        for sub in self._subplots:\n+            if isinstance(self._scales.get(sub[\"y\"]), Nominal):\n+                sub[\"ax\"].yaxis.set_inverted(True)\n \n         engine_default = None if p._target is not None else \"tight\"\n         layout_engine = p._layout_spec.get(\"engine\", engine_default)\n         set_layout_engine(self._figure, layout_engine)\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\n--- a/tests/_core/test_nominal_axis.py\n+++ b/tests/_core/test_nominal_axis.py\n@@ -77,20 +77,26 @@\n @pytest.mark.parametrize(\"share\", [True, False, \"col\", \"row\"])\n-def test_nominal_axis_facets(axis, share):\n+@pytest.mark.parametrize(\"limits\", [None, (None, 1.5), (.5, None)])\n+def test_nominal_axis_facets(axis, share, limits):\n \n     other = \"y\" if axis == \"x\" else \"x\"\n     p = (\n         Plot(**{axis: [\"a\", \"b\", \"c\", \"a\"], other: [1, 2, 3, 4]})\n         .facet(col=[\"u\", \"u\", \"v\", \"v\"])\n         .share(**{axis: share})\n         .add(Dot())\n-        .plot()\n     )\n+    if limits is not None:\n+        p = p.limit(**{axis: limits})\n+    p = p.plot()\n     for ax in p._figure.axes:\n         n = len(getattr(ax, f\"get_{axis}ticks\")())\n-        check_nominal_axis(ax, axis, (-.5, n - .5))\n+        lo, hi = -.5, n - .5\n+        if limits is not None:\n+            lo = lo if limits[0] is None else limits[0]\n+            hi = hi if limits[1] is None else limits[1]\n+        check_nominal_axis(ax, axis, (lo, hi))\n \n \n @pytest.mark.parametrize(\"share\", [True, False])\n@@ -130,6 +136,6 @@\n def test_both_nominal_axes():\n \n-    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\",]).add(Dot()).plot()._figure.axes\n+    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\"]).add(Dot()).plot()._figure.axes\n     for axis in \"xy\":\n         check_nominal_axis(ax, axis, (-.5, 1.5))\nPATCH\npytest tests/_core/test_nominal_axis.py tests/_core/test_plot.py tests/_core/test_scales.py tests/test_objects.py -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager diff --check && git --no-pager diff -- seaborn/_core/plot.py seaborn/_core/scales.py && if command -v flake8 >/dev/null 2>&1; then flake8 seaborn/_core/plot.py seaborn/_core/scales.py tests/_core/test_nominal_axis.py; fi && git --no-pager status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "python - <<'PY'\nimport matplotlib\nmatplotlib.use('Agg')\nimport seaborn as sns\nimport seaborn.objects as so\nfor axis in ['x', 'y']:\n    p = so.Plot(**{axis: ['a', 'b', 'c'], 'y' if axis == 'x' else 'x': [1, 2, 3]}).add(so.Dot()).theme(sns.axes_style('whitegrid')).plot()\n    ax = p._figure.axes[0]\n    p._figure.canvas.draw()\n    limits = getattr(ax, f'get_{axis}lim')()\n    grid = [l.get_visible() for l in getattr(ax, f'get_{axis}gridlines')()]\n    inverted = getattr(ax, f'{axis}axis_inverted')()\n    print(axis, 'limits:', limits, 'grid:', grid, 'inverted:', inverted)\n    assert limits == ((-.5, 2.5) if axis == 'x' else (2.5, -.5))\n    assert not any(grid)\n    assert inverted == (axis == 'y')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\n--- a/tests/_core/test_nominal_axis.py\n+++ b/tests/_core/test_nominal_axis.py\n@@ -92,5 +92,5 @@\n     p = p.plot()\n     for ax in p._figure.axes:\n-        n = len(getattr(ax, f\"get_{axis}ticks\")())\n+        n = 3 if share in [True, \"row\"] else 2\n         lo, hi = -.5, n - .5\n         if limits is not None:\n@@ -117,6 +117,7 @@\n     p = Plot().pair(**{axis: [[\"a\", \"b\", \"c\"], [1, 2, 3]]}).plot()\n     nominal, continuous = p._figure.axes\n     check_nominal_axis(nominal, axis, (-.5, 2.5))\n-    assert any(line.get_visible() for line in getattr(continuous, f\"get_{axis}gridlines\")())\n+    gridlines = getattr(continuous, f\"get_{axis}gridlines\")()\n+    assert any(line.get_visible() for line in gridlines)\n     assert not getattr(continuous, f\"{axis}axis_inverted\")()\nPATCH\nflake8 seaborn/_core/plot.py seaborn/_core/scales.py tests/_core/test_nominal_axis.py && pytest tests/_core/test_nominal_axis.py -q && git --no-pager diff --check && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "sed -n '14,34p' seaborn/_core/plot.py && sed -n '190,228p' seaborn/categorical.py && sed -n '1,130p' seaborn/_marks/bar.py && sed -n '1,110p' tests/_marks/test_dot.py && sed -n '1215,1320p' tests/_core/test_plot.py && sed -n '1610,1638p' tests/_core/test_plot.py && command -v apply_patch && grep -nE 'matplotlib|pytest|flake8|mypy' setup.py pyproject.toml Makefile 2>/dev/null",
+  "git --no-pager diff --stat && sed -n '24,31p' seaborn/_core/plot.py && git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py\n--- a/seaborn/_core/plot.py\n+++ b/seaborn/_core/plot.py\n@@ -27,7 +27,7 @@\n from seaborn._stats.base import Stat\n from seaborn._core.data import PlotData\n from seaborn._core.moves import Move\n-from seaborn._core.scales import Scale\n+from seaborn._core.scales import Scale, Nominal\n from seaborn._core.subplots import Subplots\n from seaborn._core.groupby import GroupBy\n from seaborn._core.properties import PROPERTIES, Property\n@@ -1237,7 +1237,6 @@\n             # This only affects us when sharing *paired* axes. This is a novel/niche\n             # behavior, so we will raise rather than hack together a workaround.\n             if axis is not None and Version(mpl.__version__) < Version(\"3.4.0\"):\n-                from seaborn._core.scales import Nominal\n                 paired_axis = axis in p._pair_spec.get(\"structure\", {})\n                 cat_scale = isinstance(scale, Nominal)\n                 ok_dim = {\"x\": \"col\", \"y\": \"row\"}[axis]\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/_core/test_nominal_axis.py\n@@ -0,0 +1,150 @@\n+import matplotlib.pyplot as plt\n+import pytest\n+\n+from seaborn._core.plot import Plot\n+from seaborn._core.scales import Nominal\n+from seaborn._marks.bar import Bar\n+from seaborn._marks.dot import Dot\n+\n+\n+@pytest.fixture(params=[\"x\", \"y\"])\n+def axis(request):\n+    return request.param\n+\n+\n+def check_nominal_axis(ax, axis, limits):\n+\n+    expected = limits if axis == \"x\" else tuple(sorted(limits, reverse=True))\n+    assert getattr(ax, f\"get_{axis}lim\")() == expected\n+    assert not any(line.get_visible() for line in getattr(ax, f\"get_{axis}gridlines\")())\n+    assert getattr(ax, f\"{axis}axis_inverted\")() == (axis == \"y\")\n+\n+\n+@pytest.mark.parametrize(\"mark\", [Dot, Bar])\n+@pytest.mark.parametrize(\"scale_type\", [\"inferred\", \"explicit\", \"numeric\"])\n+def test_nominal_axis_defaults(axis, mark, scale_type):\n+\n+    values = [2, 1, 3] if scale_type == \"numeric\" else [\"b\", \"a\", \"c\"]\n+    other = \"y\" if axis == \"x\" else \"x\"\n+    p = Plot(**{axis: values, other: [1, 2, 3]}).add(mark(), orient=axis)\n+    if scale_type != \"inferred\":\n+        p = p.scale(**{axis: Nominal()})\n+    p = p.theme({\"axes.grid\": True, \"axes.xmargin\": .2, \"axes.ymargin\": .2})\n+    ax, = p.plot()._figure.axes\n+\n+    check_nominal_axis(ax, axis, (-.5, 2.5))\n+    assert any(line.get_visible() for line in getattr(ax, f\"get_{other}gridlines\")())\n+    assert not getattr(ax, f\"{other}axis_inverted\")()\n+\n+\n+@pytest.mark.parametrize(\"mark\", [None, Dot, Bar])\n+def test_nominal_axis_unused_categories(axis, mark):\n+\n+    other = \"y\" if axis == \"x\" else \"x\"\n+    p = Plot(**{axis: [\"a\", \"b\"], other: [1, 2]})\n+    p = p.scale(**{axis: Nominal(order=[\"c\", \"b\", \"a\", \"d\"])})\n+    if mark is not None:\n+        p = p.add(mark(), orient=axis)\n+    ax, = p.plot()._figure.axes\n+\n+    check_nominal_axis(ax, axis, (-.5, 3.5))\n+    labels = getattr(ax, f\"get_{axis}ticklabels\")()\n+    assert [label.get_text() for label in labels] == [\"c\", \"b\", \"a\", \"d\"]\n+\n+\n+def test_nominal_axis_single_category(axis):\n+\n+    ax, = Plot(**{axis: [\"a\"]}).plot()._figure.axes\n+    check_nominal_axis(ax, axis, (-.5, .5))\n+\n+\n+@pytest.mark.parametrize(\"limits,expected\", [\n+    ((None, None), (-.5, 3.5)),\n+    ((None, 2), (-.5, 2)),\n+    ((1, None), (1, 3.5)),\n+    ((.5, 2.5), (.5, 2.5)),\n+    ((\"b\", \"c\"), (.5, 2.5)),\n+    ((None, \"c\"), (-.5, 2.5)),\n+    ((\"b\", None), (.5, 3.5)),\n+])\n+def test_nominal_axis_explicit_limits(axis, limits, expected):\n+\n+    p = Plot(**{axis: [\"a\", \"b\", \"c\", \"d\"]}).limit(**{axis: limits})\n+    ax, = p.plot()._figure.axes\n+    check_nominal_axis(ax, axis, expected)\n+\n+\n+@pytest.mark.parametrize(\"share\", [True, False, \"col\", \"row\"])\n+def test_nominal_axis_facets(axis, share):\n+\n+    other = \"y\" if axis == \"x\" else \"x\"\n+    p = (\n+        Plot(**{axis: [\"a\", \"b\", \"c\", \"a\"], other: [1, 2, 3, 4]})\n+        .facet(col=[\"u\", \"u\", \"v\", \"v\"])\n+        .share(**{axis: share})\n+        .add(Dot())\n+        .plot()\n+    )\n+    for ax in p._figure.axes:\n+        n = len(getattr(ax, f\"get_{axis}ticks\")())\n+        check_nominal_axis(ax, axis, (-.5, n - .5))\n+\n+\n+@pytest.mark.parametrize(\"share\", [True, False])\n+def test_nominal_axis_paired(axis, share):\n+\n+    p = (\n+        Plot()\n+        .pair(**{axis: [[\"a\", \"b\", \"c\"], [\"a\", \"b\", \"c\"]]})\n+        .share(**{axis: share})\n+        .limit(**{f\"{axis}0\": (.5, 1.5)})\n+        .plot()\n+    )\n+    for i, ax in enumerate(p._figure.axes):\n+        limits = (.5, 1.5) if share or i == 0 else (-.5, 2.5)\n+        check_nominal_axis(ax, axis, limits)\n+\n+\n+def test_nominal_axis_preserves_other_paired_scales(axis):\n+\n+    p = Plot().pair(**{axis: [[\"a\", \"b\", \"c\"], [1, 2, 3]]}).plot()\n+    nominal, continuous = p._figure.axes\n+    check_nominal_axis(nominal, axis, (-.5, 2.5))\n+    assert any(line.get_visible() for line in getattr(continuous, f\"get_{axis}gridlines\")())\n+    assert not getattr(continuous, f\"{axis}axis_inverted\")()\n+\n+\n+def test_nominal_axis_existing_axes(axis):\n+\n+    _, ax = plt.subplots()\n+    ax.invert_yaxis()\n+    p = Plot(**{axis: [\"a\", \"b\", \"c\"]}).on(ax)\n+    p.plot()\n+    p.plot()\n+    check_nominal_axis(ax, axis, (-.5, 2.5))\n+\n+\n+def test_both_nominal_axes():\n+\n+    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\",]).add(Dot()).plot()._figure.axes\n+    for axis in \"xy\":\n+        check_nominal_axis(ax, axis, (-.5, 1.5))\nPATCH\npytest tests/_core/test_nominal_axis.py -q",
+  "git apply --recount <<'PATCH'\ndiff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py\n--- a/seaborn/_core/plot.py\n+++ b/seaborn/_core/plot.py\n@@ -1655,9 +1655,10 @@\n                         hi = cast(float, hi) + 0.5\n                     ax.set(**{f\"{axis}lim\": (lo, hi)})\n \n-                if axis == \"y\" and isinstance(self._scales.get(axis_key), Nominal):\n-                    ax.yaxis.set_inverted(True)\n+        for sub in self._subplots:\n+            if isinstance(self._scales.get(sub[\"y\"]), Nominal):\n+                sub[\"ax\"].yaxis.set_inverted(True)\n \n         engine_default = None if p._target is not None else \"tight\"\n         layout_engine = p._layout_spec.get(\"engine\", engine_default)\n         set_layout_engine(self._figure, layout_engine)\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\n--- a/tests/_core/test_nominal_axis.py\n+++ b/tests/_core/test_nominal_axis.py\n@@ -77,20 +77,26 @@\n @pytest.mark.parametrize(\"share\", [True, False, \"col\", \"row\"])\n-def test_nominal_axis_facets(axis, share):\n+@pytest.mark.parametrize(\"limits\", [None, (None, 1.5), (.5, None)])\n+def test_nominal_axis_facets(axis, share, limits):\n \n     other = \"y\" if axis == \"x\" else \"x\"\n     p = (\n         Plot(**{axis: [\"a\", \"b\", \"c\", \"a\"], other: [1, 2, 3, 4]})\n         .facet(col=[\"u\", \"u\", \"v\", \"v\"])\n         .share(**{axis: share})\n         .add(Dot())\n-        .plot()\n     )\n+    if limits is not None:\n+        p = p.limit(**{axis: limits})\n+    p = p.plot()\n     for ax in p._figure.axes:\n         n = len(getattr(ax, f\"get_{axis}ticks\")())\n-        check_nominal_axis(ax, axis, (-.5, n - .5))\n+        lo, hi = -.5, n - .5\n+        if limits is not None:\n+            lo = lo if limits[0] is None else limits[0]\n+            hi = hi if limits[1] is None else limits[1]\n+        check_nominal_axis(ax, axis, (lo, hi))\n \n \n @pytest.mark.parametrize(\"share\", [True, False])\n@@ -130,6 +136,6 @@\n def test_both_nominal_axes():\n \n-    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\",]).add(Dot()).plot()._figure.axes\n+    ax, = Plot(x=[\"a\", \"b\"], y=[\"c\", \"d\"]).add(Dot()).plot()._figure.axes\n     for axis in \"xy\":\n         check_nominal_axis(ax, axis, (-.5, 1.5))\nPATCH\npytest tests/_core/test_nominal_axis.py tests/_core/test_plot.py tests/_core/test_scales.py tests/test_objects.py -q",
+  "git apply --recount <<'PATCH'\ndiff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py\n--- a/tests/_core/test_nominal_axis.py\n+++ b/tests/_core/test_nominal_axis.py\n@@ -92,5 +92,5 @@\n     p = p.plot()\n     for ax in p._figure.axes:\n-        n = len(getattr(ax, f\"get_{axis}ticks\")())\n+        n = 3 if share in [True, \"row\"] else 2\n         lo, hi = -.5, n - .5\n         if limits is not None:\n@@ -117,6 +117,7 @@\n     p = Plot().pair(**{axis: [[\"a\", \"b\", \"c\"], [1, 2, 3]]}).plot()\n     nominal, continuous = p._figure.axes\n     check_nominal_axis(nominal, axis, (-.5, 2.5))\n-    assert any(line.get_visible() for line in getattr(continuous, f\"get_{axis}gridlines\")())\n+    gridlines = getattr(continuous, f\"get_{axis}gridlines\")()\n+    assert any(line.get_visible() for line in gridlines)\n     assert not getattr(continuous, f\"{axis}axis_inverted\")()\nPATCH\nflake8 seaborn/_core/plot.py seaborn/_core/scales.py tests/_core/test_nominal_axis.py && pytest tests/_core/test_nominal_axis.py -q && git --no-pager diff --check && git --no-pager status --short"
+ ],
+ "peeky_commands": [
+  {
+   "command": "python - <<'PY'\nimport matplotlib\nmatplotlib.use('Agg')\nimport seaborn as sns\nimport seaborn.objects as so\nfor axis in ['x', 'y']:\n    p = so.Plot(**{axis: ['a', 'b', 'c'], 'y' if axis == 'x' else 'x': [1, 2, 3]}).add(so.Dot()).theme(sns.axes_style('whitegrid')).plot()\n    ax = p._figure.axes[0]\n    print(axis, 'limits:', getattr(ax, f'get_{axis}lim')(), 'grid:', [l.get_visible() for l in getattr(ax, f'get_{axis}gridlines')()], 'inverted:', getattr(ax, f'{axis}axis_inverted')())\nPY\npeeky describe . --at seaborn/_core/plot.py | tail -100",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "peeky probe . --at seaborn/_core/plot.py:1636 --capture \"axis,axis_key,self._scales,p._limits,ax.xaxis.units._mapping,ax.xaxis._major_tick_kw,ax.yaxis._major_tick_kw,ax._xmargin,ax._ymargin,ax._viewLim._points\" --hits all --run-module pytest -- -q tests/_core/test_plot.py::TestScaling::test_inferred_categorical_converter tests/_core/test_plot.py::TestScaling::test_explicit_categorical_converter",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "describe": 1,
+  "probe": 1
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 6,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 40,
+ "contaminated": false,
+ "final_message": "Fixed nominal axes to use half-category padding, hide grids, and invert y axes while respecting explicit limits and shared subplots. The root cause was missing categorical handling during figure finalization. `peeky probe` at `seaborn/_core/plot.py:1636` confirmed nominal axes retained margins of `0.05` and `gridOn: True`. Added regression tests and updated the scale documentation.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the nominal-axis behavior, inspect it with Peeky, and then fix the scale finalization.\n",
+  "Peeky stopped in `_finalize_figure` and showed `Nominal` scales still using margins of `0.05` with `gridOn: True`. I\u2019ll add categorical defaults there while preserving explicit limits and handling shared y-axis inversion without toggling it.\n",
+  "Fixed nominal axes to use half-category padding, hide grids, and invert y axes while respecting explicit limits and shared subplots. The root cause was missing categorical handling during figure finalization. `peeky probe` at `seaborn/_core/plot.py:1636` confirmed nominal axes retained margins of `0.05` and `gridOn: True`. Added regression tests and updated the scale documentation."
+ ],
+ "assistant_reasoning": [
+  "**Troubleshooting git issues**\n\nI'm noticing that the output from `git diff` is empty, which feels off. It seems like the patch could be malformed since the first hunks aren't applied, and I wonder if the patch writes at the file's end instead of what I expected. So I think I need to import the initial patch correctly. To figure out the situation better, I'll run `git status` to check the state of my repository.",
+  "**Exploring plot overlays**\n\nI\u2019m considering how to handle multiple Plot().on(ax) overlays with categorical scales. It's important to set the lengths and n ticks correctly, perhaps by referencing an existing category dictionary. The default n should be exact. I need to test if calling the existing axes twice ensures the y-axis isn\u2019t toggled. Ensuring accuracy in this step seems crucial to producing a clear and informative visualization. I\u2019ll keep that in mind as I proceed!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 272.2
+}

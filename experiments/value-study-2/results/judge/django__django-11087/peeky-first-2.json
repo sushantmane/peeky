@@ -1,0 +1,7 @@
+{
+ "judge_id": "a063",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was fetching unrelated fields and decoding corrupt text.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmds 12/19 at deletion.py:223 showed sub_objs.query.deferred_loading=(frozenset({}), True) (no deferral) and select_related=False; consistent with the full-column SELECTs and decode errors in cmds 9/11 and the cmd 19 test failure on column 'data'. Related labels 'delete_regress.PlayedWith' (field 'toy') and 'delete_regress.DeletionChild' match the models shown. Cmd 23 at line 240 showed referenced_fields={'key','id','other_key'} and deferred_loading=(that set, False), matching the code in cmd 22 and the DeletionLeaf to_field='key'/'other_key' FKs added in the patch; the test then passed. Nothing contradicted."
+}

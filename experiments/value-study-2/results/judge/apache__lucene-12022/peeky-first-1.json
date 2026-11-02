@@ -1,0 +1,7 @@
+{
+ "judge_id": "a203",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"[debugger command] at `ShapeField.java:383` confirmed the retained line incorrectly had `ab=false` despite `bc=true` and `ca=true`.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 18 probe at ShapeField.java:383 (after lines 379-382 swap b<-c, c<-a, shown in cmd 16): a=(0,0), b=(10,10), c=(0,0), ab=false, bc=true, ca=true; the attached jshell run (cmd 17) printed the decoded triangle '0, 0 10, 10 0, 0 [false,true,true]', the same values (also cmd 10/14). Other Peeky commands were help, errors or NO_STOP. Nothing contradicted."
+}

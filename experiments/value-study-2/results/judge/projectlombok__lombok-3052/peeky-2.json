@@ -1,0 +1,7 @@
+{
+ "judge_id": "a142",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Lombok overwrote initializer source positions, causing collisions in Java 11\u2019s position-keyed generic type cache.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

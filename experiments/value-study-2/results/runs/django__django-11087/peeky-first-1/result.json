@@ -1,0 +1,295 @@
+{
+ "bug": "django__django-11087",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/django__django-11087:peeky-r2",
+ "image_digest": "sha256:0705b45e0fb72f755798760f13638503cb3d2191ae37db63a6695cb40be1795a",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-django__django-11087-peeky-first-1-c56eae",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T11:40:47+00:00",
+ "ended": "2026-11-01T11:46:15+00:00",
+ "wall_seconds": 328.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "test_only_referenced_fields_selected (delete.tests.DeletionTests)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.4,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "9b2aef709fadd07c43b824273bb384945b33617aa88c9fcd977c61892dd44a33",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 3,
+ "patch_files": [
+  "django/db/models/deletion.py",
+  "docs/ref/models/querysets.txt",
+  "docs/releases/3.0.txt"
+ ],
+ "patch_bytes": 3680,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 49
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 18,
+ "ai_credits": 35.1373,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 672852,
+  "output": 14790,
+  "cache_read": 616096,
+  "cache_write": 56702,
+  "reasoning": 6758
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 23,
+ "tool_calls_by_name": {
+  "bash": 23
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed && git --no-pager status --short; fi; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,370p' django/db/models/deletion.py && ls tests/delete && sed -n '1,280p' tests/delete/models.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,300p' tests/delete/tests.py && sed -n '300,720p' tests/delete/tests.py && cat tests/test_sqlite.py && sed -n '1,160p' tests/runtests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/lang/python.md; cd /testbed && rg -n 'foreign_related_fields|select_related|pre_delete|post_delete' docs/ref/models/querysets.txt tests/delete/tests.py django/db/models/fields/related.py && ls docs/releases | tail -12 && peeky probe --help | head -100",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '140,390p' tests/delete/tests.py && cat tests/test_sqlite.py && head -80 tests/runtests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'foreign_related_fields|local_related_fields' django/db/models/fields/related.py; grep -nE 'delete\\(|signal|fetch' docs/ref/models/querysets.txt | tail -35; head -50 django/__init__.py; peeky probe --help | head -90",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -c '\nimport sys\nsys.path.insert(0, \"tests\")\nfrom django.conf import settings\nsettings.configure(INSTALLED_APPS=[\"delete\"], DATABASES={\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}}, SECRET_KEY=\"repro\")\nimport django\ndjango.setup()\nfrom django.db import connection, models\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\x27ed\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    PurgeJob.objects.filter(pk=job.pk).delete()\n'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls django/bin && nl -ba django/db/models/deletion.py | sed -n '210,232p' && PYTHONPATH=/testbed/tests peeky probe . --at django/db/models/deletion.py:223 --capture 'sub_objs.query.deferred_loading,sub_objs.model._meta.label,sub_objs.query.select_related' --run django/bin/django-admin.py --python /opt/venv/bin/python --timeout 60 -- shell --settings=test_sqlite --command '\nfrom django.apps import apps\napps.set_installed_apps([\"delete\"])\nfrom django.db import connection, models\nconnection.settings_dict[\"NAME\"] = \":memory:\"\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\x27ed\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    PurgeJob.objects.filter(pk=job.pk).delete()\n'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && PYTHONPATH=/testbed/tests peeky probe . --at django/db/models/deletion.py:223 --capture 'sub_objs.query.deferred_loading,sub_objs.model._meta.label,sub_objs.query.select_related' --run django/bin/django-admin.py --python /opt/venv/bin/python --timeout 60 -- shell --settings=test_sqlite --command 'exec(\"\"\"\nfrom django.apps import apps\napps.set_installed_apps([\"delete\"])\nfrom django.db import connection, models\nconnection.settings_dict[\"NAME\"] = \":memory:\"\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\\\x27ed\\\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    PurgeJob.objects.filter(pk=job.pk).delete()\n\"\"\", globals())'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '610,646p' django/db/models/fields/related.py && grep -nE 'def (only|add_immediate_loading)|deferred_loading|select_related' django/db/models/query.py django/db/models/sql/query.py | tail -30 && sed -n '2490,2550p' docs/ref/models/querysets.txt && sed -n '1,190p' docs/releases/3.0.txt && sed -n '1,145p' tests/delete/tests.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'to_field|ForeignObject|base_manager_name|select_related|defer|signal|proxy' tests/delete/tests.py tests/delete_regress/models.py tests/delete_regress/tests.py && sed -n '1,240p' tests/delete_regress/models.py && sed -n '1,200p' tests/delete_regress/tests.py && grep -nE '^\\[|flake8|isort|max-line' setup.cfg",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1935,1984p' django/db/models/sql/query.py && sed -n '646,708p' django/db/models/sql/query.py && cat setup.cfg && sed -n '180,220p' docs/releases/3.0.txt && tail -50 tests/delete/tests.py && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/delete/models.py b/tests/delete/models.py\n--- a/tests/delete/models.py\n+++ b/tests/delete/models.py\n@@ -133,3 +133,23 @@\n class RelToBase(models.Model):\n     base = models.ForeignKey(Base, models.DO_NOTHING)\n+\n+\n+class DeleteTop(models.Model):\n+    pass\n+\n+\n+class DeleteMiddle(models.Model):\n+    parent = models.OneToOneField(DeleteTop, models.CASCADE)\n+    key = models.CharField(max_length=20, unique=True)\n+    description = models.TextField()\n+\n+\n+class DeleteBottom(models.Model):\n+    middle = models.ForeignKey(DeleteMiddle, models.CASCADE, to_field='key')\n+    middle_parent = models.ForeignKey(\n+        DeleteMiddle, models.CASCADE, to_field='parent', related_name='+',\n+    )\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,12 +1,14 @@\n from math import ceil\n+from unittest import mock\n \n from django.db import IntegrityError, connection, models\n from django.db.models.deletion import Collector\n from django.db.models.sql.constants import GET_ITERATOR_CHUNK_SIZE\n from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature\n \n from .models import (\n-    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, M, M2MFrom,\n-    M2MTo, MRNull, Parent, R, RChild, S, T, User, create_a, get_default_r,\n+    MR, A, Avatar, Base, Child, DeleteBottom, DeleteMiddle, DeleteTop,\n+    HiddenUser, HiddenUserProfile, M, M2MFrom, M2MTo, MRNull, Parent, R, RChild,\n+    S, T, U, User, create_a, get_default_r,\n )\n@@ -141,3 +143,107 @@\n-class DeletionTests(TestCase):\n+class DeletionFieldTests(TestCase):\n+    def create_objects(self):\n+        top = DeleteTop.objects.create()\n+        middle = DeleteMiddle.objects.create(parent=top, key='key', description='unused')\n+        DeleteBottom.objects.create(middle=middle, middle_parent=middle)\n+        return top, middle\n+\n+    def test_only_required_fields(self):\n+        top, middle = self.create_objects()\n+        with self.assertNumQueries(5) as ctx:\n+            deleted = DeleteTop.objects.filter(pk=top.pk).delete()\n+        # The initial queryset adds a query to the instance deletion path.\n+        quote = connection.ops.quote_name\n+        table = quote(DeleteMiddle._meta.db_table)\n+        columns = ', '.join('%s.%s' % (table, quote(name)) for name in ('id', 'parent_id', 'key'))\n+        self.assertEqual(ctx.captured_queries[1]['sql'].split(' FROM ')[0], 'SELECT ' + columns)\n+        self.assertEqual(deleted, (3, {'delete.DeleteTop': 1, 'delete.DeleteMiddle': 1, 'delete.DeleteBottom': 1}))\n+        self.assertFalse(DeleteTop.objects.exists())\n+        self.assertFalse(DeleteMiddle.objects.exists())\n+        self.assertFalse(DeleteBottom.objects.exists())\n+\n+    def test_only_primary_key(self):\n+        s = S.objects.create(r=R.objects.create())\n+        t = T.objects.create(s=s)\n+        U.objects.create(t=t)\n+        with self.assertNumQueries(4) as ctx:\n+            self.assertEqual(s.delete(), (3, {'delete.S': 1, 'delete.T': 1, 'delete.U': 1}))\n+        quote = connection.ops.quote_name\n+        self.assertEqual(\n+            ctx.captured_queries[0]['sql'].split(' FROM ')[0],\n+            'SELECT %s.%s' % (quote(T._meta.db_table), quote('id')),\n+        )\n+\n+    def test_field_update_only_primary_key(self):\n+        a = create_a('setnull')\n+        collector = Collector(using='default')\n+        collector.collect([a.setnull])\n+        field = A._meta.get_field('setnull')\n+        instances = collector.field_updates[A][field, None]\n+        self.assertEqual(len(instances), 1)\n+        instance = next(iter(instances))\n+        self.assertEqual(\n+            instance.get_deferred_fields(),\n+            {f.attname for f in A._meta.concrete_fields if not f.primary_key},\n+        )\n+        collector.delete()\n+        a.refresh_from_db()\n+        self.assertIsNone(a.setnull_id)\n+\n+    def test_unused_field_conversion(self):\n+        top, middle = self.create_objects()\n+        field = DeleteMiddle._meta.get_field('description')\n+        error = UnicodeDecodeError('utf-8', b'\\xed', 0, 1, 'invalid continuation byte')\n+        with mock.patch.object(field, 'from_db_value', side_effect=error, create=True) as converter:\n+            top.delete()\n+        converter.assert_not_called()\n+        self.assertFalse(DeleteMiddle.objects.exists())\n+        self.assertFalse(DeleteBottom.objects.exists())\n+\n+    def test_signal_fields(self):\n+        for signal in (models.signals.pre_delete, models.signals.post_delete):\n+            for sender in (None, DeleteMiddle):\n+                with self.subTest(signal=signal, sender=sender):\n+                    top, middle = self.create_objects()\n+                    seen = []\n+\n+                    def receiver(instance, **kwargs):\n+                        if isinstance(instance, DeleteMiddle):\n+                            self.assertEqual(instance.get_deferred_fields(), set())\n+                            self.assertEqual(instance.description, 'unused')\n+                            seen.append(instance.pk)\n+\n+                    signal.connect(receiver, sender=sender)\n+                    try:\n+                        with self.assertNumQueries(6 if sender is None else 5):\n+                            top.delete()\n+                    finally:\n+                        signal.disconnect(receiver, sender=sender)\n+                    self.assertEqual(seen, [middle.pk])\n+\n+    def test_select_related(self):\n+        top, middle = self.create_objects()\n+        queryset = DeleteMiddle.objects.select_related('parent')\n+        with mock.patch.object(DeleteMiddle._base_manager, 'get_queryset', return_value=queryset):\n+            collector = Collector(using='default')\n+            with self.assertNumQueries(1):\n+                collector.collect([top])\n+            instance = next(iter(collector.data[DeleteMiddle]))\n+            self.assertEqual(instance.get_deferred_fields(), set())\n+            with self.assertNumQueries(0):\n+                self.assertEqual(instance.parent, top)\n+            collector.delete()\n+        self.assertFalse(DeleteMiddle.objects.exists())\n+        self.assertFalse(DeleteBottom.objects.exists())\n+\n+\n+class DeletionTests(TestCase):\n \n     def test_m2m(self):\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldTests --verbosity 1",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -114,3 +114,9 @@\n-    def can_fast_delete(self, objs, from_field=None):\n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n+    def can_fast_delete(self, objs, from_field=None):\n@@ -136,5 +142,3 @@\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n@@ -220,5 +224,17 @@\n                     sub_objs = self.related_objects(related, batch)\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n+                        continue\n+                    related_model = related.related_model\n+                    # Defer non-referenced fields unless they might be needed\n+                    # by signal receivers or a select_related() query.\n+                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                        referenced_fields = {\n+                            f.attname\n+                            for rel in get_candidate_relations_to_delete(related_model._meta)\n+                            for f in rel.field.foreign_related_fields\n+                        }\n+                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)\n+                    if sub_objs:\n                         field.remote_field.on_delete(self, field, sub_objs, self.using)\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -150,7 +150,6 @@\n     def test_only_required_fields(self):\n-        top, middle = self.create_objects()\n-        with self.assertNumQueries(5) as ctx:\n+        top, _ = self.create_objects()\n+        with self.assertNumQueries(6) as ctx:\n             deleted = DeleteTop.objects.filter(pk=top.pk).delete()\n-        # The initial queryset adds a query to the instance deletion path.\n         quote = connection.ops.quote_name\n@@ -193,3 +192,3 @@\n     def test_unused_field_conversion(self):\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\n@@ -223,3 +222,3 @@\n     def test_select_related(self):\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\ndiff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt\n--- a/docs/ref/models/querysets.txt\n+++ b/docs/ref/models/querysets.txt\n@@ -2531,4 +2531,6 @@\n Django needs to fetch objects into memory to send signals and handle cascades.\n+When handling cascades without signal listeners, Django may defer fields that\n+aren't needed for deletion.\n However, if there are no cascades and no signals, then Django may take a\n fast-path and delete objects without fetching into memory. For large\n deletes this can result in significantly reduced memory usage. The amount of\n diff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt\n--- a/docs/releases/3.0.txt\n+++ b/docs/releases/3.0.txt\n@@ -194,3 +194,7 @@\n   treatment of nonexistent and ambiguous datetimes.\n \n+* :meth:`.QuerySet.delete` now defers fields that aren't needed for deletion when\n+  fetching related objects, unless signal listeners or ``select_related()``\n+  require them.\n+\n Requests and Responses\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress --verbosity 1",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount --unidiff-zero <<'PATCH'\ndiff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -118,1 +118,9 @@\n-    def can_fast_delete(self, objs, from_field=None):\n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n+    def can_fast_delete(self, objs, from_field=None):\n@@ -139,4 +146,2 @@\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n@@ -220,5 +225,17 @@\n                     sub_objs = self.related_objects(related, batch)\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n+                        continue\n+                    related_model = related.related_model\n+                    # Defer non-referenced fields unless they might be needed\n+                    # by signal receivers or a select_related() query.\n+                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                        referenced_fields = {\n+                            f.attname\n+                            for rel in get_candidate_relations_to_delete(related_model._meta)\n+                            for f in rel.field.foreign_related_fields\n+                        }\n+                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)\n+                    if sub_objs:\n                         field.remote_field.on_delete(self, field, sub_objs, self.using)\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -151,5 +151,4 @@\n-        top, middle = self.create_objects()\n-        with self.assertNumQueries(5) as ctx:\n+        top, _ = self.create_objects()\n+        with self.assertNumQueries(6) as ctx:\n             deleted = DeleteTop.objects.filter(pk=top.pk).delete()\n-        # The initial queryset adds a query to the instance deletion path.\n         quote = connection.ops.quote_name\n@@ -194,1 +193,1 @@\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\n@@ -224,1 +223,1 @@\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\ndiff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt\n--- a/docs/ref/models/querysets.txt\n+++ b/docs/ref/models/querysets.txt\n@@ -2531,2 +2531,4 @@\n Django needs to fetch objects into memory to send signals and handle cascades.\n+When handling cascades without signal listeners, Django may defer fields that\n+aren't needed for deletion.\n However, if there are no cascades and no signals, then Django may take a\n diff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt\n--- a/docs/releases/3.0.txt\n+++ b/docs/releases/3.0.txt\n@@ -198,1 +198,5 @@\n-Requests and Responses\n+* :meth:`.QuerySet.delete` now defers fields that aren't needed for deletion when\n+  fetching related objects, unless signal listeners or ``select_related()``\n+  require them.\n+\n+Requests and Responses\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount --unidiff-zero <<'PATCH'\ndiff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -118,1 +118,9 @@\n-    def can_fast_delete(self, objs, from_field=None):\n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n+    def can_fast_delete(self, objs, from_field=None):\n@@ -139,4 +146,2 @@\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n@@ -220,5 +225,17 @@\n                     sub_objs = self.related_objects(related, batch)\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n+                        continue\n+                    related_model = related.related_model\n+                    # Defer non-referenced fields unless they might be needed\n+                    # by signal receivers or a select_related() query.\n+                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                        referenced_fields = {\n+                            f.attname\n+                            for rel in get_candidate_relations_to_delete(related_model._meta)\n+                            for f in rel.field.foreign_related_fields\n+                        }\n+                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)\n+                    if sub_objs:\n                         field.remote_field.on_delete(self, field, sub_objs, self.using)\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -151,5 +151,4 @@\n-        top, middle = self.create_objects()\n-        with self.assertNumQueries(5) as ctx:\n+        top, _ = self.create_objects()\n+        with self.assertNumQueries(6) as ctx:\n             deleted = DeleteTop.objects.filter(pk=top.pk).delete()\n-        # The initial queryset adds a query to the instance deletion path.\n         quote = connection.ops.quote_name\n@@ -194,1 +193,1 @@\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\n@@ -224,1 +223,1 @@\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\ndiff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt\n--- a/docs/ref/models/querysets.txt\n+++ b/docs/ref/models/querysets.txt\n@@ -2531,2 +2531,4 @@\n Django needs to fetch objects into memory to send signals and handle cascades.\n+When handling cascades without signal listeners, Django may defer fields that\n+aren't needed for deletion.\n However, if there are no cascades and no signals, then Django may take a\ndiff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt\n--- a/docs/releases/3.0.txt\n+++ b/docs/releases/3.0.txt\n@@ -198,1 +198,5 @@\n-Requests and Responses\n+* :meth:`.QuerySet.delete` now defers fields that aren't needed for deletion when\n+  fetching related objects, unless signal listeners or ``select_related()``\n+  require them.\n+\n+Requests and Responses\nPATCH\n",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress --verbosity 1",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && sed -n '108,161p' django/db/models/deletion.py && sed -n '218,255p' django/db/models/deletion.py && sed -n '141,242p' tests/delete/tests.py && command -v flake8; command -v isort",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && nl -ba django/db/models/deletion.py | sed -n '225,246p' && sed -n '295,332p' django/db/models/fields/related_descriptors.py && git --no-pager diff --check && git --no-pager status --short && ls tests/foreign_object tests/model_inheritance tests/generic_relations_regress | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 foreign_object model_inheritance generic_relations_regress --verbosity 1",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && PYTHONPATH=/testbed/tests peeky probe . --at django/db/models/deletion.py:239 --capture 'sub_objs.query.deferred_loading,sub_objs.model._meta.label,sub_objs.query.select_related' --run django/bin/django-admin.py --python /opt/venv/bin/python --timeout 60 -- shell --settings=test_sqlite --command 'exec(\"\"\"\nfrom django.apps import apps\napps.set_installed_apps([\"delete\"])\nfrom django.db import connection, models\nconnection.settings_dict[\"NAME\"] = \":memory:\"\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\\\x27ed\\\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    deleted = PurgeJob.objects.filter(pk=job.pk).delete()\nassert deleted == (3, {\"delete.PurgeJob\": 1, \"delete.PurgeLog\": 1, \"delete.PurgeError\": 1}), deleted\nassert not any(model.objects.exists() for model in (PurgeJob, PurgeLog, PurgeError))\nprint(\"Corrupt-text cascade succeeded:\", deleted)\n\"\"\", globals())'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff -- django/db/models/deletion.py docs/ref/models/querysets.txt docs/releases/3.0.txt tests/delete/models.py && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/delete/models.py b/tests/delete/models.py\n--- a/tests/delete/models.py\n+++ b/tests/delete/models.py\n@@ -133,3 +133,23 @@\n class RelToBase(models.Model):\n     base = models.ForeignKey(Base, models.DO_NOTHING)\n+\n+\n+class DeleteTop(models.Model):\n+    pass\n+\n+\n+class DeleteMiddle(models.Model):\n+    parent = models.OneToOneField(DeleteTop, models.CASCADE)\n+    key = models.CharField(max_length=20, unique=True)\n+    description = models.TextField()\n+\n+\n+class DeleteBottom(models.Model):\n+    middle = models.ForeignKey(DeleteMiddle, models.CASCADE, to_field='key')\n+    middle_parent = models.ForeignKey(\n+        DeleteMiddle, models.CASCADE, to_field='parent', related_name='+',\n+    )\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -1,12 +1,14 @@\n from math import ceil\n+from unittest import mock\n \n from django.db import IntegrityError, connection, models\n from django.db.models.deletion import Collector\n from django.db.models.sql.constants import GET_ITERATOR_CHUNK_SIZE\n from django.test import TestCase, skipIfDBFeature, skipUnlessDBFeature\n \n from .models import (\n-    MR, A, Avatar, Base, Child, HiddenUser, HiddenUserProfile, M, M2MFrom,\n-    M2MTo, MRNull, Parent, R, RChild, S, T, User, create_a, get_default_r,\n+    MR, A, Avatar, Base, Child, DeleteBottom, DeleteMiddle, DeleteTop,\n+    HiddenUser, HiddenUserProfile, M, M2MFrom, M2MTo, MRNull, Parent, R, RChild,\n+    S, T, U, User, create_a, get_default_r,\n )\n@@ -141,3 +143,107 @@\n-class DeletionTests(TestCase):\n+class DeletionFieldTests(TestCase):\n+    def create_objects(self):\n+        top = DeleteTop.objects.create()\n+        middle = DeleteMiddle.objects.create(parent=top, key='key', description='unused')\n+        DeleteBottom.objects.create(middle=middle, middle_parent=middle)\n+        return top, middle\n+\n+    def test_only_required_fields(self):\n+        top, middle = self.create_objects()\n+        with self.assertNumQueries(5) as ctx:\n+            deleted = DeleteTop.objects.filter(pk=top.pk).delete()\n+        # The initial queryset adds a query to the instance deletion path.\n+        quote = connection.ops.quote_name\n+        table = quote(DeleteMiddle._meta.db_table)\n+        columns = ', '.join('%s.%s' % (table, quote(name)) for name in ('id', 'parent_id', 'key'))\n+        self.assertEqual(ctx.captured_queries[1]['sql'].split(' FROM ')[0], 'SELECT ' + columns)\n+        self.assertEqual(deleted, (3, {'delete.DeleteTop': 1, 'delete.DeleteMiddle': 1, 'delete.DeleteBottom': 1}))\n+        self.assertFalse(DeleteTop.objects.exists())\n+        self.assertFalse(DeleteMiddle.objects.exists())\n+        self.assertFalse(DeleteBottom.objects.exists())\n+\n+    def test_only_primary_key(self):\n+        s = S.objects.create(r=R.objects.create())\n+        t = T.objects.create(s=s)\n+        U.objects.create(t=t)\n+        with self.assertNumQueries(4) as ctx:\n+            self.assertEqual(s.delete(), (3, {'delete.S': 1, 'delete.T': 1, 'delete.U': 1}))\n+        quote = connection.ops.quote_name\n+        self.assertEqual(\n+            ctx.captured_queries[0]['sql'].split(' FROM ')[0],\n+            'SELECT %s.%s' % (quote(T._meta.db_table), quote('id')),\n+        )\n+\n+    def test_field_update_only_primary_key(self):\n+        a = create_a('setnull')\n+        collector = Collector(using='default')\n+        collector.collect([a.setnull])\n+        field = A._meta.get_field('setnull')\n+        instances = collector.field_updates[A][field, None]\n+        self.assertEqual(len(instances), 1)\n+        instance = next(iter(instances))\n+        self.assertEqual(\n+            instance.get_deferred_fields(),\n+            {f.attname for f in A._meta.concrete_fields if not f.primary_key},\n+        )\n+        collector.delete()\n+        a.refresh_from_db()\n+        self.assertIsNone(a.setnull_id)\n+\n+    def test_unused_field_conversion(self):\n+        top, middle = self.create_objects()\n+        field = DeleteMiddle._meta.get_field('description')\n+        error = UnicodeDecodeError('utf-8', b'\\xed', 0, 1, 'invalid continuation byte')\n+        with mock.patch.object(field, 'from_db_value', side_effect=error, create=True) as converter:\n+            top.delete()\n+        converter.assert_not_called()\n+        self.assertFalse(DeleteMiddle.objects.exists())\n+        self.assertFalse(DeleteBottom.objects.exists())\n+\n+    def test_signal_fields(self):\n+        for signal in (models.signals.pre_delete, models.signals.post_delete):\n+            for sender in (None, DeleteMiddle):\n+                with self.subTest(signal=signal, sender=sender):\n+                    top, middle = self.create_objects()\n+                    seen = []\n+\n+                    def receiver(instance, **kwargs):\n+                        if isinstance(instance, DeleteMiddle):\n+                            self.assertEqual(instance.get_deferred_fields(), set())\n+                            self.assertEqual(instance.description, 'unused')\n+                            seen.append(instance.pk)\n+\n+                    signal.connect(receiver, sender=sender)\n+                    try:\n+                        with self.assertNumQueries(6 if sender is None else 5):\n+                            top.delete()\n+                    finally:\n+                        signal.disconnect(receiver, sender=sender)\n+                    self.assertEqual(seen, [middle.pk])\n+\n+    def test_select_related(self):\n+        top, middle = self.create_objects()\n+        queryset = DeleteMiddle.objects.select_related('parent')\n+        with mock.patch.object(DeleteMiddle._base_manager, 'get_queryset', return_value=queryset):\n+            collector = Collector(using='default')\n+            with self.assertNumQueries(1):\n+                collector.collect([top])\n+            instance = next(iter(collector.data[DeleteMiddle]))\n+            self.assertEqual(instance.get_deferred_fields(), set())\n+            with self.assertNumQueries(0):\n+                self.assertEqual(instance.parent, top)\n+            collector.delete()\n+        self.assertFalse(DeleteMiddle.objects.exists())\n+        self.assertFalse(DeleteBottom.objects.exists())\n+\n+\n+class DeletionTests(TestCase):\n \n     def test_m2m(self):\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete.tests.DeletionFieldTests --verbosity 1",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/django/db/models/deletion.py b/django/db/models/deletion.py\n--- a/django/db/models/deletion.py\n+++ b/django/db/models/deletion.py\n@@ -114,3 +114,9 @@\n-    def can_fast_delete(self, objs, from_field=None):\n+    def _has_signal_listeners(self, model):\n+        return (\n+            signals.pre_delete.has_listeners(model) or\n+            signals.post_delete.has_listeners(model) or\n+            signals.m2m_changed.has_listeners(model)\n+        )\n+\n+    def can_fast_delete(self, objs, from_field=None):\n@@ -136,5 +142,3 @@\n-        if (signals.pre_delete.has_listeners(model) or\n-                signals.post_delete.has_listeners(model) or\n-                signals.m2m_changed.has_listeners(model)):\n+        if self._has_signal_listeners(model):\n             return False\n@@ -220,5 +224,17 @@\n                     sub_objs = self.related_objects(related, batch)\n                     if self.can_fast_delete(sub_objs, from_field=field):\n                         self.fast_deletes.append(sub_objs)\n-                    elif sub_objs:\n+                        continue\n+                    related_model = related.related_model\n+                    # Defer non-referenced fields unless they might be needed\n+                    # by signal receivers or a select_related() query.\n+                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):\n+                        referenced_fields = {\n+                            f.attname\n+                            for rel in get_candidate_relations_to_delete(related_model._meta)\n+                            for f in rel.field.foreign_related_fields\n+                        }\n+                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)\n+                    if sub_objs:\n                         field.remote_field.on_delete(self, field, sub_objs, self.using)\ndiff --git a/tests/delete/tests.py b/tests/delete/tests.py\n--- a/tests/delete/tests.py\n+++ b/tests/delete/tests.py\n@@ -150,7 +150,6 @@\n     def test_only_required_fields(self):\n-        top, middle = self.create_objects()\n-        with self.assertNumQueries(5) as ctx:\n+        top, _ = self.create_objects()\n+        with self.assertNumQueries(6) as ctx:\n             deleted = DeleteTop.objects.filter(pk=top.pk).delete()\n-        # The initial queryset adds a query to the instance deletion path.\n         quote = connection.ops.quote_name\n@@ -193,3 +192,3 @@\n     def test_unused_field_conversion(self):\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\n@@ -223,3 +222,3 @@\n     def test_select_related(self):\n-        top, middle = self.create_objects()\n+        top, _ = self.create_objects()\ndiff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt\n--- a/docs/ref/models/querysets.txt\n+++ b/docs/ref/models/querysets.txt\n@@ -2531,4 +2531,6 @@\n Django needs to fetch objects into memory to send signals and handle cascades.\n+When handling cascades without signal listeners, Django may defer fields that\n+aren't needed for deletion.\n However, if there are no cascades and no signals, then Django may take a\n fast-path and delete objects without fetching into memory. For large\n deletes this can result in significantly reduced memory usage. The amount of\n diff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt\n--- a/docs/releases/3.0.txt\n+++ b/docs/releases/3.0.txt\n@@ -194,3 +194,7 @@\n   treatment of nonexistent and ambiguous datetimes.\n \n+* :meth:`.QuerySet.delete` now defers fields that aren't needed for deletion when\n+  fetching related objects, unless signal listeners or ``select_related()``\n+  require them.\n+\n Requests and Responses\nPATCH\n./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress --verbosity 1",
+  "cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 delete delete_regress --verbosity 1",
+  "cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 foreign_object model_inheritance generic_relations_regress --verbosity 1"
+ ],
+ "peeky_commands": [
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/lang/python.md; cd /testbed && rg -n 'foreign_related_fields|select_related|pre_delete|post_delete' docs/ref/models/querysets.txt tests/delete/tests.py django/db/models/fields/related.py && ls docs/releases | tail -12 && peeky probe --help | head -100",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 127
+  },
+  {
+   "command": "cd /testbed && grep -nE 'foreign_related_fields|local_related_fields' django/db/models/fields/related.py; grep -nE 'delete\\(|signal|fetch' docs/ref/models/querysets.txt | tail -35; head -50 django/__init__.py; peeky probe --help | head -90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && ls django/bin && nl -ba django/db/models/deletion.py | sed -n '210,232p' && PYTHONPATH=/testbed/tests peeky probe . --at django/db/models/deletion.py:223 --capture 'sub_objs.query.deferred_loading,sub_objs.model._meta.label,sub_objs.query.select_related' --run django/bin/django-admin.py --python /opt/venv/bin/python --timeout 60 -- shell --settings=test_sqlite --command '\nfrom django.apps import apps\napps.set_installed_apps([\"delete\"])\nfrom django.db import connection, models\nconnection.settings_dict[\"NAME\"] = \":memory:\"\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\x27ed\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    PurgeJob.objects.filter(pk=job.pk).delete()\n'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && PYTHONPATH=/testbed/tests peeky probe . --at django/db/models/deletion.py:223 --capture 'sub_objs.query.deferred_loading,sub_objs.model._meta.label,sub_objs.query.select_related' --run django/bin/django-admin.py --python /opt/venv/bin/python --timeout 60 -- shell --settings=test_sqlite --command 'exec(\"\"\"\nfrom django.apps import apps\napps.set_installed_apps([\"delete\"])\nfrom django.db import connection, models\nconnection.settings_dict[\"NAME\"] = \":memory:\"\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\\\x27ed\\\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    PurgeJob.objects.filter(pk=job.pk).delete()\n\"\"\", globals())'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && PYTHONPATH=/testbed/tests peeky probe . --at django/db/models/deletion.py:239 --capture 'sub_objs.query.deferred_loading,sub_objs.model._meta.label,sub_objs.query.select_related' --run django/bin/django-admin.py --python /opt/venv/bin/python --timeout 60 -- shell --settings=test_sqlite --command 'exec(\"\"\"\nfrom django.apps import apps\napps.set_installed_apps([\"delete\"])\nfrom django.db import connection, models\nconnection.settings_dict[\"NAME\"] = \":memory:\"\nclass PurgeJob(models.Model):\n    class Meta:\n        app_label = \"delete\"\nclass PurgeLog(models.Model):\n    job = models.ForeignKey(PurgeJob, models.CASCADE)\n    line = models.TextField()\n    class Meta:\n        app_label = \"delete\"\nclass PurgeError(models.Model):\n    log = models.ForeignKey(PurgeLog, models.CASCADE)\n    class Meta:\n        app_label = \"delete\"\nwith connection.schema_editor() as editor:\n    for model in (PurgeJob, PurgeLog, PurgeError):\n        editor.create_model(model)\njob = PurgeJob.objects.create()\nlog = PurgeLog.objects.create(job=job, line=\"valid\")\nPurgeError.objects.create(log=log)\nwith connection.cursor() as cursor:\n    cursor.execute(\"UPDATE delete_purgelog SET line = CAST(X\\\\x27ed\\\\x27 AS TEXT)\")\nconnection.connection.text_factory = lambda value: value.decode(\"utf-8\")\ndef show_query(execute, sql, params, many, context):\n    print(sql, params, flush=True)\n    return execute(sql, params, many, context)\nwith connection.execute_wrapper(show_query):\n    deleted = PurgeJob.objects.filter(pk=job.pk).delete()\nassert deleted == (3, {\"delete.PurgeJob\": 1, \"delete.PurgeLog\": 1, \"delete.PurgeError\": 1}), deleted\nassert not any(model.objects.exists() for model in (PurgeJob, PurgeLog, PurgeError))\nprint(\"Corrupt-text cascade succeeded:\", deleted)\n\"\"\", globals())'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 5
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 9,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 11,
+ "contaminated": false,
+ "final_message": "Fixed the collector fetching every field from cascaded objects, which unnecessarily decoded corrupt text. Related queries now load only primary and cascade-reference keys, preserving full loading for signals and `select_related()`. Peeky\u2019s probe at `deletion.py:223` showed no deferred fields before the fix; afterward it showed `({'id'}, False)`, and the corrupt-text deletion succeeded.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the unnecessary field fetch, inspect it with Peeky, then update the deletion collector while preserving signal behavior.\n",
+  "The corrupt-text reproduction fails because the cascade query fetches `line`. Peeky stopped just before that fetch and showed no deferred fields (`(frozenset({}), True)`). I\u2019ll limit related-object queries to cascade keys unless signals or `select_related()` require full instances.\n",
+  "The collector now fetches only primary and downstream relation keys. The regression coverage also confirms that signal receivers and `select_related()` still get full instances. I\u2019ll rerun the original corrupt-text case under Peeky to verify the failing field is no longer fetched.\n",
+  "Fixed the collector fetching every field from cascaded objects, which unnecessarily decoded corrupt text. Related queries now load only primary and cascade-reference keys, preserving full loading for signals and `select_related()`. Peeky\u2019s probe at `deletion.py:223` showed no deferred fields before the fix; afterward it showed `({'id'}, False)`, and the corrupt-text deletion succeeded."
+ ],
+ "assistant_reasoning": [
+  "**Exploring Django configuration**\n\nI'm trying to figure out how to configure Django with a shell command. It seems that when using `django-admin` with `--settings=test_sqlite`, it initializes apps as empty. Then, the shell reads commands but might not configure correctly, especially around `apps.set_installed_apps([\"delete\"])`. It\u2019s easier to run existing tests with `tests/runtests.py --settings=test_sqlite` since that doesn't require script arguments. I wonder about using the Django shell for multi-line commands and handling the SQLite settings with an automatic in-memory database.",
+  "**Considering code structure**\n\nI'm contemplating how to define `expected_columns` using a list comprehension for SQL columns, which includes the `id` and `key` fields. I think this will allow me to structure the `SELECT` statement efficiently. It seems I should also check for any unused imports in the existing file to clean it up. Additionally, I need to think about possibly creating a new test class called `DeletionFieldTests` and what test data I should set up for it.",
+  "**Clarifying Django update notes**\n\nI need to ensure the release notes for Django reflect the update accurately. It looks like when handling cascades without signal listeners, Django fetches only the fields needed for deletion. However, there's a caveat: using `select_related` can add extra fields, which means it may defer fields that aren\u2019t necessary for deletion. It\u2019s important to convey this information clearly in one precise sentence for the release notes.",
+  "**Rethinking code adjustments**\n\nI'm reflecting on an issue regarding accidentally copying a leading \"diff\" in my code, which is causing problems. It seems that its presence is affecting the context and the subsequent lines. I realize that it's crucial to ensure everything is atomic and that I need to avoid repeating mistakes like including a leading \"diff.\" So, I\u2019ll focus on cleaning up that part to ensure everything runs smoothly moving forward.",
+  "**Reviewing final changes**\n\nI\u2019m looking at our final \u201ccollector now loads only related objects,\u201d where it's important to specify only those, not the root. The fix we made ensures related rows are loaded correctly. I could probably wrap this up, but I need to assess the risk around root signal fetch loading, making sure all tests pass. It\u2019s essential to verify the original model order and confirm the method syntax with `.QuerySet.delete` is correct. I\u2019ll run a final check with git diff for any potential issues in the source."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 329.1
+}

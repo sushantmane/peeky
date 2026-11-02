@@ -1,0 +1,7 @@
+{
+ "judge_id": "a002",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed: removing the last item cancelled the timer without waking the pending poller.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Cmd 8 was `peeky build`; cmd 10 refused (INVALID_BREAKPOINT). Cmd 12 captured `queue` only as an opaque struct summary `Spawn<DelayQueue<&str>> @ 0xfffff7d0dc68` (type + address, not checkable); cmds 13/14 fields were `<not found>`/`<cannot expand 'pointer'>` texts. No checkable value."
+}

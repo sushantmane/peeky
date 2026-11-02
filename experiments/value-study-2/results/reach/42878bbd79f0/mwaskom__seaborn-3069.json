@@ -1,0 +1,184 @@
+{
+ "bug": "mwaskom__seaborn-3069",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/mwaskom__seaborn-3069:peeky-r2",
+ "image_id": "sha256:7224c3683352750bace14166ae3f8580001feda121c62b825563a762aae15fb1",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:34:33+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the first insertion in _finalize_figure",
+   "at": "seaborn/_core/plot.py:1636",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at seaborn/_core/plot.py:1636 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks",
+     "exit": 0,
+     "seconds": 1.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/seaborn/_core/plot.py:1636",
+    "function": "_finalize_figure",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "ax",
+      "value": "<Axes: >"
+     },
+     {
+      "name": "axis",
+      "value": "'x'"
+     },
+     {
+      "name": "axis_key",
+      "value": "'x'"
+     },
+     {
+      "name": "p",
+      "value": "<seaborn._core.plot.Plot object at 0xffff0a9665d0>"
+     },
+     {
+      "name": "self",
+      "value": "<seaborn._core.plot.Plotter object at 0xffff0a96e150>"
+     },
+     {
+      "name": "sub",
+      "value": "{'ax': <Axes: >, 'left': True, 'right': True, 'top': True, 'bottom': True, 'row': None, 'col': None, 'x': 'x', 'y': 'y'}"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the last insertion in _finalize_figure",
+   "at": "seaborn/_core/plot.py:1647",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at seaborn/_core/plot.py:1647 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks",
+     "exit": 0,
+     "seconds": 1.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/seaborn/_core/plot.py:1647",
+    "function": "_finalize_figure",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "ax",
+      "value": "<Axes: >"
+     },
+     {
+      "name": "axis",
+      "value": "'y'"
+     },
+     {
+      "name": "axis_key",
+      "value": "'y'"
+     },
+     {
+      "name": "p",
+      "value": "<seaborn._core.plot.Plot object at 0xffff361e5ad0>"
+     },
+     {
+      "name": "self",
+      "value": "<seaborn._core.plot.Plotter object at 0xffff361f1650>"
+     },
+     {
+      "name": "sub",
+      "value": "{'ax': <Axes: >, 'left': True, 'right': True, 'top': True, 'bottom': True, 'row': None, 'col': None, 'x': 'x', 'y': 'y'}"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/_core/test_plot.py:652",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/_core/test_plot.py:652 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks",
+     "exit": 0,
+     "seconds": 1.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/_core/test_plot.py:652",
+    "function": "test_nominal_x_axis_tweaks",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "ax1",
+      "value": "<Axes: >"
+     },
+     {
+      "name": "p",
+      "value": "<seaborn._core.plot.Plot object at 0xffff1968f810>"
+     },
+     {
+      "name": "self",
+      "value": "<tests._core.test_plot.TestScaling object at 0xffff192e7490>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:34:39+00:00"
+}

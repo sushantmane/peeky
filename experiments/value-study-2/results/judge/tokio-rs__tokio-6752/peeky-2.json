@@ -1,0 +1,7 @@
+{
+ "judge_id": "a196",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Removing the last item drops the timer without waking the stored poller.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

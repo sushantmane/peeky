@@ -1,0 +1,13 @@
+diff --git a/src/acl.c b/src/acl.c
+index d01f2dc93..2da3073ed 100644
+--- a/src/acl.c
++++ b/src/acl.c
+@@ -2378,6 +2378,8 @@ static sds ACLLoadFromFile(const char *filename) {
+         while ((ln = listNext(&li)) != NULL) {
+             client *c = listNodeValue(ln);
+             user *original = c->user;
++            /* Clients without an associated user are not subject to ACL rules. */
++            if (original == NULL) continue;
+             list *channels = NULL;
+             user *new_user = ACLGetUserByName(c->user->name, sdslen(c->user->name));
+             if (new_user && user_channels) {

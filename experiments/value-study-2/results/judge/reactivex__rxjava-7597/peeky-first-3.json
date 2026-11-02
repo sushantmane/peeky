@@ -1,0 +1,7 @@
+{
+ "judge_id": "a137",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: cancellation could skip queue initialization, while `scan` still emitted its seed.",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 21 probe at ObservableSwitchMap.java:354 (`queue.offer(t)`, removed in the cmd 26 diff) showed this.queue = null, this.index = 1, this.parent.unique = 1, parent.cancelled = true. Consistent with the NullPointerException at ObservableSwitchMap.java:354 in SwitchMapInnerObserver.onNext (cmd 20), with index == parent.unique being needed to reach that line, and with the null-queue guard making the new failing test pass (cmds 25-27: 0 failures). Other Peeky cmds were help, INVALID_REQUEST or NO_STOP. Nothing contradicts."
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a028",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The capture isn\u2019t expanding: replacement printing copies the look-ahead buffer into the output and can also replace later matches in that buffer.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

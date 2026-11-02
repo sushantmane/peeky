@@ -1,0 +1,63 @@
+{
+ "bug": "fmtlib__fmt-3272",
+ "language": "cpp",
+ "category": "C",
+ "image": "peeky-study/fmtlib__fmt-3272:peeky-r2",
+ "image_id": "sha256:022d40cbdfa106bed5ae93054d12c588d9d93db428da7c969a7813630cb19d4d",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:33:58+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky --parallel 4 --target xchar-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 2.1,
+   "output": "78 warnings generated.\n[100%] Linking CXX executable ../bin/xchar-test\n[100%] Built target xchar-test\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed size computation in do_write_float",
+   "at": "include/fmt/format.h:2550",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/xchar-test --at include/fmt/format.h:2550 --name reach --timeout 300 --json -- --gtest_filter=locale_test.localized_double",
+     "exit": 2,
+     "seconds": 2.7
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 2550 of include/fmt/format.h is not among the breakpoint lines of the units Peeky judges (`peeky describe` lists them): it has no code, or only a unit Peeky doesn't judge has code there",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "test/xchar-test.cc:436",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/xchar-test --at test/xchar-test.cc:436 --name reach --timeout 300 --json -- --gtest_filter=locale_test.localized_double",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of build-peeky/bin/xchar-test Peeky judges has code in test/xchar-test.cc: `peeky describe` lists each unit, judged or not and why",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:34:04+00:00"
+}

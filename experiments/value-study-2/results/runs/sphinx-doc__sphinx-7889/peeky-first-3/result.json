@@ -1,0 +1,262 @@
+{
+ "bug": "sphinx-doc__sphinx-7889",
+ "arm": "peeky-first",
+ "rep": 3,
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sphinx-doc__sphinx-7889:peeky-r2",
+ "image_digest": "sha256:8055c7524cbe021d2bc0a84734ba9305375ffb0f97d6a9fe0cb9441744184b31",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-sphinx-doc__sphinx-7889-peeky-first-3-bafdca",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T11:16:56+00:00",
+ "ended": "2026-11-01T11:19:58+00:00",
+ "wall_seconds": 182.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_ext_autodoc_mock.py::test_MockObject": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.3,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "d82ca1aaefb14d5e5bcb5d0e27d08385b3938f07700931bfc28d48161878eaa5",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 2,
+ "patch_files": [
+  "CHANGES",
+  "sphinx/ext/autodoc/mock.py"
+ ],
+ "patch_bytes": 1150,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 6
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 15,
+ "ai_credits": 20.9221,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 389262,
+  "output": 8109,
+  "cache_read": 352084,
+  "cache_write": 37133,
+  "reasoning": 3287
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 20,
+ "tool_calls_by_name": {
+  "bash": 20
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -ld /testbed /opt/peeky/docs/AGENT_GUIDE.md; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,230p' /opt/peeky/docs/AGENT_GUIDE.md; cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && sed -n '1,300p' sphinx/ext/autodoc/mock.py && ls tests/*mock* && rg -n 'TypeVar|Generic|_make_subclass|__getitem__' tests/test_ext_autodoc_mock.py pyproject.toml setup.cfg",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,330p' tests/test_ext_autodoc_mock.py && sed -n '1,240p' /opt/peeky/docs/lang/python.md && ls -a | head -45 && ls doc/changes*",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -m timeit -n 1 -r 1 'from typing import TypeVar\nfrom sphinx.ext.autodoc.mock import mock\nT = TypeVar(\"T\")\nwith mock([\"autodoc_mock_generic_dependency\"]):\n    from autodoc_mock_generic_dependency import Generic\n    class Example(Generic[T]):\n        pass'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module timeit -- -n 1 -r 1 'from typing import TypeVar\nfrom sphinx.ext.autodoc.mock import mock\nT = TypeVar(\"T\")\nwith mock([\"autodoc_mock_generic_dependency\"]):\n    from autodoc_mock_generic_dependency import Generic\n    class Example(Generic[T]):\n        pass'",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,190p' CHANGES && cat setup.cfg && grep -n -E 'autodoc_mock|mock_imports|generic|TypeVar' tests/test_ext_autodoc.py doc/usage/extensions/autodoc.rst tests/test_ext_autodoc_mock.py && sed -n '1,180p' tox.ini && sed -n '1,120p' tests/conftest.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: tests/test_ext_autodoc_mock.py\n@@\n from importlib import import_module\n+from typing import TypeVar\n@@\n def test_MockObject():\n@@\n     assert isinstance(obj.other_method(), SubClass)\n \n \n+@pytest.mark.parametrize('key', ['attr', 0, int, TypeVar('T'),\n+                                 (TypeVar('T'), TypeVar('U')), slice(1, 3)])\n+def test_MockObject_getitem(key):\n+    obj = _MockModule('mocked_module').Generic\n+    parameterized = obj[key]\n+\n+    assert isinstance(parameterized, _MockObject)\n+    assert repr(parameterized) == 'mocked_module.Generic.' + str(key)\n+    assert parameterized.__class__.__name__ == str(key)\n+\n+\n+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+def test_mock_generic_class():\n+    T = TypeVar('T')\n+    with mock(['sphinx.unknown']):\n+        from sphinx.unknown import Generic\n+\n+        class Example(Generic[T]):\n+            \"\"\"docstring of Example\"\"\"\n+\n+            def method(self):\n+                return 'string'\n+\n+        obj = Example()\n+        assert Example.__doc__ == 'docstring of Example'\n+        assert isinstance(obj, Example)\n+        assert isinstance(obj, _MockObject)\n+        assert obj.method() == 'string'\n+        assert isinstance(obj.other_method(), Example)\n+\n+\n def test_mock():\n*** End Patch\nPATCH\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module pytest -- -q tests/test_ext_autodoc_mock.py::test_mock_generic_class",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock.py')\ntext = path.read_text()\ntext = text.replace('from importlib import import_module\\n', 'from importlib import import_module\\nfrom typing import TypeVar\\n', 1)\nanchor = '\\ndef test_mock():\\n'\nassert text.count(anchor) == 1\ntext = text.replace(anchor, '''\n@pytest.mark.parametrize('key', ['attr', 0, int, TypeVar('T'),\n                                 (TypeVar('T'), TypeVar('U')), slice(1, 3)])\ndef test_MockObject_getitem(key):\n    obj = _MockModule('mocked_module').Generic\n    parameterized = obj[key]\n\n    assert isinstance(parameterized, _MockObject)\n    assert repr(parameterized) == 'mocked_module.Generic.' + str(key)\n    assert parameterized.__class__.__name__ == str(key)\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\ndef test_mock_generic_class():\n    T = TypeVar('T')\n    with mock(['sphinx.unknown']):\n        from sphinx.unknown import Generic\n\n        class Example(Generic[T]):\n            \"\"\"docstring of Example\"\"\"\n\n            def method(self):\n                return 'string'\n\n        obj = Example()\n        assert Example.__doc__ == 'docstring of Example'\n        assert isinstance(obj, Example)\n        assert isinstance(obj, _MockObject)\n        assert obj.method() == 'string'\n        assert isinstance(obj.other_method(), Example)\n\n\ndef test_mock():\n''', 1)\npath.write_text(text)\nPY\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module pytest -- -q tests/test_ext_autodoc_mock.py::test_mock_generic_class",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('sphinx/ext/autodoc/mock.py')\ntext = path.read_text()\nold = '''    def __getitem__(self, key: str) -> \"_MockObject\":\n        return _make_subclass(key, self.__display_name__, self.__class__)()\n'''\nnew = '''    def __getitem__(self, key: Any) -> \"_MockObject\":\n        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new, 1))\npath = Path('CHANGES')\ntext = path.read_text()\nold = '''Bugs fixed\n----------\n\n* #7839'''\nnew = '''Bugs fixed\n----------\n\n* autodoc: Fix TypeError when a mocked class is parameterized with a TypeVar.\n* #7839'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new, 1))\nPY\npython -m pytest tests/test_ext_autodoc_mock.py -q && git --no-pager diff --check && git --no-pager diff --stat && sed -n '1,110p' tests/test_ext_autodoc.py && ls tests/*autodoc*",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -E 'mock|pytest.mark.sphinx|genericalias|TypeVar' tests/test_ext_autodoc_configs.py tests/test_ext_autodoc.py | tail -65 && sed -n '1,110p' tests/roots/test-ext-autodoc/conf.py && sed -n '1,180p' tests/roots/test-ext-autodoc/target/genericalias.py && git --no-pager diff -- sphinx/ext/autodoc/mock.py tests/test_ext_autodoc_mock.py CHANGES",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -m timeit -n 1 -r 1 'from typing import TypeVar\nfrom sphinx.ext.autodoc.mock import mock\nT = TypeVar(\"T\")\nwith mock([\"autodoc_mock_generic_dependency\"]):\n    from autodoc_mock_generic_dependency import Generic\n    class Example(Generic[T]):\n        pass'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -B 4 -A 35 -i 'mock' tests/test_ext_autodoc_configs.py && sed -n '1580,1600p' tests/test_ext_autodoc.py && sed -n '1,140p' sphinx/testing/util.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='sphinx-mock-generic-') as temp:\n    root = Path(temp)\n    source = root / 'source'\n    source.mkdir()\n    (source / 'conf.py').write_text('''import sys\nsys.path.insert(0, %r)\nextensions = ['sphinx.ext.autodoc']\nautodoc_mock_imports = ['autodoc_mock_generic_dependency']\nmaster_doc = 'index'\n''' % str(source))\n    (source / 'generic_example.py').write_text('''from typing import TypeVar\nfrom autodoc_mock_generic_dependency import Generic\nT = TypeVar('T')\nclass Example(Generic[T]):\n    \"\"\"Generic example documentation.\"\"\"\n''')\n    (source / 'index.rst').write_text('''Generic example\n===============\n\n.. autoclass:: generic_example.Example\n''')\n    status, warning = StringIO(), StringIO()\n    app = Sphinx(str(source), str(source), str(root / 'html'),\n                 str(root / 'doctrees'), 'html', status=status,\n                 warning=warning, warningiserror=True, freshenv=True)\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert not warning.getvalue(), warning.getvalue()\n    html = (root / 'html' / 'index.html').read_text()\n    assert 'generic_example.Example' in html\n    assert 'Generic example documentation.' in html\n    print('HTML build succeeded without warnings and documented the generic class.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports tests/test_ext_autodoc.py::test_autodoc_GenericAlias tests/test_ext_autodoc.py::test_autodoc_TypeVar -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '390,428p' sphinx/util/logging.py && sed -n '140,220p' sphinx/testing/util.py && command -v flake8; command -v mypy",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='sphinx-mock-generic-') as temp:\n    root = Path(temp)\n    source = root / 'source'\n    source.mkdir()\n    (source / 'conf.py').write_text('''import sys\nsys.path.insert(0, %r)\nextensions = ['sphinx.ext.autodoc']\nautodoc_mock_imports = ['autodoc_mock_generic_dependency']\nmaster_doc = 'index'\n''' % str(source))\n    (source / 'generic_example.py').write_text('''from typing import TypeVar\nfrom autodoc_mock_generic_dependency import Generic\nT = TypeVar('T')\nclass Example(Generic[T]):\n    \"\"\"Generic example documentation.\"\"\"\n''')\n    (source / 'index.rst').write_text('''Generic example\n===============\n\n.. autoclass:: generic_example.Example\n''')\n    status, warning = StringIO(), StringIO()\n    app = Sphinx(str(source), str(source), str(root / 'html'),\n                 str(root / 'doctrees'), 'html', status=status,\n                 warning=warning, freshenv=True)\n    setup_warnings = warning.getvalue()\n    assert setup_warnings == \"WARNING: node class 'meta' is already registered, its visitors will be overridden\\n\", setup_warnings\n    print('Existing Sphinx/docutils setup warning:', setup_warnings.strip())\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, status.getvalue()\n    assert not warning.getvalue(), warning.getvalue()\n    html = (root / 'html' / 'index.html').read_text()\n    assert 'generic_example.Example' in html\n    assert 'Generic example documentation.' in html\n    print('HTML build documented the generic class without build warnings.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='sphinx-mock-generic-') as temp:\n    root = Path(temp)\n    source = root / 'source'\n    source.mkdir()\n    (source / 'conf.py').write_text('''import sys\nsys.path.insert(0, %r)\nextensions = ['sphinx.ext.autodoc']\nautodoc_mock_imports = ['autodoc_mock_generic_dependency']\nmaster_doc = 'index'\n''' % str(source))\n    (source / 'generic_example.py').write_text('''from typing import TypeVar\nfrom autodoc_mock_generic_dependency import Generic\nT = TypeVar('T')\nclass Example(Generic[T]):\n    \"\"\"Generic example documentation.\"\"\"\n''')\n    (source / 'index.rst').write_text('''Generic example\n===============\n\n.. autoclass:: generic_example.Example\n''')\n    status, warning = StringIO(), StringIO()\n    app = Sphinx(str(source), str(source), str(root / 'html'),\n                 str(root / 'doctrees'), 'html', status=status,\n                 warning=warning, freshenv=True)\n    setup_warnings = warning.getvalue()\n    assert setup_warnings == \"WARNING: while setting up extension sphinx.addnodes: node class 'meta' is already registered, its visitors will be overridden\\n\", setup_warnings\n    print('Existing Sphinx/docutils setup warning:', setup_warnings.strip())\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, status.getvalue()\n    assert not warning.getvalue(), warning.getvalue()\n    html = (root / 'html' / 'index.html').read_text()\n    assert 'generic_example.Example' in html\n    assert 'Generic example documentation.' in html\n    print('HTML build documented the generic class without build warnings.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='sphinx-mock-generic-') as temp:\n    root = Path(temp)\n    source = root / 'source'\n    source.mkdir()\n    (source / 'conf.py').write_text('''import sys\nsys.path.insert(0, %r)\nextensions = ['sphinx.ext.autodoc']\nautodoc_mock_imports = ['autodoc_mock_generic_dependency']\nmaster_doc = 'index'\n''' % str(source))\n    (source / 'generic_example.py').write_text('''from typing import TypeVar\nfrom autodoc_mock_generic_dependency import Generic\nT = TypeVar('T')\nclass Example(Generic[T]):\n    \"\"\"Generic example documentation.\"\"\"\n''')\n    (source / 'index.rst').write_text('''Generic example\n===============\n\n.. autoclass:: generic_example.Example\n''')\n    status, warning = StringIO(), StringIO()\n    app = Sphinx(str(source), str(source), str(root / 'html'),\n                 str(root / 'doctrees'), 'html', status=status,\n                 warning=warning, freshenv=True)\n    setup_warnings = warning.getvalue()\n    assert len(setup_warnings.splitlines()) == 1 and \"node class 'meta' is already registered\" in setup_warnings, repr(setup_warnings)\n    print('Existing Sphinx/docutils setup warning:', setup_warnings.strip())\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, status.getvalue()\n    assert not warning.getvalue(), warning.getvalue()\n    html = (root / 'html' / 'index.html').read_text()\n    assert 'generic_example.Example' in html\n    assert 'Generic example documentation.' in html\n    print('HTML build documented the generic class without build warnings.')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager status --short && sed -n '49,98p' tests/test_ext_autodoc_mock.py && sed -n '49,61p' sphinx/ext/autodoc/mock.py",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 2,
+ "build_or_test_commands": [
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('sphinx/ext/autodoc/mock.py')\ntext = path.read_text()\nold = '''    def __getitem__(self, key: str) -> \"_MockObject\":\n        return _make_subclass(key, self.__display_name__, self.__class__)()\n'''\nnew = '''    def __getitem__(self, key: Any) -> \"_MockObject\":\n        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new, 1))\npath = Path('CHANGES')\ntext = path.read_text()\nold = '''Bugs fixed\n----------\n\n* #7839'''\nnew = '''Bugs fixed\n----------\n\n* autodoc: Fix TypeError when a mocked class is parameterized with a TypeVar.\n* #7839'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new, 1))\nPY\npython -m pytest tests/test_ext_autodoc_mock.py -q && git --no-pager diff --check && git --no-pager diff --stat && sed -n '1,110p' tests/test_ext_autodoc.py && ls tests/*autodoc*",
+  "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports tests/test_ext_autodoc.py::test_autodoc_GenericAlias tests/test_ext_autodoc.py::test_autodoc_TypeVar -q"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && peeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module timeit -- -n 1 -r 1 'from typing import TypeVar\nfrom sphinx.ext.autodoc.mock import mock\nT = TypeVar(\"T\")\nwith mock([\"autodoc_mock_generic_dependency\"]):\n    from autodoc_mock_generic_dependency import Generic\n    class Example(Generic[T]):\n        pass'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && apply_patch <<'PATCH'\n*** Begin Patch\n*** Update File: tests/test_ext_autodoc_mock.py\n@@\n from importlib import import_module\n+from typing import TypeVar\n@@\n def test_MockObject():\n@@\n     assert isinstance(obj.other_method(), SubClass)\n \n \n+@pytest.mark.parametrize('key', ['attr', 0, int, TypeVar('T'),\n+                                 (TypeVar('T'), TypeVar('U')), slice(1, 3)])\n+def test_MockObject_getitem(key):\n+    obj = _MockModule('mocked_module').Generic\n+    parameterized = obj[key]\n+\n+    assert isinstance(parameterized, _MockObject)\n+    assert repr(parameterized) == 'mocked_module.Generic.' + str(key)\n+    assert parameterized.__class__.__name__ == str(key)\n+\n+\n+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+def test_mock_generic_class():\n+    T = TypeVar('T')\n+    with mock(['sphinx.unknown']):\n+        from sphinx.unknown import Generic\n+\n+        class Example(Generic[T]):\n+            \"\"\"docstring of Example\"\"\"\n+\n+            def method(self):\n+                return 'string'\n+\n+        obj = Example()\n+        assert Example.__doc__ == 'docstring of Example'\n+        assert isinstance(obj, Example)\n+        assert isinstance(obj, _MockObject)\n+        assert obj.method() == 'string'\n+        assert isinstance(obj.other_method(), Example)\n+\n+\n def test_mock():\n*** End Patch\nPATCH\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module pytest -- -q tests/test_ext_autodoc_mock.py::test_mock_generic_class",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock.py')\ntext = path.read_text()\ntext = text.replace('from importlib import import_module\\n', 'from importlib import import_module\\nfrom typing import TypeVar\\n', 1)\nanchor = '\\ndef test_mock():\\n'\nassert text.count(anchor) == 1\ntext = text.replace(anchor, '''\n@pytest.mark.parametrize('key', ['attr', 0, int, TypeVar('T'),\n                                 (TypeVar('T'), TypeVar('U')), slice(1, 3)])\ndef test_MockObject_getitem(key):\n    obj = _MockModule('mocked_module').Generic\n    parameterized = obj[key]\n\n    assert isinstance(parameterized, _MockObject)\n    assert repr(parameterized) == 'mocked_module.Generic.' + str(key)\n    assert parameterized.__class__.__name__ == str(key)\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\ndef test_mock_generic_class():\n    T = TypeVar('T')\n    with mock(['sphinx.unknown']):\n        from sphinx.unknown import Generic\n\n        class Example(Generic[T]):\n            \"\"\"docstring of Example\"\"\"\n\n            def method(self):\n                return 'string'\n\n        obj = Example()\n        assert Example.__doc__ == 'docstring of Example'\n        assert isinstance(obj, Example)\n        assert isinstance(obj, _MockObject)\n        assert obj.method() == 'string'\n        assert isinstance(obj.other_method(), Example)\n\n\ndef test_mock():\n''', 1)\npath.write_text(text)\nPY\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module pytest -- -q tests/test_ext_autodoc_mock.py::test_mock_generic_class",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 3
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 8,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 6,
+ "contaminated": false,
+ "final_message": "Fixed by accepting arbitrary subscription keys and converting them to strings before mock subclass construction. The root cause was passing a `TypeVar` into string concatenation; Peeky stopped at `mock.py:73` and showed `name=~T` with type `TypeVar`. Added regression coverage and a changelog entry.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the generic-mocking failure and inspect it with Peeky before changing the source.\n",
+  "The reproducer confirms that a `TypeVar` reaches `_make_subclass` as its string-only name argument. Peeky rejected the runner with \u201c--run-module takes only pytest\u201d; I\u2019ll add a regression test and use that supported entry point to inspect the failure.\n",
+  "Peeky stopped at the failing concatenation and showed `name` was `TypeVar ~T`, while `module` was `'sphinx.unknown.Generic'`. I\u2019ll convert subscription keys to strings before subclass construction and update the key annotation to accept non-string arguments.\n",
+  "Fixed by accepting arbitrary subscription keys and converting them to strings before mock subclass construction. The root cause was passing a `TypeVar` into string concatenation; Peeky stopped at `mock.py:73` and showed `name=~T` with type `TypeVar`. Added regression coverage and a changelog entry."
+ ],
+ "assistant_reasoning": [
+  "**Validating test configurations**\n\nI\u2019m realizing that I need to validate the behavior of my existing tests related to configurations and mocking. It\u2019s important to ensure they\u2019re working correctly, as this will help avoid future issues. First, I should take a closer look at what\u2019s currently set up and see if any adjustments are necessary. I want to be confident in the reliability of these tests moving forward! Let's dive into the details and verify everything aligns correctly.",
+  "**Evaluating Sphinx integration**\n\nI\u2019m working on existing auto classes that are mocked with `__sphinx_mock__` set to True. I\u2019m considering whether the importer should skip certain steps. The goal is to ensure the Sphinx build succeeds, while also addressing warnings related to Python 3.12's inspect module differences. Recent user dependencies with new Sphinx 3.2 have caused failures. I\u2019ll make an integration test using `SphinxTestApp` in `test_ext_autodoc_mock.py` to handle the complexities and validate existing autodoc configurations with specific mocks.",
+  "**Analyzing Sphinx warnings**\n\nI\u2019m noticing that there\u2019s an old mismatch warning with Sphinx's docutils during initialization. It seems like the tests are capturing warnings that should be false. I need to figure out how to integrate this without warnings during the build process, which requires a clean setup. Maybe setting `warningiserror=False` during the app initialization could help, and then resetting the warning position after? I should read more about the `WarningIsErrorFilter`.",
+  "**Considering build updates**\n\nI\u2019m trying to figure out how to deal with an efficient update for the build, without spinning it. It seems there might be lots of unrelated components to address, especially concerning `enum` and the `static/search` context. I expect there might be an assert message that's missing a prefix. Using SphinxTestApp could help with setting up the regex correctly. Plus, I need to sort out any incompatibilities with the old docs theme and current Jinja, but tests passed, so that's promising!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 183.5
+}

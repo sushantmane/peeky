@@ -1,0 +1,54 @@
+diff --git a/doc/api.rst b/doc/api.rst
+index 2d65d5b3..a96f32f0 100644
+--- a/doc/api.rst
++++ b/doc/api.rst
+@@ -447,6 +447,10 @@ The library also supports convenient formatting of ranges and tuples::
+   fmt::print("{}", t);
+ 
+ 
++Nested ranges are formatted recursively, with characters and strings quoted and
++escaped by default. This also applies to C++20 range views, including views that
++produce temporary ranges with non-const ``begin()`` and ``end()``.
++
+ NOTE: currently, the overload of ``fmt::join`` for iterables exists in the main
+ ``format.h`` header, but expect this to change in the future.
+ 
+diff --git a/include/fmt/ranges.h b/include/fmt/ranges.h
+index 2105a668..17b5d7b0 100644
+--- a/include/fmt/ranges.h
++++ b/include/fmt/ranges.h
+@@ -473,19 +473,15 @@ struct range_formatter<
+   FMT_CONSTEXPR auto parse(ParseContext& ctx) -> decltype(ctx.begin()) {
+     auto it = ctx.begin();
+     auto end = ctx.end();
+-    if (it == end || *it == '}') {
+-      maybe_set_debug_format();
+-      return it;
+-    }
+-
+-    if (*it == 'n') {
++    if (it != end && *it == 'n') {
+       set_brackets({}, {});
+       ++it;
+     }
+ 
+-    if (*it == '}') {
++    if (it == end || *it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      ctx.advance_to(it);
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it != ':')
+@@ -509,7 +505,9 @@ struct range_formatter<
+       if (i > 0) out = detail::copy_str<Char>(separator_, out);
+       ;
+       ctx.advance_to(out);
+-      out = underlying_.format(mapper.map(*it), ctx);
++      // Bind temporary elements to an lvalue to allow non-const formatters.
++      auto&& item = *it;
++      out = underlying_.format(mapper.map(item), ctx);
+       ++i;
+     }
+     out = detail::copy_str<Char>(closing_bracket_, out);

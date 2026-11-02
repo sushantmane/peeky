@@ -1,0 +1,38 @@
+diff --git a/doc/changelog.markdown b/doc/changelog.markdown
+index a3703316..11af03a9 100644
+--- a/doc/changelog.markdown
++++ b/doc/changelog.markdown
+@@ -2,7 +2,7 @@ Lombok Changelog
+ ----------------
+ 
+ ### v1.18.25 "Edgy Guinea Pig"
+-* No new changes since the release of v1.18.24
++* BUGFIX: `@UtilityClass` with inner classes, generic methods, and overloaded methods no longer causes a NullPointerException in javac on JDK9+.
+ 
+ ### v1.18.24 (April 18th, 2022)
+ 
+diff --git a/src/core/lombok/javac/handlers/HandleUtilityClass.java b/src/core/lombok/javac/handlers/HandleUtilityClass.java
+index 716d6d63..ce6120aa 100644
+--- a/src/core/lombok/javac/handlers/HandleUtilityClass.java
++++ b/src/core/lombok/javac/handlers/HandleUtilityClass.java
+@@ -130,6 +130,8 @@ public class HandleUtilityClass extends JavacAnnotationHandler<UtilityClass> {
+ 				ClassSymbol innerClassSymbol = innerClassDecl.sym;
+ 				if (innerClassSymbol != null && innerClassSymbol.type instanceof ClassType) {
+ 					((ClassType) innerClassSymbol.type).setEnclosingType(Type.noType);
++					// The cached erasure may still contain the old enclosing type.
++					innerClassSymbol.erasure_field = null;
+ 				}
+ 			}
+ 		}
+diff --git a/src/stubs/com/sun/tools/javac/code/Symbol.java b/src/stubs/com/sun/tools/javac/code/Symbol.java
+index f389f1a8..f8b7885d 100644
+--- a/src/stubs/com/sun/tools/javac/code/Symbol.java
++++ b/src/stubs/com/sun/tools/javac/code/Symbol.java
+@@ -23,6 +23,7 @@ import com.sun.tools.javac.util.Name;
+ 
+ public abstract class Symbol implements Element {
+ 	public Type type;
++	public Type erasure_field;
+ 	public Name name;
+ 	public Symbol owner;
+ 

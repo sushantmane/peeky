@@ -1,0 +1,359 @@
+{
+ "bug": "projectlombok__lombok-3009",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/projectlombok__lombok-3009:peeky-r2",
+ "image_digest": "sha256:120392fd633ac56b45ddfea70dca9e6090b78da925646ec4e43c88345f6e43d1",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-projectlombok__lombok-3009-peeky-first-1-08178e",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:45:01+00:00",
+ "ended": "2026-11-01T13:52:48+00:00",
+ "wall_seconds": 467.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "javac-FieldDefaultsViaConfigOnRecord.java(lombok.transform.TestWithDelombok)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 5.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "71c0b836ed707a43cafed2812ff19772d6cf1064fd181c0fb025f492965d51f6",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 3,
+ "patch_files": [
+  "src/core/lombok/eclipse/handlers/HandleFieldDefaults.java",
+  "src/core/lombok/javac/handlers/HandleFieldDefaults.java",
+  "test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java",
+  "test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java",
+  "test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java",
+  "test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java",
+  "test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java",
+  "test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java",
+  "website/templates/features/experimental/FieldDefaults.html"
+ ],
+ "patch_bytes": 5240,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 329
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 37,
+ "ai_credits": 55.3829,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 1644289,
+  "output": 22099,
+  "cache_read": 1574095,
+  "cache_write": 70083,
+  "reasoning": 6695
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 45,
+ "tool_calls_by_name": {
+  "bash": 36,
+  "read_bash": 9
+ },
+ "shell_commands": [
+  {
+   "command": "cd /testbed && pwd && git status --short && sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md && printf '\\n--- handlers ---\\n' && rg --files | grep -E 'HandleFieldDefaults|FieldDefaults|build.xml|test.*record' | head -60",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat /opt/peeky/docs/PROJECT.md && sed -n '1,230p' /opt/peeky/docs/lang/java.md && java -version && ls -d build* lib* && find . -name '*FieldDefaults*' -o -name '*Record*' | head -70",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,260p' src/core/lombok/javac/handlers/HandleFieldDefaults.java && sed -n '1,250p' src/core/lombok/eclipse/handlers/HandleFieldDefaults.java && grep -n 'test.compile\\|test.javacCurrent\\|javac\\|jar' build.xml | head -65",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat build.xml | head -100 && grep -n 'test.compile\\|test.javacCurrent\\|test.ecj\\|test.delombok\\|test.filter\\|junit' buildScripts/*.xml | head -95 && ls build && cat test/transform/resource/before/FieldDefaultsOnRecord.java test/transform/resource/before/FieldDefaultsViaConfig.java && find test -name '*Test*.java' | head -40 && grep -n 'isRecord\\|isClassOrEnum' src/core/lombok/{javac,eclipse}/handlers/{JavacHandlerUtil,EclipseHandlerUtil}.java",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '235,365p' /opt/peeky/docs/lang/java-cookbook.md && find build -maxdepth 2 -type f | head -35 && find dist lib -maxdepth 2 -name '*.jar' | head -40 && command -v apply_patch && find website -iname '*fielddefaults*' && ls /usr/lib/jvm",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,195p' buildScripts/tests.ant.xml && sed -n '1,180p' test/core/src/lombok/AbstractRunTests.java && sed -n '1,155p' src/core/lombok/core/LombokConfiguration.java && cat src/core/lombok/core/configuration/ConfigurationResolver.java && sed -n '1970,2005p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '2630,2660p' src/core/lombok/eclipse/handlers/EclipseHandlerUtil.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n '^## 7.4\\|class_roots\\|class_names\\|sources' /opt/peeky/docs/lang/java-cookbook.md | tail -25 && find website -iname '*fielddefaults*' && ls /usr/lib/jvm && type apply_patch || true && sed -n '1,185p' test/transform/src/lombok/transform/TestWithDelombok.java && sed -n '1,170p' test/core/src/lombok/RunTestsViaDelombok.java && grep -n 'FIELD_DEFAULTS_.*EVERYWHERE' src/core/lombok/ConfigurationKeys.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '20,145p' src/core/lombok/core/LombokConfiguration.java && sed -n '20,80p' src/core/lombok/core/configuration/ConfigurationResolver.java && sed -n '136,152p' buildScripts/tests.ant.xml && sed -n '1978,2003p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '2635,2658p' src/core/lombok/eclipse/handlers/EclipseHandlerUtil.java && grep -n 'System.getProperty\\|getenv' test/core/src/lombok/DirectoryRunner.java && sed -n '810,880p' /opt/peeky/docs/lang/java-cookbook.md && sed -n '1,150p' website/templates/features/experimental/FieldDefaults.html",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/jshell --class-path build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-utils8:build/lombok-main8:build/lombok-version:build/lombok-transplants -R--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nLombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() { public <T> T resolve(ConfigurationKey<T> key) { if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE; return key.getType().isList() ? (T) Collections.emptyList() : null; } });\nvar source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) { public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; } };\nvar compiler = ToolProvider.getSystemJavaCompiler();\nvar diagnostics = new DiagnosticCollector<JavaFileObject>();\nvar task = compiler.getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\ntask.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\nSystem.out.println(\"Compilation succeeded: \" + task.call());\ndiagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n/exit\nEOF",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/jshell --class-path build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants -R--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nLombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() { public <T> T resolve(ConfigurationKey<T> key) { if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE; return key.getType().isList() ? (T) Collections.emptyList() : null; } });\nvar source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) { public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; } };\nvar compiler = ToolProvider.getSystemJavaCompiler();\nvar diagnostics = new DiagnosticCollector<JavaFileObject>();\nvar task = compiler.getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\ntask.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\nSystem.out.println(\"Compilation succeeded: \" + task.call());\ndiagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/jshell --class-path build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants -R-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 -R--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED -R--add-exports=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nLombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() { public <T> T resolve(ConfigurationKey<T> key) { if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE; return key.getType().isList() ? (T) Collections.emptyList() : null; } });\nvar source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) { public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; } };\nvar compiler = ToolProvider.getSystemJavaCompiler();\nvar diagnostics = new DiagnosticCollector<JavaFileObject>();\nvar task = compiler.getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\ntask.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\nSystem.out.println(\"Compilation succeeded: \" + task.call());\ndiagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/jshell --execution local --class-path build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 -J--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED -J--add-exports=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nLombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() { public <T> T resolve(ConfigurationKey<T> key) { if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE; return key.getType().isList() ? (T) Collections.emptyList() : null; } });\nvar source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) { public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; } };\nvar compiler = ToolProvider.getSystemJavaCompiler();\nvar diagnostics = new DiagnosticCollector<JavaFileObject>();\nvar task = compiler.getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\ntask.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\nSystem.out.println(\"Compilation succeeded: \" + task.call());\ndiagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/lib/jvm/java-17-openjdk-arm64/bin/java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED --class-path build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants --source 17 /dev/stdin <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nclass RecordRepro {\n public static void main(String[] args) {\n  LombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() {\n   @SuppressWarnings(\"unchecked\") public <T> T resolve(ConfigurationKey<T> key) {\n    if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE;\n    return key.getType().isList() ? (T) Collections.emptyList() : null;\n   }\n  });\n  JavaFileObject source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) {\n   public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; }\n  };\n  DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();\n  JavaCompiler.CompilationTask task = ToolProvider.getSystemJavaCompiler().getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\n  task.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\n  System.out.println(\"Compilation succeeded: \" + task.call());\n  diagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n }\n}\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 -c 'import os,sys,subprocess; fd=os.memfd_create(\"RecordRepro.java\",0); os.write(fd,sys.stdin.buffer.read()); os.lseek(fd,0,0); cmd=[\"/usr/lib/jvm/java-17-openjdk-arm64/bin/java\",\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005\"]+[\"--add-exports=jdk.compiler/com.sun.tools.javac.\"+p+\"=ALL-UNNAMED\" for p in [\"processing\",\"util\",\"tree\",\"code\",\"main\",\"model\",\"file\",\"parser\",\"comp\",\"jvm\"]]+[\"--class-path\",\"build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants\",\"--source\",\"17\",\"/proc/self/fd/\"+str(fd)]; sys.exit(subprocess.call(cmd,pass_fds=(fd,)))' <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nclass RecordRepro {\n public static void main(String[] args) {\n  LombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() {\n   @SuppressWarnings(\"unchecked\") public <T> T resolve(ConfigurationKey<T> key) {\n    if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE;\n    return key.getType().isList() ? (T) Collections.emptyList() : null;\n   }\n  });\n  JavaFileObject source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) {\n   public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; }\n  };\n  DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();\n  JavaCompiler.CompilationTask task = ToolProvider.getSystemJavaCompiler().getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\n  task.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\n  System.out.println(\"Compilation succeeded: \" + task.call());\n  diagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n }\n}\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 -c 'import os,sys,subprocess; fd=os.memfd_create(\"RecordRepro.java\",0); os.write(fd,sys.stdin.buffer.read()); os.lseek(fd,0,0); cmd=[\"/usr/lib/jvm/java-17-openjdk-arm64/bin/java\",\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005\"]+[\"--add-opens=jdk.compiler/com.sun.tools.javac.\"+p+\"=ALL-UNNAMED\" for p in [\"processing\",\"util\",\"tree\",\"code\",\"main\",\"model\",\"file\",\"parser\",\"comp\",\"jvm\"]]+[\"--class-path\",\"build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants\",\"--source\",\"17\",\"/proc/self/fd/\"+str(fd)]; sys.exit(subprocess.call(cmd,pass_fds=(fd,)))' <<'EOF'\nimport javax.tools.*;\nimport java.net.*;\nimport java.util.*;\nimport lombok.core.*;\nimport lombok.core.configuration.*;\nclass RecordRepro {\n public static void main(String[] args) {\n  LombokConfiguration.overrideConfigurationResolverFactory(uri -> new ConfigurationResolver() {\n   @SuppressWarnings(\"unchecked\") public <T> T resolve(ConfigurationKey<T> key) {\n    if (key == lombok.ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE || key == lombok.ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE) return (T) Boolean.TRUE;\n    return key.getType().isList() ? (T) Collections.emptyList() : null;\n   }\n  });\n  JavaFileObject source = new SimpleJavaFileObject(URI.create(\"string:///Foo.java\"), JavaFileObject.Kind.SOURCE) {\n   public CharSequence getCharContent(boolean ignoreEncodingErrors) { return \"public record Foo() {}\"; }\n  };\n  DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();\n  JavaCompiler.CompilationTask task = ToolProvider.getSystemJavaCompiler().getTask(null, null, diagnostics, List.of(\"-proc:only\"), null, List.of(source));\n  task.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\n  System.out.println(\"Compilation succeeded: \" + task.call());\n  diagnostics.getDiagnostics().forEach(d -> System.out.println(d.getKind() + \": \" + d.getMessage(Locale.ROOT)));\n }\n}\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '80,250p' test/core/src/lombok/DirectoryRunner.java && sed -n '25,145p' test/core/src/lombok/TestJavac.java && cat test/transform/resource/after-delombok/FieldDefaultsOnRecord.java test/transform/resource/after-ecj/FieldDefaultsOnRecord.java test/transform/resource/messages-delombok/FieldDefaultsOnRecord.java.messages test/transform/resource/messages-ecj/FieldDefaultsOnRecord.java.messages && sed -n '1,120p' test/transform/resource/after-delombok/LoggerConfigOnRecord.java && grep -n 'packing.basedirs\\|cp.test\\|cp.stripe' buildScripts/{compile,tests,setup}.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '20,85p' test/core/src/lombok/DirectoryRunner.java && sed -n '24,60p' buildScripts/tests.ant.xml && sed -n '193,229p' buildScripts/tests.ant.xml && ls lib/test lib/stripe lib/ecj16 && grep -n 'expected\\|ACTUAL\\|Actual\\|System.out\\|compare' test/core/src/lombok/AbstractRunTests.java | head -50 && sed -n '150,245p' test/core/src/lombok/AbstractRunTests.java && git status --short",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n 'ACTUAL\\|Actual\\|expected\\|System.out\\|compare' test/core/src/lombok/AbstractRunTests.java | head -45 && sed -n '95,185p' test/core/src/lombok/AbstractRunTests.java && find lib -maxdepth 2 -iname '*ecj*' -o -name '*jdt.core.jar' && grep -l 'record [[:alnum:]_]*()' test/transform/resource/after-ecj/*.java | head -10 && sed -n '1,85p' test/core/src/lombok/RunTestsViaEcj.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat test/transform/resource/before/FieldDefaultsNoop.java && cat test/transform/resource/before/LoggerConfigOnRecord.java && unzip -p lib/eclipse-oxygen/org.eclipse.jdt-org.eclipse.jdt.core.jar META-INF/MANIFEST.MF | grep -E 'Bundle-Version' && sed -n '68,101p' test/core/src/lombok/AbstractRunTests.java && sed -n '180,212p' buildScripts/setup.ant.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+//CONF: lombok.fieldDefaults.defaultPrivate = true\n+//CONF: lombok.fieldDefaults.defaultFinal = true\n+\n+public record FieldDefaultsViaConfigOnRecord() {\n+}\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,5 @@\n+// version 14:\n+//CONF: lombok.fieldDefaults.defaultPrivate = true\n+\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+}\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,5 @@\n+// version 14:\n+//CONF: lombok.fieldDefaults.defaultFinal = true\n+\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+}\ndiff --git a/test/transform/resource/after-delombok/FieldDefaultsViaConfigOnRecord.java b/test/transform/resource/after-delombok/FieldDefaultsViaConfigOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/after-delombok/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,3 @@\n+// version 14:\n+public record FieldDefaultsViaConfigOnRecord() {\n+}\ndiff --git a/test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java b/test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/after-delombok/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,3 @@\n+// version 14:\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+}\ndiff --git a/test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java b/test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/after-delombok/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,3 @@\n+// version 14:\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+}\ndiff --git a/test/transform/resource/after-ecj/FieldDefaultsViaConfigOnRecord.java b/test/transform/resource/after-ecj/FieldDefaultsViaConfigOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/after-ecj/FieldDefaultsViaConfigOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+public record FieldDefaultsViaConfigOnRecord() {\n+  public FieldDefaultsViaConfigOnRecord() {\n+    super();\n+  }\n+}\ndiff --git a/test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java b/test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/after-ecj/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+public record FieldDefaultsViaConfigPrivateOnRecord() {\n+  public FieldDefaultsViaConfigPrivateOnRecord() {\n+    super();\n+  }\n+}\ndiff --git a/test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java b/test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java\nnew file mode 100644\n--- /dev/null\n+++ b/test/transform/resource/after-ecj/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -0,0 +1,6 @@\n+// version 14:\n+public record FieldDefaultsViaConfigFinalOnRecord() {\n+  public FieldDefaultsViaConfigFinalOnRecord() {\n+    super();\n+  }\n+}\ndiff --git a/build/FieldDefaultsTestRunner.java b/build/FieldDefaultsTestRunner.java\nnew file mode 100644\n--- /dev/null\n+++ b/build/FieldDefaultsTestRunner.java\n@@ -0,0 +1,25 @@\n+import java.io.File;\n+import lombok.DirectoryRunner;\n+import lombok.transform.TestWithDelombok;\n+import org.junit.runner.JUnitCore;\n+import org.junit.runner.Result;\n+import org.junit.runner.notification.Failure;\n+\n+public class FieldDefaultsTestRunner {\n+    public static class Selected extends TestWithDelombok {\n+        @Override public boolean accept(File file) {\n+            return file.getName().startsWith(\"FieldDefaults\");\n+        }\n+    }\n+\n+    public static void main(String[] args) throws Exception {\n+        Result result = new JUnitCore().run(new DirectoryRunner(Selected.class));\n+        for (Failure failure : result.getFailures()) {\n+            System.out.println(failure.getTestHeader() + \": \" + failure.getMessage());\n+        }\n+        System.out.println(\"Tests: \" + result.getRunCount() +\n+                \", failures: \" + result.getFailureCount() +\n+                \", ignored: \" + result.getIgnoreCount());\n+        if (!result.wasSuccessful()) System.exit(1);\n+    }\n+}\nPATCH\nCP='build/tests:build/teststubs:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants:lib/test/*:lib/stripe/*:lib/eclipse-oxygen/*' && /usr/lib/jvm/java-17-openjdk-arm64/bin/javac -proc:none -cp \"$CP\" -d build/tests build/FieldDefaultsTestRunner.java && /usr/lib/jvm/java-17-openjdk-arm64/bin/java --add-opens=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED -cp \"$CP\" FieldDefaultsTestRunner",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleFieldDefaults.java b/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n--- a/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n+++ b/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n@@ -135,1 +135,1 @@\n-\t\tif (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\ndiff --git a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n--- a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n+++ b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n@@ -163,1 +163,1 @@\n-\t\tif (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\ndiff --git a/website/templates/features/experimental/FieldDefaults.html b/website/templates/features/experimental/FieldDefaults.html\n--- a/website/templates/features/experimental/FieldDefaults.html\n+++ b/website/templates/features/experimental/FieldDefaults.html\n@@ -61,2 +61,4 @@\n \t\t<p>\n+\t\t\tThe <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration keys do not apply to records. Explicitly using <code>@FieldDefaults</code> on a record is an error.\n+\t\t</p><p>\n \t\t\tLike other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n@@ -1,1 +1,2 @@\n // version 14:\n+// unchanged\n diff --git a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -1,1 +1,2 @@\n // version 14:\n+// unchanged\n diff --git a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -1,1 +1,2 @@\n // version 14:\n+// unchanged\nPATCH\nJAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -quiet test.compile",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleFieldDefaults.java b/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n--- a/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n+++ b/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n@@ -132,7 +132,7 @@\n \t\t\tbreak;\n \t\t}\n \t\t\n-\t\tif (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\n \t\t\n \t\tboolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));\n \t\tboolean defaultToFinal = makeFinalIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE));\ndiff --git a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n--- a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n+++ b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n@@ -160,7 +160,7 @@\n \t\t\tbreak;\n \t\t}\n \t\t\n-\t\tif (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\n \t\t\n \t\tboolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));\n \t\tboolean defaultToFinal = makeFinalIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE));\ndiff --git a/website/templates/features/experimental/FieldDefaults.html b/website/templates/features/experimental/FieldDefaults.html\n--- a/website/templates/features/experimental/FieldDefaults.html\n+++ b/website/templates/features/experimental/FieldDefaults.html\n@@ -60,6 +60,8 @@\n \t<@f.smallPrint>\n \t\t<p>\n+\t\t\tThe <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration keys do not apply to records. Explicitly using <code>@FieldDefaults</code> on a record is an error.\n+\t\t</p><p>\n \t\t\tLike other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.\n \t\t</p>\n \t</@f.smallPrint>\n </@f.scaffold>\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n@@ -1,4 +1,5 @@\n // version 14:\n+// unchanged\n //CONF: lombok.fieldDefaults.defaultPrivate = true\n //CONF: lombok.fieldDefaults.defaultFinal = true\n \n diff --git a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -1,4 +1,5 @@\n // version 14:\n+// unchanged\n //CONF: lombok.fieldDefaults.defaultPrivate = true\n \n public record FieldDefaultsViaConfigPrivateOnRecord() {\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -1,4 +1,5 @@\n // version 14:\n+// unchanged\n //CONF: lombok.fieldDefaults.defaultFinal = true\n \n public record FieldDefaultsViaConfigFinalOnRecord() {\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -quiet test.compile && CP='build/tests:build/teststubs:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants:lib/test/*:lib/stripe/*:lib/eclipse-oxygen/*' && /usr/lib/jvm/java-17-openjdk-arm64/bin/java --add-opens=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED -cp \"$CP\" FieldDefaultsTestRunner && git diff --check && git --no-pager diff --stat && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 -c 'import os,sys,subprocess; fd=os.memfd_create(\"FieldDefaultsCompileCheck.java\",0); os.write(fd,sys.stdin.buffer.read()); os.lseek(fd,0,0); cmd=[\"/usr/lib/jvm/java-17-openjdk-arm64/bin/java\"]+[\"--add-opens=jdk.compiler/com.sun.tools.javac.\"+p+\"=ALL-UNNAMED\" for p in [\"processing\",\"util\",\"tree\",\"code\",\"main\",\"model\",\"file\",\"parser\",\"comp\",\"jvm\"]]+[\"--class-path\",\"build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants\",\"--source\",\"17\",\"/proc/self/fd/\"+str(fd)]; sys.exit(subprocess.call(cmd,pass_fds=(fd,)))' <<'EOF'\nimport java.net.*;\nimport java.nio.file.*;\nimport java.lang.reflect.Modifier;\nimport java.util.*;\nimport javax.tools.*;\nimport lombok.core.LombokConfiguration;\nclass FieldDefaultsCompileCheck {\n static void compile(Path directory, String name, String code, boolean expected) throws Exception {\n  JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();\n  DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();\n  JavaFileObject source = new SimpleJavaFileObject(directory.resolve(name + \".java\").toUri(), JavaFileObject.Kind.SOURCE) {\n   public CharSequence getCharContent(boolean ignoreEncodingErrors) { return code; }\n  };\n  try (StandardJavaFileManager files = compiler.getStandardFileManager(diagnostics, null, null)) {\n   JavaCompiler.CompilationTask task = compiler.getTask(null, files, diagnostics, List.of(\"-d\", directory.toString()), null, List.of(source));\n   task.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\n   boolean success = task.call();\n   if (success != expected) throw new AssertionError(name + \": \" + diagnostics.getDiagnostics());\n   if (!expected) {\n    long errors = diagnostics.getDiagnostics().stream().filter(d -> d.getKind() == Diagnostic.Kind.ERROR).count();\n    if (errors != 1 || !diagnostics.getDiagnostics().get(0).getMessage(Locale.ROOT).equals(\"@FieldDefaults is only supported on a class or an enum.\")) {\n     throw new AssertionError(\"Wrong explicit annotation error: \" + diagnostics.getDiagnostics());\n    }\n   }\n  }\n }\n public static void main(String[] args) throws Exception {\n  LombokConfiguration.overrideConfigurationResolverFactory(null);\n  for (int flags = 0; flags < 4; flags++) {\n   boolean makePrivate = (flags & 1) != 0;\n   boolean makeFinal = (flags & 2) != 0;\n   Path directory = Files.createTempDirectory(Path.of(\"build\").toAbsolutePath(), \"field-defaults-record-\");\n   try {\n    Files.writeString(directory.resolve(\"lombok.config\"), \"config.stopBubbling = true\\nlombok.fieldDefaults.defaultPrivate = \" + makePrivate + \"\\nlombok.fieldDefaults.defaultFinal = \" + makeFinal + \"\\n\");\n    compile(directory, \"Empty\", \"public record Empty() {}\", true);\n    compile(directory, \"Foo\", \"public record Foo(int component) { static int counter; record NestedRecord() {} static class NestedClass { int value = 1; } }\", true);\n    compile(directory, \"Explicit\", \"@lombok.experimental.FieldDefaults(makeFinal = true) public record Explicit() {}\", false);\n    try (URLClassLoader loader = new URLClassLoader(new URL[] {directory.toUri().toURL()})) {\n     int component = loader.loadClass(\"Foo\").getDeclaredField(\"component\").getModifiers();\n     int counter = loader.loadClass(\"Foo\").getDeclaredField(\"counter\").getModifiers();\n     int nested = loader.loadClass(\"Foo$NestedClass\").getDeclaredField(\"value\").getModifiers();\n     if (!Modifier.isPrivate(component) || !Modifier.isFinal(component)) throw new AssertionError(\"Record component changed\");\n     if (Modifier.isPrivate(counter) || Modifier.isFinal(counter)) throw new AssertionError(\"Record static field changed\");\n     if (Modifier.isPrivate(nested) != makePrivate || Modifier.isFinal(nested) != makeFinal) throw new AssertionError(\"Nested class defaults changed\");\n    }\n   } finally {\n    try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {\n     for (Path file : files) Files.delete(file);\n    }\n    Files.delete(directory);\n   }\n  }\n  System.out.println(\"Compilation and field modifiers verified for all four config combinations; explicit record annotations still rejected.\");\n }\n}\nEOF",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find lib -maxdepth 2 -iname '*asm*' && grep -n 'org.objectweb\\|asm\\|lombok-deps' buildScripts/{ivy.xml,compile.ant.xml} | head -35 && ls build/lombok-deps 2>/dev/null && git --no-pager diff -- src/core/lombok/javac/handlers/HandleFieldDefaults.java src/core/lombok/eclipse/handlers/HandleFieldDefaults.java website/templates/features/experimental/FieldDefaults.html",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '214,240p' buildScripts/compile.ant.xml && sed -n '25,60p' buildScripts/ivy.xml && find . -maxdepth 3 -type f -iname '*asm*' -o -name '*deps*' && unzip -l lib/stripe/org.projectlombok-lombok.patcher.jar | grep 'ClassVisitor\\|asm' | head -8 && grep -n 'disablePostCompiler' src/core/lombok/core/PostCompiler.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff -- src/core/lombok/javac/handlers/HandleFieldDefaults.java src/core/lombok/eclipse/handlers/HandleFieldDefaults.java website/templates/features/experimental/FieldDefaults.html && cat test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java && find build -maxdepth 1 -name 'field-defaults-record-*' && ls -l $(command -v ant)",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 -c 'import os,sys,subprocess; fd=os.memfd_create(\"FieldDefaultsCompileCheck.java\",0); os.write(fd,sys.stdin.buffer.read()); os.lseek(fd,0,0); cmd=[\"/usr/lib/jvm/java-17-openjdk-arm64/bin/java\"]+[\"--add-opens=jdk.compiler/com.sun.tools.javac.\"+p+\"=ALL-UNNAMED\" for p in [\"processing\",\"util\",\"tree\",\"code\",\"main\",\"model\",\"file\",\"parser\",\"comp\",\"jvm\"]]+[\"--class-path\",\"build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants:lib/stripe/*\",\"--source\",\"17\",\"/proc/self/fd/\"+str(fd)]; sys.exit(subprocess.call(cmd,pass_fds=(fd,)))' <<'EOF'\nimport java.net.*;\nimport java.nio.file.*;\nimport java.lang.reflect.Modifier;\nimport java.util.*;\nimport javax.tools.*;\nimport lombok.core.LombokConfiguration;\nclass FieldDefaultsCompileCheck {\n static void compile(Path directory, String name, String code, boolean expected) throws Exception {\n  JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();\n  DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();\n  JavaFileObject source = new SimpleJavaFileObject(directory.resolve(name + \".java\").toUri(), JavaFileObject.Kind.SOURCE) {\n   public CharSequence getCharContent(boolean ignoreEncodingErrors) { return code; }\n  };\n  try (StandardJavaFileManager files = compiler.getStandardFileManager(diagnostics, null, null)) {\n   JavaCompiler.CompilationTask task = compiler.getTask(null, files, diagnostics, List.of(\"-d\", directory.toString()), null, List.of(source));\n   task.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\n   boolean success = task.call();\n   if (success != expected) throw new AssertionError(name + \": \" + diagnostics.getDiagnostics());\n   if (!expected) {\n    long errors = diagnostics.getDiagnostics().stream().filter(d -> d.getKind() == Diagnostic.Kind.ERROR).count();\n    if (errors != 1 || !diagnostics.getDiagnostics().get(0).getMessage(Locale.ROOT).equals(\"@FieldDefaults is only supported on a class or an enum.\")) {\n     throw new AssertionError(\"Wrong explicit annotation error: \" + diagnostics.getDiagnostics());\n    }\n   }\n  }\n }\n public static void main(String[] args) throws Exception {\n  LombokConfiguration.overrideConfigurationResolverFactory(null);\n  for (int flags = 0; flags < 4; flags++) {\n   boolean makePrivate = (flags & 1) != 0;\n   boolean makeFinal = (flags & 2) != 0;\n   Path directory = Files.createTempDirectory(Path.of(\"build\").toAbsolutePath(), \"field-defaults-record-\");\n   try {\n    Files.writeString(directory.resolve(\"lombok.config\"), \"config.stopBubbling = true\\nlombok.fieldDefaults.defaultPrivate = \" + makePrivate + \"\\nlombok.fieldDefaults.defaultFinal = \" + makeFinal + \"\\n\");\n    compile(directory, \"Empty\", \"public record Empty() {}\", true);\n    compile(directory, \"Foo\", \"public record Foo(int component) { static int counter; record NestedRecord() {} static class NestedClass { int value = 1; } }\", true);\n    compile(directory, \"Explicit\", \"@lombok.experimental.FieldDefaults(makeFinal = true) public record Explicit() {}\", false);\n    try (URLClassLoader loader = new URLClassLoader(new URL[] {directory.toUri().toURL()})) {\n     int component = loader.loadClass(\"Foo\").getDeclaredField(\"component\").getModifiers();\n     int counter = loader.loadClass(\"Foo\").getDeclaredField(\"counter\").getModifiers();\n     int nested = loader.loadClass(\"Foo$NestedClass\").getDeclaredField(\"value\").getModifiers();\n     if (!Modifier.isPrivate(component) || !Modifier.isFinal(component)) throw new AssertionError(\"Record component changed\");\n     if (Modifier.isPrivate(counter) || Modifier.isFinal(counter)) throw new AssertionError(\"Record static field changed\");\n     if (Modifier.isPrivate(nested) != makePrivate || Modifier.isFinal(nested) != makeFinal) throw new AssertionError(\"Nested class defaults changed\");\n    }\n   } finally {\n    try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {\n     for (Path file : files) Files.delete(file);\n    }\n    Files.delete(directory);\n   }\n  }\n  System.out.println(\"Compilation and field modifiers verified for all four config combinations; explicit record annotations still rejected.\");\n }\n}\nEOF",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n 'getAbsoluteFileLocation\\|absoluteFileLocation\\|getFileName' src/core/lombok/{core/AST,javac/JavacAST}.java && sed -n '35,145p' src/core/lombok/core/configuration/FileSystemSourceCache.java && sed -n '70,120p' src/core/lombok/javac/JavacAST.java && sed -n '70,120p' src/core/lombok/core/AST.java && cat lombok.config 2>/dev/null || true",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find build -maxdepth 1 -name 'field-defaults-record-*' && git diff --check && grep -n 'RECORD' src/core/lombok/javac/Javac.java | head -10 && grep -n 'JavacAST.*traverse\\|visitType\\|traverseChildren' src/core/lombok/javac/JavacNode.java | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 -c 'import os,sys,subprocess; fd=os.memfd_create(\"FieldDefaultsCompileCheck.java\",0); os.write(fd,sys.stdin.buffer.read()); os.lseek(fd,0,0); cmd=[\"/usr/lib/jvm/java-17-openjdk-arm64/bin/java\"]+[\"--add-opens=jdk.compiler/com.sun.tools.javac.\"+p+\"=ALL-UNNAMED\" for p in [\"processing\",\"util\",\"tree\",\"code\",\"main\",\"model\",\"file\",\"parser\",\"comp\",\"jvm\"]]+[\"--class-path\",\"build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants:lib/stripe/*\",\"--source\",\"17\",\"/proc/self/fd/\"+str(fd)]; sys.exit(subprocess.call(cmd,pass_fds=(fd,)))' <<'EOF'\nimport java.net.*;\nimport java.nio.file.*;\nimport java.lang.reflect.Modifier;\nimport java.util.*;\nimport javax.tools.*;\nimport lombok.core.LombokConfiguration;\nclass FieldDefaultsCompileCheck {\n static void compile(Path directory, String name, String code, boolean expected) throws Exception {\n  JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();\n  DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();\n  Path source = directory.resolve(name + \".java\");\n  Files.writeString(source, code);\n  try (StandardJavaFileManager files = compiler.getStandardFileManager(diagnostics, null, null)) {\n   JavaCompiler.CompilationTask task = compiler.getTask(null, files, diagnostics, List.of(\"-d\", directory.toString()), null, files.getJavaFileObjects(source));\n   task.setProcessors(List.of(new lombok.javac.apt.LombokProcessor()));\n   boolean success = task.call();\n   if (success != expected) throw new AssertionError(name + \": \" + diagnostics.getDiagnostics());\n   if (!expected) {\n    var errors = diagnostics.getDiagnostics().stream().filter(d -> d.getKind() == Diagnostic.Kind.ERROR).toList();\n    if (errors.size() != 1 || !errors.get(0).getMessage(Locale.ROOT).equals(\"@FieldDefaults is only supported on a class or an enum.\")) {\n     throw new AssertionError(\"Wrong explicit annotation error: \" + diagnostics.getDiagnostics());\n    }\n   }\n  }\n }\n public static void main(String[] args) throws Exception {\n  LombokConfiguration.overrideConfigurationResolverFactory(null);\n  for (int flags = 0; flags < 4; flags++) {\n   boolean makePrivate = (flags & 1) != 0;\n   boolean makeFinal = (flags & 2) != 0;\n   Path directory = Files.createTempDirectory(Path.of(\"build\").toAbsolutePath(), \"field-defaults-record-\");\n   try {\n    Files.writeString(directory.resolve(\"lombok.config\"), \"config.stopBubbling = true\\nlombok.fieldDefaults.defaultPrivate = \" + makePrivate + \"\\nlombok.fieldDefaults.defaultFinal = \" + makeFinal + \"\\n\");\n    compile(directory, \"Empty\", \"public record Empty() {}\", true);\n    compile(directory, \"Foo\", \"public record Foo(int component) { static int counter; record NestedRecord() {} static class NestedClass { int value = 1; } }\", true);\n    compile(directory, \"Explicit\", \"@lombok.experimental.FieldDefaults(makeFinal = true) public record Explicit() {}\", false);\n    try (URLClassLoader loader = new URLClassLoader(new URL[] {directory.toUri().toURL()})) {\n     int component = loader.loadClass(\"Foo\").getDeclaredField(\"component\").getModifiers();\n     int counter = loader.loadClass(\"Foo\").getDeclaredField(\"counter\").getModifiers();\n     int nested = loader.loadClass(\"Foo$NestedClass\").getDeclaredField(\"value\").getModifiers();\n     if (!Modifier.isPrivate(component) || !Modifier.isFinal(component)) throw new AssertionError(\"Record component changed\");\n     if (Modifier.isPrivate(counter) || Modifier.isFinal(counter)) throw new AssertionError(\"Record static field changed\");\n     if (Modifier.isPrivate(nested) != makePrivate || Modifier.isFinal(nested) != makeFinal) throw new AssertionError(\"Nested class defaults changed for config \" + flags + \": \" + nested);\n    }\n   } finally {\n    try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {\n     for (Path file : files) Files.delete(file);\n    }\n    Files.delete(directory);\n   }\n  }\n  System.out.println(\"Compilation and field modifiers verified for all four config combinations; explicit record annotations still rejected.\");\n }\n}\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm build/FieldDefaultsTestRunner.java build/tests/FieldDefaultsTestRunner.class 'build/tests/FieldDefaultsTestRunner$Selected.class' && git diff --check && git status --short && printf '\\n--- new regression fixtures ---\\n' && for file in test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java; do cat \"$file\"; done && printf '\\n--- remaining temporary compilation directories ---\\n' && find build -maxdepth 1 -name 'field-defaults-record-*'",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 2,
+ "build_or_test_commands": [
+  "cd /testbed && git apply <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleFieldDefaults.java b/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n--- a/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n+++ b/src/core/lombok/javac/handlers/HandleFieldDefaults.java\n@@ -135,1 +135,1 @@\n-\t\tif (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\ndiff --git a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n--- a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n+++ b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java\n@@ -163,1 +163,1 @@\n-\t\tif (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;\n+\t\tif (fd == null && !isClassOrEnum(typeNode)) return;\ndiff --git a/website/templates/features/experimental/FieldDefaults.html b/website/templates/features/experimental/FieldDefaults.html\n--- a/website/templates/features/experimental/FieldDefaults.html\n+++ b/website/templates/features/experimental/FieldDefaults.html\n@@ -61,2 +61,4 @@\n \t\t<p>\n+\t\t\tThe <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration keys do not apply to records. Explicitly using <code>@FieldDefaults</code> on a record is an error.\n+\t\t</p><p>\n \t\t\tLike other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.\ndiff --git a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigOnRecord.java\n@@ -1,1 +1,2 @@\n // version 14:\n+// unchanged\n diff --git a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigPrivateOnRecord.java\n@@ -1,1 +1,2 @@\n // version 14:\n+// unchanged\n diff --git a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n--- a/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n+++ b/test/transform/resource/before/FieldDefaultsViaConfigFinalOnRecord.java\n@@ -1,1 +1,2 @@\n // version 14:\n+// unchanged\nPATCH\nJAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -quiet test.compile",
+  "cd /testbed && JAVA_HOME=/usr/lib/jvm/java-17-openjdk-arm64 PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH ant -quiet test.compile && CP='build/tests:build/teststubs:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-version:build/lombok-transplants:lib/test/*:lib/stripe/*:lib/eclipse-oxygen/*' && /usr/lib/jvm/java-17-openjdk-arm64/bin/java --add-opens=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED --add-opens=jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED -cp \"$CP\" FieldDefaultsTestRunner && git diff --check && git --no-pager diff --stat && git status --short"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && PATH=/usr/lib/jvm/java-17-openjdk-arm64/bin:$PATH peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"src/core/lombok/javac/handlers/HandleFieldDefaults.java\"],\"class_roots\":[\"build/lombok-main\"]}') --at src/core/lombok/javac/handlers/HandleFieldDefaults.java:61 --capture 'level,makeFinal,1:fd,1:defaultToPrivate,1:defaultToFinal,1:type.mods.flags,1:type.name' --timeout 60",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 4
+ },
+ "peeky_doc_reads": 5,
+ "peeky_mentions_in_commands": 10,
+ "peeky_withheld_markers": 4,
+ "peeky_withheld_by_marker": {
+  "not settable": 4
+ },
+ "peeky_values_printed": 7,
+ "contaminated": false,
+ "final_message": "Fixed the implicit-default guard in both javac and Eclipse to exclude records, while preserving errors for explicit `@FieldDefaults`. The guard previously omitted records; Peeky\u2019s probe at `HandleFieldDefaults.java:61` showed `fd=null` and both configuration defaults `true` at the error. Added regression cases and updated documentation.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the record failure, inspect it with Peeky before editing, and then fix the implicit field-default handling while preserving explicit annotation errors.\n",
+  "The in-memory reproduction failed with the reported error. The implicit-default guard excludes interfaces and annotations but not records; I\u2019ll inspect the error path with Peeky before changing both compiler handlers.\n",
+  "Fixed the implicit-default guard in both javac and Eclipse to exclude records, while preserving errors for explicit `@FieldDefaults`. The guard previously omitted records; Peeky\u2019s probe at `HandleFieldDefaults.java:61` showed `fd=null` and both configuration defaults `true` at the error. Added regression cases and updated documentation."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating file reproduction requirements**\n\nI\u2019m considering if I need to reproduce everything before editing any file, including fixtures. Should I use the existing Record tests config? It might be easiest to work with the existing FieldDefaults. Although, using javac stdin seems impossible. And I think there may be requirements for a Lombok config file as well. I need to check my paths and examine the build and tests thoroughly before proceeding with any action.",
+  "**Exploring JDK17 options**\n\nI\u2019m looking into JDK17 and how jshell operates, particularly regarding the class path and the flags required for reflection and annotation processing. It seems I need to consider things like the direct class path and module flags. There\u2019s a possibility of patching it to better handle Java source via stdin using jshell. I wonder if I can compile and test it with the javax.tools API and set the resolver factory through the code. Let's inspect that!",
+  "**Exploring git apply for patches**\n\nI\u2019m considering using `git apply` for manual edits as a non-interactive way to handle patches. This method seems precise, like doing surgery on my changes. Before editing the source, I want to gather all the information and run baseline tests first to ensure I can catch any potential regressions. It looks like I'll need to set an efficient target run and use the specific runner for these tests with `DEBUG_FOCUS_ON_FILE` at the top.",
+  "**Considering Ant and Java issues**\n\nI\u2019m noticing some potential issues with Ant compilation and the JAVA_HOME environment variable. It seems like there might be warnings in JDK24, which I need to keep an eye on. I wonder if the user command for Ant might override the environmental settings? Also, I need to check if ant0s means that there\u2019s no change since the last compilation. Now I should remember to recompile the updated handlers.",
+  "**Reducing Java script complexity**\n\nI\u2019m thinking about how to simplify things with Java script. By adding `lib/stripe/*` to the classpath during the postcompiler step, I can solve some issues without installing any additional tools. Running the same command with the path including `lib/stripe` seems to help, and it looks like it could cut down on the 60 lines of repeated code, which feels like a good improvement overall!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 473.6
+}

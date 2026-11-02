@@ -1,0 +1,7 @@
+{
+ "judge_id": "a251",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The current route applies geocentric-to-topocentric aberration, shifting the nearby overhead object by more than three degrees.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

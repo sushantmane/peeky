@@ -1,0 +1,7 @@
+{
+ "judge_id": "a115",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Dotted-bracket parsing was incomplete: this commit already supports the reported object-key chain, but rejected chained iterators and slices.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

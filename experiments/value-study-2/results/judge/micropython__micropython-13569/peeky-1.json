@@ -1,0 +1,7 @@
+{
+ "judge_id": "a252",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The compiler underestimated stack space for `finally` during return unwinding, allowing stack operations to overwrite `self`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

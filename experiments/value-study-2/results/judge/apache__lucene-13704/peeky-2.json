@@ -1,0 +1,7 @@
+{
+ "judge_id": "a257",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: The latitude bound check can overflow: for narrow shapes near the north pole, `latBase + maxLatDelta` becomes negative and rejects valid points.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

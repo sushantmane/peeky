@@ -1,0 +1,7 @@
+{
+ "judge_id": "a151",
+ "wrong_root_cause": false,
+ "evidence": "Message 5: \"The compiler released its unwind-stack reservation before compiling `finally`, letting temporaries overwrite `self`.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 22 probe at runtime.c:1234 (mp_load_method's no-attribute error path) showed base 0x0000000000000003 and dest[0] 0x0; the same run's output 'AttributeError: 'int' object has no attribute '_i'' (also cmds 10, 19, and cmd 25 area rerun) confirms base was a small int (0x3 = small int 1 under (n<<1)|1 encoding shown later) and the lookup failed. Cmds 10/19 values were [unproven] or 'no value yet' and not counted; cmds 8, 12, 34 were errors/no-stop. Nothing contradicts."
+}

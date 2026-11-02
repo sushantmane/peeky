@@ -1,0 +1,7 @@
+{
+ "judge_id": "a044",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"`cp`'s path argument lacks `.num_args(1..)`, so Zsh gets a completion rule for only one path.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

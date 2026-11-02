@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One attempt of the study: a fresh container, the agent, then grading in that container.
 
-    harness/run_one.py <bug_id> <control|peeky> <rep> [--results DIR] [--bugs DIR]
+    harness/run_one.py <bug_id> <arm> <rep> [--results DIR] [--bugs DIR]
                        [--budget-minutes 40] [--budget-credits 250] [--fake-agent gold|noop]
 
 Writes <results>/<bug>/<arm>-<rep>/: prompt.txt, command.json, bash_env.sh, events.jsonl.gz
@@ -81,11 +81,10 @@ def now():
 
 def build_prompt(bug, arm):
     meta = bug["meta"]
-    template = (studylib.HARNESS / "prompt.md").read_text()
-    if arm == "peeky":
-        template = (
-            template.rstrip("\n") + "\n\n" + (studylib.HARNESS / "prompt-peeky.md").read_text()
-        )
+    first, *rest = studylib.arm_prompts(arm)
+    template = first.read_text()
+    for part in rest:
+        template = template.rstrip("\n") + "\n\n" + part.read_text()
     language = str(meta.get("language") or "")
     problem = (bug["dir"] / "problem.md").read_text().strip("\n")
     values = [
@@ -403,10 +402,11 @@ def main():
     try:
         info = studylib.image_info(image)
         result["image_digest"] = info["id"]
-        result["peeky_sha"] = info["peeky_sha"] if args.arm == "peeky" else None
-        if args.arm == "peeky" and not info["peeky_sha"]:
+        uses_peeky = studylib.arm_uses_peeky(args.arm)
+        result["peeky_sha"] = info["peeky_sha"] if uses_peeky else None
+        if uses_peeky and not info["peeky_sha"]:
             raise RuntimeError("{} has no peeky-study.peeky-sha label".format(image))
-        if args.arm == "control" and info["peeky_sha"]:
+        if not uses_peeky and info["peeky_sha"]:
             raise RuntimeError("{} is a Peeky image".format(image))
         if args.fake_agent:
             studylib.start_container(image, container)

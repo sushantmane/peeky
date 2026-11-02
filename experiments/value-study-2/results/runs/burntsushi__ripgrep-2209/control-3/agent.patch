@@ -1,0 +1,125 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ba427f9..2e1a46b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,6 +8,8 @@ Bug fixes:
+   Fix bug when using `-w` with a regex that can match the empty string.
+ * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):
+   Disable mmap searching in all non-64-bit environments.
++* Fix multiline replacements including or replacing text beyond the matching
++  lines.
+ 
+ 
+ 13.0.0 (2021-06-12)
+diff --git a/crates/printer/src/standard.rs b/crates/printer/src/standard.rs
+index df4447c..cff49b0 100644
+--- a/crates/printer/src/standard.rs
++++ b/crates/printer/src/standard.rs
+@@ -3316,6 +3316,27 @@ Holmeses, success in the province of detective work must always
+         assert_eq_printed!(expected, got);
+     }
+ 
++    #[test]
++    fn replacement_multi_line_bounded() {
++        let matcher = RegexMatcher::new(r"foo\n(?P<last>bar)").unwrap();
++        let mut printer = StandardBuilder::new()
++            .replacement(Some(b"$last".to_vec()))
++            .build(NoColor::new(vec![]));
++        SearcherBuilder::new()
++            .line_number(true)
++            .multi_line(true)
++            .build()
++            .search_reader(
++                &matcher,
++                "before\nprefix foo\nbar suffix\nafter\n".as_bytes(),
++                printer.sink(&matcher),
++            )
++            .unwrap();
++
++        let got = printer_contents(&mut printer);
++        assert_eq_printed!("2:prefix bar suffix\n", got);
++    }
++
+     #[test]
+     fn replacement_max_columns() {
+         let matcher = RegexMatcher::new(r"Sherlock|Doctor (\w+)").unwrap();
+diff --git a/crates/printer/src/util.rs b/crates/printer/src/util.rs
+index 434deec..8c12dd3 100644
+--- a/crates/printer/src/util.rs
++++ b/crates/printer/src/util.rs
+@@ -82,13 +82,19 @@ impl<M: Matcher> Replacer<M> {
+             dst.clear();
+             matches.clear();
+ 
++            let mut last_match = range.start;
+             matcher
+-                .replace_with_captures_at(
++                .captures_iter_at(
+                     subject,
+                     range.start,
+                     caps,
+-                    dst,
+-                    |caps, dst| {
++                    |caps| {
++                        let m = caps.get(0).unwrap();
++                        if m.start() >= range.end {
++                            return false;
++                        }
++                        dst.extend(&subject[last_match..m.start()]);
++                        last_match = m.end();
+                         let start = dst.len();
+                         caps.interpolate(
+                             |name| matcher.capture_index(name),
+@@ -102,6 +108,11 @@ impl<M: Matcher> Replacer<M> {
+                     },
+                 )
+                 .map_err(io::Error::error_message)?;
++            // Keep the look-ahead context out of the replacement output.
++            let end = range.end.min(subject.len());
++            if last_match < end {
++                dst.extend(&subject[last_match..end]);
++            }
+         }
+         Ok(())
+     }
+diff --git a/tests/multiline.rs b/tests/multiline.rs
+index d084c96..ecdb6b1 100644
+--- a/tests/multiline.rs
++++ b/tests/multiline.rs
+@@ -119,3 +119,36 @@ rgtest!(context, |dir: Dir, mut cmd: TestCommand| {
+ ";
+     eqnice!(expected, cmd.stdout());
+ });
++
++rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {
++    dir.create(
++        "test",
++        "before\n# first\npipc () {  # usage\nignored\n\
++         # second\npipc () {  # other\ntrailing\n",
++    );
++    let pattern = concat!(
++        r"^(?P<predoc>\n?(# .*\n)*)",
++        r"(?P<fname>pipc) \(\) \{(  #(?P<usage> .+))?",
++    );
++    cmd.args(&["-NU", "-r", "$usage", pattern, "test"]);
++    eqnice!(" usage\n other\n", cmd.stdout());
++
++    let mut cmd = dir.command();
++    cmd.args(&["-NUo", "-r", "$usage", pattern, "test"]);
++    eqnice!(" usage\n other\n", cmd.stdout());
++});
++
++rgtest!(replacement_lookaround, |dir: Dir, mut cmd: TestCommand| {
++    if !dir.is_pcre2() {
++        return;
++    }
++    dir.create("test", "foo\nbar\nfoo\nbaz\n");
++    cmd.args(&["-NU", "-r", "$1!", r"(?<=foo\n)(bar)(?=\nfoo)", "test"]);
++    eqnice!("bar!\n", cmd.stdout());
++});
++
++rgtest!(replacement_empty_boundary, |dir: Dir, mut cmd: TestCommand| {
++    dir.create("test", "foo\nbar\n");
++    cmd.args(&["-NU", "-r", "X", r"foo|$", "test"]);
++    eqnice!("X\nbarX\n", cmd.stdout());
++});

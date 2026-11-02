@@ -12,10 +12,52 @@ from pathlib import Path
 
 HARNESS = Path(__file__).resolve().parent
 STUDY = HARNESS.parent
-BUGS = STUDY / "bugs"
-RESULTS = STUDY / "results"
+
+# A later round reuses this harness with a study config: a JSON file that $PEEKY_STUDY_CONFIG
+# names (value-study-2/study.json). Without one, everything is as this round ran it. Paths in a
+# config are relative to the config's directory. Its keys:
+#   "bugs", "results": directories; "seed": the schedule's shuffle and the bootstrap's seed;
+#   "arms": {arm: {"image_tag": tag, "prompts": [files, joined], "peeky": bool}}, in order;
+#   "comparisons": [[treatment, base], ...], the first being the primary outcome.
+DEFAULT_ARMS = {
+    "control": {"image_tag": "control", "prompts": [str(HARNESS / "prompt.md")], "peeky": False},
+    "peeky": {
+        "image_tag": "peeky",
+        "prompts": [str(HARNESS / "prompt.md"), str(HARNESS / "prompt-peeky.md")],
+        "peeky": True,
+    },
+}
+
+
+def _load_config():
+    path = os.environ.get("PEEKY_STUDY_CONFIG")
+    if not path:
+        return None, {}
+    path = Path(path).resolve()
+    data = json.loads(path.read_text())
+    base = path.parent
+
+    def resolve(value):
+        return str((base / value).resolve())
+
+    for key in ("bugs", "results"):
+        if key in data:
+            data[key] = resolve(data[key])
+    for arm in (data.get("arms") or {}).values():
+        arm["prompts"] = [resolve(prompt) for prompt in arm.get("prompts", [])]
+    return path, data
+
+
+CONFIG_PATH, CONFIG = _load_config()
+BUGS = Path(CONFIG.get("bugs") or STUDY / "bugs")
+RESULTS = Path(CONFIG.get("results") or STUDY / "results")
 RUNS = RESULTS / "runs"
-ARMS = ("control", "peeky")
+ARM_SPECS = CONFIG.get("arms") or DEFAULT_ARMS
+ARMS = tuple(ARM_SPECS)
+SEED = int(CONFIG.get("seed", 441))
+COMPARISONS = [tuple(pair) for pair in CONFIG.get("comparisons", [["peeky", "control"]])]
+# Whether the analysis adds what round 1's report didn't have (more arms, values printed).
+EXTENDED = set(ARMS) != {"control", "peeky"}
 START_MARKER = ">>>>> Start Test Output"
 END_MARKER = ">>>>> End Test Output"
 PASSING = ("PASSED", "XFAIL")
@@ -220,11 +262,24 @@ def load_bug(bug_id, bugs=None):
         "grade": grade,
         "control_image": control,
         "peeky_image": base + ":peeky",
+        "image_base": base,
     }
 
 
 def image_for(bug, arm):
-    return bug["control_image"] if arm == "control" else bug["peeky_image"]
+    if not CONFIG:
+        return bug["control_image"] if arm == "control" else bug["peeky_image"]
+    tag = ARM_SPECS[arm]["image_tag"]
+    return bug["control_image"] if tag == "control" else "{}:{}".format(bug["image_base"], tag)
+
+
+def arm_uses_peeky(arm):
+    return bool(ARM_SPECS[arm]["peeky"])
+
+
+def arm_prompts(arm):
+    """The prompt files an arm's prompt joins, in order."""
+    return [Path(prompt) for prompt in ARM_SPECS[arm]["prompts"]]
 
 
 def validation_ok(directory):

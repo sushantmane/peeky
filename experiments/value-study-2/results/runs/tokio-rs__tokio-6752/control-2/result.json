@@ -1,0 +1,198 @@
+{
+ "bug": "tokio-rs__tokio-6752",
+ "arm": "control",
+ "rep": 2,
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__tokio-6752:control",
+ "image_digest": "sha256:2eb21fb21a126603c4a6dd59422d4832b82354957b3bdfa9b22c7dfe1b7d4785",
+ "peeky_sha": null,
+ "container": "study-tokio-rs__tokio-6752-control-2-eb7b4a",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:30:17+00:00",
+ "ended": "2026-11-01T13:31:44+00:00",
+ "wall_seconds": 86.3,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "wake_after_remove_last": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "eaf901b3c98775e370b3b4881480614d74c84f3f619f5046d862f5476b82d2df",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "tokio-util/src/time/delay_queue.rs"
+ ],
+ "patch_bytes": 1789,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 33
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 9,
+ "ai_credits": 10.8011,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 146418,
+  "output": 3440,
+  "cache_read": 121842,
+  "cache_write": 24549,
+  "reasoning": 1313
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 13,
+ "tool_calls_by_name": {
+  "bash": 13
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls && if [ -d /testbed ]; then ls /testbed; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg -n 'fn (remove|try_remove|poll_expired|clear|poll_idx)|waker|fn compact' tokio-util/src/time/delay_queue.rs && sed -n '1,260p' tokio-util/src/time/delay_queue.rs && sed -n '1,180p' tokio-util/Cargo.toml",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg --files tokio-util/tests | grep -E '(delay|time)' && sed -n '1,260p' tokio-util/tests/time_delay_queue.rs && sed -n '1,160p' Cargo.toml",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'fn (remove|try_remove|poll_expired|clear|poll_idx|compact)|waker' tokio-util/src/time/delay_queue.rs && sed -n '1,260p' tokio-util/src/time/delay_queue.rs && cat tokio-util/Cargo.toml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find tokio-util/tests -maxdepth 1 -iname '*time*' -o -iname '*delay*' && sed -n '1,300p' tokio-util/tests/time_delay_queue.rs && sed -n '1,180p' Cargo.toml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '490,850p' tokio-util/src/time/delay_queue.rs && sed -n '925,1185p' tokio-util/src/time/delay_queue.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'try_remove|remove|woken|clear|insert.*empty|empty' tokio-util/tests/time_delay_queue.rs && sed -n '750,1080p' tokio-util/tests/time_delay_queue.rs && ls -a .cargo && command -v apply_patch && grep -n 'test-util' tokio/Cargo.toml tokio-test/Cargo.toml",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '515,710p' tokio-util/tests/time_delay_queue.rs && sed -n '843,910p' tokio-util/src/time/delay_queue.rs && grep -n 'test-util' tokio/Cargo.toml tokio-test/Cargo.toml && command -v apply_patch && cargo --version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'self\\.waker\\.take\\(\\)|pub fn (remove|clear)' tokio-util/src/time/*.rs && sed -n '1,180p' tokio-test/src/task.rs && git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply <<'PATCH'\ndiff --git a/tokio-util/tests/time_delay_queue.rs b/tokio-util/tests/time_delay_queue.rs\n--- a/tokio-util/tests/time_delay_queue.rs\n+++ b/tokio-util/tests/time_delay_queue.rs\n@@ -171,6 +171,34 @@ async fn remove_entry() {\n     assert!(entry.is_none());\n }\n \n+#[tokio::test(start_paused = true)]\n+async fn remove_last_entry_wakes_poller() {\n+    let mut queue = task::spawn(DelayQueue::new());\n+    let key = queue.insert(\"foo\", Duration::from_secs(100));\n+\n+    assert_pending!(poll!(queue));\n+    assert!(!queue.is_woken());\n+\n+    let entry = queue.remove(&key);\n+    assert_eq!(entry.into_inner(), \"foo\");\n+    assert!(queue.is_woken());\n+    assert!(assert_ready!(poll!(queue)).is_none());\n+}\n+\n+#[tokio::test(start_paused = true)]\n+async fn try_remove_last_entry_wakes_poller() {\n+    let mut queue = task::spawn(DelayQueue::new());\n+    let key = queue.insert(\"foo\", Duration::from_secs(100));\n+\n+    assert_pending!(poll!(queue));\n+    assert!(!queue.is_woken());\n+\n+    let entry = queue.try_remove(&key).unwrap();\n+    assert_eq!(entry.into_inner(), \"foo\");\n+    assert!(queue.is_woken());\n+    assert!(assert_ready!(poll!(queue)).is_none());\n+}\n+\n #[tokio::test]\n async fn reset_entry() {\n     time::pause();\nPATCH\ncargo test -p tokio-util --features full --test time_delay_queue remove_last_entry --offline",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tokio-util/src/time/delay_queue.rs b/tokio-util/src/time/delay_queue.rs\n--- a/tokio-util/src/time/delay_queue.rs\n+++ b/tokio-util/src/time/delay_queue.rs\n@@ -152,4 +152,3 @@\n-    /// Waker that is invoked when we potentially need to reset the timer.\n-    /// Because we lazily create the timer when the first entry is created, we\n-    /// need to awaken any poller that polled us before that point.\n+    /// Waker to notify when the queue's state changes without resetting an\n+    /// existing timer, such as when inserting the first or removing the last item.\n     waker: Option<Waker>,\n@@ -727,6 +726,9 @@\n     /// removed item as well as the `Instant` at which it will the delay will\n     /// have expired.\n     ///\n+    /// If this removes the last item in the queue, the task registered by\n+    /// [`poll_expired`](Self::poll_expired) is woken to observe the empty queue.\n+    ///\n     /// # Panics\n@@ -766,6 +768,12 @@\n                 (Some(deadline), None) => self.delay = Some(Box::pin(sleep_until(deadline))),\n             }\n         }\n \n+        if self.is_empty() {\n+            if let Some(waker) = self.waker.take() {\n+                waker.wake();\n+            }\n+        }\n+\n         Expired {\n@@ -782,6 +790,9 @@\n     /// Returns `None` if `key` is not in the queue.\n     ///\n+    /// If this removes the last item in the queue, the task registered by\n+    /// [`poll_expired`](Self::poll_expired) is woken to observe the empty queue.\n+    ///\n     /// # Examples\nPATCH\ncargo test -p tokio-util --features full --test time_delay_queue --offline && git --no-pager diff --check && git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff -- tokio-util/src/time/delay_queue.rs tokio-util/tests/time_delay_queue.rs && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rustfmt --check --edition 2021 tokio-util/src/time/delay_queue.rs tokio-util/tests/time_delay_queue.rs",
+   "exit_code": 1,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 2,
+ "build_or_test_commands": [
+  "cd /testbed && git apply <<'PATCH'\ndiff --git a/tokio-util/tests/time_delay_queue.rs b/tokio-util/tests/time_delay_queue.rs\n--- a/tokio-util/tests/time_delay_queue.rs\n+++ b/tokio-util/tests/time_delay_queue.rs\n@@ -171,6 +171,34 @@ async fn remove_entry() {\n     assert!(entry.is_none());\n }\n \n+#[tokio::test(start_paused = true)]\n+async fn remove_last_entry_wakes_poller() {\n+    let mut queue = task::spawn(DelayQueue::new());\n+    let key = queue.insert(\"foo\", Duration::from_secs(100));\n+\n+    assert_pending!(poll!(queue));\n+    assert!(!queue.is_woken());\n+\n+    let entry = queue.remove(&key);\n+    assert_eq!(entry.into_inner(), \"foo\");\n+    assert!(queue.is_woken());\n+    assert!(assert_ready!(poll!(queue)).is_none());\n+}\n+\n+#[tokio::test(start_paused = true)]\n+async fn try_remove_last_entry_wakes_poller() {\n+    let mut queue = task::spawn(DelayQueue::new());\n+    let key = queue.insert(\"foo\", Duration::from_secs(100));\n+\n+    assert_pending!(poll!(queue));\n+    assert!(!queue.is_woken());\n+\n+    let entry = queue.try_remove(&key).unwrap();\n+    assert_eq!(entry.into_inner(), \"foo\");\n+    assert!(queue.is_woken());\n+    assert!(assert_ready!(poll!(queue)).is_none());\n+}\n+\n #[tokio::test]\n async fn reset_entry() {\n     time::pause();\nPATCH\ncargo test -p tokio-util --features full --test time_delay_queue remove_last_entry --offline",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tokio-util/src/time/delay_queue.rs b/tokio-util/src/time/delay_queue.rs\n--- a/tokio-util/src/time/delay_queue.rs\n+++ b/tokio-util/src/time/delay_queue.rs\n@@ -152,4 +152,3 @@\n-    /// Waker that is invoked when we potentially need to reset the timer.\n-    /// Because we lazily create the timer when the first entry is created, we\n-    /// need to awaken any poller that polled us before that point.\n+    /// Waker to notify when the queue's state changes without resetting an\n+    /// existing timer, such as when inserting the first or removing the last item.\n     waker: Option<Waker>,\n@@ -727,6 +726,9 @@\n     /// removed item as well as the `Instant` at which it will the delay will\n     /// have expired.\n     ///\n+    /// If this removes the last item in the queue, the task registered by\n+    /// [`poll_expired`](Self::poll_expired) is woken to observe the empty queue.\n+    ///\n     /// # Panics\n@@ -766,6 +768,12 @@\n                 (Some(deadline), None) => self.delay = Some(Box::pin(sleep_until(deadline))),\n             }\n         }\n \n+        if self.is_empty() {\n+            if let Some(waker) = self.waker.take() {\n+                waker.wake();\n+            }\n+        }\n+\n         Expired {\n@@ -782,6 +790,9 @@\n     /// Returns `None` if `key` is not in the queue.\n     ///\n+    /// If this removes the last item in the queue, the task registered by\n+    /// [`poll_expired`](Self::poll_expired) is woken to observe the empty queue.\n+    ///\n     /// # Examples\nPATCH\ncargo test -p tokio-util --features full --test time_delay_queue --offline && git --no-pager diff --check && git --no-pager diff --stat"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Removing the last item dropped the timer without notifying the stored waker, leaving `poll_expired` pending indefinitely. `remove` now wakes the registered task when the queue becomes empty; `try_remove` inherits the fix. Added regression tests for both methods without changing existing tests.",
+ "assistant_messages": [
+  "I\u2019ll check how removal updates the stored waker, add a regression test, and fix the wakeup path.\n",
+  "Removing the last entry drops the timer without waking the task waiting on `poll_expired`. Since `try_remove` delegates to `remove`, one fix can cover both. I\u2019ll first add tests that check for an immediate wakeup, without advancing time.\n",
+  "Removing the last item dropped the timer without notifying the stored waker, leaving `poll_expired` pending indefinitely. `remove` now wakes the registered task when the queue becomes empty; `try_remove` inherits the fix. Added regression tests for both methods without changing existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Verifying formatting commands**\n\nI need to verify the different formatting commands for Rust, specifically checking what is available in `rustfmt`. I can run `cargo fmt --all -- --check` to see if any pre-existing formatting fails. It's possible that using `rustfmt --check` on specific files like `tokio-util/src/time/delay_queue.rs` and `tokio-util/tests/time_delay_queue.rs` may help as well. I want to ensure tests pass while preserving behavior, so I\u2019ll read the diff and format it all independently."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 87.6
+}

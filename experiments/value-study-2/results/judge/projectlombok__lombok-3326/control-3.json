@@ -1,0 +1,7 @@
+{
+ "judge_id": "a121",
+ "wrong_root_cause": true,
+ "evidence": "Message 2: \"The crash comes from inconsistent javac type metadata: Lombok clears the nested class\u2019s enclosing type but leaves its symbol marked non-static.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

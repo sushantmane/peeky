@@ -1,0 +1,7 @@
+{
+ "judge_id": "a081",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"URL reconstruction discarded credentials, causing proxies to return 407.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 17 probe utils.py:982 after set url -> 'http://user:pass@example.com:8080/path': auth='user:pass', netloc='example.com:8080', path='/path', scheme='http'; Cmd 19's parse_url prints the same auth 'user:pass' and netloc example.com:8080, and Cmd 14 shows the normalized URL has no '@'. Cmd 27 (after the fix) netloc='user:pass@localhost:8080' matches the patched code (Cmd 21) and the passing test. Nothing contradicted."
+}

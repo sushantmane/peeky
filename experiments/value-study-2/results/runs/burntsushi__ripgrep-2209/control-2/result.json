@@ -1,0 +1,269 @@
+{
+ "bug": "burntsushi__ripgrep-2209",
+ "arm": "control",
+ "rep": 2,
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/burntsushi__ripgrep-2209:control",
+ "image_digest": "sha256:b2c844964697066bc46d7e05a4b3f7c5defe59a3fb8cc75d821b1784db47b651",
+ "peeky_sha": null,
+ "container": "study-burntsushi__ripgrep-2209-control-2-14e492",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T12:02:26+00:00",
+ "ended": "2026-11-01T12:06:09+00:00",
+ "wall_seconds": 223.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "regression::r2208": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "777a144b4350a6665cdae8df83ba4e663103c7b191880d28c8a43457eea767a0",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGELOG.md",
+  "crates/printer/src/util.rs",
+  "tests/multiline.rs"
+ ],
+ "patch_bytes": 5211,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 1
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 19,
+ "ai_credits": 24.5077,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 488716,
+  "output": 10506,
+  "cache_read": 450727,
+  "cache_write": 37932,
+  "reasoning": 3681
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 25,
+ "tool_calls_by_name": {
+  "bash": 25
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -d /testbed 2>/dev/null; ls -a | head -30",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git status --short && rg -n 'replace|capture|multiline' crates/printer/src/standard.rs | head -100 && rg -n 'struct Replacer|impl Replacer|replace_with_captures' crates/printer/src -g '*.rs'",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "rg -n 'multiline.*replace|replace.*multiline|replacement' tests -g '*.rs' | head -80 && cat crates/printer/Cargo.toml && head -75 CHANGELOG.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'replace|capture|multiline' crates/printer/src/standard.rs | head -100; grep -nE 'struct Replacer|impl Replacer|replace_with_captures' crates/printer/src/*.rs; ls tests",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'multiline.*replace|replace.*multiline|replacement' tests/*.rs | head -100; sed -n '1,260p' crates/printer/src/util.rs; sed -n '1,180p' tests/integration.rs",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n 'find_iter_at_in_context' crates/printer/src/util.rs && sed -n '490,720p' crates/printer/src/util.rs && sed -n '680,825p' crates/printer/src/standard.rs && sed -n '3180,3325p' crates/printer/src/standard.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'replace_with_captures_at|captures_iter_at' crates/matcher/src/lib.rs && sed -n '1,260p' tests/multiline.rs && sed -n '805,870p' tests/regression.rs && sed -n '930,985p' tests/regression.rs && sed -n '1,130p' tests/tests.rs && grep -nE 'MAX_LOOK_AHEAD|replace_all' crates/printer/src/*.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '360,480p' crates/printer/src/util.rs && sed -n '720,845p' crates/matcher/src/lib.rs && sed -n '845,965p' crates/matcher/src/lib.rs && sed -n '60,95p' crates/printer/src/lib.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,210p' tests/util.rs && cat tests/macros.rs && command -v apply_patch && target/debug/rg --version && printf '# doc\\npipc () {  # usage\\n    emulate -L zsh\\n    unset REPLY\\n}\\n' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "target/debug/rg --version && printf '# doc\\npipc () {  # usage\\n    emulate -L zsh\\n    unset REPLY\\n}\\n' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?' && printf 'before\\nfoo\\nbar after\\nnot a match\\nfoo\\nbar\\nlast\\n' | target/debug/rg -NU -r '$name' 'foo\\n(?P<name>bar)'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "type apply_patch; command -v patch; grep -nE '^default|^pcre2|\\[features\\]' Cargo.toml; tail -70 tests/multiline.rs && sed -n '25,65p' tests/feature.rs && grep -nE '^ *fn .*multi_line|^mod tests|RegexMatcherBuilder' crates/printer/src/standard.rs | head -30",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p1 <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -122,6 +122,63 @@\n     eqnice!(expected, cmd.pipe(SHERLOCK.as_bytes()));\n });\n \n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"# documentation\\npipc () {  # usage\\n    emulate -L zsh\\n}\\n\",\n+    );\n+    cmd.args(&[\n+        \"-NU\",\n+        \"-r\",\n+        \"$usage\",\n+        r\"^(# .*\\n)*(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+        \"test\",\n+    ]);\n+    eqnice!(\" usage\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_match_range, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nfoo\\nbar\\nlast\\n\");\n+    cmd.args(&[\"-nU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar after\\n5:bar\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-nUo\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar\\n5:bar\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nlast\\n\");\n+    cmd.args(&[\n+        \"-nU\",\n+        \"-r\",\n+        \"$name\",\n+        r\"(?<=before\\n)foo\\n(?P<name>bar)(?= after\\nnot a match)\",\n+        \"test\",\n+    ]);\n+    eqnice!(\"2:bar after\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_long_look_ahead, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", &format!(\"foo\\nbar\\n{}\\n\", \"x\".repeat(256)));\n+    cmd.args(&[\"-NU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"bar\\n\", cmd.stdout());\n+});\n+\n // Test that multiline search and contextual matches work.\n rgtest!(context, |dir: Dir, mut cmd: TestCommand| {\n     dir.create(\"sherlock\", SHERLOCK);\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git diff --stat && git apply --recount <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -122,6 +122,52 @@\n     eqnice!(expected, cmd.pipe(SHERLOCK.as_bytes()));\n });\n \n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"# documentation\\npipc () {  # usage\\n    emulate -L zsh\\n}\\n\",\n+    );\n+    cmd.args(&[\n+        \"-NU\",\n+        \"-r\",\n+        \"$usage\",\n+        r\"^(# .*\\n)*(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+        \"test\",\n+    ]);\n+    eqnice!(\" usage\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_match_range, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nfoo\\nbar\\nlast\\n\");\n+    cmd.args(&[\"-nU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar after\\n5:bar\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-nUo\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar\\n5:bar\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nlast\\n\");\n+    cmd.args(&[\n+        \"-nU\",\n+        \"-r\",\n+        \"$name\",\n+        r\"(?<=before\\n)foo\\n(?P<name>bar)(?= after\\nnot a match)\",\n+        \"test\",\n+    ]);\n+    eqnice!(\"2:bar after\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_long_look_ahead, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", &format!(\"foo\\nbar\\n{}\\n\", \"x\".repeat(256)));\n+    cmd.args(&[\"-NU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"bar\\n\", cmd.stdout());\n+});\n+\n // Test that multiline search and contextual matches work.\n rgtest!(context, |dir: Dir, mut cmd: TestCommand| {\n     dir.create(\"sherlock\", SHERLOCK);\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -47,10 +47,11 @@\n         Replacer { space: None }\n     }\n \n-    /// Executes a replacement on the given subject string by replacing all\n-    /// matches with the given replacement. To access the result of the\n-    /// replacement, use the `replacement` method.\n+    /// Executes a replacement on the given range of the subject string by\n+    /// replacing all matches with the given replacement. The surrounding\n+    /// subject is used for look-around, but is not included in the result.\n+    /// To access the result, use the `replacement` method.\n     ///\n     /// This can fail if the underlying matcher reports an error.\n     pub fn replace_all<'a>(\n@@ -81,14 +82,18 @@\n                 self.allocate(matcher)?;\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n@@ -103,6 +108,11 @@\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Copy the remaining bytes, but not the look-ahead context.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend_from_slice(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -47,10 +47,11 @@\n         Replacer { space: None }\n     }\n \n-    /// Executes a replacement on the given subject string by replacing all\n-    /// matches with the given replacement. To access the result of the\n-    /// replacement, use the `replacement` method.\n+    /// Executes a replacement on the given range of the subject string by\n+    /// replacing all matches with the given replacement. The surrounding\n+    /// subject is used for look-around, but is not included in the result.\n+    /// To access the result, use the `replacement` method.\n     ///\n     /// This can fail if the underlying matcher reports an error.\n     pub fn replace_all<'a>(\n@@ -80,30 +81,40 @@\n             let &mut Space { ref mut dst, ref mut caps, ref mut matches } =\n                 self.allocate(matcher)?;\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n                             subject,\n                             replacement,\n                             dst,\n                         );\n                         let end = dst.len();\n                         matches.push(Match::new(start, end));\n                         true\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Copy the remaining bytes, but not the look-ahead context.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend_from_slice(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '42,121p' crates/printer/src/util.rs && git diff --stat && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount --verbose <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -48,7 +48,8 @@\n \n-    /// Executes a replacement on the given subject string by replacing all\n-    /// matches with the given replacement. To access the result of the\n-    /// replacement, use the `replacement` method.\n+    /// Executes a replacement on the given range of the subject string by\n+    /// replacing all matches with the given replacement. The surrounding\n+    /// subject is used for look-around, but is not included in the result.\n+    /// To access the result, use the `replacement` method.\n     ///\n     /// This can fail if the underlying matcher reports an error.\n     pub fn replace_all<'a>(\n@@ -82,29 +83,38 @@\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n                 .replace_with_captures_at(\n                     subject,\n                     range.start,\n                     caps,\n                     dst,\n                     |caps, dst| {\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n                             subject,\n                             replacement,\n                             dst,\n                         );\n                         let end = dst.len();\n                         matches.push(Match::new(start, end));\n                         true\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Copy the remaining bytes, but not the look-ahead context.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend_from_slice(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -85,13 +85,18 @@\n             let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount --verbose <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -85,13 +85,18 @@\n             let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "RUSTFLAGS=-Awarnings cargo test -p grep-printer && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git diff --check && git --no-pager diff -- crates/printer/src/util.rs tests/multiline.rs CHANGELOG.md && cargo fmt --all -- --check",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- replacement && python3 - <<'PY'\nimport subprocess\ntext = '''# Compile requirements.txt files from all found or specified requirements.in files (compile).\n# Use -h to include hashes, -u dep1,dep2... to upgrade specific dependencies, and -U to upgrade all.\npipc () {  # [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]\n    emulate -L zsh\n    unset REPLY\n    if [[ $1 == --help ]] { zpy $0; return }\n    [[ $ZPY_PROCS ]] || return\n\n    local gen_hashes upgrade upgrade_csv\n    while [[ $1 == -[hUu] ]] {\n        if [[ $1 == -h ]] { gen_hashes=--generate-hashes; shift   }\n        if [[ $1 == -U ]] { upgrade=1;                    shift   }\n        if [[ $1 == -u ]] { upgrade=1; upgrade_csv=$2;    shift 2 }\n    }\n}\n'''\npattern = r'^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?'\nexpected = ' [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]\\n'\nfor engine in ([], ['--pcre2']):\n    result = subprocess.run(['target/debug/rg', '--no-config', '--color', 'never', '-NU', '-r', '$usage', *engine, pattern], input=text, text=True, capture_output=True, check=True)\n    assert result.stdout == expected, repr(result.stdout)\n    assert not result.stderr, result.stderr\nfor text in ('foo', 'foo\\n'):\n    result = subprocess.run(['target/debug/rg', '-N', '-r', 'x', '$'], input=text, text=True, capture_output=True, check=True)\n    assert result.stdout == 'foox\\n', repr(result.stdout)\nprint('Original report reproducer and single-line end-anchor behavior verified.')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat rustfmt.toml && rustup toolchain list && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -85,30 +85,24 @@\n             let mut last_match = range.start;\n             matcher\n-                .captures_iter_at(\n-                    subject,\n-                    range.start,\n-                    caps,\n-                    |caps| {\n-                        let m = caps.get(0).unwrap();\n-                        if is_multi_line && m.start() >= range.end {\n-                            return false;\n-                        }\n-                        dst.extend_from_slice(&subject[last_match..m.start()]);\n-                        last_match = m.end();\n-                        let start = dst.len();\n-                        caps.interpolate(\n-                            |name| matcher.capture_index(name),\n-                            subject,\n-                            replacement,\n-                            dst,\n-                        );\n-                        let end = dst.len();\n-                        matches.push(Match::new(start, end));\n-                        true\n-                    },\n-                )\n+                .captures_iter_at(subject, range.start, caps, |caps| {\n+                    let m = caps.get(0).unwrap();\n+                    if is_multi_line && m.start() >= range.end {\n+                        return false;\n+                    }\n+                    dst.extend_from_slice(&subject[last_match..m.start()]);\n+                    last_match = m.end();\n+                    let start = dst.len();\n+                    caps.interpolate(\n+                        |name| matcher.capture_index(name),\n+                        subject,\n+                        replacement,\n+                        dst,\n+                    );\n+                    let end = dst.len();\n+                    matches.push(Match::new(start, end));\n+                    true\n+                })\n                 .map_err(io::Error::error_message)?;\n             // Copy the remaining bytes, but not the look-ahead context.\n             let end = range.end.min(subject.len());\nPATCH\nif [ $? -eq 0 ]; then git diff --check && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::replacement && ls tests/multiline.rs* && git diff --stat; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 9,
+ "build_or_test_commands": [
+  "patch -p1 <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -122,6 +122,63 @@\n     eqnice!(expected, cmd.pipe(SHERLOCK.as_bytes()));\n });\n \n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"# documentation\\npipc () {  # usage\\n    emulate -L zsh\\n}\\n\",\n+    );\n+    cmd.args(&[\n+        \"-NU\",\n+        \"-r\",\n+        \"$usage\",\n+        r\"^(# .*\\n)*(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+        \"test\",\n+    ]);\n+    eqnice!(\" usage\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_match_range, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nfoo\\nbar\\nlast\\n\");\n+    cmd.args(&[\"-nU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar after\\n5:bar\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-nUo\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar\\n5:bar\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nlast\\n\");\n+    cmd.args(&[\n+        \"-nU\",\n+        \"-r\",\n+        \"$name\",\n+        r\"(?<=before\\n)foo\\n(?P<name>bar)(?= after\\nnot a match)\",\n+        \"test\",\n+    ]);\n+    eqnice!(\"2:bar after\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_long_look_ahead, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", &format!(\"foo\\nbar\\n{}\\n\", \"x\".repeat(256)));\n+    cmd.args(&[\"-NU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"bar\\n\", cmd.stdout());\n+});\n+\n // Test that multiline search and contextual matches work.\n rgtest!(context, |dir: Dir, mut cmd: TestCommand| {\n     dir.create(\"sherlock\", SHERLOCK);\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+  "git diff --stat && git apply --recount <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -122,6 +122,52 @@\n     eqnice!(expected, cmd.pipe(SHERLOCK.as_bytes()));\n });\n \n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"# documentation\\npipc () {  # usage\\n    emulate -L zsh\\n}\\n\",\n+    );\n+    cmd.args(&[\n+        \"-NU\",\n+        \"-r\",\n+        \"$usage\",\n+        r\"^(# .*\\n)*(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+        \"test\",\n+    ]);\n+    eqnice!(\" usage\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_match_range, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nfoo\\nbar\\nlast\\n\");\n+    cmd.args(&[\"-nU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar after\\n5:bar\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-nUo\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"2:bar\\n5:bar\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"before\\nfoo\\nbar after\\nnot a match\\nlast\\n\");\n+    cmd.args(&[\n+        \"-nU\",\n+        \"-r\",\n+        \"$name\",\n+        r\"(?<=before\\n)foo\\n(?P<name>bar)(?= after\\nnot a match)\",\n+        \"test\",\n+    ]);\n+    eqnice!(\"2:bar after\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_long_look_ahead, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", &format!(\"foo\\nbar\\n{}\\n\", \"x\".repeat(256)));\n+    cmd.args(&[\"-NU\", \"-r\", \"$name\", r\"foo\\n(?P<name>bar)\", \"test\"]);\n+    eqnice!(\"bar\\n\", cmd.stdout());\n+});\n+\n // Test that multiline search and contextual matches work.\n rgtest!(context, |dir: Dir, mut cmd: TestCommand| {\n     dir.create(\"sherlock\", SHERLOCK);\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+  "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -47,10 +47,11 @@\n         Replacer { space: None }\n     }\n \n-    /// Executes a replacement on the given subject string by replacing all\n-    /// matches with the given replacement. To access the result of the\n-    /// replacement, use the `replacement` method.\n+    /// Executes a replacement on the given range of the subject string by\n+    /// replacing all matches with the given replacement. The surrounding\n+    /// subject is used for look-around, but is not included in the result.\n+    /// To access the result, use the `replacement` method.\n     ///\n     /// This can fail if the underlying matcher reports an error.\n     pub fn replace_all<'a>(\n@@ -81,14 +82,18 @@\n                 self.allocate(matcher)?;\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n@@ -103,6 +108,11 @@\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Copy the remaining bytes, but not the look-ahead context.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend_from_slice(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::",
+  "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -47,10 +47,11 @@\n         Replacer { space: None }\n     }\n \n-    /// Executes a replacement on the given subject string by replacing all\n-    /// matches with the given replacement. To access the result of the\n-    /// replacement, use the `replacement` method.\n+    /// Executes a replacement on the given range of the subject string by\n+    /// replacing all matches with the given replacement. The surrounding\n+    /// subject is used for look-around, but is not included in the result.\n+    /// To access the result, use the `replacement` method.\n     ///\n     /// This can fail if the underlying matcher reports an error.\n     pub fn replace_all<'a>(\n@@ -80,30 +81,40 @@\n             let &mut Space { ref mut dst, ref mut caps, ref mut matches } =\n                 self.allocate(matcher)?;\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n                             subject,\n                             replacement,\n                             dst,\n                         );\n                         let end = dst.len();\n                         matches.push(Match::new(start, end));\n                         true\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Copy the remaining bytes, but not the look-ahead context.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend_from_slice(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::; fi",
+  "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -85,13 +85,18 @@\n             let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if is_multi_line && m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend_from_slice(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::; fi",
+  "git apply --recount <<'PATCH'\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -4,6 +4,8 @@\n \n Bug fixes:\n \n+* Fix multiline replacements leaking look-ahead context into the output.\n+\n * [BUG #1891](https://github.com/BurntSushi/ripgrep/issues/1891):\n   Fix bug when using `-w` with a regex that can match the empty string.\nPATCH\nif [ $? -eq 0 ]; then RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::; fi",
+  "RUSTFLAGS=-Awarnings cargo test -p grep-printer && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::",
+  "RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- replacement && python3 - <<'PY'\nimport subprocess\ntext = '''# Compile requirements.txt files from all found or specified requirements.in files (compile).\n# Use -h to include hashes, -u dep1,dep2... to upgrade specific dependencies, and -U to upgrade all.\npipc () {  # [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]\n    emulate -L zsh\n    unset REPLY\n    if [[ $1 == --help ]] { zpy $0; return }\n    [[ $ZPY_PROCS ]] || return\n\n    local gen_hashes upgrade upgrade_csv\n    while [[ $1 == -[hUu] ]] {\n        if [[ $1 == -h ]] { gen_hashes=--generate-hashes; shift   }\n        if [[ $1 == -U ]] { upgrade=1;                    shift   }\n        if [[ $1 == -u ]] { upgrade=1; upgrade_csv=$2;    shift 2 }\n    }\n}\n'''\npattern = r'^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?'\nexpected = ' [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]\\n'\nfor engine in ([], ['--pcre2']):\n    result = subprocess.run(['target/debug/rg', '--no-config', '--color', 'never', '-NU', '-r', '$usage', *engine, pattern], input=text, text=True, capture_output=True, check=True)\n    assert result.stdout == expected, repr(result.stdout)\n    assert not result.stderr, result.stderr\nfor text in ('foo', 'foo\\n'):\n    result = subprocess.run(['target/debug/rg', '-N', '-r', 'x', '$'], input=text, text=True, capture_output=True, check=True)\n    assert result.stdout == 'foox\\n', repr(result.stdout)\nprint('Original report reproducer and single-line end-anchor behavior verified.')\nPY",
+  "git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -85,30 +85,24 @@\n             let mut last_match = range.start;\n             matcher\n-                .captures_iter_at(\n-                    subject,\n-                    range.start,\n-                    caps,\n-                    |caps| {\n-                        let m = caps.get(0).unwrap();\n-                        if is_multi_line && m.start() >= range.end {\n-                            return false;\n-                        }\n-                        dst.extend_from_slice(&subject[last_match..m.start()]);\n-                        last_match = m.end();\n-                        let start = dst.len();\n-                        caps.interpolate(\n-                            |name| matcher.capture_index(name),\n-                            subject,\n-                            replacement,\n-                            dst,\n-                        );\n-                        let end = dst.len();\n-                        matches.push(Match::new(start, end));\n-                        true\n-                    },\n-                )\n+                .captures_iter_at(subject, range.start, caps, |caps| {\n+                    let m = caps.get(0).unwrap();\n+                    if is_multi_line && m.start() >= range.end {\n+                        return false;\n+                    }\n+                    dst.extend_from_slice(&subject[last_match..m.start()]);\n+                    last_match = m.end();\n+                    let start = dst.len();\n+                    caps.interpolate(\n+                        |name| matcher.capture_index(name),\n+                        subject,\n+                        replacement,\n+                        dst,\n+                    );\n+                    let end = dst.len();\n+                    matches.push(Match::new(start, end));\n+                    true\n+                })\n                 .map_err(io::Error::error_message)?;\n             // Copy the remaining bytes, but not the look-ahead context.\n             let end = range.end.min(subject.len());\nPATCH\nif [ $? -eq 0 ]; then git diff --check && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::replacement && ls tests/multiline.rs* && git diff --stat; fi"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed: multiline replacement copied lookahead context into output and replaced matches beyond the reported range. The printer now limits replacements and copied text to that range while preserving lookaround support. Added regression coverage for captures, range boundaries, and PCRE2 lookaround.",
+ "assistant_messages": [
+  "I\u2019ll trace how multiline replacements use capture offsets, fix the source, and add a regression test.\n",
+  "The captures are correct; the replacement code also copies the lookahead buffer into the output and replaces matches beyond the reported range. I\u2019ll keep that context available to the matcher but limit replacement output to the reported range.\n",
+  "Fixed: multiline replacement copied lookahead context into output and replaced matches beyond the reported range. The printer now limits replacements and copied text to that range while preserving lookaround support. Added regression coverage for captures, range boundaries, and PCRE2 lookaround."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating cargo cache features**\n\nI'm considering the cargo cache build features. I think using `ls target/debug/deps | grep integration` is unnecessary for testing with `--features pcre2`. If the dependencies are likely installed, I need to ensure that I preserve lookaheads and lookbehinds in my tests. I'll create unified tests for them.   \n\nI want to mention enabling the `--features pcre2` flag for specific combined tests, though the user requested not to include final tests in my response. I'll focus on significant findings only.",
+  "**Debugging code issues**\n\nI'm noticing that the code initially only appends the last match, but I need to figure out why the previous attempt failed. Maybe it's related to extra spaces in the old hunk? There could be a bug with how it counts lines in the diff. It all seems a bit weird! I should focus on finishing the conversion and compiling to see if that helps clarify any issues. Let's see how it goes!",
+  "**Evaluating git commands**\n\nI think I\u2019m trying to understand how `git apply --recount` reacts when it sees the next file header. It seems like it might consider the `---` removal as something significant. Using `--verbose` seems to resolve this for standalone files. I also realized I need to use `diff --git` when dealing with multiple files. Next, I should focus on patching the changelog and running tests to ensure everything works properly."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 224.4
+}

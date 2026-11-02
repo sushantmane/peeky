@@ -1,0 +1,7 @@
+{
+ "judge_id": "a186",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"`cp`'s path argument lacked variadic arity, so Zsh offered file completion only for the first operand.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

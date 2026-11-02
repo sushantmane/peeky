@@ -1,0 +1,7 @@
+{
+ "judge_id": "a168",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was an eligibility check excluding interfaces and annotations but not records.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 28 probe (re-listed in cmd 46) at HandleFieldDefaults.java:60 showed caller frame defaultToPrivate=true, defaultToFinal=true, fd=null, type.mods.flags=2305843009213693953 (RECORD|PUBLIC), makeFinal=true. Consistent with cmd 18 output 'defaultPrivate=true, defaultFinal=true' for the same config, Record.java being a public record with no @FieldDefaults, and the '@FieldDefaults is only supported on a class or an enum' error in cmd 27. Cmds 21/23/26 had 0 hits (classes not loading per cmds 20/22/25); cmd 19 is describe. Nothing contradicted."
+}

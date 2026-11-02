@@ -1,0 +1,372 @@
+{
+ "bug": "projectlombok__lombok-3052",
+ "arm": "peeky-first",
+ "rep": 2,
+ "language": "java",
+ "category": "B",
+ "image": "peeky-study/projectlombok__lombok-3052:peeky-r2",
+ "image_digest": "sha256:59919b79f22f865470cc96ac1b508016001664da066c8e6cee2ee79d46ceb2ca",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-projectlombok__lombok-3052-peeky-first-2-5ac009",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T11:05:30+00:00",
+ "ended": "2026-11-01T11:10:34+00:00",
+ "wall_seconds": 304.2,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "javac-BuilderDefaultsTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED",
+  "javac-SuperBuilderWithDefaultsAndTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 5.9,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "ee45c8f8226b191b720e64472a0572bd24dc2b54343bf800bfb9d34fe16a3eed",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "doc/changelog.markdown",
+  "src/core/lombok/javac/handlers/HandleBuilder.java",
+  "src/core/lombok/javac/handlers/HandleSuperBuilder.java",
+  "test/transform/resource/after-delombok/BuilderDefaultsGenericCalls.java",
+  "test/transform/resource/after-ecj/BuilderDefaultsGenericCalls.java",
+  "test/transform/resource/before/BuilderDefaultsGenericCalls.java"
+ ],
+ "patch_bytes": 21872,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 305
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 26,
+ "ai_credits": 39.4815,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 1095842,
+  "output": 12039,
+  "cache_read": 1027142,
+  "cache_write": 68622,
+  "reasoning": 4826
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 40,
+ "tool_calls_by_name": {
+  "bash": 37,
+  "read_bash": 3
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && ls /testbed 2>/dev/null; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,210p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git status --short && java -version 2>&1 && ls dist && rg -n 'generateDefaultProvider|\\$default\\$|Builder.Default' src/core/lombok/javac/handlers/HandleBuilder.java && rg -n 'test.javacCurrent|test.compile' build.xml buildScripts",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'generateDefaultProvider|\\$default\\$|Builder.Default' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '1,230p' /opt/peeky/docs/lang/java.md && find build -maxdepth 3 -type d && grep -nE 'test.javacCurrent|test.compile' build.xml buildScripts/*.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant test.compile",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,170p' /opt/peeky/docs/lang/java.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '780,840p' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '1,230p' buildScripts/tests.ant.xml && find build -maxdepth 2 -type d && command -v apply_patch && sed -n '1,160p' src/core/lombok/javac/handlers/HandleBuilder.java",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "ls src/launch/lombok/launch && grep -nE 'packing.basedirs|path id' buildScripts/compile.ant.xml && sed -n '20,125p' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '230,310p' src/core/lombok/javac/handlers/HandleBuilder.java && grep -nE 'recursiveSetGeneratedBy|setGeneratedBy' src/core/lombok/javac/JavacHandlerUtil.java",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\np=Path('/testbed/build/builder-default-repro')\np.mkdir(exist_ok=True)\n(p/'MyTest.java').write_text('''import lombok.Builder;\nimport lombok.Value;\n\n@Builder\npublic class MyTest {\n    @Builder.Default\n    String foo = doSth(MyClass.myInt(), MyClass.myChar());\n\n    @Value\n    static class MyClass<T> {\n        T value;\n        static MyClass<Integer> myInt() { return new MyClass<>(42); }\n        static MyClass<Character> myChar() { return new MyClass<>('A'); }\n    }\n\n    static String doSth(MyClass<Integer> i, MyClass<Character> c) {\n        return i.value.toString() + c.value.toString();\n    }\n\n    public static void main(String... args) {\n        MyTest test = MyTest.builder().build();\n        System.out.println(test.foo);\n    }\n}\n''')\nPY\njavac -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8 -processor lombok.javac.apt.LombokProcessor -d build/builder-default-repro build/builder-default-repro/MyTest.java",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'recursiveSetGeneratedBy|setGeneratedBy' src/core/lombok/javac/handlers/JavacHandlerUtil.java && grep -nE 'generateDefaultProvider|recursiveSetGeneratedBy' src/core/lombok/javac/handlers/HandleSuperBuilder.java && find test -iname '*BuilderDefault*' && grep -n 'filter\\|focus\\|System.getProperty' test/transform/src/lombok/*.java && grep -n 'Builder.Default\\|default' website/templates/features/Builder.html | head -20 && nl -ba src/core/lombok/javac/handlers/HandleBuilder.java | sed -n '282,298p' && peeky --version",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '/### 7.4/,/### 7.5/p' /opt/peeky/docs/lang/java-cookbook.md | head -180 && javap -l -cp build/lombok-main lombok.javac.handlers.HandleBuilder | sed -n '/generateDefaultProvider/,/generateBuilderMethod/p'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '108,190p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '198,219p' src/core/lombok/javac/handlers/HandleSuperBuilder.java && find test/transform/src -type f | head -35 && cat test/transform/resource/before/BuilderDefaultsGenerics.java && cat test/transform/resource/after-delombok/BuilderDefaultsGenerics.java && grep -n 'Builder.Default\\|default' website/templates/features/Builder.html | head -15 && grep -n '74 Java\\|class_roots\\|host\\|port' /opt/peeky/docs/lang/java-cookbook.md | tail -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('build/builder-default-repro/attach.json').write_text(json.dumps({'port':5005,'sources':['src/core/lombok/javac/handlers/HandleBuilder.java'],'class_roots':['build/lombok-main']}))\nPY\njavac -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8 -processor lombok.javac.apt.LombokProcessor -d build/builder-default-repro build/builder-default-repro/MyTest.java",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "peeky probe . --config build/builder-default-repro/attach.json --at src/core/lombok/javac/handlers/HandleBuilder.java:291 --capture md.body.stats.head.expr.args.head.pos,md.body.stats.head.expr.args.tail.head.pos,annotationNode.node.pos",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "find test/core/src/lombok -maxdepth 2 -iname '*Javac*' -o -iname '*RunTests*' && sed -n '1,185p' test/transform/src/lombok/transform/TestSourceFiles.java && sed -n '1,180p' test/transform/src/lombok/transform/TestWithDelombok.java && ls test/bytecode/src/lombok && head -65 doc/changelog.markdown && grep -n 'pos\\|cache' src/core/lombok/javac/handlers/HandleBuilder.java | head -25 && nl -ba src/core/lombok/javac/handlers/JavacHandlerUtil.java | sed -n '168,186p'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nimport json\nfrom pathlib import Path\nPath('build/builder-default-repro/attach.json').write_text(json.dumps({'port':5005,'sources':['src/core/lombok/javac/handlers/HandleBuilder.java','src/core/lombok/javac/handlers/JavacHandlerUtil.java'],'class_roots':['build/lombok-main']}))\nPY\njavac -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8 -processor lombok.javac.apt.LombokProcessor -d build/builder-default-repro build/builder-default-repro/MyTest.java",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "peeky probe . --config build/builder-default-repro/attach.json --at src/core/lombok/javac/handlers/JavacHandlerUtil.java:178 --capture node.pos,node.meth.pos,node.args.head.pos,node.args.tail.head.pos --hits all --json > build/builder-default-repro/positions.json && python3 - <<'PY'\nimport json\np=json.load(open('build/builder-default-repro/positions.json'))\nprint(json.dumps(p,indent=2)[:20000])\nPY",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '633,681p' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '1,230p' test/core/src/lombok/TestJavac.java && sed -n '1,240p' test/core/src/lombok/AbstractRunTests.java && grep -nE 'System.getProperty|filter|focus|compile' test/core/src/lombok/DirectoryRunner.java && find test -path '*compile*' -type f | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "peeky probe . --config build/builder-default-repro/attach.json --at src/core/lombok/javac/handlers/JavacHandlerUtil.java:178 --capture node.pos,node.meth.pos,node.args.head.pos,node.args.tail.head.pos --hits 30 --json > build/builder-default-repro/positions.json && python3 - <<'PY'\nimport json\np=json.load(open('build/builder-default-repro/positions.json'))\nprint(json.dumps(p,indent=2)[:23000])\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nimport json\np=json.load(open('build/builder-default-repro/positions.json'))\nprint('keys',list(p))\nfor k,v in p.items():\n if isinstance(v,list):\n  print(k,len(v))\n  for row in v[:2]:print(row)\n else:\n  if k!='probe':print(k,str(v)[:800])\nPY\nsed -n '1,200p' test/core/src/lombok/RunTestsViaDelombok.java && sed -n '1,180p' test/core/src/lombok/DirectoryRunner.java && find test/bytecode -type f | head -35 && sed -n '1,200p' test/bytecode/src/lombok/bytecode/RunBytecodeTests.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '180,355p' test/core/src/lombok/DirectoryRunner.java && grep -R -n --include='*.java' 'JavaCompiler\\|ToolProvider\\|LombokProcessor' test/core/src test/bytecode/src | head -40 && find test/transform/resource/before -iname '*SuperBuilder*' | head -12 && sed -n '1,145p' test/core/src/lombok/LombokTestSource.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nimport json\np=json.load(open('build/builder-default-repro/positions.json'))\nfor h in p['by_hit']:\n if isinstance(h['observed'].get('node.meth.pos'),str): print(h)\nprint('warnings:',p['warnings'],'status:',p['status'])\nPY\nsed -n '145,233p' test/bytecode/src/lombok/bytecode/TestClassFileMetaData.java && grep -nE 'attribute|analyze|gen|parse' src/delombok/lombok/delombok/Delombok.java | tail -35 && cat test/transform/resource/before/SuperBuilderInitializer.java && grep -R -n --include='*.java' 'generateDefaultProvider' src",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\np=Path('src/core/lombok/javac/handlers/HandleBuilder.java')\ns=p.read_text()\ns=s.replace('import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;','import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\\nimport com.sun.tools.javac.tree.JCTree.JCReturn;')\ns=s.replace('JCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\\n\\t\\t\\t\\t\\trecursiveSetGeneratedBy(md, annotationNode);', 'JCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);')\nold='''\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n\t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n\t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n\t\t\n\t\tJCStatement statement = maker.Return(field.init);\n\t\tfield.init = null;\n\t\t\n\t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n\t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n\t}'''\nnew='''\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n\t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n\t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n\t\t\n\t\tJCExpression init = field.init;\n\t\tfield.init = null;\n\t\tJCReturn statement = maker.Return(null);\n\t\t\n\t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n\t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n\t\trecursiveSetGeneratedBy(defaultProvider, source);\n\t\t// Keep the initializer's original positions: javac caches invocation types by position.\n\t\tstatement.expr = init;\n\t\treturn defaultProvider;\n\t}'''\nassert old in s\np.write_text(s.replace(old,new))\np=Path('src/core/lombok/javac/handlers/HandleSuperBuilder.java')\ns=p.read_text()\nold='JCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\\n\\t\\t\\t\\trecursiveSetGeneratedBy(md, annotationNode);'\nassert old in s\np.write_text(s.replace(old,'JCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);'))\np=Path('doc/changelog.markdown')\ns=p.read_text()\ns=s.replace('### v1.18.24 \"Edgy Guinea Pig\"\\n', '### v1.18.24 \"Edgy Guinea Pig\"\\n* BUGFIX: `@Builder.Default` and `@SuperBuilder` defaults no longer cause incorrect generic type errors for nested method calls on javac 11 and later.\\n',1)\np.write_text(s)\np=Path('test/transform/resource/before/BuilderDefaultsGenericCalls.java')\nassert not p.exists()\np.write_text('''//version 8:\nimport lombok.Builder;\nimport lombok.Value;\nimport lombok.experimental.SuperBuilder;\n\n@Builder\npublic class BuilderDefaultsGenericCalls {\n\t@Builder.Default\n\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n\n\t@Value\n\tstatic class MyClass<T> {\n\t\tT value;\n\n\t\tstatic MyClass<Integer> myInt() {\n\t\t\treturn new MyClass<>(42);\n\t\t}\n\n\t\tstatic MyClass<Character> myChar() {\n\t\t\treturn new MyClass<>('A');\n\t\t}\n\t}\n\n\tstatic String doSth(MyClass<Integer> i, MyClass<Character> c) {\n\t\treturn i.value.toString() + c.value.toString();\n\t}\n\n\t@SuperBuilder\n\tstatic class Parent {\n\t\t@Builder.Default\n\t\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n\t}\n\n\t@SuperBuilder\n\tstatic class Child extends Parent {\n\t}\n}\n''')\nPY\nant -q test.compile && javac -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8 -processor lombok.javac.apt.LombokProcessor -d build/builder-default-repro build/builder-default-repro/MyTest.java test/transform/resource/before/BuilderDefaultsGenericCalls.java && java -cp build/builder-default-repro MyTest && git diff --stat",
+   "exit_code": 4,
+   "mode": "sync"
+  },
+  {
+   "command": "find lib -iname '*asm*' -o -iname '*junit*' -o -iname '*stripe*' && sed -n '42,90p' buildScripts/compile.ant.xml && sed -n '715,855p' src/delombok/lombok/delombok/Delombok.java && git diff -- src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/javac/handlers/HandleSuperBuilder.java && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "peeky sql \"SELECT hit, selector, value FROM last_run WHERE selector = 'node.pos' AND hit IN (9, 11, 14)\" && peeky sql \"SELECT hit, selector, value FROM last_run WHERE selector = 'node.meth.pos' AND hit IN (9, 11, 14)\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ls lib/stripe && grep -n 'cp.stripe' buildScripts/*.xml && javac -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/stripe/*' -processor lombok.javac.apt.LombokProcessor -d build/builder-default-repro build/builder-default-repro/MyTest.java test/transform/resource/before/BuilderDefaultsGenericCalls.java && java -cp build/builder-default-repro MyTest && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/stripe/*' lombok.delombok.Delombok --help | head -65",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/stripe/*' lombok.delombok.Delombok -f generateDelombokComment:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericCalls.java && sed -n '1,95p' test/transform/resource/after-delombok/BuilderDefaultsGenericCalls.java && grep -nE 'foo|default|Parent|Child|return' test/transform/resource/after-delombok/BuilderDefaultsGenericCalls.java | tail -45 && ant -q test.javacCurrent > build/builder-default-repro/javac-tests.log 2>&1; tail -70 build/builder-default-repro/javac-tests.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '20,190p' test/core/src/lombok/RunTestsViaEcj.java && sed -n '1,90p' test/transform/src/lombok/transform/TestWithEcj.java && sed -n '1,95p' test/transform/resource/after-ecj/BuilderDefaultsGenerics.java && ls lib/test && ls lib/eclipse-oxygen",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -l '^//platform javac' test/transform/resource/before/*.java | head -12 && grep -nE '^//platform|^//version' test/transform/resource/after-delombok/BuilderDefaults*.java && git diff --check && find build -maxdepth 2 -name '*TEST*' -o -name '*TestJavac*' && ls build/builder-default-repro && grep -n 'Inject\\|injectMethod' src/core/lombok/javac/handlers/JavacHandlerUtil.java | head -8",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\np=Path('build/builder-default-repro/CheckBuilders.java')\np.write_text('''public class CheckBuilders {\n    public static void main(String[] args) {\n        check(\"42A\", BuilderDefaultsGenericCalls.builder().build().foo);\n        check(\"custom\", BuilderDefaultsGenericCalls.builder().foo(\"custom\").build().foo);\n        check(\"42A\", BuilderDefaultsGenericCalls.Parent.builder().build().foo);\n        check(\"custom\", BuilderDefaultsGenericCalls.Parent.builder().foo(\"custom\").build().foo);\n        check(\"42A\", BuilderDefaultsGenericCalls.Child.builder().build().foo);\n        check(\"custom\", BuilderDefaultsGenericCalls.Child.builder().foo(\"custom\").build().foo);\n    }\n    static void check(String expected, String actual) {\n        if (!expected.equals(actual)) throw new AssertionError(expected + \" != \" + actual);\n    }\n}\n''')\nPY\njavac -proc:none -cp build/builder-default-repro -d build/builder-default-repro build/builder-default-repro/CheckBuilders.java && java -cp build/builder-default-repro CheckBuilders",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n 'platform' test/core/src/lombok/LombokTestSource.java && grep -n 'platform' test/transform/resource/before/*.java | head -15 && sed -n '1215,1255p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '210,248p' buildScripts/compile.ant.xml && sed -n '1,90p' test/core/src/lombok/TestEclipse.java && find ivyCache -name '*rt*.jar' | head -8 && find lib -path '*runtime*' -o -path '*jdk*'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant -q dist > build/builder-default-repro/dist.log 2>&1; tail -30 build/builder-default-repro/dist.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\np=Path('build/builder-default-repro/GenerateEcjFixture.java')\np.write_text('''import java.io.File;\nimport java.io.StringWriter;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.Files;\nimport java.util.ArrayList;\nimport java.util.Collections;\nimport java.util.List;\nimport lombok.RunTestsViaEcj;\nimport lombok.eclipse.Eclipse;\nimport lombok.javac.CapturingDiagnosticListener.CompilerMessage;\nimport lombok.transform.TestWithEcj;\n\npublic class GenerateEcjFixture {\n    public static void main(String[] args) throws Throwable {\n        File source = new File(\"test/transform/resource/before/BuilderDefaultsGenericCalls.java\");\n        StringWriter output = new StringWriter();\n        List<CompilerMessage> messages = new ArrayList<CompilerMessage>();\n        RunTestsViaEcj runner = new RunTestsViaEcj();\n        runner.transformCode(messages, output, source, \"UTF-8\", Collections.<String, String>emptyMap(), 8, false);\n        if (!messages.isEmpty()) throw new AssertionError(messages.toString());\n        Files.write(new File(\"test/transform/resource/after-ecj/BuilderDefaultsGenericCalls.java\").toPath(), output.toString().getBytes(StandardCharsets.UTF_8));\n        runner.createTester(new TestWithEcj(), source, RunTestsViaEcj.eclipseAvailable() ? \"eclipse\" : \"ecj\", Eclipse.getEcjCompilerVersion()).runTest();\n    }\n}\n''')\nPY\njavac -proc:none -cp 'build/tests:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/test/*:lib/eclipse-oxygen/*:lib/stripe/*' -d build/builder-default-repro build/builder-default-repro/GenerateEcjFixture.java && java -javaagent:dist/lombok.jar -Ddelombok.bootclasspath=/testbed/lib/openjdk8_rt.jar -Dsun.boot.class.path=/testbed/lib/openjdk8_rt.jar -cp 'build/builder-default-repro:build/tests:build/teststubs:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/test/*:lib/eclipse-oxygen/*:lib/stripe/*' GenerateEcjFixture && sed -n '1,85p' test/transform/resource/after-ecj/BuilderDefaultsGenericCalls.java && git status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "python3 - <<'PY'\nfrom pathlib import Path\np=Path('build/builder-default-repro/GenerateEcjFixture.java')\np.write_text('package lombok;\\n' + p.read_text())\nPY\njavac -proc:none -cp 'build/tests:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/test/*:lib/eclipse-oxygen/*:lib/stripe/*' -d build/builder-default-repro build/builder-default-repro/GenerateEcjFixture.java && java -javaagent:dist/lombok.jar -Ddelombok.bootclasspath=/testbed/lib/openjdk8_rt.jar -Dsun.boot.class.path=/testbed/lib/openjdk8_rt.jar -cp 'build/builder-default-repro:build/tests:build/teststubs:build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/test/*:lib/eclipse-oxygen/*:lib/stripe/*' lombok.GenerateEcjFixture && sed -n '1,85p' test/transform/resource/after-ecj/BuilderDefaultsGenericCalls.java && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant -q test.javac8 > build/builder-default-repro/javac8-tests.log 2>&1; tail -70 build/builder-default-repro/javac8-tests.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "javac -cp dist/lombok.jar -d build/builder-default-repro build/builder-default-repro/MyTest.java test/transform/resource/before/BuilderDefaultsGenericCalls.java && java -cp build/builder-default-repro MyTest && java -cp build/builder-default-repro CheckBuilders && git diff --check && git diff --numstat && wc -l test/transform/resource/{before,after-delombok,after-ecj}/BuilderDefaultsGenericCalls.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "rm -rf /testbed/build/builder-default-repro && git diff --check && git status --short && git diff -- doc/changelog.markdown && sed -n '1,42p' test/transform/resource/before/BuilderDefaultsGenericCalls.java",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "ant test.compile",
+  "python3 - <<'PY'\nfrom pathlib import Path\np=Path('src/core/lombok/javac/handlers/HandleBuilder.java')\ns=p.read_text()\ns=s.replace('import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;','import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\\nimport com.sun.tools.javac.tree.JCTree.JCReturn;')\ns=s.replace('JCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\\n\\t\\t\\t\\t\\trecursiveSetGeneratedBy(md, annotationNode);', 'JCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);')\nold='''\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n\t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n\t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n\t\t\n\t\tJCStatement statement = maker.Return(field.init);\n\t\tfield.init = null;\n\t\t\n\t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n\t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n\t}'''\nnew='''\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n\t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n\t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n\t\t\n\t\tJCExpression init = field.init;\n\t\tfield.init = null;\n\t\tJCReturn statement = maker.Return(null);\n\t\t\n\t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n\t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n\t\trecursiveSetGeneratedBy(defaultProvider, source);\n\t\t// Keep the initializer's original positions: javac caches invocation types by position.\n\t\tstatement.expr = init;\n\t\treturn defaultProvider;\n\t}'''\nassert old in s\np.write_text(s.replace(old,new))\np=Path('src/core/lombok/javac/handlers/HandleSuperBuilder.java')\ns=p.read_text()\nold='JCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\\n\\t\\t\\t\\trecursiveSetGeneratedBy(md, annotationNode);'\nassert old in s\np.write_text(s.replace(old,'JCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);'))\np=Path('doc/changelog.markdown')\ns=p.read_text()\ns=s.replace('### v1.18.24 \"Edgy Guinea Pig\"\\n', '### v1.18.24 \"Edgy Guinea Pig\"\\n* BUGFIX: `@Builder.Default` and `@SuperBuilder` defaults no longer cause incorrect generic type errors for nested method calls on javac 11 and later.\\n',1)\np.write_text(s)\np=Path('test/transform/resource/before/BuilderDefaultsGenericCalls.java')\nassert not p.exists()\np.write_text('''//version 8:\nimport lombok.Builder;\nimport lombok.Value;\nimport lombok.experimental.SuperBuilder;\n\n@Builder\npublic class BuilderDefaultsGenericCalls {\n\t@Builder.Default\n\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n\n\t@Value\n\tstatic class MyClass<T> {\n\t\tT value;\n\n\t\tstatic MyClass<Integer> myInt() {\n\t\t\treturn new MyClass<>(42);\n\t\t}\n\n\t\tstatic MyClass<Character> myChar() {\n\t\t\treturn new MyClass<>('A');\n\t\t}\n\t}\n\n\tstatic String doSth(MyClass<Integer> i, MyClass<Character> c) {\n\t\treturn i.value.toString() + c.value.toString();\n\t}\n\n\t@SuperBuilder\n\tstatic class Parent {\n\t\t@Builder.Default\n\t\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n\t}\n\n\t@SuperBuilder\n\tstatic class Child extends Parent {\n\t}\n}\n''')\nPY\nant -q test.compile && javac -cp build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8 -processor lombok.javac.apt.LombokProcessor -d build/builder-default-repro build/builder-default-repro/MyTest.java test/transform/resource/before/BuilderDefaultsGenericCalls.java && java -cp build/builder-default-repro MyTest && git diff --stat",
+  "java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:lib/stripe/*' lombok.delombok.Delombok -f generateDelombokComment:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericCalls.java && sed -n '1,95p' test/transform/resource/after-delombok/BuilderDefaultsGenericCalls.java && grep -nE 'foo|default|Parent|Child|return' test/transform/resource/after-delombok/BuilderDefaultsGenericCalls.java | tail -45 && ant -q test.javacCurrent > build/builder-default-repro/javac-tests.log 2>&1; tail -70 build/builder-default-repro/javac-tests.log",
+  "ant -q dist > build/builder-default-repro/dist.log 2>&1; tail -30 build/builder-default-repro/dist.log",
+  "ant -q test.javac8 > build/builder-default-repro/javac8-tests.log 2>&1; tail -70 build/builder-default-repro/javac8-tests.log"
+ ],
+ "peeky_commands": [
+  {
+   "command": "grep -nE 'recursiveSetGeneratedBy|setGeneratedBy' src/core/lombok/javac/handlers/JavacHandlerUtil.java && grep -nE 'generateDefaultProvider|recursiveSetGeneratedBy' src/core/lombok/javac/handlers/HandleSuperBuilder.java && find test -iname '*BuilderDefault*' && grep -n 'filter\\|focus\\|System.getProperty' test/transform/src/lombok/*.java && grep -n 'Builder.Default\\|default' website/templates/features/Builder.html | head -20 && nl -ba src/core/lombok/javac/handlers/HandleBuilder.java | sed -n '282,298p' && peeky --version",
+   "subcommands": [
+    "--version"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "peeky probe . --config build/builder-default-repro/attach.json --at src/core/lombok/javac/handlers/HandleBuilder.java:291 --capture md.body.stats.head.expr.args.head.pos,md.body.stats.head.expr.args.tail.head.pos,annotationNode.node.pos",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "peeky probe . --config build/builder-default-repro/attach.json --at src/core/lombok/javac/handlers/JavacHandlerUtil.java:178 --capture node.pos,node.meth.pos,node.args.head.pos,node.args.tail.head.pos --hits all --json > build/builder-default-repro/positions.json && python3 - <<'PY'\nimport json\np=json.load(open('build/builder-default-repro/positions.json'))\nprint(json.dumps(p,indent=2)[:20000])\nPY",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "peeky probe . --config build/builder-default-repro/attach.json --at src/core/lombok/javac/handlers/JavacHandlerUtil.java:178 --capture node.pos,node.meth.pos,node.args.head.pos,node.args.tail.head.pos --hits 30 --json > build/builder-default-repro/positions.json && python3 - <<'PY'\nimport json\np=json.load(open('build/builder-default-repro/positions.json'))\nprint(json.dumps(p,indent=2)[:23000])\nPY",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "peeky sql \"SELECT hit, selector, value FROM last_run WHERE selector = 'node.pos' AND hit IN (9, 11, 14)\" && peeky sql \"SELECT hit, selector, value FROM last_run WHERE selector = 'node.meth.pos' AND hit IN (9, 11, 14)\"",
+   "subcommands": [
+    "sql",
+    "sql"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "--version": 1,
+  "probe": 3,
+  "sql": 2
+ },
+ "peeky_doc_reads": 6,
+ "peeky_mentions_in_commands": 13,
+ "peeky_withheld_markers": 1,
+ "peeky_withheld_by_marker": {
+  "not settable": 1
+ },
+ "peeky_values_printed": 3,
+ "contaminated": false,
+ "final_message": "Fixed by preserving initializer source positions when generating default providers for both `@Builder` and `@SuperBuilder`. Lombok previously assigned nested calls the same position, colliding with javac 11\u2019s position-based type cache. Peeky\u2019s `peeky probe` at `JavacHandlerUtil.java:178` showed both calls reset to `node.pos = 45`. Added regression coverage without modifying existing tests.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the javac failure first, then use Peeky to inspect how Lombok moves the default initializer before changing the source.\n",
+  "Fixed by preserving initializer source positions when generating default providers for both `@Builder` and `@SuperBuilder`. Lombok previously assigned nested calls the same position, colliding with javac 11\u2019s position-based type cache. Peeky\u2019s `peeky probe` at `JavacHandlerUtil.java:178` showed both calls reset to `node.pos = 45`. Added regression coverage without modifying existing tests."
+ ],
+ "assistant_reasoning": [
+  "**Exploring test runner options**\n\nI'm considering using Delombok for the test runner that allows `//platform javac`. First, I think I need to inspect other existing platform tests to see how they handle things. This will give me a better understanding of what approach to take. Let\u2019s gather enough information to make a solid choice that suits my needs. It's all about finding the best strategy for running my tests effectively!",
+  "**Evaluating test case simplification**\n\nI need to consider simplifying my test case which includes a large @Value annotation, but it\u2019s not a concern given the 460 lines. I might think about removing the @Value import from MyClass and manually using a constructor for four lines of tests, which keeps the root unaffected. This could reduce the fixture count by around 70 lines, but I want to maintain the original @Value as requested. So, it's a balancing act!",
+  "**Evaluating budget and cleanup**\n\nI see there's a substantial budget available, and it seems I don't need to use it all right now. I should clean up temporary files before finalizing things, but I wonder about the current JSON and whether I need to keep it. It looks like I'm saving key evidence outside the source, so I might not need to retain build files. The user has requested a persistent outcome, so perhaps I should focus on cleaning up specific builds for testing.\n\n**Analyzing release and cleanup**\n\nI\u2019m considering outputting a large preview of the untracked release. The `git status` shows six items as good, and it seems permissible to remove the build directory for the testbed by executing `rm -rf /testbed/build/builder-default-repro`. However, I\u2019m concerned about losing log outputs, though the Peeky database will retain essential artifact evidence. I need to check for active tools and ongoing asynchronous processes since the `peeky session list` probe revealed no sessions. The final analysis indicates that I've fixed a type collision issue related to `@Builder` and `@SuperBuilder`.\n\n**Drafting user response**\n\nThe user has requested a short paragraph about the root cause and fix regarding Peeky, without mentioning tests. I see it's best to keep it concise\u2014around 70 words. Although I could add regression coverage details, it's not necessary. I must quote the proper command accurately, using a direct quote like `\"node.pos\": \"45\"` from SQL. The concise command is `peeky sql \"SELECT hit, selector, value FROM last_run WHERE selector = 'node.pos' AND hit IN (9, 11, 14)\"`. If a command quote is needed, I can use `peeky probe \u2026 --at ...:178` as an abbreviation."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 310.6
+}

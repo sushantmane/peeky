@@ -1,0 +1,7 @@
+{
+ "judge_id": "a073",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The separate timedelta bug is real\u2014the conversion subtracts a datetime epoch from a duration.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 12 probe duck_array_ops.py:434: array dtype '<m8[ns]' [-1e10,0,1e10,2e10,NaT], offset numpy.datetime64('1970-01-01'); the same run's error 'subtract cannot use operands ... <m8[ns]> and <M8[D]>' and the test's input confirm it. Cmd 14 offset numpy.timedelta64(0,'ns') matches the Cmd 13 edit; Cmd 10 offset datetime64('1970-01-01') matches the code's hard-coded offset. Nothing contradicted."
+}

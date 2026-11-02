@@ -1,0 +1,7 @@
+{
+ "judge_id": "a240",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed: removing the last item dropped the timer without waking the task waiting in `poll_expired`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no values: cmds 4 and 7 are docs/help, cmd 9 failed with INVALID_BREAKPOINT (generic/inlined function)."
+}

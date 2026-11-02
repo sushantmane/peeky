@@ -1,0 +1,7 @@
+{
+ "judge_id": "a236",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The old loop overwrote the first post-aggregate slot, leaving later slots null; the debugger showed `postPos` remained `0` across both writes.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 25 probe at GroupByQueryQueryToolChest.java:657 showed postPos 0 on both hits, results.cursor 4 then 5, resultRow.row[3] null then Integer@3658 (= input[4]), row[4] null at both hits. Code (cmd 11/30) never increments postPos, and the program output in cmd 26 'Actual: [#en.wikipedia, null, 10516, 31548, null]' (and the failing test in cmd 30) matches the slot being overwritten with row[4] left null. Nothing contradicts; cmds 15, 17, 21 were errors/no-stop."
+}

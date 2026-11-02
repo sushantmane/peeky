@@ -1,0 +1,7 @@
+{
+ "judge_id": "a113",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: `--plain` removes the preceding `--paging=never` during parsing.",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 13 extra_plain false (one --plain) and cmds 15/17 paging_mode QuitIfOneScreen with interactive_output true for '--paging=never --plain'; the program then paged ('Press RETURN to continue' in cmds 13/15, 'pager-output' in cmd 17), and the code shown in cmd 21 gives QuitIfOneScreen on that path. Cmd 27 after the fix shows paging_mode Never and the program printed 'hello world' without the pager. No contradiction."
+}

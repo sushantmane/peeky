@@ -1,0 +1,7 @@
+{
+ "judge_id": "a217",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"the debugger confirmed that the visitor prepends `../` to an already page-relative link. The SVG renderer then applies another path adjustment.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 urls {'my_package.MyClass1': '../my_class_1.html#...'} follows line 416 (\"../\" + refuri) shown in cmd 13; cmd 24 urls/imgpath per page (e.g. 'sub/deep/page' -> '../../classes.html#...', imgpath '../../_images') fit the unedited code shown in cmd 27; cmd 30 urls like 'sphinx.parsers.Parser': '/#sphinx.parsers.Parser' for 'sub/classes/index.html' match cmd 29's urljoin check ('sub/classes/index.html ../../#Class -> /#Class'); cmd 36 url 'index.html' -> new_path '../index.html' fits relpath from _images. modified_url (note/not found) excluded. Nothing contradicted."
+}

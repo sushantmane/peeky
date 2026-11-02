@@ -1,0 +1,88 @@
+{
+ "bug": "tokio-rs__tokio-6752",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__tokio-6752:peeky-r2",
+ "image_id": "sha256:512ebd995a0cc1243f24344e421b7019f3564203b0982afea18521abce642bf6",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:04:48+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the expression after the insertion in DelayQueue::remove",
+   "at": "tokio-util/src/time/delay_queue.rs:769",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio-util/src/time/delay_queue.rs:769 --name reach --timeout 300 --json -- --exact wake_after_remove_last --test-threads=1",
+     "exit": 2,
+     "seconds": 11.1
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 769 has no code to stop at in `tokio_util`'s build: it is in `tokio_util::time::delay_queue::<impl at tokio-util/src/time/delay_queue.rs:434:1: 434:22>::remove`, a generic or inlined function whose code only the crates that use it compile, for their own types, and Peeky reads none of theirs. Stop where `tokio_util`'s own code calls it, or choose a line from `peeky describe`",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio-util/tests/time_delay_queue.rs:888",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio-util/tests/time_delay_queue.rs:888 --name reach --timeout 300 --json -- --exact wake_after_remove_last --test-threads=1",
+     "exit": 0,
+     "seconds": 10.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 1.9
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio-util/tests/time_delay_queue.rs:888",
+    "function": "time_delay_queue::wake_after_remove_last::_$u7b$$u7b$closure$u7d$$u7d$::hc830990817296813",
+    "warnings": [
+     "Line 888 stops up to 4 times per pass in time_delay_queue::wake_after_remove_last::{{closure}} (4 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 4, in address order) says which location."
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 4,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "<null>",
+      "value": "core::pin::Pin<time_delay_queue::wake_after_remove_last::{async_block_env#0} *> @ 0xfffff7d0cf98"
+     },
+     {
+      "name": "_task_context",
+      "value": "0x0000fffff7d0d368"
+     },
+     {
+      "name": "queue",
+      "value": "tokio_test::task::Spawn<tokio_util::time::delay_queue::DelayQueue<&str> > @ 0xfffff7d0cda0"
+     },
+     {
+      "name": "key",
+      "value": "tokio_util::time::delay_queue::Key @ 0xfffff7d0ce78"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:05:13+00:00"
+}

@@ -1,0 +1,203 @@
+{
+ "bug": "projectlombok__lombok-3052",
+ "language": "java",
+ "category": "B",
+ "image": "peeky-study/projectlombok__lombok-3052:peeky-r2",
+ "image_id": "sha256:59919b79f22f865470cc96ac1b508016001664da066c8e6cee2ee79d46ceb2ca",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:00:02+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "f=buildScripts/tests.ant.xml && { head -n -1 $f; cat <<'XML'; tail -n 1 $f; } > /root/reach/tests.ant.xml && cp /root/reach/tests.ant.xml $f\n<target name=\"test.instance\" depends=\"test.compile, test.formatter.compile\">\n  <junit printsummary=\"yes\" fork=\"true\" forkmode=\"once\" haltonfailure=\"no\">\n    <jvmarg value=\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005\" />\n    <formatter classname=\"lombok.ant.SimpleTestFormatter\" usefile=\"false\" unless=\"tests.quiet\" />\n    <classpath location=\"build/ant\" />\n    <classpath refid=\"cp.test\" />\n    <classpath refid=\"cp.stripe\" />\n    <classpath refid=\"packing.basedirs.path\" />\n    <classpath location=\"build/tests\" />\n    <classpath location=\"build/teststubs\" />\n    <test name=\"lombok.transform.TestWithDelombok\" />\n  </junit>\n</target>\nXML",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": ""
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed call of generateDefaultProvider in HandleBuilder (first code hunk)",
+   "at": "src/core/lombok/javac/handlers/HandleBuilder.java:289",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/core/lombok/javac/handlers/HandleBuilder.java:289 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/core/lombok/javac/handlers/HandleBuilder.java:289",
+    "function": "HandleBuilder.handle(AnnotationValues,JCTree$JCAnnotation,JavacNode)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 20,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "annotation",
+      "value": "AnnotationValues@2340"
+     },
+     {
+      "name": "ast",
+      "value": "JCTree$JCAnnotation@2341"
+     },
+     {
+      "name": "annotationNode",
+      "value": "JavacNode@2342"
+     },
+     {
+      "name": "job",
+      "value": "HandleBuilder$BuilderJob@2343"
+     },
+     {
+      "name": "annInstance",
+      "value": "$Proxy12@2344"
+     },
+     {
+      "name": "typeArgsForToBuilder",
+      "value": "null"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "gold",
+   "why": "the changed call of generateDefaultProvider in HandleSuperBuilder (last code hunk)",
+   "at": "src/core/lombok/javac/handlers/HandleSuperBuilder.java:211",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/core/lombok/javac/handlers/HandleSuperBuilder.java:211 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/core/lombok/javac/handlers/HandleSuperBuilder.java:211",
+    "function": "HandleSuperBuilder.handle(AnnotationValues,JCTree$JCAnnotation,JavacNode)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 19,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "annotation",
+      "value": "AnnotationValues@2621"
+     },
+     {
+      "name": "ast",
+      "value": "JCTree$JCAnnotation@2622"
+     },
+     {
+      "name": "annotationNode",
+      "value": "JavacNode@2623"
+     },
+     {
+      "name": "job",
+      "value": "HandleSuperBuilder$SuperBuilderJob@2624"
+     },
+     {
+      "name": "annInstance",
+      "value": "$Proxy13@2625"
+     },
+     {
+      "name": "generateBuilderMethod",
+      "value": "true"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  },
+  {
+   "role": "assertion",
+   "why": "the harness's comparison of the expected and generated file, which every case of the failing suite runs",
+   "at": "test/core/src/lombok/AbstractRunTests.java:275",
+   "launch": {
+    "ready_seconds": 3.1
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at test/core/src/lombok/AbstractRunTests.java:275 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/test/core/src/lombok/AbstractRunTests.java:275",
+    "function": "AbstractRunTests.compareContent(String,String,String)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 9,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "name",
+      "value": "\"Accessors.java\""
+     },
+     {
+      "name": "expectedFile",
+      "value": "\"class AccessorsFluent {\n\tprivate String fieldName = \"\";\n\t@java.lang.SuppressWarnings(\"all\")\n\tpublic String fieldName() {\n\t\treturn this.fieldName;\n\t}\n\t/**\n\t * @"
+     },
+     {
+      "name": "actualFile",
+      "value": "\"// Generated by delombok at Sun Nov 01 09:00:20 UTC 2026\n\nclass AccessorsFluent {\n\tprivate String fieldName = \"\";\n\n\t@java.lang.SuppressWarnings(\"all\")\n\tpublic "
+     },
+     {
+      "name": "expectedLines",
+      "value": "String[127]@2286"
+     },
+     {
+      "name": "actualLines",
+      "value": "String[127]@2287"
+     },
+     {
+      "name": "size",
+      "value": "127"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 9
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:00:22+00:00"
+}

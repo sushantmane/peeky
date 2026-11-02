@@ -1,0 +1,7 @@
+{
+ "judge_id": "a012",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Fixed the bug: Clap\u2019s mutual overrides caused `--plain` to discard `--paging=never`.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

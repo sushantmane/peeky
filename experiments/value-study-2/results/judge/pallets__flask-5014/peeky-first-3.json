@@ -1,0 +1,7 @@
+{
+ "judge_id": "a243",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Blueprint validation rejected dots but allowed empty names.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 11 probe: `set name: 'bp' -> ''` at blueprints.py:193 matches test_self_registration's Blueprint(\"bp\", ...) shown in cmd 7; name '' and self.name '' at line 198 agree with the constructor code (self.name = name after the dot check, diff in cmd 13) and with cmd 6 printing `Blueprint accepted empty name: ''`. Nothing contradicted."
+}

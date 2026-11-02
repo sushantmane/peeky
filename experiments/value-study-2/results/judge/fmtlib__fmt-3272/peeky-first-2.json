@@ -1,0 +1,7 @@
+{
+ "judge_id": "a253",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The size calculation counts separators across fractional digits too.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Cmd 10 probe refused (PROVENANCE_CHANGED error), cmd 11 refused (INVALID_BREAKPOINT error), cmd 12 `peeky describe` printed only a manifest of breakpoint lines/names. No values printed."
+}

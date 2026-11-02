@@ -1,0 +1,7 @@
+{
+ "judge_id": "a017",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: The proxy URL normalization helper drops credentials: urllib3 stores them separately from `netloc`, but Requests rebuilds the URL using only `netloc`.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

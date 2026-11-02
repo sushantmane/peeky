@@ -1,0 +1,113 @@
+diff --git a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java
+index 5900e7ed..748dcc8c 100644
+--- a/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java
++++ b/src/core/lombok/eclipse/handlers/HandleFieldDefaults.java
+@@ -154,7 +154,7 @@ public class HandleFieldDefaults extends EclipseASTAdapter {
+ 			break;
+ 		}
+ 		
+-		if (fd == null && (type.modifiers & (ClassFileConstants.AccInterface | ClassFileConstants.AccAnnotation)) != 0) return;
++		if (fd == null && !isClassOrEnum(typeNode)) return;
+ 		
+ 		boolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));
+ 		boolean defaultToFinal = makeFinalIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE));
+diff --git a/src/core/lombok/javac/handlers/HandleFieldDefaults.java b/src/core/lombok/javac/handlers/HandleFieldDefaults.java
+index ebab67e3..e30bd915 100644
+--- a/src/core/lombok/javac/handlers/HandleFieldDefaults.java
++++ b/src/core/lombok/javac/handlers/HandleFieldDefaults.java
+@@ -134,7 +134,7 @@ public class HandleFieldDefaults extends JavacASTAdapter {
+ 			break;
+ 		}
+ 		
+-		if (fd == null && (type.mods.flags & (Flags.INTERFACE | Flags.ANNOTATION)) != 0) return;
++		if (fd == null && !isClassOrEnum(typeNode)) return;
+ 		
+ 		boolean defaultToPrivate = levelIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_PRIVATE_EVERYWHERE));
+ 		boolean defaultToFinal = makeFinalIsExplicit ? false : Boolean.TRUE.equals(typeNode.getAst().readConfiguration(ConfigurationKeys.FIELD_DEFAULTS_FINAL_EVERYWHERE));
+diff --git a/test/transform/resource/after-delombok/FieldDefaultsFinalViaConfigOnRecord.java b/test/transform/resource/after-delombok/FieldDefaultsFinalViaConfigOnRecord.java
+new file mode 100644
+index 00000000..c5133923
+--- /dev/null
++++ b/test/transform/resource/after-delombok/FieldDefaultsFinalViaConfigOnRecord.java
+@@ -0,0 +1,4 @@
++// version 14:
++public record FieldDefaultsFinalViaConfigOnRecord(int value) {
++	static int counter;
++}
+diff --git a/test/transform/resource/after-delombok/FieldDefaultsPrivateViaConfigOnRecord.java b/test/transform/resource/after-delombok/FieldDefaultsPrivateViaConfigOnRecord.java
+new file mode 100644
+index 00000000..e71bbeef
+--- /dev/null
++++ b/test/transform/resource/after-delombok/FieldDefaultsPrivateViaConfigOnRecord.java
+@@ -0,0 +1,4 @@
++// version 14:
++public record FieldDefaultsPrivateViaConfigOnRecord(int value) {
++	static int counter;
++}
+diff --git a/test/transform/resource/after-ecj/FieldDefaultsFinalViaConfigOnRecord.java b/test/transform/resource/after-ecj/FieldDefaultsFinalViaConfigOnRecord.java
+new file mode 100644
+index 00000000..ec2cb12b
+--- /dev/null
++++ b/test/transform/resource/after-ecj/FieldDefaultsFinalViaConfigOnRecord.java
+@@ -0,0 +1,9 @@
++// version 14:
++public record FieldDefaultsFinalViaConfigOnRecord(int value) {
++/* Implicit */  private final int value;
++  static int counter;
++  public FieldDefaultsFinalViaConfigOnRecord(int value) {
++    super();
++    .value = value;
++  }
++}
+diff --git a/test/transform/resource/after-ecj/FieldDefaultsPrivateViaConfigOnRecord.java b/test/transform/resource/after-ecj/FieldDefaultsPrivateViaConfigOnRecord.java
+new file mode 100644
+index 00000000..fa15e542
+--- /dev/null
++++ b/test/transform/resource/after-ecj/FieldDefaultsPrivateViaConfigOnRecord.java
+@@ -0,0 +1,9 @@
++// version 14:
++public record FieldDefaultsPrivateViaConfigOnRecord(int value) {
++/* Implicit */  private final int value;
++  static int counter;
++  public FieldDefaultsPrivateViaConfigOnRecord(int value) {
++    super();
++    .value = value;
++  }
++}
+diff --git a/test/transform/resource/before/FieldDefaultsFinalViaConfigOnRecord.java b/test/transform/resource/before/FieldDefaultsFinalViaConfigOnRecord.java
+new file mode 100644
+index 00000000..b901e718
+--- /dev/null
++++ b/test/transform/resource/before/FieldDefaultsFinalViaConfigOnRecord.java
+@@ -0,0 +1,6 @@
++// version 14:
++// unchanged
++//CONF: lombok.fieldDefaults.defaultFinal = true
++public record FieldDefaultsFinalViaConfigOnRecord(int value) {
++	static int counter;
++}
+diff --git a/test/transform/resource/before/FieldDefaultsPrivateViaConfigOnRecord.java b/test/transform/resource/before/FieldDefaultsPrivateViaConfigOnRecord.java
+new file mode 100644
+index 00000000..af1820de
+--- /dev/null
++++ b/test/transform/resource/before/FieldDefaultsPrivateViaConfigOnRecord.java
+@@ -0,0 +1,6 @@
++// version 14:
++// unchanged
++//CONF: lombok.fieldDefaults.defaultPrivate = true
++public record FieldDefaultsPrivateViaConfigOnRecord(int value) {
++	static int counter;
++}
+diff --git a/website/templates/features/experimental/FieldDefaults.html b/website/templates/features/experimental/FieldDefaults.html
+index c0d3db96..871a1c19 100644
+--- a/website/templates/features/experimental/FieldDefaults.html
++++ b/website/templates/features/experimental/FieldDefaults.html
+@@ -51,6 +51,8 @@
+ 	<@f.smallPrint>
+ 		<p>
+ 			Like other lombok handlers that touch fields, any field whose name starts with a dollar (<code>$</code>) symbol is skipped entirely. Such a field will not be modified at all.
++		</p><p>
++			The <code>lombok.fieldDefaults.defaultPrivate</code> and <code>lombok.fieldDefaults.defaultFinal</code> configuration keys do not apply to records. Explicit use of <code>@FieldDefaults</code> on a record is not supported.
+ 		</p>
+ 	</@f.smallPrint>
+ </@f.scaffold>

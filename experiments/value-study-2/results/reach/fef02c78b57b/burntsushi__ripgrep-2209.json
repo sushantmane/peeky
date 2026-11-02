@@ -1,0 +1,96 @@
+{
+ "bug": "burntsushi__ripgrep-2209",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/burntsushi__ripgrep-2209:peeky-r2",
+ "image_id": "sha256:4833e369e9f412275df3d4a3072383c7aef24fef5493162d55684148d0ccba12",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T08:58:06+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "mkdir -p /root/reach/rg && sed -n '/^rgtest!(r2208/,/^\");/p' tests/regression.rs | sed '1d;$d' | sed '1s/^    dir.create(\"test\", \"//' > /root/reach/rg/test && wc -l /root/reach/rg/test",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "15 /root/reach/rg/test\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed replace_with_captures_at call in Replacer::replace_all",
+   "at": "crates/printer/src/util.rs:85",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at crates/printer/src/util.rs:85 --name reach --timeout 300 --json -- -N -U -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?' /root/reach/rg/test",
+     "exit": 2,
+     "seconds": 10.0
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 85 has no code to stop at in `grep_printer`'s build: it is in `grep_printer::util::<impl at crates/printer/src/util.rs:41:1: 41:29>::replace_all`, a generic or inlined function whose code only the crates that use it compile, for their own types, and Peeky reads none of theirs. Stop where `grep_printer`'s own code calls it, or choose a line from `peeky describe`",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/regression.rs:1119",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/regression.rs:1119 --name reach --timeout 300 --json -- --exact regression::r2208 --test-threads=1",
+     "exit": 0,
+     "seconds": 15.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 3.9
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/regression.rs:1119",
+    "function": "integration::regression::r2208::_$u7b$$u7b$closure$u7d$$u7d$::h2471fa46dc74f5fd"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "<null>",
+      "value": "0x0000000000000001"
+     },
+     {
+      "name": "dir",
+      "value": "integration::util::Dir @ 0xfffff7dbdca8"
+     },
+     {
+      "name": "cmd",
+      "value": "integration::util::TestCommand @ 0xfffff7dbdce0"
+     },
+     {
+      "name": "expected @ regression.rs:1118",
+      "value": "&str @ 0xfffff7dbd9c0"
+     },
+     {
+      "name": "expected @ macros.rs:20",
+      "value": "<not shown: may point at freed memory>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T08:58:36+00:00"
+}

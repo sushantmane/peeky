@@ -1,0 +1,7 @@
+{
+ "judge_id": "a220",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed `CLUSTER SHARDS` to select the shard\u2019s actual slot owner instead of the failed former primary\u2019s empty slot cache.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Only probe with values is cmd 23 (cluster_legacy.c:5675); every visible row (hit 1: n.name, n.flags, n.numslots, n.slot_info_pairs_count, n.slot_info_pairs, n.replicaof, nodes.len) is marked [unproven], and hits 2-3 are cut from the transcript. (They also agree with the CLUSTER SHARDS reply in cmd 23: node 549d84... master with 5461 slots.) Cmds 14/19/20/21/22 were help, job starts, an INVALID_REQUEST error and 'still running'. No checkable value."
+}

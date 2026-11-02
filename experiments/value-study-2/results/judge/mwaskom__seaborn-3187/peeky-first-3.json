@@ -1,0 +1,7 @@
+{
+ "judge_id": "a003",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"the debugger ... showed million-scale tick values becoming `3`\u2013`6` with `orderOfMagnitude = 6`: the legend omitted that multiplier.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 9 probe (limits set to (3000000,6000000)) showed raw_levels [3000000.0, 4000000.0, 5000000.0, 6000000.0], formatted_levels ['3','4','5','6'], orderOfMagnitude 6, offset 0. Cmd 12 direct run of locator_to_legend_entries on (3e6,6e6) printed the same levels and labels ['3','4','5','6']; cmd 7 objects legend also ['3','4','5','6']. Nothing contradicts."
+}

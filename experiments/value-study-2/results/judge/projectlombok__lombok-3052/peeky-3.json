@@ -1,0 +1,7 @@
+{
+ "judge_id": "a080",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Lombok assigns the builder annotation's source position to every node in the moved initializer. Java 11's argument-type cache uses source positions as keys, so distinct calls can collide.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

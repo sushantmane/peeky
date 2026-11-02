@@ -1,0 +1,7 @@
+{
+ "judge_id": "a146",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed the cache loader: it never advanced the post-aggregator index, so later metrics overwrote the first slot.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 18 probe at GroupByQueryQueryToolChest.java:657 showed postPos 0 on both hits and results.cursor 4 then 5. Code shown in cmd 13 never increments postPos (consistent), and cmd 17/20 output ACTUAL [#en.wikipedia, null, 10516, 31548, null] matches both post-agg values written to the same slot. Nothing contradicts."
+}

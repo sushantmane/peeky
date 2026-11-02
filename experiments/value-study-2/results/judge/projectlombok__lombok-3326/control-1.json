@@ -1,0 +1,7 @@
+{
+ "judge_id": "a153",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed the NPE: javac's cached erased type retained an enclosing class after `@UtilityClass` made `DTO` static.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

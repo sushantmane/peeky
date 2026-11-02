@@ -1,0 +1,7 @@
+{
+ "judge_id": "a098",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The compiler reserves only one control slot for `finally`, but return and jump unwinding need two, allowing the value stack to overwrite `self`.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 12 probe at runtime.c:1055 (mp_load_attr) showed base=0x0000000000000003 (small int 1) with attr=994; consistent with the program's own 'AttributeError: 'int' object has no attribute '_i'' (cmd 12 output, cmd 4). Cmd 15 comp.pass '\\x01'..'\\x04' matches the four compiler passes; cmd 19 delta values (1,-1,1,1,1,-2,-1,1,0,-1) are arithmetically consistent with the emitbc.c code shown (cmd 16). Other values are [unproven]. Nothing contradicted."
+}

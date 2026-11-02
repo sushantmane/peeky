@@ -1,0 +1,24 @@
+{
+ "name": "value-study-2",
+ "bugs": "../value-study/bugs",
+ "results": "results",
+ "seed": 20261101,
+ "arms": {
+  "control": {
+   "image_tag": "control",
+   "prompts": ["../value-study/harness/prompt.md"],
+   "peeky": false
+  },
+  "peeky": {
+   "image_tag": "peeky-r2",
+   "prompts": ["../value-study/harness/prompt.md", "../value-study/harness/prompt-peeky.md"],
+   "peeky": true
+  },
+  "peeky-first": {
+   "image_tag": "peeky-r2",
+   "prompts": ["../value-study/harness/prompt.md", "prompts/prompt-peeky-first.md"],
+   "peeky": true
+  }
+ },
+ "comparisons": [["peeky-first", "control"], ["peeky", "control"]]
+}

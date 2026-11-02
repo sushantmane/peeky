@@ -1,0 +1,274 @@
+{
+ "bug": "burntsushi__ripgrep-2209",
+ "arm": "control",
+ "rep": 3,
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/burntsushi__ripgrep-2209:control",
+ "image_digest": "sha256:b2c844964697066bc46d7e05a4b3f7c5defe59a3fb8cc75d821b1784db47b651",
+ "peeky_sha": null,
+ "container": "study-burntsushi__ripgrep-2209-control-3-bcee51",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:11:36+00:00",
+ "ended": "2026-11-01T13:15:18+00:00",
+ "wall_seconds": 222.7,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "regression::r2208": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "777a144b4350a6665cdae8df83ba4e663103c7b191880d28c8a43457eea767a0",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGELOG.md",
+  "crates/printer/src/standard.rs",
+  "crates/printer/src/util.rs",
+  "tests/multiline.rs"
+ ],
+ "patch_bytes": 4444,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 1
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 20,
+ "ai_credits": 25.98,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 584217,
+  "output": 10356,
+  "cache_read": 543447,
+  "cache_write": 40710,
+  "reasoning": 3255
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 26,
+ "tool_calls_by_name": {
+  "bash": 26
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed && git --no-pager status --short; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'replace|captures|multi_line' crates/printer/src/standard.rs crates/printer/src/util.rs crates/printer/src/lib.rs && cat crates/printer/Cargo.toml",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'multiline.*replace|replace.*multiline|regression|replace' tests/multiline.rs tests/feature.rs tests/regression.rs tests/misc.rs | head -110 && sed -n '1,180p' tests/multiline.rs && head -65 CHANGELOG.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'replace|captures|multi_line' crates/printer/src/standard.rs crates/printer/src/util.rs crates/printer/src/lib.rs && cat crates/printer/Cargo.toml && ls target/debug/rg",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'replace|multiline' tests/regression.rs tests/feature.rs tests/multiline.rs | tail -100 && sed -n '1,110p' tests/integration.rs && ls crates/printer/src",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,155p' crates/printer/src/util.rs && sed -n '370,470p' crates/printer/src/util.rs && sed -n '665,760p' crates/printer/src/standard.rs && sed -n '3180,3330p' crates/printer/src/standard.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n 'replace_with_captures_at' crates/matcher/src/lib.rs && sed -n '720,795p' tests/regression.rs && sed -n '805,875p' tests/regression.rs && sed -n '935,992p' tests/regression.rs && ls tests && cat Cargo.toml | head -120 && printf '# comment\\npipc () {  # usage\\n    emulate -L zsh\\n}\\n' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '710,970p' crates/matcher/src/lib.rs && grep -nE 'captures_iter|captures_at|replace_with' crates/regex/src/matcher.rs crates/pcre2/src/matcher.rs && sed -n '1,140p' tests/tests.rs && sed -n '1,100p' tests/macros.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,200p' crates/regex/src/matcher.rs && grep -n 'MAX_LOOK_AHEAD' crates/printer/src/lib.rs && printf '# comment\\npipc () {  # usage\\n    emulate -L zsh\\n}\\n' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?' -o && command -v apply_patch && sed -n '880,940p' tests/regression.rs",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '880,940p' tests/regression.rs && sed -n '790,850p' crates/printer/src/standard.rs && sed -n '1740,1790p' crates/printer/src/standard.rs && ls /usr/bin/*patch* /usr/local/bin/*patch* 2>/dev/null; cd /testbed && tail -110 crates/printer/src/util.rs && sed -n '1,100p' .cargo/config && cat rustfmt.toml",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && printf 'before\\n# first\\npipc () {  # usage\\nignored\\n# second\\npipc () {  # other\\ntrailing\\n' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?' && printf 'foo\\nbar\\n' | target/debug/rg -U -r X 'foo|$' && cargo --version && rustfmt --version",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -118,3 +118,45 @@\n \";\n     eqnice!(expected, cmd.stdout());\n });\n+\n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"before\\n# first\\npipc () {  # usage\\nignored\\n\\\n+         # second\\npipc () {  # other\\ntrailing\\n\",\n+    );\n+    let pattern = concat!(\n+        r\"^(?P<predoc>\\n?(# .*\\n)*)\",\n+        r\"(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+    );\n+    cmd.args(&[\"-NU\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-NUo\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_lookaround, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"foo\\nbar\\nfoo\\nbaz\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"$1!\", r\"(?<=foo\\n)(bar)(?=\\nfoo)\", \"test\"]);\n+    eqnice!(\"bar!\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_empty_boundary, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"foo\\nbar\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"X\", r\"foo|$\", \"test\"]);\n+    eqnice!(\"X\\nbarX\\n\", cmd.stdout());\n+});\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -118,3 +118,45 @@\n \";\n     eqnice!(expected, cmd.stdout());\n });\n+\n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"before\\n# first\\npipc () {  # usage\\nignored\\n\\\n+         # second\\npipc () {  # other\\ntrailing\\n\",\n+    );\n+    let pattern = concat!(\n+        r\"^(?P<predoc>\\n?(# .*\\n)*)\",\n+        r\"(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+    );\n+    cmd.args(&[\"-NU\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-NUo\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_lookaround, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"foo\\nbar\\nfoo\\nbaz\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"$1!\", r\"(?<=foo\\n)(bar)(?=\\nfoo)\", \"test\"]);\n+    eqnice!(\"bar!\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_empty_boundary, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"foo\\nbar\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"X\", r\"foo|$\", \"test\"]);\n+    eqnice!(\"X\\nbarX\\n\", cmd.stdout());\n+});\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -82,14 +82,18 @@\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n@@ -102,6 +106,11 @@\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Keep the look-ahead context out of the replacement output.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3319,6 +3319,27 @@\n     #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                \"before\\nprefix foo\\nbar suffix\\nafter\\n\".as_bytes(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+    }\n+\n+    #[test]\n     fn replacement_max_columns() {\n         let matcher = RegexMatcher::new(r\"Sherlock|Doctor (\\w+)\").unwrap();\n         let mut printer = StandardBuilder::new()\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -9,6 +9,8 @@\n * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):\n   Disable mmap searching in all non-64-bit environments.\n+* Fix multiline replacements including or replacing text beyond the matching\n+  lines.\n \n \n 13.0.0 (2021-06-12)\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -81,28 +81,39 @@\n                 self.allocate(matcher)?;\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n                             subject,\n                             replacement,\n                             dst,\n                         );\n                         let end = dst.len();\n                         matches.push(Match::new(start, end));\n                         true\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Keep the look-ahead context out of the replacement output.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3319,4 +3319,25 @@\n     #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                \"before\\nprefix foo\\nbar suffix\\nafter\\n\".as_bytes(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+    }\n+\n+    #[test]\n     fn replacement_max_columns() {\n         let matcher = RegexMatcher::new(r\"Sherlock|Doctor (\\w+)\").unwrap();\n         let mut printer = StandardBuilder::new()\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -9,6 +9,8 @@\n * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):\n   Disable mmap searching in all non-64-bit environments.\n+* Fix multiline replacements including or replacing text beyond the matching\n+  lines.\n \n \n 13.0.0 (2021-06-12)\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '75,111l' crates/printer/src/util.rs && git --no-pager diff --stat && git --no-pager status --short && cat rustfmt.toml && ls .cargo",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount --verbose <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -82,26 +82,37 @@\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n                             |name| matcher.capture_index(name),\n                             subject,\n                             replacement,\n                             dst,\n                         );\n                         let end = dst.len();\n                         matches.push(Match::new(start, end));\n                         true\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Keep the look-ahead context out of the replacement output.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3319,4 +3319,25 @@\n     #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                \"before\\nprefix foo\\nbar suffix\\nafter\\n\".as_bytes(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+    }\n+\n+    #[test]\n     fn replacement_max_columns() {\n         let matcher = RegexMatcher::new(r\"Sherlock|Doctor (\\w+)\").unwrap();\n         let mut printer = StandardBuilder::new()\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -9,5 +9,7 @@\n * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):\n   Disable mmap searching in all non-64-bit environments.\n+* Fix multiline replacements including or replacing text beyond the matching\n+  lines.\n \n \n 13.0.0 (2021-06-12)\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '3310,3332p' crates/printer/src/standard.rs && sed -n '1,18p' CHANGELOG.md && git --no-pager diff -- crates/printer/src/util.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount --verbose <<'PATCH'\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3319,4 +3319,25 @@\n+    #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                \"before\\nprefix foo\\nbar suffix\\nafter\\n\".as_bytes(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+    }\n+\n     #[test]\n     fn replacement_max_columns() {\n         let matcher = RegexMatcher::new(r\"Sherlock|Doctor (\\w+)\").unwrap();\n         let mut printer = StandardBuilder::new()\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -9,5 +9,7 @@\n * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):\n   Disable mmap searching in all non-64-bit environments.\n+* Fix multiline replacements including or replacing text beyond the matching\n+  lines.\n \n \n 13.0.0 (2021-06-12)\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/crates/printer/src/standard.rs b/crates/printer/src/standard.rs\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3319,4 +3319,25 @@\n+    #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                \"before\\nprefix foo\\nbar suffix\\nafter\\n\".as_bytes(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+    }\n+\n     #[test]\n     fn replacement_max_columns() {\n         let matcher = RegexMatcher::new(r\"Sherlock|Doctor (\\w+)\").unwrap();\n         let mut printer = StandardBuilder::new()\ndiff --git a/CHANGELOG.md b/CHANGELOG.md\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -9,5 +9,7 @@\n * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):\n   Disable mmap searching in all non-64-bit environments.\n+* Fix multiline replacements including or replacing text beyond the matching\n+  lines.\n \n \n 13.0.0 (2021-06-12)\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test -p grep-printer && git diff --check && git --no-pager diff --stat",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/crates/printer/src/standard.rs b/crates/printer/src/standard.rs\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3320,9 +3320,10 @@\n     fn replacement_multi_line_bounded() {\n         let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n         let mut printer = StandardBuilder::new()\n             .replacement(Some(b\"$last\".to_vec()))\n             .build(NoColor::new(vec![]));\n         SearcherBuilder::new()\n+            .line_number(true)\n             .multi_line(true)\n             .build()\n             .search_reader(\n@@ -3334,4 +3335,4 @@\n \n         let got = printer_contents(&mut printer);\n-        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+        assert_eq_printed!(\"2:prefix bar suffix\\n\", got);\n     }\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test -p grep-printer --quiet && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- replac",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport subprocess\n\ncontent = '''# Compile requirements.txt files from all found or specified requirements.in files (compile).\n# Use -h to include hashes, -u dep1,dep2... to upgrade specific dependencies, and -U to upgrade all.\npipc () {  # [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]\n    emulate -L zsh\n    unset REPLY\n    if [[ $1 == --help ]] { zpy $0; return }\n    [[ $ZPY_PROCS ]] || return\n\n    local gen_hashes upgrade upgrade_csv\n    while [[ $1 == -[hUu] ]] {\n        if [[ $1 == -h ]] { gen_hashes=--generate-hashes; shift   }\n        if [[ $1 == -U ]] { upgrade=1;                    shift   }\n        if [[ $1 == -u ]] { upgrade=1; upgrade_csv=$2;    shift 2 }\n    }\n}\n'''\npattern = r'^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?'\nexpected = ' [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]\\n'\nfor flags in ([], ['-P'], ['-o'], ['-P', '-o']):\n    result = subprocess.run(\n        ['target/debug/rg', '--no-config', '--color', 'never', '-NU', '-r', '$usage', *flags, pattern],\n        input=content, text=True, capture_output=True, check=True,\n    )\n    assert result.stdout == expected, (flags, result.stdout)\nprint('Exact bug-report reproduction returns only the expected usage line with both engines.')\nPY\n git diff --check && git --no-pager diff --stat && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -118,3 +118,45 @@\n \";\n     eqnice!(expected, cmd.stdout());\n });\n+\n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"before\\n# first\\npipc () {  # usage\\nignored\\n\\\n+         # second\\npipc () {  # other\\ntrailing\\n\",\n+    );\n+    let pattern = concat!(\n+        r\"^(?P<predoc>\\n?(# .*\\n)*)\",\n+        r\"(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+    );\n+    cmd.args(&[\"-NU\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-NUo\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_lookaround, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"foo\\nbar\\nfoo\\nbaz\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"$1!\", r\"(?<=foo\\n)(bar)(?=\\nfoo)\", \"test\"]);\n+    eqnice!(\"bar!\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_empty_boundary, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"foo\\nbar\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"X\", r\"foo|$\", \"test\"]);\n+    eqnice!(\"X\\nbarX\\n\", cmd.stdout());\n+});\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+  "cd /testbed && git apply --recount <<'PATCH'\n--- a/tests/multiline.rs\n+++ b/tests/multiline.rs\n@@ -118,3 +118,45 @@\n \";\n     eqnice!(expected, cmd.stdout());\n });\n+\n+rgtest!(replacement_capture, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\n+        \"test\",\n+        \"before\\n# first\\npipc () {  # usage\\nignored\\n\\\n+         # second\\npipc () {  # other\\ntrailing\\n\",\n+    );\n+    let pattern = concat!(\n+        r\"^(?P<predoc>\\n?(# .*\\n)*)\",\n+        r\"(?P<fname>pipc) \\(\\) \\{(  #(?P<usage> .+))?\",\n+    );\n+    cmd.args(&[\"-NU\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+\n+    let mut cmd = dir.command();\n+    cmd.args(&[\"-NUo\", \"-r\", \"$usage\", pattern, \"test\"]);\n+    eqnice!(\" usage\\n other\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_lookaround, |dir: Dir, mut cmd: TestCommand| {\n+    if !dir.is_pcre2() {\n+        return;\n+    }\n+    dir.create(\"test\", \"foo\\nbar\\nfoo\\nbaz\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"$1!\", r\"(?<=foo\\n)(bar)(?=\\nfoo)\", \"test\"]);\n+    eqnice!(\"bar!\\n\", cmd.stdout());\n+});\n+\n+rgtest!(replacement_empty_boundary, |dir: Dir, mut cmd: TestCommand| {\n+    dir.create(\"test\", \"foo\\nbar\\n\");\n+    cmd.args(&[\"-NU\", \"-r\", \"X\", r\"foo|$\", \"test\"]);\n+    eqnice!(\"X\\nbarX\\n\", cmd.stdout());\n+});\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+  "cd /testbed && git apply --recount <<'PATCH'\n--- a/crates/printer/src/util.rs\n+++ b/crates/printer/src/util.rs\n@@ -82,14 +82,18 @@\n             dst.clear();\n             matches.clear();\n \n+            let mut last_match = range.start;\n             matcher\n-                .replace_with_captures_at(\n+                .captures_iter_at(\n                     subject,\n                     range.start,\n                     caps,\n-                    dst,\n-                    |caps, dst| {\n+                    |caps| {\n+                        let m = caps.get(0).unwrap();\n+                        if m.start() >= range.end {\n+                            return false;\n+                        }\n+                        dst.extend(&subject[last_match..m.start()]);\n+                        last_match = m.end();\n                         let start = dst.len();\n                         caps.interpolate(\n@@ -102,6 +106,11 @@\n                     },\n                 )\n                 .map_err(io::Error::error_message)?;\n+            // Keep the look-ahead context out of the replacement output.\n+            let end = range.end.min(subject.len());\n+            if last_match < end {\n+                dst.extend(&subject[last_match..end]);\n+            }\n         }\n         Ok(())\n     }\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3319,6 +3319,27 @@\n     #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                \"before\\nprefix foo\\nbar suffix\\nafter\\n\".as_bytes(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+    }\n+\n+    #[test]\n     fn replacement_max_columns() {\n         let matcher = RegexMatcher::new(r\"Sherlock|Doctor (\\w+)\").unwrap();\n         let mut printer = StandardBuilder::new()\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -9,6 +9,8 @@\n * [BUG #1911](https://github.com/BurntSushi/ripgrep/issues/1911):\n   Disable mmap searching in all non-64-bit environments.\n+* Fix multiline replacements including or replacing text beyond the matching\n+  lines.\n \n \n 13.0.0 (2021-06-12)\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test -p grep-printer && git diff --check && git --no-pager diff --stat",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/crates/printer/src/standard.rs b/crates/printer/src/standard.rs\n--- a/crates/printer/src/standard.rs\n+++ b/crates/printer/src/standard.rs\n@@ -3320,9 +3320,10 @@\n     fn replacement_multi_line_bounded() {\n         let matcher = RegexMatcher::new(r\"foo\\n(?P<last>bar)\").unwrap();\n         let mut printer = StandardBuilder::new()\n             .replacement(Some(b\"$last\".to_vec()))\n             .build(NoColor::new(vec![]));\n         SearcherBuilder::new()\n+            .line_number(true)\n             .multi_line(true)\n             .build()\n             .search_reader(\n@@ -3334,4 +3335,4 @@\n \n         let got = printer_contents(&mut printer);\n-        assert_eq_printed!(\"prefix bar suffix\\n\", got);\n+        assert_eq_printed!(\"2:prefix bar suffix\\n\", got);\n     }\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test -p grep-printer --quiet && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- replac"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "The replacement code treated multiline look-ahead context as output, leaking later lines and replacing matches outside the current block. I bounded replacements and copied text to the reported match range while preserving look-around support, and added regression coverage.",
+ "assistant_messages": [
+  "I\u2019ll trace how multiline replacements use capture offsets, reproduce the mismatch, and add a regression test for the fix.\n",
+  "The captures are correct; the replacement code copies the look-ahead buffer into the output and can also replace matches beyond the current block. I\u2019ll keep that context available for matching while limiting replacements and copied text to the reported lines.\n",
+  "The replacement code treated multiline look-ahead context as output, leaking later lines and replacing matches outside the current block. I bounded replacements and copied text to the reported match range while preserving look-around support, and added regression coverage."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating git apply usage**\n\nI'm trying to figure out how to use `git apply` with the right options. It looks like if I need to deal with 3 or more additions, I can try `git apply --recount`, which helps solve issues by ignoring counts. I think this could resolve problems with repeated micro edits, but I want to be careful not to mess things up since these changes might not materialize as expected. I'll keep this in mind moving forward!",
+  "**Fixing diff headers**\n\nI'm realizing I need to recount treats and address them next for deletion until I get to the `diff --git` part! I really need to fix the included diff headers between the files since all previous failures didn't succeed due to the lack of this next diff. It's like there's one that didn't work out, but I know I need to make sure the unified diff git header is done properly this time.",
+  "**Revising code formatting**\n\nI have enough budget, but I don\u2019t want to explore optional changes just yet. I need to check the format of `.captures_iter_at` in a multiline 4-argument style, likely to help reduce the outputs. The original method's formatting was too compressed, especially when the closure becomes too large. Although I can't use rustfmt right now, I\u2019ll adapt the code manually for clarity. \n\nI\u2019ll simplify the matcher call and reduce the lines while enhancing readability. It's looking surgical and cleaner now!\n\n**Validating toolchain usage**\n\nI\u2019m considering whether I could run the installed rustup toolchain, but it's not strictly necessary. I\u2019d prefer to keep things simple and focus on fixing the root issue with the captures iterator manually. I also need a complete report through stdin, which I can achieve using a Python subprocess for validation. \n\nI\u2019ll write a small script to execute the command with specific patterns while checking that everything matches the expected output on one line. That should cover all my bases!\n\n**Testing subprocesses and commands**\n\nUsing a subprocess for JSON seems safe, and I\u2019m considering running independent test commands in parallel groups. I might also explore integration tests to see if the `--replac` flag will work effectively. It looks like there are about seven targeted regression tests available, possibly more.\n\nI want to ensure that the command runs with the right regex flags for lookbehinds. I\u2019ll validate results against a threshold and ensure that captured tests report correctly. After that, a final git diff will help confirm everything's in order!",
+  "**Finalizing code details**\n\nI need to finalize my task, ensuring I follow the code formatting and preserve the existing style. I\u2019ll review the differences to ensure nothing is missing, especially since Rust version compatibility is important. I should address issues like the tail bug and ensure the invariant last_match is consistent when searching. All tests are passing, which is great! I\u2019m curious if the user wants a concise root cause fix, but I think adding regression coverage is meaningful, even if not explicitly requested.\n\n**Reviewing changes before finalization**\n\nI don\u2019t need to finalize everything just yet; I should review all the differences before delivering. I\u2019ve read enough about the changes to ensure all sources are precise. I noticed that formatting might not be required, as linting is currently unavailable. I could remove some redundant nested braces, though. The new tests for input validation seem fine, and I think I should confirm that the developer may need to validate everything. Once I\u2019m done, I\u2019ll be ready to deliver."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 223.9
+}

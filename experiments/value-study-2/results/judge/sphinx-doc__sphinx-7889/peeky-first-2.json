@@ -1,0 +1,7 @@
+{
+ "judge_id": "a135",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"the debugger stopped at `mock.py:73` and showed `name` was `TypeVar ~T`, confirming why string concatenation failed.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 9 probe at mock.py:73: hit 3 name=TypeVar ~T, module='missing_dependency.Generic' (hits 1-2 name='Generic'); same run's traceback shows TypeError 'can only concatenate str (not \"typing.TypeVar\") to str' at line 73, and cmd 22 reproduces that TypeError. Cmd 18 key=TypeVar ~T at mock.py:56 matches first parametrize value TypeVar('T') of test_mock_generic_class (cmd 21 diff). Nothing contradicted."
+}

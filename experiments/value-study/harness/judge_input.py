@@ -174,7 +174,7 @@ def main():
     result = json.loads((run_dir / "result.json").read_text())
     bug = studylib.load_bug(result["bug"], args.bugs)
     if args.peeky:
-        if result.get("arm") != "peeky":
+        if not metrics.uses_peeky(result.get("arm")):
             sys.exit("part 2 is for Peeky-arm attempts")
         print(part_two(run_dir, bug, result, args.max_output))
     else:

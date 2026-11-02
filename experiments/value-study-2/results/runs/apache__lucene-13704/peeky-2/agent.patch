@@ -1,0 +1,93 @@
+diff --git a/lucene/CHANGES.txt b/lucene/CHANGES.txt
+index ae15247ac2..467da35cb3 100644
+--- a/lucene/CHANGES.txt
++++ b/lucene/CHANGES.txt
+@@ -184,6 +184,9 @@ Optimizations
+ Bug Fixes
+ ---------------------
+ 
++* Fix integer overflow in geo query predicates that rejected points in narrow
++  shapes near the north pole.
++
+ * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until
+   they reach the maximum merge size. (Adrien Grand)
+ 
+diff --git a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+index d7ff62ba3b..818639bee8 100644
+--- a/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
++++ b/lucene/core/src/java/org/apache/lucene/geo/GeoEncodingUtils.java
+@@ -363,7 +363,7 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+@@ -411,7 +411,7 @@ public final class GeoEncodingUtils {
+      */
+     public boolean test(int lat, int lon) {
+       final int lat2 = ((lat - Integer.MIN_VALUE) >>> latShift);
+-      if (lat2 < latBase || lat2 >= latBase + maxLatDelta) {
++      if (lat2 < latBase || lat2 - latBase >= maxLatDelta) {
+         return false;
+       }
+       int lon2 = ((lon - Integer.MIN_VALUE) >>> lonShift);
+diff --git a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
+index d654e44647..4075214b8b 100644
+--- a/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
++++ b/lucene/core/src/test/org/apache/lucene/geo/TestGeoEncodingUtils.java
+@@ -135,6 +135,52 @@ public class TestGeoEncodingUtils extends LuceneTestCase {
+     }
+   }
+ 
++  public void testComponentPredicateAtExtremeCoordinates() {
++    for (int minLat : new int[] {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 3}) {
++      for (int minLon : new int[] {Integer.MIN_VALUE, -2, Integer.MAX_VALUE - 3}) {
++        int maxLat = minLat + 3;
++        int maxLon = minLon + 3;
++        double minY = decodeLatitude(minLat);
++        double maxY = decodeLatitude(maxLat);
++        double minX = decodeLongitude(minLon);
++        double maxX = decodeLongitude(maxLon);
++        Polygon polygon =
++            new Polygon(
++                new double[] {minY, minY, maxY, maxY, minY},
++                new double[] {minX, maxX, maxX, minX, minX});
++        GeoEncodingUtils.Component2DPredicate predicate =
++            GeoEncodingUtils.createComponentPredicate(LatLonGeometry.create(polygon));
++        for (int i = 0; i <= 3; i++) {
++          for (int j = 0; j <= 3; j++) {
++            assertTrue(predicate.test(minLat + i, minLon + j));
++          }
++        }
++        if (minLat > Integer.MIN_VALUE) {
++          assertFalse(predicate.test(minLat - 1, minLon));
++        }
++        if (maxLat < Integer.MAX_VALUE) {
++          assertFalse(predicate.test(maxLat + 1, minLon));
++        }
++        if (minLon > Integer.MIN_VALUE) {
++          assertFalse(predicate.test(minLat, minLon - 1));
++        }
++        if (maxLon < Integer.MAX_VALUE) {
++          assertFalse(predicate.test(minLat, maxLon + 1));
++        }
++      }
++    }
++  }
++
++  public void testDistancePredicateAtNorthPole() {
++    int lat = Integer.MAX_VALUE - 2;
++    for (int lon : new int[] {Integer.MIN_VALUE, 0, Integer.MAX_VALUE}) {
++      GeoEncodingUtils.DistancePredicate predicate =
++          GeoEncodingUtils.createDistancePredicate(decodeLatitude(lat), decodeLongitude(lon), 0.01);
++      assertTrue(predicate.test(lat, lon));
++      assertFalse(predicate.test(encodeLatitude(89), lon));
++    }
++  }
++
+   // check edge/interesting cases explicitly
+   public void testEncodeEdgeCases() {
+     assertEquals(Integer.MIN_VALUE, encodeLatitude(MIN_LAT_INCL));

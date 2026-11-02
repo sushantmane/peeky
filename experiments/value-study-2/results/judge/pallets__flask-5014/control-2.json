@@ -1,0 +1,7 @@
+{
+ "judge_id": "a171",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Blueprint name validation rejected dots but allowed empty strings, causing incorrect behavior.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

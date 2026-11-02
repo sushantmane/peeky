@@ -1,0 +1,7 @@
+{
+ "judge_id": "a247",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Lombok had reset them, causing Java 11\u2019s generic-argument cache to confuse distinct calls.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 30 probe at JavacHandlerUtil.java:180 (and cmd 55 query of run 5): node.pos values 76, 100, 44, and three JCMethodInvocation nodes with node.pos=44. Consistent with code line 177 'node.pos = sourceNode.getStartPos()' (cmd 28) and the source text, where 44 is the start of line 2 '@Builder'; cmd 23/29 javac error is reported at /MyTest.java:2 column 1. Nothing contradicts. Cmd 24 values were withheld (depth limit); cmds 22, 27, 28 failed."
+}

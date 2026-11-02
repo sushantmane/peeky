@@ -1,0 +1,7 @@
+{
+ "judge_id": "a089",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: The parser makes `--plain` and `--paging` overwrite each other, so a later `--plain` discards `--paging=never`.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

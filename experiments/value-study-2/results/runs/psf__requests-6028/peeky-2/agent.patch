@@ -1,0 +1,85 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 9acc1c59..771e3009 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -4,7 +4,8 @@ Release History
+ dev
+ ---
+ 
+-- \[Short description of non-trivial change.\]
++- Fixed proxy authentication by preserving URL credentials when normalizing
++  proxy schemes.
+ 
+ 2.27.0 (2022-01-03)
+ -------------------
+diff --git a/requests/utils.py b/requests/utils.py
+index 1c2ae4e0..15e536d5 100644
+--- a/requests/utils.py
++++ b/requests/utils.py
+@@ -974,6 +974,8 @@ def prepend_scheme_if_needed(url, new_scheme):
+     if not netloc:
+         netloc, path = path, netloc
+ 
++    if auth:
++        netloc = '@'.join([auth, netloc])
+     if scheme is None:
+         scheme = new_scheme
+     if path is None:
+diff --git a/tests/test_lowlevel.py b/tests/test_lowlevel.py
+index 7256eda9..14cdc40f 100644
+--- a/tests/test_lowlevel.py
++++ b/tests/test_lowlevel.py
+@@ -268,6 +268,31 @@ def test_digestauth_only_on_4xx():
+         close_server.set()
+ 
+ 
++@pytest.mark.parametrize('proxy_scheme', ['http:', ''])
++@pytest.mark.parametrize('password', ['pass', ''])
++def test_authenticated_http_proxy(proxy_scheme, password):
++    expected_auth = requests.auth._basic_auth_str('user', password).encode('ascii')
++
++    def proxy_handler(sock):
++        request_content = consume_socket_content(sock)
++        if b'Proxy-Authorization: ' + expected_auth + b'\r\n' in request_content:
++            status = b'200 OK'
++        else:
++            status = b'407 Proxy Authentication Required'
++        sock.sendall(b'HTTP/1.1 ' + status + b'\r\nContent-Length: 0\r\n\r\n')
++        return request_content
++
++    server = Server(proxy_handler)
++    with server as (host, port):
++        proxy = '{}//user:{}@{}:{}'.format(proxy_scheme, password, host, port)
++        with requests.Session() as session:
++            session.trust_env = False
++            response = session.get('http://example.org/', proxies={'http': proxy},
++                                   timeout=5)
++        assert response.status_code == 200
++    assert server.handler_results[0].startswith(b'GET http://example.org/ HTTP/1.1')
++
++
+ _schemes_by_var_prefix = [
+     ('http', ['http']),
+     ('https', ['https']),
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 29b3aca8..81c2e8e9 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1891,6 +1891,17 @@ class TestRequests:
+         headers = adapter.proxy_headers("http://user:pass@httpbin.org")
+         assert headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}
+ 
++    @pytest.mark.parametrize('scheme', ['http', 'https'])
++    def test_proxy_connection_preserves_auth(self, scheme):
++        proxy = 'http://user:pass@proxy.example:8080'
++        with requests.Session() as session:
++            adapter = session.get_adapter(scheme + '://')
++            connection = adapter.get_connection(
++                scheme + '://example.org/', proxies={scheme: proxy})
++            assert connection.proxy.auth == 'user:pass'
++            assert connection.proxy_headers == {
++                'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}
++
+     def test_proxy_auth_empty_pass(self):
+         adapter = HTTPAdapter()
+         headers = adapter.proxy_headers("http://user:@httpbin.org")

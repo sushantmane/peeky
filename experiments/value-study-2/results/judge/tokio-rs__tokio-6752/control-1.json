@@ -1,0 +1,7 @@
+{
+ "judge_id": "a024",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed: removing the last item dropped the timer without waking the stored poller, leaving `poll_expired` pending indefinitely.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

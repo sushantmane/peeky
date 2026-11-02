@@ -1,0 +1,7 @@
+{
+ "judge_id": "a092",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"The root cause was passing a `TypeVar` into string concatenation\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 9 probe at mock.py:73: hits 1-2 name='Generic', module='sphinx.unknown' (matches `mock(['sphinx.unknown'])` + `from sphinx.unknown import Generic` in the test); hit 3 name=TypeVar ~T, module='sphinx.unknown.Generic', consistent with the TypeError 'can only concatenate str (not \"typing.TypeVar\") to str' at line 73 in cmd 5 and the failing test in cmd 9. Cmds 6/8 were errors/no stop. Nothing contradicted."
+}
