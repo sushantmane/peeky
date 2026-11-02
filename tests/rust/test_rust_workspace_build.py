@@ -1538,6 +1538,96 @@ fn baked() {
 """
 
 
+READS_ITS_BINARY = """const APP: &[u8] = include_bytes!(env!("CARGO_BIN_EXE_app"));
+
+#[test]
+fn reads() {
+    assert_eq!(APP, &std::fs::read(env!("CARGO_BIN_EXE_app")).unwrap()[..]);
+    println!("READ {} AT {}", APP.len(), env!("CARGO_BIN_EXE_app"));
+}
+"""
+
+
+# Cargo doesn't wait for a package's binaries before compiling its tests (its job queue
+# drops that edge). A dev-dependency's build script waiting for `app` orders them here.
+WAITS_FOR_APP = """fn main() {
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let app = out.ancestors().nth(3).unwrap().join("app");
+    for _ in 0..600 {
+        if app.is_file() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_integration_test_reads_its_binary_while_it_compiles(workspace, capsys):
+    # A binary Cargo built before the test's compile is there as it compiles, as under Cargo
+    # (#489's review): `include_bytes!(env!("CARGO_BIN_EXE_app"))` read the run's copy, which
+    # was made only once Cargo was done, so the test didn't compile.
+    (workspace / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["app", "util", "waits"]\nresolver = "2"\n'
+    )
+    (workspace / "waits/src").mkdir(parents=True)
+    (workspace / "waits/Cargo.toml").write_text(
+        '[package]\nname = "waits"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (workspace / "waits/src/lib.rs").write_text("")
+    (workspace / "waits/build.rs").write_text(WAITS_FOR_APP)
+    manifest = workspace / "app/Cargo.toml"
+    manifest.write_text(
+        manifest.read_text() + '\n[dev-dependencies]\nwaits = { path = "../waits" }\n'
+    )
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(READS_ITS_BINARY)
+    lock(workspace)
+    config = configure(workspace, run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    directory, manifest = manifest_of(summary)
+    copy = directory / manifest["run"]["binaries"]["app"]
+    assert copy == Path(summary["executable"]).with_name("app")
+    digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+    assert manifest["artifacts"][manifest["run"]["binaries"]["app"]] == digest
+    shown = subprocess.run(
+        [summary["executable"], "--exact", "reads", "--nocapture"],
+        capture_output=True,
+        text=True,
+        cwd=workspace / "app",
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert f"READ {copy.stat().st_size} AT {copy}\n" in shown.stdout, shown.stdout + shown.stderr
+    assert "test result: ok" in shown.stdout
+
+
+@pytest.mark.timeout(300)
+def test_a_test_that_reads_a_binary_cargo_hasnt_built_yet_is_told_why(workspace, capsys):
+    # Unordered, Cargo usually begins the test's compile first: it fails, as under Cargo with
+    # a clean target directory, and the wrapper says why. Built, it read the run's own copy.
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(READS_ITS_BINARY)
+    config = configure(workspace, run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    if code == 0:
+        copy = Path(summary["executable"]).with_name("app")
+        shown = subprocess.run(
+            [summary["executable"], "--exact", "reads", "--nocapture"],
+            capture_output=True,
+            text=True,
+            env={"PATH": os.environ["PATH"]},
+        )
+        assert f"READ {copy.stat().st_size} AT {copy}\n" in shown.stdout, shown.stdout
+    else:
+        assert summary["error"]["code"] == "BUILD_FAILED", summary
+        assert (
+            "Cargo hadn't built app when it began compiling this test"
+            in (summary["error"]["message"])
+        )
+
+
 @pytest.mark.timeout(300)
 def test_a_binary_an_integration_test_names_while_it_compiles_is_its_runs_own(workspace, capsys):
     # `env!("CARGO_BIN_EXE_app")` named Cargo's `target/debug/app`, which a later build of

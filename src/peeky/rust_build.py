@@ -75,8 +75,10 @@ SCHEMA = 5
 # Every other compile runs unchanged, but for one thing. An integration test's compile is
 # given each of its package's binaries as CARGO_BIN_EXE_<name> (`target/debug/app`), which
 # `env!` bakes into the test. Each is replaced with the run's own copy of that binary
-# (`runs/<nonce>/bin/app`, made once Cargo is done: _copy_binaries), and the names kept in
-# the run's `bin-env` (_check_binaries). A later build replaces Cargo's, never the run's.
+# (`runs/<nonce>/bin/app`), and the names kept in the run's `bin-env` (_check_binaries). A
+# later build replaces Cargo's, never the run's. A compile may read it (`include_bytes!`), so
+# one Cargo has built is copied here, and _copy_binaries checks the copy. Cargo doesn't wait
+# for the binaries before compiling a test, so one may not be built yet: then said so.
 # Python, not a shell: dash drops variables like CARGO_BIN_EXE_<bin-with-dashes>.
 WRAPPER = r"""import json
 import os
@@ -103,15 +105,42 @@ for option in options:
     if option.startswith("extra-filename="):
         extra = option.split("=", 1)[1]
 binaries = sorted(name for name in os.environ if name.startswith("CARGO_BIN_EXE_"))
+missing = []
 if binaries:
     run = os.path.dirname(os.environ["PEEKY_UNITS"])
+    os.makedirs(os.path.join(run, "bin"), mode=0o700, exist_ok=True)
     planned = {}
     for name in binaries:
-        planned[name] = os.path.join(run, "bin", os.path.basename(os.environ[name]))
+        built = os.environ[name]
+        planned[name] = os.path.join(run, "bin", os.path.basename(built))
+        if os.path.isfile(built):
+            part = "%s.%d.part" % (planned[name], os.getpid())
+            shutil.copy2(built, part)
+            os.replace(part, planned[name])
+        else:
+            missing.append(os.path.basename(built))
         os.environ[name] = planned[name]
     os.makedirs(os.path.join(run, "bin-env"), exist_ok=True)
     with open(os.path.join(run, "bin-env", (crate or "") + extra + ".json"), "w") as out:
         json.dump(planned, out)
+
+
+def finish(code):
+    if missing and code != 0:
+        sys.stderr.write(
+            "Peeky: Cargo hadn't built %s when it began compiling this test. Cargo doesn't wait "
+            "for a package's binaries before compiling its tests, so reading one as the test "
+            "compiles (include_bytes!) races under Cargo too. Read it as the test runs "
+            "instead.\n" % ", ".join(missing))
+    sys.exit(code if code >= 0 else 128 - code)
+
+
+def compile_(argv, env):
+    if not missing:
+        os.execve(argv[0], argv, env)
+    finish(subprocess.run(argv, env=env, close_fds=False).returncode)
+
+
 if source is not None:
     unit = os.path.join(os.environ["PEEKY_UNITS"], crate + extra)
     os.makedirs(unit)
@@ -144,7 +173,7 @@ if source is not None:
         sys.stderr.buffer.write(b"\n".join(
             line for line in lines if not line.startswith(b'{"artifact":')))
         sys.stderr.buffer.flush()
-        sys.exit(gate.returncode)
+        finish(gate.returncode)
     shutil.rmtree(stable, ignore_errors=True)
     with open(os.path.join(unit, "expand.log"), "wb") as log:
         done = subprocess.run(
@@ -167,8 +196,8 @@ if source is not None:
         # told by its crate. It changes no code rustc generates.
         "-Ztrim-diagnostic-paths=false",
     ]
-    os.execve(args[0], args, nightly)
-os.execv(args[0], args)
+    compile_(args, nightly)
+compile_(args, dict(os.environ))
 """
 WRAPPER_SHA256 = hashlib.sha256(WRAPPER.encode()).hexdigest()
 
@@ -1290,6 +1319,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
     analysed_names = {package.name for package in shape.analysed}
     run_package, run_target = shape.run
     executable, binaries, ran = None, {}, None
+    own = (run / "bin").resolve()
     sources, generated, units, macros = {}, {}, [], set()
     seen_units, directories = set(), set()
     # The analysed compiles the wrapper recorded, by crate, source file and whether a test.
@@ -1343,7 +1373,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
                 f"Cargo wrote no dependency file for `{package.name}`'s {artifact.get('name')}"
             )
         read = _read_dependencies(
-            depfile, shape.workspace, root, target_dir, package.name, producer
+            depfile, shape.workspace, root, target_dir, package.name, producer, own
         )
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
         directories.update(read["directories"])
@@ -1351,7 +1381,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
             # Cargo's own too, beside the binary it copied up: its build scripts'
             # `rerun-if-changed` paths, directories among them (``_watched_directories``).
             also = _read_dependencies(
-                cargo, shape.workspace, root, target_dir, package.name, "cargo"
+                cargo, shape.workspace, root, target_dir, package.name, "cargo", own
             )
             _record_read(also, root, target_dir, before, started_ns, sources, generated)
             directories.update(also["directories"])
@@ -1378,7 +1408,7 @@ def _record(target, root, shape, directory, run, messages, before, started_ns, s
         seen_units.add(unit.name)
         entry = _unit(package, artifact, unit, run)
         depfile = Path(entry.pop("dependency_file"))
-        read = _read_dependencies(depfile, shape.workspace, root, target_dir, package.name)
+        read = _read_dependencies(depfile, shape.workspace, root, target_dir, package.name, own=own)
         _check_bootstrap_mentions(read, root, target_dir, f"`{package.name}`")
         _check_bootstrap_read(package.name, crate, depfile)
         _record_read(read, root, target_dir, before, started_ns, sources, generated)
@@ -2097,7 +2127,9 @@ def _watched_directories(directories, manifest, shape, vendor):
         )
 
 
-def _read_dependencies(depfile, workspace, root, target_dir, package, producer="rustc"):
+def _read_dependencies(depfile, workspace, root, target_dir, package, producer="rustc", own=None):
+    """What a compile read, as its dependency file lists it: ``own``, the run's `bin`, holds
+    the copies of binaries a test may read as it compiles (WRAPPER), hashed with the run."""
     try:
         paths = dependency_paths(depfile.read_text(errors="surrogateescape"), workspace, producer)
     except UnreadDependencies as exc:
@@ -2105,6 +2137,8 @@ def _read_dependencies(depfile, workspace, root, target_dir, package, producer="
     found = {"sources": [], "generated": [], "directories": []}
     for path in paths:
         resolved = path.resolve()
+        if own is not None and resolved.parent == own:
+            continue
         if resolved.is_relative_to(target_dir):
             found["generated"].append(resolved.relative_to(target_dir).as_posix())
         elif producer == "cargo" and resolved.is_relative_to(root) and resolved.is_dir():
@@ -2200,14 +2234,19 @@ def _copy_binaries(binaries, run):
     executable. `cargo test` runs an integration test from `target/debug/deps`, beside
     `target/debug/bat`, and gives it `CARGO_BIN_EXE_bat` (rust_workspace_session). So
     assert_cmd's `Command::cargo_bin("bat")` finds it either way (bat's tests, #488), and
-    `env!("CARGO_BIN_EXE_bat")` names it too (WRAPPER). They are the build's own output,
-    recorded and checked as the executable is."""
+    `env!("CARGO_BIN_EXE_bat")` names it too. One Cargo had built as the test began compiling
+    was copied then (WRAPPER), and must be byte for byte the binary Cargo built. They are the
+    build's own output, recorded and checked as the executable is."""
     folder, found = run / "bin", {}
     for name, executable in sorted(binaries.items()):
         copy = folder / Path(executable).name
-        if copy.exists():
-            raise ValueError(f"Peeky's build holds two files named {copy.name} to run")
-        shutil.copy2(executable, copy)
+        if not copy.exists():
+            shutil.copy2(executable, copy)
+        elif not filecmp.cmp(executable, copy, shallow=False):
+            raise ValueError(
+                f"Peeky's copy of {copy.name}, made as Cargo compiled the test, isn't the {name} "
+                "binary Cargo built. Build again"
+            )
         found[name] = copy.relative_to(run.parent.parent).as_posix()
     return found
 
@@ -2246,8 +2285,11 @@ def _copy_executable(executable, run):
     """The run's executable (and its macOS symbols), copied out of Cargo's target
     directory: a later build replaces Cargo's, never this one."""
     folder = run / "bin"
-    folder.mkdir(mode=0o700)
+    # Already there where the wrapper copied a test's binaries (WRAPPER).
+    folder.mkdir(mode=0o700, exist_ok=True)
     copy = folder / executable.name
+    if copy.exists():
+        raise ValueError(f"Peeky's build holds two files named {copy.name} to run")
     shutil.copy2(executable, copy)
     symbols = executable.with_name(executable.name + ".dSYM")
     if sys.platform == "darwin":

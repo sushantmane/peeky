@@ -39,7 +39,10 @@
   `CARGO_BIN_EXE_<name>` to them, as `cargo test` does. A test that bakes the name in while it
   compiles (`env!("CARGO_BIN_EXE_bat")`) gets the build's own copy too, never Cargo's
   `target/debug/bat`, which a later build replaces. Its package is compiled again every build,
-  and a test Cargo didn't compile again is refused.
+  and a test Cargo didn't compile again is refused. A binary Cargo has built when the test
+  begins compiling is copied then, for `include_bytes!`, and must match what Cargo built.
+  Cargo doesn't wait for it, so a test that reads one not built yet fails, as under Cargo; the
+  failure says why.
 
 - **Rust workspaces: a change of `.git/index` whose entries are the same is said so.**
   git-version's macro (bat's) has rustc read `.git/index` as a source, and runs `git describe

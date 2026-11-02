@@ -32,6 +32,8 @@ with open(os.environ["FAKE_LOG"], "a") as log:
 if "-o" in args:
     with open(args[args.index("-o") + 1], "w") as out:
         out.write("#![feature(prelude_import)]\\npub fn expanded() {}\\n")
+if os.environ.get("FAKE_FAILS"):
+    sys.exit(1)
 if "--emit=metadata" in args and os.environ.get("FAKE_STABLE_REFUSES"):
     sys.stderr.write('{"artifact":"/x/libutil.rmeta","emit":"metadata"}\\n')
     sys.stderr.write("error[E0554]: `#![feature]` may not be used on the stable release channel\\n")
@@ -94,7 +96,10 @@ def test_the_wrapper_gives_an_integration_test_the_runs_own_binaries(wrapped, tm
     # a later build replaces (#489's review): rustc is given the run's copy instead, named in
     # the run's `bin-env`. The run is the units directory's parent.
     run, units = wrapped
-    cargo = {"CARGO_BIN_EXE_app": "/target/debug/app", "CARGO_BIN_EXE_app-cli": "/t/app-cli"}
+    built = tmp_path / "target/debug"
+    built.mkdir(parents=True)
+    (built / "app").write_bytes(b"app's bytes")
+    cargo = {"CARGO_BIN_EXE_app": str(built / "app"), "CARGO_BIN_EXE_app-cli": "/t/app-cli"}
     (compile_,) = run(
         "tests/cli.rs", "-C", "extra-filename=-0123456789abcdef", crate="cli", extra=cargo
     )
@@ -105,10 +110,42 @@ def test_the_wrapper_gives_an_integration_test_the_runs_own_binaries(wrapped, tm
     assert {name: compile_["env"][name] for name in planned} == planned
     assert json.loads((tmp_path / "bin-env/cli-0123456789abcdef.json").read_text()) == planned
     assert not list(units.iterdir())
+    # One Cargo has built is copied before rustc runs, as the compile may read it
+    # (`include_bytes!`). One not built yet isn't: Cargo doesn't wait for it.
+    assert sorted(each.name for each in (tmp_path / "bin").iterdir()) == ["app"]
+    assert (tmp_path / "bin/app").read_bytes() == b"app's bytes"
     # Any other compile is given none, and named nowhere.
     (other,) = run("src/main.rs", "-C", "extra-filename=-fedcba9876543210", crate="app")
     assert not any(name.startswith("CARGO_BIN_EXE_") for name in other["env"])
     assert [each.name for each in (tmp_path / "bin-env").iterdir()] == ["cli-0123456789abcdef.json"]
+    # A compile that fails with a binary not built yet says so; one with all built doesn't.
+    _, done = run("tests/cli.rs", crate="cli", extra={**cargo, "FAKE_FAILS": "1"}, failed=True)
+    assert "Cargo hadn't built app-cli when it began compiling this test" in done.stderr
+    assert done.returncode == 1
+    only = {"CARGO_BIN_EXE_app": str(built / "app"), "FAKE_FAILS": "1"}
+    _, done = run("tests/cli.rs", crate="cli", extra=only, failed=True)
+    assert "Cargo hadn't built" not in done.stderr and done.returncode == 1
+
+
+def test_a_binary_copied_as_the_test_compiled_must_be_the_one_cargo_built(tmp_path):
+    run = tmp_path / "runs/0123456789abcdef"
+    (run / "bin").mkdir(parents=True)
+    cargo = tmp_path / "target/debug"
+    cargo.mkdir(parents=True)
+    for name in ("app", "tool", "late"):
+        (cargo / name).write_bytes(f"{name}'s bytes".encode())
+    (run / "bin/app").write_bytes(b"app's bytes")
+    binaries = {name: str(cargo / name) for name in ("app", "late")}
+    # The wrapper's copy, as Cargo built it, is kept; one it didn't copy is copied now.
+    assert rb._copy_binaries(binaries, run) == {
+        "app": "runs/0123456789abcdef/bin/app",
+        "late": "runs/0123456789abcdef/bin/late",
+    }
+    assert (run / "bin/late").read_bytes() == b"late's bytes"
+    # A copy that isn't what Cargo built (Cargo's replaced after the test compiled).
+    (run / "bin/tool").write_bytes(b"an earlier tool")
+    with pytest.raises(ValueError, match="copy of tool, made as Cargo compiled the test, isn't"):
+        rb._copy_binaries({"tool": str(cargo / "tool")}, run)
 
 
 def test_an_integration_test_is_refused_where_its_binaries_may_be_another_builds(tmp_path):
