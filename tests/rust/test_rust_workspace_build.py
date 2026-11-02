@@ -1454,3 +1454,218 @@ def test_a_build_that_used_the_index_bytes_is_stale_when_they_change(workspace, 
     assert result["error"]["message"].startswith(
         "No current Peeky build of this workspace: .git/index changed since `peeky build` ran. Run"
     )
+
+
+# An integration test that runs its package's binary as assert_cmd's
+# `Command::cargo_bin("app")` finds it (bat's tests): `CARGO_BIN_EXE_app` at run time, else
+# beside the test's own executable (one up from `deps`).
+FINDS_ITS_BINARY = """fn cargo_bin(name: &str, from_env: bool) -> std::path::PathBuf {
+    let set = std::env::var_os(format!("CARGO_BIN_EXE_{name}")).filter(|_| from_env);
+    set.map(Into::into).unwrap_or_else(|| {
+        let mut dir = std::env::current_exe().unwrap();
+        dir.pop();
+        if dir.ends_with("deps") {
+            dir.pop();
+        }
+        dir.join(name)
+    })
+}
+
+#[test]
+fn runs() {
+    let out = std::process::Command::new(cargo_bin("app", true)).output().unwrap();
+    let printed = out.stdout.len();
+    assert_eq!(out.stdout, b"2\\n"); // PRINTED
+    assert!(printed > 0);
+}
+
+#[test]
+fn beside() {
+    let out = std::process::Command::new(cargo_bin("app", false)).output().unwrap();
+    assert_eq!(out.stdout, b"2\\n");
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_integration_test_finds_its_packages_binary_as_cargo_test_gives_it(workspace, capsys):
+    # bat's integration test runs `bat` through assert_cmd's `Command::cargo_bin`. Peeky ran
+    # its copy of the test from its run's directory, which held no `bat`, and gave no
+    # `CARGO_BIN_EXE_bat`: the test panicked with NotFound, and the probe never stopped (#488).
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(FINDS_ITS_BINARY)
+    config = configure(workspace, analyse=["app"], run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    # Under Peeky, `CARGO_BIN_EXE_app` too: the probe stops after the binary ran.
+    line = next(
+        i for i, text in enumerate(FINDS_ITS_BINARY.splitlines(), 1) if "// PRINTED" in text
+    )
+    at = ["--at", f"app/tests/cli.rs:{line}", "--capture", "printed", "--quiet", "--json"]
+    code = main(["probe", str(workspace), "--config", str(config), *at, "--", "--exact", "runs"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    (row,) = [r for r in result["rows"] if r["selector"] == "printed" and r["phase"] == "observed"]
+    assert row["value"] == "2", row
+    assert "test result: ok. 1 passed" in result["output"], result["output"]
+    directory, manifest = manifest_of(summary)
+    copy = manifest["run"]["binaries"]["app"]
+    assert Path(copy).parent == Path(manifest["run"]["executable"]).parent
+    assert copy in manifest["artifacts"]
+    # The copy beside the test's own executable, as `target/debug/app` is beside `deps`.
+    shown = subprocess.run(
+        [summary["executable"], "--exact", "beside"],
+        capture_output=True,
+        text=True,
+        cwd=workspace / "app",
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert "test result: ok. 1 passed" in shown.stdout, shown.stdout + shown.stderr
+    # A changed copy is the build's own output changed.
+    (directory / copy).write_bytes(b"not the binary")
+    code, result = probe(capsys, workspace, config, "app/tests/cli.rs:1")
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+
+
+# An integration test that runs its package's binary by the path Cargo gives it while it
+# compiles (`env!`), and says which path that was.
+BAKED_BINARY = """#[test]
+fn baked() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_app")).output().unwrap();
+    print!("RAN {}", String::from_utf8_lossy(&out.stdout));
+    println!("AT {}", env!("CARGO_BIN_EXE_app"));
+}
+"""
+
+
+READS_ITS_BINARY = """const APP: &[u8] = include_bytes!(env!("CARGO_BIN_EXE_app"));
+
+#[test]
+fn reads() {
+    assert_eq!(APP, &std::fs::read(env!("CARGO_BIN_EXE_app")).unwrap()[..]);
+    println!("READ {} AT {}", APP.len(), env!("CARGO_BIN_EXE_app"));
+}
+"""
+
+
+# Cargo doesn't wait for a package's binaries before compiling its tests (its job queue
+# drops that edge). A dev-dependency's build script waiting for `app` orders them here.
+WAITS_FOR_APP = """fn main() {
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let app = out.ancestors().nth(3).unwrap().join("app");
+    for _ in 0..600 {
+        if app.is_file() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_integration_test_reads_its_binary_while_it_compiles(workspace, capsys):
+    # A binary Cargo built before the test's compile is there as it compiles, as under Cargo
+    # (#489's review): `include_bytes!(env!("CARGO_BIN_EXE_app"))` read the run's copy, which
+    # was made only once Cargo was done, so the test didn't compile.
+    (workspace / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["app", "util", "waits"]\nresolver = "2"\n'
+    )
+    (workspace / "waits/src").mkdir(parents=True)
+    (workspace / "waits/Cargo.toml").write_text(
+        '[package]\nname = "waits"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (workspace / "waits/src/lib.rs").write_text("")
+    (workspace / "waits/build.rs").write_text(WAITS_FOR_APP)
+    manifest = workspace / "app/Cargo.toml"
+    manifest.write_text(
+        manifest.read_text() + '\n[dev-dependencies]\nwaits = { path = "../waits" }\n'
+    )
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(READS_ITS_BINARY)
+    lock(workspace)
+    config = configure(workspace, run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    assert code == 0, summary
+    directory, manifest = manifest_of(summary)
+    copy = directory / manifest["run"]["binaries"]["app"]
+    assert copy == Path(summary["executable"]).with_name("app")
+    digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+    assert manifest["artifacts"][manifest["run"]["binaries"]["app"]] == digest
+    shown = subprocess.run(
+        [summary["executable"], "--exact", "reads", "--nocapture"],
+        capture_output=True,
+        text=True,
+        cwd=workspace / "app",
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert f"READ {copy.stat().st_size} AT {copy}\n" in shown.stdout, shown.stdout + shown.stderr
+    assert "test result: ok" in shown.stdout
+
+
+@pytest.mark.timeout(300)
+def test_a_test_that_reads_a_binary_cargo_hasnt_built_yet_is_told_why(workspace, capsys):
+    # Unordered, Cargo usually begins the test's compile first: it fails, as under Cargo with
+    # a clean target directory, and the wrapper says why. Built, it read the run's own copy.
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(READS_ITS_BINARY)
+    config = configure(workspace, run={"package": "app", "test": "cli"})
+    code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+    if code == 0:
+        copy = Path(summary["executable"]).with_name("app")
+        shown = subprocess.run(
+            [summary["executable"], "--exact", "reads", "--nocapture"],
+            capture_output=True,
+            text=True,
+            env={"PATH": os.environ["PATH"]},
+        )
+        assert f"READ {copy.stat().st_size} AT {copy}\n" in shown.stdout, shown.stdout
+    else:
+        assert summary["error"]["code"] == "BUILD_FAILED", summary
+        assert (
+            "Cargo hadn't built app when it began compiling this test"
+            in (summary["error"]["message"])
+        )
+
+
+@pytest.mark.timeout(300)
+def test_a_binary_an_integration_test_names_while_it_compiles_is_its_runs_own(workspace, capsys):
+    # `env!("CARGO_BIN_EXE_app")` named Cargo's `target/debug/app`, which a later build of
+    # the same configuration replaces: a probe leasing the older build ran the later build's
+    # binary (#489's review). Now it names the run's own copy, and the test is compiled again
+    # every build, so it never names an earlier run's.
+    (workspace / "app/tests").mkdir()
+    (workspace / "app/tests/cli.rs").write_text(BAKED_BINARY)
+    config = configure(workspace, run={"package": "app", "test": "cli"})
+    main_rs = workspace / "app/src/main.rs"
+
+    def built():
+        code, summary = run(capsys, "build", str(workspace), "--config", str(config), "--quiet")
+        assert code == 0, summary
+        return Path(summary["executable"])
+
+    def ran(test):
+        # As a probe on that build runs it, without `CARGO_BIN_EXE_app` at run time.
+        shown = subprocess.run(
+            [test, "--exact", "baked", "--nocapture"],
+            capture_output=True,
+            text=True,
+            cwd=workspace / "app",
+            env={"PATH": os.environ["PATH"]},
+        )
+        assert "test result: ok" in shown.stdout, shown.stdout + shown.stderr
+        lines = shown.stdout.splitlines()
+        printed = next(line for line in lines if line.startswith("RAN "))[4:]
+        named = next(line for line in lines if line.startswith("AT "))[3:]
+        return printed, Path(named)
+
+    older = built()
+    main_rs.write_text(main_rs.read_text().replace("let x =", "let x = 1 +"))
+    newer = built()
+    # The older build, kept as a lease keeps it, runs its own `app`, not the later one's.
+    assert ran(older) == ("2", older.with_name("app"))
+    assert ran(newer) == ("3", newer.with_name("app"))
+    # Built again with nothing changed: the test names that build's copy, not the last.
+    again = built()
+    assert again.parent != newer.parent
+    assert ran(again) == ("3", again.with_name("app"))

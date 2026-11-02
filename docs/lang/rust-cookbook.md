@@ -2185,6 +2185,14 @@ Dependencies are built once, then reused. The analysed packages are compiled eve
 opt-level 0, whatever the profiles say. Add `--background` for a long build, and read it with `peeky
 job`.
 
+An integration test finds its package's binaries as `cargo test` gives them: each is copied
+beside the test's own executable, and named in `CARGO_BIN_EXE_<name>`. So assert_cmd's
+`Command::cargo_bin("bat")` works under Peeky too. The copies are part of the build's record.
+`env!("CARGO_BIN_EXE_bat")` names that build's own copy too, not Cargo's `target/debug/bat`,
+which a later build replaces. So the test's package is compiled again every build. A test may
+read the binary as it compiles (`include_bytes!`) only if Cargo has built it by then. Cargo
+doesn't wait for it, so the compile may fail, as under Cargo, and Peeky says why.
+
 Then probe with the same `--config`:
 
 ```
