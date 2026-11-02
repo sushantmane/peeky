@@ -86,7 +86,7 @@ WRITES_FILE = re.compile(
 )
 INLINE_CONFIG = re.compile(r"--(?:native-|rust-)?config\s+(?:<\(|/dev/stdin|-\s)")
 PEEKY_PROGRAMS_HELP = ("peeky",)
-HOST_PATH = re.compile(r"/Users/[^\s'\"]+|/home/[^\s'\"/]+")
+HOST_PATH = re.compile(r"/(?:Users|home)/[^\s'\"]+")
 
 
 def scrub(text):

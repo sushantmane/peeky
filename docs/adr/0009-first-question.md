@@ -1,14 +1,14 @@
 # ADR 0009: The first question, from the project's own test command
 
 Status: accepted, from the owner's "lets do" on round 2's next steps. The evidence is
-[SETUP_COST.md](../../experiments/value-study-2/SETUP_COST.md).
+`experiments/value-study-2/SETUP_COST.md`.
 
 ## Context
 
 Round 2 of the value study asked agents to use Peeky before editing. They did, in all 87
 attempts, and it cost 8.6 more AI credits, 88 s and 7 tool calls per bug than control, on every
-one of the 29 bugs ([REPORT](../../experiments/value-study-2/REPORT.md)). The transcripts say
-where that went ([SETUP_COST](../../experiments/value-study-2/SETUP_COST.md)):
+one of the 29 bugs (`experiments/value-study-2/REPORT.md`). The transcripts say where that
+went (`SETUP_COST.md` beside it):
 
 - **Before the first stop,** a median attempt made 13 tool calls, spent 11.1 credits and 71 s:
   40% of its credits. By call, set-up was 5.0 credits per bug, and reading Peeky's docs 4.2 of it.
