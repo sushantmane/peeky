@@ -11,6 +11,14 @@ set -u
 checkout=$(cd "$1" && pwd)
 shift
 
+# What an agent writes before its first probe, where the test is its own reproducer.
+setup_for() {
+  case $1 in
+    projectlombok__lombok-3052)
+      echo "mkdir -p build/bug-repro && printf '%s\\n' 'import lombok.Builder;' '@Builder public class MyTest {' '  @Builder.Default int foo = 1;' '}' > build/bug-repro/MyTest.java" ;;
+  esac
+}
+
 command_for() {
   case $1 in
     psf__requests-6028)
@@ -23,17 +31,25 @@ command_for() {
       # Its first build is refused: git-version's `git describe` refreshes .git/index while it
       # runs (#486), and --test doesn't build again on its own. The same command again stops.
       echo "peeky probe . --at src/bin/bat/app.rs:101 --capture style_components --test -- cargo run --bin bat -- --decorations=always --plain --paging=never README.md" ;;
+    apache__druid-15402)
+      echo "peeky probe . --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture postPos --hits 2 --test -- mvn test -o -q -pl processing -Dtest=GroupByQueryQueryToolChestTest#testCacheStrategy" ;;
+    projectlombok__lombok-3052)
+      # The agents' own reproducer: javac with Lombok's processor on a class with @Builder.Default.
+      echo "peeky probe . --at src/core/lombok/javac/handlers/HandleBuilder.java:290 --capture bfd.name,md --test -- javac -cp build/lombok-main:build/lombok-main8:build/lombok-utils:build/lombok-utils6:build/lombok-transplants -processor lombok.core.AnnotationProcessor -d build/bug-repro build/bug-repro/MyTest.java" ;;
+    reactivex__rxjava-7597)
+      echo "peeky probe . --at src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSwitchMap.java:352 --capture t,this.index --test -- ./gradlew --offline test --tests io.reactivex.rxjava3.internal.operators.observable.ObservableSwitchTest" ;;
   esac
 }
 
 bugs=("$@")
-[ ${#bugs[@]} -eq 0 ] && bugs=(psf__requests-6028 jqlang__jq-2650 sharkdp__bat-3108)
+[ ${#bugs[@]} -eq 0 ] && bugs=(psf__requests-6028 jqlang__jq-2650 sharkdp__bat-3108 apache__druid-15402 reactivex__rxjava-7597 projectlombok__lombok-3052)
 for bug in "${bugs[@]}"; do
   command=$(command_for "$bug")
+  setup=$(setup_for "$bug")
   [ -z "$command" ] && { echo "no command for $bug" >&2; continue; }
   echo "=== $bug"
   docker run --rm --network none --cpus=4 --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v "$checkout/src:/peeky-src:ro" \
     "peeky-study/$bug:peeky-r2" bash -c "
       printf '#!/bin/sh\nPYTHONPATH=/peeky-src exec /opt/peeky/venv/bin/python -c \"import sys; from peeky.cli import main; sys.exit(main())\" \"\$@\"\n' > /usr/local/bin/peeky
-      cd /testbed && echo \"\$ $command\" && eval \"$command\""
+      cd /testbed && ${setup:+eval \"$setup\" &&} echo \"\$ $command\" && eval \"$command\""
 done

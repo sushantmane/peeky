@@ -297,7 +297,7 @@ def test_the_cli_takes_the_words_after_dash_dash_as_the_test_command(project, ca
     assert "drop --config" in error["message"]
     code = main(["probe", ".", "--at", "calc.py:1", "--test", "--json", "--", "mvn", "test"])
     error = json.loads(capsys.readouterr().out)["error"]
-    assert code == 2 and error["code"] == "UNSUPPORTED" and "Java" in error["message"]
+    assert code == 2 and "A Java --test stops in a .java file" in error["message"]
     code = main(
         ["probe", ".", "--at", "calc.py:1", "--test", "--worker", "http://127.0.0.1:1", "--json"]
         + ["--", "pytest"]

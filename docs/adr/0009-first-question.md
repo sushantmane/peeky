@@ -191,6 +191,36 @@ lines point to it, and `peeky probe --help` shows its command first.
 | `NO_STOP` on an attached JVM (30) | The hint says the JVM may not run the line, and gives the `--test` form |
 | `BUILD_REQUIRED` (3) | With `--test`, Peeky builds |
 
+## Verified
+
+On round 2's `peeky-r2` images, with no agent, `experiments/value-study-2/harness/first_question.sh`
+runs one `--test` command per bug, from the bug's test hint, at a line the fix changes. Each
+stopped and read values in its first Peeky call, with no config written. The transcripts'
+columns are the three `peeky-first` attempts' tool calls, and Peeky runs among them, up to
+their first stop (`SETUP_COST.md`).
+
+| Bug | `--test --` | Seconds | Transcripts: calls (Peeky runs) |
+| --- | --- | --- | --- |
+| psf__requests-6028 | `pytest -q tests/test_utils.py -k prepend_scheme` | 1 | 15 (3), 17 (2), 15 (2) |
+| jqlang__jq-2650 | `./jq -L tests/modules --run-tests tests/jq.test` | 3 | 10 (2), 9 (1), 10 (3) |
+| sharkdp__bat-3108 | `cargo run --bin bat -- --decorations=always --plain --paging=never README.md` | 41, two builds | 13 (3), 19 (4), 10 (3) |
+| apache__druid-15402 | `mvn test -o -q -pl processing -Dtest=GroupByQueryQueryToolChestTest#testCacheStrategy` | 23 | 28 (5), 25 (3), 20 (3) |
+| reactivex__rxjava-7597 | `./gradlew --offline test --tests …ObservableSwitchTest` | 12 | 24 (3), 24 (3), 24 (5) |
+| projectlombok__lombok-3052 | `javac -cp build/lombok-main:… -processor lombok.core.AnnotationProcessor …`, on the agents' own reproducer | 3 | 16 (1), 15 (2), 27 (3) |
+
+- druid read `postPos = 0` at both hits: the reading round 2's attempt reached after starting
+  four JVMs by hand (REPORT, "No difference").
+- bat's first build was refused when git refreshed its index, and built again (#486).
+- tokio-6752's line is in generic code that only another crate compiles, refused as in the
+  reach check (`INVALID_BREAKPOINT`). Its test also needs `--features full`, as `cargo test`
+  does: without it, the build reads no `delay_queue.rs`, and the refusal now says a feature
+  may be off.
+- After a debugger detaches, JDWP listens again on a new port, the JVM running. So Peeky tells
+  a test JVM no debugger ever reached by the port it first listened on, and stops the build at
+  once rather than at the deadline.
+- A JVM's dual-stack socket shows in Linux's `/proc/net/tcp6` as `::ffff:127.0.0.1`. The proof
+  reads it there.
+
 ## What is refused, and why
 
 | Refused | Why |

@@ -24,6 +24,11 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - Peeky runs that bundle only from directories you own, mode 0700, under none another user can
   write. Otherwise it is `UNSUPPORTED`, and the message names the path
   ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- Or give the test's command after `--test --`: `peeky probe . --at FILE:LINE --capture a --test
+  -- mvn test -Dtest='FooTest#bar'`. Maven, Gradle, `java` and `javac` work. Peeky adds its debug
+  agent to the test's JVM alone, attaches once it waits, and proves the attach reached it. Then
+  the test runs to its end, and `test` says how it ended. With no config, probes only
+  ([Java 7.4](java-cookbook.md#let-peeky-start-the-test)).
 - A launched Java target needs `--config <file.json>`. The file names the sources and the main
   class. `arguments` is optional. For example:
   `{"sources": ["shop/Main.java"], "main_class": "shop.Main"}`

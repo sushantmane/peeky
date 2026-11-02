@@ -44,6 +44,7 @@ through JDI, the JDK's debugger API. For these words and a few more, see
   - [Lines that several methods share](#lines-that-several-methods-share)
   - [Read Java values](#read-java-values)
 - [7.4 Java Tests Already Running (Gradle `--debug-jvm`, e.g. Venice)](#74-java-tests-already-running-gradle---debug-jvm-eg-venice)
+  - [Let Peeky start the test](#let-peeky-start-the-test)
   - [Attach to a Gradle test](#attach-to-a-gradle-test)
   - [What attaching changes](#what-attaching-changes)
 
@@ -808,6 +809,46 @@ Other details:
   block has ended ([COOKBOOK 5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).
 
 ## 7.4 Java Tests Already Running (Gradle `--debug-jvm`, e.g. Venice)
+
+### Let Peeky start the test
+
+Give the command that runs the failing test after `--test --`. Peeky runs it, attaches to the
+JVM that runs the tests, probes, and lets the test end
+([ADR 0009](../adr/0009-first-question.md#2-java-peeky-starts-the-test-finds-its-jvm-and-proves-it-attached-to-it)):
+
+```sh
+peeky probe . --at core/src/main/java/pkg/Foo.java:LINE --capture a,b \
+  --test -- mvn test -o -pl core -Dtest='FooTest#bar'
+# Gradle: --test -- ./gradlew test --tests pkg.FooTest
+# A JVM of your own: --test -- java -cp target/classes:LIBS pkg.Main ARGS
+# An annotation processor (Lombok): --test -- javac -cp LIBS -processor P -d out A.java
+```
+
+- **What Peeky adds.** JDWP's agent, suspended and on a loopback port the JVM picks, and a
+  random `-Dpeeky.launch=` word, to the JVM that runs the tests only. Maven gets them through
+  `-Dmaven.surefire.debug` (and failsafe's), so surefire's forked JVM has them, not Maven's.
+  Gradle gets an init script that adds them to each `Test` task's `jvmArgs`, with one fork.
+  `java` gets them as its first options, and `javac` as `-J` words.
+- **Which JVM.** The one of your user whose JVM options hold both words exactly, and that
+  listens on one loopback port, read from the system (`/proc`, or `lsof` on macOS). Port 5005,
+  and a JVM another run left waiting, play no part.
+- **The proof.** Once the debugger has attached, and before the JVM runs, the JVM must hold a
+  connection at its port whose other end is the debugger Peeky started. Otherwise nothing is
+  read (`UNSUPPORTED`).
+- **Classes.** Maven's `target/classes` and `target/test-classes`, or Gradle's
+  `build/classes/<lang>/<set>`, in the `--at` file's module; for `java` and `javac`, the
+  classpath's directories inside the root. The `--at` file is the attach's one source.
+- **The test runs on.** After the probe, Peeky waits for the build, then reports its exit code
+  and last lines (`test` in `--json`); the whole log is in Peeky's state directory. At the
+  deadline it stops the build. `--timeout` defaults to 300 s here, the build included.
+- **Refused before anything runs:** a command with its own debug option (`--debug-jvm`,
+  `-Dmaven.surefire.debug`, `-agentlib:jdwp`), `-DforkCount=0`, Ant and other tools (give the
+  `java` command the test runs), and sessions: a session's test would outlive the command.
+- **`NO_STOP`** also comes from a build that ended before any test JVM waited: a `-Dtest` filter
+  that names no test, a compile error, or a pom whose surefire doesn't fork. The `test` lines say
+  which.
+- A second test JVM that waits for a debugger stops the build, with a warning: select one test
+  class.
 
 ### Attach to a Gradle test
 

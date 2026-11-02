@@ -134,6 +134,9 @@ class JavaAttachTarget:
     java: str | None = None
     host: str = "127.0.0.1"
     timeout_ms: int = 10000
+    # (pid, port) of a JVM Peeky started for `--test` (java_test): the attach must be proven
+    # to have reached it (check_attached). None: a JVM the user started.
+    launched: tuple[int, int] | None = None
 
     supports_deadline = True
     language = "java"
@@ -159,6 +162,13 @@ class JavaAttachTarget:
                 raise ValueError("Attach paths must be relative to the source root")
         if any(not name.endswith(".java") for name in self.sources):
             raise ValueError("Attach sources must be .java files")
+        if self.launched is not None and (
+            not isinstance(self.launched, tuple)
+            or len(self.launched) != 2
+            or any(type(value) is not int or value <= 0 for value in self.launched)
+            or self.launched[1] != self.port
+        ):
+            raise ValueError("A launched JVM is its pid and the attach's own port")
 
     @property
     def target_identity(self):
@@ -289,6 +299,14 @@ class JavaAttachSession(JavaSession):
     @property
     def verification_command(self):
         raise ValueError("Attached JVMs cannot run fresh verification")
+
+    def check_attached(self):
+        """Once the debugger has attached, before the JVM runs: for a JVM Peeky started
+        (`--test`), refused unless the debugger's connection is to that JVM."""
+        if self.target.launched is not None:
+            from peeky.java_test import check_connected
+
+            check_connected(*self.target.launched)
 
     def launch_args(self, program, root):
         self.assert_current()
