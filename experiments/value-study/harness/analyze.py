@@ -28,6 +28,7 @@ import studylib  # noqa: E402
 
 SEED = studylib.SEED
 RESAMPLES = 10000
+EXACT = studylib.CONFIG_PATH is not None
 RUN_NAME = re.compile(
     r"^({})-(\d+)$".format(
         "|".join(re.escape(a) for a in sorted(studylib.ARMS, key=len, reverse=True))
@@ -91,7 +92,12 @@ def describe(values):
 
 
 def rnd(value, digits=2):
-    return None if value is None else round(value, digits)
+    # Round 1 kept its summary's values rounded, and printed some of them from those, rounding
+    # twice (13.746 to 13.75 to 13.8). With a study config, values stay exact until they are
+    # printed, so each is rounded once; without one, round 1's output stays as it was.
+    if value is None or EXACT:
+        return value
+    return round(value, digits)
 
 
 def fmt(value, digits=1, percent=False):

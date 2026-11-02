@@ -7,8 +7,10 @@ before any agent run, and the reach check is [REACH.md](REACH.md). Round 1 is
 
 ## Conclusion
 
-**With Peeky's reach much wider, and with agents told to use it first, the agents still fixed
-these bugs at the same rate. Using Peeky first cost about 45% more AI credits per bug.**
+**With Peeky's reach much wider, and with agents told to use it first, the study detected no
+improvement. Observed solve rates were similar to control's and slightly lower, and both
+intervals include zero, but they also allow a loss of up to 7 or 8 points. Using Peeky first
+cost about 45% more AI credits per bug.**
 
 - **Outcome:** about 9 bugs in 10 were solved in every arm.
   - `peeky-first` − `control`: −2 percentage points (95% interval −8 to +2).
@@ -28,10 +30,13 @@ these bugs at the same rate. Using Peeky first cost about 45% more AI credits pe
 - **Wrong root causes** were rare in every arm: 3 of 87 attempts in control, 1 in `peeky`, and 1
   in `peeky-first`.
 
-So Peeky's readings were right and agents used them when told to. In the final messages, they
-became the evidence for the root cause, such as "Peeky showed `postPos` remained `0` across
-both writes". But on these bugs, reading the code and the tests already found the cause about 9
-times in 10. The readings confirmed what the agents would have found anyway, at a price.
+When told to, agents used Peeky, and in the final messages its readings became the evidence for
+the root cause, such as "Peeky showed `postPos` remained `0` across both writes". In the 65
+attempts the judges could check, they found no printed value the program contradicted. That
+check covers 65 of the 92 attempts that ran Peeky, and only whether a value was contradicted.
+On these bugs, the control arm found the cause about 9 times in 10 by reading the code and the
+tests. One interpretation, which the study didn't test, is that the readings mostly confirmed
+what reading the code found, at a price.
 
 ## Setup in brief
 
@@ -63,9 +68,9 @@ and the intervals resample bugs.
 
 | Arm | Attempts | Solved | Solve rate (95% CI) | Wall s: median [IQR] | Wall s: mean ± sd | Credits: median [IQR] | Credits: mean ± sd | Timed out |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| control | 87 | 79 | 91% (79%–100%) | 179 [127–227] | 198 ± 125 | 19.5 [13.8–26.1] | 21.7 ± 12.0 | 0 |
+| control | 87 | 79 | 91% (79%–100%) | 179 [127–227] | 198 ± 125 | 19.5 [13.7–26.1] | 21.7 ± 12.0 | 0 |
 | peeky | 87 | 76 | 87% (76%–97%) | 168 [119–227] | 193 ± 113 | 19.3 [14.5–25.4] | 21.9 ± 11.4 | 0 |
-| peeky-first | 87 | 77 | 89% (77%–98%) | 273 [199–376] | 300 ± 139 | 29.6 [22.1–39.0] | 31.9 ± 13.8 | 0 |
+| peeky-first | 87 | 77 | 89% (77%–98%) | 273 [199–376] | 300 ± 139 | 29.5 [22.1–39.0] | 32.0 ± 13.8 | 0 |
 
 ### Paired difference in solve rate (`peeky-first` − control)
 
@@ -138,8 +143,9 @@ These splits are exploration.
 | peeky | 5 of 87 | 6 (0) | 3 | 5 of 5 |
 | peeky-first | 87 of 87 | 422 (5) | 74 | 77 of 87 |
 
-- **`peeky-first`'s commands:** `probe` 308, `describe` 66, `build` 21, `--help` 13, and 41
-  session commands. A few more ran `sql`, `queries` and `verify`.
+- **`peeky-first`'s commands:** `probe` 308, `describe` 66, `build` 21, `--help` 13, and 49
+  session subcommand invocations (`get` 13, `start` 12, `close` 9, `continue` 7, `step` 4,
+  `list` 3, `report` 1). A few more ran `sql`, `queries` and `verify`.
 - **Values:** the count of program values printed is approximate (README, "Outcomes"). It sees only
   commands that run `peeky` directly, and it can count a line of other output.
 - **By reach group:**
@@ -229,8 +235,8 @@ None.
 | mwaskom__seaborn-3069 | B | python | control | 3/3 | 267 | 26.7 | 23 | 5 |
 | mwaskom__seaborn-3069 | B | python | peeky | 2/3 | 233 | 25.2 | 22 | 3 |
 | mwaskom__seaborn-3069 | B | python | peeky-first | 1/3 | 268 | 29.9 | 24 | 4 |
-| mwaskom__seaborn-3187 | B | python | control | 3/3 | 138 | 17.8 | 17 | 4 |
-| mwaskom__seaborn-3187 | B | python | peeky | 3/3 | 158 | 17.4 | 16 | 3 |
+| mwaskom__seaborn-3187 | B | python | control | 3/3 | 138 | 17.7 | 17 | 4 |
+| mwaskom__seaborn-3187 | B | python | peeky | 3/3 | 158 | 17.5 | 16 | 3 |
 | mwaskom__seaborn-3187 | B | python | peeky-first | 3/3 | 210 | 21.6 | 26 | 4 |
 | nlohmann__json-4237 | E | cpp | control | 3/3 | 153 | 18.0 | 19 | 5 |
 | nlohmann__json-4237 | E | cpp | peeky | 2/3 | 171 | 19.3 | 17 | 7 |
@@ -238,14 +244,14 @@ None.
 | pallets__flask-5014 | E | python | control | 3/3 | 49 | 5.6 | 10 | 3 |
 | pallets__flask-5014 | E | python | peeky | 3/3 | 40 | 6.5 | 9 | 2 |
 | pallets__flask-5014 | E | python | peeky-first | 3/3 | 68 | 9.9 | 12 | 2 |
-| projectlombok__lombok-3009 | E | java | control | 3/3 | 264 | 29.1 | 30 | 4 |
+| projectlombok__lombok-3009 | E | java | control | 3/3 | 264 | 29.2 | 30 | 4 |
 | projectlombok__lombok-3009 | E | java | peeky | 3/3 | 254 | 29.1 | 25 | 6 |
 | projectlombok__lombok-3009 | E | java | peeky-first | 3/3 | 468 | 55.4 | 45 | 5 |
 | projectlombok__lombok-3052 | B | java | control | 3/3 | 230 | 30.0 | 30 | 6 |
 | projectlombok__lombok-3052 | B | java | peeky | 3/3 | 263 | 35.6 | 31 | 5 |
 | projectlombok__lombok-3052 | B | java | peeky-first | 3/3 | 437 | 54.0 | 57 | 5 |
 | projectlombok__lombok-3326 | B | java | control | 3/3 | 272 | 30.5 | 33 | 9 |
-| projectlombok__lombok-3326 | B | java | peeky | 3/3 | 208 | 26.6 | 29 | 11 |
+| projectlombok__lombok-3326 | B | java | peeky | 3/3 | 208 | 26.7 | 29 | 11 |
 | projectlombok__lombok-3326 | B | java | peeky-first | 3/3 | 365 | 51.2 | 47 | 8 |
 | psf__requests-6028 | B | python | control | 3/3 | 154 | 18.1 | 20 | 4 |
 | psf__requests-6028 | B | python | peeky | 3/3 | 124 | 15.4 | 16 | 4 |
@@ -258,10 +264,10 @@ None.
 | reactivex__rxjava-7597 | D | java | peeky-first | 3/3 | 235 | 26.5 | 30 | 3 |
 | sharkdp__bat-3108 | B | rust | control | 3/3 | 208 | 22.0 | 19 | 7 |
 | sharkdp__bat-3108 | B | rust | peeky | 3/3 | 197 | 20.1 | 17 | 6 |
-| sharkdp__bat-3108 | B | rust | peeky-first | 3/3 | 398 | 29.6 | 28 | 5 |
+| sharkdp__bat-3108 | B | rust | peeky-first | 3/3 | 398 | 29.5 | 28 | 5 |
 | sphinx-doc__sphinx-10614 | D | python | control | 0/3 | 371 | 39.2 | 24 | 8 |
 | sphinx-doc__sphinx-10614 | D | python | peeky | 0/3 | 263 | 24.9 | 20 | 5 |
-| sphinx-doc__sphinx-10614 | D | python | peeky-first | 0/3 | 419 | 44.0 | 33 | 9 |
+| sphinx-doc__sphinx-10614 | D | python | peeky-first | 0/3 | 419 | 44.1 | 33 | 9 |
 | sphinx-doc__sphinx-7889 | E | python | control | 3/3 | 127 | 16.0 | 18 | 6 |
 | sphinx-doc__sphinx-7889 | E | python | peeky | 3/3 | 158 | 17.2 | 18 | 4 |
 | sphinx-doc__sphinx-7889 | E | python | peeky-first | 3/3 | 183 | 20.9 | 22 | 7 |
@@ -286,10 +292,9 @@ None.
 
 ## Where Peeky helped, made no difference, or hurt
 
-### Helped: nowhere in the outcome
+### Helped: no reliable evidence of benefit
 
-No bug was solved more often because of Peeky. Only 4 bugs had different solve rates across arms,
-each by one or two attempts of three, which is within run-to-run spread:
+Only 4 bugs had different observed solve rates across arms, each by one or two attempts of three:
 
 | Bug | control | peeky | peeky-first |
 | --- | --- | --- | --- |
@@ -298,12 +303,17 @@ each by one or two attempts of three, which is within run-to-run spread:
 | seaborn-3069 | 3/3 | 2/3 | 1/3 |
 | json-4237 | 3/3 | 2/3 | 3/3 |
 
+- astropy-13398 had a higher observed `peeky-first` rate: 2 of 3, against 1 of 3 in control.
+- The other three were lower in at least one Peeky arm than in control.
+- With 3 attempts per bug, none of these differences is more than run-to-run spread could make.
+  No bug shows reliable evidence of benefit.
+
 - **astropy-13398:** two `peeky-first` attempts were solved. Both cite Peeky: it showed a 10 km
   overhead vector becoming 10.02067845 km on the old route. The one that failed cited a similar
   reading. The control arm's solved attempt used the same idea without a debugger.
-- In the other three bugs, Peeky's readings were correct. The misses came from the fixes, or from
-  the question asked (jq, below). seaborn's misses left its y-axis test failing. json's change
-  broke other conversions, in an attempt that didn't run Peeky.
+- In the other three bugs, the judges found no Peeky value the program contradicted. The misses
+  came from the fixes, or from the question asked (jq, below). seaborn's misses left its y-axis
+  test failing. json's change broke other conversions, in an attempt that didn't run Peeky.
 
 ### No difference: the typical `peeky-first` attempt
 
@@ -320,9 +330,9 @@ Final: "Fixed the cache-reading loop: it never advanced `postPos`, so later post
 overwrote the first. `peeky probe` at line 657 confirmed `postPos = 0` on both writes."
 ```
 
-The reading was right, and it is the cause. But the control arm found the same loop by reading it,
-in about half the time and less than half the credits. This pattern holds across the arm:
-`peeky-first` cost more in every bug, and most of the cost went to docs, configs and runs.
+The reading matches the upstream fix's cause. But the control arm found the same loop by reading
+it, in about half the time and less than half the credits. That cost pattern holds across the
+arm: `peeky-first` cost more in every bug, and most of the cost went to docs, configs and runs.
 
 ### Hurt: the cost, and one wrong question
 
@@ -332,10 +342,12 @@ in about half the time and less than half the credits. This pattern holds across
 - **`jqlang__jq-2650`, `peeky-first`, attempt 2:** the agent probed the parser on the report's
   own example, `.["media:content"].["media:credits"]`, and on a slice chain. Both already parse at
   the base commit. Peeky showed it (`yyn=91`, `yylen=5`), and the agent concluded that nothing
-  was left to fix. The judge counted that as a wrong root cause. The reading was right; the
-  question missed the remaining `.a.[]` case. jq's failed `peeky` attempt concluded the same
-  without running Peeky, as half of round 1's jq attempts did.
-- **No reading misled:** in 65 checked attempts, no value Peeky printed was wrong.
+  was left to fix. The judge counted that as a wrong root cause. The values weren't contradicted;
+  they fed a wrong conclusion, because the question missed the remaining `.a.[]` case. jq's failed
+  `peeky` attempt concluded the same without running Peeky, as half of round 1's jq attempts did.
+- **Values the program contradicted:** in 65 checkable attempts, the judges found none. That
+  doesn't show a value never misled: jq's didn't contradict the program, and still led to a wrong
+  conclusion.
 
 ### Same outcome in every arm: where the agents failed
 
@@ -346,15 +358,19 @@ in about half the time and less than half the credits. This pattern holds across
 
 ## What the reach work bought
 
-The reach check ([REACH.md](REACH.md)) ran the same probes with no agent, on round 1's Peeky
-and this round's:
+The reach check ([REACH.md](REACH.md)) ran the same probes with no agent, on three of this
+round's Peeky commits. Round 1's own reach comes from its report, which found 13 projects out of
+reach:
 
 - Round 1 couldn't reach 13 of the 29 projects. On `fef02c78`, Peeky stops at the fix's code and
   reads values in 5 of them: jq, MicroPython, both valkey bugs and bat.
 - All 7 Java bugs now read values, the JDK 11 ones too. In the `peeky` arm, the attempt that
   probed `lombok-3326`, round 1's refused JDK 11 case, read the inner class's symbol.
-- Still out of reach: fmt and json (their test units carry no checksums), axum (#483), and the
-  generic Rust code of tokio twice and ripgrep. These were refused by design, saying why.
+- Still refused, 7: fmt twice and json, whose test units carry no checksums; axum, over the
+  debug-information budget (#483); and the generic Rust code of tokio twice and ripgrep, refused
+  by design (#463). Each refusal says why.
+- coreutils, the eighth, isn't refused: Peeky stops at its gold point, `uu_app`, but that function
+  has no locals to read. So it isn't reached under the pre-registered rule.
 
 Agents used that reach when asked: in `peeky-first`, 58 of 60 attempts on reached bugs printed
 values. Without the request, 3 of 60 did.

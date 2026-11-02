@@ -21,7 +21,8 @@ A later round reuses this code with a study config, a JSON file that `$PEEKY_STU
 ([round 2's](../../value-study-2/study.json)). It sets the bugs and results directories, the
 seed, the arms with their images and prompts, and the comparisons to analyse. Without one,
 everything runs as this round ran: run on this round's results, `analyze.py` gives the same
-report and `summary.json`. `build_peeky_images.sh` takes its Dockerfile, image names and build
+report and `summary.json`. With a config, the summary keeps its values unrounded, so each table
+rounds a value once. `build_peeky_images.sh` takes its Dockerfile, image names and build
 context from `STUDY_*` variables (its header lists them).
 
 ## Running

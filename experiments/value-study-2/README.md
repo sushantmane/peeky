@@ -218,7 +218,9 @@ records stay outside `results/`, as in round 1.
 `harness/study.sh analyze.py` writes `results/summary.json` and the report's tables. It is round
 1's analysis, run with this round's [study.json](study.json): the arms, the comparisons and the
 seed. Round 1's output is unchanged by the code that adds a third arm: run on round 1's results,
-it gives the same report and the same `summary.json`, byte for byte.
+it gives the same report and the same `summary.json`, byte for byte. With a study config,
+`summary.json` keeps its values unrounded, and each table rounds a value once. Round 1's
+analysis rounded some twice (13.746 to 13.75 to 13.8), and keeps doing so without a config.
 
 ## Exclusions
 
