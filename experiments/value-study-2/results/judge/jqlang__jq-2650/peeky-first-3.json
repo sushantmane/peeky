@@ -1,0 +1,7 @@
+{
+ "judge_id": "a019",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"dotted slices and iterators failed because their grammar lacked optional-dot support.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 10 probe at parser.c:3799 for `-n '.foo.[0:1]'`: yymsgp \"syntax error, unexpected ':'\", yychar 58 (':'), yylloc {start=7,end=8}, exit 3. Matches cmd 7's jq output \"syntax error, unexpected ':' ... .foo.[0:1]\" / compile error and the ':' at offset 7 of the input. Cmd 9 describe printed only unit list. Nothing contradicted."
+}

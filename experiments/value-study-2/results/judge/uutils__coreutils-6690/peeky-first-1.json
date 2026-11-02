@@ -1,0 +1,7 @@
+{
+ "judge_id": "a122",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed `cp` completion by adding `.num_args(1..)`: its argument metadata described only one path, so zsh stopped completing after the source.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 7 probe at coreutils.rs:182 showed shell=Zsh (utility is [unproven]; command is only an address), matching the `completion cp zsh` arguments and the zsh completion script the program printed in the same command (`compdef _cp cp`). Cmds 9 and 13 were INVALID_REQUEST errors. Nothing contradicted."
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a254",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"On this revision, nested character ranges lose their debug formatting because the inner formatter is never parsed.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

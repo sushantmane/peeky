@@ -1,0 +1,77 @@
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..1c9c953461 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -220,7 +225,18 @@ class Collector:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+                         self.fast_deletes.append(sub_objs)
+-                    elif sub_objs:
++                        continue
++                    related_model = related.related_model
++                    # Defer non-referenced fields unless they might be needed
++                    # by signal receivers or a select_related() query.
++                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
++                        referenced_fields = {
++                            f.attname
++                            for rel in get_candidate_relations_to_delete(related_model._meta)
++                            for f in rel.field.foreign_related_fields
++                        }
++                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)
++                    if sub_objs:
+                         field.remote_field.on_delete(self, field, sub_objs, self.using)
+             for field in model._meta.private_fields:
+                 if hasattr(field, 'bulk_related_objects'):
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 8485d436e1..febd942ccb 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -2529,6 +2529,8 @@ methods on your models. It does, however, emit the
+ (including cascaded deletions).
+ 
+ Django needs to fetch objects into memory to send signals and handle cascades.
++When handling cascades without signal listeners, Django may defer fields that
++aren't needed for deletion.
+ However, if there are no cascades and no signals, then Django may take a
+ fast-path and delete objects without fetching into memory. For large
+ deletes this can result in significantly reduced memory usage. The amount of
+diff --git a/docs/releases/3.0.txt b/docs/releases/3.0.txt
+index 44656b11cd..964c7de043 100644
+--- a/docs/releases/3.0.txt
++++ b/docs/releases/3.0.txt
+@@ -193,6 +193,10 @@ Models
+   :class:`~django.db.models.functions.Trunc` database functions determines the
+   treatment of nonexistent and ambiguous datetimes.
+ 
++* :meth:`.QuerySet.delete` now defers fields that aren't needed for deletion when
++  fetching related objects, unless signal listeners or ``select_related()``
++  require them.
++
+ Requests and Responses
+ ~~~~~~~~~~~~~~~~~~~~~~
+ 

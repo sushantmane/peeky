@@ -1,0 +1,7 @@
+{
+ "judge_id": "a154",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"its loop never advanced the post-aggregator position, so later metrics overwrote the first and left remaining slots null.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

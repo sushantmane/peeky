@@ -1,0 +1,7 @@
+{
+ "judge_id": "a088",
+ "wrong_root_cause": true,
+ "evidence": "Message 2: \"Redirect handling adds `Proxy-Authorization` to HTTPS requests even though urllib3 authenticates the CONNECT tunnel separately.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

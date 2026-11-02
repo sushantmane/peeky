@@ -1,0 +1,112 @@
+{
+ "bug": "pydata__xarray-6599",
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/pydata__xarray-6599:peeky-r2",
+ "image_id": "sha256:6565a552cd3c751d939643e38cde1dd8b8815743c9f0ca097b4f88698f441d89",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:35:58+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed condition in _ensure_numeric.to_floatable",
+   "at": "xarray/core/computation.py:1936",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at xarray/core/computation.py:1936 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'xarray/tests/test_computation.py::test_polyval[timedelta-False]'",
+     "exit": 0,
+     "seconds": 1.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/xarray/core/computation.py:1936",
+    "function": "to_floatable",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "x",
+      "value": "<xarray.DataArray (x: 3)>\narray([1000, 2000, 3000], dtype='timedelta64[ns]')\nDimensions without coordinates: x"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the inserted timedelta branch",
+   "at": "xarray/core/computation.py:1944",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at xarray/core/computation.py:1944 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'xarray/tests/test_computation.py::test_polyval[timedelta-False]'",
+     "exit": 0,
+     "seconds": 2.5
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026s://github.com/python/mypy/issues/1533 ?\n/testbed/xarray/core/computation.py:1949: in _ensure_numeric\n    return to_floatable(data)\n/testbed/xarray/core/computation.py:1938: in to_floatable\n    data=datetime_to_numeric(\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\narray = array([1000, 2000, 3000], dtype='timedelta64[ns]')\noffset = numpy.datetime64('1970-01-01'), datetime_unit = 'ns'\ndtype = <class 'float'>\n\n    def datetime_to_numeric(array, offset=None, datetime_unit=None, dtype=float):\n        \"\"\"Convert an array containing datetime-like data to numerical values.\n        Convert the datetime array to a timedelta relative to an offset.\n        Parameters\n        ----------\n        array : array-like\n            Input data\n        offset : None, datetime or cftime.datetime\n            Datetime offset. If None, this is set by default to the array's minimum\n            value to reduce round off errors.\n        datetime_unit : {None, Y, M, W, D, h, m, s, ms, us, ns, ps, fs, as}\n            If not None, convert output to a given datetime unit. Note that some\n            conversions are not allowed due to non-linear relationships between units.\n        dtype : dtype\n            Output dtype.\n        Returns\n        -------\n        array\n            Numerical representation of datetime object relative to an offset.\n        Notes\n        -----\n        Some datetime unit conversions won't work, for example from days to years, even\n        though some calendars would allow for them (e.g. no_leap). This is because there\n        is no `cftime.timedelta` object.\n        \"\"\"\n        # TODO: make this function dask-compatible?\n        # Set offset to minimum if not given\n        if offset is None:\n            if array.dtype.kind in \"Mm\":\n                offset = _datetime_nanmin(array)\n            else:\n                offset = min(array)\n    \n        # Compute timedelta object.\n        # For np.datetime64, this can silently yield garbage due to overflow.\n        # One option is to enforce 1970-01-01 as the universal offset.\n>       array = array - offset\nE       numpy.core._exceptions._UFuncBinaryResolutionError: ufunc 'subtract' cannot use operands with types dtype('<m8[ns]') and dtype('<M8[D]')\n\n/testbed/xarray/core/duck_array_ops.py:434: UFuncTypeError\n=========================== short test summary info ============================\nFAILED xarray/tests/test_computation.py::test_polyval[timedelta-False] - nump...\n1 failed in 0.24s\n"
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "xarray/tests/test_computation.py:2036",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at xarray/tests/test_computation.py:2036 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'xarray/tests/test_computation.py::test_polyval[timedelta-False]'",
+     "exit": 0,
+     "seconds": 2.5
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026s://github.com/python/mypy/issues/1533 ?\n/testbed/xarray/core/computation.py:1949: in _ensure_numeric\n    return to_floatable(data)\n/testbed/xarray/core/computation.py:1938: in to_floatable\n    data=datetime_to_numeric(\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\narray = array([1000, 2000, 3000], dtype='timedelta64[ns]')\noffset = numpy.datetime64('1970-01-01'), datetime_unit = 'ns'\ndtype = <class 'float'>\n\n    def datetime_to_numeric(array, offset=None, datetime_unit=None, dtype=float):\n        \"\"\"Convert an array containing datetime-like data to numerical values.\n        Convert the datetime array to a timedelta relative to an offset.\n        Parameters\n        ----------\n        array : array-like\n            Input data\n        offset : None, datetime or cftime.datetime\n            Datetime offset. If None, this is set by default to the array's minimum\n            value to reduce round off errors.\n        datetime_unit : {None, Y, M, W, D, h, m, s, ms, us, ns, ps, fs, as}\n            If not None, convert output to a given datetime unit. Note that some\n            conversions are not allowed due to non-linear relationships between units.\n        dtype : dtype\n            Output dtype.\n        Returns\n        -------\n        array\n            Numerical representation of datetime object relative to an offset.\n        Notes\n        -----\n        Some datetime unit conversions won't work, for example from days to years, even\n        though some calendars would allow for them (e.g. no_leap). This is because there\n        is no `cftime.timedelta` object.\n        \"\"\"\n        # TODO: make this function dask-compatible?\n        # Set offset to minimum if not given\n        if offset is None:\n            if array.dtype.kind in \"Mm\":\n                offset = _datetime_nanmin(array)\n            else:\n                offset = min(array)\n    \n        # Compute timedelta object.\n        # For np.datetime64, this can silently yield garbage due to overflow.\n        # One option is to enforce 1970-01-01 as the universal offset.\n>       array = array - offset\nE       numpy.core._exceptions._UFuncBinaryResolutionError: ufunc 'subtract' cannot use operands with types dtype('<m8[ns]') and dtype('<M8[D]')\n\n/testbed/xarray/core/duck_array_ops.py:434: UFuncTypeError\n=========================== short test summary info ============================\nFAILED xarray/tests/test_computation.py::test_polyval[timedelta-False] - nump...\n1 failed in 0.24s\n"
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:36:06+00:00"
+}

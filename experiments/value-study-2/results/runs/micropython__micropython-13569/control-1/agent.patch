@@ -1,0 +1,103 @@
+diff --git a/docs/develop/compiler.rst b/docs/develop/compiler.rst
+index cac92585f..fbdc8a739 100644
+--- a/docs/develop/compiler.rst
++++ b/docs/develop/compiler.rst
+@@ -203,6 +203,10 @@ The second and third passes involve computing the Python stack size and code siz
+ for the bytecode or native code. After the third pass the code size cannot change,
+ otherwise jump labels will be incorrect.
+ 
++The stack size calculation includes values used by control flow. For example, a
++``finally`` block must allow for both a pending return or jump value and its
++unwinding sentinel, rather than just a single exception or ``None`` value.
++
+ .. code-block:: c
+ 
+    for (scope_t *s = comp->scope_head; s != NULL && comp->compile_error == MP_OBJ_NULL; s = s->next) {
+diff --git a/py/compile.c b/py/compile.c
+index 4f91ca49b..108b0ffe0 100644
+--- a/py/compile.c
++++ b/py/compile.c
+@@ -1684,7 +1684,10 @@ STATIC void compile_try_finally(compiler_t *comp, mp_parse_node_t pn_body, int n
+     }
+     EMIT_ARG(load_const_tok, MP_TOKEN_KW_NONE);
+     EMIT_ARG(label_assign, l_finally_block);
++    // An unwinding return or jump has two stack entries instead of just None or an exception.
++    EMIT_ARG(adjust_stack_size, 1);
+     compile_node(comp, pn_finally);
++    EMIT_ARG(adjust_stack_size, -1);
+ 
+     compile_decrease_except_level(comp);
+ }
+diff --git a/tests/basics/try_finally_stack.py b/tests/basics/try_finally_stack.py
+new file mode 100644
+index 000000000..12cda940b
+--- /dev/null
++++ b/tests/basics/try_finally_stack.py
+@@ -0,0 +1,67 @@
++# A pending return needs an extra stack slot while executing the finally block.
++class IDGenerator:
++    def __init__(self, max_id: int):
++        self._i = 0
++        self._mi = max_id
++
++    def get(self):
++        try:
++            return self._i
++        finally:
++            self._i += 1
++            if self._i > self._mi:
++                self._i = 0
++
++    def get_except(self):
++        try:
++            return self._i
++        except ValueError:
++            pass
++        finally:
++            self.values = (0, 1, 2, 3, 4, 5, 6, 7, self._i, self)
++
++    def get_nested(self):
++        try:
++            return self._i
++        finally:
++            try:
++                pass
++            finally:
++                self._i += 1
++                if self._i > self._mi:
++                    self._i = 0
++
++
++id_gen = IDGenerator(10)
++for _ in range(13):
++    print(id_gen.get(), id_gen._i)
++print(id_gen.get_except(), id_gen.values[:-1], id_gen.values[-1] is id_gen)
++for _ in range(13):
++    print(id_gen.get_nested(), id_gen._i)
++
++
++# Exercise a deeper finally stack on fallthrough, return, exception and jump.
++def f(mode):
++    value = 42
++    while True:
++        try:
++            if mode == 1:
++                return value
++            if mode == 2:
++                raise ValueError
++            if mode == 3:
++                break
++            if mode == 4:
++                mode = 0
++                continue
++        finally:
++            print(0, 1, 2, 3, 4, 5, 6, 7, value)
++        break
++    return value
++
++
++for mode in range(5):
++    try:
++        print(f(mode))
++    except ValueError:
++        print("ValueError")

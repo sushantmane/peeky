@@ -1,0 +1,54 @@
+diff --git a/axum/CHANGELOG.md b/axum/CHANGELOG.md
+index 8ad076d..23d4115 100644
+--- a/axum/CHANGELOG.md
++++ b/axum/CHANGELOG.md
+@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ # Unreleased
+ 
+-- None.
++- **fixed:** Avoid panicking when a nested service receives an existing
++  `MatchedPath`, such as when using `ServeDir` in a fallback router.
+ 
+ # 0.6.15 (12. April, 2023)
+ 
+diff --git a/axum/src/extract/matched_path.rs b/axum/src/extract/matched_path.rs
+index 57a17be..be2526b 100644
+--- a/axum/src/extract/matched_path.rs
++++ b/axum/src/extract/matched_path.rs
+@@ -143,7 +143,7 @@ pub(crate) fn set_matched_path_for_request(
+ 
+     if matched_path.ends_with(NEST_TAIL_PARAM_CAPTURE) {
+         extensions.insert(MatchedNestedPath(matched_path));
+-        debug_assert!(matches!(extensions.remove::<MatchedPath>(), None));
++        extensions.remove::<MatchedPath>();
+     } else {
+         extensions.insert(MatchedPath(matched_path));
+         extensions.remove::<MatchedNestedPath>();
+@@ -353,4 +353,26 @@ mod tests {
+         let res = client.get("/foo/bar").send().await;
+         assert_eq!(res.status(), StatusCode::OK);
+     }
++
++    #[crate::test]
++    async fn extracting_on_nested_handler_after_matched_route() {
++        async fn handler(path: Option<MatchedPath>) -> &'static str {
++            assert!(path.is_none());
++            "nested"
++        }
++
++        let service = Router::new().nest_service("/", handler.into_service());
++        let apps = [
++            Router::new().fallback_service(service.clone()),
++            Router::new().route("/*path", crate::routing::get_service(service)),
++        ];
++
++        for app in apps {
++            let client = TestClient::new(app);
++
++            let res = client.get("/foo/bar").send().await;
++            assert_eq!(res.status(), StatusCode::OK);
++            assert_eq!(res.text().await, "nested");
++        }
++    }
+ }

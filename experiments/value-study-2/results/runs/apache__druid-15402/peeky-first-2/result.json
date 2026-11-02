@@ -1,0 +1,294 @@
+{
+ "bug": "apache__druid-15402",
+ "arm": "peeky-first",
+ "rep": 2,
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__druid-15402:peeky-r2",
+ "image_digest": "sha256:df729e9968e331adfd73ef6c66f8f632efefc8f3243290667afa9dd9eb46d77e",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-apache__druid-15402-peeky-first-2-fb4168",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T14:00:35+00:00",
+ "ended": "2026-11-01T14:04:52+00:00",
+ "wall_seconds": 256.5,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest#testCacheStrategy": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 30.5,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "92bd60082f10779978f67ba60282fbb1a2e49b6b6454774173350acf3f7da4a5",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 3,
+ "patch_files": [
+  "docs/querying/caching.md",
+  "processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java"
+ ],
+ "patch_bytes": 2536,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 3
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 25,
+ "ai_credits": 27.5905,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 777764,
+  "output": 8604,
+  "cache_read": 731045,
+  "cache_write": 46644,
+  "reasoning": 2380
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 32,
+ "tool_calls_by_name": {
+  "bash": 25,
+  "read_bash": 7
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -ld /testbed /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && rg -n 'prepareForCache|pullFromCache|CacheStrategy|postAggregator' processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java && rg -n 'Cache|postAggreg' processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'prepareForCache|pullFromCache|CacheStrategy|postAggregator' processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java && grep -nE 'Cache|postAggreg' processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/lang/java.md && sed -n '220,340p' /opt/peeky/docs/AGENT_GUIDE.md && cd /testbed && ls -a | head -25 && java -version && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '500,690p' processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java && sed -n '1,145p' processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java && sed -n '970,1048p' processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java && ls processing/target | head && ls -a | head -20",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,160p' /opt/peeky/docs/lang/java.md && command -v java; command -v mvn; command -v peeky; ls /usr/lib/jvm; command -v apply_patch; sed -n '1,150p' /opt/peeky/docs/lang/java-cookbook.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ls processing/target && sed -n '1,110p' processing/src/main/java/org/apache/druid/query/groupby/ResultRow.java && grep -nE 'java.class.path|surefire.test.class.path' processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml | cut -c1-550 && grep -nE 'surefire|checkstyle|skip' pom.xml | head -40",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '/## 7.4/,$p' /opt/peeky/docs/lang/java-cookbook.md | head -175 && ls /opt/peeky && ls -l /usr/local/bin | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && CP=$(python3 -c 'import xml.etree.ElementTree as E; r=E.parse(\"processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml\"); print(next(p.get(\"value\") for p in r.findall(\"properties/property\") if p.get(\"name\")==\"surefire.test.class.path\"))') && jshell --class-path \"$CP\" <<'EOF'\nimport org.apache.druid.query.groupby.*;\nimport org.apache.druid.query.*;\nimport org.apache.druid.query.aggregation.post.*;\nimport org.apache.druid.query.dimension.*;\nimport org.apache.druid.java.util.common.granularity.*;\nimport org.apache.druid.common.config.*;\nimport org.apache.druid.segment.TestHelper;\nNullHandling.initializeForTests();\nvar query = GroupByQuery.builder().setDataSource(\"wikipedia\").setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD).setDimensions(new DefaultDimensionSpec(\"channel\", \"channel\"), new DefaultDimensionSpec(\"cityName\", \"cityName\")).setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT).setPostAggregatorSpecs(new ConstantPostAggregator(\"a2\", 21032), new ConstantPostAggregator(\"a3\", 31548)).setGranularity(Granularities.ALL).build();\nvar strategy = new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\nvar expected = ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\nvar mapper = TestHelper.makeJsonMapper();\nvar cached = mapper.readValue(mapper.writeValueAsBytes(strategy.prepareForCache(true).apply(expected)), strategy.getCacheObjectClazz());\nvar actual = strategy.pullFromCache(true).apply(cached);\nSystem.out.println(\"EXPECTED: \" + expected + \" ACTUAL: \" + actual);\ntry { org.junit.Assert.assertEquals(expected, actual); } catch (AssertionError e) { System.out.println(\"REPRODUCED FAILURE: \" + e); }\n/exit\nEOF",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "peeky probe --help | head -95 && sed -n '1,200p' /opt/peeky/docs/JAVA_ATTACH.md && cd /testbed && git status --short",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'postItr|postPos' processing/src/main/java/org/apache/druid/query/{topn/TopNQueryQueryToolChest.java,timeseries/TimeseriesQueryQueryToolChest.java} && command -v patch && find /opt /usr/bin -name '*apply_patch*' -print 2>/dev/null | head -10",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && CP=$(python3 -c 'import xml.etree.ElementTree as E; r=E.parse(\"processing/target/surefire-reports/TEST-org.apache.druid.query.groupby/GroupByQueryQueryToolChestTest.xml\")' 2>/dev/null || python3 -c 'import xml.etree.ElementTree as E; r=E.parse(\"processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml\"); print(next(p.get(\"value\") for p in r.findall(\"properties/property\") if p.get(\"name\")==\"surefire.test.class.path\"))') && jshell -R-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"$CP\" <<'EOF'\nimport org.apache.druid.query.groupby.*;\nimport org.apache.druid.query.*;\nimport org.apache.druid.query.aggregation.post.*;\nimport org.apache.druid.query.dimension.*;\nimport org.apache.druid.java.util.common.granularity.*;\nimport org.apache.druid.common.config.*;\nimport org.apache.druid.segment.TestHelper;\nNullHandling.initializeForTests();\nvar query = GroupByQuery.builder().setDataSource(\"wikipedia\").setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD).setDimensions(new DefaultDimensionSpec(\"channel\", \"channel\"), new DefaultDimensionSpec(\"cityName\", \"cityName\")).setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT).setPostAggregatorSpecs(new ConstantPostAggregator(\"a2\", 21032), new ConstantPostAggregator(\"a3\", 31548)).setGranularity(Granularities.ALL).build();\nvar strategy = new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\nvar expected = ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\nvar mapper = TestHelper.makeJsonMapper();\nvar cached = mapper.readValue(mapper.writeValueAsBytes(strategy.prepareForCache(true).apply(expected)), strategy.getCacheObjectClazz());\nvar actual = strategy.pullFromCache(true).apply(cached);\nSystem.out.println(\"EXPECTED: \" + expected + \" ACTUAL: \" + actual);\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && CP=$(python3 -c 'import xml.etree.ElementTree as E; r=E.parse(\"processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml\"); print(next(p.get(\"value\") for p in r.findall(\"properties/property\") if p.get(\"name\")==\"surefire.test.class.path\"))') && jshell --execution local -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"$CP\" <<'EOF'\nimport org.apache.druid.query.groupby.*;\nimport org.apache.druid.query.*;\nimport org.apache.druid.query.aggregation.post.*;\nimport org.apache.druid.query.dimension.*;\nimport org.apache.druid.java.util.common.granularity.*;\nimport org.apache.druid.common.config.*;\nimport org.apache.druid.segment.TestHelper;\nNullHandling.initializeForTests();\nvar query = GroupByQuery.builder().setDataSource(\"wikipedia\").setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD).setDimensions(new DefaultDimensionSpec(\"channel\", \"channel\"), new DefaultDimensionSpec(\"cityName\", \"cityName\")).setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT).setPostAggregatorSpecs(new ConstantPostAggregator(\"a2\", 21032), new ConstantPostAggregator(\"a3\", 31548)).setGranularity(Granularities.ALL).build();\nvar strategy = new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\nvar expected = ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\nvar mapper = TestHelper.makeJsonMapper();\nvar cached = mapper.readValue(mapper.writeValueAsBytes(strategy.prepareForCache(true).apply(expected)), strategy.getCacheObjectClazz());\nvar actual = strategy.pullFromCache(true).apply(cached);\nSystem.out.println(\"EXPECTED: \" + expected + \" ACTUAL: \" + actual);\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\"],\"class_roots\":[\"processing/target/classes\"]}') --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture 'postPos,postAggregatorStart,input,resultRow.row,results.cursor' --hits 2 --timeout 90",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && CP=$(python3 -c 'import xml.etree.ElementTree as E; r=E.parse(\"processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml\"); print(next(p.get(\"value\") for p in r.findall(\"properties/property\") if p.get(\"name\")==\"surefire.test.class.path\"))') && java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"$CP\" --source 11 /dev/stdin <<'EOF'\nimport org.apache.druid.query.groupby.*;\nimport org.apache.druid.query.*;\nimport org.apache.druid.query.aggregation.post.*;\nimport org.apache.druid.query.dimension.*;\nimport org.apache.druid.java.util.common.granularity.*;\nimport org.apache.druid.common.config.*;\nimport org.apache.druid.segment.TestHelper;\nclass CacheReproducer {\n  public static void main(String[] args) throws Exception {\n    NullHandling.initializeForTests();\n    var query = GroupByQuery.builder().setDataSource(\"wikipedia\").setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD).setDimensions(new DefaultDimensionSpec(\"channel\", \"channel\"), new DefaultDimensionSpec(\"cityName\", \"cityName\")).setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT).setPostAggregatorSpecs(new ConstantPostAggregator(\"a2\", 21032), new ConstantPostAggregator(\"a3\", 31548)).setGranularity(Granularities.ALL).build();\n    var strategy = new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\n    var expected = ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\n    var mapper = TestHelper.makeJsonMapper();\n    var cached = mapper.readValue(mapper.writeValueAsBytes(strategy.prepareForCache(true).apply(expected)), strategy.getCacheObjectClazz());\n    var actual = strategy.pullFromCache(true).apply(cached);\n    System.out.println(\"EXPECTED: \" + expected + \" ACTUAL: \" + actual);\n    org.junit.Assert.assertEquals(expected, actual);\n  }\n}\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\"],\"class_roots\":[\"processing/target/classes\"]}') --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture 'postPos,postAggregatorStart,input,resultRow.row,results.cursor' --hits 2 --timeout 90",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && CP=$(python3 -c 'import xml.etree.ElementTree as E; r=E.parse(\"processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml\"); print(next(p.get(\"value\") for p in r.findall(\"properties/property\") if p.get(\"name\")==\"surefire.test.class.path\"))') && jshell --execution local -J--class-path=\"$CP\" -J-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 --class-path \"$CP\" <<'EOF'\nimport org.apache.druid.query.groupby.*;\nimport org.apache.druid.query.*;\nimport org.apache.druid.query.aggregation.post.*;\nimport org.apache.druid.query.dimension.*;\nimport org.apache.druid.java.util.common.granularity.*;\nimport org.apache.druid.common.config.*;\nimport org.apache.druid.segment.TestHelper;\nNullHandling.initializeForTests();\nvar query = GroupByQuery.builder().setDataSource(\"wikipedia\").setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD).setDimensions(new DefaultDimensionSpec(\"channel\", \"channel\"), new DefaultDimensionSpec(\"cityName\", \"cityName\")).setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT).setPostAggregatorSpecs(new ConstantPostAggregator(\"a2\", 21032), new ConstantPostAggregator(\"a3\", 31548)).setGranularity(Granularities.ALL).build();\nvar strategy = new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\nvar expected = ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\nvar mapper = TestHelper.makeJsonMapper();\nvar cached = mapper.readValue(mapper.writeValueAsBytes(strategy.prepareForCache(true).apply(expected)), strategy.getCacheObjectClazz());\nvar actual = strategy.pullFromCache(true).apply(cached);\nSystem.out.println(\"EXPECTED: \" + expected + \" ACTUAL: \" + actual);\n/exit\nEOF",
+   "exit_code": null,
+   "mode": "async"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\"],\"class_roots\":[\"processing/target/classes\"]}') --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture 'postPos,postAggregatorStart,input,resultRow.row,results.cursor' --hits 2 --timeout 90",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '510,585p' processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java && sed -n '150,230p' processing/src/main/java/org/apache/druid/query/CacheStrategy.java && grep -n 'PostAggregator' processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java && find docs -maxdepth 3 -iname '*cach*' -print && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,180p' docs/querying/caching.md && sed -n '1,120p' docs/querying/using-caching.md && sed -n '55,72p' processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java && sed -n '1670,1708p' pom.xml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java\n+++ b/processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java\n@@ -36,6 +36,7 @@\n import org.apache.druid.java.util.common.DateTimes;\n import org.apache.druid.java.util.common.StringUtils;\n import org.apache.druid.java.util.common.granularity.Granularities;\n+import org.apache.druid.java.util.common.granularity.Granularity;\n import org.apache.druid.java.util.common.guava.Sequences;\n import org.apache.druid.query.CacheStrategy;\n import org.apache.druid.query.DruidProcessingConfig;\n@@ -521,6 +522,49 @@\n   }\n \n   @Test\n+  public void testCacheStrategyWithMultiplePostAggregators() throws IOException\n+  {\n+    final ObjectMapper objectMapper = TestHelper.makeJsonMapper();\n+    for (Granularity granularity : Arrays.asList(Granularities.ALL, Granularities.DAY)) {\n+      final GroupByQuery query = GroupByQuery.builder()\n+          .setDataSource(QueryRunnerTestHelper.DATA_SOURCE)\n+          .setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD)\n+          .setDimensions(\n+              new DefaultDimensionSpec(\"channel\", \"channel\"),\n+              new DefaultDimensionSpec(\"cityName\", \"cityName\")\n+          )\n+          .setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT)\n+          .setPostAggregatorSpecs(\n+              new ExpressionPostAggregator(\"a2\", \"rows * 2\", null, null, TestExprMacroTable.INSTANCE),\n+              new ExpressionPostAggregator(\"a3\", \"rows * 3\", null, null, TestExprMacroTable.INSTANCE)\n+          )\n+          .setGranularity(granularity)\n+          .build();\n+      final CacheStrategy<ResultRow, Object, GroupByQuery> strategy =\n+          new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\n+      final ResultRow fullResult = query.getResultRowHasTimestamp()\n+                                   ? ResultRow.of(123L, \"#en.wikipedia\", null, 10516, 21032, 31548)\n+                                   : ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\n+\n+      for (boolean isResultLevelCache : new boolean[]{false, true}) {\n+        final ResultRow result = ResultRow.of(\n+            Arrays.copyOf(\n+                fullResult.getArray(),\n+                isResultLevelCache\n+                ? query.getResultRowSizeWithPostAggregators()\n+                : query.getResultRowSizeWithoutPostAggregators()\n+            )\n+        );\n+        final Object cached = objectMapper.readValue(\n+            objectMapper.writeValueAsBytes(strategy.prepareForCache(isResultLevelCache).apply(result)),\n+            strategy.getCacheObjectClazz()\n+        );\n+        Assert.assertEquals(result, strategy.pullFromCache(isResultLevelCache).apply(cached));\n+      }\n+    }\n+  }\n+\n+  @Test\n   public void testMultiColumnCacheStrategy() throws Exception\n   {\n     final GroupByQuery query1 = GroupByQuery\nPATCH\nmvn test -o -pl processing '-Dtest=GroupByQueryQueryToolChestTest#testCacheStrategyWithMultiplePostAggregators' -Dsurefire.rerunFailingTestsCount=0 -q",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\n+++ b/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\n@@ -62,7 +62,6 @@\n import org.apache.druid.query.aggregation.AggregatorFactory;\n import org.apache.druid.query.aggregation.MetricManipulationFn;\n import org.apache.druid.query.aggregation.MetricManipulatorFns;\n-import org.apache.druid.query.aggregation.PostAggregator;\n import org.apache.druid.query.cache.CacheKeyBuilder;\n import org.apache.druid.query.context.ResponseContext;\n import org.apache.druid.query.dimension.DefaultDimensionSpec;\n@@ -651,9 +650,7 @@\n             );\n \n             if (isResultLevelCache) {\n-              Iterator<PostAggregator> postItr = query.getPostAggregatorSpecs().iterator();\n-              int postPos = 0;\n-              while (postItr.hasNext() && results.hasNext()) {\n+              for (int postPos = 0; postPos < query.getPostAggregatorSpecs().size() && results.hasNext(); postPos++) {\n                 resultRow.set(postAggregatorStart + postPos, results.next());\n               }\n             }\n--- a/docs/querying/caching.md\n+++ b/docs/querying/caching.md\n@@ -71,6 +71,8 @@\n \n With *whole-query caching*, Druid caches the entire results of individual queries, meaning the Broker no longer needs to merge per-segment results from data processes.\n \n+For `groupBy` queries, cached results include all post-aggregation values in addition to dimensions and aggregations.\n+\n Use *whole-query caching* on the Broker to increase query efficiency when there is little risk of ingestion invalidating the cache at a segment level. This applies particularly, for example, when _not_ using real-time ingestion. Perhaps your queries tend to use batch-ingested data, in which case per-segment caching would be less efficient since the underlying segments hardly ever change, yet Druid would continue to acquire per-segment results for each query.\n \n ## Where to enable caching\nPATCH\nmvn test -o -pl processing '-Dtest=GroupByQueryQueryToolChestTest#testCacheStrategyWithMultiplePostAggregators+testCacheStrategy+testMultiColumnCacheStrategy' -q && git diff --check && git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff -- processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java docs/querying/caching.md && python3 - <<'PY'\nimport xml.etree.ElementTree as E\nr = E.parse('processing/target/surefire-reports/TEST-org.apache.druid.query.groupby.GroupByQueryQueryToolChestTest.xml').getroot()\nprint('Tests: {}, failures: {}, errors: {}'.format(r.get('tests'), r.get('failures'), r.get('errors')))\nfor t in r.findall('testcase'):\n    print(t.get('name'))\nPY\n git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm docs/querying/caching.md.orig && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 2,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java\n+++ b/processing/src/test/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChestTest.java\n@@ -36,6 +36,7 @@\n import org.apache.druid.java.util.common.DateTimes;\n import org.apache.druid.java.util.common.StringUtils;\n import org.apache.druid.java.util.common.granularity.Granularities;\n+import org.apache.druid.java.util.common.granularity.Granularity;\n import org.apache.druid.java.util.common.guava.Sequences;\n import org.apache.druid.query.CacheStrategy;\n import org.apache.druid.query.DruidProcessingConfig;\n@@ -521,6 +522,49 @@\n   }\n \n   @Test\n+  public void testCacheStrategyWithMultiplePostAggregators() throws IOException\n+  {\n+    final ObjectMapper objectMapper = TestHelper.makeJsonMapper();\n+    for (Granularity granularity : Arrays.asList(Granularities.ALL, Granularities.DAY)) {\n+      final GroupByQuery query = GroupByQuery.builder()\n+          .setDataSource(QueryRunnerTestHelper.DATA_SOURCE)\n+          .setQuerySegmentSpec(QueryRunnerTestHelper.FIRST_TO_THIRD)\n+          .setDimensions(\n+              new DefaultDimensionSpec(\"channel\", \"channel\"),\n+              new DefaultDimensionSpec(\"cityName\", \"cityName\")\n+          )\n+          .setAggregatorSpecs(QueryRunnerTestHelper.ROWS_COUNT)\n+          .setPostAggregatorSpecs(\n+              new ExpressionPostAggregator(\"a2\", \"rows * 2\", null, null, TestExprMacroTable.INSTANCE),\n+              new ExpressionPostAggregator(\"a3\", \"rows * 3\", null, null, TestExprMacroTable.INSTANCE)\n+          )\n+          .setGranularity(granularity)\n+          .build();\n+      final CacheStrategy<ResultRow, Object, GroupByQuery> strategy =\n+          new GroupByQueryQueryToolChest(null).getCacheStrategy(query);\n+      final ResultRow fullResult = query.getResultRowHasTimestamp()\n+                                   ? ResultRow.of(123L, \"#en.wikipedia\", null, 10516, 21032, 31548)\n+                                   : ResultRow.of(\"#en.wikipedia\", null, 10516, 21032, 31548);\n+\n+      for (boolean isResultLevelCache : new boolean[]{false, true}) {\n+        final ResultRow result = ResultRow.of(\n+            Arrays.copyOf(\n+                fullResult.getArray(),\n+                isResultLevelCache\n+                ? query.getResultRowSizeWithPostAggregators()\n+                : query.getResultRowSizeWithoutPostAggregators()\n+            )\n+        );\n+        final Object cached = objectMapper.readValue(\n+            objectMapper.writeValueAsBytes(strategy.prepareForCache(isResultLevelCache).apply(result)),\n+            strategy.getCacheObjectClazz()\n+        );\n+        Assert.assertEquals(result, strategy.pullFromCache(isResultLevelCache).apply(cached));\n+      }\n+    }\n+  }\n+\n+  @Test\n   public void testMultiColumnCacheStrategy() throws Exception\n   {\n     final GroupByQuery query1 = GroupByQuery\nPATCH\nmvn test -o -pl processing '-Dtest=GroupByQueryQueryToolChestTest#testCacheStrategyWithMultiplePostAggregators' -Dsurefire.rerunFailingTestsCount=0 -q",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\n+++ b/processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\n@@ -62,7 +62,6 @@\n import org.apache.druid.query.aggregation.AggregatorFactory;\n import org.apache.druid.query.aggregation.MetricManipulationFn;\n import org.apache.druid.query.aggregation.MetricManipulatorFns;\n-import org.apache.druid.query.aggregation.PostAggregator;\n import org.apache.druid.query.cache.CacheKeyBuilder;\n import org.apache.druid.query.context.ResponseContext;\n import org.apache.druid.query.dimension.DefaultDimensionSpec;\n@@ -651,9 +650,7 @@\n             );\n \n             if (isResultLevelCache) {\n-              Iterator<PostAggregator> postItr = query.getPostAggregatorSpecs().iterator();\n-              int postPos = 0;\n-              while (postItr.hasNext() && results.hasNext()) {\n+              for (int postPos = 0; postPos < query.getPostAggregatorSpecs().size() && results.hasNext(); postPos++) {\n                 resultRow.set(postAggregatorStart + postPos, results.next());\n               }\n             }\n--- a/docs/querying/caching.md\n+++ b/docs/querying/caching.md\n@@ -71,6 +71,8 @@\n \n With *whole-query caching*, Druid caches the entire results of individual queries, meaning the Broker no longer needs to merge per-segment results from data processes.\n \n+For `groupBy` queries, cached results include all post-aggregation values in addition to dimensions and aggregations.\n+\n Use *whole-query caching* on the Broker to increase query efficiency when there is little risk of ingestion invalidating the cache at a segment level. This applies particularly, for example, when _not_ using real-time ingestion. Perhaps your queries tend to use batch-ingested data, in which case per-segment caching would be less efficient since the underlying segments hardly ever change, yet Druid would continue to acquire per-segment results for each query.\n \n ## Where to enable caching\nPATCH\nmvn test -o -pl processing '-Dtest=GroupByQueryQueryToolChestTest#testCacheStrategyWithMultiplePostAggregators+testCacheStrategy+testMultiColumnCacheStrategy' -q && git diff --check && git --no-pager diff --stat"
+ ],
+ "peeky_commands": [
+  {
+   "command": "peeky probe --help | head -95 && sed -n '1,200p' /opt/peeky/docs/JAVA_ATTACH.md && cd /testbed && git status --short",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\"],\"class_roots\":[\"processing/target/classes\"]}') --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture 'postPos,postAggregatorStart,input,resultRow.row,results.cursor' --hits 2 --timeout 90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\"],\"class_roots\":[\"processing/target/classes\"]}') --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture 'postPos,postAggregatorStart,input,resultRow.row,results.cursor' --hits 2 --timeout 90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config <(printf '%s\\n' '{\"port\":5005,\"sources\":[\"processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java\"],\"class_roots\":[\"processing/target/classes\"]}') --at processing/src/main/java/org/apache/druid/query/groupby/GroupByQueryQueryToolChest.java:657 --capture 'postPos,postAggregatorStart,input,resultRow.row,results.cursor' --hits 2 --timeout 90",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 4
+ },
+ "peeky_doc_reads": 6,
+ "peeky_mentions_in_commands": 16,
+ "peeky_withheld_markers": 2,
+ "peeky_withheld_by_marker": {
+  "not settable": 2
+ },
+ "peeky_values_printed": 10,
+ "contaminated": false,
+ "final_message": "Fixed the cache-reading loop: it never advanced `postPos`, so later post-aggregates overwrote the first. `peeky probe` at line 657 confirmed `postPos = 0` on both writes. The replacement indexed loop restores each value to its correct column; regression coverage checks result-level and segment-level caching with and without timestamps.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the cache corruption first, then use Peeky to inspect the failing result reconstruction before changing the source.\n",
+  "Fixed the cache-reading loop: it never advanced `postPos`, so later post-aggregates overwrote the first. `peeky probe` at line 657 confirmed `postPos = 0` on both writes. The replacement indexed loop restores each value to its correct column; regression coverage checks result-level and segment-level caching with and without timestamps."
+ ],
+ "assistant_reasoning": [
+  "**Considering config paths**\n\nOkay, the user counts any edit as none sourced, and I'm contemplating using the command `--config <(printf ...)`. But I'm wondering about how sources are resolved relative to the config. I should check the guide regarding config paths related to the target, and I might have to delve into how \"peeky\" parses paths for checks within the target. Looking into `peeky --help` could provide more clarity on that!",
+  "**Using new methods for data processing**\n\nI\u2019m thinking about employing a new method to help optimize my query with two dimensions: counting long rows and maintaining the granularity. For each granularity, I plan to list the PostAggregator Expression 3. It looks like counting from 0 up to size should ensure that I capture all variant results at the specified level, and I might expect the third result to be around 52,580. Just need to double-check everything!",
+  "**Considering documentation updates**\n\nI\u2019m thinking about whether there's a need for documentation updates. It seems like there\u2019s an internal bug affecting behavior without needing documentation changes. Maybe I could just add a single sentence regarding result caching and postagg fields, but that might not be critical. I'll check the documentation to see if there's anything relevant about supported queries and groupby mentions \u2014 if not, then perhaps there\u2019s no need to update anything after all."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 287.8
+}

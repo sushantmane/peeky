@@ -1,0 +1,212 @@
+diff --git a/CHANGES b/CHANGES
+index e05488388..177cd9b32 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -40,6 +40,8 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* inheritance_diagram: Fix SVG links on nested HTML pages and with directory
++  HTML output, and preserve external links.
+ * #11077: graphviz: Fix relative links from within the graph.
+   Patch by Ralf Grubenmann.
+ * #11529: Line Block in LaTeX builder outputs spurious empty token.
+diff --git a/doc/usage/extensions/inheritance.rst b/doc/usage/extensions/inheritance.rst
+index 33284b52d..5acd8df79 100644
+--- a/doc/usage/extensions/inheritance.rst
++++ b/doc/usage/extensions/inheritance.rst
+@@ -11,6 +11,10 @@
+ This extension allows you to include inheritance diagrams, rendered via the
+ :mod:`Graphviz extension <sphinx.ext.graphviz>`.
+ 
++In HTML output, class nodes link to their documentation when it is available.
++This works with both PNG and SVG diagrams, as selected by
++:confval:`graphviz_output_format`.
++
+ It adds this directive:
+ 
+ .. rst:directive:: inheritance-diagram
+diff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py
+index 8b21d9e3b..0948fe247 100644
+--- a/sphinx/ext/graphviz.py
++++ b/sphinx/ext/graphviz.py
+@@ -26,7 +26,7 @@ from sphinx.util import logging
+ from sphinx.util.docutils import SphinxDirective, SphinxTranslator
+ from sphinx.util.i18n import search_image_for_language
+ from sphinx.util.nodes import set_source_info
+-from sphinx.util.osutil import ensuredir
++from sphinx.util.osutil import canon_path, ensuredir
+ from sphinx.util.typing import OptionSpec
+ from sphinx.writers.html import HTML5Translator
+ from sphinx.writers.latex import LaTeXTranslator
+@@ -218,7 +218,7 @@ class GraphvizSimple(SphinxDirective):
+ 
+ 
+ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+-    """Change relative links in generated svg files to be relative to imgpath."""
++    """Make SVG links relative to the image directory, not the output directory."""
+     tree = ET.parse(filepath)  # NoQA: S314
+     root = tree.getroot()
+     ns = {'svg': 'http://www.w3.org/2000/svg', 'xlink': 'http://www.w3.org/1999/xlink'}
+@@ -230,15 +230,17 @@ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+         root.findall('.//svg:a[@xlink:href]', ns),
+     ):
+         scheme, hostname, url, query, fragment = urlsplit(element.attrib[href_name])
+-        if hostname:
++        if scheme or hostname or url.startswith('/'):
+             # not a relative link
+             continue
+ 
+         old_path = path.join(self.builder.outdir, url)
+-        new_path = path.relpath(
++        new_path = canon_path(path.relpath(
+             old_path,
+-            start=path.join(self.builder.outdir, self.builder.imgpath),
+-        )
++            start=path.dirname(filepath),
++        ))
++        if url.endswith('/'):
++            new_path += '/'
+         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))
+ 
+         element.set(href_name, modified_url)
+diff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py
+index 6e3985512..671035267 100644
+--- a/sphinx/ext/inheritance_diagram.py
++++ b/sphinx/ext/inheritance_diagram.py
+@@ -37,6 +37,7 @@ import re
+ from collections.abc import Iterable
+ from importlib import import_module
+ from typing import Any, cast
++from urllib.parse import urljoin, urlsplit
+ 
+ from docutils import nodes
+ from docutils.nodes import Node
+@@ -406,21 +407,20 @@ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diag
+     name = 'inheritance%s' % graph_hash
+ 
+     # Create a mapping from fully-qualified class names to URLs.
+-    graphviz_output_format = self.builder.env.config.graphviz_output_format.upper()
+-    current_filename = self.builder.current_docname + self.builder.out_suffix
+     urls = {}
+     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)
+     for child in pending_xrefs:
+         if child.get('refuri') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = "../" + child.get('refuri')
+-            else:
+-                urls[child['reftitle']] = child.get('refuri')
++            urls[child['reftitle']] = child.get('refuri')
+         elif child.get('refid') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')
+-            else:
+-                urls[child['reftitle']] = '#' + child.get('refid')
++            urls[child['reftitle']] = '#' + child.get('refid')
++
++    if self.builder.env.config.graphviz_output_format.upper() == 'SVG':
++        current_uri = self.builder.get_target_uri(self.builder.current_docname).split('#')[0]
++        # Resolve URLs against the output root before Graphviz relocates them.
++        for cls, url in urls.items():
++            if not urlsplit(url).scheme and not url.startswith('/'):
++                urls[cls] = urljoin('/' + current_uri, url).removeprefix('/')
+ 
+     dotcode = graph.generate_dot(name, urls, env=self.builder.env)
+     render_dot_html(self, node, dotcode, {}, 'inheritance', 'inheritance',
+diff --git a/tests/test_ext_inheritance_diagram_links.py b/tests/test_ext_inheritance_diagram_links.py
+new file mode 100644
+index 000000000..f16af5294
+--- /dev/null
++++ b/tests/test_ext_inheritance_diagram_links.py
+@@ -0,0 +1,91 @@
++"""Test links in inheritance diagrams embedded on nested HTML pages."""
++
++import re
++import xml.etree.ElementTree as ET
++from urllib.parse import urljoin
++
++import pytest
++from docutils import nodes
++
++
++@pytest.fixture()
++def app_params(app_params, buildername, suffix, output_format):
++    app_params.kwargs.update(buildername=buildername, freshenv=True, confoverrides={
++        'graphviz_output_format': output_format,
++        'html_file_suffix': suffix,
++        'html_link_suffix': suffix,
++    })
++    return app_params
++
++
++@pytest.mark.sphinx(testroot='ext-inheritance_diagram',
++                    srcdir='ext-inheritance_diagram-links')
++@pytest.mark.usefixtures('if_graphviz_found')
++@pytest.mark.parametrize('output_format', ['png', 'svg'])
++@pytest.mark.parametrize(('buildername', 'suffix'), [
++    ('html', '.html'),
++    ('html', '.xhtml'),
++    ('dirhtml', '.html'),
++    ('singlehtml', '.html'),
++])
++@pytest.mark.parametrize('external_uri', [
++    'https://external.example.org/api?q=1#test.Qux',
++    '//external.example.org/api#test.Qux',
++    '/api#test.Qux',
++    'mailto:example@example.org',
++])
++def test_inheritance_diagram_links(app, buildername, output_format, external_uri):
++    nested = app.srcdir / 'nested' / 'deep'
++    nested.mkdir(parents=True, exist_ok=True)
++    (app.srcdir / 'index.rst').write_text(
++        'Root\n====\n\n'
++        '.. toctree::\n\n   nested/deep/diagram\n   nested/deep/api\n\n'
++        '.. py:class:: test.Foo\n\n'
++        '.. inheritance-diagram:: test.Baz test.Qux\n', encoding='utf8')
++    (nested / 'diagram.rst').write_text(
++        'Nested diagram\n==============\n\n'
++        '.. py:class:: test.Baz\n\n'
++        '.. inheritance-diagram:: test.Baz test.Qux\n', encoding='utf8')
++    (nested / 'api.rst').write_text(
++        'API\n===\n\n.. py:class:: test.Bar\n', encoding='utf8')
++
++    def resolve_external(app, env, node, contnode):
++        if node['reftarget'] == 'test.Qux':
++            return nodes.reference('', '', contnode, refuri=external_uri,
++                                   reftitle='test.Qux')
++
++    app.connect('missing-reference', resolve_external)
++    app.builder.build_all()
++
++    assert app.statuscode == 0
++    assert app._warning.getvalue() == ''
++
++    site_uri = 'https://example.org/docs/'
++    expected = {
++        urljoin(site_uri, app.builder.get_target_uri(docname).split('#')[0]) + '#' + cls
++        for docname, cls in [('index', 'test.Foo'),
++                             ('nested/deep/api', 'test.Bar'),
++                             ('nested/deep/diagram', 'test.Baz')]
++    } | {urljoin(site_uri, external_uri)}
++    docnames = ['index'] if buildername == 'singlehtml' else ['index', 'nested/deep/diagram']
++    for docname in docnames:
++        html_path = app.builder.get_outfilename(docname)
++        with open(html_path, encoding='utf8') as stream:
++            content = stream.read()
++        if output_format == 'svg':
++            images = re.findall(r'<object data="([^"]+\.svg)"', content)
++            assert images
++            page_uri = urljoin(site_uri, app.builder.get_target_uri(docname).split('#')[0])
++            for image in images:
++                svg_uri = urljoin(page_uri, image)
++                svg_path = app.outdir / svg_uri.removeprefix(site_uri)
++                tree = ET.parse(svg_path)
++                href = '{http://www.w3.org/1999/xlink}href'
++                links = {urljoin(svg_uri, element.attrib[href])
++                         for element in tree.findall('.//{http://www.w3.org/2000/svg}a')}
++                assert links == expected
++        else:
++            page_uri = urljoin(site_uri, app.builder.get_target_uri(docname).split('#')[0])
++            links = {urljoin(page_uri, uri.replace('&amp;', '&'))
++                     for uri in re.findall(r'<area\b[^>]*href="([^"]+)"', content)}
++            assert links == expected

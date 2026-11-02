@@ -1,0 +1,7 @@
+{
+ "judge_id": "a109",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The candidate filter previously skipped interfaces and annotations, but not records.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 23 probe (javac on `public record Foo() {}` with lombok.config defaultPrivate/defaultFinal=true from cmd 21) at HandleFieldDefaults.java:60: 1:fieldDefaults=null, 1:defaultToPrivate=true, 1:defaultToFinal=true, makeFinal=true, 1:type.mods.flags=2305843009213693953. Consistent with the attempt: Foo has no @FieldDefaults, config sets both defaults true (fdToFinal=defaultToFinal per code in cmd 6), flags = RECORD (1L<<61, cmd 24) | PUBLIC(1), and cmd 21 shows javac reaching the 'only supported on a class or an enum' error for the record. Cmd 20 failed (DEBUGGER_ERROR, no values). None contradicted."
+}

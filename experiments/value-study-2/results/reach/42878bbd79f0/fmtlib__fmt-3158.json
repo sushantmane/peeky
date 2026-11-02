@@ -1,0 +1,83 @@
+{
+ "bug": "fmtlib__fmt-3158",
+ "language": "cpp",
+ "category": "C",
+ "image": "peeky-study/fmtlib__fmt-3158:peeky-r2",
+ "image_id": "sha256:8f8ee0a32cf5c81b38dc0b575452b256ab73edaaf04587e550ba8da319e930b8",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:33:55+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [
+  {
+   "command": "cmake --build build-peeky --parallel 4 --target ranges-test > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log",
+   "exit": 0,
+   "seconds": 1.2,
+   "output": "1 warning generated.\n[ 91%] Linking CXX executable ../bin/ranges-test\n[100%] Built target ranges-test\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed return in range_formatter::parse (first hunk)",
+   "at": "include/fmt/ranges.h:478",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/ranges-test --at include/fmt/ranges.h:478 --name reach --timeout 300 --json -- --gtest_filter=ranges_test.format_vector",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of build-peeky/bin/ranges-test Peeky judges has code in include/fmt/ranges.h: `peeky describe` lists each unit, judged or not and why",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the changed return in range_formatter::parse (last hunk)",
+   "at": "include/fmt/ranges.h:488",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/ranges-test --at include/fmt/ranges.h:488 --name reach --timeout 300 --json -- --gtest_filter=ranges_test.format_vector",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of build-peeky/bin/ranges-test Peeky judges has code in include/fmt/ranges.h: `peeky describe` lists each unit, judged or not and why",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "test/ranges-test.cc:50",
+   "commands": [
+    {
+     "command": "peeky session start . --binary build-peeky/bin/ranges-test --at test/ranges-test.cc:50 --name reach --timeout 300 --json -- --gtest_filter=ranges_test.format_vector",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "No unit of build-peeky/bin/ranges-test Peeky judges has code in test/ranges-test.cc: `peeky describe` lists each unit, judged or not and why",
+    "hint": "Nothing ran. Rebuild as the message says (clang -O0 -g -gdwarf-5 -grecord-command-line), or probe a unit `peeky describe --binary` judges.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:33:58+00:00"
+}

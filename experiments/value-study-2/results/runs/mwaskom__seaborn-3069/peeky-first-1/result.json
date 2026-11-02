@@ -1,0 +1,294 @@
+{
+ "bug": "mwaskom__seaborn-3069",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "python",
+ "category": "B",
+ "image": "peeky-study/mwaskom__seaborn-3069:peeky-r2",
+ "image_digest": "sha256:fc133b76ec6b91a681e66b75384ea32dca50aeb24187f98c0d81159830e93ffc",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-mwaskom__seaborn-3069-peeky-first-1-f038a9",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:29:50+00:00",
+ "ended": "2026-11-01T13:35:19+00:00",
+ "wall_seconds": 328.4,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": false,
+ "f2p": {
+  "tests/_core/test_plot.py::TestScaling::test_nominal_x_axis_tweaks": "PASSED",
+  "tests/_core/test_plot.py::TestScaling::test_nominal_y_axis_tweaks": "FAILED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 3.7,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "72d56ff8c72d80a4279c4c9d15df22926219d7dbb6726bfd858479ef7d767871",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "doc/whatsnew/v0.12.1.rst",
+  "seaborn/_core/plot.py"
+ ],
+ "patch_bytes": 3817,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 170
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 18,
+ "ai_credits": 35.2437,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 734124,
+  "output": 12591,
+  "cache_read": 670315,
+  "cache_write": 63755,
+  "reasoning": 6482
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 26,
+ "tool_calls_by_name": {
+  "bash": 26
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -la; if [ -d /testbed ]; then cd /testbed && git status --short; fi; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,240p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n 'class Nominal|def _finalize_figure|sticky_edges|class TestNominal' seaborn tests && ls tests && ls seaborn/_core && ls doc",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'class Nominal|def _finalize_figure|sticky_edges' seaborn/_core/*.py && find tests -maxdepth 2 -type f | sort && ls doc && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md && sed -n '1,200p' /opt/peeky/docs/lang/python.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,340p' seaborn/_core/scales.py && sed -n '1490,1770p' seaborn/_core/plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,280p' tests/_core/test_scales.py && grep -nE 'Nominal|limit|grid|invert|finalize|sharing|share' tests/_core/test_plot.py && ls doc/whatsnew && grep -nE 'def _adjust_cat_axis|sticky_edges' seaborn/categorical.py seaborn/_marks/*.py && sed -n '1,150p' tests/_core/test_plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport seaborn.objects as so\nfor explicit in (False, True):\n    for axis in 'xy':\n        spec = so.Plot(**{axis: ['a', 'b', 'c'], ('y' if axis == 'x' else 'x'): [1, 2, 3]}).add(so.Dot())\n        if explicit:\n            spec = spec.scale(**{axis: so.Nominal()})\n        plot = spec.plot()\n        ax = plot._figure.axes[0]\n        limits = getattr(ax, f'get_{axis}lim')()\n        grid = [line.get_visible() for line in getattr(ax, f'get_{axis}gridlines')()]\n        inverted = getattr(ax, f'{axis}axis_inverted')()\n        print(f'{explicit=}, {axis=}, {limits=}, {grid=}, {inverted=}')\n        expected = (-.5, 2.5) if axis == 'x' else (2.5, -.5)\n        print(f'FAIL: expected {expected}, no grid' if limits != expected or any(grid) else 'PASS')\nPY\nnl -ba seaborn/_core/plot.py | sed -n '1620,1665p'\npeeky describe . --at seaborn/_core/plot.py --json > /tmp/seaborn-peeky-describe.json && python - <<'PY'\nimport json\nwith open('/tmp/seaborn-peeky-describe.json') as f:\n    d=json.load(f)\nprint(str(d)[-14000:])\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '310,385p' tests/_core/test_plot.py && sed -n '480,620p' tests/_core/test_plot.py && sed -n '1090,1175p' tests/_core/test_plot.py && sed -n '195,239p' seaborn/categorical.py && sed -n '1,200p' doc/whatsnew/v0.12.1.rst && sed -n '920,1070p' seaborn/_core/plot.py && sed -n '1070,1235p' seaborn/_core/plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '330,377p' tests/_core/test_plot.py && grep -n '^class Test' tests/_core/test_plot.py && sed -n '1140,1168p' tests/_core/test_plot.py && sed -n '195,239p' seaborn/categorical.py && sed -n '1,95p' doc/whatsnew/v0.12.1.rst && sed -n '1230,1290p' seaborn/_core/plot.py && sed -n '1,115p' tests/test_objects.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,42p' seaborn/_core/plot.py && sed -n '815,857p' seaborn/_core/plot.py && grep -nE 'Nominal|Dot|Bar' tests/test_objects.py | head -35 && sed -n '1,110p' tests/conftest.py && grep -nE 'axes.grid|theme' tests/_core/test_plot.py | tail -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at seaborn/_core/plot.py:1636 --capture \"axis,axis_key,p._limits,self._scales['y'],ax._viewLim._points,ax._ymargin,ax.yaxis._major_tick_kw,ax.yaxis.units._mapping\" --hits all --run-module pytest -- -q tests/_core/test_plot.py::TestScaling::test_explicit_categorical_converter",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '649,755p' tests/_core/test_plot.py && sed -n '865,909p' tests/_core/test_plot.py && sed -n '1,135p' tests/_marks/test_bar.py && sed -n '1,100p' tests/_marks/test_dot.py && sed -n '860,884p' seaborn/_core/plot.py && sed -n '650,672p' seaborn/_core/plot.py && cat setup.cfg",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport inspect\nfrom matplotlib.axes import Axes\nprint(inspect.getsource(Axes.autoscale_view))\nprint(inspect.getsource(Axes._update_patch_limits))\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport inspect\nfrom matplotlib.axis import Axis\nprint(inspect.getsource(Axis._set_lim))\nPY\nsed -n '295,328p' seaborn/_core/plot.py && grep -n 'Nominal' doc/_docstrings/*.rst doc/_tutorial/*.ipynb 2>/dev/null | head -20 && grep -n 'def test_.*cat\\|def test_.*empty' tests/_core/test_scales.py | tail -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'artists|lines|patches|collections|get_children|dataLim|get_[xy]lim|axis_inverted' tests/_core/test_plot.py tests/_marks/*.py | head -100 && ls -l /usr/local/bin/apply_patch /opt/venv/bin/apply_patch 2>/dev/null; command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text()\ntext = text.replace('from seaborn._marks.base import Mark\\n', 'from seaborn._marks.base import Mark\\nfrom seaborn._marks.bar import Bar\\nfrom seaborn._marks.dot import Dot\\n')\naddition = '''class TestNominalAxes:\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"explicit\", [False, True])\n    @pytest.mark.parametrize(\"n\", [1, 3])\n    @pytest.mark.parametrize(\"mark\", [MockMark, Dot, Bar])\n    def test_defaults(self, axis, explicit, n, mark):\n\n        other = \"y\" if axis == \"x\" else \"x\"\n        categories = list(range(n)) if explicit else list(\"abc\"[:n])\n        p = Plot(**{axis: categories, other: list(range(1, n + 1))})\n        if explicit:\n            p = p.scale(**{axis: Nominal()})\n        p = p.add(mark()).theme({\"axes.grid\": True, \"axes.grid.which\": \"both\"})\n        ax, = p.plot()._figure.axes\n        ax.figure.canvas.draw()\n\n        expected = (-.5, n - .5)\n        if axis == \"y\":\n            expected = expected[::-1]\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n        axis_obj = getattr(ax, f\"{axis}axis\")\n        assert not any(t.gridline.get_visible() for t in axis_obj.get_major_ticks())\n        axis_obj.set_minor_locator(mpl.ticker.FixedLocator([.25]))\n        assert not any(t.gridline.get_visible() for t in axis_obj.get_minor_ticks())\n        assert any(l.get_visible() for l in getattr(ax, f\"get_{other}gridlines\")())\n        assert not getattr(ax, f\"{other}axis_inverted\")()\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    def test_order_with_unused_categories(self, axis):\n\n        p = Plot(**{axis: [\"b\"]}).scale(**{axis: Nominal(order=list(\"abcd\"))})\n        ax, = p.plot()._figure.axes\n        expected = (-.5, 3.5) if axis == \"x\" else (3.5, -.5)\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"share\", [True, False, \"row\"])\n    def test_facets(self, axis, share):\n\n        p = (\n            Plot(**{axis: list(\"abc\")})\n            .facet(col=[\"a\", \"a\", \"b\"])\n            .share(**{axis: share})\n            .plot()\n        )\n        for i, ax in enumerate(p._figure.axes):\n            n = 3 if share is True else 2 - i\n            expected = (-.5, n - .5)\n            if axis == \"y\":\n                expected = expected[::-1]\n            assert getattr(ax, f\"get_{axis}lim\")() == expected\n            assert not any(l.get_visible() for l in getattr(ax, f\"get_{axis}gridlines\")())\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    def test_paired_scales(self, axis):\n\n        p = Plot().pair(**{axis: [list(\"abc\"), [1, 2, 3]]}).plot()\n        nominal_ax, continuous_ax = p._figure.axes\n        expected = (-.5, 2.5) if axis == \"x\" else (2.5, -.5)\n        assert getattr(nominal_ax, f\"get_{axis}lim\")() == expected\n        assert not any(l.get_visible() for l in getattr(nominal_ax, f\"get_{axis}gridlines\")())\n        assert any(l.get_visible() for l in getattr(continuous_ax, f\"get_{axis}gridlines\")())\n        assert not getattr(continuous_ax, f\"{axis}axis_inverted\")()\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"limits, expected\", [\n        ((\"b\", \"c\"), (.5, 2.5)),\n        ((None, \"b\"), (-.5, 1.5)),\n        ((\"b\", None), (.5, 3.5)),\n        ((None, None), (-.5, 3.5)),\n        ((0, 2), (0, 2)),\n    ])\n    def test_explicit_limits(self, axis, limits, expected):\n\n        p = Plot(**{axis: list(\"abcd\")}).limit(**{axis: limits}).plot()\n        ax, = p._figure.axes\n        if axis == \"y\":\n            expected = expected[::-1]\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n\n\n'''\nassert text.count('class TestPlotting:\\n') == 1\ntext = text.replace('class TestPlotting:\\n', addition + 'class TestPlotting:\\n')\npath.write_text(text)\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('seaborn/_core/plot.py')\ntext = path.read_text().replace('from seaborn._core.scales import Scale\\n', 'from seaborn._core.scales import Scale, Nominal\\n')\ntext = text.replace('                from seaborn._core.scales import Nominal\\n', '')\nold = '''                axis_key = sub[axis]\n\n                # Axis limits\n'''\nnew = '''                axis_key = sub[axis]\n                axis_obj = getattr(ax, f\"{axis}axis\")\n                nominal = isinstance(self._scales.get(axis_key), Nominal)\n                if nominal:\n                    axis_obj.grid(False, which=\"both\")\n                    n = len(axis_obj.get_majorticklocs())\n                    if n:\n                        getattr(ax, f\"set_{axis}lim\")(-.5, n - .5, auto=None)\n\n                # Axis limits\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\ntext = text.replace('                    convert_units = getattr(ax, f\"{axis}axis\").convert_units\\n', '                    convert_units = axis_obj.convert_units\\n')\nold = '''                    ax.set(**{f\"{axis}lim\": (lo, hi)})\n\n        engine_default'''\nnew = '''                    ax.set(**{f\"{axis}lim\": (lo, hi)})\n\n                if nominal and axis == \"y\":\n                    axis_obj.set_inverted(True)\n\n        engine_default'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\npath.write_text(text)\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text().replace('            n = 3 if share is True else 2 - i\\n', '            n = 3 if share in [True, \"row\"] else 2 - i\\n')\npath.write_text(text)\npath = Path('doc/whatsnew/v0.12.1.rst')\ntext = path.read_text()\nold = '- |Enhancement| The :class:`Jitter` move'\nnew = '- |Enhancement| Axes with a :class:`objects.Nominal` scale now match categorical plots: limits extend half a unit beyond the first and last category, grid lines are hidden, and the y axis is inverted. This applies to both explicit and inferred scales; explicit plot limits still control the visible range.\\n\\n' + old\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes --tb=short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && pytest -q tests/_core/test_plot.py tests/_core/test_scales.py tests/_marks --tb=short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git --no-pager diff --stat && git --no-pager diff -- seaborn/_core/plot.py doc/whatsnew/v0.12.1.rst tests/_core/test_plot.py && python - <<'PY'\nfrom pathlib import Path\nfor file in ['seaborn/_core/plot.py', 'tests/_core/test_plot.py']:\n    for n, line in enumerate(Path(file).read_text().splitlines(), 1):\n        if len(line) > 88:\n            print(f'{file}:{n}: {len(line)} characters')\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text()\ntext = text.replace('            assert not any(l.get_visible() for l in getattr(ax, f\"get_{axis}gridlines\")())\\n', '            axis_obj = getattr(ax, f\"{axis}axis\")\\n            assert not any(t.gridline.get_visible() for t in axis_obj.get_major_ticks())\\n')\ntext = text.replace('        assert not any(l.get_visible() for l in getattr(nominal_ax, f\"get_{axis}gridlines\")())\\n        assert any(l.get_visible() for l in getattr(continuous_ax, f\"get_{axis}gridlines\")())\\n', '        nominal_axis = getattr(nominal_ax, f\"{axis}axis\")\\n        continuous_axis = getattr(continuous_ax, f\"{axis}axis\")\\n        assert not any(t.gridline.get_visible() for t in nominal_axis.get_major_ticks())\\n        assert any(t.gridline.get_visible() for t in continuous_axis.get_major_ticks())\\n')\npath.write_text(text)\nfor file in ['seaborn/_core/plot.py', 'tests/_core/test_plot.py']:\n    for n, line in enumerate(Path(file).read_text().splitlines(), 1):\n        assert len(line) <= 88, (file, n, len(line))\nPath('/tmp/seaborn-peeky-describe.json').unlink()\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes --tb=short && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1190,1236p' seaborn/_core/plot.py && sed -n '75,139p' seaborn/_marks/line.py && python - <<'PY'\nimport seaborn.objects as so\nfor axis in 'xy':\n    other = 'y' if axis == 'x' else 'x'\n    try:\n        p = so.Plot(**{other: [1, 2], f'{axis}min': ['a', 'a'], f'{axis}max': ['b', 'c']}).add(so.Range(), orient=other).plot()\n    except Exception as e:\n        print(type(e).__name__, str(e))\n    else:\n        ax = p._figure.axes[0]\n        print(axis, list(p._scales), getattr(ax, f'get_{axis}lim')(), [l.get_visible() for l in getattr(ax, f'get_{axis}gridlines')()])\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,170p' seaborn/_core/subplots.py && grep -nE '^    def __iter__|_subplot_list|\\.keys\\(\\)|== .*sub|view|\\[\"scales\"\\]' tests/_core/test_subplots.py seaborn/_core/subplots.py tests/_core/test_plot.py | head -75 && sed -n '1389,1435p' seaborn/_core/plot.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'SubplotSpec|Subplot' seaborn/_core/typing.py && sed -n '1,145p' seaborn/_core/typing.py && grep -nE 'def _get_subplot|return|def __iter__|yield|_subplot_list' seaborn/_core/subplots.py | tail -30",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n '^class Range' seaborn/_marks/*.py && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text().replace('from seaborn._marks.dot import Dot\\n', 'from seaborn._marks.dot import Dot\\nfrom seaborn._marks.line import Range\\n')\nold = '    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\\n    def test_order_with_unused_categories(self, axis):\\n'\nnew = '''    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"explicit\", [False, True])\n    def test_coordinate_bounds(self, axis, explicit):\n\n        other = \"y\" if axis == \"x\" else \"x\"\n        p = Plot(**{\n            other: [1, 2], f\"{axis}min\": [\"a\", \"a\"], f\"{axis}max\": [\"b\", \"c\"],\n        }).add(Range(), orient=other)\n        if explicit:\n            p = p.scale(**{axis: Nominal()})\n        ax, = p.plot()._figure.axes\n        expected = (-.5, 2.5) if axis == \"x\" else (2.5, -.5)\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n        axis_obj = getattr(ax, f\"{axis}axis\")\n        assert not any(t.gridline.get_visible() for t in axis_obj.get_major_ticks())\n\n''' + old\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes::test_coordinate_bounds --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('seaborn/_core/plot.py')\ntext = path.read_text()\nold = '''                view_scale = scale._setup(seed_values, prop, axis=axis_obj)\n                set_scale_obj(view[\"ax\"], axis, view_scale._matplotlib_scale)\n'''\nnew = '''                view_scale = scale._setup(seed_values, prop, axis=axis_obj)\n                view[f\"{axis}scale\"] = view_scale\n                set_scale_obj(view[\"ax\"], axis, view_scale._matplotlib_scale)\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\ntext = text.replace('                nominal = isinstance(self._scales.get(axis_key), Nominal)\\n', '                nominal = isinstance(sub.get(f\"{axis}scale\"), Nominal)\\n')\npath.write_text(text)\nPY\npytest -q tests/_core/test_plot.py tests/_core/test_scales.py tests/_core/test_subplots.py tests/_marks --tb=short && git diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 6,
+ "build_or_test_commands": [
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text()\ntext = text.replace('from seaborn._marks.base import Mark\\n', 'from seaborn._marks.base import Mark\\nfrom seaborn._marks.bar import Bar\\nfrom seaborn._marks.dot import Dot\\n')\naddition = '''class TestNominalAxes:\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"explicit\", [False, True])\n    @pytest.mark.parametrize(\"n\", [1, 3])\n    @pytest.mark.parametrize(\"mark\", [MockMark, Dot, Bar])\n    def test_defaults(self, axis, explicit, n, mark):\n\n        other = \"y\" if axis == \"x\" else \"x\"\n        categories = list(range(n)) if explicit else list(\"abc\"[:n])\n        p = Plot(**{axis: categories, other: list(range(1, n + 1))})\n        if explicit:\n            p = p.scale(**{axis: Nominal()})\n        p = p.add(mark()).theme({\"axes.grid\": True, \"axes.grid.which\": \"both\"})\n        ax, = p.plot()._figure.axes\n        ax.figure.canvas.draw()\n\n        expected = (-.5, n - .5)\n        if axis == \"y\":\n            expected = expected[::-1]\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n        axis_obj = getattr(ax, f\"{axis}axis\")\n        assert not any(t.gridline.get_visible() for t in axis_obj.get_major_ticks())\n        axis_obj.set_minor_locator(mpl.ticker.FixedLocator([.25]))\n        assert not any(t.gridline.get_visible() for t in axis_obj.get_minor_ticks())\n        assert any(l.get_visible() for l in getattr(ax, f\"get_{other}gridlines\")())\n        assert not getattr(ax, f\"{other}axis_inverted\")()\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    def test_order_with_unused_categories(self, axis):\n\n        p = Plot(**{axis: [\"b\"]}).scale(**{axis: Nominal(order=list(\"abcd\"))})\n        ax, = p.plot()._figure.axes\n        expected = (-.5, 3.5) if axis == \"x\" else (3.5, -.5)\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"share\", [True, False, \"row\"])\n    def test_facets(self, axis, share):\n\n        p = (\n            Plot(**{axis: list(\"abc\")})\n            .facet(col=[\"a\", \"a\", \"b\"])\n            .share(**{axis: share})\n            .plot()\n        )\n        for i, ax in enumerate(p._figure.axes):\n            n = 3 if share is True else 2 - i\n            expected = (-.5, n - .5)\n            if axis == \"y\":\n                expected = expected[::-1]\n            assert getattr(ax, f\"get_{axis}lim\")() == expected\n            assert not any(l.get_visible() for l in getattr(ax, f\"get_{axis}gridlines\")())\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    def test_paired_scales(self, axis):\n\n        p = Plot().pair(**{axis: [list(\"abc\"), [1, 2, 3]]}).plot()\n        nominal_ax, continuous_ax = p._figure.axes\n        expected = (-.5, 2.5) if axis == \"x\" else (2.5, -.5)\n        assert getattr(nominal_ax, f\"get_{axis}lim\")() == expected\n        assert not any(l.get_visible() for l in getattr(nominal_ax, f\"get_{axis}gridlines\")())\n        assert any(l.get_visible() for l in getattr(continuous_ax, f\"get_{axis}gridlines\")())\n        assert not getattr(continuous_ax, f\"{axis}axis_inverted\")()\n\n    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"limits, expected\", [\n        ((\"b\", \"c\"), (.5, 2.5)),\n        ((None, \"b\"), (-.5, 1.5)),\n        ((\"b\", None), (.5, 3.5)),\n        ((None, None), (-.5, 3.5)),\n        ((0, 2), (0, 2)),\n    ])\n    def test_explicit_limits(self, axis, limits, expected):\n\n        p = Plot(**{axis: list(\"abcd\")}).limit(**{axis: limits}).plot()\n        ax, = p._figure.axes\n        if axis == \"y\":\n            expected = expected[::-1]\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n\n\n'''\nassert text.count('class TestPlotting:\\n') == 1\ntext = text.replace('class TestPlotting:\\n', addition + 'class TestPlotting:\\n')\npath.write_text(text)\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('seaborn/_core/plot.py')\ntext = path.read_text().replace('from seaborn._core.scales import Scale\\n', 'from seaborn._core.scales import Scale, Nominal\\n')\ntext = text.replace('                from seaborn._core.scales import Nominal\\n', '')\nold = '''                axis_key = sub[axis]\n\n                # Axis limits\n'''\nnew = '''                axis_key = sub[axis]\n                axis_obj = getattr(ax, f\"{axis}axis\")\n                nominal = isinstance(self._scales.get(axis_key), Nominal)\n                if nominal:\n                    axis_obj.grid(False, which=\"both\")\n                    n = len(axis_obj.get_majorticklocs())\n                    if n:\n                        getattr(ax, f\"set_{axis}lim\")(-.5, n - .5, auto=None)\n\n                # Axis limits\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\ntext = text.replace('                    convert_units = getattr(ax, f\"{axis}axis\").convert_units\\n', '                    convert_units = axis_obj.convert_units\\n')\nold = '''                    ax.set(**{f\"{axis}lim\": (lo, hi)})\n\n        engine_default'''\nnew = '''                    ax.set(**{f\"{axis}lim\": (lo, hi)})\n\n                if nominal and axis == \"y\":\n                    axis_obj.set_inverted(True)\n\n        engine_default'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\npath.write_text(text)\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text().replace('            n = 3 if share is True else 2 - i\\n', '            n = 3 if share in [True, \"row\"] else 2 - i\\n')\npath.write_text(text)\npath = Path('doc/whatsnew/v0.12.1.rst')\ntext = path.read_text()\nold = '- |Enhancement| The :class:`Jitter` move'\nnew = '- |Enhancement| Axes with a :class:`objects.Nominal` scale now match categorical plots: limits extend half a unit beyond the first and last category, grid lines are hidden, and the y axis is inverted. This applies to both explicit and inferred scales; explicit plot limits still control the visible range.\\n\\n' + old\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes --tb=short",
+  "cd /testbed && pytest -q tests/_core/test_plot.py tests/_core/test_scales.py tests/_marks --tb=short",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text()\ntext = text.replace('            assert not any(l.get_visible() for l in getattr(ax, f\"get_{axis}gridlines\")())\\n', '            axis_obj = getattr(ax, f\"{axis}axis\")\\n            assert not any(t.gridline.get_visible() for t in axis_obj.get_major_ticks())\\n')\ntext = text.replace('        assert not any(l.get_visible() for l in getattr(nominal_ax, f\"get_{axis}gridlines\")())\\n        assert any(l.get_visible() for l in getattr(continuous_ax, f\"get_{axis}gridlines\")())\\n', '        nominal_axis = getattr(nominal_ax, f\"{axis}axis\")\\n        continuous_axis = getattr(continuous_ax, f\"{axis}axis\")\\n        assert not any(t.gridline.get_visible() for t in nominal_axis.get_major_ticks())\\n        assert any(t.gridline.get_visible() for t in continuous_axis.get_major_ticks())\\n')\npath.write_text(text)\nfor file in ['seaborn/_core/plot.py', 'tests/_core/test_plot.py']:\n    for n, line in enumerate(Path(file).read_text().splitlines(), 1):\n        assert len(line) <= 88, (file, n, len(line))\nPath('/tmp/seaborn-peeky-describe.json').unlink()\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes --tb=short && git diff --check && git status --short",
+  "cd /testbed && grep -n '^class Range' seaborn/_marks/*.py && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/_core/test_plot.py')\ntext = path.read_text().replace('from seaborn._marks.dot import Dot\\n', 'from seaborn._marks.dot import Dot\\nfrom seaborn._marks.line import Range\\n')\nold = '    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\\n    def test_order_with_unused_categories(self, axis):\\n'\nnew = '''    @pytest.mark.parametrize(\"axis\", [\"x\", \"y\"])\n    @pytest.mark.parametrize(\"explicit\", [False, True])\n    def test_coordinate_bounds(self, axis, explicit):\n\n        other = \"y\" if axis == \"x\" else \"x\"\n        p = Plot(**{\n            other: [1, 2], f\"{axis}min\": [\"a\", \"a\"], f\"{axis}max\": [\"b\", \"c\"],\n        }).add(Range(), orient=other)\n        if explicit:\n            p = p.scale(**{axis: Nominal()})\n        ax, = p.plot()._figure.axes\n        expected = (-.5, 2.5) if axis == \"x\" else (2.5, -.5)\n        assert getattr(ax, f\"get_{axis}lim\")() == expected\n        axis_obj = getattr(ax, f\"{axis}axis\")\n        assert not any(t.gridline.get_visible() for t in axis_obj.get_major_ticks())\n\n''' + old\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npytest -q tests/_core/test_plot.py::TestNominalAxes::test_coordinate_bounds --tb=short",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('seaborn/_core/plot.py')\ntext = path.read_text()\nold = '''                view_scale = scale._setup(seed_values, prop, axis=axis_obj)\n                set_scale_obj(view[\"ax\"], axis, view_scale._matplotlib_scale)\n'''\nnew = '''                view_scale = scale._setup(seed_values, prop, axis=axis_obj)\n                view[f\"{axis}scale\"] = view_scale\n                set_scale_obj(view[\"ax\"], axis, view_scale._matplotlib_scale)\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\ntext = text.replace('                nominal = isinstance(self._scales.get(axis_key), Nominal)\\n', '                nominal = isinstance(sub.get(f\"{axis}scale\"), Nominal)\\n')\npath.write_text(text)\nPY\npytest -q tests/_core/test_plot.py tests/_core/test_scales.py tests/_core/test_subplots.py tests/_marks --tb=short && git diff --check"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && MPLBACKEND=Agg python - <<'PY'\nimport seaborn.objects as so\nfor explicit in (False, True):\n    for axis in 'xy':\n        spec = so.Plot(**{axis: ['a', 'b', 'c'], ('y' if axis == 'x' else 'x'): [1, 2, 3]}).add(so.Dot())\n        if explicit:\n            spec = spec.scale(**{axis: so.Nominal()})\n        plot = spec.plot()\n        ax = plot._figure.axes[0]\n        limits = getattr(ax, f'get_{axis}lim')()\n        grid = [line.get_visible() for line in getattr(ax, f'get_{axis}gridlines')()]\n        inverted = getattr(ax, f'{axis}axis_inverted')()\n        print(f'{explicit=}, {axis=}, {limits=}, {grid=}, {inverted=}')\n        expected = (-.5, 2.5) if axis == 'x' else (2.5, -.5)\n        print(f'FAIL: expected {expected}, no grid' if limits != expected or any(grid) else 'PASS')\nPY\nnl -ba seaborn/_core/plot.py | sed -n '1620,1665p'\npeeky describe . --at seaborn/_core/plot.py --json > /tmp/seaborn-peeky-describe.json && python - <<'PY'\nimport json\nwith open('/tmp/seaborn-peeky-describe.json') as f:\n    d=json.load(f)\nprint(str(d)[-14000:])\nPY",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at seaborn/_core/plot.py:1636 --capture \"axis,axis_key,p._limits,self._scales['y'],ax._viewLim._points,ax._ymargin,ax.yaxis._major_tick_kw,ax.yaxis.units._mapping\" --hits all --run-module pytest -- -q tests/_core/test_plot.py::TestScaling::test_explicit_categorical_converter",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "describe": 1,
+  "probe": 1
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 9,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 16,
+ "contaminated": false,
+ "final_message": "Nominal axes incorrectly retained numeric-axis defaults; Peeky stopped in `_finalize_figure` and showed margin `0.05`, `gridOn=True`, and uninverted y bounds. Finalization now applies half-category limits, hides grids, and inverts nominal y axes\u2014including inferred and coordinate-bound scales\u2014while respecting explicit limit ranges. Added regression coverage and release notes.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the nominal-axis behavior, inspect it with Peeky, and then update the scale handling with regression coverage.\n",
+  "Peeky reached `_finalize_figure` and showed a `Nominal` y scale still using a `0.05` margin with `gridOn=True` and uninverted bounds. I\u2019ll add nominal-specific finalization while preserving explicit limits and shared-axis behavior.\n",
+  "A further check found nominal scales inferred from `xmin`/`xmax` or `ymin`/`ymax` still missed these defaults. I\u2019ll use each subplot\u2019s configured axis scale so those coordinate-bound mappings are covered too.\n",
+  "Nominal axes incorrectly retained numeric-axis defaults; Peeky stopped in `_finalize_figure` and showed margin `0.05`, `gridOn=True`, and uninverted y bounds. Finalization now applies half-category limits, hides grids, and inverts nominal y axes\u2014including inferred and coordinate-bound scales\u2014while respecting explicit limit ranges. Added regression coverage and release notes."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating test parameters**\n\nI\u2019m considering the existing test setup where MockMark doesn't provide actual data but states useful information. It could run nominal tests by capturing scale details and imposing limits. I\u2019m thinking that the test structure could be improved with actual data, maybe using a smoke test approach. The nominal tests for capturing metrics like \u2018y\u2019 values appear straightforward, but I need to ensure I\u2019m keeping within allowed methods and proper orientation for the test metrics.",
+  "**Evaluating axis view limits**\n\nI'm considering whether finalizer can set axis view limits with auto=None to match categorical exactly. It seems like this satisfies some conditions but might lose effectiveness after re-autoscaling. Saving those settings probably won't auto-update if they're not stale, so I might need to think about adding layers for restyling or recomputing. The requirement mentions a range of +/- .5 rather than normal margin logic, which could mean introducing an invisible artist for sticky edges.\n\n**Exploring invisible Line2D options**\n\nI'm reviewing how to implement an invisible Line2D, like using `ax.plot([-.5, n-.5], [nan, nan])`, but that doesn't update `dataLim`, causing issues. Instead, I could add an Artist without updating, or use `update_datalim` with specific axis checks. Setting limits with `ax.dataLim.intervalx` might help, yet it seems like a strict limit is needed for `autoscaling`. Perhaps I can test with `ax.axvspan` to create invisible regions but still manage sticky edges effectively. I'll focus on ensuring all combinations work as intended.",
+  "**Implementing scale hook**\n\nI'm thinking we should implement the scale hook Nominal with a finalize function for the axis. I'll start by disabling the grid. Then, I need to check the number of major tick locations on the axis to set the limits accordingly. I'll consider whether the axis margins should be set to zero. Based on the axis name, I'll adjust the limits for the x-axis or the y-axis, keeping in mind that y may need to be inverted with explicit limits.\n\n**Handling explicit limits**\n\nI'm considering how the current numeric limits for y, defined as \"lo\" and \"hi,\" would be uninverted if the finalize step occurs before setting the explicit limits. I think it makes sense to handle limits first, and then let the Nominal._finalize function manage them to skip bounds and just invert based on the default increase. If the y limits are specified, I'll ensure to convert and call the finalizer appropriately while respecting the order for users who want those limits preserved.",
+  "\n\n**Evaluating axis limits**\n\nI need to think about how hook sets default limits using `axis.set_view_interval(lo, hi)`. It also accepts ignore flags, but writing orientation could lose explicit settings. I want to finalize by ensuring the axis margins are set to 0. I should consider whether to replace bounds via `ax.dataLim.interval` and preserve axes manually. It\u2019s crucial to avoid contaminating points swapped on x/y and ensure limits are reversed automatically afterward for efficient scaling.\n\n**Finalizing axis configurations**\n\nI need to ensure finalization occurs before setting explicit limits to establish partial bounds correctly. For y-axis inversion, I should reverse limits if `axis_name == \"y\"` and nominal is set. It\u2019s more efficient to do the default limits before any explicit settings. If I convert values for None cases, I want to make sure I set existing bounds properly. Maybe avoiding abstraction hooks is a good idea, focusing on conditions directly. Ultimately, the scale should manage its own grid feature without needing external API demands. I'll also consider adding tests to cover these changes.",
+  "**Evaluating output cleanup and settings**\n\nI need to clean up a temporary description file for a specific user. I\u2019ll remove the JSON artifact and ensure tools execute without unnecessary cleanup. I wonder if I have the right edge and limits set, especially with categorical settings overriding defaults. Running the final Peeky command on TestNominalAxes to see real limits is necessary, as the user\u2019s request was already addressed. I should ensure the final output captures all relevant capture scales before summarizing the commands.\n\n**Validating tests and formatting**\n\nI need to do a final source validation with `pytest` after formatting the code. It sounds like running tiny tests again may not be needed since the semantics already match. If `flake8` is installed, I should check for linting issues, but maybe I don\u2019t need to run the full tests if they\u2019re flagged. I could run specific tests again, like `pytest tests/_core/test_plot.py` or others, after formatting. It might also be efficient to do a batch formatting and check git diffs for targeted tests.",
+  "**Checking test parameters**\n\nI'm thinking about checking the current tests for `test_move_with_range`, specifically looking at `y ymin` and `y max` values. I notice their scales are set to Continuous, which is good. Since everything seems to be in order, it looks like no fix is needed at this point. Just doing a little check to ensure the parameters align correctly!",
+  "**Clarifying plot finalization details**\n\nI\u2019ve made some adjustments to the nominal axes, keeping the numeric-axis defaults intact. I noticed a stop in the finalization process where it showed a nominal y scale with specific parameters. Now, the finalization applies configured scales to each subplot for half-category limits, grid visibility, and y-axis inversion while maintaining explicit ranges. I've also added regression coverage and release notes for better tracking. Everything seems fixed and clear!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 332.6
+}

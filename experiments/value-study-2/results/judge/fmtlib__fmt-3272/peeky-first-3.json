@@ -1,0 +1,7 @@
+{
+ "judge_id": "a102",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"the other values are one character short because padding counts separators in the fractional digits.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Cmd 7 only ran `peeky probe --help`; cmd 12 probe refused with INVALID_BREAKPOINT error. No values printed."
+}

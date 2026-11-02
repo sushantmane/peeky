@@ -1,0 +1,7 @@
+{
+ "judge_id": "a242",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was integer overflow in the grid's upper-latitude bound, which rejected valid points near 90\u00b0.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

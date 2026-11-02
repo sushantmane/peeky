@@ -1,0 +1,382 @@
+{
+ "bug": "burntsushi__ripgrep-2209",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/burntsushi__ripgrep-2209:peeky-r2",
+ "image_digest": "sha256:4833e369e9f412275df3d4a3072383c7aef24fef5493162d55684148d0ccba12",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-burntsushi__ripgrep-2209-peeky-first-1-987f74",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T12:56:05+00:00",
+ "ended": "2026-11-01T13:01:27+00:00",
+ "wall_seconds": 322.6,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "regression::r2208": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "2097ded40ff54907fe0039ee745310dac424edab8f8eceffed1281ad54b620d1",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGELOG.md",
+  "Cargo.lock",
+  "crates/printer/src/standard.rs",
+  "crates/printer/src/util.rs",
+  "tests/multiline.rs"
+ ],
+ "patch_bytes": 6453,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 1
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 22,
+ "ai_credits": 34.4741,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 875323,
+  "output": 11371,
+  "cache_read": 815518,
+  "cache_write": 59739,
+  "reasoning": 4994
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 30,
+ "tool_calls_by_name": {
+  "bash": 30
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls /testbed; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md; cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && rg -n 'replace|captures' crates/printer/src/{standard.rs,util.rs} && rg -n 'multiline.*replace|replace.*multiline' tests crates/printer && ls -l target/debug/rg",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && printf 'before\\nfoo bar\\nafter text\\n' | target/debug/rg --no-config --color never -NU -r '$last' '(?P<first>before\\n)foo (?P<last>.+)' ; printf 'before\\nfoo bar\\nafter text\\n' | target/debug/rg --no-config --color never -NU '(?P<first>before\\n)foo (?P<last>.+)' ; grep -nE 'replace|captures' crates/printer/src/{standard.rs,util.rs}; grep -nE 'multiline.*replace|replace.*multiline' tests/*.rs crates/printer/src/*.rs",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/lang/rust.md; sed -n '1,190p' /opt/peeky/docs/lang/rust-cookbook.md; cat /opt/peeky/study/rust.json; cd /testbed && ls crates/printer/src && sed -n '1,100p' Cargo.toml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && nl -ba crates/printer/src/util.rs | sed -n '1,162p'; sed -n '680,770p' crates/printer/src/standard.rs; grep -nE 'captures_at|captures_iter|replace_with_captures' crates/{matcher,regex}/src/*.rs; grep -n 'find_iter_at_in_context' crates/printer/src/*.rs; sed -n '3240,3325p' crates/printer/src/standard.rs; ls tests",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,180p' /opt/peeky/docs/lang/rust.md; grep -nA 50 'A Rust workspace' /opt/peeky/docs/lang/rust-cookbook.md; cd /testbed && peeky describe . --config /opt/peeky/study/rust.json --at crates/printer/src/util.rs",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '745,850p' crates/regex/src/matcher.rs; cat crates/regex/src/multi.rs; sed -n '387,489p' crates/printer/src/util.rs; sed -n '790,845p' crates/matcher/src/lib.rs; sed -n '923,955p' crates/matcher/src/lib.rs; sed -n '1,200p' tests/multiline.rs; grep -nE 'edition|name' crates/{printer,regex}/Cargo.toml",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "peeky build --help; peeky describe --help; sed -n '2171,2245p' /opt/peeky/docs/lang/rust-cookbook.md; cd /testbed && grep -n 'matcher\\|search_reader' crates/core/search.rs | head -30; ls -la /opt/peeky/study",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "command -v apply_patch; cd /testbed && peeky probe . --config /opt/peeky/study/rust.json --at crates/printer/src/util.rs:105 --capture range.start,range.end ; peeky probe --help | head -85; sed -n '1,70p' crates/printer/Cargo.toml; sed -n '900,1020p' crates/printer/src/standard.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- /dev/null\n+++ .peeky-replacement.json\n@@ -0,0 +1 @@\n+{\"workspace\":\".\",\"analyse\":[\"ripgrep\",\"grep-printer\"],\"run\":{\"bin\":\"rg\"},\"vendor\":\"vendor\"}\n--- /dev/null\n+++ .peeky-replacement-input\n@@ -0,0 +1,3 @@\n+before\n+foo bar\n+after text\nPATCH\npeeky build . --config .peeky-replacement.json",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'look|replace|crlf|zero|empty' tests/{multiline,regression,feature}.rs | head -100; sed -n '1,100p' tests/macros.rs; head -90 tests/tests.rs; grep -nE 'MAX_LOOK_AHEAD|replace' crates/printer/src/lib.rs; sed -n '1040,1200p' crates/printer/src/standard.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs | grep -E 'breakpoint lines in crates/printer/src/util.rs|names in .*replace_all|mutable:|withheld' && peeky probe . --config .peeky-replacement.json --at crates/printer/src/util.rs:105 --capture range.start,range.end,subject.length,dst.len,matches.len -- --no-config --color never -NU -r '$last' '(?P<first>before\\n)foo (?P<last>.+)' .peeky-replacement-input",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '740,765p' tests/regression.rs; sed -n '810,860p' tests/regression.rs; sed -n '942,959p' tests/regression.rs; sed -n '3205,3250p' crates/printer/src/standard.rs; grep -nE 'line_terminator|only_matching|context' crates/printer/src/standard.rs | tail -25; sed -n '1,100p' crates/printer/README.md; head -65 CHANGELOG.md; printf '%s\\n' '# Compile requirements.txt files from all found or specified requirements.in files (compile).' '# Use -h to include hashes, -u dep1,dep2... to upgrade specific dependencies, and -U to upgrade all.' 'pipc () {  # [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]' '    emulate -L zsh' '    unset REPLY' '    if [[ $1 == --help ]] { zpy $0; return }' '    [[ $ZPY_PROCS ]] || return' '' '    local gen_hashes upgrade upgrade_csv' '    while [[ $1 == -[hUu] ]] {' '        if [[ $1 == -h ]] { gen_hashes=--generate-hashes; shift   }' '        if [[ $1 == -U ]] { upgrade=1;                    shift   }' '        if [[ $1 == -u ]] { upgrade=1; upgrade_csv=$2;    shift 2 }' '    }' '}' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --stat && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs | grep 'Replacer\\|Space' | head -10; grep -nE 'fn .*replace|replacement\\(' crates/printer/src/standard.rs | tail -25; sed -n '70,100p' crates/printer/src/lib.rs; sed -n '730,776p' crates/matcher/src/lib.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- .peeky-replacement.json\n+++ .peeky-replacement.json\n@@ -1 +1 @@\n-{\"workspace\":\".\",\"analyse\":[\"ripgrep\",\"grep-printer\"],\"run\":{\"bin\":\"rg\"},\"vendor\":\"vendor\"}\n+{\"workspace\":\".\",\"analyse\":[\"grep-printer\"],\"run\":{\"package\":\"grep-printer\",\"lib\":true},\"vendor\":\"vendor\"}\n--- crates/printer/src/standard.rs\n+++ crates/printer/src/standard.rs\n@@ -3268,6 +3268,28 @@\n         assert_eq_printed!(expected, got);\n     }\n \n+    #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"before\\nfoo (?P<last>.+)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                b\"before\\nfoo bar\\nafter text\\n\".as_ref(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        let expected = \"bar\\n\";\n+        assert_eq_printed!(expected, got);\n+    }\n+\n     #[test]\n     fn replacement_multi_line_diff_line_term() {\n         let matcher = RegexMatcherBuilder::new()\nPATCH\nRUSTFLAGS=-Awarnings cargo test -p grep-printer replacement_multi_line_bounded -- --exact standard::tests::replacement_multi_line_bounded",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('crates/printer/src/standard.rs')\nold = '    #[test]\\n    fn replacement_multi_line_diff_line_term() {'\nnew = r'''    #[test]\n    fn replacement_multi_line_bounded() {\n        let matcher = RegexMatcher::new(r\"before\\nfoo (?P<last>.+)\").unwrap();\n        let mut printer = StandardBuilder::new()\n            .replacement(Some(b\"$last\".to_vec()))\n            .build(NoColor::new(vec![]));\n        SearcherBuilder::new()\n            .multi_line(true)\n            .build()\n            .search_reader(\n                &matcher,\n                b\"before\\nfoo bar\\nafter text\\n\".as_ref(),\n                printer.sink(&matcher),\n            )\n            .unwrap();\n\n        let got = printer_contents(&mut printer);\n        let expected = \"bar\\n\";\n        assert_eq_printed!(expected, got);\n    }\n\n'''+old\ntext=path.read_text()\nassert text.count(old)==1\npath.write_text(text.replace(old,new))\nPY\nRUSTFLAGS=-Awarnings cargo test -p grep-printer replacement_multi_line_bounded",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath=Path('crates/printer/src/standard.rs')\ntext=path.read_text()\nold='''        let got = printer_contents(&mut printer);\n        let expected = \"bar\\\\n\";\n        assert_eq_printed!(expected, got);\n'''\nassert text.count(old)==1\npath.write_text(text.replace(old,old.replace('\"bar\\\\n\"','\"1:bar\\\\n\"')))\nPY\npeeky build . --config .peeky-replacement.json && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs | grep -E 'breakpoint lines in crates/printer/src/util.rs|names in .*replace_all'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config .peeky-replacement.json --at crates/printer/src/util.rs:104 --capture range.start,range.end,subject.length,dst.len,matches.len -- --exact standard::tests::replacement_multi_line_bounded --nocapture --test-threads=1",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config .peeky-replacement.json --at crates/printer/src/util.rs:99 --capture start,dst,dst.len,caps -- --exact standard::tests::replacement_multi_line_bounded --nocapture --test-threads=1",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('tests/multiline.rs')\ntext = path.read_text()\nassert 'replacement_named_capture' not in text\ntext += r'''\nrgtest!(replacement_named_capture, |dir: Dir, mut cmd: TestCommand| {\n    let mut input = String::from(\n        \"# First documentation line.\\n\\\n         # Second documentation line.\\n\\\n         pipc () {  # usage\\n\",\n    );\n    input.push_str(&\"    body\\n\".repeat(32));\n    dir.create(\"test\", &input);\n    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$usage\",\n        r#\"^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?\"#,\n        \"test\",\n    ]);\n    eqnice!(\" usage\\n\", cmd.stdout());\n});\n\nrgtest!(replacement_boundaries, |dir: Dir, mut cmd: TestCommand| {\n    dir.create(\n        \"test\",\n        \"prefix\\nbefore\\nfoo bar suffix\\nmiddle\\nbefore\\nfoo baz suffix\\nafter\\n\",\n    );\n    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$last\",\n        r\"before\\nfoo (?P<last>\\w+)\",\n        \"test\",\n    ]);\n    eqnice!(\"bar suffix\\nbaz suffix\\n\", cmd.stdout());\n});\n\nrgtest!(replacement_context, |dir: Dir, mut cmd: TestCommand| {\n    dir.create(\"test\", \"prefix\\nbefore\\nfoo bar\\nafter\\n\");\n    cmd.args(&[\n        \"-nU\",\n        \"-C1\",\n        \"-r\",\n        \"$last\",\n        r\"before\\nfoo (?P<last>.+)\",\n        \"test\",\n    ]);\n    eqnice!(\"1-prefix\\n2:bar\\n4-after\\n\", cmd.stdout());\n});\n\nrgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {\n    if !dir.is_pcre2() {\n        return;\n    }\n    dir.create(\"test\", \"prefix\\nbefore\\nfoo bar\\nafter\\n\");\n    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$last\",\n        r\"(?<=prefix\\n)before\\nfoo (?P<last>\\w+)(?=\\nafter)\",\n        \"test\",\n    ]);\n    eqnice!(\"bar\\n\", cmd.stdout());\n});\n'''\npath.write_text(text)\nPY\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('crates/printer/src/util.rs')\ntext = path.read_text()\nold = '''    /// Executes a replacement on the given subject string by replacing all\n    /// matches with the given replacement. To access the result of the\n    /// replacement, use the `replacement` method.\n'''\nnew = '''    /// Executes a replacement on matches in the given range of the subject.\n    /// Bytes outside the range are used only for matching context, and are not\n    /// included in the result. To access the result of the replacement, use\n    /// the `replacement` method.\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\nold = '''            matcher\n                .replace_with_captures_at(\n                    subject,\n                    range.start,\n                    caps,\n                    dst,\n                    |caps, dst| {\n                        let start = dst.len();\n                        caps.interpolate(\n                            |name| matcher.capture_index(name),\n                            subject,\n                            replacement,\n                            dst,\n                        );\n                        let end = dst.len();\n                        matches.push(Match::new(start, end));\n                        true\n                    },\n                )\n                .map_err(io::Error::error_message)?;\n'''\nnew = '''            let mut last_match = range.start;\n            matcher\n                .captures_iter_at(subject, range.start, caps, |caps| {\n                    let m = caps.get(0).unwrap();\n                    if is_multi_line && m.start() >= range.end {\n                        return false;\n                    }\n                    dst.extend_from_slice(&subject[last_match..m.start()]);\n                    last_match = m.end();\n                    let start = dst.len();\n                    caps.interpolate(\n                        |name| matcher.capture_index(name),\n                        subject,\n                        replacement,\n                        dst,\n                    );\n                    let end = dst.len();\n                    matches.push(Match::new(start, end));\n                    true\n                })\n                .map_err(io::Error::error_message)?;\n            let end = range.end.min(subject.len());\n            if last_match < end {\n                dst.extend_from_slice(&subject[last_match..end]);\n            }\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('CHANGELOG.md')\ntext = path.read_text()\nold = '''  Disable mmap searching in all non-64-bit environments.\n'''\nnew = old + '''* Fix multiline replacements leaking content beyond the matching lines.\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test -p grep-printer && RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- repla",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rustfmt --check crates/printer/src/util.rs crates/printer/src/standard.rs tests/multiline.rs && git diff --check && git diff --stat && git diff -- crates/printer/src/util.rs tests/multiline.rs CHANGELOG.md",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && git diff --check && git diff -- crates/printer/src/util.rs crates/printer/src/standard.rs tests/multiline.rs CHANGELOG.md && rustup toolchain list && ls -la .peeky-replacement* crates/printer/src/standard.rs.*",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- repla && printf 'before\\nfoo bar\\nafter text\\n' | target/debug/rg --no-config --color never -NU -r '$last' '(?P<first>before\\n)foo (?P<last>.+)'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat rustfmt.toml && sed -n '265,317p' tests/feature.rs; grep -nA 8 'cmd.args(&\\[' tests/multiline.rs | head -45; git diff -- Cargo.lock; printf '%s\\n' '# Compile requirements.txt files from all found or specified requirements.in files (compile).' '# Use -h to include hashes, -u dep1,dep2... to upgrade specific dependencies, and -U to upgrade all.' 'pipc () {  # [-h] [-U|-u <pkgspec>[,<pkgspec>...]] [<reqs-in>...] [-- <pip-compile-arg>...]' '    emulate -L zsh' '    unset REPLY' '    if [[ $1 == --help ]] { zpy $0; return }' '    [[ $ZPY_PROCS ]] || return' '' '    local gen_hashes upgrade upgrade_csv' '    while [[ $1 == -[hUu] ]] {' '        if [[ $1 == -h ]] { gen_hashes=--generate-hashes; shift   }' '        if [[ $1 == -U ]] { upgrade=1;                    shift   }' '        if [[ $1 == -u ]] { upgrade=1; upgrade_csv=$2;    shift 2 }' '    }' '}' | target/debug/rg --no-config --color never -NU -r '$usage' '^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?' && rm -- .peeky-replacement.json .peeky-replacement-input && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('Cargo.lock')\ntext = path.read_text()\nold = '# It is not intended for manual editing.\\nversion = 4\\n\\n[[package]]'\nnew = '# It is not intended for manual editing.\\nversion = 4\\n[[package]]'\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('tests/multiline.rs')\ntext = path.read_text()\nold = r'''    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$last\",\n        r\"before\\nfoo (?P<last>\\w+)\",\n        \"test\",\n    ]);'''\nnew = r'''    cmd.args(&[\"-NU\", \"-r\", \"$last\", r\"before\\nfoo (?P<last>\\w+)\", \"test\"]);'''\nassert text.count(old) == 1\nassert len(new) <= 79\npath.write_text(text.replace(old, new))\nPY\n git diff --check && git diff --stat && git diff -- Cargo.lock && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p0 <<'PATCH'\n--- .peeky-replacement.json\n+++ .peeky-replacement.json\n@@ -1 +1 @@\n-{\"workspace\":\".\",\"analyse\":[\"ripgrep\",\"grep-printer\"],\"run\":{\"bin\":\"rg\"},\"vendor\":\"vendor\"}\n+{\"workspace\":\".\",\"analyse\":[\"grep-printer\"],\"run\":{\"package\":\"grep-printer\",\"lib\":true},\"vendor\":\"vendor\"}\n--- crates/printer/src/standard.rs\n+++ crates/printer/src/standard.rs\n@@ -3268,6 +3268,28 @@\n         assert_eq_printed!(expected, got);\n     }\n \n+    #[test]\n+    fn replacement_multi_line_bounded() {\n+        let matcher = RegexMatcher::new(r\"before\\nfoo (?P<last>.+)\").unwrap();\n+        let mut printer = StandardBuilder::new()\n+            .replacement(Some(b\"$last\".to_vec()))\n+            .build(NoColor::new(vec![]));\n+        SearcherBuilder::new()\n+            .multi_line(true)\n+            .build()\n+            .search_reader(\n+                &matcher,\n+                b\"before\\nfoo bar\\nafter text\\n\".as_ref(),\n+                printer.sink(&matcher),\n+            )\n+            .unwrap();\n+\n+        let got = printer_contents(&mut printer);\n+        let expected = \"bar\\n\";\n+        assert_eq_printed!(expected, got);\n+    }\n+\n     #[test]\n     fn replacement_multi_line_diff_line_term() {\n         let matcher = RegexMatcherBuilder::new()\nPATCH\nRUSTFLAGS=-Awarnings cargo test -p grep-printer replacement_multi_line_bounded -- --exact standard::tests::replacement_multi_line_bounded",
+  "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('crates/printer/src/standard.rs')\nold = '    #[test]\\n    fn replacement_multi_line_diff_line_term() {'\nnew = r'''    #[test]\n    fn replacement_multi_line_bounded() {\n        let matcher = RegexMatcher::new(r\"before\\nfoo (?P<last>.+)\").unwrap();\n        let mut printer = StandardBuilder::new()\n            .replacement(Some(b\"$last\".to_vec()))\n            .build(NoColor::new(vec![]));\n        SearcherBuilder::new()\n            .multi_line(true)\n            .build()\n            .search_reader(\n                &matcher,\n                b\"before\\nfoo bar\\nafter text\\n\".as_ref(),\n                printer.sink(&matcher),\n            )\n            .unwrap();\n\n        let got = printer_contents(&mut printer);\n        let expected = \"bar\\n\";\n        assert_eq_printed!(expected, got);\n    }\n\n'''+old\ntext=path.read_text()\nassert text.count(old)==1\npath.write_text(text.replace(old,new))\nPY\nRUSTFLAGS=-Awarnings cargo test -p grep-printer replacement_multi_line_bounded",
+  "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('tests/multiline.rs')\ntext = path.read_text()\nassert 'replacement_named_capture' not in text\ntext += r'''\nrgtest!(replacement_named_capture, |dir: Dir, mut cmd: TestCommand| {\n    let mut input = String::from(\n        \"# First documentation line.\\n\\\n         # Second documentation line.\\n\\\n         pipc () {  # usage\\n\",\n    );\n    input.push_str(&\"    body\\n\".repeat(32));\n    dir.create(\"test\", &input);\n    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$usage\",\n        r#\"^(?P<predoc>\\n?(# .*\\n)*)(alias (?P<aname>pipc)=\"[^\"]+\"|(?P<fname>pipc) \\(\\) \\{)(  #(?P<usage> .+))?\"#,\n        \"test\",\n    ]);\n    eqnice!(\" usage\\n\", cmd.stdout());\n});\n\nrgtest!(replacement_boundaries, |dir: Dir, mut cmd: TestCommand| {\n    dir.create(\n        \"test\",\n        \"prefix\\nbefore\\nfoo bar suffix\\nmiddle\\nbefore\\nfoo baz suffix\\nafter\\n\",\n    );\n    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$last\",\n        r\"before\\nfoo (?P<last>\\w+)\",\n        \"test\",\n    ]);\n    eqnice!(\"bar suffix\\nbaz suffix\\n\", cmd.stdout());\n});\n\nrgtest!(replacement_context, |dir: Dir, mut cmd: TestCommand| {\n    dir.create(\"test\", \"prefix\\nbefore\\nfoo bar\\nafter\\n\");\n    cmd.args(&[\n        \"-nU\",\n        \"-C1\",\n        \"-r\",\n        \"$last\",\n        r\"before\\nfoo (?P<last>.+)\",\n        \"test\",\n    ]);\n    eqnice!(\"1-prefix\\n2:bar\\n4-after\\n\", cmd.stdout());\n});\n\nrgtest!(replacement_look_around, |dir: Dir, mut cmd: TestCommand| {\n    if !dir.is_pcre2() {\n        return;\n    }\n    dir.create(\"test\", \"prefix\\nbefore\\nfoo bar\\nafter\\n\");\n    cmd.args(&[\n        \"-NU\",\n        \"-r\",\n        \"$last\",\n        r\"(?<=prefix\\n)before\\nfoo (?P<last>\\w+)(?=\\nafter)\",\n        \"test\",\n    ]);\n    eqnice!(\"bar\\n\", cmd.stdout());\n});\n'''\npath.write_text(text)\nPY\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+  "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath = Path('crates/printer/src/util.rs')\ntext = path.read_text()\nold = '''    /// Executes a replacement on the given subject string by replacing all\n    /// matches with the given replacement. To access the result of the\n    /// replacement, use the `replacement` method.\n'''\nnew = '''    /// Executes a replacement on matches in the given range of the subject.\n    /// Bytes outside the range are used only for matching context, and are not\n    /// included in the result. To access the result of the replacement, use\n    /// the `replacement` method.\n'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\nold = '''            matcher\n                .replace_with_captures_at(\n                    subject,\n                    range.start,\n                    caps,\n                    dst,\n                    |caps, dst| {\n                        let start = dst.len();\n                        caps.interpolate(\n                            |name| matcher.capture_index(name),\n                            subject,\n                            replacement,\n                            dst,\n                        );\n                        let end = dst.len();\n                        matches.push(Match::new(start, end));\n                        true\n                    },\n                )\n                .map_err(io::Error::error_message)?;\n'''\nnew = '''            let mut last_match = range.start;\n            matcher\n                .captures_iter_at(subject, range.start, caps, |caps| {\n                    let m = caps.get(0).unwrap();\n                    if is_multi_line && m.start() >= range.end {\n                        return false;\n                    }\n                    dst.extend_from_slice(&subject[last_match..m.start()]);\n                    last_match = m.end();\n                    let start = dst.len();\n                    caps.interpolate(\n                        |name| matcher.capture_index(name),\n                        subject,\n                        replacement,\n                        dst,\n                    );\n                    let end = dst.len();\n                    matches.push(Match::new(start, end));\n                    true\n                })\n                .map_err(io::Error::error_message)?;\n            let end = range.end.min(subject.len());\n            if last_match < end {\n                dst.extend_from_slice(&subject[last_match..end]);\n            }\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('CHANGELOG.md')\ntext = path.read_text()\nold = '''  Disable mmap searching in all non-64-bit environments.\n'''\nnew = old + '''* Fix multiline replacements leaking content beyond the matching lines.\n'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\nRUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- multiline::replacement",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test -p grep-printer && RUSTFLAGS=-Awarnings cargo test --package ripgrep --test integration -- repla",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- multiline::",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package ripgrep --features pcre2 --test integration -- repla && printf 'before\\nfoo bar\\nafter text\\n' | target/debug/rg --no-config --color never -NU -r '$last' '(?P<first>before\\n)foo (?P<last>.+)'"
+ ],
+ "peeky_commands": [
+  {
+   "command": "sed -n '1,180p' /opt/peeky/docs/lang/rust.md; grep -nA 50 'A Rust workspace' /opt/peeky/docs/lang/rust-cookbook.md; cd /testbed && peeky describe . --config /opt/peeky/study/rust.json --at crates/printer/src/util.rs",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "peeky build --help; peeky describe --help; sed -n '2171,2245p' /opt/peeky/docs/lang/rust-cookbook.md; cd /testbed && grep -n 'matcher\\|search_reader' crates/core/search.rs | head -30; ls -la /opt/peeky/study",
+   "subcommands": [
+    "build",
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "command -v apply_patch; cd /testbed && peeky probe . --config /opt/peeky/study/rust.json --at crates/printer/src/util.rs:105 --capture range.start,range.end ; peeky probe --help | head -85; sed -n '1,70p' crates/printer/Cargo.toml; sed -n '900,1020p' crates/printer/src/standard.rs",
+   "subcommands": [
+    "probe",
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n--- /dev/null\n+++ .peeky-replacement.json\n@@ -0,0 +1 @@\n+{\"workspace\":\".\",\"analyse\":[\"ripgrep\",\"grep-printer\"],\"run\":{\"bin\":\"rg\"},\"vendor\":\"vendor\"}\n--- /dev/null\n+++ .peeky-replacement-input\n@@ -0,0 +1,3 @@\n+before\n+foo bar\n+after text\nPATCH\npeeky build . --config .peeky-replacement.json",
+   "subcommands": [
+    "build"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs | grep -E 'breakpoint lines in crates/printer/src/util.rs|names in .*replace_all|mutable:|withheld' && peeky probe . --config .peeky-replacement.json --at crates/printer/src/util.rs:105 --capture range.start,range.end,subject.length,dst.len,matches.len -- --no-config --color never -NU -r '$last' '(?P<first>before\\n)foo (?P<last>.+)' .peeky-replacement-input",
+   "subcommands": [
+    "describe",
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && git diff --stat && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs | grep 'Replacer\\|Space' | head -10; grep -nE 'fn .*replace|replacement\\(' crates/printer/src/standard.rs | tail -25; sed -n '70,100p' crates/printer/src/lib.rs; sed -n '730,776p' crates/matcher/src/lib.rs",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nfrom pathlib import Path\npath=Path('crates/printer/src/standard.rs')\ntext=path.read_text()\nold='''        let got = printer_contents(&mut printer);\n        let expected = \"bar\\\\n\";\n        assert_eq_printed!(expected, got);\n'''\nassert text.count(old)==1\npath.write_text(text.replace(old,old.replace('\"bar\\\\n\"','\"1:bar\\\\n\"')))\nPY\npeeky build . --config .peeky-replacement.json && peeky describe . --config .peeky-replacement.json --at crates/printer/src/util.rs | grep -E 'breakpoint lines in crates/printer/src/util.rs|names in .*replace_all'",
+   "subcommands": [
+    "build",
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config .peeky-replacement.json --at crates/printer/src/util.rs:104 --capture range.start,range.end,subject.length,dst.len,matches.len -- --exact standard::tests::replacement_multi_line_bounded --nocapture --test-threads=1",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --config .peeky-replacement.json --at crates/printer/src/util.rs:99 --capture start,dst,dst.len,caps -- --exact standard::tests::replacement_multi_line_bounded --nocapture --test-threads=1",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "describe": 6,
+  "build": 3,
+  "probe": 5
+ },
+ "peeky_doc_reads": 5,
+ "peeky_mentions_in_commands": 43,
+ "peeky_withheld_markers": 10,
+ "peeky_withheld_by_marker": {
+  "[unproven]": 3,
+  "[stale]": 3,
+  "withheld": 2,
+  "not settable": 2
+ },
+ "peeky_values_printed": 18,
+ "contaminated": false,
+ "final_message": "The bug was leaked look-ahead text, not an expanded capture: Peeky\u2019s probe at `util.rs:99` showed `dst.len = 3` for `bar` before the extra text appeared. Replacements now stay within the matching lines while retaining context for look-around. Added regressions pass, along with printer and targeted integration tests for both regex engines.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the replacement mismatch, then use Peeky to inspect the capture offsets before changing the source.\n",
+  "The small reproduction shows replacement output leaking the following line. Peeky\u2019s supplied config refused the helper with \u201cPeeky stops only in the analysed packages\u2019 files (ripgrep).\u201d I\u2019ll add `grep-printer` to the debugging scope to inspect the replacement buffer.\n",
+  "Peeky also refused the binary\u2019s helper because it is \u201ca generic or inlined function whose code only the crates that use it compile.\u201d I\u2019ll run a focused printer test under Peeky so that code is compiled inside the analysed crate. The source points to the issue: replacement copies the entire look-ahead buffer, not just the matching lines.\n",
+  "Peeky stopped after capture interpolation and showed `dst.len = 3` for `bar`, while the test output included `after text`. The capture is correct; later copying leaks the look-ahead text. I\u2019ll bound replacement to the reported lines while keeping surrounding bytes available for look-around.\n",
+  "The bug was leaked look-ahead text, not an expanded capture: Peeky\u2019s probe at `util.rs:99` showed `dst.len = 3` for `bar` before the extra text appeared. Replacements now stay within the matching lines while retaining context for look-around. Added regressions pass, along with printer and targeted integration tests for both regex engines."
+ ],
+ "assistant_reasoning": [
+  "**Exploring patch creation**\n\nI'm noticing there's no apply_patch command installed, so I think I'll have to rely on creating a patch using a Python file instead. It seems like using the bash tool \"patch\" would be the simplest option here. I\u2019m wondering if I should use a define helper command to respect edits, and think command patch -p1 could help in creating my .peeky-bug.json and .peeky-bug-input files in the current working directory. I'll also want the exact report via input to ensure I cover all bases.",
+  "**Testing print functionality**\n\nI\u2019m thinking about how to test a single simple matching spanning explicit newlines, whether it's one or more. For this, I'll focus on the printer test as it seems straightforward. I'll need to reproduce the first debug build and run a library test configuration. If the user encounters a file failure, it\u2019s essential to reference the last failure and my approach when targeting the test tool call. It\u2019s all about getting this right!",
+  "**Considering patch implementation**\n\nHmm, it looks like the patch count should be 29 instead of 28. I want to make sure I'm avoiding any malformed patches by implementing the local apply_patch script. The instructions suggest using apply_patch only when it's available, and I'll use a Python helper for this. I plan to replace the exact test anchor uniquely, making sure the configuration has been test-run satisfactorily. I\u2019ll proceed with baseline tests and parallel independent builds to ensure safety.",
+  "**Refining search tests**\n\nI\u2019m working with the SearcherBuilder and noticing that setting line_num to true is somewhat surprising, as it seems unnecessary but also expected. I need the expectation to match \"1:bar\\n\" when line_num is true, which will follow the tests as expected. When I debug the tests, values show up to proceed, and I can describe what grep is doing with names and lines. I\u2019ll aim for clearer expectations moving forward!",
+  "**Considering printer tests**\n\nI'm looking at the printer settings for testing. I need to run `cargo test` to check existing tests and integration with `repla` while ensuring all new replacements are covered, without messing with multiline asserts. I need to use PCRE2 for proper filtering in line modes. Both integration and pcre commands require locks, but everything should run fine in parallel. I'll also ensure that there are no modifications to `Cargo.lock`, except for the necessary baseline. I\u2019ll check features to ensure they\u2019re enabled."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 323.9
+}

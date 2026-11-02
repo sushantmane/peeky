@@ -1,0 +1,103 @@
+{
+ "bug": "tokio-rs__tokio-4867",
+ "language": "rust",
+ "category": "C",
+ "image": "peeky-study/tokio-rs__tokio-4867:peeky-r2",
+ "image_id": "sha256:e404a086267d8e793080b97ca665c21952070da653551885e8618f1af753b7b2",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:03:49+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed call in Sender::send (first code hunk)",
+   "at": "tokio/src/sync/broadcast.rs:540",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:540 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 2,
+     "seconds": 22.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 540 has no code to stop at in `tokio`'s build: it is in `tokio::sync::broadcast::<impl at tokio/src/sync/broadcast.rs:488:1: 488:18>::send`, a generic or inlined function whose code only the crates that use it compile, for their own types, and Peeky reads none of theirs. Stop where `tokio`'s own code calls it, or choose a line from `peeky describe`",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the removed closed check in Receiver::recv_ref (last code hunk)",
+   "at": "tokio/src/sync/broadcast.rs:885",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:885 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 2,
+     "seconds": 16.5
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 885 has no code to stop at in `tokio`'s build: it is in `tokio::sync::broadcast::<impl at tokio/src/sync/broadcast.rs:708:1: 708:20>::recv_ref`, a generic or inlined function whose code only the crates that use it compile, for their own types, and Peeky reads none of theirs. Stop where `tokio`'s own code calls it, or choose a line from `peeky describe`",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/sync_broadcast.rs:527",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/sync_broadcast.rs:527 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 0,
+     "seconds": 15.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 3.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio/tests/sync_broadcast.rs:527",
+    "function": "sync_broadcast::resubscribe_to_closed_channel::h5c5e0238c784e58e"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "rx",
+      "value": "tokio::sync::broadcast::Receiver<unsigned int> @ 0xfffff7dbde60"
+     },
+     {
+      "name": "rx_resub",
+      "value": "tokio::sync::broadcast::Receiver<unsigned int> @ 0xfffff7dbde88"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "tx",
+      "value": "tokio::sync::broadcast::Sender<unsigned int> @ 0xfffff7dbde58",
+      "stale": "True"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:04:48+00:00"
+}

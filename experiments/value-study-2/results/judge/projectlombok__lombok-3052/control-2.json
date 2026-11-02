@@ -1,0 +1,7 @@
+{
+ "judge_id": "a067",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The generated default method resets every initializer node to the same source position. Java 11\u2019s javac uses those positions as type-cache keys\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

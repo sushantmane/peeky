@@ -1,0 +1,7 @@
+{
+ "judge_id": "a049",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"default parsing stops at the outer range, so nested characters never get debug quoting.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

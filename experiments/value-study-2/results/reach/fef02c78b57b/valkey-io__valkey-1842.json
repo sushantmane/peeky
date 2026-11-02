@@ -1,0 +1,122 @@
+{
+ "bug": "valkey-io__valkey-1842",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-1842:peeky-r2",
+ "image_id": "sha256:e2a5f9e59c6cbf603596bf561a45c90c1d24ef1e16ce3d49ccc7a88884606777",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:07:06+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the inserted check in ACLLoadFromFile's loop over clients (the test's ACL LOAD on a replica)",
+   "at": "src/acl.c:2380",
+   "commands": [
+    {
+     "command": "peeky session start . --binary src/valkey-server --at src/acl.c:2380 --name reach --timeout 5 --json -- --port 7001 --save '' --appendonly no --aclfile /root/reach/users.acl",
+     "exit": 0,
+     "seconds": 21.0
+    },
+    {
+     "command": "peeky session wait --name reach --timeout 119 --json",
+     "exit": 0,
+     "seconds": 0.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.9
+    }
+   ],
+   "trigger": {
+    "exit": 0,
+    "seconds": 24.1,
+    "output": "OK\n"
+   },
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/acl.c:2380",
+    "function": "ACLLoadFromFile"
+   },
+   "moved": false,
+   "values": {
+    "shown": 10,
+    "withheld": 6,
+    "sample": [
+     {
+      "name": "fp",
+      "value": "0x0000aaaaab045550"
+     },
+     {
+      "name": "buf",
+      "value": "\"user default on nopass ~* &* +@all\\n\" (then a NUL and 988 bytes not shown)"
+     },
+     {
+      "name": "totlines",
+      "value": "2"
+     },
+     {
+      "name": "lines",
+      "value": "0x0000fffff78316e0"
+     },
+     {
+      "name": "old_users",
+      "value": "0x0000fffff7878140"
+     },
+     {
+      "name": "new_default",
+      "value": "0x0000fffff78316b8"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "filename",
+      "value": "0x0000fffff787b0d0 \"/root/reach/users.acl\"",
+      "note": "Peeky can't show that `filename` points at a live object, so its text may be left over: its address is in no local, member or element that Peeky could place in the frames it lists, nor in the program's static memory; if it is a heap block, Peeky can't tell whether that block is still allocated, so c"
+     },
+     {
+      "name": "acls",
+      "value": "0x0000fffff7841783 \"\\xf7\\xff\\xff\"",
+      "note": "Peeky can't show that `acls` points at a live object, so its text may be left over: its address is in no local, member or element that Peeky could place in the frames it lists, nor in the program's static memory; if it is a heap block, Peeky can't tell whether that block is still allocated, so check"
+     },
+     {
+      "name": "errors",
+      "value": "0x0000fffff7837003 \"\"",
+      "note": "Peeky can't show that `errors` points at a live object, so its text may be left over: its address is in no local, member or element that Peeky could place in the frames it lists, nor in the program's static memory; if it is a heap block, Peeky can't tell whether that block is still allocated, so che"
+     },
+     {
+      "name": "original",
+      "value": "0x636e79736572206c",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared on line 2380, at whose first instruction this stop is, and any call above the stop may return twice (f_call is code no unit's debug information covers (assembly built without -g?), and 581 more; a config's \"returns_twice\" can name the "
+     },
+     {
+      "name": "channels",
+      "value": "0xffffff80ffffffd0",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 2381, below this stop, and any call above the stop may return twice (f_call is code no unit's debug information covers (assembly built without -g?), and 581 more; a config's \"returns_twice\" can name the functions that do), so P"
+     },
+     {
+      "name": "new_user",
+      "value": "0x0000fffffffff380",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 2382, below this stop, and any call above the stop may return twice (f_call is code no unit's debug information covers (assembly built without -g?), and 581 more; a config's \"returns_twice\" can name the functions that do), so P"
+     }
+    ]
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is Tcl (tests/unit/acl.tcl), which Peeky doesn't debug"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:07:53+00:00"
+}

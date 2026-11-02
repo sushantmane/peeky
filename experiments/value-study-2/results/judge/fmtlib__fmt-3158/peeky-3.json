@@ -1,0 +1,7 @@
+{
+ "judge_id": "a260",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"String-view detection incorrectly treated ranges as strings, nested formatters skipped debug initialization, and temporary elements couldn't bind to mutable range formatters.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

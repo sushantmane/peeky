@@ -1,0 +1,7 @@
+{
+ "judge_id": "a234",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was using `ScalarFormatter` labels without displaying their shared multiplier or offset.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

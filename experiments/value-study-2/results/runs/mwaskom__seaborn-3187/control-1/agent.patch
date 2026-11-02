@@ -1,0 +1,150 @@
+diff --git a/doc/whatsnew/v0.12.2.rst b/doc/whatsnew/v0.12.2.rst
+index 8eeb8f19..782567a0 100644
+--- a/doc/whatsnew/v0.12.2.rst
++++ b/doc/whatsnew/v0.12.2.rst
+@@ -11,3 +11,5 @@ v0.12.2 (Unreleased)
+ - |Fix| Fixed a bug in :func:`histplot` with `kde=True` and `log_scale=True` where the curve was not scaled properly (:pr:`3173`).
+ 
+ - |Fix| Fixed a bug in :func:`relplot` where inner axis labels would be shown when axis sharing was disabled (:pr:`3180`).
++
++- |Fix| Fixed numeric legend labels in the objects interface and relational plots that omitted a shared scientific multiplier or additive offset for large or small values.
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index 55874bf2..52dac4fb 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -378,7 +378,13 @@ class ContinuousBase(Scale):
+             axis.set_view_interval(vmin, vmax)
+             locs = axis.major.locator()
+             locs = locs[(vmin <= locs) & (locs <= vmax)]
+-            labels = axis.major.formatter.format_ticks(locs)
++            formatter = axis.major.formatter
++            if isinstance(formatter, ScalarFormatter):
++                # Unlike axes, legends cannot display a shared offset or multiplier.
++                formatter = copy(formatter)
++                formatter.set_useOffset(False)
++                formatter.set_scientific(False)
++            labels = formatter.format_ticks(locs)
+             new._legend = list(locs), list(labels)
+ 
+         return new
+diff --git a/seaborn/utils.py b/seaborn/utils.py
+index 2407853c..94db60b0 100644
+--- a/seaborn/utils.py
++++ b/seaborn/utils.py
+@@ -698,7 +698,8 @@ def locator_to_legend_entries(locator, limits, dtype):
+     if isinstance(locator, mpl.ticker.LogLocator):
+         formatter = mpl.ticker.LogFormatter()
+     else:
+-        formatter = mpl.ticker.ScalarFormatter()
++        formatter = mpl.ticker.ScalarFormatter(useOffset=False)
++        formatter.set_scientific(False)
+     formatter.axis = dummy_axis()
+ 
+     # TODO: The following two lines should be replaced
+diff --git a/tests/_core/test_scales.py b/tests/_core/test_scales.py
+index c4b39f5d..91c02457 100644
+--- a/tests/_core/test_scales.py
++++ b/tests/_core/test_scales.py
+@@ -5,7 +5,7 @@ import pandas as pd
+ import matplotlib as mpl
+ 
+ import pytest
+-from numpy.testing import assert_array_equal
++from numpy.testing import assert_array_equal, assert_allclose
+ from pandas.testing import assert_series_equal
+ 
+ from seaborn._core.scales import (
+@@ -238,6 +238,51 @@ class TestContinuous:
+         assert np.allclose(np.diff(np.log10(pos_ticks[1:])), 1)
+         assert pos_ticks[0] == 0
+ 
++    @pytest.mark.parametrize("values", [
++        [2e6, 4e6, 6e6],
++        [2e-6, 4e-6, 6e-6],
++        [1e6, 1e6 + 2, 1e6 + 4],
++        [-1e6 - 4, -1e6 - 2, -1e6],
++    ])
++    @pytest.mark.parametrize("use_offset", [True, False])
++    def test_legend_labels_full_values(self, values, use_offset):
++
++        with mpl.rc_context({
++            "axes.formatter.useoffset": use_offset,
++            "axes.formatter.offset_threshold": 2,
++            "axes.formatter.limits": (-2, 2),
++            "axes.formatter.use_mathtext": False,
++        }):
++            s = Continuous()._setup(pd.Series(values), IntervalProperty())
++
++        locs, labels = s._legend
++        assert labels
++        numbers = [float(label.replace("\u2212", "-")) for label in labels]
++        assert_allclose(numbers, locs, rtol=1e-12, atol=0)
++
++    def test_legend_scalar_formatter_preserved(self):
++
++        formatter = mpl.ticker.ScalarFormatter(useOffset=1e6, useMathText=False)
++        values = pd.Series([1e6, 1e6 + 2, 1e6 + 4])
++        s = Continuous().label(formatter)._setup(values, IntervalProperty())
++
++        locs, labels = s._legend
++        assert_allclose(np.asarray(labels, float), locs, rtol=1e-12, atol=0)
++        assert formatter.offset == 1e6
++        assert formatter.format_ticks(locs) == ["0", "1", "2", "3", "4"]
++        assert formatter.get_offset() == "+1e6"
++
++    def test_legend_custom_formatter(self):
++
++        values = pd.Series([2e6, 4e6, 6e6])
++        s = (
++            Continuous().label(like="{x:.2e}")
++            ._setup(values, IntervalProperty())
++        )
++
++        locs, labels = s._legend
++        assert labels == [f"{value:.2e}" for value in locs]
++
+     def test_label_formatter(self, x):
+ 
+         fmt = mpl.ticker.FormatStrFormatter("%.3f")
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 02839a02..e8f997bb 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -13,6 +13,7 @@ from cycler import cycler
+ import pytest
+ from numpy.testing import (
+     assert_array_equal,
++    assert_allclose,
+ )
+ from pandas.testing import (
+     assert_series_equal,
+@@ -335,6 +336,29 @@ def test_locator_to_legend_entries():
+         assert re.match(f"1e.0{exp}", str_levels[i])
+ 
+ 
++@pytest.mark.parametrize("limits", [
++    (2e6, 6e6),
++    (2e-6, 6e-6),
++    (1e6, 1e6 + 4),
++    (-1e6 - 4, -1e6),
++])
++@pytest.mark.parametrize("use_offset", [True, False])
++def test_locator_to_legend_entries_full_values(limits, use_offset):
++
++    locator = mpl.ticker.MaxNLocator(nbins=3)
++    with mpl.rc_context({
++        "axes.formatter.useoffset": use_offset,
++        "axes.formatter.offset_threshold": 2,
++        "axes.formatter.limits": (-2, 2),
++        "axes.formatter.use_mathtext": False,
++    }):
++        levels, labels = utils.locator_to_legend_entries(locator, limits, float)
++
++    assert labels
++    numbers = [float(label.replace("\u2212", "-")) for label in labels]
++    assert_allclose(numbers, levels, rtol=1e-12, atol=0)
++
++
+ def test_move_legend_matplotlib_objects():
+ 
+     fig, ax = plt.subplots()

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a005",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: Removing the last entry drops the timer without waking the saved poller",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no values: cmd 9 only read docs/`peeky build --help`; cmd 11 failed [INVALID_REQUEST] (tokio-util not analysed); cmd 12 built, then probe failed [INVALID_BREAKPOINT] at delay_queue.rs:773 (generic/inlined fn). No probe rows to check."
+}

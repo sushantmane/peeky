@@ -1,0 +1,7 @@
+{
+ "judge_id": "a139",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed `ACL LOAD` dereferencing the replica\u2019s primary connection\u2019s intentionally null ACL user.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Both PEEKY commands (cmd 7: `peeky probe --help`/`session start --help`; cmd 13: `peeky --help`) printed only help text; no program values from Peeky to check."
+}

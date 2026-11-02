@@ -1,0 +1,7 @@
+{
+ "judge_id": "a224",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed proxy URL normalization dropping credentials: urllib3's `netloc` excludes authentication\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 15 at utils.py:982 shows auth 'user:pass' but netloc 'example.com', scheme 'http', path '/path'; consistent with cmd 9 (normalized proxy URL loses credentials) and cmd 11 (proxy gets no Proxy-Authorization) and the passing test. Cmd 23 after the fix shows netloc 'user:pass@localhost:...', matching the added code in cmd 21's diff (netloc = auth@netloc) and the passing test. No contradiction."
+}

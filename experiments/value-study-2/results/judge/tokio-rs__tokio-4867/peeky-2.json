@@ -1,0 +1,7 @@
+{
+ "judge_id": "a209",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: Resubscription starts after the closure marker, so the new receiver sees an empty queue rather than closure.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

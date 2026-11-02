@@ -1,0 +1,7 @@
+{
+ "judge_id": "a062",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed the NPE: disposal before inner `onSubscribe` leaves the queue uninitialized, but `scan` still emits its seed.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 21 probe at ObservableSwitchMap.java:354 (`queue.offer(t)`, shown in cmd 18 grep) showed this.queue = null, this.index = 1, this.parent.unique = 1, parent.cancelled = true. Consistent with the NullPointerException at ObservableSwitchMap.java:354 in SwitchMapInnerObserver.onNext (cmd 20), with index == parent.unique being required to reach line 354, and with the null-queue guard fix making ObservableSwitchTest pass (cmd 26: 58 tests, 0 failures). Cmds 10/11 were help text, 14 an error, 16 NO_STOP. Nothing contradicts."
+}

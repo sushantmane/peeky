@@ -1,0 +1,37 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 498d5e51..ddd979c5 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -33,6 +33,7 @@ Unreleased
+ -   Use modern packaging metadata with ``pyproject.toml`` instead of ``setup.cfg``.
+     :pr:`4947`
+ -   Ensure subdomains are applied with nested blueprints. :issue:`4834`
++-   Raise an error when creating a blueprint with an empty name. :issue:`4944`
+ -   ``config.from_file`` can use ``text=False`` to indicate that the parser wants a
+     binary file instead. :issue:`4989`
+ 
+diff --git a/src/flask/blueprints.py b/src/flask/blueprints.py
+index eb50585d..1c53dd3a 100644
+--- a/src/flask/blueprints.py
++++ b/src/flask/blueprints.py
+@@ -130,8 +130,8 @@ class Blueprint(Scaffold):
+ 
+     See :doc:`/blueprints` for more information.
+ 
+-    :param name: The name of the blueprint. Will be prepended to each
+-        endpoint name.
++    :param name: The name of the blueprint. Must not be empty or contain a
++        dot. Will be prepended to each endpoint name.
+     :param import_name: The name of the blueprint package, usually
+         ``__name__``. This helps locate the ``root_path`` for the
+         blueprint.
+@@ -190,6 +190,9 @@ class Blueprint(Scaffold):
+             root_path=root_path,
+         )
+ 
++        if not name:
++            raise ValueError("'name' may not be empty.")
++
+         if "." in name:
+             raise ValueError("'name' may not contain a dot '.' character.")
+ 

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a133",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The inheritance extension adds a fixed `../` prefix, then Graphviz rewrites the links again using a page-relative image path.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

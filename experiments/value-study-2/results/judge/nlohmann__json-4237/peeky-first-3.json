@@ -1,0 +1,7 @@
+{
+ "judge_id": "a055",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Enum serialization always used signed storage, turning large unsigned values negative.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Every Peeky command failed before running: cmds 10, 14 probe refused with UNSUPPORTED (libc++ build / no MD5 line table), cmd 13 never reached peeky (patch/compile failed), cmd 15 describe refused UNSUPPORTED. Peeky printed no values."
+}

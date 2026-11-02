@@ -1,0 +1,7 @@
+{
+ "judge_id": "a162",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"I'll disable scalar offsets and scientific scaling for legend labels so each label gives the full value\" (debugger showed labels 3-6 with orderOfMagnitude=6)",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14/15 show legend labels ['3','4','5','6'] with orderOfMagnitude 6 for limits 3e6-6e6 (consistent with the failing assert in cmd 14 and the bug); cmd 26 after the fix shows labels ['3000000',...,'6000000'], matching cmd 25's printed objects legend and the passing test. No contradiction."
+}

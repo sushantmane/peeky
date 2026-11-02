@@ -1,0 +1,285 @@
+{
+ "bug": "sphinx-doc__sphinx-7889",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sphinx-doc__sphinx-7889:peeky-r2",
+ "image_digest": "sha256:8055c7524cbe021d2bc0a84734ba9305375ffb0f97d6a9fe0cb9441744184b31",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-sphinx-doc__sphinx-7889-peeky-first-1-9a5f3e",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T09:41:39+00:00",
+ "ended": "2026-11-01T09:45:06+00:00",
+ "wall_seconds": 207.1,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_ext_autodoc_mock.py::test_MockObject": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.3,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "d82ca1aaefb14d5e5bcb5d0e27d08385b3938f07700931bfc28d48161878eaa5",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 1,
+ "patch_files": [
+  "CHANGES",
+  "sphinx/ext/autodoc/mock.py",
+  "tests/test_ext_autodoc_mock_generic.py"
+ ],
+ "patch_bytes": 4299,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 6
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 18,
+ "ai_credits": 24.6567,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 510446,
+  "output": 9245,
+  "cache_read": 467488,
+  "cache_write": 42904,
+  "reasoning": 3749
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 23,
+ "tool_calls_by_name": {
+  "bash": 23
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -la; if [ -d /testbed ]; then ls -ld /testbed; fi; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,180p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && sed -n '1,260p' sphinx/ext/autodoc/mock.py && rg --files tests | grep -E 'mock|autodoc' && ls CHANGES*",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find tests -name '*mock*' -o -name '*autodoc*' && sed -n '1,280p' tests/test_ext_autodoc_mock.py && head -100 CHANGES && sed -n '1,180p' tests/conftest.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md; sed -n '1,210p' /opt/peeky/docs/lang/python.md; cd /testbed && python -c 'from typing import TypeVar; from sphinx.ext.autodoc.mock import mock; T = TypeVar(\"T\");\nwith mock([\"missing_dependency\"]):\n    from missing_dependency import GenericBase\n    class Derived(GenericBase[T]):\n        pass'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module timeit -- -n 1 -r 1 'from typing import TypeVar; from sphinx.ext.autodoc.mock import mock; T = TypeVar(\"T\")\nwith mock([\"missing_dependency\"]):\n    from missing_dependency import GenericBase\n    class Derived(GenericBase[T]):\n        pass'",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && command -v apply_patch && apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: .peeky_generic_repro.py\n+from typing import TypeVar\n+\n+from sphinx.ext.autodoc.mock import mock\n+\n+T = TypeVar('T')\n+with mock(['missing_dependency']):\n+    from missing_dependency import GenericBase\n+\n+    class Derived(GenericBase[T]):\n+        pass\n*** End Patch\nPATCH\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run .peeky_generic_repro.py",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,240p' tests/test_ext_autodoc_configs.py && cat tests/roots/test-ext-autodoc/target/need_mocks.py && grep -n 'mock\\|need_mocks' tests/test_ext_autodoc*.py && grep -n -A80 '\\[tool:pytest\\]\\|\\[flake8\\]' setup.cfg && python -m pytest tests/test_ext_autodoc_mock.py -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\nPath('.peeky_generic_repro.py').write_text('''from typing import TypeVar\n\nfrom sphinx.ext.autodoc.mock import mock\n\nT = TypeVar('T')\nwith mock(['missing_dependency']):\n    from missing_dependency import GenericBase\n\n    class Derived(GenericBase[T]):\n        pass\n''')\nPY\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run .peeky_generic_repro.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,105p' tests/test_ext_autodoc.py && sed -n '420,490p' tests/test_ext_autodoc_configs.py && cat tests/roots/test-ext-autodoc/conf.py && sed -n '1,150p' sphinx/testing/fixtures.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n '__getitem__\\|_make_subclass' sphinx/ext/autodoc/mock.py && grep -n 'str(key)\\|def __getitem__' sphinx/ext/*.py sphinx/util/*.py && cat tox.ini | head -140 && git --no-pager status --short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\nassert not path.exists()\npath.write_text('''\"\"\"\n    test_ext_autodoc_mock_generic\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n    Test subscriptions and generic classes with mocked dependencies.\n\n    :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.\n    :license: BSD, see LICENSE for details.\n\"\"\"\n\nimport sys\nfrom importlib import import_module\nfrom typing import Generic, TypeVar\n\nimport pytest\n\nfrom sphinx.ext.autodoc.mock import _MockObject, mock\nfrom test_ext_autodoc import do_autodoc\n\nT = TypeVar('T')\nU = TypeVar('U')\n\n\n@pytest.mark.parametrize('key', ['member', 0, None, slice(1, 3), int, T, (T, U)])\ndef test_MockObject_getitem(key):\n    obj = _MockObject()\n    item = obj[key]\n\n    assert isinstance(item, _MockObject)\n    assert repr(item) == '_MockObject.' + str(key)\n    assert item.__class__.__name__ == str(key)\n    assert item.__class__.__module__ == '_MockObject'\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\ndef test_mock_generic_class():\n    with mock(['sphinx.unknown']):\n        module = import_module('sphinx.unknown')\n\n        class Derived(module.GenericBase[T], Generic[T]):\n            \"\"\"A generic subclass of a mocked dependency.\"\"\"\n\n            def method(self):\n                return 'value'\n\n        obj = Derived[int]()\n        assert isinstance(obj, Derived)\n        assert isinstance(obj, _MockObject)\n        assert obj.method() == 'value'\n        assert isinstance(obj.other_method(), Derived)\n        assert Derived.__doc__ == 'A generic subclass of a mocked dependency.'\n        assert repr(Derived.__bases__[0]()) == 'sphinx.unknown.GenericBase.' + str(T)\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n@pytest.mark.sphinx('html', testroot='ext-autodoc',\n                    confoverrides={'autodoc_mock_imports': ['missing_generic_dependency']})\ndef test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch):\n    target = tmp_path / 'generic_mock_target.py'\n    target.write_text(\"\"\"from typing import Generic, TypeVar\nfrom missing_generic_dependency import GenericBase\n\nT = TypeVar('T')\nU = TypeVar('U')\n\nclass Derived(GenericBase[T], Generic[T]):\n    \\\\\\\"\\\\\\\"\\\\\\\"A generic subclass.\\\\\\\"\\\\\\\"\\\\\\\"\n\nclass Pair(GenericBase[T, U], Generic[T, U]):\n    \\\\\\\"\\\\\\\"\\\\\\\"A generic subclass with two parameters.\\\\\\\"\\\\\\\"\\\\\\\"\n\"\"\")\n    monkeypatch.syspath_prepend(str(tmp_path))\n\n    actual = do_autodoc(app, 'module', 'generic_mock_target',\n                        {'members': 'Derived,Pair'})\n    assert list(actual) == [\n        '',\n        '.. py:module:: generic_mock_target',\n        '',\n        '',\n        '.. py:class:: Derived()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass.',\n        '',\n        '',\n        '.. py:class:: Pair()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass with two parameters.',\n        '',\n    ]\n    assert warning.getvalue() == ''\n''')\nPY\npython -m pytest tests/test_ext_autodoc_mock_generic.py -q --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('sphinx/ext/autodoc/mock.py')\nold = '''    def __getitem__(self, key: str) -> \"_MockObject\":\n        return _make_subclass(key, self.__display_name__, self.__class__)()\n'''\nnew = '''    def __getitem__(self, key: Any) -> \"_MockObject\":\n        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n'''\ntext = path.read_text()\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('CHANGES')\ntext = path.read_text()\nold = '''Bugs fixed\n----------\n\n'''\nassert old in text\npath.write_text(text.replace(old, old + '* autodoc: Fix TypeError when generic classes use mocked dependencies\\n', 1))\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\nold = \"    actual = do_autodoc(app, 'module', 'generic_mock_target',\"\nassert text.count(old) == 1\ntext = text.replace(old, \"    warnings_before = warning.getvalue()\\n\" + old)\ntext = text.replace(\"    assert warning.getvalue() == ''\", \"    assert warning.getvalue() == warnings_before\")\npath.write_text(text)\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\ntext = text.replace('from typing import Generic, TypeVar', 'from typing import TypeVar')\ntext = text.replace('class Derived(module.GenericBase[T], Generic[T]):', 'class Derived(module.GenericBase[T]):')\ntext = text.replace('obj = Derived[int]()', 'obj = Derived()')\ntext = text.replace('class Derived(GenericBase[T], Generic[T]):', 'class Derived(GenericBase[T]):')\ntext = text.replace('class Pair(GenericBase[T, U], Generic[T, U]):', 'class Pair(GenericBase[T, U]):')\npath.write_text(text)\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -B7 -A12 '__sphinx_mock__\\|check_module\\|can_document_member' sphinx/ext/autodoc/__init__.py sphinx/ext/autodoc/importer.py && sed -n '1,170p' tests/test_ext_autodoc_mock_generic.py && cat tox.ini | head -110",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python .peeky_generic_repro.py && git --no-pager diff -- sphinx/ext/autodoc/mock.py CHANGES && python - <<'PY'\nfrom typing import TypeVar\nfrom sphinx.ext.autodoc.mock import mock\nfrom sphinx.util import inspect\nT = TypeVar('T')\nwith mock(['missing_dependency']):\n    from missing_dependency import GenericBase\n    class Derived(GenericBase[T]):\n        \"\"\"A generic subclass.\"\"\"\n    print('class:', Derived, type(Derived), inspect.isclass(Derived))\n    print('module:', Derived.__module__)\n    print('mock flag:', Derived.__sphinx_mock__)\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n -B5 -A8 '__sphinx_mock__' sphinx/ext/autodoc/__init__.py sphinx/ext/autodoc/importer.py sphinx/util/inspect.py; grep -n '^class ClassDocumenter\\|def check_module\\|def filter_members\\|def get_object_members' sphinx/ext/autodoc/__init__.py; sed -n '1390,1455p' sphinx/ext/autodoc/__init__.py; sed -n '595,725p' sphinx/ext/autodoc/__init__.py; cat tox.ini | head -95",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\nold = '''def test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch):'''\nnew = '''@pytest.mark.parametrize('classname, docstring', [\n    ('Derived', 'A generic subclass.'),\n    ('Pair', 'A generic subclass with two parameters.'),\n])\ndef test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch,\n                                     classname, docstring):'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\nold = '''    actual = do_autodoc(app, 'module', 'generic_mock_target',\n                        {'members': 'Derived,Pair'})\n    assert list(actual) == [\n        '',\n        '.. py:module:: generic_mock_target',\n        '',\n        '',\n        '.. py:class:: Derived()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass.',\n        '',\n        '',\n        '.. py:class:: Pair()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass with two parameters.',\n        '',\n    ]'''\nnew = '''    actual = do_autodoc(app, 'class', 'generic_mock_target.' + classname)\n    assert list(actual) == [\n        '',\n        '.. py:class:: %s()' % classname,\n        '   :module: generic_mock_target',\n        '',\n        '   ' + docstring,\n        '',\n    ]'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\nold = \"        '.. py:class:: %s()' % classname,\"\nnew = \"        '.. py:class:: %s(*args: Any, **kwargs: Any)' % classname,\"\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,130p' tests/test_ext_autodoc_mock_generic.py && git --no-pager status --short && grep -n -A20 'def write_text' sphinx/testing/path.py && grep -n 'app.srcdir.*write_text\\|index.rst.*write_text' tests/test_ext_autodoc*.py tests/test_build*.py | head -15; command -v flake8; command -v mypy",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport tempfile\nfrom io import StringIO\nfrom pathlib import Path\nfrom sphinx.application import Sphinx\n\nwith tempfile.TemporaryDirectory(prefix='sphinx-generic-mock-') as directory:\n    root = Path(directory)\n    source = root / 'docs'\n    source.mkdir()\n    (source / 'conf.py').write_text(\"import sys\\nsys.path.insert(0, %r)\\nextensions = ['sphinx.ext.autodoc']\\nautodoc_mock_imports = ['missing_dependency']\\n\" % str(source))\n    (source / 'generic_target.py').write_text(\"from typing import TypeVar\\nfrom missing_dependency import GenericBase\\nT = TypeVar('T')\\nU = TypeVar('U')\\nclass Derived(GenericBase[T]):\\n    '''A generic subclass.'''\\nclass Pair(GenericBase[T, U]):\\n    '''A generic subclass with two parameters.'''\\n\")\n    (source / 'index.rst').write_text('Generic mock regression\\n=======================\\n\\n.. autoclass:: generic_target.Derived\\n\\n.. autoclass:: generic_target.Pair\\n')\n    warning = StringIO()\n    app = Sphinx(str(source), str(source), str(root / 'html'), str(root / 'doctrees'), 'html', status=StringIO(), warning=warning, warningiserror=True)\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == '', warning.getvalue()\n    html = (root / 'html' / 'index.html').read_text()\n    assert 'A generic subclass.' in html\n    assert 'A generic subclass with two parameters.' in html\n    print('HTML build succeeds with both single and multiple TypeVar parameters.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '400,430p' sphinx/util/logging.py && python - <<'PY'\nimport tempfile\nfrom io import StringIO\nfrom pathlib import Path\nfrom sphinx.application import Sphinx\n\nwith tempfile.TemporaryDirectory(prefix='sphinx-generic-mock-') as directory:\n    root = Path(directory)\n    source = root / 'docs'\n    source.mkdir()\n    (source / 'conf.py').write_text(\"import sys\\nsys.path.insert(0, %r)\\nextensions = ['sphinx.ext.autodoc']\\nautodoc_mock_imports = ['missing_dependency']\\n\" % str(source))\n    (source / 'generic_target.py').write_text(\"from typing import TypeVar\\nfrom missing_dependency import GenericBase\\nT = TypeVar('T')\\nU = TypeVar('U')\\nclass Derived(GenericBase[T]):\\n    '''A generic subclass.'''\\nclass Pair(GenericBase[T, U]):\\n    '''A generic subclass with two parameters.'''\\n\")\n    (source / 'index.rst').write_text('Generic mock regression\\n=======================\\n\\n.. autoclass:: generic_target.Derived\\n\\n.. autoclass:: generic_target.Pair\\n')\n    warning = StringIO()\n    app = Sphinx(str(source), str(source), str(root / 'html'), str(root / 'doctrees'), 'html', status=StringIO(), warning=warning)\n    setup_warnings = warning.getvalue()\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == setup_warnings, warning.getvalue()\n    html = (root / 'html' / 'index.html').read_text()\n    assert 'A generic subclass.' in html\n    assert 'A generic subclass with two parameters.' in html\n    print('HTML build succeeds with both single and multiple TypeVar parameters; no build warnings.')\n    if setup_warnings:\n        print('Pre-existing setup warning: ' + setup_warnings.strip())\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm .peeky_generic_repro.py && git --no-pager diff --check && git --no-pager status --short && git --no-pager diff --stat && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --disable-warnings",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 7,
+ "build_or_test_commands": [
+  "cd /testbed && sed -n '1,240p' tests/test_ext_autodoc_configs.py && cat tests/roots/test-ext-autodoc/target/need_mocks.py && grep -n 'mock\\|need_mocks' tests/test_ext_autodoc*.py && grep -n -A80 '\\[tool:pytest\\]\\|\\[flake8\\]' setup.cfg && python -m pytest tests/test_ext_autodoc_mock.py -q",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\nassert not path.exists()\npath.write_text('''\"\"\"\n    test_ext_autodoc_mock_generic\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n    Test subscriptions and generic classes with mocked dependencies.\n\n    :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.\n    :license: BSD, see LICENSE for details.\n\"\"\"\n\nimport sys\nfrom importlib import import_module\nfrom typing import Generic, TypeVar\n\nimport pytest\n\nfrom sphinx.ext.autodoc.mock import _MockObject, mock\nfrom test_ext_autodoc import do_autodoc\n\nT = TypeVar('T')\nU = TypeVar('U')\n\n\n@pytest.mark.parametrize('key', ['member', 0, None, slice(1, 3), int, T, (T, U)])\ndef test_MockObject_getitem(key):\n    obj = _MockObject()\n    item = obj[key]\n\n    assert isinstance(item, _MockObject)\n    assert repr(item) == '_MockObject.' + str(key)\n    assert item.__class__.__name__ == str(key)\n    assert item.__class__.__module__ == '_MockObject'\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\ndef test_mock_generic_class():\n    with mock(['sphinx.unknown']):\n        module = import_module('sphinx.unknown')\n\n        class Derived(module.GenericBase[T], Generic[T]):\n            \"\"\"A generic subclass of a mocked dependency.\"\"\"\n\n            def method(self):\n                return 'value'\n\n        obj = Derived[int]()\n        assert isinstance(obj, Derived)\n        assert isinstance(obj, _MockObject)\n        assert obj.method() == 'value'\n        assert isinstance(obj.other_method(), Derived)\n        assert Derived.__doc__ == 'A generic subclass of a mocked dependency.'\n        assert repr(Derived.__bases__[0]()) == 'sphinx.unknown.GenericBase.' + str(T)\n\n\n@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n@pytest.mark.sphinx('html', testroot='ext-autodoc',\n                    confoverrides={'autodoc_mock_imports': ['missing_generic_dependency']})\ndef test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch):\n    target = tmp_path / 'generic_mock_target.py'\n    target.write_text(\"\"\"from typing import Generic, TypeVar\nfrom missing_generic_dependency import GenericBase\n\nT = TypeVar('T')\nU = TypeVar('U')\n\nclass Derived(GenericBase[T], Generic[T]):\n    \\\\\\\"\\\\\\\"\\\\\\\"A generic subclass.\\\\\\\"\\\\\\\"\\\\\\\"\n\nclass Pair(GenericBase[T, U], Generic[T, U]):\n    \\\\\\\"\\\\\\\"\\\\\\\"A generic subclass with two parameters.\\\\\\\"\\\\\\\"\\\\\\\"\n\"\"\")\n    monkeypatch.syspath_prepend(str(tmp_path))\n\n    actual = do_autodoc(app, 'module', 'generic_mock_target',\n                        {'members': 'Derived,Pair'})\n    assert list(actual) == [\n        '',\n        '.. py:module:: generic_mock_target',\n        '',\n        '',\n        '.. py:class:: Derived()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass.',\n        '',\n        '',\n        '.. py:class:: Pair()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass with two parameters.',\n        '',\n    ]\n    assert warning.getvalue() == ''\n''')\nPY\npython -m pytest tests/test_ext_autodoc_mock_generic.py -q --tb=short",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('sphinx/ext/autodoc/mock.py')\nold = '''    def __getitem__(self, key: str) -> \"_MockObject\":\n        return _make_subclass(key, self.__display_name__, self.__class__)()\n'''\nnew = '''    def __getitem__(self, key: Any) -> \"_MockObject\":\n        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n'''\ntext = path.read_text()\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\npath = Path('CHANGES')\ntext = path.read_text()\nold = '''Bugs fixed\n----------\n\n'''\nassert old in text\npath.write_text(text.replace(old, old + '* autodoc: Fix TypeError when generic classes use mocked dependencies\\n', 1))\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\nold = \"    actual = do_autodoc(app, 'module', 'generic_mock_target',\"\nassert text.count(old) == 1\ntext = text.replace(old, \"    warnings_before = warning.getvalue()\\n\" + old)\ntext = text.replace(\"    assert warning.getvalue() == ''\", \"    assert warning.getvalue() == warnings_before\")\npath.write_text(text)\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\ntext = text.replace('from typing import Generic, TypeVar', 'from typing import TypeVar')\ntext = text.replace('class Derived(module.GenericBase[T], Generic[T]):', 'class Derived(module.GenericBase[T]):')\ntext = text.replace('obj = Derived[int]()', 'obj = Derived()')\ntext = text.replace('class Derived(GenericBase[T], Generic[T]):', 'class Derived(GenericBase[T]):')\ntext = text.replace('class Pair(GenericBase[T, U], Generic[T, U]):', 'class Pair(GenericBase[T, U]):')\npath.write_text(text)\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\nold = '''def test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch):'''\nnew = '''@pytest.mark.parametrize('classname, docstring', [\n    ('Derived', 'A generic subclass.'),\n    ('Pair', 'A generic subclass with two parameters.'),\n])\ndef test_autodoc_mock_generic_classes(app, warning, tmp_path, monkeypatch,\n                                     classname, docstring):'''\nassert text.count(old) == 1\ntext = text.replace(old, new)\nold = '''    actual = do_autodoc(app, 'module', 'generic_mock_target',\n                        {'members': 'Derived,Pair'})\n    assert list(actual) == [\n        '',\n        '.. py:module:: generic_mock_target',\n        '',\n        '',\n        '.. py:class:: Derived()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass.',\n        '',\n        '',\n        '.. py:class:: Pair()',\n        '   :module: generic_mock_target',\n        '',\n        '   A generic subclass with two parameters.',\n        '',\n    ]'''\nnew = '''    actual = do_autodoc(app, 'class', 'generic_mock_target.' + classname)\n    assert list(actual) == [\n        '',\n        '.. py:class:: %s()' % classname,\n        '   :module: generic_mock_target',\n        '',\n        '   ' + docstring,\n        '',\n    ]'''\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+  "cd /testbed && python - <<'PY'\nfrom pathlib import Path\npath = Path('tests/test_ext_autodoc_mock_generic.py')\ntext = path.read_text()\nold = \"        '.. py:class:: %s()' % classname,\"\nnew = \"        '.. py:class:: %s(*args: Any, **kwargs: Any)' % classname,\"\nassert text.count(old) == 1\npath.write_text(text.replace(old, new))\nPY\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --tb=short && python .peeky_generic_repro.py && git --no-pager diff --check",
+  "cd /testbed && rm .peeky_generic_repro.py && git --no-pager diff --check && git --no-pager status --short && git --no-pager diff --stat && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_mock_generic.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --disable-warnings"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && peeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run-module timeit -- -n 1 -r 1 'from typing import TypeVar; from sphinx.ext.autodoc.mock import mock; T = TypeVar(\"T\")\nwith mock([\"missing_dependency\"]):\n    from missing_dependency import GenericBase\n    class Derived(GenericBase[T]):\n        pass'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && command -v apply_patch && apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: .peeky_generic_repro.py\n+from typing import TypeVar\n+\n+from sphinx.ext.autodoc.mock import mock\n+\n+T = TypeVar('T')\n+with mock(['missing_dependency']):\n+    from missing_dependency import GenericBase\n+\n+    class Derived(GenericBase[T]):\n+        pass\n*** End Patch\nPATCH\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run .peeky_generic_repro.py",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom pathlib import Path\nPath('.peeky_generic_repro.py').write_text('''from typing import TypeVar\n\nfrom sphinx.ext.autodoc.mock import mock\n\nT = TypeVar('T')\nwith mock(['missing_dependency']):\n    from missing_dependency import GenericBase\n\n    class Derived(GenericBase[T]):\n        pass\n''')\nPY\npeeky probe . --at sphinx/ext/autodoc/mock.py:73 --capture name,module --hits all --run .peeky_generic_repro.py",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 3
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 7,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 6,
+ "contaminated": false,
+ "final_message": "Fixed the crash by accepting arbitrary subscription keys in `_MockObject.__getitem__` and converting them with `str(key)` before subclass creation. `peeky probe` at `mock.py:73` showed the root cause: `name` was `~T`, a `TypeVar`, being concatenated with a string. Added regression coverage and a changelog entry.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the mock/generic failure and inspect it with Peeky before changing the source.\n",
+  "The reproducer fails with `TypeError` in `_make_subclass`. Peeky rejected the module target\u2014\u201c`--run-module takes only pytest`\u201d\u2014so I\u2019ll use a temporary script to inspect the failing values.\n",
+  "`peeky probe` at `mock.py:73` showed `name=~T` (`TypeVar`) and `module='missing_dependency.GenericBase'`. Subscription keys are passed unchanged to a helper that requires a string. I\u2019ll convert them to strings in `__getitem__` and add regression coverage for generic inheritance and autodoc output.\n",
+  "Fixed the crash by accepting arbitrary subscription keys in `_MockObject.__getitem__` and converting them with `str(key)` before subclass creation. `peeky probe` at `mock.py:73` showed the root cause: `name` was `~T`, a `TypeVar`, being concatenated with a string. Added regression coverage and a changelog entry."
+ ],
+ "assistant_reasoning": [
+  "**Exploring testing with Peeky**\n\nI'm diving into using Peeky with pytest for tests. I need to make sure I\u2019m only using the necessary modules. It seems like I can\u2019t edit before probing. The command options for pytest are a bit puzzling, especially trying to run existing test files without encountering refusals. I\u2019m also considering using temporary files for reproducing issues. It feels like I need to navigate multiple details to effectively use Peeky alongside pytest while adhering to all requirements.\n\n**Considering Peeky session options**\n\nI'm thinking about the best way to use Peeky with the `--run-module timeit` option. If it gets refused, I feel like I'll miss an opportunity to effectively run my tests. An alternative could be to utilize an existing Python script or module file that can execute tests without needing a command-line interface. I want to explore options for a Peeky session that includes mocks, particularly focusing on the mock line with that timeit module.",
+  "**Evaluating testing strategy**\n\nI'm considering how to handle preexisting tests and whether I need to hide any errors. I think it's important to explicitly check for warnings before asserting that nothing has changed. That way, I can ensure better integration and no new warnings are created. I\u2019ll apply a patch via Python, and I also need to make sure I call the source helper properly with the correct parameters. It's a bit intricate, but I'm on it!",
+  "**Narrowing grep output**\n\nI need to focus on refining my grep output since it's currently too wide. The challenge is to narrow it down effectively and specifically for the __sphinx mock, along with the canDocument class. By pinpointing these elements, I can ensure I get the exact data I require. It's essential to streamline this process for clarity and accuracy, so let's figure out the best parameters to achieve that!",
+  "**Exploring code integration**\n\nI'm trying to eliminate the integration challenges by writing a code that doesn't repeat itself. It seems the issue might revolve around generating a test that builds an autodoc class. I wonder if there's a potential signature mismatch when inheriting. Would the docstring header in my Derived class lead to any ignored methods because there's no known signature? I'll need to run this to see how it behaves!",
+  "**Evaluating integration tests**\n\nI\u2019m looking into the automatic environment path change for integration tests. It seems like a big scope might help avoid issues with Sphinx class helper imports and extra side effects. I\u2019ve added a small test file, around 90 lines, to check the complexities. I need to be careful not to over-engineer while ensuring everything is documented. It looks like I have enough to meet acceptance criteria, so I\u2019ll run everything to verify.",
+  "**Reviewing test outcomes**\n\nI need to ensure I preserve the outcomes of the full build test without adding persistent builds beyond validation. I want to avoid installing lint/type since there are no network tools available. It's good that Python compile tests pass and validate type safety.\n\nI also notice the final status doesn't include the new file but it's already reviewed. After fixing, I should check the values again. It seems like new tests are needed, but I should keep existing ones unchanged.\n\n**Streamlining tests**\n\nI can streamline the test to 60 lines using an existing test file, but the user doesn't have any existing tests, which is fine. I\u2019ll create a new test with `None` and a slice for Python 3.5's TypeVar parameters, ensuring safety with a pytest 3.9 fixture like `tmp_path`. I see that the import order may cause overhead warnings, but using unique names should help.\n\nI need to ensure that SphinxTestApp cleanup works properly. Overall, it looks like the current temporary directories and paths are okay, and the integration parameters should be reused properly.\n\n**Finalizing test adjustments**\n\nI need to ensure that I'm using monkeypatch to add `delitem` to `sys.modules` before the test call, preventing stale data, especially for repeated tests or external modules. The test target should remain unique and unchanged to avoid caching issues.\n\nTo verify everything, I\u2019ll run final added tests against the original source and ensure they all fail as expected before modifications. I can use Peeky to check the baseline with old tests and the new source. It seems the user didn\u2019t ask for Peeky verification, just inspection. I should also do a final cleanup and may want to record a specific grep line for future reference."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 208.0
+}

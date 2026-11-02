@@ -1,0 +1,144 @@
+{
+ "bug": "apache__lucene-12022",
+ "language": "java",
+ "category": "D",
+ "image": "peeky-study/apache__lucene-12022:peeky-r2",
+ "image_id": "sha256:c6a933b535bbb8c4fac0befe764b915c924ce49d8a4c959d4ac39d8be67c9cb4",
+ "peeky_sha": "791510a690e44b2a969a0c5dcad689a0bf9700c7",
+ "started": "2026-11-01T02:14:51+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the first insertion in resolveTriangleType",
+   "at": "lucene/core/src/java/org/apache/lucene/document/ShapeField.java:379",
+   "launch": {
+    "ready_seconds": 12.3
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at lucene/core/src/java/org/apache/lucene/document/ShapeField.java:379 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the last insertion in resolveTriangleType",
+   "at": "lucene/core/src/java/org/apache/lucene/document/ShapeField.java:386",
+   "launch": {
+    "ready_seconds": 9.3
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at lucene/core/src/java/org/apache/lucene/document/ShapeField.java:386 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lucene/core/src/java/org/apache/lucene/document/ShapeField.java:386",
+    "function": "ShapeField.resolveTriangleType(ShapeField$DecodedTriangle)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "triangle",
+      "value": "ShapeField$DecodedTriangle@2474"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java:974",
+   "launch": {
+    "ready_seconds": 9.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java:974 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lucene/core/src/test/org/apache/lucene/document/TestLatLonShape.java:974",
+    "function": "TestLatLonShape.testFlatPolygonDoesNotContainIntersectingLine()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 12,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "lons",
+      "value": "double[5]@2547"
+     },
+     {
+      "name": "lats",
+      "value": "double[5]@2548"
+     },
+     {
+      "name": "polygon",
+      "value": "Polygon@2549"
+     },
+     {
+      "name": "line",
+      "value": "Line@2550"
+     },
+     {
+      "name": "dir",
+      "value": "MockDirectoryWrapper@2551"
+     },
+     {
+      "name": "writer",
+      "value": "RandomIndexWriter@2552"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 9
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:15:31+00:00"
+}

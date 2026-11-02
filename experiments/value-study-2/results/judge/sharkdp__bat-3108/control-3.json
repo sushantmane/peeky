@@ -1,0 +1,7 @@
+{
+ "judge_id": "a043",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was Clap\u2019s mutual overrides: `--plain` discarded `--paging=never`, restoring automatic paging.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,285 @@
+{
+ "bug": "valkey-io__valkey-1842",
+ "arm": "peeky-first",
+ "rep": 3,
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-1842:peeky-r2",
+ "image_digest": "sha256:e2a5f9e59c6cbf603596bf561a45c90c1d24ef1e16ce3d49ccc7a88884606777",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-valkey-io__valkey-1842-peeky-first-3-ad9f80",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T14:10:28+00:00",
+ "ended": "2026-11-01T14:14:25+00:00",
+ "wall_seconds": 236.5,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "Test ACL LOAD works on replica": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 60.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "38c06b10cabf672549e66c60875c7dd618d58415a7dd9c1d406ae493e1c89e9f",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 50,
+ "patch_files": [
+  "src/acl.c"
+ ],
+ "patch_bytes": 602,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 110
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 15,
+ "ai_credits": 26.8109,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 544716,
+  "output": 8555,
+  "cache_read": 491337,
+  "cache_write": 53334,
+  "reasoning": 2391
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 24,
+ "tool_calls_by_name": {
+  "bash": 24
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -ld /testbed /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && ls src/valkey-server src/valkey-cli && rg -n 'ACL LOAD|aclLoad|ACLLoad|load.*[Uu]ser|free.*[Uu]ser' src/acl.c tests/unit/acl* tests/unit/*repl*",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,220p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'ACL LOAD|aclLoad|ACLLoad|load.*[Uu]ser|free.*[Uu]ser' src/acl.c tests/unit/acl* && sed -n '1,160p' tests/unit/acl.tcl && file src/valkey-server",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport os, pathlib, subprocess, tempfile, time\nroot = pathlib.Path(tempfile.mkdtemp(prefix='acl-load-repro-', dir='/tmp'))\n(root / 'users.acl').write_text('user foo on #551a821992d8592d71c26a4989e26ce1d39e90ba3c20e3eaf99eed4a2e64251f +@all ~* resetchannels &*\\n')\nprocs = []\ndef cli(port, *args):\n    return subprocess.run(['src/valkey-cli', '-p', str(port), *args], capture_output=True, text=True, timeout=5)\ntry:\n    for port, extra in [(17779, []), (17780, ['--replicaof', '127.0.0.1', '17779'])]:\n        log = open(root / f'{port}.log', 'w')\n        proc = subprocess.Popen(['src/valkey-server', '--port', str(port), '--bind', '127.0.0.1', '--aclfile', str(root / 'users.acl'), '--save', '', '--appendonly', 'no', '--dir', str(root), '--repl-diskless-sync-delay', '0', *extra], stdout=log, stderr=subprocess.STDOUT)\n        procs.append(proc)\n        log.close()\n        for _ in range(100):\n            if cli(port, 'ping').stdout.strip() == 'PONG': break\n            if proc.poll() is not None: raise RuntimeError((root / f'{port}.log').read_text())\n            time.sleep(.05)\n        else: raise RuntimeError('server did not start')\n    for _ in range(100):\n        if 'master_link_status:up' in cli(17780, 'info', 'replication').stdout: break\n        time.sleep(.1)\n    else: raise RuntimeError('replication did not connect')\n    print('REPRO_DIR:', root)\n    print('primary ACL LOAD:', cli(17779, 'acl', 'load').stdout.strip())\n    result = cli(17780, 'acl', 'load')\n    print('replica ACL LOAD:', repr(result.stdout), repr(result.stderr), 'exit:', result.returncode)\n    time.sleep(.5)\n    print('replica process exit:', procs[1].poll())\n    text = (root / '17780.log').read_text()\n    start = text.find('===')\n    print(text[start:start+18000] if start >= 0 else text[-12000:])\nfinally:\n    for proc in procs:\n        if proc.poll() is None:\n            proc.terminate()\n            try: proc.wait(timeout=5)\n            except subprocess.TimeoutExpired:\n                proc.kill(); proc.wait()\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '220,380p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/lang/c-cpp.md && cd /testbed && sed -n '2190,2460p' src/acl.c && sed -n '980,1105p' tests/unit/acl.tcl && grep -nE 'user =|user;' src/networking.c src/replication.c | head -70",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '2210,2405p' src/acl.c && sed -n '1010,1098p' tests/unit/acl.tcl && grep -nE 'user =|user;' src/networking.c src/replication.c | head -70 && command -v apply_patch && peeky session start --help",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,185p' /opt/peeky/docs/lang/c-cpp.md && grep -nE 'binary|session|pointer|capture|build' /opt/peeky/docs/lang/c-cpp-cookbook.md | head -60",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky session start --help && peeky session get --help && nl -ba src/acl.c | sed -n '2358,2385p' && sed -n '1970,2025p' src/replication.c && grep -nE 'c->user|original' src/acl.c | head -65",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '910,985p' tests/unit/acl.tcl && grep -nE 'start_server|wait_for_sync|wait_for_condition|replicaof' tests/unit/replication.tcl | head -55 && ls /usr/local/bin/*patch* /usr/bin/*patch* 2>/dev/null && sed -n '445,550p' /opt/peeky/docs/lang/c-cpp-cookbook.md",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport pathlib, subprocess, time\nroot = pathlib.Path('/tmp/acl-load-repro-ei6t53_r')\nname = 'acl-load-replica'\ndef peek(*args):\n    cmd = ['peeky', 'session', *args, '--name', name]\n    print('$', ' '.join(cmd), flush=True)\n    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)\n    print(result.stdout, result.stderr, 'exit:', result.returncode, flush=True)\n    return result\ndef cli(port, *args):\n    return subprocess.run(['src/valkey-cli', '-p', str(port), *args], capture_output=True, text=True, timeout=3)\nlog = open(root / 'peeky-primary.log', 'w')\nprimary = subprocess.Popen(['src/valkey-server', '--port', '17779', '--bind', '127.0.0.1', '--aclfile', str(root / 'users.acl'), '--save', '', '--appendonly', 'no', '--dir', str(root), '--repl-diskless-sync-delay', '0'], stdout=log, stderr=subprocess.STDOUT)\nlog.close()\nload = None\ntry:\n    for _ in range(100):\n        if cli(17779, 'ping').stdout.strip() == 'PONG': break\n        time.sleep(.05)\n    cmd = ['peeky', 'session', 'start', '.', '--binary', 'src/valkey-server', '--at', 'src/acl.c:2382', '--name', name, '--timeout', '2', '--', '--port', '17780', '--bind', '127.0.0.1', '--aclfile', str(root / 'users.acl'), '--save', '', '--appendonly', 'no', '--dir', str(root), '--replicaof', '127.0.0.1', '17779']\n    print('$', ' '.join(cmd), flush=True)\n    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)\n    print(result.stdout, result.stderr, 'exit:', result.returncode, flush=True)\n    if result.returncode not in (0, 3): raise RuntimeError('Peeky session start failed')\n    for _ in range(150):\n        if 'master_link_status:up' in cli(17780, 'info', 'replication').stdout: break\n        time.sleep(.1)\n    else: raise RuntimeError('debug replica not responsive/synchronized')\n    print('Debug replica responsive and master_link_status:up', flush=True)\n    load = subprocess.Popen(['src/valkey-cli', '-p', '17780', 'acl', 'load'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)\n    peek('wait', '--timeout', '10')\n    peek('get', 'original', 'c.user', 'c.flag.primary', 'c.id', 'channels')\n    peek('continue', '--to-exit', '--timeout', '10')\n    peek('inspect')\nfinally:\n    peek('close')\n    if load is not None:\n        try: print('ACL LOAD result:', load.communicate(timeout=5), flush=True)\n        except subprocess.TimeoutExpired:\n            load.terminate(); load.communicate()\n    if primary.poll() is None:\n        primary.terminate()\n        try: primary.wait(timeout=5)\n        except subprocess.TimeoutExpired:\n            primary.kill(); primary.wait()\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && find tests -name '*repl*' -o -name '*acl*' && grep -n 'wait_for_sync' tests/support/*.tcl && sed -n '1715,1765p' src/acl.c && sed -n '2898,2937p' src/acl.c && sed -n '465,510p' src/acl.c && sed -n '435,535p' /opt/peeky/docs/lang/c-cpp-cookbook.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,125p' tests/integration/replication.tcl && sed -n '85,145p' tests/support/util.tcl && tail -135 tests/unit/acl.tcl && cat tests/assets/nodefaultuser.acl && cat tests/assets/user.acl && grep -nE 'aclfile|ACL LOAD|wait_for_sync' tests/integration/replication*.tcl tests/unit/acl-v2.tcl | head -60",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'CLIENT.*PRIMARY|clientFlags|struct.*client|flag;' src/server.h | head -55 && ls -a | head -25 && grep -nE 'clang-format|format' Makefile .clang-format .github/CONTRIBUTING* CONTRIBUTING* 2>/dev/null | head -30 && peeky session report --help && command -v clang-18 && command -v make",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'client list type (master|primary)|CLIENT LIST TYPE (MASTER|PRIMARY)|client kill type (master|primary)' tests/integration/replication*.tcl tests/unit/*.tcl | head -30 && sed -n '3638,3678p' src/networking.c && sed -n '1207,1228p' src/server.h && sed -n '235,275p' tests/integration/replication-4.tcl && sed -n '510,535p' tests/unit/acl-v2.tcl && ls .config && find . -maxdepth 3 -name '*clang*format*'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && grep -nE 'write_file|create.*file|proc tmpdir|proc tmpfile' tests/support/*.tcl | head -35 && sed -n '1,75p' src/Makefile && grep -nE '^OPTIMIZATION|^DEBUG|^CC|FINAL_CFLAGS|CFLAGS=' src/Makefile | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/acl.c\n+++ b/src/acl.c\n@@ -2378,6 +2378,8 @@\n         while ((ln = listNext(&li)) != NULL) {\n             client *c = listNodeValue(ln);\n             user *original = c->user;\n+            /* Clients without an associated user are not subject to ACL rules. */\n+            if (original == NULL) continue;\n             list *channels = NULL;\n             user *new_user = ACLGetUserByName(c->user->name, sdslen(c->user->name));\n             if (new_user && user_channels) {\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1263,6 +1263,39 @@\n     }\n }\n \n+foreach aclfile {user.acl nodefaultuser.acl} {\n+    set server_path [tmpdir \"replica.acl\"]\n+    exec cp -f tests/assets/$aclfile $server_path\n+    start_server {overrides {repl-diskless-sync-delay 0} tags {acl repl external:skip}} {\n+        start_server [list overrides [list dir $server_path aclfile $aclfile]] {\n+            test \"ACL LOAD on a replica with $aclfile preserves replication\" {\n+                set primary [srv -1 client]\n+                set replica [srv 0 client]\n+                $replica replicaof [srv -1 host] [srv -1 port]\n+                wait_for_sync $replica\n+                set primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_match {id=*} $primary_client_id\n+\n+                $replica ACL SETUSER alice -get\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal {+@all} [dict get [$replica ACL GETUSER alice] commands]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_equal {up} [status $replica master_link_status]\n+\n+                # The replication client must remain unrestricted by local ACLs.\n+                $replica ACL SETUSER default -set\n+                assert_error {NOPERM *} {$replica SET key value}\n+                $primary SET key value\n+                assert_equal 1 [$primary WAIT 1 5000]\n+                assert_equal {value} [$replica GET key]\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+            }\n+        }\n+    }\n+}\n+\n tags {acl external:skip} {\n     set renames [list rename-command \"PING RainWasHere\" \\\n                       rename-command \"RainWasHere VPING\" \\\nPATCH\n\ngit --no-pager diff --check && git --no-pager diff --stat && make -j4 > /tmp/acl-load-build.log 2>&1 && tail -8 /tmp/acl-load-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1263,6 +1263,38 @@\n     }\n }\n \n+foreach aclfile {user.acl nodefaultuser.acl} {\n+    set server_path [tmpdir \"replica.acl\"]\n+    exec cp -f tests/assets/$aclfile $server_path\n+    start_server {overrides {repl-diskless-sync-delay 0} tags {acl repl external:skip}} {\n+        start_server [list overrides [list dir $server_path aclfile $aclfile]] {\n+            test \"ACL LOAD on a replica with $aclfile preserves replication\" {\n+                set primary [srv -1 client]\n+                set replica [srv 0 client]\n+                $replica replicaof [srv -1 host] [srv -1 port]\n+                wait_for_sync $replica\n+                set primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_match {id=*} $primary_client_id\n+\n+                $replica ACL SETUSER alice -get\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal {+@all} [dict get [$replica ACL GETUSER alice] commands]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_equal {up} [status $replica master_link_status]\n+\n+                # The replication client must remain unrestricted by local ACLs.\n+                $replica ACL SETUSER default -set\n+                assert_error {NOPERM *} {$replica SET key value}\n+                $primary SET key value\n+                assert_equal 1 [$primary WAIT 1 5000]\n+                assert_equal {value} [$replica GET key]\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+            }\n+        }\n+    }\n+}\n+\n tags {acl external:skip} {\n     set renames [list rename-command \"PING RainWasHere\" \\\n                       rename-command \"RainWasHere VPING\" \\\nPATCH\n\ngit --no-pager diff --check && ./runtest --single unit/acl --only '/ACL LOAD on a replica/'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'only|regexp|test.*match' tests/support/test.tcl tests/test_helper.tcl | head -65 && git --no-pager diff -- src/acl.c tests/unit/acl.tcl && grep -nA15 'getClientTypeByName' src/networking.c | head -20 && tail -3 src/.make-settings",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./runtest --single unit/acl --only 'ACL LOAD on a replica*' > /tmp/acl-load-targeted-tests.log 2>&1; result=$?; grep -E '\\[ok\\]|\\[err\\]|\\[exception\\]|All tests|failed|The End' /tmp/acl-load-targeted-tests.log; if [ \"$result\" -ne 0 ]; then tail -80 /tmp/acl-load-targeted-tests.log; fi; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '170,220p' tests/support/test.tcl && grep -nE 'ACL LOAD on|\\[pass|\\[ok|\\[err' /tmp/acl-load-targeted-tests.log && ./runtest --single unit/acl --single unit/acl-v2 > /tmp/acl-load-acl-tests.log 2>&1; result=$?; tail -25 /tmp/acl-load-acl-tests.log; exit \"$result\"",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport pathlib, subprocess, time\nroot = pathlib.Path('/tmp/acl-load-repro-ei6t53_r')\nprocs = []\ndef cli(port, *args):\n    result = subprocess.run(['src/valkey-cli', '-p', str(port), *args], capture_output=True, text=True, timeout=5)\n    if result.returncode: raise RuntimeError(result.stderr)\n    return result.stdout.strip()\ntry:\n    for port, extra in [(17779, []), (17780, ['--replicaof', '127.0.0.1', '17779'])]:\n        log = open(root / f'fixed-{port}.log', 'w')\n        proc = subprocess.Popen(['src/valkey-server', '--port', str(port), '--bind', '127.0.0.1', '--aclfile', str(root / 'users.acl'), '--save', '', '--appendonly', 'no', '--dir', str(root), '--repl-diskless-sync-delay', '0', *extra], stdout=log, stderr=subprocess.STDOUT)\n        procs.append(proc)\n        log.close()\n        for _ in range(100):\n            result = subprocess.run(['src/valkey-cli', '-p', str(port), 'ping'], capture_output=True, text=True)\n            if result.stdout.strip() == 'PONG': break\n            if proc.poll() is not None: raise RuntimeError('server exited')\n            time.sleep(.05)\n        else: raise RuntimeError('server did not start')\n    for _ in range(100):\n        if 'master_link_status:up' in cli(17780, 'info', 'replication'): break\n        time.sleep(.1)\n    else: raise RuntimeError('replication did not connect')\n    for port in (17779, 17780):\n        assert cli(port, 'acl', 'load') == 'OK'\n        assert cli(port, 'acl', 'users').splitlines() == ['default', 'foo']\n        print(f'{port}: ACL LOAD OK; users: default, foo')\n    for i in range(3):\n        assert cli(17780, 'acl', 'load') == 'OK'\n        assert cli(17779, 'set', 'acl-load-key', str(i)) == 'OK'\n        assert cli(17779, 'wait', '1', '5000') == '1'\n        assert cli(17780, 'get', 'acl-load-key') == str(i)\n    assert all(proc.poll() is None for proc in procs)\n    print('Original reproduction fixed; repeated ACL LOAD preserves replication')\nfinally:\n    for proc in procs:\n        if proc.poll() is None:\n            proc.terminate()\n            try: proc.wait(timeout=5)\n            except subprocess.TimeoutExpired:\n                proc.kill(); proc.wait()\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && git --no-pager diff --check && ls -la /tmp/acl-load-repro-ei6t53_r && grep -E '^\\[ok\\]: ACL LOAD|All tests passed' /tmp/acl-load-acl-tests.log && git --no-pager diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rm tests/unit/acl.tcl.orig /tmp/acl-load-repro-ei6t53_r/users.acl /tmp/acl-load-repro-ei6t53_r/17779.log /tmp/acl-load-repro-ei6t53_r/17780.log /tmp/acl-load-repro-ei6t53_r/peeky-primary.log /tmp/acl-load-repro-ei6t53_r/fixed-17779.log /tmp/acl-load-repro-ei6t53_r/fixed-17780.log /tmp/acl-load-repro-ei6t53_r/dump.rdb /tmp/acl-load-build.log /tmp/acl-load-targeted-tests.log /tmp/acl-load-acl-tests.log && rmdir /tmp/acl-load-repro-ei6t53_r && git --no-pager diff --check && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/src/acl.c\n+++ b/src/acl.c\n@@ -2378,6 +2378,8 @@\n         while ((ln = listNext(&li)) != NULL) {\n             client *c = listNodeValue(ln);\n             user *original = c->user;\n+            /* Clients without an associated user are not subject to ACL rules. */\n+            if (original == NULL) continue;\n             list *channels = NULL;\n             user *new_user = ACLGetUserByName(c->user->name, sdslen(c->user->name));\n             if (new_user && user_channels) {\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1263,6 +1263,39 @@\n     }\n }\n \n+foreach aclfile {user.acl nodefaultuser.acl} {\n+    set server_path [tmpdir \"replica.acl\"]\n+    exec cp -f tests/assets/$aclfile $server_path\n+    start_server {overrides {repl-diskless-sync-delay 0} tags {acl repl external:skip}} {\n+        start_server [list overrides [list dir $server_path aclfile $aclfile]] {\n+            test \"ACL LOAD on a replica with $aclfile preserves replication\" {\n+                set primary [srv -1 client]\n+                set replica [srv 0 client]\n+                $replica replicaof [srv -1 host] [srv -1 port]\n+                wait_for_sync $replica\n+                set primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_match {id=*} $primary_client_id\n+\n+                $replica ACL SETUSER alice -get\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal {+@all} [dict get [$replica ACL GETUSER alice] commands]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_equal {up} [status $replica master_link_status]\n+\n+                # The replication client must remain unrestricted by local ACLs.\n+                $replica ACL SETUSER default -set\n+                assert_error {NOPERM *} {$replica SET key value}\n+                $primary SET key value\n+                assert_equal 1 [$primary WAIT 1 5000]\n+                assert_equal {value} [$replica GET key]\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+            }\n+        }\n+    }\n+}\n+\n tags {acl external:skip} {\n     set renames [list rename-command \"PING RainWasHere\" \\\n                       rename-command \"RainWasHere VPING\" \\\nPATCH\n\ngit --no-pager diff --check && git --no-pager diff --stat && make -j4 > /tmp/acl-load-build.log 2>&1 && tail -8 /tmp/acl-load-build.log",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/tests/unit/acl.tcl\n+++ b/tests/unit/acl.tcl\n@@ -1263,6 +1263,38 @@\n     }\n }\n \n+foreach aclfile {user.acl nodefaultuser.acl} {\n+    set server_path [tmpdir \"replica.acl\"]\n+    exec cp -f tests/assets/$aclfile $server_path\n+    start_server {overrides {repl-diskless-sync-delay 0} tags {acl repl external:skip}} {\n+        start_server [list overrides [list dir $server_path aclfile $aclfile]] {\n+            test \"ACL LOAD on a replica with $aclfile preserves replication\" {\n+                set primary [srv -1 client]\n+                set replica [srv 0 client]\n+                $replica replicaof [srv -1 host] [srv -1 port]\n+                wait_for_sync $replica\n+                set primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_match {id=*} $primary_client_id\n+\n+                $replica ACL SETUSER alice -get\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal {+@all} [dict get [$replica ACL GETUSER alice] commands]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+                assert_equal {up} [status $replica master_link_status]\n+\n+                # The replication client must remain unrestricted by local ACLs.\n+                $replica ACL SETUSER default -set\n+                assert_error {NOPERM *} {$replica SET key value}\n+                $primary SET key value\n+                assert_equal 1 [$primary WAIT 1 5000]\n+                assert_equal {value} [$replica GET key]\n+                assert_equal {OK} [$replica ACL LOAD]\n+                assert_equal $primary_client_id [lindex [split [$replica client list type master] \" \"] 0]\n+            }\n+        }\n+    }\n+}\n+\n tags {acl external:skip} {\n     set renames [list rename-command \"PING RainWasHere\" \\\n                       rename-command \"RainWasHere VPING\" \\\nPATCH\n\ngit --no-pager diff --check && ./runtest --single unit/acl --only '/ACL LOAD on a replica/'",
+  "cd /testbed && ./runtest --single unit/acl --only 'ACL LOAD on a replica*' > /tmp/acl-load-targeted-tests.log 2>&1; result=$?; grep -E '\\[ok\\]|\\[err\\]|\\[exception\\]|All tests|failed|The End' /tmp/acl-load-targeted-tests.log; if [ \"$result\" -ne 0 ]; then tail -80 /tmp/acl-load-targeted-tests.log; fi; exit \"$result\"",
+  "cd /testbed && sed -n '170,220p' tests/support/test.tcl && grep -nE 'ACL LOAD on|\\[pass|\\[ok|\\[err' /tmp/acl-load-targeted-tests.log && ./runtest --single unit/acl --single unit/acl-v2 > /tmp/acl-load-acl-tests.log 2>&1; result=$?; tail -25 /tmp/acl-load-acl-tests.log; exit \"$result\""
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && sed -n '2210,2405p' src/acl.c && sed -n '1010,1098p' tests/unit/acl.tcl && grep -nE 'user =|user;' src/networking.c src/replication.c | head -70 && command -v apply_patch && peeky session start --help",
+   "subcommands": [
+    "session start"
+   ],
+   "exit_code": 1
+  },
+  {
+   "command": "cd /testbed && peeky session start --help && peeky session get --help && nl -ba src/acl.c | sed -n '2358,2385p' && sed -n '1970,2025p' src/replication.c && grep -nE 'c->user|original' src/acl.c | head -65",
+   "subcommands": [
+    "session start",
+    "session get"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && grep -nE 'CLIENT.*PRIMARY|clientFlags|struct.*client|flag;' src/server.h | head -55 && ls -a | head -25 && grep -nE 'clang-format|format' Makefile .clang-format .github/CONTRIBUTING* CONTRIBUTING* 2>/dev/null | head -30 && peeky session report --help && command -v clang-18 && command -v make",
+   "subcommands": [
+    "session report"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "session start": 2,
+  "session get": 1,
+  "session report": 1
+ },
+ "peeky_doc_reads": 6,
+ "peeky_mentions_in_commands": 19,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 15,
+ "contaminated": false,
+ "final_message": "`ACL LOAD` dereferenced the replica\u2019s upstream client\u2019s intentionally null ACL user. Peeky stopped at `src/acl.c:2382`; `peeky session get original --name acl-load-replica` showed `0x0000000000000000`. The reload loop now skips ACL-independent clients, preserving replication. Added regressions cover ACL files with and without a default user; both ACL suites pass.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the replica crash, inspect it with Peeky before changing code, then fix the cause and run the relevant tests.\n",
+  "The crash is reproducible: `ACL LOAD` succeeds on the primary, but the replica dereferences a null user pointer. Replication deliberately gives its upstream client no ACL user; I\u2019ll check that client at the failing line with Peeky.\n",
+  "Peeky stopped at `src/acl.c:2382`; `session get original` showed `user * = 0x0000000000000000`. Continuing stopped on an exception at that same line. I\u2019ll skip ACL-independent clients during reloading and add coverage that verifies replication stays connected and unrestricted.\n",
+  "`ACL LOAD` dereferenced the replica\u2019s upstream client\u2019s intentionally null ACL user. Peeky stopped at `src/acl.c:2382`; `peeky session get original --name acl-load-replica` showed `0x0000000000000000`. The reload loop now skips ACL-independent clients, preserving replication. Added regressions cover ACL files with and without a default user; both ACL suites pass."
+ ],
+ "assistant_reasoning": [
+  "**Figuring out reproduction process**\n\nI need to reproduce before editing any file, which involves creating an ACL via shell. The user mentioned inputting to facilitate creation, and using temp printf seems likely. The tools are only bash, and while there's no apply tool available, there\u2019s an apply_patch command to check later. I should read the guide from page 220 onward, plus the C guide. I\u2019ll also run two binaries on ports 17779 and 17780, capturing logs and terminating my own PIDs.",
+  "**Planning test setup**\n\nI'm aiming for a balanced budget while keeping things compact. It\u2019s important to add tests for regression verification before fixing anything. I\u2019ll run tests to establish a new baseline. I wonder if a new block can replicate both the ACL presence and the nested starts. Maybe I should use an absolute fixture for tests, ensuring we don\u2019t modify the fixture. I think I\u2019ll create a new block for initial replication using a fresh ACL file copied over. Lastly, I\u2019ll consider adding the block after starting the server.\n\n**Setting up server and tests**\n\nI'm handling the outer start_server settings to manage diskless overrides on ACL tags. For the inner setup, I\u2019m specifying the path to the tmpdir for ACL replication and copying the user.acl file into the overrides directory. I need to check if there\u2019s an initial load missing the default. \n\nIt seems I want to ensure existing users are replaced while maintaining unrestricted replication, even if local defaults prevent certain SET commands. I\u2019ll also design two tests: one for ACL loading on replicas and another checking networking types. I want to gather data carefully throughout this process.",
+  "**Creating a backup**\n\nI need to ensure that a clean named original backup is created, as it's allowed. I'll remove an exact list from /tmp, including core files. It's crucial to use `rm` explicitly and avoid broad removals, especially with logs. I\u2019ll ensure any existing original is correctly patched and that the initial clean state is verified. Logs will be excluded from config changes to prevent issues. Once everything\u2019s confirmed, I'll finalize the process."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 297.7
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a250",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed the replacement printer: it was emitting and re-replacing multiline lookahead context, not expanding capture groups.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a144",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Nominal axes were retaining Matplotlib\u2019s numeric-axis defaults.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

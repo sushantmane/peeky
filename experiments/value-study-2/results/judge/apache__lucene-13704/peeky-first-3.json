@@ -1,0 +1,7 @@
+{
+ "judge_id": "a233",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: Fixed integer overflow in the latitude-grid bounds ... the upper-bound sum overflowed.",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 19 probe at GeoEncodingUtils.java:414: lat=2147483645, lon=2147483645 match the call test(Integer.MAX_VALUE - 2, Integer.MAX_VALUE - 2) in cmd 18; return=false matches cmd 18 'match ==> false' / 'Component predicate matches: false'; lat2=2147483646 fits code 'lat2 = ((lat - Integer.MIN_VALUE) >>> latShift)' with latShift=1 (diff, cmd 25). Nothing contradicts."
+}

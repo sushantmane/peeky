@@ -1,0 +1,75 @@
+diff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+index bd85a5771f..ca82eeff31 100644
+--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
++++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+@@ -287,6 +287,10 @@ public final class ShapeField {
+   /**
+    * Decode a triangle encoded by {@link ShapeField#encodeTriangle(byte[], int, int, boolean, int,
+    * int, boolean, int, int, boolean)}.
++   *
++   * <p>Triangles with coincident vertices are simplified to points or lines. The resulting line's
++   * {@link DecodedTriangle#ab} flag is set if either non-collapsed edge belongs to the original
++   * shape.
+    */
+   public static void decodeTriangle(byte[] t, DecodedTriangle triangle) {
+     final int aX, aY, bX, bY, cX, cY;
+@@ -380,13 +384,16 @@ public final class ShapeField {
+         triangle.bY = triangle.cY;
+         triangle.cX = triangle.aX;
+         triangle.cY = triangle.aY;
++        triangle.ab = triangle.bc || triangle.ca;
+         triangle.type = DecodedTriangle.TYPE.LINE;
+       }
+     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {
++      triangle.ab = triangle.ab || triangle.bc;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {
+       triangle.cX = triangle.aX;
+       triangle.cY = triangle.aY;
++      triangle.ab = triangle.ab || triangle.ca;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else {
+       triangle.type = DecodedTriangle.TYPE.TRIANGLE;
+diff --git a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
+index 3beafb44bd..06ef0c7470 100644
+--- a/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
++++ b/lucene/core/src/test/org/apache/lucene/document/BaseShapeEncodingTestCase.java
+@@ -348,6 +348,38 @@ public abstract class BaseShapeEncodingTestCase extends LuceneTestCase {
+     assertEquals(encodedABC, encodedACB);
+   }
+ 
++  public void testCollapsedTriangleEdgeFlags() {
++    int aX = encodeX(0);
++    int aY = encodeY(0);
++    int bX = encodeX(1);
++    int bY = encodeY(1);
++    for (int collapsedEdge = 0; collapsedEdge < 3; collapsedEdge++) {
++      for (int flags = 0; flags < 8; flags++) {
++        ShapeField.DecodedTriangle triangle = new ShapeField.DecodedTriangle();
++        triangle.setValues(
++            aX,
++            aY,
++            (flags & 1) != 0,
++            collapsedEdge == 0 ? aX : bX,
++            collapsedEdge == 0 ? aY : bY,
++            (flags & 2) != 0,
++            collapsedEdge == 2 ? aX : bX,
++            collapsedEdge == 2 ? aY : bY,
++            (flags & 4) != 0);
++        boolean fromShape = (flags & ~(1 << collapsedEdge)) != 0;
++        ShapeField.resolveTriangleType(triangle);
++        assertEquals(ShapeField.DecodedTriangle.TYPE.LINE, triangle.type);
++        assertEquals(aX, triangle.aX);
++        assertEquals(aY, triangle.aY);
++        assertEquals(bX, triangle.bX);
++        assertEquals(bY, triangle.bY);
++        assertEquals(aX, triangle.cX);
++        assertEquals(aY, triangle.cY);
++        assertEquals(fromShape, triangle.ab);
++      }
++    }
++  }
++
+   public void testPointEncoding() {
+     double lat = 45.0;
+     double lon = 45.0;

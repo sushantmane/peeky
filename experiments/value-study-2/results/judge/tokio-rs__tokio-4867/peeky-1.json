@@ -1,0 +1,7 @@
+{
+ "judge_id": "a222",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Resubscribed receivers started past the closing marker, and empty-receive paths ignored channel closure.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

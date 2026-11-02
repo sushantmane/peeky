@@ -1,0 +1,141 @@
+{
+ "bug": "valkey-io__valkey-790",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-790:peeky-r2",
+ "image_id": "sha256:50ae4a1e5dd22df4297d03bcccb42c0ff2b2f9b3e8b037c48390046b564ba39b",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T09:07:53+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first statement of the removed addShardReplyForClusterShards (CLUSTER SHARDS on one node)",
+   "at": "src/cluster_legacy.c:5667",
+   "commands": [
+    {
+     "command": "peeky session start . --binary src/valkey-server --at src/cluster_legacy.c:5667 --name reach --timeout 5 --json -- --port 7002 --save '' --appendonly no --cluster-enabled yes --cluster-config-file /root/reach/nodes-7002.conf",
+     "exit": 0,
+     "seconds": 19.5
+    },
+    {
+     "command": "peeky session wait --name reach --timeout 119 --json",
+     "exit": 0,
+     "seconds": 0.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.9
+    }
+   ],
+   "trigger": {
+    "exit": 0,
+    "seconds": 21.1,
+    "output": "OK\n"
+   },
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/cluster_legacy.c:5667",
+    "function": "addShardReplyForClusterShards"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 2,
+    "sample": [
+     {
+      "name": "c",
+      "value": "0x0000fffff79e1700"
+     },
+     {
+      "name": "nodes",
+      "value": "0x0000fffff7825960"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "n",
+      "value": "0x0000fffff7860ad8",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 5668, below this stop, and any call above the stop may return twice (f_call is code no unit's debug information covers (assembly built without -g?), and 580 more; a config's \"returns_twice\" can name the functions that do), so P"
+     },
+     {
+      "name": "li",
+      "value": "{next = 0x00000001fffff560, direction = -142210344}",
+      "note": "may be leftovers, or its value from before a `longjmp`: declared at line 5686, below this stop, and any call above the stop may return twice (f_call is code no unit's debug information covers (assembly built without -g?), and 580 more; a config's \"returns_twice\" can name the functions that do), so P"
+     }
+    ]
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "gold",
+   "why": "the removed call in clusterCommandShards",
+   "at": "src/cluster_legacy.c:5704",
+   "commands": [
+    {
+     "command": "peeky session start . --binary src/valkey-server --at src/cluster_legacy.c:5704 --name reach --timeout 5 --json -- --port 7002 --save '' --appendonly no --cluster-enabled yes --cluster-config-file /root/reach/nodes-7002.conf",
+     "exit": 0,
+     "seconds": 20.0
+    },
+    {
+     "command": "peeky session wait --name reach --timeout 119 --json",
+     "exit": 0,
+     "seconds": 0.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.7
+    }
+   ],
+   "trigger": {
+    "exit": 0,
+    "seconds": 21.1,
+    "output": "ERR Slot 1 is already busy\n\n"
+   },
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/cluster_legacy.c:5704",
+    "function": "clusterCommandShards"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "c",
+      "value": "0x0000fffff79e1700"
+     },
+     {
+      "name": "di",
+      "value": "0x0000fffff7825b10"
+     },
+     {
+      "name": "de",
+      "value": "0x0000fffff7860ad8"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is Tcl (tests/unit/cluster/cluster-shards.tcl), which Peeky doesn't debug"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T09:09:17+00:00"
+}

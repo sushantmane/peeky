@@ -1,0 +1,241 @@
+{
+ "bug": "tokio-rs__axum-1934",
+ "arm": "peeky",
+ "rep": 1,
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__axum-1934:peeky-r2",
+ "image_digest": "sha256:0a3ae0eb3e8a683551f0ff5e8f7bd16648194efbfa1959c724555cdb2717a05f",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-tokio-rs__axum-1934-peeky-1-33a0f5",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T12:37:04+00:00",
+ "ended": "2026-11-01T12:39:45+00:00",
+ "wall_seconds": 161.1,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "routing::tests::fallback::doesnt_panic_if_used_with_nested_router": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 3.4,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "02c7f47ab15bbf30a5d3d1a15f8f232f002e9998f64d958740fbfa6a6c2e0d9b",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "axum/CHANGELOG.md",
+  "axum/src/extract/matched_path.rs"
+ ],
+ "patch_bytes": 1949,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 16
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 12,
+ "ai_credits": 17.905,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 287589,
+  "output": 6010,
+  "cache_read": 250002,
+  "cache_write": 37551,
+  "reasoning": 2823
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 18,
+ "tool_calls_by_name": {
+  "bash": 18
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -la && ls /testbed && cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && sed -n '1,250p' axum/src/extract/matched_path.rs && rg -n 'MatchedPath|set_matched_path|fallback_service|nest_service' axum/src/routing --glob '*.rs'",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,190p' /opt/peeky/docs/AGENT_GUIDE.md && cd /testbed && cat axum/Cargo.toml && ls axum && cat axum/CHANGELOG.md | head -75",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'MatchedPath|set_matched_path|fallback|nest_service' axum/src/routing/path_router.rs && sed -n '1,320p' axum/src/routing/path_router.rs && sed -n '250,540p' axum/src/extract/matched_path.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'fallback|nest_service|fn call' axum/src/routing/mod.rs && cat axum/Cargo.toml && head -65 axum/CHANGELOG.md && sed -n '1,100p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '90,180p' axum/src/routing/mod.rs && sed -n '249,331p' axum/src/routing/mod.rs && sed -n '310,460p' axum/src/routing/path_router.rs && cat axum/src/docs/routing/fallback.md && grep -nE 'matched_path|MatchedPath|ServeDir|fallback_service' axum/src/routing/tests/*.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,280p' axum/src/routing/tests/fallback.rs && sed -n '1,140p' axum/src/routing/tests/mod.rs && grep -nE 'ServeDir|nest_service' axum/src/routing/tests/nest.rs && sed -n '1,180p' axum/src/test_helpers/test_client.rs && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '175,225p' axum/src/routing/tests/nest.rs && grep -R -n 'PathRouter\\|FALLBACK_PARAM\\|MatchedPath' axum/src/docs --include='*.md' | head -70 && grep -R -n 'PathRouter' axum/src --include='*.rs' && git --no-pager log -4 --oneline && command -v patch && ls /usr/local/bin/*patch* /usr/bin/*patch* 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n 'oneshot\\|include_str!\\|content_length' axum/src/routing/tests/fallback.rs axum/src/routing/tests/nest.rs | head -65 && cat rust-toolchain* 2>/dev/null; cat /opt/peeky/docs/PROJECT.md | head -70",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -3,6 +3,29 @@\n use super::*;\n use crate::middleware::{map_request, map_response};\n \n+#[crate::test]\n+async fn fallback_service_with_nested_serve_dir() {\n+    for prefix in [\"/\", \"/static\"] {\n+        let routes_static = Router::new().nest_service(\n+            prefix,\n+            get_service(tower_http::services::ServeDir::new(env!(\n+                \"CARGO_MANIFEST_DIR\"\n+            ))),\n+        );\n+        let app = Router::new().fallback_service(routes_static);\n+        let client = TestClient::new(app);\n+\n+        let path = format!(\"{}/README.md\", prefix.trim_end_matches('/'));\n+        let res = client.get(&path).send().await;\n+        assert_eq!(res.status(), StatusCode::OK);\n+        assert_eq!(res.text().await, include_str!(\"../../../README.md\"));\n+\n+        let path = format!(\"{}/does-not-exist\", prefix.trim_end_matches('/'));\n+        let res = client.get(&path).send().await;\n+        assert_eq!(res.status(), StatusCode::NOT_FOUND);\n+    }\n+}\n+\n #[crate::test]\n async fn basic() {\n     let app = Router::new()\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -391,4 +391,28 @@\n         let res = client.get(\"/foo/bar\").send().await;\n         assert_eq!(res.status(), StatusCode::OK);\n     }\n+\n+    #[crate::test]\n+    async fn extracting_on_nested_handler_after_matched_route() {\n+        async fn handler(path: Option<MatchedPath>) -> &'static str {\n+            assert!(path.is_none());\n+            \"nested\"\n+        }\n+\n+        let service = Router::new().nest_service(\"/\", handler.into_service());\n+        let apps = [\n+            Router::new().fallback_service(service.clone()),\n+            Router::new().route(\"/*path\", crate::routing::get_service(service)),\n+        ];\n+\n+        for app in apps {\n+            let client = TestClient::new(app);\n+\n+            let res = client.get(\"/foo/bar\").send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+            assert_eq!(res.text().await, \"nested\");\n+        }\n+    }\n }\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback_service_with_nested_serve_dir",
+   "exit_code": 101,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && tail -35 axum/src/extract/matched_path.rs && git --no-pager diff --stat && git --no-pager status --short && head -43 axum/src/routing/tests/fallback.rs",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,135p' /opt/peeky/docs/lang/rust.md && peeky --help | head -45",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -143,7 +143,7 @@\n \n     if matched_path.ends_with(NEST_TAIL_PARAM_CAPTURE) {\n         extensions.insert(MatchedNestedPath(matched_path));\n-        debug_assert!(matches!(extensions.remove::<MatchedPath>(), None));\n+        extensions.remove::<MatchedPath>();\n     } else {\n         extensions.insert(MatchedPath(matched_path));\n         extensions.remove::<MatchedNestedPath>();\n@@ -391,4 +391,26 @@\n         let res = client.get(\"/foo/bar\").send().await;\n         assert_eq!(res.status(), StatusCode::OK);\n     }\n+\n+    #[crate::test]\n+    async fn extracting_on_nested_handler_after_matched_route() {\n+        async fn handler(path: Option<MatchedPath>) -> &'static str {\n+            assert!(path.is_none());\n+            \"nested\"\n+        }\n+\n+        let service = Router::new().nest_service(\"/\", handler.into_service());\n+        let apps = [\n+            Router::new().fallback_service(service.clone()),\n+            Router::new().route(\"/*path\", crate::routing::get_service(service)),\n+        ];\n+\n+        for app in apps {\n+            let client = TestClient::new(app);\n+\n+            let res = client.get(\"/foo/bar\").send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+            assert_eq!(res.text().await, \"nested\");\n+        }\n+    }\n }\n--- a/axum/CHANGELOG.md\n+++ b/axum/CHANGELOG.md\n@@ -8,7 +8,8 @@\n \n # Unreleased\n \n-- None.\n+- **fixed:** Avoid panicking when a nested service receives an existing\n+  `MatchedPath`, such as when using `ServeDir` in a fallback router.\n \n # 0.6.15 (12. April, 2023)\n \nPATCH\nRUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- extract::matched_path && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- routing::tests::fallback",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rustfmt --check --edition 2021 axum/src/extract/matched_path.rs axum/src/routing/tests/fallback.rs && git --no-pager diff --check && git --no-pager diff && git --no-pager status --short && find axum -name '*.orig' -o -name '*.rej'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff && git --no-pager status --short && find axum -name '*.orig' -o -name '*.rej'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "rustup toolchain list && command -v cargo-fmt && ls /opt && ls /usr/bin/rustfmt /usr/local/bin/rustfmt 2>/dev/null",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 --no-backup-if-mismatch <<'PATCH'\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -1,4 +1,5 @@\n use tower::ServiceExt;\n+use tower_http::services::ServeDir;\n \n use super::*;\n use crate::middleware::{map_request, map_response};\n@@ -8,9 +9,7 @@\n     for prefix in [\"/\", \"/static\"] {\n         let routes_static = Router::new().nest_service(\n             prefix,\n-            get_service(tower_http::services::ServeDir::new(env!(\n-                \"CARGO_MANIFEST_DIR\"\n-            ))),\n+            get_service(ServeDir::new(env!(\"CARGO_MANIFEST_DIR\"))),\n         );\n         let app = Router::new().fallback_service(routes_static);\n         let client = TestClient::new(app);\nPATCH\nrm axum/CHANGELOG.md.orig axum/src/extract/matched_path.rs.orig && git --no-pager diff --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested && CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false RUSTFLAGS=-Awarnings cargo test --package axum --lib -- extracting_on_nested_handler_after_matched_route && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -3,6 +3,29 @@\n use super::*;\n use crate::middleware::{map_request, map_response};\n \n+#[crate::test]\n+async fn fallback_service_with_nested_serve_dir() {\n+    for prefix in [\"/\", \"/static\"] {\n+        let routes_static = Router::new().nest_service(\n+            prefix,\n+            get_service(tower_http::services::ServeDir::new(env!(\n+                \"CARGO_MANIFEST_DIR\"\n+            ))),\n+        );\n+        let app = Router::new().fallback_service(routes_static);\n+        let client = TestClient::new(app);\n+\n+        let path = format!(\"{}/README.md\", prefix.trim_end_matches('/'));\n+        let res = client.get(&path).send().await;\n+        assert_eq!(res.status(), StatusCode::OK);\n+        assert_eq!(res.text().await, include_str!(\"../../../README.md\"));\n+\n+        let path = format!(\"{}/does-not-exist\", prefix.trim_end_matches('/'));\n+        let res = client.get(&path).send().await;\n+        assert_eq!(res.status(), StatusCode::NOT_FOUND);\n+    }\n+}\n+\n #[crate::test]\n async fn basic() {\n     let app = Router::new()\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -391,4 +391,28 @@\n         let res = client.get(\"/foo/bar\").send().await;\n         assert_eq!(res.status(), StatusCode::OK);\n     }\n+\n+    #[crate::test]\n+    async fn extracting_on_nested_handler_after_matched_route() {\n+        async fn handler(path: Option<MatchedPath>) -> &'static str {\n+            assert!(path.is_none());\n+            \"nested\"\n+        }\n+\n+        let service = Router::new().nest_service(\"/\", handler.into_service());\n+        let apps = [\n+            Router::new().fallback_service(service.clone()),\n+            Router::new().route(\"/*path\", crate::routing::get_service(service)),\n+        ];\n+\n+        for app in apps {\n+            let client = TestClient::new(app);\n+\n+            let res = client.get(\"/foo/bar\").send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+            assert_eq!(res.text().await, \"nested\");\n+        }\n+    }\n }\nPATCH\nRUSTFLAGS=-Awarnings cargo test --package axum --lib -- fallback_service_with_nested_serve_dir",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/axum/src/extract/matched_path.rs\n+++ b/axum/src/extract/matched_path.rs\n@@ -143,7 +143,7 @@\n \n     if matched_path.ends_with(NEST_TAIL_PARAM_CAPTURE) {\n         extensions.insert(MatchedNestedPath(matched_path));\n-        debug_assert!(matches!(extensions.remove::<MatchedPath>(), None));\n+        extensions.remove::<MatchedPath>();\n     } else {\n         extensions.insert(MatchedPath(matched_path));\n         extensions.remove::<MatchedNestedPath>();\n@@ -391,4 +391,26 @@\n         let res = client.get(\"/foo/bar\").send().await;\n         assert_eq!(res.status(), StatusCode::OK);\n     }\n+\n+    #[crate::test]\n+    async fn extracting_on_nested_handler_after_matched_route() {\n+        async fn handler(path: Option<MatchedPath>) -> &'static str {\n+            assert!(path.is_none());\n+            \"nested\"\n+        }\n+\n+        let service = Router::new().nest_service(\"/\", handler.into_service());\n+        let apps = [\n+            Router::new().fallback_service(service.clone()),\n+            Router::new().route(\"/*path\", crate::routing::get_service(service)),\n+        ];\n+\n+        for app in apps {\n+            let client = TestClient::new(app);\n+\n+            let res = client.get(\"/foo/bar\").send().await;\n+            assert_eq!(res.status(), StatusCode::OK);\n+            assert_eq!(res.text().await, \"nested\");\n+        }\n+    }\n }\n--- a/axum/CHANGELOG.md\n+++ b/axum/CHANGELOG.md\n@@ -8,7 +8,8 @@\n \n # Unreleased\n \n-- None.\n+- **fixed:** Avoid panicking when a nested service receives an existing\n+  `MatchedPath`, such as when using `ServeDir` in a fallback router.\n \n # 0.6.15 (12. April, 2023)\n \nPATCH\nRUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested",
+  "cd /testbed && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- extract::matched_path && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- routing::tests::fallback",
+  "cd /testbed && patch -p1 --no-backup-if-mismatch <<'PATCH'\n--- a/axum/src/routing/tests/fallback.rs\n+++ b/axum/src/routing/tests/fallback.rs\n@@ -1,4 +1,5 @@\n use tower::ServiceExt;\n+use tower_http::services::ServeDir;\n \n use super::*;\n use crate::middleware::{map_request, map_response};\n@@ -8,9 +9,7 @@\n     for prefix in [\"/\", \"/static\"] {\n         let routes_static = Router::new().nest_service(\n             prefix,\n-            get_service(tower_http::services::ServeDir::new(env!(\n-                \"CARGO_MANIFEST_DIR\"\n-            ))),\n+            get_service(ServeDir::new(env!(\"CARGO_MANIFEST_DIR\"))),\n         );\n         let app = Router::new().fallback_service(routes_static);\n         let client = TestClient::new(app);\nPATCH\nrm axum/CHANGELOG.md.orig axum/src/extract/matched_path.rs.orig && git --no-pager diff --check && RUSTFLAGS=-Awarnings cargo test --package axum --lib -- nested && CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false RUSTFLAGS=-Awarnings cargo test --package axum --lib -- extracting_on_nested_handler_after_matched_route && git --no-pager status --short"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && sed -n '1,135p' /opt/peeky/docs/lang/rust.md && peeky --help | head -45",
+   "subcommands": [
+    "--help"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "--help": 1
+ },
+ "peeky_doc_reads": 5,
+ "peeky_mentions_in_commands": 6,
+ "peeky_withheld_markers": 4,
+ "peeky_withheld_by_marker": {
+  "[unproven]": 1,
+  "[stale]": 2,
+  "not settable": 1
+ },
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed the `ServeDir` fallback panic. Nested routing incorrectly asserted that no prior `MatchedPath` existed; it now removes that extension unconditionally, preventing the panic and stale metadata in release builds. Added regression tests covering static-file fallbacks and matched-path cleanup; targeted tests pass with debug assertions enabled and disabled.",
+ "assistant_messages": [
+  "I\u2019ll trace how fallback routing handles `MatchedPath`, fix the regression, and add a test for the reported router setup.\n",
+  "The panic comes from an invalid assertion: a nested service can receive a `MatchedPath` from an earlier routing step. I\u2019ll remove that extension unconditionally, which also fixes stale metadata in release builds, and test the reported `ServeDir` fallback setup.\n",
+  "Fixed the `ServeDir` fallback panic. Nested routing incorrectly asserted that no prior `MatchedPath` existed; it now removes that extension unconditionally, preventing the panic and stale metadata in release builds. Added regression tests covering static-file fallbacks and matched-path cleanup; targeted tests pass with debug assertions enabled and disabled."
+ ],
+ "assistant_reasoning": [
+  "**Testing router outcomes**\n\nI need to test the resulting MatchedPath in the router, specifically with the `.fallback_service(Router::new().route(\"/foo\",get(MatchedPath)))`. It seems to output a fallback private prefix, which is concerning because there\u2019s a preexisting regression. I need to ensure that the developer investigates every relevant surface to preserve the intended user experience. It's essential to get this right!",
+  "**Refining Rust Imports**\n\nI need to format my Rust imports to make them clearer. I\u2019m looking to reduce fully qualified imports for `ServeDir`, like in the tests with `tower_http`. By using `use tower_http::services::ServeDir;`, I can simplify my service call to `get_service(ServeDir::new(env!(\"CARGO_MANIFEST_DIR\")))`. It seems like naming things and ensuring the imports are tidy could help reduce unnecessary multiline declarations.\n\nI should also check the width for rustfmt compliance by restructuring lines to fit better conventionally. Ultimately, I want everything streamlined!\n\n**Streamlining Patch Management**\n\nI need to ensure I\u2019m removing any `.orig` files only after final patches. To avoid overwriting the original source, I should use `patch --no-backup-if-mismatch`. This way, I don't accidentally update those `.orig` files. It\u2019s not necessary to mention the formatter unless requested during tests, especially since the user specifically asked to run `axum` unit tests without them.\n\nI also need to validate the release and clean up any debug assertions. Running the test profile can help ensure everything is working smoothly without unnecessary rebuilds.\n\n**Testing Release Behavior**\n\nI need to ensure that the release behavior is meaningful, so I'll perform tests with a direct release override using the specified `CARGO_PROFILE_TEST_DEBUG_ASSERTIONS=false` flag. This matches what the user has requested.\n\nIt's worth considering if a full rebuild that takes about a minute is justified to confirm the behavior shift during tests, especially since this is a change from debug-only to release. I want to ensure the root correctness of the release, especially given the claims made."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 165.7
+}

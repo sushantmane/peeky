@@ -1,0 +1,7 @@
+{
+ "judge_id": "a190",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`ACL LOAD` dereferenced the primary replication client\u2019s intentionally NULL ACL user.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Peeky probe run via python (cmds 10-11, not marked PEEKY but Peeky's table via `peeky job wait`) at acl.c:2382 on a replica: original=0x0000000000000000, channels=0x0, c=0x...7600. Consistent with code shown: cmd 12 replication.c:2002 `server.primary->user = NULL`, cmd 8 line 2380 `original = c->user`, 2381 `channels = NULL`; ACL LOAD crashed the server in cmd 11 (NULL c->user->name deref), and the NULL-user skip fix passes tests in cmd 20. c.user marked [unproven] excluded. Marked PEEKY cmds (8,15,21,22) printed no values. None contradicted."
+}

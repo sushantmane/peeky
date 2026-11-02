@@ -1,0 +1,311 @@
+{
+ "bug": "projectlombok__lombok-3052",
+ "arm": "control",
+ "rep": 3,
+ "language": "java",
+ "category": "B",
+ "image": "peeky-study/projectlombok__lombok-3052:control",
+ "image_digest": "sha256:ea705c2064c6e3381792404e1416510281a87a6f1fa046a5928287fbd6485f91",
+ "peeky_sha": null,
+ "container": "study-projectlombok__lombok-3052-control-3-ca0a63",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:10:07+00:00",
+ "ended": "2026-11-01T13:14:26+00:00",
+ "wall_seconds": 259.0,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "javac-BuilderDefaultsTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED",
+  "javac-SuperBuilderWithDefaultsAndTargetTyping.java(lombok.transform.TestWithDelombok)": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 5.6,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "eac2640a1243957a24b07eee6ccd2d6dbebffe307f2ee6868e81560a42be661e",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "doc/changelog.markdown",
+  "src/core/lombok/javac/handlers/HandleBuilder.java",
+  "src/core/lombok/javac/handlers/HandleSuperBuilder.java",
+  "test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java",
+  "test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java"
+ ],
+ "patch_bytes": 14405,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 305
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 22,
+ "ai_credits": 32.5618,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 782817,
+  "output": 11420,
+  "cache_read": 727330,
+  "cache_write": 55421,
+  "reasoning": 2650
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 32,
+ "tool_calls_by_name": {
+  "bash": 32
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -a && if [ -d /testbed ]; then cd /testbed && git status --short; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "rg -n 'generateDefaultProvider|defaultProvider|\\$default\\$' src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/eclipse/handlers/HandleBuilder.java && sed -n '230,340p' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '730,850p' src/core/lombok/javac/handlers/HandleBuilder.java",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "rg --files test | grep -E '(Builder.*Default|BuilderDefaults|RunTests|Compiler|Javac)' | head -70 && rg -n 'test.compile|test.javacCurrent' build.xml buildScripts/*.xml && java -version && ant -version",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "rg -n 'copy.*Type|clone.*Type|recursive.*Type|cloneSelf|copy.*Tree' src/core/lombok/javac --glob '*.java' && sed -n '1,140p' test/transform/resource/before/BuilderDefaults.java && rg -n 'Builder.Default|default provider' website/templates/features/Builder.html",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'generateDefaultProvider|defaultProvider|\\$default\\$' src/core/lombok/{javac,eclipse}/handlers/HandleBuilder.java && sed -n '230,340p' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '730,850p' src/core/lombok/javac/handlers/HandleBuilder.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "find test -type f | grep -E '(Builder.*Default|BuilderDefaults|RunTests|Compiler|Javac)' | head -70; grep -nE 'test.compile|test.javacCurrent' build.xml buildScripts/*.xml; java -version; ant -version",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -RnE 'copy.*Type|clone.*Type|recursive.*Type|cloneSelf|copy.*Tree' src/core/lombok/javac --include='*.java' | head -90; cat test/transform/resource/before/BuilderDefaults.java; grep -nE 'Builder.Default|default provider' website/templates/features/Builder.html",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'recursiveSetGeneratedBy|setGeneratedBy|pos =' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '160,270p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '1,190p' buildScripts/tests.ant.xml && cat test/core/src/lombok/TestJavac.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,260p' test/core/src/lombok/AbstractRunTests.java && cat test/transform/resource/{before,after-delombok}/BuilderDefaultsGenerics.java && sed -n '1,120p' website/templates/changelog.html && grep -nE 'generateDefaultProvider|recursiveSetGeneratedBy' src/core/lombok/javac/handlers/HandleSuperBuilder.java && ls build && ls dist",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '100,166p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && grep -nE 'injectMethod|addSuppressWarnings' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '1350,1415p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && cat test/transform/src/lombok/transform/{TestSourceFiles,TestWithDelombok}.java && sed -n '1,200p' test/core/src/lombok/DirectoryRunner.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat test/core/src/lombok/RunTestsViaDelombok.java && grep -RnE 'checkPositions|generated.*pos|position' test/transform/src test/core/src/lombok/RunTestsViaDelombok.java && find doc -maxdepth 2 -type f | head -35 && sed -n '185,225p' src/core/lombok/javac/handlers/HandleSuperBuilder.java && command -v apply_patch && sed -n '1,150p' buildScripts/compile.ant.xml",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "head -75 doc/changelog.markdown; sed -n '1215,1255p' src/core/lombok/javac/handlers/JavacHandlerUtil.java; sed -n '35,95p' src/core/lombok/javac/handlers/HandleBuilder.java; sed -n '1,150p' buildScripts/compile.ant.xml; grep -Rnl '^//platform javac' test/transform/resource/before --include='*.java' | head -10; find lib -name '*.jar' | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant -q test.compile",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "head -22 doc/changelog.markdown && sed -n '1218,1250p' src/core/lombok/javac/handlers/JavacHandlerUtil.java && sed -n '42,89p' src/core/lombok/javac/handlers/HandleBuilder.java && grep -Rnl '^// *platform javac' test/transform/resource/before --include='*.java' | head -8 && find lib -name '*.jar' | head -25 && grep -nE 'packing.basedirs|cp.stripe|cp.test' buildScripts/{compile,dependencies,packing}.ant.xml",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -Rnl 'platform.*javac' test/transform/resource/before --include='*.java' | head -5; sed -n '35,100p' test/core/src/lombok/LombokTestSource.java; grep -nE 'platform|skip compare' test/core/src/lombok/LombokTestSource.java; ls build/lombok-main/lombok/launch; ls build/lombok-main/META-INF/services; find lib -path '*stripe*' -o -path '*test*'; command -v patch",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '180,215p' test/core/src/lombok/LombokTestSource.java && head -10 test/transform/resource/before/BuilderSingularMaps.java && grep -Rnl 'diamond' test/transform/resource/before --include='*.java' | head -5 && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok --help | head -40",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "patch -p1 <<'PATCH'\n--- /dev/null\n+++ b/test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java\n@@ -0,0 +1,44 @@\n+// version 8:\n+// platform javac\n+import lombok.Builder;\n+import lombok.Value;\n+\n+@Builder\n+public class BuilderDefaultsGenericsInInitializer {\n+\n+\t@Builder.Default\n+\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n+\n+\t@Value\n+\tstatic class MyClass<T> {\n+\t\tT value;\n+\t\tstatic MyClass<Integer> myInt() {\n+\t\t\treturn new MyClass<>(42);\n+\t\t}\n+\t\tstatic MyClass<Character> myChar() {\n+\t\t\treturn new MyClass<>('A');\n+\t\t}\n+\t}\n+\n+\tstatic String doSth(MyClass<Integer> i, MyClass<Character> c) {\n+\t\treturn i.value.toString() + c.value.toString();\n+\t}\n+\n+\tpublic static void main(String... args) {\n+\t\tif (!\"42A\".equals(BuilderDefaultsGenericsInInitializer.builder().build().foo)) throw new AssertionError();\n+\t\tif (!\"override\".equals(BuilderDefaultsGenericsInInitializer.builder().foo(\"override\").build().foo)) throw new AssertionError();\n+\t\tif (!\"42A\".equals(SuperBuilderDefaultsGenericsInInitializer.builder().build().foo)) throw new AssertionError();\n+\t\tif (!\"override\".equals(SuperBuilderDefaultsGenericsInInitializer.builder().foo(\"override\").build().foo)) throw new AssertionError();\n+\t}\n+}\n+\n+@lombok.experimental.SuperBuilder\n+class SuperBuilderDefaultsGenericsInInitializer {\n+\t@Builder.Default\n+\tString foo = BuilderDefaultsGenericsInInitializer.doSth(\n+\t\tBuilderDefaultsGenericsInInitializer.MyClass.myInt(),\n+\t\tBuilderDefaultsGenericsInInitializer.MyClass.myChar());\n+}\n+\n+\nPATCH\njava -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -p test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java > build/BuilderDefaultsGenericsInInitializer.baseline.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- /dev/null\n+++ b/test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java\n@@ -0,0 +1,1 @@\n+// version 8:\n+// platform javac\n+import lombok.Builder;\n+import lombok.Value;\n+\n+@Builder\n+public class BuilderDefaultsGenericsInInitializer {\n+\n+\t@Builder.Default\n+\tString foo = doSth(MyClass.myInt(), MyClass.myChar());\n+\n+\t@Value\n+\tstatic class MyClass<T> {\n+\t\tT value;\n+\t\tstatic MyClass<Integer> myInt() {\n+\t\t\treturn new MyClass<>(42);\n+\t\t}\n+\t\tstatic MyClass<Character> myChar() {\n+\t\t\treturn new MyClass<>('A');\n+\t\t}\n+\t}\n+\n+\tstatic String doSth(MyClass<Integer> i, MyClass<Character> c) {\n+\t\treturn i.value.toString() + c.value.toString();\n+\t}\n+\n+\tpublic static void main(String... args) {\n+\t\tif (!\"42A\".equals(BuilderDefaultsGenericsInInitializer.builder().build().foo)) throw new AssertionError();\n+\t\tif (!\"override\".equals(BuilderDefaultsGenericsInInitializer.builder().foo(\"override\").build().foo)) throw new AssertionError();\n+\t\tif (!\"42A\".equals(SuperBuilderDefaultsGenericsInInitializer.builder().build().foo)) throw new AssertionError();\n+\t\tif (!\"override\".equals(SuperBuilderDefaultsGenericsInInitializer.builder().foo(\"override\").build().foo)) throw new AssertionError();\n+\t}\n+}\n+\n+@lombok.experimental.SuperBuilder\n+class SuperBuilderDefaultsGenericsInInitializer {\n+\t@Builder.Default\n+\tString foo = BuilderDefaultsGenericsInInitializer.doSth(\n+\t\tBuilderDefaultsGenericsInInitializer.MyClass.myInt(),\n+\t\tBuilderDefaultsGenericsInInitializer.MyClass.myChar());\n+}\nPATCH\njava -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -p test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java > build/BuilderDefaultsGenericsInInitializer.baseline.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,1 +4,2 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\nPATCH\nant -q test.compile && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -f suppressWarnings:generate -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && git diff --stat && head -18 test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '804,824l' src/core/lombok/javac/handlers/HandleBuilder.java && git status --short && git diff -- src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '48,56l' src/core/lombok/javac/handlers/HandleBuilder.java && sed -n '285,294l' src/core/lombok/javac/handlers/HandleBuilder.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount --ignore-space-change <<'PATCH'\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,1 +4,2 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\ndiff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\ndiff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,1 +4,2 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\nPATCH\nant -q test.compile && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -f suppressWarnings:generate -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && git diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\ndiff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\ndiff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -3,3 +3,4 @@\n \n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\n * FEATURE: Turning a field named `uShape` into a getter is tricky: `getUShape` or `getuShape`? The community is split on which style to use. Lombok does `getUShape`, but if you prefer the `getuShape` style, add to `lombok.config`: `lombok.accessors.capitalization = beanspec`. [Issue #2693](https://github.com/projectlombok/lombok/issues/2693) [Pull Request #2996](https://github.com/projectlombok/lombok/pull/2996). Thanks __@YonathanSherwin__!\nPATCH\nif [ $? -ne 0 ]; then exit 1; fi\nant -q test.compile && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -f suppressWarnings:generate -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && git diff --stat",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant -q test.javacCurrent > build/builder-defaults-javac-tests.log 2>&1; result=$?; tail -70 build/builder-defaults-javac-tests.log; exit $result",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "mkdir -p build/builder-defaults-regression && javac -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' -d build/builder-defaults-regression test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && java -cp build/builder-defaults-regression BuilderDefaultsGenericsInInitializer && git diff --check && git --no-pager diff -- src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/javac/handlers/HandleSuperBuilder.java doc/changelog.markdown && sed -n '1,220p' test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java",
+   "exit_code": 4,
+   "mode": "sync"
+  },
+  {
+   "command": "ant test.javacCurrent > build/builder-defaults-javac-tests.log 2>&1; result=$?; tail -110 build/builder-defaults-javac-tests.log; exit $result",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "git diff --check && git --no-pager diff -- src/core/lombok/javac/handlers/HandleBuilder.java src/core/lombok/javac/handlers/HandleSuperBuilder.java doc/changelog.markdown && head -12 test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java && grep -nE 'generated|\\$default|doSth|main|SuperBuilderDefaults' test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java && sed -n '25,145p' src/core/lombok/javac/apt/LombokFileObjects.java && grep -nE 'dist|lombok.jar' buildScripts/compile.ant.xml | tail -20",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok --format-help | grep -A4 -B2 -iE 'generated|pretty|suppress|empty|final' && sed -n '225,251p' buildScripts/compile.ant.xml && grep -n 'java9Compiler' src/core/lombok/javac/apt/LombokFileObjects.java && sed -n '158,186p' src/core/lombok/javac/apt/LombokFileObjects.java",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "ant -q dist > build/builder-defaults-dist.log 2>&1; result=$?; tail -35 build/builder-defaults-dist.log; exit $result",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "java -jar dist/lombok.jar delombok -f generateDelombokComment:skip -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && ant test.javacCurrent > build/builder-defaults-javac-tests.log 2>&1; result=$?; grep -E '(FAIL|Unexpected|Expected|position of node|BuilderDefaultsGenericsInInitializer|BUILD |Total time)' build/builder-defaults-javac-tests.log | tail -45; exit $result",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "javac -cp dist/lombok.jar -d build/builder-defaults-regression test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && java -cp build/builder-defaults-regression BuilderDefaultsGenericsInInitializer && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,205p' test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java && find build/builder-defaults-regression -maxdepth 1 -type f -print && rm -f -- build/BuilderDefaultsGenericsInInitializer.baseline.java build/builder-defaults-dist.log build/builder-defaults-javac-tests.log && rm -r -- build/builder-defaults-regression && git diff --check && git status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 10,
+ "build_or_test_commands": [
+  "rg --files test | grep -E '(Builder.*Default|BuilderDefaults|RunTests|Compiler|Javac)' | head -70 && rg -n 'test.compile|test.javacCurrent' build.xml buildScripts/*.xml && java -version && ant -version",
+  "find test -type f | grep -E '(Builder.*Default|BuilderDefaults|RunTests|Compiler|Javac)' | head -70; grep -nE 'test.compile|test.javacCurrent' build.xml buildScripts/*.xml; java -version; ant -version",
+  "ant -q test.compile",
+  "git apply --recount <<'PATCH'\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,1 +4,2 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\nPATCH\nant -q test.compile && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -f suppressWarnings:generate -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && git diff --stat && head -18 test/transform/resource/after-delombok/BuilderDefaultsGenericsInInitializer.java",
+  "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\ndiff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\ndiff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -4,1 +4,2 @@\n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\nPATCH\nant -q test.compile && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -f suppressWarnings:generate -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && git diff --stat",
+  "git apply --recount <<'PATCH'\ndiff --git a/src/core/lombok/javac/handlers/HandleBuilder.java b/src/core/lombok/javac/handlers/HandleBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleBuilder.java\n@@ -48,3 +48,4 @@\n import com.sun.tools.javac.tree.JCTree.JCPrimitiveTypeTree;\n+import com.sun.tools.javac.tree.JCTree.JCReturn;\n import com.sun.tools.javac.tree.JCTree.JCStatement;\n import com.sun.tools.javac.tree.JCTree.JCTypeApply;\n@@ -289,3 +290,2 @@\n-\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\t\tJCMethodDecl md = generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\t\tif (md != null) injectMethod(parent, md);\n@@ -807,12 +807,18 @@\n-\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params) {\n+\tpublic static JCMethodDecl generateDefaultProvider(Name methodName, JavacNode fieldNode, List<JCTypeParameter> params, JavacNode source) {\n \t\tJavacTreeMaker maker = fieldNode.getTreeMaker();\n \t\tJCVariableDecl field = (JCVariableDecl) fieldNode.get();\n \t\t\n-\t\tJCStatement statement = maker.Return(field.init);\n+\t\tJCExpression init = field.init;\n \t\tfield.init = null;\n \t\t\n+\t\tJCReturn statement = maker.Return(null);\n \t\tJCBlock body = maker.Block(0, List.<JCStatement>of(statement));\n \t\tint modifiers = Flags.PRIVATE | Flags.STATIC;\n-\t\treturn maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\tJCMethodDecl defaultProvider = maker.MethodDef(maker.Modifiers(modifiers), methodName, cloneType(maker, field.vartype, fieldNode), copyTypeParams(fieldNode, params), List.<JCVariableDecl>nil(), List.<JCExpression>nil(), body, null);\n+\t\trecursiveSetGeneratedBy(defaultProvider, source);\n+\t\t// Preserve the initializer's positions; javac uses them during generic type inference.\n+\t\tstatement.expr = init;\n+\t\treturn defaultProvider;\n \t}\ndiff --git a/src/core/lombok/javac/handlers/HandleSuperBuilder.java b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n--- a/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n+++ b/src/core/lombok/javac/handlers/HandleSuperBuilder.java\n@@ -211,3 +211,2 @@\n-\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams);\n-\t\t\t\trecursiveSetGeneratedBy(md, annotationNode);\n+\t\t\t\tJCMethodDecl md = HandleBuilder.generateDefaultProvider(bfd.nameOfDefaultProvider, fieldNode, td.typarams, annotationNode);\n \t\t\t\tif (md != null) injectMethod(parent, md);\ndiff --git a/doc/changelog.markdown b/doc/changelog.markdown\n--- a/doc/changelog.markdown\n+++ b/doc/changelog.markdown\n@@ -3,3 +3,4 @@\n \n ### v1.18.24 \"Edgy Guinea Pig\"\n+* BUGFIX: `@Builder.Default` initializers containing calls with different generic types no longer cause incorrect type errors on javac 11. This also applies to `@SuperBuilder`.\n * FEATURE: Turning a field named `uShape` into a getter is tricky: `getUShape` or `getuShape`? The community is split on which style to use. Lombok does `getUShape`, but if you prefer the `getuShape` style, add to `lombok.config`: `lombok.accessors.capitalization = beanspec`. [Issue #2693](https://github.com/projectlombok/lombok/issues/2693) [Pull Request #2996](https://github.com/projectlombok/lombok/pull/2996). Thanks __@YonathanSherwin__!\nPATCH\nif [ $? -ne 0 ]; then exit 1; fi\nant -q test.compile && java -cp 'build/lombok-main:build/lombok-utils:build/lombok-utils6:build/lombok-main8:build/lombok-transplants:lib/stripe/*' lombok.launch.Main delombok -f suppressWarnings:generate -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && git diff --stat",
+  "ant -q test.javacCurrent > build/builder-defaults-javac-tests.log 2>&1; result=$?; tail -70 build/builder-defaults-javac-tests.log; exit $result",
+  "ant test.javacCurrent > build/builder-defaults-javac-tests.log 2>&1; result=$?; tail -110 build/builder-defaults-javac-tests.log; exit $result",
+  "ant -q dist > build/builder-defaults-dist.log 2>&1; result=$?; tail -35 build/builder-defaults-dist.log; exit $result",
+  "java -jar dist/lombok.jar delombok -f generateDelombokComment:skip -f generated:skip -d test/transform/resource/after-delombok test/transform/resource/before/BuilderDefaultsGenericsInInitializer.java && ant test.javacCurrent > build/builder-defaults-javac-tests.log 2>&1; result=$?; grep -E '(FAIL|Unexpected|Expected|position of node|BuilderDefaultsGenericsInInitializer|BUILD |Total time)' build/builder-defaults-javac-tests.log | tail -45; exit $result"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed the bug: Lombok overwrote source positions in `@Builder.Default` initializers, confusing Java 11\u2019s generic type inference. The shared default-provider generator now preserves initializer positions for both `@Builder` and `@SuperBuilder`, with regression coverage added.",
+ "assistant_messages": [
+  "I\u2019ll inspect how `@Builder.Default` moves field initializers into generated methods, then add a regression test and fix the type-inference issue.\n",
+  "Lombok resets every node in the moved initializer to the annotation\u2019s source position. This can confuse javac\u2019s generic inference; I\u2019ll preserve the initializer\u2019s original positions in the shared default-provider code used by both `@Builder` and `@SuperBuilder`.\n",
+  "The fix now compiles the reproducer for both builder types, and the javac suites pass. Defaults and explicitly supplied values also behave correctly; I\u2019m checking the final diff and removing temporary validation files.\n",
+  "Fixed the bug: Lombok overwrote source positions in `@Builder.Default` initializers, confusing Java 11\u2019s generic type inference. The shared default-provider generator now preserves initializer positions for both `@Builder` and `@SuperBuilder`, with regression coverage added."
+ ],
+ "assistant_reasoning": [
+  "**Inspecting recursive generation causes**\n\nI\u2019m considering how the positions resetting in the recursive generation might cause issues with the java caches. It seems like the deferred attributes might be keyed by the same positions, which could lead to collisions. I realize I need to preserve the initializer source positions to prevent this problem. I\u2019ll need to take a closer look at the utility being used as part of this process. There\u2019s definitely something worth exploring further!",
+  "**Troubleshooting patch commands**\n\nIt looks like I'm having trouble with the `apply_patch` command; it returns a failure when I check its availability. Since I can only use Bash, I need to rely on the `patch` utility instead. I should run `patch -p1 <<'PATCH'` directly in Bash. I also need to add tests using single fixtures with a builder and superbuilder, while avoiding the use of `@Value` for a simplified helper constructor. I'll include necessary files like `BuilderDefaultsGenericsInInitializer.java`.\n\n**Enhancing runtime behavior**\n\nI'm looking at the runtime behavior and trying to focus on the original bug regarding default generic arguments and multiple default fields. I need to determine if I should include two fields in the main sample and separate tests. It seems beneficial to leverage the Builder helper here while ensuring positions are preserved. The main test needs to check that both builder and superbuilder functions work as intended, with checks for overridden initializers. I'll also consider using `@NoArgsConstructor` and `@AllArgsConstructor` to maintain support for this.\n\n**Maintaining test outputs across platforms**\n\nI want to ensure that both test outputs are maintained across all platforms, especially with ECJ for generating the expected test dump path. It might be useful to add a fixture with the platform-specific `javac`, since it only has known bugs. However, testing this in other pipelines would be beneficial. I should try to avoid generating large manual outputs by utilizing `//platform javac`, as the bug seems related to `javac` type inference. I\u2019ll also need to locate the existing using directive.",
+  "**Evaluating command conventions**\n\nI'm questioning the use of the command `grep ^//platform` because it seems like it's following the wrong convention for specifying `// platform:`. I wonder if there's a better way to properly format this command or if I need to adjust my approach to meet the expected standards. It\u2019s a bit confusing, and I want to ensure I'm getting it right! I\u2019ll have to look closer at the conventions to clarify this.",
+  "**Evaluating patch counts**\n\nI\u2019m realizing that manual patch counts failed, so I\u2019m considering using a workaround with `apply_patch` to create a wrapper. It seems the easiest solution is to run `git apply --recount` to accept the recount. I\u2019ll create a diff between the old and new states where the counts might not be accurate.\n\nWith shell existing `patch` counts needing a proper count (is it 41?), using `diff` manually seems necessary. The `git apply --recount` command appears to handle new files well, even when there\u2019s no `diff --git`.",
+  "**Inspecting Ant Failures**\n\nI need to investigate why my Ant build is failing while using the quiet mode without suppressing the output formatter. I want to check if the formatter logs are being ignored or suppressed. I think I should run Ant in a non-quiet mode to tail the failure logs. It seems there\u2019s a runtime issue with the classloader due to a loose processor, so I might need a proper distribution packaging for offline use. I'll also redirect logging when running tests."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 265.4
+}

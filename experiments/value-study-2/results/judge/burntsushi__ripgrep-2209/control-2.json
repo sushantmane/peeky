@@ -1,0 +1,7 @@
+{
+ "judge_id": "a124",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The captures are correct; the replacement code also copies the lookahead buffer into the output and replaces matches beyond the reported range.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

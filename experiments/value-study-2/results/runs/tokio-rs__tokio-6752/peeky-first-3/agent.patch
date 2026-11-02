@@ -1,0 +1,63 @@
+diff --git a/tokio-util/src/time/delay_queue.rs b/tokio-util/src/time/delay_queue.rs
+index 2b33e361..ed0ddcf1 100644
+--- a/tokio-util/src/time/delay_queue.rs
++++ b/tokio-util/src/time/delay_queue.rs
+@@ -152,6 +152,7 @@ pub struct DelayQueue<T> {
+     /// Waker that is invoked when we potentially need to reset the timer.
+     /// Because we lazily create the timer when the first entry is created, we
+     /// need to awaken any poller that polled us before that point.
++    /// This is also invoked when the last item in the queue is removed.
+     waker: Option<Waker>,
+ }
+ 
+@@ -728,6 +729,9 @@ impl<T> DelayQueue<T> {
+     /// removed item as well as the `Instant` at which it will the delay will
+     /// have expired.
+     ///
++    /// If this removes the last item in the queue, the task that last called
++    /// [`poll_expired`] is woken.
++    ///
+     /// # Panics
+     ///
+     /// The function panics if `key` is not contained by the queue.
+@@ -750,6 +754,8 @@ impl<T> DelayQueue<T> {
+     /// assert_eq!(*item.get_ref(), "foo");
+     /// # }
+     /// ```
++    ///
++    /// [`poll_expired`]: Self::poll_expired
+     #[track_caller]
+     pub fn remove(&mut self, key: &Key) -> Expired<T> {
+         let prev_deadline = self.next_deadline();
+@@ -766,6 +772,12 @@ impl<T> DelayQueue<T> {
+             }
+         }
+ 
++        if self.is_empty() {
++            if let Some(waker) = self.waker.take() {
++                waker.wake();
++            }
++        }
++
+         Expired {
+             key: Key::new(key.index),
+             data: data.inner,
+@@ -780,6 +792,9 @@ impl<T> DelayQueue<T> {
+     ///
+     /// Returns `None` if `key` is not in the queue.
+     ///
++    /// If this removes the last item in the queue, the task that last called
++    /// [`poll_expired`] is woken.
++    ///
+     /// # Examples
+     ///
+     /// Basic usage
+@@ -802,6 +817,8 @@ impl<T> DelayQueue<T> {
+     /// assert!(item.is_none());
+     /// # }
+     /// ```
++    ///
++    /// [`poll_expired`]: Self::poll_expired
+     pub fn try_remove(&mut self, key: &Key) -> Option<Expired<T>> {
+         if self.slab.contains(key) {
+             Some(self.remove(key))

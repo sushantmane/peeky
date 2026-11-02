@@ -1,0 +1,7 @@
+{
+ "judge_id": "a232",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Both handlers skip interfaces and annotations for config-driven defaults, but not records.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

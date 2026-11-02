@@ -1,0 +1,163 @@
+{
+ "bug": "django__django-11087",
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/django__django-11087:peeky-r2",
+ "image_id": "sha256:0705b45e0fb72f755798760f13638503cb3d2191ae37db63a6695cb40be1795a",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "started": "2026-11-01T08:58:36+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed condition in Collector.can_fast_delete",
+   "at": "django/db/models/deletion.py:138",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/deletion.py:138 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 delete.tests.DeletionTests.test_only_referenced_fields_selected",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/deletion.py:138",
+    "function": "can_fast_delete"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "from_field",
+      "value": "<django.db.models.fields.related.ForeignKey: origin>"
+     },
+     {
+      "name": "objs",
+      "value": "<QuerySet []>"
+     },
+     {
+      "name": "self",
+      "value": "<django.db.models.deletion.Collector object at 0xffff6f301890>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed branch in Collector.collect",
+   "at": "django/db/models/deletion.py:223",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/deletion.py:223 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 delete.tests.DeletionTests.test_only_referenced_fields_selected",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/deletion.py:223",
+    "function": "collect"
+   },
+   "moved": false,
+   "values": {
+    "shown": 15,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "batch",
+      "value": "[<Origin: Origin object (1)>]"
+     },
+     {
+      "name": "batches",
+      "value": "[[<Origin: Origin object (1)>]]"
+     },
+     {
+      "name": "collect_related",
+      "value": "True"
+     },
+     {
+      "name": "field",
+      "value": "<django.db.models.fields.related.ForeignKey: origin>"
+     },
+     {
+      "name": "keep_parents",
+      "value": "False"
+     },
+     {
+      "name": "new_objs",
+      "value": "[<Origin: Origin object (1)>]"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/delete/tests.py:453",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at tests/delete/tests.py:453 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 delete.tests.DeletionTests.test_only_referenced_fields_selected",
+     "exit": 0,
+     "seconds": 1.0
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/delete/tests.py:453",
+    "function": "test_only_referenced_fields_selected"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "expected_sql",
+      "value": "'SELECT \"delete_referrer\".\"id\", \"delete_referrer\".\"unique_field\" FROM \"delete_referrer\" WHERE \"delete_referrer\".\"origin_id\" IN (1)'"
+     },
+     {
+      "name": "origin",
+      "value": "<Origin: Origin object (1)>"
+     },
+     {
+      "name": "self",
+      "value": "<delete.tests.DeletionTests testMethod=test_only_referenced_fields_selected>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T08:58:41+00:00"
+}

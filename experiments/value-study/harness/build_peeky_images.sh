@@ -18,11 +18,22 @@
 #   STUDY_SCRATCH   where the build context is staged (default: ~/.cache/peeky-study)
 #   STUDY_BUGS_DIR  the bug directories (default: bugs/ beside harness/)
 #   FORCE=1         rebuild images that exist
+#
+# A later round reuses this script with its own Dockerfile (value-study-2/harness/build_images.sh):
+#   STUDY_DOCKERFILE    the Dockerfile (default: docker/peeky.Dockerfile)
+#   STUDY_DIST_REPO     the dist image's repository (default: peeky-study/peeky-dist)
+#   STUDY_PEEKY_TAG     the bug images' tag (default: peeky)
+#   STUDY_BUG_CONTEXT   the bug stage's build context (default: an empty directory)
+#   STUDY_BUILD_OPTS    more `docker build` options, such as resource limits
+# The bug stage always gets the build argument BUG_ID, the bug's id.
 set -euo pipefail
 
 HARNESS=$(cd "$(dirname "$0")" && pwd)
 STUDY=$(dirname "$HARNESS")
-DOCKERFILE=$STUDY/docker/peeky.Dockerfile
+DOCKERFILE=${STUDY_DOCKERFILE:-$STUDY/docker/peeky.Dockerfile}
+DIST_REPO=${STUDY_DIST_REPO:-peeky-study/peeky-dist}
+PEEKY_TAG=${STUDY_PEEKY_TAG:-peeky}
+read -r -a BUILD_OPTS <<< "${STUDY_BUILD_OPTS:-}"
 PEEKY_CHECKOUT=${PEEKY_CHECKOUT:-$(git -C "$STUDY" rev-parse --show-toplevel)}
 STUDY_SCRATCH=${STUDY_SCRATCH:-$HOME/.cache/peeky-study}
 BUGS=${STUDY_BUGS_DIR:-$STUDY/bugs}
@@ -34,7 +45,7 @@ SHA=$(git -C "$PEEKY_CHECKOUT" rev-parse HEAD)
 if [ -n "$(git -C "$PEEKY_CHECKOUT" status --porcelain --untracked-files=no)" ]; then
   log "note: $PEEKY_CHECKOUT has uncommitted changes; the image is built from HEAD ($SHA) only"
 fi
-DIST=peeky-study/peeky-dist:$SHA
+DIST=$DIST_REPO:$SHA
 log "Peeky $SHA from $PEEKY_CHECKOUT"
 
 image_exists() { docker image inspect "$1" >/dev/null 2>&1; }
@@ -52,7 +63,8 @@ build_dist() {
   cp "$ctx"/src/docs/lang/* "$ctx/docs/lang/"
   rm -rf "$ctx/src" "$ctx/pip-tmp"
   log "building $DIST"
-  docker build -q --target dist --build-arg PEEKY_SHA="$SHA" -t "$DIST" -f "$DOCKERFILE" "$ctx" >/dev/null
+  docker build -q ${BUILD_OPTS[@]+"${BUILD_OPTS[@]}"} --target dist --build-arg PEEKY_SHA="$SHA" \
+    -t "$DIST" -f "$DOCKERFILE" "$ctx" >/dev/null
   "$HARNESS/verify_peeky_image.sh" "$DIST"
 }
 
@@ -84,10 +96,11 @@ fi
 
 empty_ctx=$STUDY_SCRATCH/empty-context
 mkdir -p "$empty_ctx"
+bug_ctx=${STUDY_BUG_CONTEXT:-$empty_ctx}
 failed=0
 for id in ${ids[@]+"${ids[@]}"}; do
   control=$(control_image "$id")
-  peeky=${control%:control}:peeky
+  peeky=${control%:control}:$PEEKY_TAG
   if ! image_exists "$control"; then
     log "$id: no image $control; skipped"; failed=1; continue
   fi
@@ -104,10 +117,10 @@ for id in ${ids[@]+"${ids[@]}"}; do
     log "$id: $peeky is current"; continue
   fi
   log "$id: building $peeky"
-  docker build -q --target bug --build-arg BUG_IMAGE="$control" --build-arg DIST_IMAGE="$DIST" \
-    --build-arg PEEKY_SHA="$SHA" \
+  docker build -q ${BUILD_OPTS[@]+"${BUILD_OPTS[@]}"} --target bug --build-arg BUG_IMAGE="$control" \
+    --build-arg DIST_IMAGE="$DIST" --build-arg PEEKY_SHA="$SHA" --build-arg BUG_ID="$id" \
     --label "peeky-study.control-id=$(docker image inspect -f '{{ .Id }}' "$control")" \
-    -t "$peeky" -f "$DOCKERFILE" "$empty_ctx" >/dev/null
+    -t "$peeky" -f "$DOCKERFILE" "$bug_ctx" >/dev/null
   "$HARNESS/verify_peeky_image.sh" "$peeky" >&2 ||
     { log "$id: $peeky failed its check"; failed=1; continue; }
   log "$id: $peeky ok"

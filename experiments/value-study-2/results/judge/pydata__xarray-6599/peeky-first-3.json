@@ -1,0 +1,7 @@
+{
+ "judge_id": "a123",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"the debugger showed it incorrectly subtracting `np.datetime64(\\\"1970-01-01\\\")` from timedelta values.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 12 probe at duck_array_ops.py:434: hit 2 array timedelta64[ns] [0,1e10,...] with offset numpy.datetime64('1970-01-01'); the same run's traceback (and cmd 15 test) fails with \"subtract ... dtype('<m8[ns]') and dtype('<M8[D]')\", matching those dtypes. Cmd 18 after fix showed offset numpy.timedelta64(0,'ns') for the timedelta hit, matching the edited code (cmd 16) and the program output 'Timedelta values: [0, 1e10, ...]'. Nothing contradicts."
+}

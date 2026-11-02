@@ -1,0 +1,7 @@
+{
+ "judge_id": "a079",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The formatter counts separator space using all significand digits, including the fractional part, but only groups the integer part.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

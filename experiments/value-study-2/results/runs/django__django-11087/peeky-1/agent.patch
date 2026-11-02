@@ -1,0 +1,154 @@
+diff --git a/django/db/models/deletion.py b/django/db/models/deletion.py
+index 3a462f1c4c..181525db7e 100644
+--- a/django/db/models/deletion.py
++++ b/django/db/models/deletion.py
+@@ -116,6 +116,13 @@ class Collector:
+             model, {}).setdefault(
+             (field, value), set()).update(objs)
+ 
++    def _has_signal_listeners(self, model):
++        return (
++            signals.pre_delete.has_listeners(model) or
++            signals.post_delete.has_listeners(model) or
++            signals.m2m_changed.has_listeners(model)
++        )
++
+     def can_fast_delete(self, objs, from_field=None):
+         """
+         Determine if the objects in the given queryset-like or single object
+@@ -135,9 +142,7 @@ class Collector:
+             model = objs.model
+         else:
+             return False
+-        if (signals.pre_delete.has_listeners(model) or
+-                signals.post_delete.has_listeners(model) or
+-                signals.m2m_changed.has_listeners(model)):
++        if self._has_signal_listeners(model):
+             return False
+         # The use of from_field comes from the need to avoid cascade back to
+         # parent when parent delete is cascading to child.
+@@ -220,7 +225,19 @@ class Collector:
+                     sub_objs = self.related_objects(related, batch)
+                     if self.can_fast_delete(sub_objs, from_field=field):
+                         self.fast_deletes.append(sub_objs)
+-                    elif sub_objs:
++                        continue
++                    related_model = related.related_model
++                    # Only primary keys and fields referenced by other relations
++                    # are needed for deletion. Signals may need arbitrary fields,
++                    # and select_related() cannot traverse deferred fields.
++                    if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
++                        referenced_fields = {
++                            rel_field.attname
++                            for rel in get_candidate_relations_to_delete(related_model._meta)
++                            for rel_field in rel.field.foreign_related_fields
++                        }
++                        sub_objs = sub_objs.only(related_model._meta.pk.attname, *referenced_fields)
++                    if sub_objs:
+                         field.remote_field.on_delete(self, field, sub_objs, self.using)
+             for field in model._meta.private_fields:
+                 if hasattr(field, 'bulk_related_objects'):
+diff --git a/docs/ref/models/querysets.txt b/docs/ref/models/querysets.txt
+index 8485d436e1..3e5983c15f 100644
+--- a/docs/ref/models/querysets.txt
++++ b/docs/ref/models/querysets.txt
+@@ -2529,6 +2529,8 @@ methods on your models. It does, however, emit the
+ (including cascaded deletions).
+ 
+ Django needs to fetch objects into memory to send signals and handle cascades.
++When collecting related objects without delete signal listeners, Django may
++fetch only the fields needed for deletion, rather than every field.
+ However, if there are no cascades and no signals, then Django may take a
+ fast-path and delete objects without fetching into memory. For large
+ deletes this can result in significantly reduced memory usage. The amount of
+diff --git a/tests/delete/test_deferred_fields.py b/tests/delete/test_deferred_fields.py
+new file mode 100644
+index 0000000000..66a4b5452c
+--- /dev/null
++++ b/tests/delete/test_deferred_fields.py
+@@ -0,0 +1,85 @@
++from unittest import mock
++
++from django.db import models
++from django.db.models.deletion import Collector
++from django.test import TestCase
++
++from .models import DeletionBranch, DeletionLeaf, DeletionRoot, create_a
++
++
++class DeferredDeletionTests(TestCase):
++    def create_tree(self):
++        root = DeletionRoot.objects.create()
++        branch = DeletionBranch.objects.create(root=root, name='branch', data='unused data')
++        DeletionLeaf.objects.create(branch=branch)
++        return root, branch
++
++    def test_cascade_defers_unused_fields(self):
++        for use_queryset in (False, True):
++            with self.subTest(use_queryset=use_queryset):
++                root, _ = self.create_tree()
++                expected_sql = str(DeletionBranch.objects.filter(root__in=[root]).only('pk', 'name').query)
++                target = DeletionRoot.objects.filter(pk=root.pk) if use_queryset else root
++                with self.assertNumQueries(5 if use_queryset else 4) as queries:
++                    deleted = target.delete()
++                self.assertEqual(queries.captured_queries[int(use_queryset)]['sql'], expected_sql)
++                self.assertEqual(deleted, (3, {
++                    'delete.DeletionRoot': 1,
++                    'delete.DeletionBranch': 1,
++                    'delete.DeletionLeaf': 1,
++                }))
++                self.assertFalse(DeletionRoot.objects.exists())
++                self.assertFalse(DeletionBranch.objects.exists())
++                self.assertFalse(DeletionLeaf.objects.exists())
++
++    def test_cascade_does_not_decode_unused_fields(self):
++        root, _ = self.create_tree()
++        field = DeletionBranch._meta.get_field('data')
++        error = UnicodeDecodeError('utf-8', b'\xed', 0, 1, 'invalid continuation byte')
++        with mock.patch.object(field, 'from_db_value', side_effect=error, create=True) as decoder:
++            self.assertEqual(root.delete()[0], 3)
++        decoder.assert_not_called()
++
++    def test_delete_signals_receive_all_fields(self):
++        for signal in (models.signals.pre_delete, models.signals.post_delete):
++            with self.subTest(signal=signal):
++                root, branch = self.create_tree()
++                received = []
++
++                def receiver(instance, **kwargs):
++                    self.assertEqual(instance.get_deferred_fields(), set())
++                    received.append(instance.data)
++
++                signal.connect(receiver, sender=DeletionBranch)
++                try:
++                    with self.assertNumQueries(4):
++                        root.delete()
++                finally:
++                    signal.disconnect(receiver, sender=DeletionBranch)
++                self.assertEqual(received, [branch.data])
++
++    def test_select_related_is_preserved(self):
++        root, _ = self.create_tree()
++        queryset = DeletionBranch.objects.select_related('root')
++        expected_sql = str(queryset.filter(root__in=[root]).query)
++        with mock.patch.object(DeletionBranch._base_manager, 'get_queryset', return_value=queryset):
++            with self.assertNumQueries(4) as queries:
++                root.delete()
++        self.assertEqual(queries.captured_queries[0]['sql'], expected_sql)
++        self.assertFalse(DeletionBranch.objects.exists())
++
++    def test_field_update_only_fetches_primary_key(self):
++        obj = create_a('setnull')
++        root = obj.setnull
++        collector = Collector(using='default')
++        collector.collect([root])
++        field = obj._meta.get_field('setnull')
++        collected = collector.field_updates[type(obj)][field, None]
++        self.assertEqual(len(collected), 1)
++        instance = next(iter(collected))
++        self.assertEqual(instance.get_deferred_fields(), {
++            f.attname for f in obj._meta.concrete_fields if not f.primary_key
++        })
++        collector.delete()
++        obj.refresh_from_db()
++        self.assertIsNone(obj.setnull)

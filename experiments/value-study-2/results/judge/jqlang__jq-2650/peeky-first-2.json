@@ -1,0 +1,7 @@
+{
+ "judge_id": "a059",
+ "wrong_root_cause": true,
+ "evidence": "Message 4: \"The reported bug is already fixed in this checkout: `src/parser.y` contains the previously missing chained-index rules.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 9 probe at parser.c:3799: yychar=58 (':') and yymsgp=\"syntax error, unexpected ':'\", yynerrs=1 match jq's own error 'syntax error, unexpected ':'' in cmd 8 and the probe's program output. Cmd 11 at parser.c:3218: yylen=5 fits rule `Term '.' '[' Exp ']'` shown in cmd 10, yychar=125 ('}') is the next token, and the program printed the expected object. Nothing contradicted."
+}

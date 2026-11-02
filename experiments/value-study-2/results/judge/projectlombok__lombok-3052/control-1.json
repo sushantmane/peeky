@@ -1,0 +1,7 @@
+{
+ "judge_id": "a038",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Lombok was assigning every expression in the default initializer the annotation's position, causing the two calls to share a cached type.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

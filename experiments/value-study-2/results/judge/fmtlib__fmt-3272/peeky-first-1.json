@@ -1,0 +1,7 @@
+{
+ "judge_id": "a029",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: The code counts grouping separators across all significand digits, including fractional digits, which reduces the padding.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Peeky printed no program values: cmd 10 PROVENANCE_CHANGED error, cmd 12 INVALID_BREAKPOINT error, cmds 14/15/16 were docs, --help and `peeky describe` (line/scope listings). No probe, session or verify values to check."
+}

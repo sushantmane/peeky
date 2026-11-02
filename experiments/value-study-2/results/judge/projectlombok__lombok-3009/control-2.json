@@ -1,0 +1,7 @@
+{
+ "judge_id": "a195",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Implicit field defaults excluded interfaces and annotations but not records, causing unsupported-type errors.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

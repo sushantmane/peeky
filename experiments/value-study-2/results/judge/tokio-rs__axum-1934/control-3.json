@@ -1,0 +1,7 @@
+{
+ "judge_id": "a161",
+ "wrong_root_cause": false,
+ "evidence": "Message 1: Fallback routing is inserting its internal catch-all pattern as `MatchedPath`; the nested static-file router then trips the assertion.",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a119",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Nested formatters skipped default debug parsing, losing character quotes\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "All Peeky commands (12, 14, 19, 20) ended in errors (UNSUPPORTED / PROVENANCE_CHANGED: nothing ran); Peeky printed no values."
+}

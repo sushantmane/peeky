@@ -1,0 +1,159 @@
+{
+ "bug": "valkey-io__valkey-790",
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-790:peeky-r2",
+ "image_id": "sha256:dffc5b69597f7b9e41b4f2e29012dab358ba86151a544fe6fcc27f97d96ae204",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:41:19+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first statement of the removed addShardReplyForClusterShards (CLUSTER SHARDS on one node)",
+   "at": "src/cluster_legacy.c:5667",
+   "commands": [
+    {
+     "command": "peeky session start . --binary src/valkey-server --at src/cluster_legacy.c:5667 --name reach --timeout 5 --json -- --port 7002 --save '' --appendonly no --cluster-enabled yes --cluster-config-file /root/reach/nodes-7002.conf",
+     "exit": 0,
+     "seconds": 13.6
+    },
+    {
+     "command": "peeky session wait --name reach --timeout 119 --json",
+     "exit": 0,
+     "seconds": 0.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "trigger": {
+    "exit": 0,
+    "seconds": 21.0,
+    "output": "OK\n"
+   },
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/cluster_legacy.c:5667",
+    "function": "addShardReplyForClusterShards"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 4,
+    "sample": [],
+    "withheld_sample": [
+     {
+      "name": "c",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5667 may declare `c` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic.h> "
+     },
+     {
+      "name": "nodes",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5667 may declare `nodes` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic"
+     },
+     {
+      "name": "n",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5667 may declare `n` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic.h> "
+     },
+     {
+      "name": "li",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5667 may declare `li` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic.h>"
+     }
+    ]
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the removed call in clusterCommandShards",
+   "at": "src/cluster_legacy.c:5704",
+   "commands": [
+    {
+     "command": "peeky session start . --binary src/valkey-server --at src/cluster_legacy.c:5704 --name reach --timeout 5 --json -- --port 7002 --save '' --appendonly no --cluster-enabled yes --cluster-config-file /root/reach/nodes-7002.conf",
+     "exit": 0,
+     "seconds": 13.7
+    },
+    {
+     "command": "peeky session wait --name reach --timeout 119 --json",
+     "exit": 0,
+     "seconds": 0.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "trigger": {
+    "exit": 0,
+    "seconds": 21.0,
+    "output": "ERR Slot 1 is already busy\n\n"
+   },
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/cluster_legacy.c:5704",
+    "function": "clusterCommandShards"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 3,
+    "sample": [],
+    "withheld_sample": [
+     {
+      "name": "c",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5704 may declare `c` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic.h> "
+     },
+     {
+      "name": "di",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5704 may declare `di` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic.h>"
+     },
+     {
+      "name": "de",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "a block around line 5704 may declare `de` (a `static`, an `extern`, an enumerator, a function or a type), which the code would name instead of this local: Peeky could not preprocess the source to read it (Peeky can't read src/cluster_legacy.c as compiled: its preprocessing asks whether <stdatomic.h>"
+     }
+    ]
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is Tcl (tests/unit/cluster/cluster-shards.tcl), which Peeky doesn't debug"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:42:30+00:00"
+}

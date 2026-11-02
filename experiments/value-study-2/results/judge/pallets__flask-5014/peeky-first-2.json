@@ -1,0 +1,7 @@
+{
+ "judge_id": "a197",
+ "wrong_root_cause": false,
+ "evidence": "Message 1: The constructor only checked for dots, so an empty name was accepted.",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 10 probe at blueprints.py:197: 'set name: 'frontend' -> ''' and name='' / self.name='' after the set. Old value 'frontend' matches the test's first Blueprint('frontend', __name__) (cmd 12 diff context), and the test then fails (cmd 10 output). Nothing contradicts. Cmd 9 was a request error; cmd 7 describe printed no values."
+}

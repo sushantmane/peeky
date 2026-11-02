@@ -1,0 +1,7 @@
+{
+ "judge_id": "a202",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"`ACL LOAD` dereferenced a NULL user on the replica\u2019s primary connection, which intentionally bypasses ACLs.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Only Peeky command (cmd 11) ran `peeky --help`; no probe/session/verify was run, so Peeky printed no values."
+}

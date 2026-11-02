@@ -1,0 +1,7 @@
+{
+ "judge_id": "a037",
+ "wrong_root_cause": false,
+ "evidence": "Message 1: \"`cp` declares its paths as a single-value positional, so the generated Zsh completion stops offering files after the first path.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

@@ -1,0 +1,7 @@
+{
+ "judge_id": "a134",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Implicit field defaults skipped interfaces and annotations but not records, triggering class-or-enum validation errors.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

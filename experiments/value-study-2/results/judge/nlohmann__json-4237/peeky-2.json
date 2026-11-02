@@ -1,0 +1,7 @@
+{
+ "judge_id": "a004",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The enum overload always uses signed JSON storage, even after casting to the enum\u2019s unsigned underlying type.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

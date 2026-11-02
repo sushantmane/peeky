@@ -1,0 +1,48 @@
+diff --git a/ChangeLog.rst b/ChangeLog.rst
+index 4ebc5c73..76a6f906 100644
+--- a/ChangeLog.rst
++++ b/ChangeLog.rst
+@@ -1,6 +1,9 @@
+ 9.1.0 - 2022-08-27
+ ------------------
+ 
++* Fixed formatting of nested character ranges and ranges of temporary views
++  that only provide non-const iteration, including C++20 split/transform views.
++
+ * ``fmt::formatted_size`` now works at compile time
+   (`#3026 <https://github.com/fmtlib/fmt/pull/3026>`_). For example
+   (`godbolt <https://godbolt.org/z/1MW5rMdf8>`__):
+diff --git a/include/fmt/ranges.h b/include/fmt/ranges.h
+index 2105a668..2e9a65e1 100644
+--- a/include/fmt/ranges.h
++++ b/include/fmt/ranges.h
+@@ -386,8 +386,8 @@ template <typename Context> struct range_mapper {
+ 
+   template <typename T,
+             FMT_ENABLE_IF(has_formatter<remove_cvref_t<T>, Context>::value)>
+-  static auto map(T&& value) -> T&& {
+-    return static_cast<T&&>(value);
++  static auto map(T&& value) -> T& {
++    return static_cast<T&>(value);
+   }
+   template <typename T,
+             FMT_ENABLE_IF(!has_formatter<remove_cvref_t<T>, Context>::value)>
+@@ -475,7 +475,7 @@ struct range_formatter<
+     auto end = ctx.end();
+     if (it == end || *it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it == 'n') {
+@@ -485,7 +485,8 @@ struct range_formatter<
+ 
+     if (*it == '}') {
+       maybe_set_debug_format();
+-      return it;
++      ctx.advance_to(it);
++      return underlying_.parse(ctx);
+     }
+ 
+     if (*it != ':')

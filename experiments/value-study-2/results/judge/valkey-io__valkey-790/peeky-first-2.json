@@ -1,0 +1,7 @@
+{
+ "judge_id": "a095",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"Fixed `CLUSTER SHARDS` to select the actual slot-owning node rather than the shard\u2019s first member, which can remain the failed former primary after failover.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": "Probe inside script (cmd 16) and `peeky queries run` (cmd 27) at cluster_legacy.c:5681 showed n.name/n.flags=9/n.numslots=0/n.slot_info_pairs=0x0/n.slot_info_pairs_count=0, but every row is marked [unproven] with a note (pointer liveness unknown); cmds 7/9/11/13 were docs/help only. No checkable value."
+}

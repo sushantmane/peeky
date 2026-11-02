@@ -1,0 +1,211 @@
+diff --git a/seaborn/_core/plot.py b/seaborn/_core/plot.py
+index 4f0290a4..9741dc3f 100644
+--- a/seaborn/_core/plot.py
++++ b/seaborn/_core/plot.py
+@@ -25,7 +25,7 @@ from seaborn._marks.base import Mark
+ from seaborn._stats.base import Stat
+ from seaborn._core.data import PlotData
+ from seaborn._core.moves import Move
+-from seaborn._core.scales import Scale
++from seaborn._core.scales import Scale, Nominal
+ from seaborn._core.subplots import Subplots
+ from seaborn._core.groupby import GroupBy
+ from seaborn._core.properties import PROPERTIES, Property
+@@ -1238,7 +1238,6 @@ class Plotter:
+             # This only affects us when sharing *paired* axes. This is a novel/niche
+             # behavior, so we will raise rather than hack together a workaround.
+             if axis is not None and Version(mpl.__version__) < Version("3.4.0"):
+-                from seaborn._core.scales import Nominal
+                 paired_axis = axis in p._pair_spec.get("structure", {})
+                 cat_scale = isinstance(scale, Nominal)
+                 ok_dim = {"x": "col", "y": "row"}[axis]
+@@ -1627,6 +1626,17 @@ class Plotter:
+ 
+     def _finalize_figure(self, p: Plot) -> None:
+ 
++        # Set categorical defaults before explicit limits on any shared axes.
++        for sub in self._subplots:
++            ax = sub["ax"]
++            for axis in "xy":
++                if isinstance(self._scales.get(sub[axis]), Nominal):
++                    axis_obj = getattr(ax, f"{axis}axis")
++                    axis_obj.grid(False)
++                    n = len(axis_obj.get_majorticklocs())
++                    if n:
++                        ax.set(**{f"{axis}lim": (-.5, n - .5)})
++
+         for sub in self._subplots:
+             ax = sub["ax"]
+             for axis in "xy":
+@@ -1644,6 +1654,10 @@ class Plotter:
+                         hi = cast(float, hi) + 0.5
+                     ax.set(**{f"{axis}lim": (lo, hi)})
+ 
++        for sub in self._subplots:
++            if isinstance(self._scales.get(sub["y"]), Nominal):
++                sub["ax"].yaxis.set_inverted(True)
++
+         engine_default = None if p._target is not None else "tight"
+         layout_engine = p._layout_spec.get("engine", engine_default)
+         set_layout_engine(self._figure, layout_engine)
+diff --git a/seaborn/_core/scales.py b/seaborn/_core/scales.py
+index bbd71ec1..6ec4a1fb 100644
+--- a/seaborn/_core/scales.py
++++ b/seaborn/_core/scales.py
+@@ -138,6 +138,11 @@ class Scale:
+ class Nominal(Scale):
+     """
+     A categorical scale without relative importance / magnitude.
++
++    On a coordinate axis, the view limits extend half a category beyond the
++    first and last ticks, unless overridden by :meth:`Plot.limit`. Grid lines
++    are disabled, and the y axis is inverted so that categories run from top
++    to bottom.
+     """
+     # Categorical (convert to strings), un-sortable
+ 
+diff --git a/tests/_core/test_nominal_axis.py b/tests/_core/test_nominal_axis.py
+new file mode 100644
+index 00000000..1eb4acf9
+--- /dev/null
++++ b/tests/_core/test_nominal_axis.py
+@@ -0,0 +1,139 @@
++import matplotlib.pyplot as plt
++import pytest
++
++from seaborn._core.plot import Plot
++from seaborn._core.scales import Nominal
++from seaborn._marks.bar import Bar
++from seaborn._marks.dot import Dot
++
++
++@pytest.fixture(params=["x", "y"])
++def axis(request):
++    return request.param
++
++
++def check_nominal_axis(ax, axis, limits):
++
++    expected = limits if axis == "x" else tuple(sorted(limits, reverse=True))
++    assert getattr(ax, f"get_{axis}lim")() == expected
++    assert not any(line.get_visible() for line in getattr(ax, f"get_{axis}gridlines")())
++    assert getattr(ax, f"{axis}axis_inverted")() == (axis == "y")
++
++
++@pytest.mark.parametrize("mark", [Dot, Bar])
++@pytest.mark.parametrize("scale_type", ["inferred", "explicit", "numeric"])
++def test_nominal_axis_defaults(axis, mark, scale_type):
++
++    values = [2, 1, 3] if scale_type == "numeric" else ["b", "a", "c"]
++    other = "y" if axis == "x" else "x"
++    p = Plot(**{axis: values, other: [1, 2, 3]}).add(mark(), orient=axis)
++    if scale_type != "inferred":
++        p = p.scale(**{axis: Nominal()})
++    p = p.theme({"axes.grid": True, "axes.xmargin": .2, "axes.ymargin": .2})
++    ax, = p.plot()._figure.axes
++
++    check_nominal_axis(ax, axis, (-.5, 2.5))
++    assert any(line.get_visible() for line in getattr(ax, f"get_{other}gridlines")())
++    assert not getattr(ax, f"{other}axis_inverted")()
++
++
++@pytest.mark.parametrize("mark", [None, Dot, Bar])
++def test_nominal_axis_unused_categories(axis, mark):
++
++    other = "y" if axis == "x" else "x"
++    p = Plot(**{axis: ["a", "b"], other: [1, 2]})
++    p = p.scale(**{axis: Nominal(order=["c", "b", "a", "d"])})
++    if mark is not None:
++        p = p.add(mark(), orient=axis)
++    ax, = p.plot()._figure.axes
++
++    check_nominal_axis(ax, axis, (-.5, 3.5))
++    labels = getattr(ax, f"get_{axis}ticklabels")()
++    assert [label.get_text() for label in labels] == ["c", "b", "a", "d"]
++
++
++def test_nominal_axis_single_category(axis):
++
++    ax, = Plot(**{axis: ["a"]}).plot()._figure.axes
++    check_nominal_axis(ax, axis, (-.5, .5))
++
++
++@pytest.mark.parametrize("limits,expected", [
++    ((None, None), (-.5, 3.5)),
++    ((None, 2), (-.5, 2)),
++    ((1, None), (1, 3.5)),
++    ((.5, 2.5), (.5, 2.5)),
++    (("b", "c"), (.5, 2.5)),
++    ((None, "c"), (-.5, 2.5)),
++    (("b", None), (.5, 3.5)),
++])
++def test_nominal_axis_explicit_limits(axis, limits, expected):
++
++    p = Plot(**{axis: ["a", "b", "c", "d"]}).limit(**{axis: limits})
++    ax, = p.plot()._figure.axes
++    check_nominal_axis(ax, axis, expected)
++
++
++@pytest.mark.parametrize("share", [True, False, "col", "row"])
++@pytest.mark.parametrize("limits", [None, (None, 1.5), (.5, None)])
++def test_nominal_axis_facets(axis, share, limits):
++
++    other = "y" if axis == "x" else "x"
++    p = (
++        Plot(**{axis: ["a", "b", "c", "a"], other: [1, 2, 3, 4]})
++        .facet(col=["u", "u", "v", "v"])
++        .share(**{axis: share})
++        .add(Dot())
++    )
++    if limits is not None:
++        p = p.limit(**{axis: limits})
++    p = p.plot()
++    for ax in p._figure.axes:
++        n = 3 if share in [True, "row"] else 2
++        lo, hi = -.5, n - .5
++        if limits is not None:
++            lo = lo if limits[0] is None else limits[0]
++            hi = hi if limits[1] is None else limits[1]
++        check_nominal_axis(ax, axis, (lo, hi))
++
++
++@pytest.mark.parametrize("share", [True, False])
++def test_nominal_axis_paired(axis, share):
++
++    p = (
++        Plot()
++        .pair(**{axis: [["a", "b", "c"], ["a", "b", "c"]]})
++        .share(**{axis: share})
++        .limit(**{f"{axis}0": (.5, 1.5)})
++        .plot()
++    )
++    for i, ax in enumerate(p._figure.axes):
++        limits = (.5, 1.5) if share or i == 0 else (-.5, 2.5)
++        check_nominal_axis(ax, axis, limits)
++
++
++def test_nominal_axis_preserves_other_paired_scales(axis):
++
++    p = Plot().pair(**{axis: [["a", "b", "c"], [1, 2, 3]]}).plot()
++    nominal, continuous = p._figure.axes
++    check_nominal_axis(nominal, axis, (-.5, 2.5))
++    gridlines = getattr(continuous, f"get_{axis}gridlines")()
++    assert any(line.get_visible() for line in gridlines)
++    assert not getattr(continuous, f"{axis}axis_inverted")()
++
++
++def test_nominal_axis_existing_axes(axis):
++
++    _, ax = plt.subplots()
++    ax.invert_yaxis()
++    p = Plot(**{axis: ["a", "b", "c"]}).on(ax)
++    p.plot()
++    p.plot()
++    check_nominal_axis(ax, axis, (-.5, 2.5))
++
++
++def test_both_nominal_axes():
++
++    ax, = Plot(x=["a", "b"], y=["c", "d"]).add(Dot()).plot()._figure.axes
++    for axis in "xy":
++        check_nominal_axis(ax, axis, (-.5, 1.5))

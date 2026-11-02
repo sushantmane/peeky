@@ -1,0 +1,148 @@
+diff --git a/lucene/CHANGES.txt b/lucene/CHANGES.txt
+index 132ce5cf82..c93eb3642b 100644
+--- a/lucene/CHANGES.txt
++++ b/lucene/CHANGES.txt
+@@ -65,6 +65,9 @@ Optimizations
+ Bug Fixes
+ ---------------------
+ 
++* Fix false-positive CONTAINS shape queries for flat polygons by preserving
++  polygon boundary flags when a triangle is simplified to a line.
++
+ * LUCENE-10599: LogMergePolicy is more likely to keep merging segments until
+   they reach the maximum merge size. (Adrien Grand)
+ 
+diff --git a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+index bd85a5771f..ce4b7c8030 100644
+--- a/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
++++ b/lucene/core/src/java/org/apache/lucene/document/ShapeField.java
+@@ -376,6 +376,7 @@ public final class ShapeField {
+       if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {
+         triangle.type = DecodedTriangle.TYPE.POINT;
+       } else {
++        triangle.ab = triangle.bc || triangle.ca;
+         triangle.bX = triangle.cX;
+         triangle.bY = triangle.cY;
+         triangle.cX = triangle.aX;
+@@ -383,8 +384,10 @@ public final class ShapeField {
+         triangle.type = DecodedTriangle.TYPE.LINE;
+       }
+     } else if (triangle.aX == triangle.cX && triangle.aY == triangle.cY) {
++      triangle.ab = triangle.ab || triangle.bc;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+     } else if (triangle.bX == triangle.cX && triangle.bY == triangle.cY) {
++      triangle.ab = triangle.ab || triangle.ca;
+       triangle.cX = triangle.aX;
+       triangle.cY = triangle.aY;
+       triangle.type = DecodedTriangle.TYPE.LINE;
+diff --git a/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java
+new file mode 100644
+index 0000000000..4987def523
+--- /dev/null
++++ b/lucene/core/src/test/org/apache/lucene/document/TestShapeField.java
+@@ -0,0 +1,105 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.lucene.document;
++
++import org.apache.lucene.document.ShapeField.DecodedTriangle;
++import org.apache.lucene.document.ShapeField.QueryRelation;
++import org.apache.lucene.geo.LatLonGeometry;
++import org.apache.lucene.geo.Polygon;
++import org.apache.lucene.geo.Rectangle;
++import org.apache.lucene.index.IndexReader;
++import org.apache.lucene.search.IndexSearcher;
++import org.apache.lucene.store.Directory;
++import org.apache.lucene.tests.index.RandomIndexWriter;
++import org.apache.lucene.tests.util.LuceneTestCase;
++
++public class TestShapeField extends LuceneTestCase {
++
++  public void testDegenerateTriangleBoundaryFlags() {
++    byte[] bytes = new byte[7 * ShapeField.BYTES];
++    DecodedTriangle triangle = new DecodedTriangle();
++    for (int direction = 0; direction < 4; direction++) {
++      for (int uniqueVertex = 0; uniqueVertex < 3; uniqueVertex++) {
++        int[] x = new int[3];
++        int[] y = new int[3];
++        x[uniqueVertex] = direction == 1 ? 0 : 2;
++        y[uniqueVertex] = direction == 0 ? 0 : direction == 3 ? -2 : 2;
++        for (int mask = 0; mask < 8; mask++) {
++          boolean[] edges = {(mask & 1) != 0, (mask & 2) != 0, (mask & 4) != 0};
++          boolean expected = edges[uniqueVertex] || edges[(uniqueVertex + 2) % 3];
++          triangle.setValues(x[0], y[0], edges[0], x[1], y[1], edges[1], x[2], y[2], edges[2]);
++          ShapeField.resolveTriangleType(triangle);
++          assertLineBoundary(triangle, expected);
++          ShapeField.encodeTriangle(
++              bytes, y[0], x[0], edges[0], y[1], x[1], edges[1], y[2], x[2], edges[2]);
++          ShapeField.decodeTriangle(bytes, triangle);
++          assertLineBoundary(triangle, expected);
++        }
++      }
++    }
++  }
++
++  private void assertLineBoundary(DecodedTriangle triangle, boolean expected) {
++    assertEquals(DecodedTriangle.TYPE.LINE, triangle.type);
++    assertEquals(expected, triangle.ab);
++    assertEquals(triangle.aX, triangle.cX);
++    assertEquals(triangle.aY, triangle.cY);
++    assertTrue(triangle.aX != triangle.bX || triangle.aY != triangle.bY);
++  }
++
++  public void testContainsFlatPolygon() throws Exception {
++    // The first two vertices coincide after quantization, collapsing a triangle to a line.
++    Polygon indexed =
++        new Polygon(new double[] {0, 1e-9, 0, 10, 10, 0}, new double[] {0, 1e-9, 10, 10, 0, 0});
++    Polygon crossing =
++        new Polygon(new double[] {4, 4, 6, 6, 4}, new double[] {-1, 1, 1, -1, -1});
++    try (Directory dir = newDirectory();
++        RandomIndexWriter writer = new RandomIndexWriter(random(), dir)) {
++      Document doc = new Document();
++      for (Field field : LatLonShape.createIndexableFields("shape", indexed)) {
++        doc.add(field);
++      }
++      writer.addDocument(doc);
++      try (IndexReader reader = writer.getReader()) {
++        IndexSearcher searcher = newSearcher(reader);
++        for (LatLonGeometry geometry :
++            new LatLonGeometry[] {crossing, new Rectangle(4, 6, -1, 1)}) {
++          assertEquals(
++              1,
++              searcher.count(
++                  LatLonShape.newGeometryQuery("shape", QueryRelation.INTERSECTS, geometry)));
++          assertEquals(
++              0,
++              searcher.count(
++                  LatLonShape.newGeometryQuery("shape", QueryRelation.WITHIN, geometry)));
++          assertEquals(
++              0,
++              searcher.count(
++                  LatLonShape.newGeometryQuery("shape", QueryRelation.CONTAINS, geometry)));
++        }
++        assertEquals(
++            0,
++            searcher.count(
++                LatLonShape.newBoxQuery("shape", QueryRelation.CONTAINS, 4, 6, -1, 1)));
++        assertEquals(
++            1,
++            searcher.count(
++                LatLonShape.newBoxQuery("shape", QueryRelation.CONTAINS, 4, 6, 1, 2)));
++      }
++    }
++  }
++}

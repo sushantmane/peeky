@@ -1,0 +1,215 @@
+{
+ "bug": "valkey-io__valkey-790",
+ "arm": "control",
+ "rep": 3,
+ "language": "c",
+ "category": "D",
+ "image": "peeky-study/valkey-io__valkey-790:control",
+ "image_digest": "sha256:88ca854124f1684c3108750fa58d4e8c281278ddea6d992ab0adb417de293916",
+ "peeky_sha": null,
+ "container": "study-valkey-io__valkey-790-control-3-da3156",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T13:36:33+00:00",
+ "ended": "2026-11-01T13:39:47+00:00",
+ "wall_seconds": 193.5,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "CLUSTER SHARDS slot response is non-empty when primary node fails": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 57.1,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "ed0a7563c40c99443e0fdaf52a1466ed27095be498eb5141135b268d9708e9ae",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 32,
+ "patch_files": [
+  "src/cluster_legacy.c",
+  "src/commands/cluster-shards.json"
+ ],
+ "patch_bytes": 2828,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 5
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 11,
+ "ai_credits": 17.4816,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 238502,
+  "output": 6151,
+  "cache_read": 201222,
+  "cache_write": 37247,
+  "reasoning": 2679
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 16,
+ "tool_calls_by_name": {
+  "bash": 16
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -d /testbed 2>/dev/null; ls -a | head -30",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager status --short && rg -n 'clusterReplyShards|clusterGen.*Shard|slots_info|slotsInfo|CLUSTER SHARDS' src/cluster*",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && rg -n -i 'cluster shards|failover' tests/unit/cluster* tests/cluster/tests/* | head -120 && ls tests/unit/cluster",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'clusterReplyShards|clusterGen.*Shard|slots_info|slotsInfo|CLUSTER SHARDS' src/cluster*.c src/cluster*.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nEi 'cluster shards|failover' tests/unit/cluster/{cluster-nodes-slots,cluster-slots,failover,manual-failover,manual-takeover}.tcl && cat tests/unit/cluster/failover.tcl && cat tests/unit/cluster/manual-takeover.tcl",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '5320,5580p' src/cluster_legacy.c && sed -n '785,875p' src/cluster.c && grep -nE 'slot_info|slotInfo|SlotsReply|ShardsReply|shard.*[Ss]lot' src/cluster_legacy.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cat tests/unit/cluster/cluster-nodes-slots.tcl && cat tests/unit/cluster/cluster-slots.tcl && grep -nE 'proc (start_cluster|wait_for_cluster_propagation)|cluster shards' tests/support/cluster.tcl tests/unit/cluster/*.tcl | head -100",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '5580,5745p' src/cluster_legacy.c && grep -nE 'shards|Shard' src/cluster_legacy.c | head -90 && cat src/commands/cluster-shards.json",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nEi 'cluster shards|proc (start_cluster|wait_for_cluster_propagation)' tests/support/*.tcl tests/unit/cluster/*.tcl tests/cluster/tests/*.tcl && sed -n '1,220p' tests/support/cluster.tcl && ls src/valkey-server src/valkey-cli 2>/dev/null && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,290p' tests/support/cluster_util.tcl && cat tests/cluster/tests/28-cluster-shards.tcl",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1640,1725p' src/cluster_legacy.c && grep -n -A16 -B7 'clusterNodeGetPrimary(' src/cluster_legacy.c && sed -n '2350,2435p' src/cluster_legacy.c && command -v patch; ls -l src/valkey-server; git --no-pager log -1 --format='%h %s'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/unit/cluster/cluster-shards.tcl b/tests/unit/cluster/cluster-shards.tcl\nnew file mode 100644\n--- /dev/null\n+++ b/tests/unit/cluster/cluster-shards.tcl\n@@ -0,0 +1,1 @@\n+proc cluster_allocate_shards_test_slots {masters replicas} {\n+    R 0 cluster addslotsrange 0 1000 1002 5461\n+    R 1 cluster addslotsrange 1001 1001 5462 10922\n+    R 2 cluster addslotsrange 10923 16383\n+}\n+\n+proc assert_cluster_shards_slots {reference expected} {\n+    set actual [dict create]\n+    set shards [R $reference cluster shards]\n+    assert_equal 3 [llength $shards]\n+    foreach shard $shards {\n+        foreach node [dict get $shard nodes] {\n+            dict set actual [dict get $node id] [dict get $shard slots]\n+        }\n+    }\n+    assert_equal [lsort [dict keys $expected]] [lsort [dict keys $actual]]\n+    dict for {id slots} $expected {\n+        assert_equal $slots [dict get $actual $id]\n+    }\n+}\n+\n+start_cluster 3 3 {tags {external:skip cluster}} {\n+    set expected [dict create]\n+    set ranges {{0 1000 1002 5461} {1001 1001 5462 10922} {10923 16383}}\n+    for {set j 0} {$j < 6} {incr j} {\n+        dict set expected [R $j cluster myid] [lindex $ranges [expr {$j % 3}]]\n+    }\n+    set old_primary_id [R 0 cluster myid]\n+    set new_primary_id [R 3 cluster myid]\n+\n+    test \"CLUSTER SHARDS reports continuous and split slot ranges\" {\n+        for {set j 0} {$j < 6} {incr j} {\n+            assert_cluster_shards_slots $j $expected\n+        }\n+    }\n+\n+    set paused_pid [srv 0 pid]\n+    test \"Fail over a shard while its primary is unreachable\" {\n+        pause_process $paused_pid\n+        wait_for_condition 1000 50 {\n+            [s -3 role] eq {master}\n+        } else {\n+            fail \"Replica did not become a primary\"\n+        }\n+        for {set j 1} {$j < 6} {incr j} {\n+            wait_for_condition 1000 50 {\n+                [lindex [R $j cluster slots] 0 2 2] eq $new_primary_id\n+            } else {\n+                fail \"Cluster node $j did not learn the new slot owner\"\n+            }\n+        }\n+    }\n+\n+    test \"CLUSTER SHARDS preserves slots with an unreachable former primary\" {\n+        for {set j 1} {$j < 6} {incr j} {\n+            set old_primary [cluster_get_node_by_id $j $old_primary_id]\n+            assert {[cluster_has_flag $old_primary master]}\n+            assert {[cluster_has_flag $old_primary fail]}\n+            assert_cluster_shards_slots $j $expected\n+            assert_cluster_shards_slots $j $expected\n+        }\n+    }\n+\n+    test \"CLUSTER SHARDS preserves slots after the former primary rejoins\" {\n+        resume_process $paused_pid\n+        wait_for_condition 1000 50 {\n+            [s 0 role] eq {slave}\n+        } else {\n+            fail \"Former primary did not become a replica\"\n+        }\n+        wait_for_cluster_propagation\n+        for {set j 0} {$j < 6} {incr j} {\n+            assert_cluster_shards_slots $j $expected\n+        }\n+    }\n+\n+    test \"CLUSTER SHARDS returns empty slots only for a slotless shard\" {\n+        R 2 cluster delslotsrange 10923 16383\n+        dict set expected [R 2 cluster myid] {}\n+        dict set expected [R 5 cluster myid] {}\n+        assert_cluster_shards_slots 2 $expected\n+    }\n+} cluster_allocate_shards_test_slots\nPATCH\n./runtest --single unit/cluster/cluster-shards",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/src/cluster_legacy.c b/src/cluster_legacy.c\n--- a/src/cluster_legacy.c\n+++ b/src/cluster_legacy.c\n@@ -5663,26 +5663,30 @@\n-/* Add the shard reply of a single shard based off the given primary node. */\n+/* Add the shard reply of a single shard based on its member nodes. */\n void addShardReplyForClusterShards(client *c, list *nodes) {\n     serverAssert(listLength(nodes) > 0);\n-    clusterNode *n = listNodeValue(listFirst(nodes));\n     addReplyMapLen(c, 2);\n     addReplyBulkCString(c, \"slots\");\n \n-    /* Use slot_info_pairs from the primary only */\n-    n = clusterNodeGetPrimary(n);\n-\n-    if (n->slot_info_pairs != NULL) {\n+    /* During failover, a shard may contain both the slotless former primary\n+     * and the new primary. Use the slot ranges of all members, not the role\n+     * or position of a node in the list, to determine the shard's slots. */\n+    void *slot_replylen = addReplyDeferredLen(c);\n+    int slot_reply_count = 0;\n+    listIter li;\n+    listRewind(nodes, &li);\n+    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {\n+        clusterNode *n = listNodeValue(ln);\n         serverAssert((n->slot_info_pairs_count % 2) == 0);\n-        addReplyArrayLen(c, n->slot_info_pairs_count);\n         for (int i = 0; i < n->slot_info_pairs_count; i++) addReplyLongLong(c, (unsigned long)n->slot_info_pairs[i]);\n-    } else {\n-        /* If no slot info pair is provided, the node owns no slots */\n-        addReplyArrayLen(c, 0);\n+        slot_reply_count += n->slot_info_pairs_count;\n     }\n+    setDeferredArrayLen(c, slot_replylen, slot_reply_count);\n \n     addReplyBulkCString(c, \"nodes\");\n     addReplyArrayLen(c, listLength(nodes));\n-    listIter li;\n     listRewind(nodes, &li);\n     for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {\ndiff --git a/src/commands/cluster-shards.json b/src/commands/cluster-shards.json\n--- a/src/commands/cluster-shards.json\n+++ b/src/commands/cluster-shards.json\n@@ -23,7 +23,7 @@\n                     \"slots\": {\n-                        \"description\": \"An even number element array specifying the start and end slot numbers for slot ranges owned by this shard.\",\n+                        \"description\": \"An even number element array specifying the start and end slot numbers for slot ranges owned by this shard. An empty array means that no node in the shard has slots assigned.\",\n                         \"type\": \"array\",\ndiff --git a/tests/unit/cluster/cluster-shards.tcl b/tests/unit/cluster/cluster-shards.tcl\n--- a/tests/unit/cluster/cluster-shards.tcl\n+++ b/tests/unit/cluster/cluster-shards.tcl\n@@ -59,6 +59,7 @@\n             assert {[cluster_has_flag $old_primary master]}\n             assert {[cluster_has_flag $old_primary fail]}\n             assert_cluster_shards_slots $j $expected\n+            # Repeated requests must not retain cached slot ranges.\n             assert_cluster_shards_slots $j $expected\nPATCH\nmake -j4 > /tmp/valkey-shards-build.log 2>&1 && tail -8 /tmp/valkey-shards-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && ./runtest --single unit/cluster/cluster-shards --single unit/cluster/failover --single unit/cluster/cluster-nodes-slots",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- src/cluster_legacy.c src/commands/cluster-shards.json && git --no-pager status --short && grep -n 'warning:' /tmp/valkey-shards-build.log | head -12 && sed -n '1,125p' tests/unit/cluster/cluster-shards.tcl",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -nE 'cluster/cluster-(nodes-slots|slots)|all_tests|glob.*unit' tests/test_helper.tcl && sed -n '1,160p' tests/test_helper.tcl && ls .config && grep -nEi 'format|clang' .github/workflows/*.yml Makefile src/Makefile | head -35 && rm /tmp/valkey-shards-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 3,
+ "build_or_test_commands": [
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/unit/cluster/cluster-shards.tcl b/tests/unit/cluster/cluster-shards.tcl\nnew file mode 100644\n--- /dev/null\n+++ b/tests/unit/cluster/cluster-shards.tcl\n@@ -0,0 +1,1 @@\n+proc cluster_allocate_shards_test_slots {masters replicas} {\n+    R 0 cluster addslotsrange 0 1000 1002 5461\n+    R 1 cluster addslotsrange 1001 1001 5462 10922\n+    R 2 cluster addslotsrange 10923 16383\n+}\n+\n+proc assert_cluster_shards_slots {reference expected} {\n+    set actual [dict create]\n+    set shards [R $reference cluster shards]\n+    assert_equal 3 [llength $shards]\n+    foreach shard $shards {\n+        foreach node [dict get $shard nodes] {\n+            dict set actual [dict get $node id] [dict get $shard slots]\n+        }\n+    }\n+    assert_equal [lsort [dict keys $expected]] [lsort [dict keys $actual]]\n+    dict for {id slots} $expected {\n+        assert_equal $slots [dict get $actual $id]\n+    }\n+}\n+\n+start_cluster 3 3 {tags {external:skip cluster}} {\n+    set expected [dict create]\n+    set ranges {{0 1000 1002 5461} {1001 1001 5462 10922} {10923 16383}}\n+    for {set j 0} {$j < 6} {incr j} {\n+        dict set expected [R $j cluster myid] [lindex $ranges [expr {$j % 3}]]\n+    }\n+    set old_primary_id [R 0 cluster myid]\n+    set new_primary_id [R 3 cluster myid]\n+\n+    test \"CLUSTER SHARDS reports continuous and split slot ranges\" {\n+        for {set j 0} {$j < 6} {incr j} {\n+            assert_cluster_shards_slots $j $expected\n+        }\n+    }\n+\n+    set paused_pid [srv 0 pid]\n+    test \"Fail over a shard while its primary is unreachable\" {\n+        pause_process $paused_pid\n+        wait_for_condition 1000 50 {\n+            [s -3 role] eq {master}\n+        } else {\n+            fail \"Replica did not become a primary\"\n+        }\n+        for {set j 1} {$j < 6} {incr j} {\n+            wait_for_condition 1000 50 {\n+                [lindex [R $j cluster slots] 0 2 2] eq $new_primary_id\n+            } else {\n+                fail \"Cluster node $j did not learn the new slot owner\"\n+            }\n+        }\n+    }\n+\n+    test \"CLUSTER SHARDS preserves slots with an unreachable former primary\" {\n+        for {set j 1} {$j < 6} {incr j} {\n+            set old_primary [cluster_get_node_by_id $j $old_primary_id]\n+            assert {[cluster_has_flag $old_primary master]}\n+            assert {[cluster_has_flag $old_primary fail]}\n+            assert_cluster_shards_slots $j $expected\n+            assert_cluster_shards_slots $j $expected\n+        }\n+    }\n+\n+    test \"CLUSTER SHARDS preserves slots after the former primary rejoins\" {\n+        resume_process $paused_pid\n+        wait_for_condition 1000 50 {\n+            [s 0 role] eq {slave}\n+        } else {\n+            fail \"Former primary did not become a replica\"\n+        }\n+        wait_for_cluster_propagation\n+        for {set j 0} {$j < 6} {incr j} {\n+            assert_cluster_shards_slots $j $expected\n+        }\n+    }\n+\n+    test \"CLUSTER SHARDS returns empty slots only for a slotless shard\" {\n+        R 2 cluster delslotsrange 10923 16383\n+        dict set expected [R 2 cluster myid] {}\n+        dict set expected [R 5 cluster myid] {}\n+        assert_cluster_shards_slots 2 $expected\n+    }\n+} cluster_allocate_shards_test_slots\nPATCH\n./runtest --single unit/cluster/cluster-shards",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/src/cluster_legacy.c b/src/cluster_legacy.c\n--- a/src/cluster_legacy.c\n+++ b/src/cluster_legacy.c\n@@ -5663,26 +5663,30 @@\n-/* Add the shard reply of a single shard based off the given primary node. */\n+/* Add the shard reply of a single shard based on its member nodes. */\n void addShardReplyForClusterShards(client *c, list *nodes) {\n     serverAssert(listLength(nodes) > 0);\n-    clusterNode *n = listNodeValue(listFirst(nodes));\n     addReplyMapLen(c, 2);\n     addReplyBulkCString(c, \"slots\");\n \n-    /* Use slot_info_pairs from the primary only */\n-    n = clusterNodeGetPrimary(n);\n-\n-    if (n->slot_info_pairs != NULL) {\n+    /* During failover, a shard may contain both the slotless former primary\n+     * and the new primary. Use the slot ranges of all members, not the role\n+     * or position of a node in the list, to determine the shard's slots. */\n+    void *slot_replylen = addReplyDeferredLen(c);\n+    int slot_reply_count = 0;\n+    listIter li;\n+    listRewind(nodes, &li);\n+    for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {\n+        clusterNode *n = listNodeValue(ln);\n         serverAssert((n->slot_info_pairs_count % 2) == 0);\n-        addReplyArrayLen(c, n->slot_info_pairs_count);\n         for (int i = 0; i < n->slot_info_pairs_count; i++) addReplyLongLong(c, (unsigned long)n->slot_info_pairs[i]);\n-    } else {\n-        /* If no slot info pair is provided, the node owns no slots */\n-        addReplyArrayLen(c, 0);\n+        slot_reply_count += n->slot_info_pairs_count;\n     }\n+    setDeferredArrayLen(c, slot_replylen, slot_reply_count);\n \n     addReplyBulkCString(c, \"nodes\");\n     addReplyArrayLen(c, listLength(nodes));\n-    listIter li;\n     listRewind(nodes, &li);\n     for (listNode *ln = listNext(&li); ln != NULL; ln = listNext(&li)) {\ndiff --git a/src/commands/cluster-shards.json b/src/commands/cluster-shards.json\n--- a/src/commands/cluster-shards.json\n+++ b/src/commands/cluster-shards.json\n@@ -23,7 +23,7 @@\n                     \"slots\": {\n-                        \"description\": \"An even number element array specifying the start and end slot numbers for slot ranges owned by this shard.\",\n+                        \"description\": \"An even number element array specifying the start and end slot numbers for slot ranges owned by this shard. An empty array means that no node in the shard has slots assigned.\",\n                         \"type\": \"array\",\ndiff --git a/tests/unit/cluster/cluster-shards.tcl b/tests/unit/cluster/cluster-shards.tcl\n--- a/tests/unit/cluster/cluster-shards.tcl\n+++ b/tests/unit/cluster/cluster-shards.tcl\n@@ -59,6 +59,7 @@\n             assert {[cluster_has_flag $old_primary master]}\n             assert {[cluster_has_flag $old_primary fail]}\n             assert_cluster_shards_slots $j $expected\n+            # Repeated requests must not retain cached slot ranges.\n             assert_cluster_shards_slots $j $expected\nPATCH\nmake -j4 > /tmp/valkey-shards-build.log 2>&1 && tail -8 /tmp/valkey-shards-build.log",
+  "cd /testbed && ./runtest --single unit/cluster/cluster-shards --single unit/cluster/failover --single unit/cluster/cluster-nodes-slots"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 0,
+ "peeky_mentions_in_commands": 0,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed `CLUSTER SHARDS` to collect slot ranges from all shard members. Previously, it used an arbitrary member\u2019s primary, which could still be the failed, slotless former primary after failover. Empty slots now correctly indicate a genuinely slotless shard.",
+ "assistant_messages": [
+  "I\u2019ll inspect how `CLUSTER SHARDS` selects slot ranges during failover, fix the source, and add a regression test.\n",
+  "The reply uses the first shard member\u2019s primary to find slots. After failover, that can still be the failed, slotless former primary. I\u2019ll make the reply use slot ranges from all shard members and add coverage for failover and genuinely slotless shards.\n",
+  "Fixed `CLUSTER SHARDS` to collect slot ranges from all shard members. Previously, it used an arbitrary member\u2019s primary, which could still be the failed, slotless former primary after failover. Empty slots now correctly indicate a genuinely slotless shard."
+ ],
+ "assistant_reasoning": [
+  "**Investigating test suite registration**\n\nI\u2019m considering whether I need to add a suite to all_tests. It looks like the tests runner accepts `--single` to run a specific file, but I wonder if it defaults to a static list like tests/test_helper.tcl when executing all_tests. It\u2019s essential to investigate how the new suite registration works and whether it might affect my tests. Let's think through the necessary steps to clarify this process!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 251.2
+}

@@ -1,0 +1,299 @@
+diff --git a/CHANGES b/CHANGES
+index e05488388..e3328a72a 100644
+--- a/CHANGES
++++ b/CHANGES
+@@ -40,6 +40,8 @@ Features added
+ Bugs fixed
+ ----------
+ 
++* inheritance_diagram: Fix SVG links from diagrams on nested pages and
++  preserve external links.
+ * #11077: graphviz: Fix relative links from within the graph.
+   Patch by Ralf Grubenmann.
+ * #11529: Line Block in LaTeX builder outputs spurious empty token.
+diff --git a/sphinx/ext/graphviz.py b/sphinx/ext/graphviz.py
+index 8b21d9e3b..da3cc7dd9 100644
+--- a/sphinx/ext/graphviz.py
++++ b/sphinx/ext/graphviz.py
+@@ -218,7 +218,7 @@ class GraphvizSimple(SphinxDirective):
+ 
+ 
+ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+-    """Change relative links in generated svg files to be relative to imgpath."""
++    """Rebase links from the output directory to the generated SVG's directory."""
+     tree = ET.parse(filepath)  # NoQA: S314
+     root = tree.getroot()
+     ns = {'svg': 'http://www.w3.org/2000/svg', 'xlink': 'http://www.w3.org/1999/xlink'}
+@@ -230,15 +230,17 @@ def fix_svg_relative_paths(self: SphinxTranslator, filepath: str) -> None:
+         root.findall('.//svg:a[@xlink:href]', ns),
+     ):
+         scheme, hostname, url, query, fragment = urlsplit(element.attrib[href_name])
+-        if hostname:
++        if scheme or hostname or url.startswith('/'):
+             # not a relative link
+             continue
+ 
+         old_path = path.join(self.builder.outdir, url)
+         new_path = path.relpath(
+             old_path,
+-            start=path.join(self.builder.outdir, self.builder.imgpath),
+-        )
++            start=path.dirname(filepath),
++        ).replace(path.sep, '/')
++        if url.endswith('/'):
++            new_path += '/'
+         modified_url = urlunsplit((scheme, hostname, new_path, query, fragment))
+ 
+         element.set(href_name, modified_url)
+diff --git a/sphinx/ext/inheritance_diagram.py b/sphinx/ext/inheritance_diagram.py
+index 6e3985512..1fb838d45 100644
+--- a/sphinx/ext/inheritance_diagram.py
++++ b/sphinx/ext/inheritance_diagram.py
+@@ -37,6 +37,7 @@ import re
+ from collections.abc import Iterable
+ from importlib import import_module
+ from typing import Any, cast
++from urllib.parse import urljoin, urlsplit
+ 
+ from docutils import nodes
+ from docutils.nodes import Node
+@@ -397,8 +398,7 @@ def get_graph_hash(node: inheritance_diagram) -> str:
+ 
+ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diagram) -> None:
+     """
+-    Output the graph for HTML.  This will insert a PNG with clickable
+-    image map.
++    Output the graph for HTML as a PNG with a clickable image map or an SVG.
+     """
+     graph = node['graph']
+ 
+@@ -407,20 +407,20 @@ def html_visit_inheritance_diagram(self: HTML5Translator, node: inheritance_diag
+ 
+     # Create a mapping from fully-qualified class names to URLs.
+     graphviz_output_format = self.builder.env.config.graphviz_output_format.upper()
+-    current_filename = self.builder.current_docname + self.builder.out_suffix
+     urls = {}
+     pending_xrefs = cast(Iterable[addnodes.pending_xref], node)
+     for child in pending_xrefs:
+         if child.get('refuri') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = "../" + child.get('refuri')
+-            else:
+-                urls[child['reftitle']] = child.get('refuri')
++            urls[child['reftitle']] = child.get('refuri')
+         elif child.get('refid') is not None:
+-            if graphviz_output_format == 'SVG':
+-                urls[child['reftitle']] = '../' + current_filename + '#' + child.get('refid')
+-            else:
+-                urls[child['reftitle']] = '#' + child.get('refid')
++            urls[child['reftitle']] = '#' + child.get('refid')
++
++    if graphviz_output_format == 'SVG':
++        # Graphviz expects links relative to the output directory, not the page.
++        current_uri = self.builder.get_target_uri(self.builder.current_docname)
++        for class_name, url in urls.items():
++            if not urlsplit(url).scheme and not url.startswith('/'):
++                urls[class_name] = urljoin(current_uri, url).lstrip('/')
+ 
+     dotcode = graph.generate_dot(name, urls, env=self.builder.env)
+     render_dot_html(self, node, dotcode, {}, 'inheritance', 'inheritance',
+diff --git a/tests/roots/test-inheritance-links/conf.py b/tests/roots/test-inheritance-links/conf.py
+new file mode 100644
+index 000000000..9953494a5
+--- /dev/null
++++ b/tests/roots/test-inheritance-links/conf.py
+@@ -0,0 +1,6 @@
++import os
++import sys
++
++sys.path.insert(0, os.path.abspath('.'))
++
++extensions = ['sphinx.ext.inheritance_diagram']
+diff --git a/tests/roots/test-inheritance-links/index.rst b/tests/roots/test-inheritance-links/index.rst
+new file mode 100644
+index 000000000..177938474
+--- /dev/null
++++ b/tests/roots/test-inheritance-links/index.rst
+@@ -0,0 +1,12 @@
++Inheritance links
++=================
++
++.. toctree::
++
++   nested/index
++   nested/classes
++   nested/deep/index
++
++.. py:class:: inheritance_classes.Foo
++
++.. inheritance-diagram:: inheritance_classes.Qux
+diff --git a/tests/roots/test-inheritance-links/inheritance_classes.py b/tests/roots/test-inheritance-links/inheritance_classes.py
+new file mode 100644
+index 000000000..5db9008ed
+--- /dev/null
++++ b/tests/roots/test-inheritance-links/inheritance_classes.py
+@@ -0,0 +1,14 @@
++class Foo:
++    pass
++
++
++class Bar(Foo):
++    pass
++
++
++class Baz(Bar):
++    pass
++
++
++class Qux(Baz):
++    pass
+diff --git a/tests/roots/test-inheritance-links/nested/classes.rst b/tests/roots/test-inheritance-links/nested/classes.rst
+new file mode 100644
+index 000000000..5e59f6be9
+--- /dev/null
++++ b/tests/roots/test-inheritance-links/nested/classes.rst
+@@ -0,0 +1,4 @@
++Classes
++=======
++
++.. py:class:: inheritance_classes.Bar
+diff --git a/tests/roots/test-inheritance-links/nested/deep/index.rst b/tests/roots/test-inheritance-links/nested/deep/index.rst
+new file mode 100644
+index 000000000..5f04f2688
+--- /dev/null
++++ b/tests/roots/test-inheritance-links/nested/deep/index.rst
+@@ -0,0 +1,4 @@
++Deep inheritance links
++======================
++
++.. inheritance-diagram:: inheritance_classes.Qux
+diff --git a/tests/roots/test-inheritance-links/nested/index.rst b/tests/roots/test-inheritance-links/nested/index.rst
+new file mode 100644
+index 000000000..d236aa3d5
+--- /dev/null
++++ b/tests/roots/test-inheritance-links/nested/index.rst
+@@ -0,0 +1,6 @@
++Nested inheritance links
++========================
++
++.. py:class:: inheritance_classes.Baz
++
++.. inheritance-diagram:: inheritance_classes.Qux
+diff --git a/tests/test_ext_inheritance_diagram_links.py b/tests/test_ext_inheritance_diagram_links.py
+new file mode 100644
+index 000000000..3d48b9191
+--- /dev/null
++++ b/tests/test_ext_inheritance_diagram_links.py
+@@ -0,0 +1,112 @@
++"""Test links in inheritance diagrams embedded at different document depths."""
++
++import re
++from html import unescape
++from pathlib import Path
++from types import SimpleNamespace
++from urllib.parse import urljoin, urlsplit
++from xml.etree import ElementTree
++
++import pytest
++from docutils import nodes
++
++from sphinx.ext.graphviz import fix_svg_relative_paths
++from sphinx.testing.util import etree_parse
++
++
++@pytest.mark.parametrize('buildername', [
++    pytest.param('html', marks=pytest.mark.sphinx('html')),
++    pytest.param('dirhtml', marks=pytest.mark.sphinx('dirhtml')),
++    pytest.param('singlehtml', marks=pytest.mark.sphinx('singlehtml')),
++])
++@pytest.mark.parametrize('output_format', ['png', 'svg'])
++@pytest.mark.sphinx(testroot='inheritance-links')
++@pytest.mark.usefixtures('if_graphviz_found')
++def test_inheritance_diagram_links(app, buildername, output_format):
++    app.config.graphviz_output_format = output_format
++    site_uri = 'https://example.test/docs/'
++    external_uri = 'https://example.org/classes.html?version=1#inheritance_classes.Qux'
++
++    def resolve_external_class(app, env, node, contnode):
++        if node['reftarget'] == 'inheritance_classes.Qux':
++            return nodes.reference('', '', contnode, refuri=external_uri,
++                                   reftitle=node['reftarget'])
++        return None
++
++    app.connect('missing-reference', resolve_external_class)
++    app.builder.build_all()
++    assert app._warning.getvalue() == ''
++
++    expected = {external_uri}
++    for docname, cls in [('index', 'Foo'), ('nested/classes', 'Bar'), ('nested/index', 'Baz')]:
++        if buildername == 'singlehtml':
++            docname = 'index'
++        filename = Path(app.builder.get_outfilename(docname)).relative_to(app.outdir)
++        expected.add(f'{site_uri}{filename.as_posix()}#inheritance_classes.{cls}')
++
++    docnames = ['index'] if buildername == 'singlehtml' else [
++        'index', 'nested/index', 'nested/deep/index',
++    ]
++    for docname in docnames:
++        html_path = Path(app.builder.get_outfilename(docname))
++        content = html_path.read_text(encoding='utf-8')
++        if output_format == 'svg':
++            diagram_paths = re.findall(r'<object data="([^"]+)"', content)
++            assert diagram_paths
++            link_groups = []
++            for diagram_path in diagram_paths:
++                svg_path = (html_path.parent / diagram_path).resolve()
++                tree = etree_parse(svg_path)
++                hrefs = [element.attrib['{http://www.w3.org/1999/xlink}href']
++                         for element in tree.findall('.//{http://www.w3.org/2000/svg}a')]
++                link_groups.append((svg_path, hrefs))
++        else:
++            hrefs = re.findall(r'<area [^>]*href="([^"]+)"', content)
++            assert hrefs
++            link_groups = [(html_path, [unescape(href) for href in hrefs])]
++
++        for link_path, hrefs in link_groups:
++            base_uri = site_uri + link_path.relative_to(app.outdir).as_posix()
++            actual = set()
++            for href in hrefs:
++                uri = urlsplit(urljoin(base_uri, href))
++                if uri.netloc == 'example.test':
++                    assert uri.path.startswith('/docs/')
++                    target = uri.path[len('/docs/'):]
++                    if not target or target.endswith('/'):
++                        target += 'index.html'
++                    assert (app.outdir / target).is_file()
++                    uri = uri._replace(path='/docs/' + target)
++                actual.add(uri.geturl())
++            assert actual == expected
++
++
++def test_graphviz_svg_relative_paths(tmp_path):
++    svg_namespace = 'http://www.w3.org/2000/svg'
++    href_name = '{http://www.w3.org/1999/xlink}href'
++    links = [
++        ('_static/test.svg?version=1#image', '../../_static/test.svg?version=1#image'),
++        ('nested/classes/?version=1#class', '../../nested/classes/?version=1#class'),
++        ('https://example.org/classes.html', 'https://example.org/classes.html'),
++        ('//example.org/classes.html', '//example.org/classes.html'),
++        ('/classes.html#class', '/classes.html#class'),
++        ('mailto:author@example.org', 'mailto:author@example.org'),
++        ('data:image/svg+xml;base64,PHN2Zy8+', 'data:image/svg+xml;base64,PHN2Zy8+'),
++    ]
++    root = ElementTree.Element(f'{{{svg_namespace}}}svg')
++    for tag in ('a', 'image'):
++        for original, expected in links:
++            ElementTree.SubElement(root, f'{{{svg_namespace}}}{tag}', {href_name: original})
++
++    svg_path = tmp_path / 'assets' / 'graphs' / 'test.svg'
++    svg_path.parent.mkdir(parents=True)
++    ElementTree.ElementTree(root).write(svg_path)
++    translator = SimpleNamespace(builder=SimpleNamespace(outdir=tmp_path,
++                                                        imgpath='../../_images'))
++    fix_svg_relative_paths(translator, str(svg_path))
++
++    tree = etree_parse(svg_path)
++    for tag in ('a', 'image'):
++        actual = [element.attrib[href_name]
++                  for element in tree.findall(f'.//{{{svg_namespace}}}{tag}')]
++        assert actual == [expected for original, expected in links]

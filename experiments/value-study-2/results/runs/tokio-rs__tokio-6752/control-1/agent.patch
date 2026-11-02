@@ -1,0 +1,37 @@
+diff --git a/tokio-util/src/time/delay_queue.rs b/tokio-util/src/time/delay_queue.rs
+index 2b33e361..bdf1cf9b 100644
+--- a/tokio-util/src/time/delay_queue.rs
++++ b/tokio-util/src/time/delay_queue.rs
+@@ -728,6 +728,9 @@ impl<T> DelayQueue<T> {
+     /// removed item as well as the `Instant` at which it will the delay will
+     /// have expired.
+     ///
++    /// If this removal makes the queue empty, the task registered with
++    /// [`Self::poll_expired`] is woken.
++    ///
+     /// # Panics
+     ///
+     /// The function panics if `key` is not contained by the queue.
+@@ -766,6 +769,12 @@ impl<T> DelayQueue<T> {
+             }
+         }
+ 
++        if self.is_empty() {
++            if let Some(waker) = self.waker.take() {
++                waker.wake();
++            }
++        }
++
+         Expired {
+             key: Key::new(key.index),
+             data: data.inner,
+@@ -780,6 +789,9 @@ impl<T> DelayQueue<T> {
+     ///
+     /// Returns `None` if `key` is not in the queue.
+     ///
++    /// If this removal makes the queue empty, the task registered with
++    /// [`Self::poll_expired`] is woken.
++    ///
+     /// # Examples
+     ///
+     /// Basic usage

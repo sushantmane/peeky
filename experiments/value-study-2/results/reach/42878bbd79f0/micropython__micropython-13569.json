@@ -1,0 +1,114 @@
+{
+ "bug": "micropython__micropython-13569",
+ "language": "c",
+ "category": "C",
+ "image": "peeky-study/micropython__micropython-13569:peeky-r2",
+ "image_id": "sha256:5be7048270607bbc90fc485a9d4caea0f3e49a21bc01d3b30d93457ab786996c",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:34:10+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in compile_try_except",
+   "at": "py/compile.c:1653",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ports/unix/build-peeky/micropython --at py/compile.c:1653 --name reach --timeout 300 --json -- tests/basics/try_finally_return.py",
+     "exit": 0,
+     "seconds": 10.4
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": "finally 1\r\nit worked\r\nfinally 2\r\nfinally 3\r\nit worked, did this work?\r\nfinally\r\n1\r\nfinally\r\n(1, 3)\r\nfinally 2\r\nfinally 1\r\n(1, 3, 5, 7)\r\nfinally 2\r\nfinally 1\r\n(1, 3, 5, 7)\r\n2 3 4 5 6\r\n6\r\n1\r\n"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the insertion in compile_try_finally",
+   "at": "py/compile.c:1685",
+   "commands": [
+    {
+     "command": "peeky session start . --binary ports/unix/build-peeky/micropython --at py/compile.c:1685 --name reach --timeout 300 --json -- tests/basics/try_finally_return.py",
+     "exit": 0,
+     "seconds": 10.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.5
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/py/compile.c:1685",
+    "function": "compile_try_finally"
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "comp",
+      "value": "0x0000fffffffff748"
+     },
+     {
+      "name": "pn_body",
+      "value": "281474837403952"
+     },
+     {
+      "name": "n_except",
+      "value": "0"
+     },
+     {
+      "name": "pn_except",
+      "value": "0x0000000000000000"
+     },
+     {
+      "name": "pn_else",
+      "value": "0"
+     },
+     {
+      "name": "pn_finally",
+      "value": "281474837404008"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "l_finally_block",
+      "value": "None",
+      "unavailable": "True",
+      "withheld": "True",
+      "reason": "declared on line 1673, and Peeky cannot tell from the source whether this line can be reached without running the declaration, so it may not be initialized here: its storage may hold leftovers"
+     }
+    ]
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "outcome": "not attempted",
+   "detail": {
+    "reason": "the test is a MicroPython script whose output run-tests.py compares with CPython's; neither is the project's C code"
+   }
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:34:33+00:00"
+}

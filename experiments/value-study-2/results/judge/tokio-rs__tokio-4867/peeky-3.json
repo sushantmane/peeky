@@ -1,0 +1,7 @@
+{
+ "judge_id": "a158",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Dropping the last sender advances the tail past the closure marker. `resubscribe()` starts at that tail, so it skips the marker and waits for a message that can never arrive.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

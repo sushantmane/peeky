@@ -1,0 +1,7 @@
+{
+ "judge_id": "a237",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"Nominal axes currently use ordinary autoscaling and grid settings.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

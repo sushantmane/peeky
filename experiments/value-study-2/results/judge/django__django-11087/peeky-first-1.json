@@ -1,0 +1,7 @@
+{
+ "judge_id": "a110",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed the collector fetching every field from cascaded objects, which unnecessarily decoded corrupt text.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 10 (before fix): sub_objs.query.deferred_loading (frozenset({}), True), label 'delete.PurgeLog', select_related False agree with cmd 8's printed query selecting all PurgeLog columns (id, job_id, line) with no join. Cmd 22 (after fix): deferred_loading ({'id'}, False) agrees with the same run's printed SQL `SELECT \"delete_purgelog\".\"id\" FROM \"delete_purgelog\" ...` and the successful cascade. Nothing contradicted."
+}

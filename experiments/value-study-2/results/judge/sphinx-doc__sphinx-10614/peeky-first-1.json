@@ -1,0 +1,7 @@
+{
+ "judge_id": "a214",
+ "wrong_root_cause": false,
+ "evidence": "Message 4: \"Fixed incorrect SVG link bases: inheritance diagrams assumed root-level pages, and Graphviz used a page-relative image directory.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 15 probe at graphviz.py:244: modified_url '../../package/classes.html#...' (index) and '../classes.html#...' (package/index) match the SVG hrefs printed by the reproduction in cmd 11 ('../../package/classes.html#...', '../classes.html#...'); cmd 14 urls ('../package/classes.html#...', '../classes.html#...') match code line 416 ('../' + refuri) shown in cmd 12; cmd 24 modified_url '../package/classes.html#...' matches the href its own script printed and cmd 26's single shared SVG matches the 1 hit. Nothing contradicted."
+}

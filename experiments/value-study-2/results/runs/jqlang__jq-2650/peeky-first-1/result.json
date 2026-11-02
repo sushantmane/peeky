@@ -1,0 +1,280 @@
+{
+ "bug": "jqlang__jq-2650",
+ "arm": "peeky-first",
+ "rep": 1,
+ "language": "c",
+ "category": "E",
+ "image": "peeky-study/jqlang__jq-2650:peeky-r2",
+ "image_digest": "sha256:f0100ff966058fbd6939d23498a3c89e99d9ea2dd8b55bd1999f2acc19ab1d86",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-jqlang__jq-2650-peeky-first-1-8fea7d",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T14:05:23+00:00",
+ "ended": "2026-11-01T14:08:25+00:00",
+ "wall_seconds": 181.8,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/jqtest": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 17.0,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "105e86f95eecd270e1f79f80256aa5dd08c408432a19e7b27c4777af54c0a76f",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "docs/content/manual/manual.yml",
+  "modules/oniguruma",
+  "src/lexer.c",
+  "src/lexer.h",
+  "src/parser.c",
+  "src/parser.h",
+  "src/parser.y"
+ ],
+ "patch_bytes": 140346,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 28
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 15,
+ "ai_credits": 25.4989,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 533744,
+  "output": 8013,
+  "cache_read": 483116,
+  "cache_write": 50583,
+  "reasoning": 1528
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 22,
+ "tool_calls_by_name": {
+  "bash": 22
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -d /testbed 2>/dev/null; cat /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,200p' /opt/peeky/docs/AGENT_GUIDE.md && cat /opt/peeky/docs/PROJECT.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && ls jq Makefile && printf '%s\\n' '{\"title\":\"Title 1\",\"media:content\":{\"media:credits\":\"media:content.media:credits 1\"}}' | ./jq '{title, credits: .[\"media:content\"].[\"media:credits\"]}'; cd /testbed && sed -n '1,160p' src/parser.y && ls tests",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '580,735p' src/parser.y && git diff --stat && git diff -- src/parser.c | head -100 && grep -n 'Term.*\\|gen_index\\|gen_slice' src/parser.c | tail -70 && sed -n '1,100p' tests/jqtest && sed -n '1,120p' tests/jq.test",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,200p' /opt/peeky/docs/lang/c-cpp.md; cd /testbed && ./jq --version && grep -n 'YFLAGS\\|BISON\\|AM_YFLAGS' Makefile | head -25 && git log -1 --oneline",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git show HEAD:src/parser.y | sed -n '674,735p' && grep -n '\\.\\[\\|Object Identifier-Index\\|Array/String Slice' docs/content/manual/manual.yml | head -40 && grep -n 'Object\\|index\\|\\.[[]\\|slice' tests/jq.test | head -55 && ./jq -nc '[{a:{b:1}} | .[\"a\"].[\"b\"], .a.[\"b\"], .[\"a\"].[\"b\"]?]' && ./jq -nc '[[1,2,3] | .[0:2], .[].[0:2]]'; cd /testbed && grep -n 'yyerror (\\|yychar\\|yytoken' src/parser.c | tail -45 && ls -l jq src/parser.y src/parser.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --binary ./jq --at src/parser.c --json > /tmp/jq-peeky-describe.json && python3 -c 'import json; d=json.load(open(\"/tmp/jq-peeky-describe.json\")); print(str(d)[:16000])'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && printf '%s\\n' '{\"foo\":[1,2,3]}' | ./jq '.foo.[]'; cd /testbed && printf '%s\\n' '{\"foo\":[1,2,3]}' | ./jq '.foo.[1:2]'; cd /testbed && sed -n '3758,3807p' src/parser.c && sed -n '125,182p' tests/jq.test && sed -n '350,415p' docs/content/manual/manual.yml && python3 - <<'PY'\nimport json\nx=json.load(open('/tmp/jq-peeky-describe.json'))\nprint('Parser error breakpoint lines:', [l for l in x['breakpoint_lines']['src/parser.c'] if 3760<=l<=3805])\nprint('Other describe keys:', [k for k in x if k not in ('units','breakpoint_lines')])\nf=x.get('functions', [])\nif isinstance(f,dict): print(str(f.get('yyparse', f))[:6500])\nelse:\n for v in f:\n  if 'yyparse' in str(v) or 'yyerror' in str(v): print(v)\nPY",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git log -6 --oneline -- src/parser.y && sed -n '1,160p' tests/setup && command -v apply_patch && grep -n 'maintainer-clean\\|parser.c\\|TESTS =' Makefile.am | head -25",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ./jq --at src/parser.c:3799 --capture yychar,yytoken,yystate,yylloc,yymsgp -- -n '.foo.[1:2]'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ./jq --at src/parser.c:3799 --capture yychar,yytoken,yystate,yylloc,yymsgp -- -n '.foo.[]'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git show 3e0a118 --stat && git show 3e0a118 -- src/parser.y tests/jq.test && command -v patch; ls /opt; grep -n 'TESTS =\\|parser.c' /testbed/Makefile.am | head -25; sed -n '385,398p' /testbed/src/parser.c",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/src/parser.y b/src/parser.y\n--- a/src/parser.y\n+++ b/src/parser.y\n@@ -711,6 +711,12 @@\n Term '[' ']' %prec NONOPT {\n   $$ = block_join($1, gen_op_simple(EACH));\n } |\n+Term '.' '[' ']' '?' {\n+  $$ = block_join($1, gen_op_simple(EACH_OPT));\n+} |\n+Term '.' '[' ']' %prec NONOPT {\n+  $$ = block_join($1, gen_op_simple(EACH));\n+} |\n Term '[' Exp ':' Exp ']' '?' {\n   $$ = gen_slice_index($1, $3, $5, INDEX_OPT);\n } |\n@@ -729,6 +735,24 @@\n Term '[' ':' Exp ']' %prec NONOPT {\n   $$ = gen_slice_index($1, gen_const(jv_null()), $4, INDEX);\n } |\n+Term '.' '[' Exp ':' Exp ']' '?' {\n+  $$ = gen_slice_index($1, $4, $6, INDEX_OPT);\n+} |\n+Term '.' '[' Exp ':' ']' '?' {\n+  $$ = gen_slice_index($1, $4, gen_const(jv_null()), INDEX_OPT);\n+} |\n+Term '.' '[' ':' Exp ']' '?' {\n+  $$ = gen_slice_index($1, gen_const(jv_null()), $5, INDEX_OPT);\n+} |\n+Term '.' '[' Exp ':' Exp ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, $4, $6, INDEX);\n+} |\n+Term '.' '[' Exp ':' ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, $4, gen_const(jv_null()), INDEX);\n+} |\n+Term '.' '[' ':' Exp ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, gen_const(jv_null()), $5, INDEX);\n+} |\n LITERAL {\n   $$ = gen_const($1);\n } |\ndiff --git a/tests/jq.test b/tests/jq.test\n--- a/tests/jq.test\n+++ b/tests/jq.test\n@@ -142,6 +142,62 @@\n {\"foo\": {\"bar\": 42}, \"bar\": \"badvalue\"}\n 42\n \n+# Chained generic indexes, with and without a dot before the brackets.\n+[.foo.[\"bar\"], .[\"foo\"].[\"bar\"], .[\"foo\"][\"bar\"], .[\"foo\"].bar]\n+{\"foo\": {\"bar\": 42}, \"bar\": \"badvalue\"}\n+[42,42,42,42]\n+\n+{title, credits: .[\"media:content\"].[\"media:credits\"]}\n+{\"title\":\"Title 1\",\"media:content\":{\"media:credits\":\"media:content.media:credits 1\"}}\n+{\"title\":\"Title 1\",\"credits\":\"media:content.media:credits 1\"}\n+\n+[.[] | .[\"foo\"]?.[\"bar\"]?]\n+[1,{}, {\"foo\":1}, {\"foo\":{\"bar\":42}}]\n+[null,42]\n+\n+.foo.[\"bar\"] |= . + 1\n+{\"foo\":{\"bar\":42}}\n+{\"foo\":{\"bar\":43}}\n+\n+[.foo.[0], .[\"foo\"].[1]?]\n+{\"foo\":[42,43]}\n+[42,43]\n+\n+[.foo.[], .[\"foo\"].[], .foo[]]\n+{\"foo\":[1,2,3]}\n+[1,2,3,1,2,3,1,2,3]\n+\n+[.foo.[] | .[\"bar\"]]\n+{\"foo\":[{\"bar\":1},{\"bar\":2}]}\n+[1,2]\n+\n+[.[] | .foo.[]?]\n+[1,{}, {\"foo\":null}, {\"foo\":false}, {\"foo\":[1,2]}, {\"foo\":{\"bar\":3}}]\n+[1,2,3]\n+\n+[.foo.[1:3], .[\"foo\"].[1:], .foo.[:2]]\n+{\"foo\":[0,1,2,3]}\n+[[1,2],[1,2,3],[0,1]]\n+\n+[.foo.[1:3], .[\"foo\"].[1:], .foo.[:2]]\n+{\"foo\":\"abcd\"}\n+[\"bc\",\"bcd\",\"ab\"]\n+\n+[.[] | .foo.[1:3]?, .foo.[1:]?, .foo.[:2]?]\n+[{\"foo\":1},{\"foo\":{}},{\"foo\":[0,1,2,3]}]\n+[[1,2],[1,2,3],[0,1]]\n+\n+[path(.foo.[]), path(.foo.[1:3]), path(.foo.[1:]), path(.foo.[:2])]\n+{\"foo\":[0,1,2,3]}\n+[[\"foo\",0],[\"foo\",1],[\"foo\",2],[\"foo\",3],[\"foo\",{\"start\":1,\"end\":3}],[\"foo\",{\"start\":1,\"end\":null}],[\"foo\",{\"start\":null,\"end\":2}]]\n+\n+.foo.[] |= . + 1 | .foo.[1:3] = [9]\n+{\"foo\":[0,1,2,3]}\n+{\"foo\":[1,9,4]}\n+\n .\"foo\".\"bar\"\n {\"foo\": {\"bar\": 20}}\n 20\ndiff --git a/docs/content/manual/manual.yml b/docs/content/manual/manual.yml\n--- a/docs/content/manual/manual.yml\n+++ b/docs/content/manual/manual.yml\n@@ -379,6 +379,9 @@\n           - program: '.[\"foo\"]'\n             input: '{\"foo\": 42}'\n             output: [42]\n+          - program: '.[\"foo::bar\"].[\"baz\"]'\n+            input: '{\"foo::bar\": {\"baz\": 42}}'\n+            output: [42]\n@@ -438,6 +441,9 @@\n           returned by `.[10:15]` will be of length 5, containing the\n           elements from index 10 (inclusive) to index 15 (exclusive).\n \n+          Slices can be chained after another filter: `.foo[1:3]` and\n+          `.foo.[1:3]` are equivalent to `.foo | .[1:3]`.\n+\n@@ -466,6 +472,9 @@\n           array. Running `.[]` with the input `[1,2,3]` will produce the\n           numbers as three separate results, rather than as a single\n           array.\n \n+          Iterators can be chained after another filter: `.foo[]` and\n+          `.foo.[]` are equivalent to `.foo | .[]`.\n+\nPATCH\nmake -j4 > /tmp/jq-build.log 2>&1 && tail -12 /tmp/jq-build.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --stat -- src/parser.y tests/jq.test docs/content/manual/manual.yml && sed -n '375,386p' docs/content/manual/manual.yml && sed -n '433,476p' docs/content/manual/manual.yml && git apply --recount <<'PATCH'\ndiff --git a/src/parser.y b/src/parser.y\n--- a/src/parser.y\n+++ b/src/parser.y\n@@ -711,6 +711,12 @@\n Term '[' ']' %prec NONOPT {\n   $$ = block_join($1, gen_op_simple(EACH));\n } |\n+Term '.' '[' ']' '?' {\n+  $$ = block_join($1, gen_op_simple(EACH_OPT));\n+} |\n+Term '.' '[' ']' %prec NONOPT {\n+  $$ = block_join($1, gen_op_simple(EACH));\n+} |\n Term '[' Exp ':' Exp ']' '?' {\n   $$ = gen_slice_index($1, $3, $5, INDEX_OPT);\n } |\n@@ -729,6 +735,24 @@\n Term '[' ':' Exp ']' %prec NONOPT {\n   $$ = gen_slice_index($1, gen_const(jv_null()), $4, INDEX);\n } |\n+Term '.' '[' Exp ':' Exp ']' '?' {\n+  $$ = gen_slice_index($1, $4, $6, INDEX_OPT);\n+} |\n+Term '.' '[' Exp ':' ']' '?' {\n+  $$ = gen_slice_index($1, $4, gen_const(jv_null()), INDEX_OPT);\n+} |\n+Term '.' '[' ':' Exp ']' '?' {\n+  $$ = gen_slice_index($1, gen_const(jv_null()), $5, INDEX_OPT);\n+} |\n+Term '.' '[' Exp ':' Exp ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, $4, $6, INDEX);\n+} |\n+Term '.' '[' Exp ':' ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, $4, gen_const(jv_null()), INDEX);\n+} |\n+Term '.' '[' ':' Exp ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, gen_const(jv_null()), $5, INDEX);\n+} |\n LITERAL {\n   $$ = gen_const($1);\n } |\ndiff --git a/tests/jq.test b/tests/jq.test\n--- a/tests/jq.test\n+++ b/tests/jq.test\n@@ -142,6 +142,62 @@\n {\"foo\": {\"bar\": 42}, \"bar\": \"badvalue\"}\n 42\n \n+# Chained generic indexes, with and without a dot before the brackets.\n+[.foo.[\"bar\"], .[\"foo\"].[\"bar\"], .[\"foo\"][\"bar\"], .[\"foo\"].bar]\n+{\"foo\": {\"bar\": 42}, \"bar\": \"badvalue\"}\n+[42,42,42,42]\n+\n+{title, credits: .[\"media:content\"].[\"media:credits\"]}\n+{\"title\":\"Title 1\",\"media:content\":{\"media:credits\":\"media:content.media:credits 1\"}}\n+{\"title\":\"Title 1\",\"credits\":\"media:content.media:credits 1\"}\n+\n+[.[] | .[\"foo\"]?.[\"bar\"]?]\n+[1,{}, {\"foo\":1}, {\"foo\":{\"bar\":42}}]\n+[null,42]\n+\n+.foo.[\"bar\"] |= . + 1\n+{\"foo\":{\"bar\":42}}\n+{\"foo\":{\"bar\":43}}\n+\n+[.foo.[0], .[\"foo\"].[1]?]\n+{\"foo\":[42,43]}\n+[42,43]\n+\n+[.foo.[], .[\"foo\"].[], .foo[]]\n+{\"foo\":[1,2,3]}\n+[1,2,3,1,2,3,1,2,3]\n+\n+[.foo.[] | .[\"bar\"]]\n+{\"foo\":[{\"bar\":1},{\"bar\":2}]}\n+[1,2]\n+\n+[.[] | .foo.[]?]\n+[1,{}, {\"foo\":null}, {\"foo\":false}, {\"foo\":[1,2]}, {\"foo\":{\"bar\":3}}]\n+[1,2,3]\n+\n+[.foo.[1:3], .[\"foo\"].[1:], .foo.[:2]]\n+{\"foo\":[0,1,2,3]}\n+[[1,2],[1,2,3],[0,1]]\n+\n+[.foo.[1:3], .[\"foo\"].[1:], .foo.[:2]]\n+{\"foo\":\"abcd\"}\n+[\"bc\",\"bcd\",\"ab\"]\n+\n+[.[] | .foo.[1:3]?, .foo.[1:]?, .foo.[:2]?]\n+[{\"foo\":1},{\"foo\":{}},{\"foo\":[0,1,2,3]}]\n+[[1,2],[1,2,3],[0,1]]\n+\n+[path(.foo.[]), path(.foo.[1:3]), path(.foo.[1:]), path(.foo.[:2])]\n+{\"foo\":[0,1,2,3]}\n+[[\"foo\",0],[\"foo\",1],[\"foo\",2],[\"foo\",3],[\"foo\",{\"start\":1,\"end\":3}],[\"foo\",{\"start\":1,\"end\":null}],[\"foo\",{\"start\":null,\"end\":2}]]\n+\n+.foo.[] |= . + 1 | .foo.[1:3] = [9]\n+{\"foo\":[0,1,2,3]}\n+{\"foo\":[1,9,4]}\n+\n .\"foo\".\"bar\"\n {\"foo\": {\"bar\": 20}}\n 20\nPATCH",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/docs/content/manual/manual.yml b/docs/content/manual/manual.yml\n--- a/docs/content/manual/manual.yml\n+++ b/docs/content/manual/manual.yml\n@@ -379,6 +379,9 @@\n           - program: '.[\"foo\"]'\n             input: '{\"foo\": 42}'\n             output: [42]\n+          - program: '.[\"foo::bar\"].[\"baz\"]'\n+            input: '{\"foo::bar\": {\"baz\": 42}}'\n+            output: [42]\n \n       - title: \"Optional Object Identifier-Index: `.foo?`\"\n         body: |\n@@ -440,6 +443,9 @@\n           backwards from the end of the array), or omitted (in which\n           case it refers to the start or end of the array).\n \n+          Slices can be chained after another filter: `.foo[1:3]` and\n+          `.foo.[1:3]` are equivalent to `.foo | .[1:3]`.\n+\n         examples:\n           - program: '.[2:4]'\n             input: '[\"a\",\"b\",\"c\",\"d\",\"e\"]'\n@@ -470,6 +476,9 @@\n           You can also use this on an object, and it will return all\n           the values of the object.\n \n+          Iterators can be chained after another filter: `.foo[]` and\n+          `.foo.[]` are equivalent to `.foo | .[]`.\n+\n         examples:\n           - program: '.[]'\n             input: '[{\"name\":\"JSON\", \"good\":true}, {\"name\":\"XML\", \"good\":false}]'\nPATCH\nif [ $? -ne 0 ]; then exit 1; fi\nmake -j4 > /tmp/jq-build.log 2>&1 && tail -15 /tmp/jq-build.log && NO_VALGRIND=1 sh tests/jqtest > /tmp/jq-target-tests.log 2>&1 && tail -5 /tmp/jq-target-tests.log",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -B 4 -A 8 'FAIL\\|failed\\|ERROR\\|Invalid\\|Expected\\|Unexpected' /tmp/jq-target-tests.log | head -90; tail -8 /tmp/jq-target-tests.log; cd /testbed && git diff --check && git diff --stat && sed -n '35,57p' Makefile.am && sed -n '690,772p' src/parser.y",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && printf '%s\\n' '{\"title\":\"Title 1\",\"media:content\":{\"media:credits\":\"media:content.media:credits 1\"},\"foo\":[1,2,3]}' | ./jq '{title, credits: .[\"media:content\"].[\"media:credits\"], values: [.foo.[]], slice: .foo.[1:2]}' && sed -n '1,70p' tests/mantest && ls docs && grep -n 'man.test\\|manual.yml' Makefile.am | head -25",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,140p' /tmp/jq-target-tests.log; cd /testbed && sed -n '143,172p' Makefile.am && sed -n '1,100p' docs/build_mantests.py && sed -n '1,80p' docs/README.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/jq.test b/tests/jq.test\n--- a/tests/jq.test\n+++ b/tests/jq.test\n@@ -171,6 +171,6 @@\n {\"foo\":[{\"bar\":1},{\"bar\":2}]}\n [1,2]\n \n-[.[] | .foo.[]?]\n+[.[] | .foo?.[]?]\n [1,{}, {\"foo\":null}, {\"foo\":false}, {\"foo\":[1,2]}, {\"foo\":{\"bar\":3}}]\n [1,2,3]\nPATCH\nif [ $? -ne 0 ]; then exit 1; fi\nNO_VALGRIND=1 sh tests/jqtest > /tmp/jq-target-tests.log 2>&1 && tail -1 /tmp/jq-target-tests.log && make check > /tmp/jq-check.log 2>&1 && tail -22 /tmp/jq-check.log",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed/docs && python3 build_mantests.py > /tmp/jq-man-regression.test && cd /testbed && PAGER=less ./jq -L tests/modules --run-tests < /tmp/jq-man-regression.test > /tmp/jq-man-regression.log 2>&1 && tail -1 /tmp/jq-man-regression.log",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git diff --numstat -- src/parser.y tests/jq.test docs/content/manual/manual.yml && git status --short && git diff -- src/parser.y docs/content/manual/manual.yml && grep -n \"Term: Term '.' '\\['\\|Term: Term '.' '\\[\\]'\" src/parser.c | head -15",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python3 - <<'PY'\nimport json\nimport subprocess\nfrom pathlib import Path\ntext = Path('docs/content/manual/manual.yml').read_text()\nexample = text.split(\"          - program: '.[\\\"foo::bar\\\"].[\\\"baz\\\"]'\\n\", 1)[1].splitlines()\nprogram = '.[\"foo::bar\"].[\"baz\"]'\ninput_text = example[0].strip().removeprefix(\"input: '\").removesuffix(\"'\")\nexpected = json.loads(example[1].strip().removeprefix('output: '))\nresult = subprocess.run(['./jq', '-c', program], input=input_text, text=True, capture_output=True, check=True)\nassert [json.loads(line) for line in result.stdout.splitlines()] == expected\nprint('New manual example matches documented output:', result.stdout.strip())\nPY\nif [ $? -ne 0 ]; then exit 1; fi\nrm -f /tmp/jq-peeky-describe.json /tmp/jq-build.log /tmp/jq-target-tests.log /tmp/jq-check.log /tmp/jq-man-regression.test\n git diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 3,
+ "build_or_test_commands": [
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/src/parser.y b/src/parser.y\n--- a/src/parser.y\n+++ b/src/parser.y\n@@ -711,6 +711,12 @@\n Term '[' ']' %prec NONOPT {\n   $$ = block_join($1, gen_op_simple(EACH));\n } |\n+Term '.' '[' ']' '?' {\n+  $$ = block_join($1, gen_op_simple(EACH_OPT));\n+} |\n+Term '.' '[' ']' %prec NONOPT {\n+  $$ = block_join($1, gen_op_simple(EACH));\n+} |\n Term '[' Exp ':' Exp ']' '?' {\n   $$ = gen_slice_index($1, $3, $5, INDEX_OPT);\n } |\n@@ -729,6 +735,24 @@\n Term '[' ':' Exp ']' %prec NONOPT {\n   $$ = gen_slice_index($1, gen_const(jv_null()), $4, INDEX);\n } |\n+Term '.' '[' Exp ':' Exp ']' '?' {\n+  $$ = gen_slice_index($1, $4, $6, INDEX_OPT);\n+} |\n+Term '.' '[' Exp ':' ']' '?' {\n+  $$ = gen_slice_index($1, $4, gen_const(jv_null()), INDEX_OPT);\n+} |\n+Term '.' '[' ':' Exp ']' '?' {\n+  $$ = gen_slice_index($1, gen_const(jv_null()), $5, INDEX_OPT);\n+} |\n+Term '.' '[' Exp ':' Exp ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, $4, $6, INDEX);\n+} |\n+Term '.' '[' Exp ':' ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, $4, gen_const(jv_null()), INDEX);\n+} |\n+Term '.' '[' ':' Exp ']' %prec NONOPT {\n+  $$ = gen_slice_index($1, gen_const(jv_null()), $5, INDEX);\n+} |\n LITERAL {\n   $$ = gen_const($1);\n } |\ndiff --git a/tests/jq.test b/tests/jq.test\n--- a/tests/jq.test\n+++ b/tests/jq.test\n@@ -142,6 +142,62 @@\n {\"foo\": {\"bar\": 42}, \"bar\": \"badvalue\"}\n 42\n \n+# Chained generic indexes, with and without a dot before the brackets.\n+[.foo.[\"bar\"], .[\"foo\"].[\"bar\"], .[\"foo\"][\"bar\"], .[\"foo\"].bar]\n+{\"foo\": {\"bar\": 42}, \"bar\": \"badvalue\"}\n+[42,42,42,42]\n+\n+{title, credits: .[\"media:content\"].[\"media:credits\"]}\n+{\"title\":\"Title 1\",\"media:content\":{\"media:credits\":\"media:content.media:credits 1\"}}\n+{\"title\":\"Title 1\",\"credits\":\"media:content.media:credits 1\"}\n+\n+[.[] | .[\"foo\"]?.[\"bar\"]?]\n+[1,{}, {\"foo\":1}, {\"foo\":{\"bar\":42}}]\n+[null,42]\n+\n+.foo.[\"bar\"] |= . + 1\n+{\"foo\":{\"bar\":42}}\n+{\"foo\":{\"bar\":43}}\n+\n+[.foo.[0], .[\"foo\"].[1]?]\n+{\"foo\":[42,43]}\n+[42,43]\n+\n+[.foo.[], .[\"foo\"].[], .foo[]]\n+{\"foo\":[1,2,3]}\n+[1,2,3,1,2,3,1,2,3]\n+\n+[.foo.[] | .[\"bar\"]]\n+{\"foo\":[{\"bar\":1},{\"bar\":2}]}\n+[1,2]\n+\n+[.[] | .foo.[]?]\n+[1,{}, {\"foo\":null}, {\"foo\":false}, {\"foo\":[1,2]}, {\"foo\":{\"bar\":3}}]\n+[1,2,3]\n+\n+[.foo.[1:3], .[\"foo\"].[1:], .foo.[:2]]\n+{\"foo\":[0,1,2,3]}\n+[[1,2],[1,2,3],[0,1]]\n+\n+[.foo.[1:3], .[\"foo\"].[1:], .foo.[:2]]\n+{\"foo\":\"abcd\"}\n+[\"bc\",\"bcd\",\"ab\"]\n+\n+[.[] | .foo.[1:3]?, .foo.[1:]?, .foo.[:2]?]\n+[{\"foo\":1},{\"foo\":{}},{\"foo\":[0,1,2,3]}]\n+[[1,2],[1,2,3],[0,1]]\n+\n+[path(.foo.[]), path(.foo.[1:3]), path(.foo.[1:]), path(.foo.[:2])]\n+{\"foo\":[0,1,2,3]}\n+[[\"foo\",0],[\"foo\",1],[\"foo\",2],[\"foo\",3],[\"foo\",{\"start\":1,\"end\":3}],[\"foo\",{\"start\":1,\"end\":null}],[\"foo\",{\"start\":null,\"end\":2}]]\n+\n+.foo.[] |= . + 1 | .foo.[1:3] = [9]\n+{\"foo\":[0,1,2,3]}\n+{\"foo\":[1,9,4]}\n+\n .\"foo\".\"bar\"\n {\"foo\": {\"bar\": 20}}\n 20\ndiff --git a/docs/content/manual/manual.yml b/docs/content/manual/manual.yml\n--- a/docs/content/manual/manual.yml\n+++ b/docs/content/manual/manual.yml\n@@ -379,6 +379,9 @@\n           - program: '.[\"foo\"]'\n             input: '{\"foo\": 42}'\n             output: [42]\n+          - program: '.[\"foo::bar\"].[\"baz\"]'\n+            input: '{\"foo::bar\": {\"baz\": 42}}'\n+            output: [42]\n@@ -438,6 +441,9 @@\n           returned by `.[10:15]` will be of length 5, containing the\n           elements from index 10 (inclusive) to index 15 (exclusive).\n \n+          Slices can be chained after another filter: `.foo[1:3]` and\n+          `.foo.[1:3]` are equivalent to `.foo | .[1:3]`.\n+\n@@ -466,6 +472,9 @@\n           array. Running `.[]` with the input `[1,2,3]` will produce the\n           numbers as three separate results, rather than as a single\n           array.\n \n+          Iterators can be chained after another filter: `.foo[]` and\n+          `.foo.[]` are equivalent to `.foo | .[]`.\n+\nPATCH\nmake -j4 > /tmp/jq-build.log 2>&1 && tail -12 /tmp/jq-build.log",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/docs/content/manual/manual.yml b/docs/content/manual/manual.yml\n--- a/docs/content/manual/manual.yml\n+++ b/docs/content/manual/manual.yml\n@@ -379,6 +379,9 @@\n           - program: '.[\"foo\"]'\n             input: '{\"foo\": 42}'\n             output: [42]\n+          - program: '.[\"foo::bar\"].[\"baz\"]'\n+            input: '{\"foo::bar\": {\"baz\": 42}}'\n+            output: [42]\n \n       - title: \"Optional Object Identifier-Index: `.foo?`\"\n         body: |\n@@ -440,6 +443,9 @@\n           backwards from the end of the array), or omitted (in which\n           case it refers to the start or end of the array).\n \n+          Slices can be chained after another filter: `.foo[1:3]` and\n+          `.foo.[1:3]` are equivalent to `.foo | .[1:3]`.\n+\n         examples:\n           - program: '.[2:4]'\n             input: '[\"a\",\"b\",\"c\",\"d\",\"e\"]'\n@@ -470,6 +476,9 @@\n           You can also use this on an object, and it will return all\n           the values of the object.\n \n+          Iterators can be chained after another filter: `.foo[]` and\n+          `.foo.[]` are equivalent to `.foo | .[]`.\n+\n         examples:\n           - program: '.[]'\n             input: '[{\"name\":\"JSON\", \"good\":true}, {\"name\":\"XML\", \"good\":false}]'\nPATCH\nif [ $? -ne 0 ]; then exit 1; fi\nmake -j4 > /tmp/jq-build.log 2>&1 && tail -15 /tmp/jq-build.log && NO_VALGRIND=1 sh tests/jqtest > /tmp/jq-target-tests.log 2>&1 && tail -5 /tmp/jq-target-tests.log",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/jq.test b/tests/jq.test\n--- a/tests/jq.test\n+++ b/tests/jq.test\n@@ -171,6 +171,6 @@\n {\"foo\":[{\"bar\":1},{\"bar\":2}]}\n [1,2]\n \n-[.[] | .foo.[]?]\n+[.[] | .foo?.[]?]\n [1,{}, {\"foo\":null}, {\"foo\":false}, {\"foo\":[1,2]}, {\"foo\":{\"bar\":3}}]\n [1,2,3]\nPATCH\nif [ $? -ne 0 ]; then exit 1; fi\nNO_VALGRIND=1 sh tests/jqtest > /tmp/jq-target-tests.log 2>&1 && tail -1 /tmp/jq-target-tests.log && make check > /tmp/jq-check.log 2>&1 && tail -22 /tmp/jq-check.log"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && peeky describe . --binary ./jq --at src/parser.c --json > /tmp/jq-peeky-describe.json && python3 -c 'import json; d=json.load(open(\"/tmp/jq-peeky-describe.json\")); print(str(d)[:16000])'",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ./jq --at src/parser.c:3799 --capture yychar,yytoken,yystate,yylloc,yymsgp -- -n '.foo.[1:2]'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary ./jq --at src/parser.c:3799 --capture yychar,yytoken,yystate,yylloc,yymsgp -- -n '.foo.[]'",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "describe": 1,
+  "probe": 2
+ },
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 11,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 10,
+ "contaminated": false,
+ "final_message": "The reported object chain already works at this commit; remaining chaining failures came from missing dotted iterator and slice grammar rules. I added those rules, regression tests, and documentation. Peeky (`peeky probe \u2026 --at src/parser.c:3799`) confirmed rejection of `]` and `:` at the parser\u2019s error path. All seven test-suite scripts pass.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the syntax error, inspect the parser with Peeky, then update the grammar and add regression coverage.\n",
+  "The reported object-index example already works at this commit, but chained `.[]` and `.[start:end]` still fail. I\u2019ll inspect those parser failures and complete bracket-selector chaining while adding coverage for the original example.\n",
+  "Peeky stopped at `src/parser.c:3799`: `.foo.[1:2]` had `yychar=58` (`:`) and \u201csyntax error, unexpected ':'\u201d; `.foo.[]` had `yychar=93` (`]`) and the corresponding error. The grammar supports dotted single indexes but lacks dotted iterator and slice rules. I\u2019ll add those using the existing compilation helpers.\n",
+  "The reported object chain already works at this commit; remaining chaining failures came from missing dotted iterator and slice grammar rules. I added those rules, regression tests, and documentation. Peeky (`peeky probe \u2026 --at src/parser.c:3799`) confirmed rejection of `]` and `:` at the parser\u2019s error path. All seven test-suite scripts pass."
+ ],
+ "assistant_reasoning": [
+  "**Investigating a bug fix**\n\nI\u2019m looking at an interesting source that has generic rules added, but I might need to identify the bug scope. There\u2019s a possibility that a dot is missing, causing issues with the iterator or slice. The user is asking for a bug report, but I see the source already has a fix. I should check if there's any binary mismatch in the source or if the parser contains the necessary rules. Reproducing the relevant failure is key here.",
+  "**Clarifying coding tasks**\n\nI need to avoid going off-task, so I\u2019ll focus on ensuring that dots, slices, and iterators are consistent. The user insists on needing a source fix, even if I think it\u2019s already resolved. I should honestly explain that an example works but the related extension seems incomplete. I need to reproduce the error with things like .foo.[] and .foo.[1:2] before making edits, especially since the description in JSON needs proper filtering for function keys.",
+  "**Considering command alternatives**\n\nI\u2019m trying to figure out if the apply_patch command is missing a tool. I might have to use /opt or find tools in a limited bash environment but patch seems available. Even though the instructions mention using apply_patch only, if that's absent, I could implement something in Python. It\u2019s essential not to create unnecessary questions. The user indicated the bug is already fixed, so regression tests and previous source history might not need to be redone. I need to reflect on that.",
+  "**Addressing the failure**\n\nIt seems I need to recognize that the original failure isn\u2019t something I can reproduce exactly. The final message indicates, \"Reported object chain was already supported; missing grammar...\" so I need to focus on completing the fix in a sensible way. I want to ensure I\u2019m addressing what went wrong without trying to recreate the earlier issue. I\u2019ll keep this in mind as I move forward with the resolution!",
+  "**Troubleshooting patch issues**\n\nI\u2019m trying to understand why my patch failed all atomic attempts. Why is the context important, and what does it have to do with blank trailing lines and overlap? It seems that the \"git apply\" command expects the first hunk without any final unchanged lines. I\u2019m thinking maybe I need to use the `--recount` option, which might allow for multiple hunks. I should definitely check the documentation for clarity on these options."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 199.3
+}

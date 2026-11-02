@@ -355,7 +355,7 @@ def collect(run_dir, language="", test_hint="", arm=""):
 
     is_build_or_test = build_test_matcher(language, test_hint)
     build_test, peeky, subcommands, markers = [], [], Counter(), Counter()
-    doc_reads = 0
+    doc_reads = values_printed = 0
     for entry in commands:
         command = entry["command"]
         if is_build_or_test(command):
@@ -366,6 +366,7 @@ def collect(run_dir, language="", test_hint="", arm=""):
             subcommands.update(subs)
             for marker in WITHHELD_MARKERS:
                 markers[marker] += entry["output"].count(marker)
+            values_printed += peeky_values(entry["output"])
         if "/opt/peeky/docs" in command:
             doc_reads += 1
 
@@ -411,7 +412,8 @@ def collect(run_dir, language="", test_hint="", arm=""):
         "peeky_mentions_in_commands": peeky_mentions,
         "peeky_withheld_markers": sum(markers.values()),
         "peeky_withheld_by_marker": {k: v for k, v in markers.items() if v},
-        "contaminated": bool(arm == "control" and peeky),
+        "peeky_values_printed": values_printed,
+        "contaminated": bool(not uses_peeky(arm) and peeky),
         "final_message": messages[-1] if messages else "",
         "assistant_messages": messages,
         "assistant_reasoning": reasoning,
@@ -435,6 +437,32 @@ def collect(run_dir, language="", test_hint="", arm=""):
         "infra_error_text": [t for t in texts if INFRA_ERROR.search(t)][:10],
         "events_unparsable_lines": bad_lines,
     }
+
+
+# What a Peeky command printed of the program's values: a probe table's rows, a session's
+# `name: type = value` lines, and a JSON answer's "value" fields. An approximate count, for
+# comparing arms; the judge checks the values themselves.
+PROBE_ROW = re.compile(r"^\s*\d+\s+(?:observed|after-set|before-set|set)\s+\d+\s", re.M)
+SESSION_VALUE = re.compile(r"^\s*\S+: [^=\n]{1,120} = \S", re.M)
+JSON_VALUE = re.compile(r'"value":\s')
+
+
+def peeky_values(output):
+    return (
+        len(PROBE_ROW.findall(output))
+        + len(SESSION_VALUE.findall(output))
+        + len(JSON_VALUE.findall(output))
+    )
+
+
+def uses_peeky(arm):
+    """Whether the arm has Peeky (the study config's arms; else every arm but control)."""
+    try:
+        import studylib
+
+        return studylib.arm_uses_peeky(arm)
+    except (ImportError, KeyError):
+        return arm != "control"
 
 
 def shell_entries(starts, completes):

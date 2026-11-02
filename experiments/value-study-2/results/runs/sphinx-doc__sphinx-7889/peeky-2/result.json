@@ -1,0 +1,258 @@
+{
+ "bug": "sphinx-doc__sphinx-7889",
+ "arm": "peeky",
+ "rep": 2,
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sphinx-doc__sphinx-7889:peeky-r2",
+ "image_digest": "sha256:8055c7524cbe021d2bc0a84734ba9305375ffb0f97d6a9fe0cb9441744184b31",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-sphinx-doc__sphinx-7889-peeky-2-1acac4",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T12:48:15+00:00",
+ "ended": "2026-11-01T12:51:01+00:00",
+ "wall_seconds": 166.9,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "tests/test_ext_autodoc_mock.py::test_MockObject": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 0.3,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "0022c427b2883c8d8fd8c0cfe5f8db495bc97abec26e1ccbd3fb4c15adc8684d",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "CHANGES",
+  "sphinx/ext/autodoc/mock.py"
+ ],
+ "patch_bytes": 1159,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 6
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 19,
+ "ai_credits": 19.2748,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 396845,
+  "output": 8259,
+  "cache_read": 367469,
+  "cache_write": 29319,
+  "reasoning": 2026
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 23,
+ "tool_calls_by_name": {
+  "bash": 23
+ },
+ "shell_commands": [
+  {
+   "command": "pwd; ls -d /testbed /opt/peeky/docs/AGENT_GUIDE.md 2>/dev/null; ls -a | head",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git status --short && sed -n '1,280p' sphinx/ext/autodoc/mock.py && find tests -iname '*mock*' -o -iname '*autodoc*' | head -35",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/AGENT_GUIDE.md; cd /testbed && ls | grep -E 'CHANGES|CONTRIBUTING|pyproject|setup|tox' && sed -n '1,100p' CHANGES",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '1,320p' tests/test_ext_autodoc_mock.py && cat tests/roots/test-ext-autodoc/target/need_mocks.py && sed -n '1,120p' CHANGES",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,140p' /opt/peeky/docs/AGENT_GUIDE.md; cd /testbed && grep -n 'mock\\|python_requires\\|pytest' setup.cfg setup.py tests/test_ext_autodoc_configs.py && grep -n 'autodoc_mock_imports' doc/usage/extensions/autodoc.rst",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && sed -n '420,485p' tests/test_ext_autodoc_configs.py && sed -n '470,495p' doc/usage/extensions/autodoc.rst && sed -n '1,105p' setup.cfg && sed -n '1,125p' tests/conftest.py && command -v apply_patch",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom typing import TypeVar\nfrom sphinx.ext.autodoc.mock import mock\n\nT = TypeVar('T')\nwith mock(['missing_generic_dependency']):\n    from missing_generic_dependency import Generic\n\n    class Example(Generic[T]):\n        \"\"\"A class inheriting from a mocked generic.\"\"\"\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p0 <<'PATCH'\n*** tests/test_ext_autodoc_mock.py.orig\n--- tests/test_ext_autodoc_mock.py\n***************\n*** 11,16 ****\n--- 11,17 ----\n  import abc\n  import sys\n  from importlib import import_module\n+ from typing import TypeVar\n  \n  import pytest\n  \n***************\n*** 53,58 ****\n--- 54,90 ----\n      assert isinstance(obj.other_method(), SubClass)\n  \n  \n+ @pytest.mark.parametrize('key', ['name', 1, int, TypeVar('T'), (TypeVar('T'), int)])\n+ def test_MockObject_getitem(key):\n+     obj = _MockModule('mocked_module').Generic\n+     item = obj[key]\n+ \n+     assert isinstance(item, _MockObject)\n+     assert isinstance(item, obj.__class__)\n+     assert item.__class__.__name__ == str(key)\n+     assert repr(item) == 'mocked_module.Generic.' + str(key)\n+ \n+ \n+ @pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+ @pytest.mark.parametrize('parameters', [TypeVar('T'), (TypeVar('T'), TypeVar('U'))])\n+ def test_mock_generic(parameters):\n+     with mock(['sphinx.unknown']):\n+         module = import_module('sphinx.unknown')\n+ \n+         class Derived(module.Generic[parameters]):\n+             \"\"\"docstring of Derived\"\"\"\n+ \n+             def method(self):\n+                 return \"string\"\n+ \n+         obj = Derived()\n+         assert Derived.__doc__ == \"docstring of Derived\"\n+         assert isinstance(obj, Derived)\n+         assert isinstance(obj, _MockObject)\n+         assert obj.method() == \"string\"\n+         assert isinstance(obj.other_method(), Derived)\n+ \n+     assert 'sphinx.unknown' not in sys.modules\n+ \n+ \n  def test_mock():\n      modname = 'sphinx.unknown'\n      submodule = modname + '.submodule'\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff -- tests/test_ext_autodoc_mock.py && ls tests/test_ext_autodoc_mock.py* && sed -n '9,20p' tests/test_ext_autodoc_mock.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_autodoc_mock.py b/tests/test_ext_autodoc_mock.py\n--- a/tests/test_ext_autodoc_mock.py\n+++ b/tests/test_ext_autodoc_mock.py\n@@ -11,6 +11,7 @@\n import abc\n import sys\n from importlib import import_module\n+from typing import TypeVar\n \n import pytest\n \n@@ -53,6 +54,40 @@\n     assert isinstance(obj.other_method(), SubClass)\n \n \n+@pytest.mark.parametrize('key', ['name', 1, int, TypeVar('T'), (TypeVar('T'), int)])\n+def test_MockObject_getitem(key):\n+    obj = _MockModule('mocked_module').Generic\n+    item = obj[key]\n+\n+    assert isinstance(item, _MockObject)\n+    assert isinstance(item, obj.__class__)\n+    assert item.__class__.__name__ == str(key)\n+    assert repr(item) == 'mocked_module.Generic.' + str(key)\n+\n+\n+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+@pytest.mark.parametrize('parameters', [TypeVar('T'), (TypeVar('T'), TypeVar('U'))])\n+def test_mock_generic(parameters):\n+    with mock(['sphinx.unknown']):\n+        module = import_module('sphinx.unknown')\n+\n+        class Derived(module.Generic[parameters]):\n+            \"\"\"docstring of Derived\"\"\"\n+\n+            def method(self):\n+                return \"string\"\n+\n+        obj = Derived()\n+        assert Derived.__doc__ == \"docstring of Derived\"\n+        assert isinstance(obj, Derived)\n+        assert isinstance(obj, _MockObject)\n+        assert obj.method() == \"string\"\n+        assert isinstance(obj.other_method(), Derived)\n+\n+    assert 'sphinx.unknown' not in sys.modules\n+\n+\n def test_mock():\n     modname = 'sphinx.unknown'\n     submodule = modname + '.submodule'\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py\n--- a/sphinx/ext/autodoc/mock.py\n+++ b/sphinx/ext/autodoc/mock.py\n@@ -55,3 +55,3 @@\n-    def __getitem__(self, key: str) -> \"_MockObject\":\n-        return _make_subclass(key, self.__display_name__, self.__class__)()\n+    def __getitem__(self, key: Any) -> \"_MockObject\":\n+        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n \n diff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -21,6 +21,7 @@\n Bugs fixed\n ----------\n \n+* autodoc: Fix TypeError when subscribing mocked classes with generic type parameters.\n * #7839: autosummary: cannot handle umlauts in function names\n * #7865: autosummary: Failed to extract summary line when abbreviations found\n * #7866: autosummary: Failed to extract correct summary line when docstring\nPATCH",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py\n--- a/sphinx/ext/autodoc/mock.py\n+++ b/sphinx/ext/autodoc/mock.py\n@@ -52,8 +52,8 @@\n     def __mro_entries__(self, bases: Tuple) -> Tuple:\n         return (self.__class__,)\n \n-    def __getitem__(self, key: str) -> \"_MockObject\":\n-        return _make_subclass(key, self.__display_name__, self.__class__)()\n+    def __getitem__(self, key: Any) -> \"_MockObject\":\n+        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n \n     def __getattr__(self, key: str) -> \"_MockObject\":\n         return _make_subclass(key, self.__display_name__, self.__class__)()\ndiff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -21,6 +21,7 @@\n Bugs fixed\n ----------\n \n+* autodoc: Fix TypeError when subscribing mocked classes with generic type parameters.\n * #7839: autosummary: cannot handle umlauts in function names\n * #7865: autosummary: Failed to extract summary line when abbreviations found\n * #7866: autosummary: Failed to extract correct summary line when docstring\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py -q --tb=short",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport subprocess\nimport pytest\nimport sphinx.ext.autodoc.mock as mock_module\n\nsource = subprocess.check_output(['git', 'show', 'HEAD:sphinx/ext/autodoc/mock.py'])\nexec(compile(source, mock_module.__file__, 'exec'), mock_module.__dict__)\nraise SystemExit(pytest.main(['tests/test_ext_autodoc_configs.py::test_autodoc_default_options', '-q', '--tb=short', '--disable-warnings']))\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --disable-warnings && git diff --check && git diff --stat && git diff -- sphinx/ext/autodoc/mock.py CHANGES tests/test_ext_autodoc_mock.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nimport subprocess\nfrom importlib import import_module\nimport pytest\n\nmock_module = import_module('sphinx.ext.autodoc.mock')\nsource = subprocess.check_output(['git', 'show', 'HEAD:sphinx/ext/autodoc/mock.py'])\nexec(compile(source, mock_module.__file__, 'exec'), mock_module.__dict__)\nraise SystemExit(pytest.main(['tests/test_ext_autodoc_configs.py::test_autodoc_default_options', '-q', '--tb=short', '--disable-warnings']))\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='generic-mock-build-', dir='/testbed') as tempdir:\n    root = Path(tempdir)\n    (root / 'conf.py').write_text(\n        \"import sys\\nfrom pathlib import Path\\nsys.path.insert(0, str(Path(__file__).parent))\\n\"\n        \"extensions = ['sphinx.ext.autodoc']\\n\"\n        \"autodoc_mock_imports = ['missing_generic_dependency']\\n\"\n        \"master_doc = 'index'\\n\", encoding='utf-8')\n    (root / 'generic_example.py').write_text(\n        \"from typing import TypeVar\\nfrom missing_generic_dependency import Generic\\n\"\n        \"T = TypeVar('T')\\nU = TypeVar('U')\\n\"\n        \"class Single(Generic[T]):\\n    '''Single parameter generic.'''\\n\"\n        \"class Multiple(Generic[T, U]):\\n    '''Multiple parameter generic.'''\\n\",\n        encoding='utf-8')\n    (root / 'index.rst').write_text(\n        \"Generic mocks\\n=============\\n\\n\"\n        \".. automodule:: generic_example\\n   :members: Single, Multiple\\n\",\n        encoding='utf-8')\n    warning = StringIO()\n    app = Sphinx(str(root), str(root), str(root / '_build'), str(root / '_doctrees'),\n                 'html', status=StringIO(), warning=warning, warningiserror=True)\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == '', warning.getvalue()\n    html = (root / '_build' / 'index.html').read_text(encoding='utf-8')\n    assert 'Single parameter generic.' in html\n    assert 'Multiple parameter generic.' in html\n    print('HTML build succeeded and documented both mocked generic subclasses without warnings.')\nPY\n git status --short && git diff --check",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='generic-mock-build-', dir='/testbed') as tempdir:\n    root = Path(tempdir)\n    (root / 'conf.py').write_text(\n        \"import sys\\nfrom pathlib import Path\\nsys.path.insert(0, str(Path(__file__).parent))\\n\"\n        \"extensions = ['sphinx.ext.autodoc']\\n\"\n        \"autodoc_mock_imports = ['missing_generic_dependency']\\n\"\n        \"master_doc = 'index'\\n\", encoding='utf-8')\n    (root / 'generic_example.py').write_text(\n        \"from typing import TypeVar\\nfrom missing_generic_dependency import Generic\\n\"\n        \"T = TypeVar('T')\\nU = TypeVar('U')\\n\"\n        \"class Single(Generic[T]):\\n    '''Single parameter generic.'''\\n\"\n        \"class Multiple(Generic[T, U]):\\n    '''Multiple parameter generic.'''\\n\",\n        encoding='utf-8')\n    (root / 'index.rst').write_text(\n        \"Generic mocks\\n=============\\n\\n\"\n        \".. automodule:: generic_example\\n   :members: Single, Multiple\\n\",\n        encoding='utf-8')\n    warning = StringIO()\n    app = Sphinx(str(root), str(root), str(root / '_build'), str(root / '_doctrees'),\n                 'html', status=StringIO(), warning=warning)\n    setup_warnings = warning.getvalue()\n    assert setup_warnings.strip() == (\"WARNING: node class 'meta' is already registered, \"\n                                      \"its visitors will be overridden\"), setup_warnings\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == '', warning.getvalue()\n    html = (root / '_build' / 'index.html').read_text(encoding='utf-8')\n    assert 'Single parameter generic.' in html\n    assert 'Multiple parameter generic.' in html\n    print('HTML build documented both generic subclasses without build warnings; '\n          'only the existing meta-node registration warning occurred during setup.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\n\nwith TemporaryDirectory(prefix='generic-mock-build-', dir='/testbed') as tempdir:\n    root = Path(tempdir)\n    (root / 'conf.py').write_text(\n        \"import sys\\nfrom pathlib import Path\\nsys.path.insert(0, str(Path(__file__).parent))\\n\"\n        \"extensions = ['sphinx.ext.autodoc']\\n\"\n        \"autodoc_mock_imports = ['missing_generic_dependency']\\n\"\n        \"master_doc = 'index'\\n\", encoding='utf-8')\n    (root / 'generic_example.py').write_text(\n        \"from typing import TypeVar\\nfrom missing_generic_dependency import Generic\\n\"\n        \"T = TypeVar('T')\\nU = TypeVar('U')\\n\"\n        \"class Single(Generic[T]):\\n    '''Single parameter generic.'''\\n\"\n        \"class Multiple(Generic[T, U]):\\n    '''Multiple parameter generic.'''\\n\",\n        encoding='utf-8')\n    (root / 'index.rst').write_text(\n        \"Generic mocks\\n=============\\n\\n\"\n        \".. automodule:: generic_example\\n   :members: Single, Multiple\\n\",\n        encoding='utf-8')\n    warning = StringIO()\n    app = Sphinx(str(root), str(root), str(root / '_build'), str(root / '_doctrees'),\n                 'html', status=StringIO(), warning=warning)\n    setup_warnings = warning.getvalue()\n    assert setup_warnings.strip() == (\n        \"WARNING: while setting up extension sphinx.addnodes: node class 'meta' \"\n        \"is already registered, its visitors will be overridden\"), setup_warnings\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == '', warning.getvalue()\n    html = (root / '_build' / 'index.html').read_text(encoding='utf-8')\n    assert 'Single parameter generic.' in html\n    assert 'Multiple parameter generic.' in html\n    print('HTML build documented both mocked generic subclasses without build warnings.')\nPY",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n 'def .*color' sphinx/util/console.py && sed -n '105,165p' sphinx/util/console.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\nfrom sphinx.util.console import strip_colors\n\nwith TemporaryDirectory(prefix='generic-mock-build-', dir='/testbed') as tempdir:\n    root = Path(tempdir)\n    (root / 'conf.py').write_text(\n        \"import sys\\nfrom pathlib import Path\\nsys.path.insert(0, str(Path(__file__).parent))\\n\"\n        \"extensions = ['sphinx.ext.autodoc']\\n\"\n        \"autodoc_mock_imports = ['missing_generic_dependency']\\n\"\n        \"master_doc = 'index'\\n\", encoding='utf-8')\n    (root / 'generic_example.py').write_text(\n        \"from typing import TypeVar\\nfrom missing_generic_dependency import Generic\\n\"\n        \"T = TypeVar('T')\\nU = TypeVar('U')\\n\"\n        \"class Single(Generic[T]):\\n    '''Single parameter generic.'''\\n\"\n        \"class Multiple(Generic[T, U]):\\n    '''Multiple parameter generic.'''\\n\",\n        encoding='utf-8')\n    (root / 'index.rst').write_text(\n        \"Generic mocks\\n=============\\n\\n\"\n        \".. automodule:: generic_example\\n   :members: Single, Multiple\\n\",\n        encoding='utf-8')\n    warning = StringIO()\n    app = Sphinx(str(root), str(root), str(root / '_build'), str(root / '_doctrees'),\n                 'html', status=StringIO(), warning=warning)\n    setup_warnings = strip_colors(warning.getvalue()).strip()\n    assert setup_warnings == (\n        \"WARNING: while setting up extension sphinx.addnodes: node class 'meta' \"\n        \"is already registered, its visitors will be overridden\"), repr(setup_warnings)\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == '', warning.getvalue()\n    html = (root / '_build' / 'index.html').read_text(encoding='utf-8')\n    assert 'Single parameter generic.' in html\n    assert 'Multiple parameter generic.' in html\n    print('HTML build documented both mocked generic subclasses without build warnings.')\nPY\n",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && grep -n '__sphinx_mock__\\|ismock' sphinx/ext/autodoc/__init__.py sphinx/util/inspect.py && sed -n '520,595p' sphinx/ext/autodoc/__init__.py",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && python - <<'PY'\nfrom io import StringIO\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom sphinx.application import Sphinx\nfrom sphinx.util.console import strip_colors\n\nwith TemporaryDirectory(prefix='generic-mock-build-', dir='/testbed') as tempdir:\n    root = Path(tempdir)\n    (root / 'conf.py').write_text(\n        \"import sys\\nfrom pathlib import Path\\nsys.path.insert(0, str(Path(__file__).parent))\\n\"\n        \"extensions = ['sphinx.ext.autodoc']\\n\"\n        \"autodoc_mock_imports = ['missing_generic_dependency']\\n\"\n        \"master_doc = 'index'\\n\", encoding='utf-8')\n    (root / 'generic_example.py').write_text(\n        \"from typing import TypeVar\\nfrom missing_generic_dependency import Generic\\n\"\n        \"T = TypeVar('T')\\nU = TypeVar('U')\\n\"\n        \"class Single(Generic[T]):\\n    '''Single parameter generic.'''\\n\"\n        \"class Multiple(Generic[T, U]):\\n    '''Multiple parameter generic.'''\\n\",\n        encoding='utf-8')\n    (root / 'index.rst').write_text(\n        \"Generic mocks\\n=============\\n\\n\"\n        \".. autoclass:: generic_example.Single\\n\\n\"\n        \".. autoclass:: generic_example.Multiple\\n\", encoding='utf-8')\n    warning = StringIO()\n    app = Sphinx(str(root), str(root), str(root / '_build'), str(root / '_doctrees'),\n                 'html', status=StringIO(), warning=warning)\n    setup_warnings = strip_colors(warning.getvalue()).strip()\n    assert setup_warnings == (\n        \"WARNING: while setting up extension sphinx.addnodes: node class 'meta' \"\n        \"is already registered, its visitors will be overridden\"), repr(setup_warnings)\n    warning.seek(0)\n    warning.truncate(0)\n    app.warningiserror = True\n    app.build(force_all=True)\n    assert app.statuscode == 0, warning.getvalue()\n    assert warning.getvalue() == '', warning.getvalue()\n    html = (root / '_build' / 'index.html').read_text(encoding='utf-8')\n    assert 'Single parameter generic.' in html, html\n    assert 'Multiple parameter generic.' in html, html\n    print('HTML build documented both mocked generic subclasses without build warnings.')\nPY\n",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git diff --check && git status --short && find . -maxdepth 1 -type d -name 'generic-mock-build-*'",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 4,
+ "build_or_test_commands": [
+  "cd /testbed && patch -p0 <<'PATCH'\n*** tests/test_ext_autodoc_mock.py.orig\n--- tests/test_ext_autodoc_mock.py\n***************\n*** 11,16 ****\n--- 11,17 ----\n  import abc\n  import sys\n  from importlib import import_module\n+ from typing import TypeVar\n  \n  import pytest\n  \n***************\n*** 53,58 ****\n--- 54,90 ----\n      assert isinstance(obj.other_method(), SubClass)\n  \n  \n+ @pytest.mark.parametrize('key', ['name', 1, int, TypeVar('T'), (TypeVar('T'), int)])\n+ def test_MockObject_getitem(key):\n+     obj = _MockModule('mocked_module').Generic\n+     item = obj[key]\n+ \n+     assert isinstance(item, _MockObject)\n+     assert isinstance(item, obj.__class__)\n+     assert item.__class__.__name__ == str(key)\n+     assert repr(item) == 'mocked_module.Generic.' + str(key)\n+ \n+ \n+ @pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+ @pytest.mark.parametrize('parameters', [TypeVar('T'), (TypeVar('T'), TypeVar('U'))])\n+ def test_mock_generic(parameters):\n+     with mock(['sphinx.unknown']):\n+         module = import_module('sphinx.unknown')\n+ \n+         class Derived(module.Generic[parameters]):\n+             \"\"\"docstring of Derived\"\"\"\n+ \n+             def method(self):\n+                 return \"string\"\n+ \n+         obj = Derived()\n+         assert Derived.__doc__ == \"docstring of Derived\"\n+         assert isinstance(obj, Derived)\n+         assert isinstance(obj, _MockObject)\n+         assert obj.method() == \"string\"\n+         assert isinstance(obj.other_method(), Derived)\n+ \n+     assert 'sphinx.unknown' not in sys.modules\n+ \n+ \n  def test_mock():\n      modname = 'sphinx.unknown'\n      submodule = modname + '.submodule'\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/tests/test_ext_autodoc_mock.py b/tests/test_ext_autodoc_mock.py\n--- a/tests/test_ext_autodoc_mock.py\n+++ b/tests/test_ext_autodoc_mock.py\n@@ -11,6 +11,7 @@\n import abc\n import sys\n from importlib import import_module\n+from typing import TypeVar\n \n import pytest\n \n@@ -53,6 +54,40 @@\n     assert isinstance(obj.other_method(), SubClass)\n \n \n+@pytest.mark.parametrize('key', ['name', 1, int, TypeVar('T'), (TypeVar('T'), int)])\n+def test_MockObject_getitem(key):\n+    obj = _MockModule('mocked_module').Generic\n+    item = obj[key]\n+\n+    assert isinstance(item, _MockObject)\n+    assert isinstance(item, obj.__class__)\n+    assert item.__class__.__name__ == str(key)\n+    assert repr(item) == 'mocked_module.Generic.' + str(key)\n+\n+\n+@pytest.mark.skipif(sys.version_info < (3, 7), reason='Only for py37 or above')\n+@pytest.mark.parametrize('parameters', [TypeVar('T'), (TypeVar('T'), TypeVar('U'))])\n+def test_mock_generic(parameters):\n+    with mock(['sphinx.unknown']):\n+        module = import_module('sphinx.unknown')\n+\n+        class Derived(module.Generic[parameters]):\n+            \"\"\"docstring of Derived\"\"\"\n+\n+            def method(self):\n+                return \"string\"\n+\n+        obj = Derived()\n+        assert Derived.__doc__ == \"docstring of Derived\"\n+        assert isinstance(obj, Derived)\n+        assert isinstance(obj, _MockObject)\n+        assert obj.method() == \"string\"\n+        assert isinstance(obj.other_method(), Derived)\n+\n+    assert 'sphinx.unknown' not in sys.modules\n+\n+\n def test_mock():\n     modname = 'sphinx.unknown'\n     submodule = modname + '.submodule'\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py -q --tb=short",
+  "cd /testbed && git apply --recount <<'PATCH'\ndiff --git a/sphinx/ext/autodoc/mock.py b/sphinx/ext/autodoc/mock.py\n--- a/sphinx/ext/autodoc/mock.py\n+++ b/sphinx/ext/autodoc/mock.py\n@@ -52,8 +52,8 @@\n     def __mro_entries__(self, bases: Tuple) -> Tuple:\n         return (self.__class__,)\n \n-    def __getitem__(self, key: str) -> \"_MockObject\":\n-        return _make_subclass(key, self.__display_name__, self.__class__)()\n+    def __getitem__(self, key: Any) -> \"_MockObject\":\n+        return _make_subclass(str(key), self.__display_name__, self.__class__)()\n \n     def __getattr__(self, key: str) -> \"_MockObject\":\n         return _make_subclass(key, self.__display_name__, self.__class__)()\ndiff --git a/CHANGES b/CHANGES\n--- a/CHANGES\n+++ b/CHANGES\n@@ -21,6 +21,7 @@\n Bugs fixed\n ----------\n \n+* autodoc: Fix TypeError when subscribing mocked classes with generic type parameters.\n * #7839: autosummary: cannot handle umlauts in function names\n * #7865: autosummary: Failed to extract summary line when abbreviations found\n * #7866: autosummary: Failed to extract correct summary line when docstring\nPATCH\npython -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py -q --tb=short",
+  "cd /testbed && python -m pytest tests/test_ext_autodoc_mock.py tests/test_ext_autodoc_configs.py::test_mocked_module_imports -q --disable-warnings && git diff --check && git diff --stat && git diff -- sphinx/ext/autodoc/mock.py CHANGES tests/test_ext_autodoc_mock.py"
+ ],
+ "peeky_commands": [],
+ "peeky_subcommands": {},
+ "peeky_doc_reads": 3,
+ "peeky_mentions_in_commands": 3,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Autodoc assumed mock subscription keys were strings, causing `TypeError` for `TypeVar` and tuple parameters. `_MockObject.__getitem__` now converts keys to strings while preserving existing behavior. Added regression coverage and a changelog entry. One unrelated configuration test also fails on the original source.",
+ "assistant_messages": [
+  "I\u2019ll inspect autodoc\u2019s mock handling and reproduce the generic-type failure before making a targeted fix.\n",
+  "The failure comes from passing a `TypeVar` subscription key to `_make_subclass`, which requires a string name. I\u2019ll convert keys to strings at subscription time and add regression coverage for single- and multi-parameter generic bases.\n",
+  "Autodoc assumed mock subscription keys were strings, causing `TypeError` for `TypeVar` and tuple parameters. `_MockObject.__getitem__` now converts keys to strings while preserving existing behavior. Added regression coverage and a changelog entry. One unrelated configuration test also fails on the original source."
+ ],
+ "assistant_reasoning": [
+  "**Evaluating patch application options**\n\nI'm looking into how to apply patches when using tools \u2014 it seems that only bash can handle the patch command properly. I can\u2019t use \u201capply_patch\u201d since there\u2019s no available tool for that, so I might have to define it in a script. Instead, I should stick with the \u201cpatch\u201d command and use \"patch -p0\" since that's supported. I'll keep things simple without unnecessary explanations.\n\n**Planning test implementation**\n\nI need to add around two tests and establish a baseline. The parameter matrix involves string, integer, and tuple types, though only five parameters might be relevant. I'll focus on subclass parameters, both single and multiple, using TypeVar with Generics. Additionally, I'll set up a unit test for the mocked generic with some conditional skips. I'm also considering the cleanup of sys.modules and ensuring regular class inheritance works properly. It seems necessary to create a simpler derived class that supports concrete types while mocking dependencies.",
+  "**Correcting patch issues**\n\nI\u2019m dealing with a botched patch format and need to count how many lines were affected. I should use Git to apply a unified standard to calculate the inserted lines, possibly around 33. It seems I need to minimize the hunk line count too. I should check if I'm trying to import something that's already been applied. It\u2019s a bit tricky, but focusing on these details should help resolve the issue!",
+  "**Considering space in parsing**\n\nI\u2019m thinking about how the leading space in a diff parser might cause issues. It seems that if the parser doesn\u2019t handle leading spaces correctly, it could misinterpret the first hunk of the diff. So, yes, leading spaces matter significantly in this context! I need to remember to account for that when working with line contexts to avoid errors. Correcting for the leading space seems crucial for accurate parsing.",
+  "**Exploring testing configurations**\n\nI think I have enough test lines for a simple fix. I'm considering running a temp doc build using tempfile.TemporaryDirectory inside the /testbed directory. It seems the command builds the code test module while missing some dependencies like Generic in the docstring. I might need to check Sphinx options involving mocks to ensure I get no warnings. I want to preserve the state in a fresh environment to avoid any persistent integration testing issues, so I\u2019ll keep my approach adaptable for the user\u2019s needs.",
+  "**Considering HTML regression testing**\n\nI'm thinking about how to persistently add HTML regression testing using app fixtures without needing new documentation integration. This approach should make future verifications easier since the tests already pass. It seems like a great way to ensure end-to-end user experiences are covered. The idea of smoke testing gives a quick overview of the implementation. I\u2019m curious about how this might streamline the process and solve some testing challenges.",
+  "**Evaluating mock testing**\n\nI'm contemplating how the mock base functions, particularly if it shows a skip based on a check with the mock object. I'm curious about using `__getattr__` and how mocked detection plays a role in this. If the test exists, I wonder if the imported functions work even with class subclasses. It seems there might be a generic marker that shouldn't really prompt skipping tests. I think I need to search for more information on this.",
+  "**Clarifying documentation process**\n\nI shouldn't fix anything unrelated. I want to keep direct autoclass entries to avoid skipping existing elements while preserving what the user intended. I\u2019ll use `.. autoclass:: generic_example.Single` and `Multiple` for class bodies as planned. There won't be warnings with the `_MockObject` and its `__init__`, which is unexpected. So, should I focus on asserting class names instead of using phrases? I think it\u2019s best to keep the documentation straightforward and combine necessary comments.",
+  "**Verifying cleanup and tests**\n\nI need to verify the persistent status after the end-to-end tests and cleanup. I already checked the git status, and I've run the targeted tests, which passed. There\u2019s no need to rerun anything that hasn\u2019t changed. I should check for differences with git diff --check and look in the temp directories for anything specific. I\u2019ll also confirm if there are any Python linting issues with flake8. If dependencies are missing, I\u2019ll install them as needed. Everything should be fine."
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 167.9
+}

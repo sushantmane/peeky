@@ -1,0 +1,266 @@
+{
+ "bug": "fmtlib__fmt-3272",
+ "arm": "peeky-first",
+ "rep": 2,
+ "language": "cpp",
+ "category": "C",
+ "image": "peeky-study/fmtlib__fmt-3272:peeky-r2",
+ "image_digest": "sha256:5f8ed7ace85a13a4926d60f0f52b8a9240d1f0eacd23f2576cb95bf6b19033fc",
+ "peeky_sha": "fef02c78b57b1ea9095f975a492640520c1b7e69",
+ "container": "study-fmtlib__fmt-3272-peeky-first-2-2627bd",
+ "fake_agent": null,
+ "budget_minutes": 40.0,
+ "budget_credits": 250.0,
+ "copilot_version": "1.0.105",
+ "started": "2026-11-01T14:57:38+00:00",
+ "ended": "2026-11-01T15:00:50+00:00",
+ "wall_seconds": 191.4,
+ "timed_out": false,
+ "exit_code": 0,
+ "solved": true,
+ "f2p": {
+  "locale_test.localized_double": "PASSED"
+ },
+ "p2p_failed": [],
+ "grading_seconds": 5.2,
+ "errors": [],
+ "infra_failure": false,
+ "prompt_sha256": "c0a467b0e1438d8c9252ed42d3ff68a2062ffc3d82579fd2c90c25106801d0d4",
+ "auth_variable": "GH_TOKEN",
+ "leftover_processes": 0,
+ "patch_files": [
+  "ChangeLog.rst",
+  "include/fmt/format.h"
+ ],
+ "patch_bytes": 1216,
+ "patch_notes": [],
+ "grading": {
+  "eval_exit": 0,
+  "eval_timed_out": false,
+  "markers_found": true,
+  "tests_parsed": 35
+ },
+ "models": [
+  "gpt-6.1-sol"
+ ],
+ "model_calls": 15,
+ "ai_credits": 26.5287,
+ "ai_credits_status": "complete",
+ "premium_requests": 1,
+ "tokens": {
+  "input": 536483,
+  "output": 6870,
+  "cache_read": 476916,
+  "cache_write": 59522,
+  "reasoning": 1620
+ },
+ "usage_source": "usage.json",
+ "tool_calls": 20,
+ "tool_calls_by_name": {
+  "bash": 20
+ },
+ "shell_commands": [
+  {
+   "command": "pwd && ls -la && if [ -d /testbed ]; then ls /testbed; fi; if [ -f /opt/peeky/docs/AGENT_GUIDE.md ]; then cat /opt/peeky/docs/AGENT_GUIDE.md; fi",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '1,210p' /opt/peeky/docs/AGENT_GUIDE.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "git --no-pager status --short && rg -n 'grouping|decimal_point|localized' include/fmt/format.h test/format-test.cc test/printf-test.cc && sed -n '1,170p' test/CMakeLists.txt && sed -n '1,110p' CMakeLists.txt",
+   "exit_code": 127,
+   "mode": "sync"
+  },
+  {
+   "command": "cat /opt/peeky/docs/PROJECT.md && sed -n '1,200p' /opt/peeky/docs/lang/c-cpp.md",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'grouping|decimal_point|localized' include/fmt/format.h test/format-test.cc test/printf-test.cc; sed -n '1,150p' test/CMakeLists.txt; sed -n '1,95p' CMakeLists.txt; ls build 2>/dev/null; command -v clang++ peeky apply_patch; locale -a",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '2040,2115p' include/fmt/format.h && sed -n '2450,2695p' include/fmt/format.h && sed -n '2120,2290p' test/format-test.cc",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'locale|numpunct|:.*L' test/xchar-test.cc; grep -nE 'locale|numpunct|:.*L' test/format-test.cc | head -75; grep -E 'CMAKE_CXX_COMPILER:|CMAKE_CXX_FLAGS:|CMAKE_CXX_FLAGS_DEBUG:|CMAKE_BUILD_TYPE:|CMAKE_EXE_LINKER_FLAGS:' build-peeky/CMakeCache.txt; ls /usr/bin/clang*; command -v c++ g++; ls build/bin/format-test build-peeky/bin/format-test; sed -n '1,70p' test/format-test.cc; sed -n '1,60p' test/xchar-test.cc",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/bin/clang++-18 -x c++ -std=c++17 -O0 -g -gdwarf-5 -grecord-command-line -fdebug-macro -stdlib=libc++ -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER -DFMT_HEADER_ONLY -I include -Wl,--build-id=sha1 -o build-peeky/localized-float-repro - <<'CPP'\n#include <locale>\n#include <fmt/printf.h>\nstruct english_punct : std::numpunct<char> {\n  char do_decimal_point() const override { return '.'; }\n  char do_thousands_sep() const override { return ','; }\n  std::string do_grouping() const override { return \"\\3\"; }\n};\nint main() {\n  std::locale::global(std::locale(std::locale::classic(), new english_punct));\n  for (double value : {-119.921, 2194.139, -57.639, -5.980, -2.119, 0.295, 1.295}) {\n    auto localized = fmt::format(\"{:19.3Lf}\", value);\n    auto plain = fmt::format(\"{:19.3f}\", value);\n    fmt::print(\"value={} localized=[{}] width={} plain=[{}] width={}\\n\", value,\n               localized, localized.size(), plain, plain.size());\n  }\n}\nCPP\n./build-peeky/localized-float-repro",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -n -A 108 'id=\"debug-a-binary\\|^### Debug a binary\\|^##.*binary\\|^###.*binary' /opt/peeky/docs/lang/c-cpp-cookbook.md; sed -n '396,513p' test/xchar-test.cc; sed -n '1,65p' ChangeLog.rst; sed -n '1,80p' build-peeky/test/CMakeFiles/xchar-test.dir/flags.make",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary build-peeky/localized-float-repro --at include/fmt/format.h:2641 --capture exp,significand_size,size,fspecs.locale,specs.width,grouping --hits all",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary build-peeky/bin/xchar-test --at include/fmt/format.h:2641 --capture exp,significand_size,size,fspecs.locale,specs.width,grouping --hits all -- --gtest_filter=locale_test.localized_double",
+   "exit_code": 2,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && peeky describe . --binary build-peeky/bin/xchar-test --at include/fmt/format.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "grep -nE 'reserve_iterator|write_padded|base_iterator' include/fmt/format.h | head -40; sed -n '1810,1895p' include/fmt/format.h; sed -n '2170,2205p' include/fmt/format.h; sed -n '3680,3775p' include/fmt/format.h; grep -nE 'using.*buffer_appender|class appender|class buffer_appender' include/fmt/core.h include/fmt/format.h",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && cmake -B build -S . && cmake --build build --parallel 4 --target xchar-test",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "sed -n '520,604p' include/fmt/format.h && sed -n '1750,1794p' include/fmt/format.h; command -v patch apply_patch; cd /testbed && ctest --test-dir build -V -R '^xchar-test$'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && /usr/bin/c++ -x c++ -std=c++11 -DFMT_HEADER_ONLY -I include -o build/localized-wide-repro - <<'CPP'\n#include <locale>\n#include <fmt/xchar.h>\ntemplate <typename Char> struct punct : std::numpunct<Char> {\n  Char do_decimal_point() const override { return '?'; }\n  Char do_thousands_sep() const override { return '~'; }\n  std::string do_grouping() const override { return \"\\3\"; }\n};\nint main() {\n  auto loc = std::locale(std::locale::classic(), new punct<wchar_t>);\n  for (double value : {0.295, 1.295, 1234.5}) {\n    auto s = fmt::format(loc, L\"{:19.3Lf}\", value);\n    fmt::print(\"value={} localized=[{}] width={}\\n\", value, std::string(s.begin(), s.end()), s.size());\n  }\n}\nCPP\n./build/localized-wide-repro",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/test/xchar-test.cc\n+++ b/test/xchar-test.cc\n@@ -440,6 +440,43 @@\n   EXPECT_EQ(fmt::format(loc, \"{:8L}\", 1230.0), \"   1~230\");\n }\n \n+TEST(locale_test, localized_double_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<char>());\n+  EXPECT_EQ(\"           -119?921\", fmt::format(loc, \"{:19.3Lf}\", -119.921));\n+  EXPECT_EQ(\"          2~194?139\", fmt::format(loc, \"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(\"            -57?639\", fmt::format(loc, \"{:19.3Lf}\", -57.639));\n+  EXPECT_EQ(\"             -5?980\", fmt::format(loc, \"{:19.3Lf}\", -5.980));\n+  EXPECT_EQ(\"             -2?119\", fmt::format(loc, \"{:19.3Lf}\", -2.119));\n+  EXPECT_EQ(\"              0?295\", fmt::format(loc, \"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(\"              1?295\", fmt::format(loc, \"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(\"1?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"__1?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"_____1?295\", fmt::format(loc, \"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"0?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"__0?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"_____0?295\", fmt::format(loc, \"{:_>10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295f));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10.3Lf}\", 1.295L));\n+  EXPECT_EQ(\"     1.295\",\n+            fmt::format(std::locale::classic(), \"{:10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"     1.295\", fmt::format(loc, \"{:10.3f}\", 1.295));\n+}\n+\n+TEST(locale_test, localized_wdouble_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<wchar_t>());\n+  EXPECT_EQ(L\"              0?295\", fmt::format(loc, L\"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(L\"              1?295\", fmt::format(loc, L\"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"          2~194?139\", fmt::format(loc, L\"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(L\"1?295_____\", fmt::format(loc, L\"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"__1?295___\", fmt::format(loc, L\"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"_____1?295\", fmt::format(loc, L\"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"     1?295\", fmt::format(loc, L\"{:10L}\", 1.295));\n+  EXPECT_EQ(L\"     1.295\",\n+            fmt::format(std::locale::classic(), L\"{:10.3Lf}\", 1.295));\n+}\n+\n TEST(locale_test, format) {\n   auto loc = std::locale(std::locale(), new numpunct<char>());\n   EXPECT_EQ(\"1234567\", fmt::format(std::locale(), \"{:L}\", 1234567));\nPATCH\ncmake --build build --parallel 4 --target xchar-test && build/bin/xchar-test --gtest_filter='locale_test.localized*alignment'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --stat && patch -p1 <<'PATCH'\n--- a/test/xchar-test.cc\n+++ b/test/xchar-test.cc\n@@ -440,6 +440,42 @@\n   EXPECT_EQ(fmt::format(loc, \"{:8L}\", 1230.0), \"   1~230\");\n }\n \n+TEST(locale_test, localized_double_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<char>());\n+  EXPECT_EQ(\"           -119?921\", fmt::format(loc, \"{:19.3Lf}\", -119.921));\n+  EXPECT_EQ(\"          2~194?139\", fmt::format(loc, \"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(\"            -57?639\", fmt::format(loc, \"{:19.3Lf}\", -57.639));\n+  EXPECT_EQ(\"             -5?980\", fmt::format(loc, \"{:19.3Lf}\", -5.980));\n+  EXPECT_EQ(\"             -2?119\", fmt::format(loc, \"{:19.3Lf}\", -2.119));\n+  EXPECT_EQ(\"              0?295\", fmt::format(loc, \"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(\"              1?295\", fmt::format(loc, \"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(\"1?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"__1?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"_____1?295\", fmt::format(loc, \"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"0?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"__0?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"_____0?295\", fmt::format(loc, \"{:_>10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295f));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10.3Lf}\", 1.295L));\n+  EXPECT_EQ(\"     1.295\",\n+            fmt::format(std::locale::classic(), \"{:10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"     1.295\", fmt::format(loc, \"{:10.3f}\", 1.295));\n+}\n+\n+TEST(locale_test, localized_wdouble_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<wchar_t>());\n+  EXPECT_EQ(L\"              0?295\", fmt::format(loc, L\"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(L\"              1?295\", fmt::format(loc, L\"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"          2~194?139\", fmt::format(loc, L\"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(L\"1?295_____\", fmt::format(loc, L\"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"__1?295___\", fmt::format(loc, L\"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"_____1?295\", fmt::format(loc, L\"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"     1?295\", fmt::format(loc, L\"{:10L}\", 1.295));\n+  EXPECT_EQ(L\"     1.295\",\n+            fmt::format(std::locale::classic(), L\"{:10.3Lf}\", 1.295));\n+}\n+\n TEST(locale_test, format) {\n   auto loc = std::locale(std::locale(), new numpunct<char>());\n   EXPECT_EQ(\"1234567\", fmt::format(std::locale(), \"{:L}\", 1234567));\nPATCH\ncmake --build build --parallel 4 --target xchar-test && build/bin/xchar-test --gtest_filter='locale_test.localized*alignment'",
+   "exit_code": 1,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && patch -p1 <<'PATCH'\n--- a/include/fmt/format.h\n+++ b/include/fmt/format.h\n@@ -2637,7 +2637,7 @@\n     int num_zeros = fspecs.showpoint ? fspecs.precision - significand_size : 0;\n     size += 1 + to_unsigned(num_zeros > 0 ? num_zeros : 0);\n     auto grouping = Grouping(loc, fspecs.locale);\n-    size += to_unsigned(grouping.count_separators(significand_size));\n+    size += to_unsigned(grouping.count_separators(exp));\n     return write_padded<align::right>(out, specs, size, [&](iterator it) {\n       if (sign) *it++ = detail::sign<Char>(sign);\n       it = write_significand(it, significand, significand_size, exp,\n--- a/ChangeLog.rst\n+++ b/ChangeLog.rst\n@@ -1,6 +1,9 @@\n 9.1.0 - 2022-08-27\n ------------------\n \n+* Fixed alignment of localized floating-point numbers by counting digit\n+  separators only in the integer part.\n+\n * ``fmt::formatted_size`` now works at compile time\n   (`#3026 <https://github.com/fmtlib/fmt/pull/3026>`_). For example\n   (`godbolt <https://godbolt.org/z/1MW5rMdf8>`__):\n--- a/test/xchar-test.cc\n+++ b/test/xchar-test.cc\n@@ -463,7 +463,7 @@\n   EXPECT_EQ(\"     1.295\", fmt::format(loc, \"{:10.3f}\", 1.295));\n }\n \n-TEST(locale_test, localized_wdouble_alignment) {\n+TEST(locale_test, localized_wide_double_alignment) {\n   auto loc = std::locale(std::locale::classic(), new numpunct<wchar_t>());\n   EXPECT_EQ(L\"              0?295\", fmt::format(loc, L\"{:19.3Lf}\", 0.295));\n   EXPECT_EQ(L\"              1?295\", fmt::format(loc, L\"{:19.3Lf}\", 1.295));\nPATCH\ncmake --build build --parallel 4 --target xchar-test format-test compile-fp-test && ctest --test-dir build -V -R '^(xchar|format|compile-fp)-test$'",
+   "exit_code": 0,
+   "mode": "sync"
+  },
+  {
+   "command": "cd /testbed && git --no-pager diff --check && git --no-pager diff --stat && git --no-pager diff -- include/fmt/format.h test/xchar-test.cc ChangeLog.rst && git --no-pager status --short && ls -l build-peeky/localized-float-repro build/localized-wide-repro && rm build-peeky/localized-float-repro build/localized-wide-repro && git --no-pager status --short",
+   "exit_code": 0,
+   "mode": "sync"
+  }
+ ],
+ "build_or_test_runs": 5,
+ "build_or_test_commands": [
+  "cd /testbed && cmake -B build -S . && cmake --build build --parallel 4 --target xchar-test",
+  "sed -n '520,604p' include/fmt/format.h && sed -n '1750,1794p' include/fmt/format.h; command -v patch apply_patch; cd /testbed && ctest --test-dir build -V -R '^xchar-test$'",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/test/xchar-test.cc\n+++ b/test/xchar-test.cc\n@@ -440,6 +440,43 @@\n   EXPECT_EQ(fmt::format(loc, \"{:8L}\", 1230.0), \"   1~230\");\n }\n \n+TEST(locale_test, localized_double_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<char>());\n+  EXPECT_EQ(\"           -119?921\", fmt::format(loc, \"{:19.3Lf}\", -119.921));\n+  EXPECT_EQ(\"          2~194?139\", fmt::format(loc, \"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(\"            -57?639\", fmt::format(loc, \"{:19.3Lf}\", -57.639));\n+  EXPECT_EQ(\"             -5?980\", fmt::format(loc, \"{:19.3Lf}\", -5.980));\n+  EXPECT_EQ(\"             -2?119\", fmt::format(loc, \"{:19.3Lf}\", -2.119));\n+  EXPECT_EQ(\"              0?295\", fmt::format(loc, \"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(\"              1?295\", fmt::format(loc, \"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(\"1?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"__1?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"_____1?295\", fmt::format(loc, \"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"0?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"__0?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"_____0?295\", fmt::format(loc, \"{:_>10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295f));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10.3Lf}\", 1.295L));\n+  EXPECT_EQ(\"     1.295\",\n+            fmt::format(std::locale::classic(), \"{:10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"     1.295\", fmt::format(loc, \"{:10.3f}\", 1.295));\n+}\n+\n+TEST(locale_test, localized_wdouble_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<wchar_t>());\n+  EXPECT_EQ(L\"              0?295\", fmt::format(loc, L\"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(L\"              1?295\", fmt::format(loc, L\"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"          2~194?139\", fmt::format(loc, L\"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(L\"1?295_____\", fmt::format(loc, L\"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"__1?295___\", fmt::format(loc, L\"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"_____1?295\", fmt::format(loc, L\"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"     1?295\", fmt::format(loc, L\"{:10L}\", 1.295));\n+  EXPECT_EQ(L\"     1.295\",\n+            fmt::format(std::locale::classic(), L\"{:10.3Lf}\", 1.295));\n+}\n+\n TEST(locale_test, format) {\n   auto loc = std::locale(std::locale(), new numpunct<char>());\n   EXPECT_EQ(\"1234567\", fmt::format(std::locale(), \"{:L}\", 1234567));\nPATCH\ncmake --build build --parallel 4 --target xchar-test && build/bin/xchar-test --gtest_filter='locale_test.localized*alignment'",
+  "cd /testbed && git --no-pager diff --stat && patch -p1 <<'PATCH'\n--- a/test/xchar-test.cc\n+++ b/test/xchar-test.cc\n@@ -440,6 +440,42 @@\n   EXPECT_EQ(fmt::format(loc, \"{:8L}\", 1230.0), \"   1~230\");\n }\n \n+TEST(locale_test, localized_double_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<char>());\n+  EXPECT_EQ(\"           -119?921\", fmt::format(loc, \"{:19.3Lf}\", -119.921));\n+  EXPECT_EQ(\"          2~194?139\", fmt::format(loc, \"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(\"            -57?639\", fmt::format(loc, \"{:19.3Lf}\", -57.639));\n+  EXPECT_EQ(\"             -5?980\", fmt::format(loc, \"{:19.3Lf}\", -5.980));\n+  EXPECT_EQ(\"             -2?119\", fmt::format(loc, \"{:19.3Lf}\", -2.119));\n+  EXPECT_EQ(\"              0?295\", fmt::format(loc, \"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(\"              1?295\", fmt::format(loc, \"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(\"1?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"__1?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"_____1?295\", fmt::format(loc, \"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"0?295_____\", fmt::format(loc, \"{:_<10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"__0?295___\", fmt::format(loc, \"{:_^10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"_____0?295\", fmt::format(loc, \"{:_>10.3Lf}\", 0.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10L}\", 1.295f));\n+  EXPECT_EQ(\"     1?295\", fmt::format(loc, \"{:10.3Lf}\", 1.295L));\n+  EXPECT_EQ(\"     1.295\",\n+            fmt::format(std::locale::classic(), \"{:10.3Lf}\", 1.295));\n+  EXPECT_EQ(\"     1.295\", fmt::format(loc, \"{:10.3f}\", 1.295));\n+}\n+\n+TEST(locale_test, localized_wdouble_alignment) {\n+  auto loc = std::locale(std::locale::classic(), new numpunct<wchar_t>());\n+  EXPECT_EQ(L\"              0?295\", fmt::format(loc, L\"{:19.3Lf}\", 0.295));\n+  EXPECT_EQ(L\"              1?295\", fmt::format(loc, L\"{:19.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"          2~194?139\", fmt::format(loc, L\"{:19.3Lf}\", 2194.139));\n+  EXPECT_EQ(L\"1?295_____\", fmt::format(loc, L\"{:_<10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"__1?295___\", fmt::format(loc, L\"{:_^10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"_____1?295\", fmt::format(loc, L\"{:_>10.3Lf}\", 1.295));\n+  EXPECT_EQ(L\"     1?295\", fmt::format(loc, L\"{:10L}\", 1.295));\n+  EXPECT_EQ(L\"     1.295\",\n+            fmt::format(std::locale::classic(), L\"{:10.3Lf}\", 1.295));\n+}\n+\n TEST(locale_test, format) {\n   auto loc = std::locale(std::locale(), new numpunct<char>());\n   EXPECT_EQ(\"1234567\", fmt::format(std::locale(), \"{:L}\", 1234567));\nPATCH\ncmake --build build --parallel 4 --target xchar-test && build/bin/xchar-test --gtest_filter='locale_test.localized*alignment'",
+  "cd /testbed && patch -p1 <<'PATCH'\n--- a/include/fmt/format.h\n+++ b/include/fmt/format.h\n@@ -2637,7 +2637,7 @@\n     int num_zeros = fspecs.showpoint ? fspecs.precision - significand_size : 0;\n     size += 1 + to_unsigned(num_zeros > 0 ? num_zeros : 0);\n     auto grouping = Grouping(loc, fspecs.locale);\n-    size += to_unsigned(grouping.count_separators(significand_size));\n+    size += to_unsigned(grouping.count_separators(exp));\n     return write_padded<align::right>(out, specs, size, [&](iterator it) {\n       if (sign) *it++ = detail::sign<Char>(sign);\n       it = write_significand(it, significand, significand_size, exp,\n--- a/ChangeLog.rst\n+++ b/ChangeLog.rst\n@@ -1,6 +1,9 @@\n 9.1.0 - 2022-08-27\n ------------------\n \n+* Fixed alignment of localized floating-point numbers by counting digit\n+  separators only in the integer part.\n+\n * ``fmt::formatted_size`` now works at compile time\n   (`#3026 <https://github.com/fmtlib/fmt/pull/3026>`_). For example\n   (`godbolt <https://godbolt.org/z/1MW5rMdf8>`__):\n--- a/test/xchar-test.cc\n+++ b/test/xchar-test.cc\n@@ -463,7 +463,7 @@\n   EXPECT_EQ(\"     1.295\", fmt::format(loc, \"{:10.3f}\", 1.295));\n }\n \n-TEST(locale_test, localized_wdouble_alignment) {\n+TEST(locale_test, localized_wide_double_alignment) {\n   auto loc = std::locale(std::locale::classic(), new numpunct<wchar_t>());\n   EXPECT_EQ(L\"              0?295\", fmt::format(loc, L\"{:19.3Lf}\", 0.295));\n   EXPECT_EQ(L\"              1?295\", fmt::format(loc, L\"{:19.3Lf}\", 1.295));\nPATCH\ncmake --build build --parallel 4 --target xchar-test format-test compile-fp-test && ctest --test-dir build -V -R '^(xchar|format|compile-fp)-test$'"
+ ],
+ "peeky_commands": [
+  {
+   "command": "cd /testbed && peeky probe . --binary build-peeky/localized-float-repro --at include/fmt/format.h:2641 --capture exp,significand_size,size,fspecs.locale,specs.width,grouping --hits all",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && peeky probe . --binary build-peeky/bin/xchar-test --at include/fmt/format.h:2641 --capture exp,significand_size,size,fspecs.locale,specs.width,grouping --hits all -- --gtest_filter=locale_test.localized_double",
+   "subcommands": [
+    "probe"
+   ],
+   "exit_code": 2
+  },
+  {
+   "command": "cd /testbed && peeky describe . --binary build-peeky/bin/xchar-test --at include/fmt/format.h",
+   "subcommands": [
+    "describe"
+   ],
+   "exit_code": 0
+  }
+ ],
+ "peeky_subcommands": {
+  "probe": 2,
+  "describe": 1
+ },
+ "peeky_doc_reads": 4,
+ "peeky_mentions_in_commands": 20,
+ "peeky_withheld_markers": 0,
+ "peeky_withheld_by_marker": {},
+ "peeky_values_printed": 0,
+ "contaminated": false,
+ "final_message": "Fixed the alignment by counting grouping separators only in the integer part, not the full significand, which had incorrectly reduced padding. Added narrow/wide regression tests without changing existing tests. Peeky could not inspect the failing code: `peeky describe` reported \u201cits line table records no MD5s\u201d for the relevant units.",
+ "assistant_messages": [
+  "I\u2019ll reproduce the alignment error, inspect the failing path with Peeky, then fix the source and add a regression test.\n",
+  "The reproduction shows that nonzero integer parts lose padding: localized output is 18 characters instead of 19, while `0.295` is correctly 19. The size calculation counts separators across fractional digits too. Peeky could not reach that code: it reported \u201cits line table records no MD5s\u201d for the relevant units. I\u2019ll fix the separator count and add alignment coverage.\n",
+  "Fixed the alignment by counting grouping separators only in the integer part, not the full significand, which had incorrectly reduced padding. Added narrow/wide regression tests without changing existing tests. Peeky could not inspect the failing code: `peeky describe` reported \u201cits line table records no MD5s\u201d for the relevant units."
+ ],
+ "assistant_reasoning": [
+  "**Inspecting compilation process**\n\nI need to reproduce the process before editing any files with the stdin compiler. Editing output binary building isn\u2019t allowed. I should use g++ or clang from the cache for this. It\u2019s also important to check the xchar localized tests and format branches. Overall, I'm pondering how to make this compilation process run smoothly while being mindful of the restrictions. Let\u2019s ensure everything is clear before moving forward!",
+  "**Exploring xchar probe alternatives**\n\nI need to find an alternative existing xchar probe that can capture the for1.23Lf with sig7 expedient size count of 2. Testing the unwidth gives the correct output, but the size seems wrong. I could check peeky to inspect this issue further. Oh, I see that the binary is already present in build-peeky/bin/xchar, so that\u2019s a good sign. Let's keep refining this!",
+  "**Evaluating output requirements**\n\nI'm considering how to output a compact result from a unit test using the standard system with gtest, avoiding MD5 checks. It seems I need to save this output to a specific build file without editing the source code. I might output to /tmp, but I need to check if I have the jq tool installed for JSON processing. It\u2019s interesting how I must focus on describing the requirements without going into too much detail.",
+  "**Evaluating patch count**\n\nI need to patch a wrong count and ensure I've added the correct lines, which appear to be a bit confusing. It looks like I've added a total of 42 lines, not 43 as expected. I need to double-check the hunk count and make sure everything matches up as I compute the lines in each test. I should verify with the git diff command before applying any patches to ensure everything is accurate.",
+  "**Fixing test naming conventions**\n\nI need to correct the test naming for `localized_wdouble` and determine if `localized_double_wide` makes sense. The existing chrono tests and format need attention too. The name `localized_wdouble` seems strange, so utilizing `localized_wide_double_alignment` might be clearer. I also think it\u2019s important to rename that as we add new patches. Finally, I should consider reducing the test count to streamline things. This approach seems surgical yet effective!"
+ ],
+ "isolation": {
+  "tools_offered": [
+   "bash",
+   "read_bash",
+   "stop_bash",
+   "list_bash"
+  ],
+  "unexpected_tools_offered": [],
+  "unexpected_tools_called": [],
+  "active_mcp_servers": [],
+  "system_segments": [
+   "customized_identity_preamble",
+   "interaction_mode",
+   "tone_and_style",
+   "search_and_delegation",
+   "tool_efficiency",
+   "version_information",
+   "model_information",
+   "environment_context",
+   "identity_task_instructions",
+   "code_change_instructions",
+   "dynamic_guidelines",
+   "environment_limitations",
+   "tool_intro",
+   "tool_instructions",
+   "system_notifications",
+   "host_additional_instructions",
+   "workspace_context",
+   "git_commit_trailer",
+   "final_instructions"
+  ],
+  "suspicious_segments": [
+   "customized_identity_preamble"
+  ],
+  "ok": false
+ },
+ "session_errors": [],
+ "session_warnings": [],
+ "session_infos": [
+  "Using model \"gpt-6.1-sol\" for this session because of an administrator-managed setting. Contact your administrator if this is unexpected.",
+  "Disabled tools: apply_patch, dynamic_workflows_manage, fetch_copilot_cli_documentation, glob, list_agents, read_agent, rg, run_dynamic_workflow, semantic_code_search, session_store_sql, skill, sql, store_memory, task, view, vote_memory, web_fetch, write_agent",
+  "Unknown tool name in the tool allowlist: \"write_bash\""
+ ],
+ "cli_exit_code_reported": 0,
+ "credit_limit_reached": false,
+ "infra_error_text": [],
+ "events_unparsable_lines": 0,
+ "total_seconds": 197.1
+}

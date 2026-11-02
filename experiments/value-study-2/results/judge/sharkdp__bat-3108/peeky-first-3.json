@@ -1,0 +1,7 @@
+{
+ "judge_id": "a129",
+ "wrong_root_cause": false,
+ "evidence": "Message 3: \"The root cause was mutual Clap overrides: `--plain` erased `--paging=never`, while reversed arguments erased plain styling.\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 14 probe app.rs:127 with --paging=never --plain: paging_mode=QuitIfOneScreen, interactive_output=true; consistent with PAGER_INVOKED in cmd 14 output and cmd 7/17 (pager invoked for --paging=never --plain). Cmd 10/12 extra_plain=false (single --plain) consistent with code. Cmd 20 after fix paging_mode=Never, output 'hello world' with no pager, matching cmd 22. None contradicted."
+}

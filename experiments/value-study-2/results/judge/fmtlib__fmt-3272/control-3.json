@@ -1,0 +1,7 @@
+{
+ "judge_id": "a105",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The width calculation counts separators across all significand digits, including fractional digits, although grouping is applied only to the integer part.\"",
+ "peeky_wrong_value": null,
+ "peeky_evidence": ""
+}

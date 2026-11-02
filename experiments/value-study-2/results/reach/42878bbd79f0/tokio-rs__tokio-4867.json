@@ -1,0 +1,146 @@
+{
+ "bug": "tokio-rs__tokio-4867",
+ "language": "rust",
+ "category": "C",
+ "image": "peeky-study/tokio-rs__tokio-4867:peeky-r2",
+ "image_id": "sha256:a45251f248bbd715632b51b9f99b8bf511345c7b80e839e0116d23c7227b7209",
+ "peeky_sha": "42878bbd79f0d36c5481552c20002673c94c32de",
+ "started": "2026-11-01T02:38:34+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed call in Sender::send (first code hunk)",
+   "at": "tokio/src/sync/broadcast.rs:540",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:540 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 0,
+     "seconds": 26.4
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 101,
+    "output_tail": "\r\nrunning 1 test\r\ntest resubscribe_to_closed_channel ... FAILED\r\n\r\nfailures:\r\n\r\n---- resubscribe_to_closed_channel stdout ----\r\n\r\nthread 'resubscribe_to_closed_channel' (1341) panicked at tokio/tests/sync_broadcast.rs:527:5:\r\nis not closed\r\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\r\n\r\n\r\nfailures:\r\n    resubscribe_to_closed_channel\r\n\r\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s\r\n\r\n"
+   },
+   "leftover_processes": 2,
+   "first_try": {
+    "outcome": "refused",
+    "detail": {
+     "code": "UNSUPPORTED",
+     "message": "Peeky reads only Cargo.lock versions 3 and 4, and /testbed/Cargo.lock is version 2. `cargo update` keeps a lockfile's version. Without git sources, version 2 is version 3 but for its first line: add `version = 3` there",
+     "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+     "retryable": false
+    },
+    "commands": [
+     {
+      "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:540 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+      "exit": 2,
+      "seconds": 0.2
+     }
+    ],
+    "remedy": {
+     "command": "sed -i '1i version = 3' Cargo.lock",
+     "exit": 0,
+     "output": ""
+    }
+   },
+   "retried": true
+  },
+  {
+   "role": "gold",
+   "why": "the removed closed check in Receiver::recv_ref (last code hunk)",
+   "at": "tokio/src/sync/broadcast.rs:885",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/src/sync/broadcast.rs:885 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 0,
+     "seconds": 22.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 2,
+     "seconds": 1.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio/src/sync/broadcast.rs:885",
+    "function": "tokio::sync::broadcast::Receiver$LT$T$GT$::recv_ref::h4cdd5374cebd2835"
+   },
+   "moved": false,
+   "values": {
+    "error": {
+     "code": "DEBUGGER_ERROR",
+     "message": "Native stopped line does not match prepared symbols",
+     "hint": "The debugger failed and the session was closed; start a new one.",
+     "retryable": false,
+     "session_closed": true,
+     "cleanup": "terminated pids 1561, 1564"
+    }
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tokio/tests/sync_broadcast.rs:527",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tokio/tests/sync_broadcast.rs:527 --name reach --timeout 300 --json -- --exact resubscribe_to_closed_channel --test-threads=1",
+     "exit": 0,
+     "seconds": 16.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 3.3
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tokio/tests/sync_broadcast.rs:527",
+    "function": "sync_broadcast::resubscribe_to_closed_channel::h7b5de5c45958bcd0"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 1,
+    "sample": [
+     {
+      "name": "rx",
+      "value": "tokio::sync::broadcast::Receiver<unsigned int> @ 0xfffff7dbde60"
+     },
+     {
+      "name": "rx_resub",
+      "value": "tokio::sync::broadcast::Receiver<unsigned int> @ 0xfffff7dbde88"
+     }
+    ],
+    "withheld_sample": [
+     {
+      "name": "tx",
+      "value": "tokio::sync::broadcast::Sender<unsigned int> @ 0xfffff7dbde58",
+      "stale": "True"
+     }
+    ]
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-01T02:39:48+00:00"
+}

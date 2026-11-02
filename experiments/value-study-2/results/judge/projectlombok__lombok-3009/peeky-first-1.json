@@ -1,0 +1,7 @@
+{
+ "judge_id": "a206",
+ "wrong_root_cause": false,
+ "evidence": "Message 2: \"The implicit-default guard excludes interfaces and annotations but not records\"",
+ "peeky_wrong_value": false,
+ "peeky_evidence": "Cmd 19 probe at HandleFieldDefaults.java:61 on `public record Foo() {}`: 1:fd null (no @FieldDefaults in the source), 1:defaultToPrivate true and 1:defaultToFinal true (the resolver in cmd 18 returns TRUE for both FIELD_DEFAULTS_*_EVERYWHERE keys), makeFinal true (= defaultToFinal per the handler code shown in cmd 3); reaching line 61 agrees with cmd 18's output 'ERROR: @FieldDefaults is only supported on a class or an enum.'. Cmds 13/15/17 had no hits. Nothing contradicted."
+}
