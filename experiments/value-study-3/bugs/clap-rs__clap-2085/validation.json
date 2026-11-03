@@ -1,0 +1,44 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "after_and_before_long_help_output": "FAILED",
+   "issue_1642_long_help_spacing": "FAILED",
+   "long_about": "FAILED",
+   "show_long_about_issue_897": "FAILED",
+   "hidden_long_args": "FAILED",
+   "hidden_short_args_long_help": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "after_and_before_long_help_output": "PASSED",
+   "issue_1642_long_help_spacing": "PASSED",
+   "long_about": "PASSED",
+   "show_long_about_issue_897": "PASSED",
+   "hidden_long_args": "PASSED",
+   "hidden_short_args_long_help": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "after_and_before_long_help_output": "PASSED",
+   "issue_1642_long_help_spacing": "PASSED",
+   "long_about": "PASSED",
+   "show_long_about_issue_897": "PASSED",
+   "hidden_long_args": "PASSED",
+   "hidden_short_args_long_help": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 1.5
+ }
+]

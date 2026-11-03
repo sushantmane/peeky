@@ -256,11 +256,11 @@ two arms and seed. Screening is described apart, with `harness/screen.py status`
   zero. The "solvable" rule limits this. The report lists the kept bugs that no attempt solved.
 - **Only bugs Peeky reaches.** The result says nothing of bugs it can't reach. The filter's
   results show how many that is.
-- **The languages are uneven.** The reach check, not the rule, sets the mix. After the first
-  pass, the 34 survivors are Python 16, Java 10, C 3, C++ 0 and Rust 5 ([FILTER.md](FILTER.md)),
-  and the refill favours Python and Java the same way. So the result speaks mostly to Python and
-  Java, nothing to C++, and little to C and Rust. The report gives the final split, and results
-  by language are exploration only.
+- **The languages are uneven.** The reach check, not the rule, sets the mix. After the refill,
+  the 50 survivors are Python 25, Java 15, C 5, C++ 0 and Rust 5 ([FILTER.md](FILTER.md)). So the
+  result speaks mostly to Python and Java, nothing to C++, and little to C and Rust. Screening
+  may skew it further. The report gives the final split, and results by language are exploration
+  only.
 - **A floor.** If both arms solve almost none of the kept bugs, the study has little power.
 - **Weak difficulty signals.** Multi-SWE-bench's submissions are older and weaker than this
   model, so its public rates sort difficulty poorly. The runtime tag is a crude word list.

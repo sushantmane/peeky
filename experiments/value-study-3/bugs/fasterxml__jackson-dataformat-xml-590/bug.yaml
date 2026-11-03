@@ -1,0 +1,43 @@
+id: fasterxml__jackson-dataformat-xml-590
+language: java
+repo: fasterxml/jackson-dataformat-xml
+source: Multi-SWE-bench
+base_commit: a18b8cd98e94660dcac19bd2cd11f376705d7745
+upstream: https://github.com/fasterxml/jackson-dataformat-xml/pull/590
+category: B
+categories_applicable: [B, E]
+category_rationale: >-
+  The duplicate comes from jackson-databind's AnnotationIntrospectorPair, which asks both of
+  XmlMapper's introspectors to add @JsonAppend's virtual properties; seeing why needs databind's
+  code, not just the XML module's.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The serialized output holds the virtual property twice, because the list of property writers
+  gets it twice, and the fix changes what that list holds; the list is built in databind's bean
+  serializer factory, well over 5 calls below XmlMapper.writeValueAsString.
+root_cause: >-
+  XmlMapper's module inserts a JacksonXmlAnnotationIntrospector, a subclass of databind's
+  JacksonAnnotationIntrospector, in front of the default JacksonAnnotationIntrospector, so the
+  mapper's introspector is a pair of two introspectors that both read @JsonAppend. When databind
+  builds a bean serializer it asks the pair to findAndAddVirtualProperties, and the pair asks
+  both, so each @JsonAppend property is added twice and written twice. The fix overrides
+  findAndAddVirtualProperties in JacksonXmlAnnotationIntrospector to do nothing, leaving it to the
+  default introspector.
+test_hint: >-
+  jackson-dataformat-xml builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a
+  test class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole
+  suite (about 2 minutes).
+image: peeky-study/fasterxml__jackson-dataformat-xml-590:control
+build_minutes: 2.3
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base, and Peeky launches Java on JDK 9 or
+  later only); the full suite passes at base on 11 (349 tests). The parent pom
+  jackson-base:2.15.0-rc3-SNAPSHOT is gone from every repository (Multi-SWE-bench rewrites it to
+  2.15.5-SNAPSHOT, gone too), so the image installs a stand-in in ~/.m2 (the 2.15.4 release pom
+  under the snapshot version; core, annotations and databind 2.15.4) and leaves pom.xml unchanged.
+  eval.sh restores the moved test (failing/JsonAppend578Test.java), removes the one the patch
+  creates, and runs `mvn -o clean test` on the hidden test's class only; pass_to_pass is empty
+  because PASS_TO_PASS holds no class from the hidden test file (the class is new in ser/).
+  Dropped at step 3: no gold point (the fix only adds an overriding method).

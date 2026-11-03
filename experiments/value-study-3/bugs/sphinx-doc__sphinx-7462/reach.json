@@ -1,0 +1,41 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_domain_py.py::test_parse_annotation"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sphinx/domains/python.py",
+   "line": 117,
+   "why": "the removed result = [] that starts the ast.Tuple branch of _parse_annotation's unparse (the first hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "sphinx/pycode/ast.py",
+   "line": 117,
+   "why": "the changed ast.Tuple return in pycode.ast.unparse (the last hunk)",
+   "program": [
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "tests/test_pycode_ast.py::test_unparse[()-()]"
+   ],
+   "run_note": "the first failing test, in grade.json's order, that runs this line at base; test_parse_annotation uses only pycode.ast's parse, not its unparse"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/test_domain_py.py",
+   "line": 241
+  }
+ ]
+}

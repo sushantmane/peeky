@@ -1,0 +1,16 @@
+stage: 3 (reach check)
+reason: not reached. The first gold point, tracing-core/src/dispatch.rs:182 (the thread-local
+default's initial value, in CURRENT_STATE's thread_local! initializer), was reached: the test
+stopped there, in tracing_core::dispatch::CURRENT_STATE::__rust_std_internal_init_fn, but
+`session inspect` read no value (0 shown, 0 withheld: the init function has no locals). The last
+gold point, tracing-core/src/dispatch.rs:913 (DefaultGuard::drop), was refused before launch:
+  [INVALID_BREAKPOINT] Line 913 has no code to stop at in `tracing_core`'s build: it is in
+  `tracing_core::dispatch::<impl at tracing-core/src/dispatch.rs:903:1: 903:27>::drop`, a generic
+  or inlined function whose code only the crates that use it compile, for their own types, and
+  Peeky reads none of theirs. Stop where `tracing_core`'s own code calls it, or choose a line from
+  `peeky describe`
+The assertion point (tracing/tests/no_collector.rs:18) didn't stop: at base the test panics in the
+mock collector before it (exit 101).
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: prebuild built (after the
+`version = 3` line), gold solved, noop not solved.
+Record: results/reach/3e51ccd7232d/tokio-rs__tracing-2001.json.

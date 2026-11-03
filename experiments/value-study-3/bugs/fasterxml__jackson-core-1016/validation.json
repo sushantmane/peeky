@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.core.json.JsonFactoryTest": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 4.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.core.json.JsonFactoryTest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.5
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.core.json.JsonFactoryTest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.5
+ }
+]

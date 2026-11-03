@@ -1,0 +1,93 @@
+{
+ "bug": "tokio-rs__tracing-2001",
+ "language": "rust",
+ "category": "D",
+ "image": "peeky-study/tokio-rs__tracing-2001:peeky-r3",
+ "image_id": "sha256:5641b7e2cffe3584e4da97b35b8e9950bcdfc1bed6b9ef815c04ac6abd6e231e",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:06:45+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed initial value of the thread-local default dispatcher, in CURRENT_STATE's thread_local! initializer, which runs when the test's thread first reaches the dispatch state (first code hunk)",
+   "at": "tracing-core/src/dispatch.rs:182",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/core.json --build --at tracing-core/src/dispatch.rs:182 --name reach --timeout 300 --json -- --exact no_collector_disables_global --test-threads=1",
+     "exit": 0,
+     "seconds": 20.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 1.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tracing-core/src/dispatch.rs:182",
+    "function": "tracing_core::dispatch::CURRENT_STATE::__rust_std_internal_init_fn::h3a5e2d46bc7ce9a4"
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 0,
+    "sample": [],
+    "withheld_sample": []
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "gold",
+   "why": "the changed replace of the thread's default in DefaultGuard::drop (last code hunk)",
+   "at": "tracing-core/src/dispatch.rs:913",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/core.json --build --at tracing-core/src/dispatch.rs:913 --name reach --timeout 300 --json -- --exact no_collector_disables_global --test-threads=1",
+     "exit": 2,
+     "seconds": 9.9
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 913 has no code to stop at in `tracing_core`'s build: it is in `tracing_core::dispatch::<impl at tracing-core/src/dispatch.rs:903:1: 903:27>::drop`, a generic or inlined function whose code only the crates that use it compile, for their own types, and Peeky reads none of theirs. Stop where `tracing_core`'s own code calls it, or choose a line from `peeky describe`",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 1
+  },
+  {
+   "role": "assertion",
+   "why": "handle.assert_finished(), the test body's first assertion (the line above it is a Result::expect)",
+   "at": "tracing/tests/no_collector.rs:18",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tracing/tests/no_collector.rs:18 --name reach --timeout 300 --json -- --exact no_collector_disables_global --test-threads=1",
+     "exit": 0,
+     "seconds": 19.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 101,
+    "output_tail": "\r\nrunning 1 test\r\ntest no_collector_disables_global ... FAILED\r\n\r\nfailures:\r\n\r\n---- no_collector_disables_global stdout ----\r\n[no_collector_disables_global] register_callsite: Metadata {\r\n    name: \"event tracing/tests/no_collector.rs:16\",\r\n    target: \"no_collector\",\r\n    level: Level(\r\n        Info,\r\n    ),\r\n    module_path: \"no_collector\",\r\n    location: tracing/tests/no_collector.rs:16,\r\n    fields: {message},\r\n    callsite: Identifier(Pointer { addr: 0xaaaaaaba0040, metadata: DynMetadata(0xaaaaaab96160) }),\r\n    kind: Kind(EVENT),\r\n}\r\n[no_collector_disables_global] enabled: Metadata {\r\n    name: \"event tracing/tests/no_collector.rs:16\",\r\n    target: \"no_collector\",\r\n    level: Level(\r\n        Info,\r\n    ),\r\n    module_path: \"no_collector\",\r\n    location: tracing/tests/no_collector.rs:16,\r\n    fields: {message},\r\n    callsite: Identifier(Pointer { addr: 0xaaaaaaba0040, metadata: DynMetadata(0xaaaaaab96160) }),\r\n    kind: Kind(EVENT),\r\n}\r\n[no_collector_disables_global] enabled -> true\r\n[no_collector_disables_global] enabled: Metadata {\r\n    name: \"event tracing/tests/no_collector.rs:16\",\r\n    target: \"no_collector\",\r\n    level: Level(\r\n        Info,\r\n    ),\r\n    module_path: \"no_collector\",\r\n    location: tracing/tests/no_collector.rs:16,\r\n    fields: {message},\r\n    callsite: Identifier(Pointer { addr: 0xaaaaaaba0040, metadata: DynMetadata(0xaaaaaab96160) }),\r\n    kind: Kind(EVENT),\r\n}\r\n[no_collector_disables_global] enabled -> true\r\n[no_collector_disables_global] event: event tracing/tests/no_collector.rs:16;\r\n\r\nthread 'no_collector_disables_global' (2237) panicked at tracing/tests/support/collector.rs:570:32:\r\n[no_collector_disables_global] expected nothing else to happen, but [no_collector_disables_global] observed event Event { fields: ValueSet { message: this should not be recorded, callsite: Identifier(Pointer { addr: 0xaaaaaaba0040, metadata: DynMetadata(0xaaaaaab96160) }) }, metadata: Metadata { name: \"event tracing/tests/no_collector.rs:16\", target: \"no_collector\", level: Level(Info), module_path: \"no_collector\", location: tracing/tests/no_collector.rs:16, fields: {message}, callsite: Identifier(Pointer { addr: 0xaaaaaaba0040, metadata: DynMetadata(0xaaaaaab96160) }), kind: Kind(EVENT) }, parent: Current } instead\r\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\r\n\r\n\r\nfailures:\r\n    no_collector_disables_global\r\n\r\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\r\n\r\n"
+   },
+   "leftover_processes": 2
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:07:39+00:00"
+}

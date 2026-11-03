@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "logstash-core:javaTests": "FAILED",
+   "org.logstash.plugins.pipeline.PipelineBusTest > blockingShutdownDeadlock[class org.logstash.plugins.pipeline.PipelineBusV2$Testable]": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 20.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "logstash-core:javaTests": "PASSED",
+   "org.logstash.plugins.pipeline.PipelineBusTest > blockingShutdownDeadlock[class org.logstash.plugins.pipeline.PipelineBusV2$Testable]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 23.7
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "logstash-core:javaTests": "PASSED",
+   "org.logstash.plugins.pipeline.PipelineBusTest > blockingShutdownDeadlock[class org.logstash.plugins.pipeline.PipelineBusV2$Testable]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 22.4
+ }
+]

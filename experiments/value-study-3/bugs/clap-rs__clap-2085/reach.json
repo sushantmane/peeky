@@ -1,0 +1,51 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/output/help.rs",
+   "line": 356,
+   "why": "the changed `if arg.has_switch()` in Help::val, where the fix skips the alignment padding for long help (the only hunk, so the first and last gold point are one)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "after_and_before_long_help_output",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/help.rs",
+   "line": 781,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "after_and_before_long_help_output",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap"
+   ],
+   "run": {
+    "package": "clap",
+    "test": "help"
+   },
+   "vendor": "vendor"
+  }
+ }
+}

@@ -1,0 +1,41 @@
+id: sympy__sympy-22080
+language: python
+repo: sympy/sympy
+source: SWE-bench Verified
+base_commit: 3f8c8c2377cb8e0daaf8073e8d03ac7d87580813
+upstream: https://github.com/sympy/sympy/pull/22080
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows the generated source (`-x % y` for -Mod(x, y)), which points at how the code
+  printer parenthesizes a negated product's factors; the printer's _print_Mul and the precedence
+  table are short and hold simple state.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a wrong value (lambdify with modules=[] returns 4 instead of -3), and the fix
+  changes how the printer computes the parenthesized string for a negated product. The printer
+  runs in the test's own process, a few calls below doprint.
+root_cause: >-
+  CodePrinter._print_Mul in sympy/printing/codeprinter.py prints a leading minus sign followed by
+  the factors parenthesized at Mul's precedence, and Mod has no entry in the precedence table, so
+  -Mod(x, y) prints as `-x % y`, which Python evaluates as (-x) % y. The fix parenthesizes a single
+  negated factor at a precedence between Mul and Pow (Python's unary minus) and gives Mod Mul's
+  precedence in sympy/printing/precedence.py.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with sympy installed in editable mode. Run tests
+  with `cd /testbed && bin/test -C --verbose sympy/<subpackage>/tests/<file>.py` (pytest isn't
+  installed; `bin/test -k <name>` selects tests by name).
+python: "3.12"
+image: peeky-study/sympy__sympy-22080:control
+build_minutes: 1.0
+grade_minutes: 0.04
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for sympy 1.10 (mpmath 1.3.0, flake8, flake8-comprehensions, editable install;
+  the spec's Python 3.9 raised to 3.12, where the tests run). Grading runs the spec's test command
+  (bin/test -C --verbose with UserWarning/SyntaxWarning ignored) on the three files the test patch
+  touches. parse.py is round 1's sympy parser (SWE-bench's). The reach run copies bin/test to
+  bin/reach_test.py (Peeky's --run needs a .py file; as sympy-17318's corrected run) and passes
+  --no-subprocess so the test runs in that process. One gold point: the fix's other code hunk adds
+  an entry to the module-level PRECEDENCE_VALUES table in precedence.py (a declaration, in no
+  function), and codeprinter.py's first hunk is an import.

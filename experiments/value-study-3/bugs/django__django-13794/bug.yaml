@@ -1,0 +1,40 @@
+id: django__django-13794
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: fe886eee36be8022f34cfe59aa61ff1c21fe01d9
+upstream: https://github.com/django/django/pull/13794
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the add filter and the TypeError (str + __proxy__), which points at the lazy
+  proxy class in django/utils/functional.py; the cause, a proxy with no + operator, is clear from
+  reading that class.
+traits: []
+traits_rationale: >-
+  The report shows wrong output (the add filter renders an empty string), but the fix only adds
+  methods: the lazy proxy gains __add__ and __radd__, an API addition rather than a change to how
+  an existing value is computed.
+root_cause: >-
+  The __proxy__ class that lazy() builds in django/utils/functional.py defines comparison, hashing
+  and % operators but no + operator, so str + lazy string raises TypeError, which the add template
+  filter catches, returning an empty string. The fix adds __add__ and __radd__, which cast the
+  proxy to its value before adding.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-13794:control
+build_minutes: 4.3
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for Django 3.2 (the spec's Python 3.6 raised to 3.11). Dependencies are
+  tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached and a native
+  build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale as the spec
+  does. parse.py is round 1's Django parser (SWE-bench's, with the documented Python 3.11 test-name
+  adaptation and docstring tests). eval.sh runs template_tests.filter_tests.test_add and
+  utils_tests.test_functional, the modules the hidden tests change, and sends stderr to stdout
+  because Django's runner reports on stderr. The build's 4.3 minutes are mostly the git clone (3.8
+  min). Dropped at step 3 (no gold point: the fix only adds two methods); see dropped.txt.

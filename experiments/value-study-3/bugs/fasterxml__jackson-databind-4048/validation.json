@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.databind.introspect.Transient3948Test": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 5.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.databind.introspect.Transient3948Test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.databind.introspect.Transient3948Test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.1
+ }
+]

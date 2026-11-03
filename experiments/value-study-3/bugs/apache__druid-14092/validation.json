@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 23.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 27.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 27.9
+ }
+]

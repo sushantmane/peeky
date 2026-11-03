@@ -1,0 +1,7 @@
+Dropped at step 3: no gold point.
+The fix (django/utils/functional.py) only adds two methods, __add__ and __radd__, to the lazy
+__proxy__ class; it changes no executable statement, so there is no gold point (STUDY3-REFILL.md,
+change 4; FILTER.md, "No gold point: the fix only adds functions"). Step 1 was completed:
+validation.json has base unsolved (test_lazy_add ERROR, test_add08 and test_add09 FAILED) and
+gold-1 and gold-2 solved. No Peeky image was built and no reach run made. The control image was
+built (Python 3.11, Django 3.2 spec) and removed after the drop.

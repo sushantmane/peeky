@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "tests/runtests.py"
+ ],
+ "program": [
+  "--settings=test_sqlite",
+  "--parallel",
+  "1",
+  "queries.tests.ExcludeTests.test_subquery_exclude_outerref"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "django/db/models/fields/__init__.py",
+   "line": 2337,
+   "why": "the removed return of AutoField.get_prep_value (the first hunk; its def line is a signature and the line before is an import)"
+  },
+  {
+   "role": "gold",
+   "file": "django/db/models/sql/query.py",
+   "line": 1705,
+   "why": "the changed isinstance(filter_rhs, F) test in Query.split_exclude (the last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/queries/tests.py",
+   "line": 2817
+  }
+ ]
+}

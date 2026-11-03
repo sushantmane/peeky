@@ -1,0 +1,11 @@
+{
+  "parser": "parse_log_maven",
+  "fail_to_pass": [
+    "com.google.gson.DefaultDateTypeAdapterTest#testNullValue"
+  ],
+  "pass_to_pass": [
+    "com.google.gson.DefaultDateTypeAdapterTest#testDatePattern",
+    "com.google.gson.DefaultDateTypeAdapterTest#testInvalidDatePattern"
+  ],
+  "timeout_s": 1200
+}

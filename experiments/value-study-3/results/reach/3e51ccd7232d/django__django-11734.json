@@ -1,0 +1,139 @@
+{
+ "bug": "django__django-11734",
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/django__django-11734:peeky-r3",
+ "image_id": "sha256:9d6277c119dc4b0176aabd1a6c392b5420d95893f279ffa0a9bc534469f7e563",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T04:57:32+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed return of AutoField.get_prep_value (the first hunk; its def line is a signature and the line before is an import)",
+   "at": "django/db/models/fields/__init__.py:2337",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/fields/__init__.py:2337 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+     "exit": 0,
+     "seconds": 1.1
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/fields/__init__.py:2337",
+    "function": "get_prep_value"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "self",
+      "value": "<django.db.models.fields.AutoField: id>"
+     },
+     {
+      "name": "value",
+      "value": "1"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed isinstance(filter_rhs, F) test in Query.split_exclude (the last hunk)",
+   "at": "django/db/models/sql/query.py:1705",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at django/db/models/sql/query.py:1705 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+     "exit": 0,
+     "seconds": 1.2
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/django/db/models/sql/query.py:1705",
+    "function": "split_exclude"
+   },
+   "moved": false,
+   "values": {
+    "shown": 6,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "can_reuse",
+      "value": "{}"
+     },
+     {
+      "name": "filter_expr",
+      "value": "('jobs', OuterRef(job))"
+     },
+     {
+      "name": "filter_lhs",
+      "value": "'jobs'"
+     },
+     {
+      "name": "filter_rhs",
+      "value": "OuterRef(job)"
+     },
+     {
+      "name": "names_with_path",
+      "value": "[('jobs', [...])]"
+     },
+     {
+      "name": "self",
+      "value": "<django.db.models.sql.query.Query object at 0xffff9ee9ff90>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/queries/tests.py:2817",
+   "commands": [
+    {
+     "command": "peeky session start . --run tests/runtests.py --at tests/queries/tests.py:2817 --name reach --timeout 300 --json -- --settings=test_sqlite --parallel 1 queries.tests.ExcludeTests.test_subquery_exclude_outerref",
+     "exit": 0,
+     "seconds": 1.9
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026it_exclude\n    condition, needed_inner = self.build_filter(\n                              ^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/query.py\", line 1253, in build_filter\n    value = self.resolve_lookup_value(value, can_reuse, allow_joins, simple_col)\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/query.py\", line 1053, in resolve_lookup_value\n    value = value.resolve_expression(self, **kwargs)\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/query.py\", line 1025, in resolve_expression\n    clone.where.resolve_expression(query, *args, **kwargs)\n  File \"/testbed/django/db/models/sql/where.py\", line 204, in resolve_expression\n    clone._resolve_node(clone, *args, **kwargs)\n  File \"/testbed/django/db/models/sql/where.py\", line 196, in _resolve_node\n    cls._resolve_node(child, query, *args, **kwargs)\n  File \"/testbed/django/db/models/sql/where.py\", line 200, in _resolve_node\n    node.rhs = cls._resolve_leaf(node.rhs, query, *args, **kwargs)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/where.py\", line 189, in _resolve_leaf\n    expr = expr.resolve_expression(query, *args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/expressions.py\", line 531, in resolve_expression\n    return query.resolve_ref(self.name, allow_joins, reuse, summarize, simple_col)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/query.py\", line 1670, in resolve_ref\n    join_info = self.setup_joins(field_list, self.get_meta(), self.get_initial_alias(), can_reuse=reuse)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/query.py\", line 1556, in setup_joins\n    path, final_field, targets, rest = self.names_to_path(\n                                       ^^^^^^^^^^^^^^^^^^^\n  File \"/testbed/django/db/models/sql/query.py\", line 1472, in names_to_path\n    raise FieldError(\"Cannot resolve keyword '%s' into field. \"\ndjango.core.exceptions.FieldError: Cannot resolve keyword 'job' into field. Choices are: description, id, jobresponsibilities, jobs\n\n----------------------------------------------------------------------\nRan 1 test in 0.004s\n\nFAILED (errors=1)\nDestroying test database for alias 'default'...\n"
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T04:57:38+00:00"
+}

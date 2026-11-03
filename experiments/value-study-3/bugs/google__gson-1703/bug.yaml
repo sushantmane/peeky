@@ -1,0 +1,44 @@
+id: google__gson-1703
+language: java
+repo: google/gson
+source: Multi-SWE-bench
+base_commit: 6d2557d5d1a8ac498f2bcee20e5053c93b33ecce
+upstream: https://github.com/google/gson/pull/1703
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the cause: the CharSequence Gson passes to a non-Writer Appendable doesn't
+  implement toString; reading Streams.AppendableWriter confirms it, with one char array as state.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The Appendable receives wrong text (pieces of a class name instead of the JSON), and the fix
+  changes the string the CharSequence gives back, cached until its array changes. The fixed code
+  runs inside the Writer that Gson wraps around the Appendable, below Gson.toJson, the type
+  adapters, JsonWriter and Writer.write, more than five calls deep.
+root_cause: >-
+  When Gson.toJson is given an Appendable that isn't a Writer, Streams.writerForAppendable wraps it
+  in an AppendableWriter, whose write(char[], int, int) hands the Appendable a CurrentWrite: a
+  mutable CharSequence over the current char array. CurrentWrite doesn't override toString, so an
+  Appendable that calls csq.toString() (as the CharSequence contract allows) gets Object's identity
+  string and appends slices of it instead of the JSON. The fix adds toString, returning the array
+  as a String, cached until setChars replaces the array.
+test_hint: >-
+  Gson builds with Maven on JDK 11, offline (the gson module and its parent pom are installed in
+  ~/.m2): run a test of the gson module with
+  `cd /testbed && mvn test -o -pl gson -Dtest=<TestClass>` (or `-Dtest=<TestClass>#<method>`).
+image: peeky-study/google__gson-1703:control
+build_minutes: 1.3
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 and Maven as in Multi-SWE-bench's image (the base's OpenJDK 11 and Maven 3.8 instead of
+  Ubuntu 22.04's), offline via /root/.m2/settings.xml. The dataset's FAIL_TO_PASS and PASS_TO_PASS
+  are empty, and its n2p tests are in other modules (extras, proto), not in the test patch:
+  Multi-SWE-bench's parser expects surefire 2's lines, and this gson module's surefire 3.0.0-M7
+  prints "[INFO] Tests run: ..., Time elapsed: 0.03 s", so it read none of the gson module's
+  classes. So fail_to_pass is the class the test patch changes (ReadersWritersTest; it adds
+  testToJsonAppendable and reformats two tests), and parse.py is Multi-SWE-bench's gson parser
+  with Maven's log prefixes stripped and "s" accepted as the time unit. eval.sh runs a clean
+  `test` of the gson module only, limited to the hidden test class, instead of the whole
+  project's `clean test`; pass_to_pass is empty (the dataset has none). Test names are classes,
+  as in Multi-SWE-bench's parser.

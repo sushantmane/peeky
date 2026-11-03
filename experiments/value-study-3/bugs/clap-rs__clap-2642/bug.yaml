@@ -1,0 +1,47 @@
+id: clap-rs__clap-2642
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: 8ca62aa18559d8c30056d6c1ebfda2840e0a322c
+upstream: https://github.com/clap-rs/clap/pull/2642
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A wording request: the generated help and version flags and the help subcommand describe
+  themselves as "Prints ...", and users want "Print ...". The strings are literals that a search
+  for the message finds.
+traits: []
+traits_rationale: >-
+  Message text, not a wrong runtime value; it builds and tests in well under 3 minutes, and the
+  strings are set where every App is built (App::new) or where its help subcommand is added.
+root_cause: >-
+  The descriptions of the generated arguments and subcommand are string literals in
+  src/build/app/mod.rs: App::new gives the help and version arguments "Prints help information"
+  and "Prints version information", and App::_check_help_and_version gives the generated help
+  subcommand "Prints this message or the help of the given subcommand(s)". The fix changes them to
+  the infinitive ("Print help information", "Print version information", "Print this message
+  or ..."), and the docs, READMEs and a benchmark to match.
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test <name>` (e.g. `--test
+  flags`; one test target per file in tests/), the library's unit tests with `cargo test --lib`,
+  and the workspace's other crates with `cargo test -p <crate>` (clap_derive, clap_generate); the
+  build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-2642:control
+build_minutes: 2.2
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain). The repo doesn't commit Cargo.lock (git ignores it) and
+  Multi-SWE-bench resolves afresh, so the image pins one resolution (Cargo 1.96,
+  generate-lockfile, 2 November 2026; Cargo.lock here, version 4). `--package clap` is ambiguous
+  (criterion's clap 2), so commands name test targets. Test command: Multi-SWE-bench runs `cargo
+  test`; eval.sh runs the test targets of the workspace's default members (`cargo test --tests
+  --no-fail-fast`: clap, clap_derive, clap_generate, without doc tests, whose names the parser
+  doesn't read), offline. fail_to_pass is the dataset's FAIL_TO_PASS (app_from_crate) plus the 121
+  n2p tests the test patch changes, by name: the tests whose body, or an expected-output static or
+  helper they use, the patch changes (clap_generate's completions tests are named
+  completions::<shell>::<test>). The dataset's base-plus-test-patch run stopped at the first failing
+  binary, so every other test is n2p; those the patch doesn't change are left out, and so are
+  wrapped_help and unwrapped_help (changed, but not in the dataset's lists: they need the wrap_help
+  feature). pass_to_pass is the dataset's PASS_TO_PASS (109, the library's unit tests). Parser:
+  Multi-SWE-bench's Rust parse_log.

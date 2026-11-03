@@ -1,0 +1,7 @@
+stage: 3 (reach check)
+reason: the failing test can't build at base. The only failing test, test-fuzzer, builds tests/fuzzer.c
+with the test patch, whose new test_compressBound uses ZSTD_MAX_INPUT_SIZE, which only the fix adds
+(to lib/zstd.h). At base the compile fails: "fuzzer.c:480:26: error: 'ZSTD_MAX_INPUT_SIZE'
+undeclared (first use in this function)" (validation's base log). So the failing test can't run at
+base, and no Peeky image was built and no reach run made (refill brief, change 4).
+step 1 passed: base unsolved (fuzzer doesn't compile), gold-1 and gold-2 solved.

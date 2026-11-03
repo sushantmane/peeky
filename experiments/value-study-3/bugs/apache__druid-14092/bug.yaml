@@ -1,0 +1,39 @@
+id: apache__druid-14092
+language: java
+repo: apache/druid
+source: SWE-bench Multilingual
+base_commit: 4fffee17761286996a8c43154b72db4bcaafb16d
+upstream: https://github.com/apache/druid/pull/14092
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report names DruidLeaderClient's retry on IOException and asks for the same on 503-like
+  responses; the state is one cached leader URL and one response status, though showing it needs
+  a 503 followed by a good response.
+traits: [runtime-state]
+traits_rationale: >-
+  Callers keep getting the 503 that a stale cached leader produces, and the fix changes when the
+  cached leader is dropped and re-resolved across retries.
+root_cause: >-
+  DruidLeaderClient.go (server module) re-resolves the leader, invalidating its cached URL
+  (getCurrentKnownLeader(false)), and retries only when the request throws an IOException or
+  ChannelException. An HTTP 503 or 504 response, such as a proxy returns when the cached leader is
+  gone, falls through to the caller as a valid response, so the stale leader is never refreshed.
+  The fix moves the URL rebuild with cache invalidation into getNewRequestUrlInvalidatingCache and
+  also retries through it when the response status is 503 or 504.
+test_hint: >-
+  Druid builds with Maven on JDK 11, offline (the modules it needs are installed in ~/.m2): run a
+  test with `cd /testbed && mvn test -o -pl <module> -Dtest=<TestClass>#<method>` (e.g.
+  `-pl server` or `-pl processing`).
+image: peeky-study/apache__druid-14092:control
+build_minutes: 7.5
+grade_minutes: 0.5
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec; its install step (`mvn clean install -pl
+  processing,cloud/aws-common,cloud/gcp-common -DskipTests -am`), then the server module's
+  dependencies fetched by running its existing test once. Maven 3.8 from the base instead of mvnd,
+  offline via /root/.m2/settings.xml. eval.sh runs each test command even if an earlier one fails
+  (the dataset chains them with &&). Surefire reruns a failing test 3 times (the project's
+  setting), so a failing run shows Run 1 to 4. Not A: the server module's offline test run takes
+  about 25 s in a 4-CPU container.

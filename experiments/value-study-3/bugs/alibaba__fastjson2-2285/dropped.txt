@@ -1,0 +1,13 @@
+stage: 3 (reach check)
+reason: not reached: Peeky refused. Both points, ObjectWriterBaseModule.java:222 (gold) and
+Issue2269.java:21 (assertion), were refused at `peeky session start` (Java attach, before
+attaching) with INVALID_REQUEST "Missing executable line debug information; compile with -g"
+(not retryable). Cause: Peeky's attach parses every class file in the package directories of the
+config's declared sources, and the hidden test's package (core/target/test-classes/com/alibaba/
+fastjson2/issues_2200) holds Kotlin-compiled test classes (from Issue2231.kt, Issue2264.kt,
+Issue2276.kt: Hello, Issue2264$Bean*, Issue2276$Type with methods without line tables, and
+classes whose SourceFile is a .kt file). The main classes' package (writer) parses cleanly; the
+javac classes do have line tables. Not worked around (the spec lists the gold and test sources, as
+round 2's Java specs do). Record: results/reach/3e51ccd7232d/alibaba__fastjson2-2285.json.
+Steps 1 and 2 passed (validation base/gold-1/gold-2 ok on JDK 11; Peeky image ok, gold solved,
+noop not).

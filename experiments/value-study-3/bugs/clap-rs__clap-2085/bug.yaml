@@ -1,0 +1,43 @@
+id: clap-rs__clap-2085
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: be27f41f8354bfbdf0e4eb43236759b799e7816a
+upstream: https://github.com/clap-rs/clap/pull/2085
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  Trailing spaces in the long help output, from the padding that aligns help text in a column.
+  The help writer's code that pads after an argument's name is found from the output; it shows
+  only in long help (--help), where the text goes on the next line.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong output (trailing spaces), and the fix changes how the spacing after an
+  argument is computed. The padding is written in Help::val, five or more calls below
+  try_get_matches_from on the help path.
+root_cause: >-
+  In src/output/help.rs, Help::val pads the space after an argument's flags and value names with
+  spaces up to the longest argument (or a fixed indent with next-line help), to align the help
+  text in a column, whether or not the help is long. In long help (--help, use_long) the help text
+  goes on the next line, so each argument's line ends in trailing spaces. The fix skips the
+  alignment when self.use_long is set.
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test <name>` (e.g. `--test
+  flags`; one test target per file in tests/), the library's unit tests with `cargo test --lib`,
+  and the workspace's other crates with `cargo test -p <crate>` (clap_derive, clap_generate); the
+  build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-2085:control
+build_minutes: 1.4
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain). The repo doesn't commit Cargo.lock (git ignores it) and
+  Multi-SWE-bench resolves afresh, so the image pins one resolution (Cargo 1.96,
+  generate-lockfile, 2 November 2026; Cargo.lock here, version 4). `--package clap` is ambiguous
+  (criterion's clap 2), so commands name test targets. Test command: Multi-SWE-bench runs `cargo
+  test`; eval.sh runs the help and hidden_args test targets (the hidden test files), offline.
+  fail_to_pass is the dataset's FAIL_TO_PASS (4, in tests/help.rs) plus the 2 n2p tests the test
+  patch changes (hidden_long_args and hidden_short_args_long_help, whose expected-output statics it
+  changes); the other n2p tests are in binaries or tests the patch doesn't change (the dataset's
+  base-plus-test-patch run stopped at the failing binary). pass_to_pass is limited to the 56
+  dataset PASS_TO_PASS tests in those two files. Parser: Multi-SWE-bench's Rust parse_log.

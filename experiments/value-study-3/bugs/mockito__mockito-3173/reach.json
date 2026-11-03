@@ -1,0 +1,48 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java",
+    "subprojects/java21/src/test/java/org/mockito/java21/RecordTest.java"
+   ],
+   "class_roots": [
+    "build/classes/java/main",
+    "subprojects/java21/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline --no-build-cache :java21:test --tests org.mockito.java21.RecordTest --debug-jvm & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "Gold points: the first hunk changes a field's declaration (mockitoConstruction's type and initializer), so the first code hunk is the isMockConstruction predicate's condition; the last is newInstance's callback. The failing test: java21:test, whose only test is the hidden RecordTest.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java",
+   "line": 275,
+   "why": "the changed condition in the isMockConstruction predicate (first code hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "src/main/java/org/mockito/internal/creation/bytebuddy/InlineDelegateByteBuddyMockMaker.java",
+   "line": 650,
+   "why": "the changed mockitoConstruction.set(true) in newInstance's construction callback (last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "subprojects/java21/src/test/java/org/mockito/java21/RecordTest.java",
+   "line": 24,
+   "why": "the first assertion of the failing test (the spied record's name)"
+  }
+ ]
+}

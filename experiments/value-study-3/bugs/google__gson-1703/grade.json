@@ -1,0 +1,8 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, gson; adapted to surefire 3's log lines)",
+ "fail_to_pass": [
+  "com.google.gson.functional.ReadersWritersTest"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 1200
+}

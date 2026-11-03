@@ -1,0 +1,35 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run",
+  "tests/runtests.py"
+ ],
+ "program": [
+  "--settings=test_sqlite",
+  "--parallel",
+  "1",
+  "db_functions.datetime.test_extract_trunc.DateFunctionTests.test_extract_iso_year_func_boundaries"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "django/db/backends/base/operations.py",
+   "line": 537,
+   "why": "the changed lower bound in year_lookup_bounds_for_date_field, the first executable line of the first hunk (the hunk's earlier changes are a signature and a docstring)",
+   "run_note": "no failing test runs this line at base (both filter a DateTimeField, which takes the datetime-field bounds), so it uses the first failing test"
+  },
+  {
+   "role": "gold",
+   "file": "django/db/models/lookups.py",
+   "line": 544,
+   "why": "the changed year_lookup_bounds_for_datetime_field call in YearLookup.year_lookup_bounds, the first line the last hunk removes"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/db_functions/datetime/test_extract_trunc.py",
+   "line": 368
+  }
+ ]
+}

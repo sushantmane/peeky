@@ -1,0 +1,41 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java",
+    "src/test/java/com/fasterxml/jackson/databind/introspect/Transient3948Test.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.introspect.Transient3948Test#testJsonIgnoreSerialization -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 600,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java",
+   "line": 615,
+   "why": "the changed `} else {` (now `} else if (!ignored) {`) in _addFields, the first line the only code hunk changes (the other source change is a Javadoc comment in MapperFeature), so first and last; testJsonIgnoreSerialization, the first failing test, runs it for the transient field b"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/introspect/Transient3948Test.java",
+   "line": 59,
+   "why": "the first assertion of testJsonIgnoreSerialization, the first failing test"
+  }
+ ]
+}

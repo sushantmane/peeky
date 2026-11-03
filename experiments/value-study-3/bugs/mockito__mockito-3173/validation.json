@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "java21:test": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 6.4
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "java21:test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "java21:test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.6
+ }
+]

@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "notes": "bin/test has no .py suffix, so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, as sympy__sympy-17318's corrected run does (Peeky's --run needs a .py entry inside the root).",
+ "prepare": [
+  "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py"
+ ],
+ "options": [
+  "--run",
+  "bin/reach_test.py"
+ ],
+ "program": [
+  "-C",
+  "--verbose",
+  "--no-subprocess",
+  "sympy/codegen/tests/test_rewriting.py",
+  "-k",
+  "test_create_expand_pow_optimization"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sympy/printing/codeprinter.py",
+   "line": 490,
+   "why": "the changed a_str computation in CodePrinter._print_Mul (the only code hunk that changes an executable statement; the others are an import and a precedence-table entry)"
+  },
+  {
+   "role": "assertion",
+   "file": "sympy/codegen/tests/test_rewriting.py",
+   "line": 262
+  }
+ ]
+}

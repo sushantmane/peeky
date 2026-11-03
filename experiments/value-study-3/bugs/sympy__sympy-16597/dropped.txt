@@ -1,0 +1,11 @@
+Dropped at step 3: not reached.
+Gold points by the rule (the first and the last hunk that changes an executable statement, in the
+fix's file order): sympy/assumptions/ask.py:1488 (a fact in get_known_facts' return expression) and
+sympy/tensor/indexed.py:605 (Idx.__new__'s integer-bound check). No failing test runs either line
+at base: the three failing tests (test_infinity, test_neg_infinity, test_other_symbol) query the
+core assumptions of oo, -oo and symbols, which the module-level rules table in
+sympy/core/assumptions.py decides; get_known_facts serves the new assumptions (ask), and none of
+them creates an Idx. So both points ran the first failing test, test_infinity: both "no stop" (the
+test ran and failed at its second assertion, line 101); the assertion point (line 100) was reached
+with 1 value. Peeky refused nothing. Steps 1 and 2 passed (base unsolved, gold-1 and gold-2 solved;
+Peeky image: gold solved, noop not). Both images were removed after the drop.

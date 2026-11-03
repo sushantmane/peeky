@@ -1,0 +1,35 @@
+id: google__gson-1100
+language: java
+repo: google/gson
+source: SWE-bench Multilingual
+base_commit: f0aa1118e9ef66ed324f9a63cdfb551cb4e9eca5
+upstream: https://github.com/google/gson/pull/1100
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report's stack trace ends in DefaultDateTypeAdapter.write formatting a null Date; the cause
+  is clear from reading the adapter's two short methods, with one null value as state.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  Serializing a null Date crashes with a NullPointerException, and the fix changes how the adapter
+  writes and reads a null value. In the report the adapter runs eight calls below Gson.toJson,
+  through the reflective and runtime-type adapters.
+root_cause: >-
+  DefaultDateTypeAdapter (gson's adapter for the date format set with GsonBuilder.setDateFormat)
+  doesn't handle null: write passes a null Date to DateFormat.format, which throws a
+  NullPointerException, and read throws JsonParseException for any token that isn't a string,
+  JSON null included. The fix writes JSON null for a null Date and reads JSON null back as null
+  (other non-string tokens now fail in nextString).
+test_hint: >-
+  Gson builds with Maven on JDK 11, offline (the gson module and its parent are installed in
+  ~/.m2): run a test with `cd /testbed && mvn test -o -pl gson -Dtest=<TestClass>#<method>`.
+image: peeky-study/google__gson-1100:control
+build_minutes: 1.6
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec (the project targets Java 1.6, which JDK 11's javac still
+  accepts); its install step (`mvn clean install -pl gson -DskipTests -am`), then the test
+  providers fetched by running the existing tests once. Maven 3.8 from the base instead of mvnd,
+  offline via /root/.m2/settings.xml. eval.sh runs each test command even if an earlier one fails
+  (the dataset chains them with &&).

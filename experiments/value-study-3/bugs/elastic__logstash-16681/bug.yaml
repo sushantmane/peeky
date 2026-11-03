@@ -1,0 +1,51 @@
+id: elastic__logstash-16681
+language: java
+repo: elastic/logstash
+source: Multi-SWE-bench
+base_commit: a4bbb0e7b52f43fe5c422105cd88da158a7f6370
+upstream: https://github.com/elastic/logstash/pull/16681
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  A deadlock between two threads that shut down a pipeline-to-pipeline address at the same time:
+  it needs blocking unlisten and sender unregistration to interleave, with two locks taken in
+  opposite orders.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  Shutdown hangs, and the fix changes the order in which the bus takes its locks (the input's
+  monitor is no longer taken inside the map's compute). The fixed code runs on the executor
+  threads that unlisten and unregister, not on the test's thread.
+root_cause: >-
+  PipelineBusV2.AddressStateMapping.mutate (logstash-core) updates an address's state inside
+  ConcurrentHashMap.compute, and still inside that lambda synchronizes on the address's
+  PipelineInput to notifyAll waiting threads, so it takes the input's monitor while holding the
+  map bin's lock. A blocking unlisten holds the same input's monitor while it calls mutate, so
+  unlisten and a concurrent unregisterSender take the two locks in opposite orders and deadlock.
+  The fix returns from compute first and notifies the resulting state's input after the map's lock
+  is released.
+test_hint: >-
+  Logstash builds with its Gradle wrapper on JDK 11, offline (JRuby and the gems are already
+  installed): run logstash-core's Java tests with
+  `cd /testbed && ./gradlew --offline :logstash-core:javaTests --tests <fully.qualified.TestClass>`.
+  Don't run the root project's `clean`: it deletes vendor/, which can't be fetched again offline.
+image: peeky-study/elastic__logstash-16681:control
+build_minutes: 2.1
+grade_minutes: 0.4
+pass_to_pass_removed:
+  - test: bootstrap
+    reason: >-
+      SKIPPED in this image: its own action (bundler install and lock) needs rubygems.org, so an
+      init script skips it once the gems are installed.
+  - test: downloadJRuby
+    reason: SKIPPED offline (the JRuby archive is already downloaded).
+notes: >-
+  Same image recipe as elastic__logstash-16579 (the base is 8.15.5, Gradle 8.7). JDK 11 as in
+  Multi-SWE-bench's image (the base's OpenJDK instead of Zulu 11), TZ and locale for its
+  JAVA_TOOL_OPTIONS. Gradle is offline via /root/.gradle/init.d/offline.gradle, and
+  /root/.gradle/init.d/bootstrapped.gradle skips the bootstrap task's own action (bundler, which
+  needs the network) while vendor/bundle holds the gems; its dependencies still run. eval.sh runs
+  only logstash-core's javaTests task, filtered to the hidden test class (PipelineBusTest), instead
+  of `clean test`; pass_to_pass is limited to what that runs (85 of the dataset's 1,120): the
+  class's other tests and the Gradle tasks the run executes. The failing test is a concurrency
+  test (100 rounds, each with a 1 s deadline); it failed at base and passed with gold on every
+  validation run.

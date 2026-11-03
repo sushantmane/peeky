@@ -1,0 +1,11 @@
+stage: 3 (reach check)
+reason: not reached. Every point (gold src/app.rs:574, gold src/args.rs:1271, assertion
+tests/misc.rs:349) was refused before launch:
+  [UNSUPPORTED] Peeky reads only Cargo.lock versions 3 and 4, and /testbed/Cargo.lock is version 1.
+  Delete it and run `cargo generate-lockfile` with this Cargo, which resolves the versions again
+The repo's Cargo.lock (June 2019) is in the version 1 format (checksums in a [metadata] table). The
+remedy the message names resolves the dependencies again (new versions, and the network), which
+changes the program, so reach.py doesn't apply it and it wasn't worked around. The image's prebuild
+failed with the same refusal (/opt/peeky/study/prebuild.status: failed).
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: gold solved, noop not solved.
+Record: results/reach/3e51ccd7232d/BurntSushi__ripgrep-1294.json.

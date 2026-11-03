@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "astropy/timeseries/tests/test_sampled.py::test_required_columns"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "astropy/timeseries/core.py",
+   "line": 79,
+   "why": "the raise the second hunk changes, in _check_required_columns (the first hunk only adds a nested helper function)"
+  },
+  {
+   "role": "assertion",
+   "file": "astropy/timeseries/tests/test_sampled.py",
+   "line": 369
+  }
+ ]
+}

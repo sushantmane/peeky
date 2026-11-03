@@ -1,0 +1,10 @@
+{
+  "parser": "parse_log_maven",
+  "fail_to_pass": [
+    "org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh"
+  ],
+  "pass_to_pass": [
+    "org.apache.druid.discovery.DruidLeaderClientTest#testServerFailureAndRedirect"
+  ],
+  "timeout_s": 1200
+}

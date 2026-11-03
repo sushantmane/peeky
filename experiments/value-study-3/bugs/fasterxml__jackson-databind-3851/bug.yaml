@@ -1,0 +1,43 @@
+id: fasterxml__jackson-databind-3851
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: cf7c15a3ddf8fa6df5c8961cb57e97e12ee9728a
+upstream: https://github.com/fasterxml/jackson-databind/pull/3851
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report gives the exception's message, which names the properties-based creator's check in
+  the enum deserializer; the state is simple. It shows only for an enum with both a delegating
+  and a properties-based creator (D).
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows deserialization failing for a value the delegating creator should take, and
+  the fix changes which creator is chosen for a non-Object token; the enum deserializer runs about
+  5 calls below ObjectReader.readValue, and deeper for an enum-valued property of a bean.
+root_cause: >-
+  FactoryBasedEnumDeserializer.deserialize, for an enum whose factory creators include a
+  properties-based one (_creatorProps set), requires a JSON Object and reports an input mismatch
+  for any other token, so a String meant for the enum's delegating creator is refused. The fix
+  uses the properties-based creator only when the token starts an Object, and otherwise reports
+  the mismatch only if the value instantiator can't create from a String, falling through to the
+  delegating path; it also keeps the lazily built PropertyBasedCreator in an AtomicReference.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 3 minutes).
+image: peeky-study/fasterxml__jackson-databind-3851:control
+build_minutes: 3.1
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base, and Peeky launches Java on JDK 9 or
+  later only). The parent pom jackson-base:2.15.0-rc3-SNAPSHOT is gone from every repository
+  (Multi-SWE-bench rewrites it to 2.15.5-SNAPSHOT, gone too), so the image installs a stand-in in
+  ~/.m2 (the 2.15.4 release pom under the snapshot version; core and annotations 2.15.4) and
+  leaves pom.xml unchanged. With core 2.15.4 the full suite at base has 2 failures of 3828
+  (StreamReadStringConstraintsTest.testBigString and testBiggerString: 2.15.4's larger default
+  string length limit), unrelated to this bug and outside eval.sh's run. eval.sh restores the
+  moved test (failing/JsonCreatorModeForEnum3566.java), removes the one the patch creates, and
+  runs `mvn -o clean test` on the hidden test's class only; pass_to_pass is empty (the dataset's
+  PASS_TO_PASS is empty).

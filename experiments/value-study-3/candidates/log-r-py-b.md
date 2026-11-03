@@ -1,0 +1,20 @@
+# Round 3 refill: r-py-b (Python, SWE-bench Verified)
+
+Peeky 3e51ccd7232d. Each step as STUDY3-ENV.md and STUDY3-REFILL.md give it; minutes are wall time in the image.
+
+| instance | refill # | control image + validation | Peeky image + gold/noop | reach (gold points: outcome, values read) | result | note |
+|---|---|---|---|---|---|---|
+| django__django-11734 | 3 | ok | ok | fields/__init__.py:2337: reached, 2 values; sql/query.py:1705: reached, 6 values (assertion tests.py:2817 no stop: at base the test errors before it) | survives | Python 3.11; build 9.3 min (8.9 of it the git clone), grade 0.1 min. First gold point is the removed `return` of AutoField.get_prep_value (the hunk's first removed lines are its def and an import). Reach run again after bug.yaml (for its language and category), same points and outcomes |
+| sympy__sympy-22080 | 9 | ok | ok | codeprinter.py:490: reached, 11 values (assertion test_rewriting.py:262 reached, 1 value) | survives | Python 3.12; build 1.0 min, grade 0.04 min. One gold point: the fix's other code hunks are an import and a new entry in precedence.py's module-level table. The run copies bin/test to bin/reach_test.py from the start, as sympy-17318's corrected run (no correction needed) |
+| sphinx-doc__sphinx-7462 | 15 | ok | ok | domains/python.py:117: reached, 1 value; pycode/ast.py:117: reached, 1 value (assertion test_domain_py.py:241 reached, 1 value) | survives | Python 3.12 (sphinx 3.1 spec's setup.py caps as pip constraints, as sphinx-7985); build 1.5 min, grade 0.05 min. The last gold point runs test_unparse[()-()], the first failing test that runs it (test_parse_annotation uses pycode.ast's parse only) |
+| django__django-14170 | 21 | ok | ok | base/operations.py:537: no stop (no failing test runs it: both filter a DateTimeField; Peeky refused nothing); lookups.py:544: reached, 4 values (assertion test_extract_trunc.py:368 reached, 10 values) | survives | Python 3.11; build 1.6 min, grade 0.1 min. operations.py's single hunk spans both bounds methods; its first changed executable line (after the signature and docstring) is in the date-field method |
+| sympy__sympy-21596 | 27 | ok | ok | intersection.py:307: reached, 12 values (assertion test_fancysets.py:661 reached, 2 values) | survives | Python 3.12; build 0.6 min, grade 0.07 min. One gold point: the other hunks are an import and a new nested helper function; the code hunk's first removed line is a comment, so the point is the next (removed solve_linear call). Run uses bin/reach_test.py from the start, as sympy-17318's corrected run |
+| django__django-13794 | 33 | ok | — | — (no gold point: the fix only adds __add__ and __radd__ to the lazy proxy class) | dropped at step 3: no gold point | Python 3.11; build 4.3 min (3.8 of it the git clone), grade 0.1 min. Step 1 finished (base unsolved, gold-1 and gold-2 solved); no Peeky image or reach run, as the refill brief says; control image removed |
+| sympy__sympy-16597 | 37 | ok | ok | ask.py:1488: no stop; indexed.py:605: no stop (assertion test_assumptions.py:100 reached, 1 value) | dropped at step 3: not reached | Python 3.12; build 2.8 min (2.6 of it the git clone), grade 0.06 min. No failing test runs either gold line at base: they query core assumptions (decided by the module-level rules table in core/assumptions.py), while the first code hunk is in ask.py's get_known_facts (new assumptions) and the last in Idx.__new__; both points ran test_infinity, which ended at its line-101 assertion. Peeky refused nothing. Images removed |
+
+Counts: 7 examined (refill #3, 9, 15, 21, 27, 33, 37). Step 1: 7 of 7 pass. Step 2: 6 of 6 pass
+(django-13794 dropped at step 3 before it, for no gold point, as the refill brief says). Step 3: 5
+reached, 2 dropped (no gold point 1; not reached 1). Survivors: django__django-11734,
+sympy__sympy-22080, sphinx-doc__sphinx-7462, django__django-14170, sympy__sympy-21596. No run
+corrections; the sympy runs used sympy-17318's corrected form (bin/test copied to bin/reach_test.py)
+from the start.

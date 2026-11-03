@@ -1,0 +1,44 @@
+id: clap-rs__clap-2882
+language: rust
+repo: clap-rs/clap
+source: Multi-SWE-bench
+base_commit: f9208ae4e3c2e1f7eac6de20456f42f45b9d3b8d
+upstream: https://github.com/clap-rs/clap/pull/2882
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The wrong headings need a particular configuration: derive structs flattened into one parser,
+  each with a struct-level help_heading. The faulty order is in the code the derive macro
+  generates, not in clap's runtime.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong output (arguments under the wrong section), and the fix changes the order
+  in which the heading is applied relative to the arguments. The fixed code runs inside the
+  clap_derive proc macro, at compile time, and acts through the code it generates.
+root_cause: >-
+  In clap_derive, a struct-level #[clap(help_heading = ...)] is kept as a generic method and
+  emitted by Attrs::top_level_methods, which gen_augment (src/derives/args.rs, and
+  src/derives/subcommand.rs) appends to the App after all of the struct's arguments are added.
+  App::help_heading applies to the arguments added after it, so a flattened struct's heading
+  lands on the next struct's arguments, not its own. The fix parses help_heading as its own
+  attribute (parse.rs, attrs.rs) and emits it before the arguments (initial_top_level_methods)
+  and on fields, keeping the other top-level methods at the end.
+test_hint: >-
+  Run the tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --test <name>` (e.g. `--test
+  flags`; one test target per file in tests/), the library's unit tests with `cargo test --lib`,
+  and the workspace's other crates with `cargo test -p <crate>` (clap_derive, clap_generate,
+  clap_generate_fig); the build cache was made with these RUSTFLAGS.
+image: peeky-study/clap-rs__clap-2882:control
+build_minutes: 1.7
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain). The repo doesn't commit Cargo.lock (git ignores it) and
+  Multi-SWE-bench resolves afresh, so the image pins one resolution (Cargo 1.96,
+  generate-lockfile, 2 November 2026; Cargo.lock here, version 4). `--package clap` is ambiguous
+  (criterion's clap 2), so commands name test targets. Test command: Multi-SWE-bench runs `cargo
+  test`; eval.sh runs clap_derive's help test target (the new hidden test file), offline.
+  fail_to_pass is the dataset's FAIL_TO_PASS (2); the file's third test, arg_help_heading_applied,
+  is in the dataset's PASS_TO_PASS, and the n2p tests are in files the patch doesn't change (the
+  dataset's base-plus-test-patch run stopped at the failing binary). pass_to_pass is limited to
+  the 1 dataset PASS_TO_PASS test in that file. Parser: Multi-SWE-bench's Rust parse_log.

@@ -1,0 +1,11 @@
+{
+  "parser": "parse_log_ant",
+  "fail_to_pass": [
+    "javac-StandardExceptionWithConstructor.java(lombok.transform.TestWithDelombok)",
+    "javac-StandardExceptions.java(lombok.transform.TestWithDelombok)"
+  ],
+  "pass_to_pass": [
+    "javac-NonNullWithAlternateException.java(lombok.transform.TestWithDelombok)"
+  ],
+  "timeout_s": 1200
+}

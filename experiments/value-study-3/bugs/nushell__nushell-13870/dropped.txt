@@ -1,0 +1,12 @@
+stage: 3 (reach check)
+reason: not reached. Every point (gold crates/nu-cmd-lang/src/core_commands/describe.rs:172, gold
+crates/nu-protocol/src/process/child.rs:185, assertion tests/shell/pipeline/commands/external.rs:647)
+was refused before launch:
+  [UNSUPPORTED] Peeky doesn't build a workspace with [patch] (in /testbed/Cargo.toml): Cargo would
+  build other sources than Cargo.lock names. Remove it, or make the patched crate a path dependency
+  inside the workspace
+The workspace's [patch.crates-io] table is empty (its two entries are commented out), as in
+nushell-11292 (#498). The image's prebuild failed with the same refusal
+(/opt/peeky/study/prebuild.status: failed).
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: gold solved, noop not solved.
+Record: results/reach/3e51ccd7232d/nushell__nushell-13870.json.

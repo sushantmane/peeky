@@ -1,0 +1,44 @@
+id: tokio-rs__tracing-2001
+language: rust
+repo: tokio-rs/tracing
+source: Multi-SWE-bench
+base_commit: 63015eb8d9c5261d9a384e11dc84552f23a5209c
+upstream: https://github.com/tokio-rs/tracing/pull/2001
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The wrong output needs a particular sequence: a global default collector, then a scoped
+  default that is itself a NoCollector. The faulty value is the thread-local current dispatcher,
+  which the dispatch code replaces lazily.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows wrong output (an event is recorded while a NoCollector is the default), and
+  the fix changes how the thread's current dispatcher is kept and filled in across calls. The
+  test calls the dispatcher directly, a few calls deep, on its own thread.
+root_cause: >-
+  In tracing-core/src/dispatch.rs, the thread-local State keeps the thread's default as a
+  Dispatch and uses a NoCollector dispatch (Dispatch::none()) to mean "never set": get_default
+  and Entered::current replace a NoCollector default with the global dispatcher. So a scoped
+  default that really is a NoCollector (with_default or set_default of NoCollector) is taken
+  for unset and swapped for the global collector, which then records the events. The fix keeps
+  an Option<Dispatch>, None meaning unset, fills it from the global default once, and stores
+  Some(..) in set_default and when a DefaultGuard drops.
+test_hint: >-
+  Run a crate's tests with `cd /testbed && cargo test -p <crate>` (e.g. `cargo test -p
+  tracing`); one integration test file with `cargo test -p <crate> --test <file stem>` (in
+  <crate>/tests/).
+image: peeky-study/tokio-rs__tracing-2001:control
+build_minutes: 0.6
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it. tracing doesn't commit Cargo.lock
+  and Multi-SWE-bench resolves afresh, so the image pins one resolution (Cargo 1.96,
+  generate-lockfile, 2 November 2026; Cargo.lock here, written in the version 2 format, as the
+  workspace's rust-version 1.49 asks; git ignores it). Test command: Multi-SWE-bench runs
+  `cargo test`; eval.sh runs the tracing crate's tests without doc tests (`cargo test -p
+  tracing --tests --no-fail-fast`), offline. fail_to_pass is the dataset's FAIL_TO_PASS, the one
+  test the test patch adds (tracing/tests/no_collector.rs); the n2p tests are in other files and
+  crates the patch doesn't change (the dataset's base-plus-test-patch run stopped at the failing
+  binary). pass_to_pass is the dataset's PASS_TO_PASS (73 tests, all in tracing's tests).
+  Parser: Multi-SWE-bench's Rust parse_log.

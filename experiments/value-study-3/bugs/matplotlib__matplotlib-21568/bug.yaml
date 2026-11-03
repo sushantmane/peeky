@@ -1,0 +1,58 @@
+id: matplotlib__matplotlib-21568
+language: python
+repo: matplotlib/matplotlib
+source: SWE-bench Verified
+base_commit: f0632c0fc7339f68e992ed63ae4cfac76cd41aad
+upstream: https://github.com/matplotlib/matplotlib/pull/21568
+category: B
+categories_applicable: [B]
+category_rationale: >-
+  The labels' code is short, but why they render badly depends on TeX's math mode, outside the
+  project: it drops spaces and spaces a colon as a relation, and the report shows only images.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows wrong output (date tick labels run together under usetex), and the fix changes
+  how the TeX label string is computed. The formatter runs directly under the test, in the same
+  process.
+root_cause: >-
+  _wrap_in_tex in lib/matplotlib/dates.py wraps date tick labels in `$\mathdefault{...}$` for
+  usetex and protects only dashes (as `{-}`). In TeX's math mode spaces are dropped and a colon is
+  spaced as a relation, so labels such as "Jan 01 1990" or "00:10" run together or are spaced
+  oddly. The fix also braces colons (`{:}`) and turns spaces into `\;` before wrapping.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with matplotlib installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest lib/matplotlib/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/matplotlib__matplotlib-21568:control
+build_minutes: 4.1
+grade_minutes: 0.03
+pass_to_pass_removed:
+  - test: lib/matplotlib/tests/test_dates.py::test_date_axhspan[png]
+    reason: Fails at base and with gold in the image, on Python 3.11: this matplotlib's savefig keyword check (_check_savefig_extra_args in backend_bases.py) walks the stack and, on 3.11, misses print_figure, so every savefig warns about the keywords print_figure adds (facecolor, ...), a MatplotlibDeprecationWarning that the tests turn into an error.
+  - test: lib/matplotlib/tests/test_dates.py::test_date_axvspan[png]
+    reason: Fails at base and with gold on Python 3.11, as test_date_axhspan[png] (savefig's keyword check warns).
+  - test: lib/matplotlib/tests/test_dates.py::test_date_axhline[png]
+    reason: Fails at base and with gold on Python 3.11, as test_date_axhspan[png] (savefig's keyword check warns).
+  - test: lib/matplotlib/tests/test_dates.py::test_date_axvline[png]
+    reason: Fails at base and with gold on Python 3.11, as test_date_axhspan[png] (savefig's keyword check warns).
+  - test: lib/matplotlib/tests/test_dates.py::test_RRuleLocator[png]
+    reason: Fails at base and with gold on Python 3.11, as test_date_axhspan[png] (savefig's keyword check warns).
+  - test: lib/matplotlib/tests/test_dates.py::test_DateFormatter[png]
+    reason: Fails at base and with gold on Python 3.11, as test_date_axhspan[png] (savefig's keyword check warns).
+  - test: lib/matplotlib/tests/test_dates.py::test_date_inverted_limit[png]
+    reason: Fails at base and with gold on Python 3.11, as test_date_axhspan[png] (savefig's keyword check warns).
+notes: >-
+  SWE-bench spec for matplotlib 3.4 (Python 3.8; the checkout is 3.5.0.dev), on Python 3.11 with
+  uv: the checkout's requirements/testing/all.txt and extra.txt (dev-requirements.txt's docs and
+  flake8 files left out), pytest and ipython, then `pip install -e .` without build isolation
+  (the checkout has no pyproject.toml), which builds the C extensions against the bundled
+  FreeType 2.6.1 and Qhull, downloaded by setup.py at image build. numpy is pinned to 1.24.4,
+  what the spec's Python 3.8 resolves to (unpinned, 3.11 would get numpy 2, which this matplotlib
+  can't build against); pip 24.2, setuptools 72.1.0 and wheel 0.43.0 are pinned to their versions
+  of 2024-08-01, as the venv seeds newer ones; other packages resolve as of that date.
+  ghostscript and libcairo2 come from apt, as in the first pass's matplotlib images, instead of
+  the spec's texlive/imagemagick install (the failing tests check label strings and need no TeX).
+  Python 3.11 rather than 3.12: this matplotlib's build needs distutils. Grading runs
+  lib/matplotlib/tests/test_dates.py, the only file the test patch touches; seven image tests of
+  PASS_TO_PASS fail there at base and with gold on Python 3.11 and are removed (see
+  pass_to_pass_removed). The build's 4.1 minutes include a 2.9-minute clone.

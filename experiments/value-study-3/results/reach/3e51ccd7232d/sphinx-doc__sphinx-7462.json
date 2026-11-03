@@ -1,0 +1,136 @@
+{
+ "bug": "sphinx-doc__sphinx-7462",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sphinx-doc__sphinx-7462:peeky-r3",
+ "image_id": "sha256:501d19f508cd8c841a45cb2ef44ca544dd0d35a442298fdd05d3cdec37d4c0e9",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:16:39+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed result = [] that starts the ast.Tuple branch of _parse_annotation's unparse (the first hunk)",
+   "at": "sphinx/domains/python.py:117",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at sphinx/domains/python.py:117 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_domain_py.py::test_parse_annotation",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sphinx/domains/python.py:117",
+    "function": "unparse",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "node",
+      "value": "<ast.Tuple object at 0xffff8a6d68d0>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed ast.Tuple return in pycode.ast.unparse (the last hunk)",
+   "at": "sphinx/pycode/ast.py:117",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at sphinx/pycode/ast.py:117 --name reach --timeout 300 --json -- -q -p no:cacheprovider 'tests/test_pycode_ast.py::test_unparse[()-()]'",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sphinx/pycode/ast.py:117",
+    "function": "unparse",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "node",
+      "value": "<ast.Tuple object at 0xffff9dbf27d0>"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/test_domain_py.py:241",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/test_domain_py.py:241 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_domain_py.py::test_parse_annotation",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/test_domain_py.py:241",
+    "function": "test_parse_annotation",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "doctree",
+      "value": "[<pending_xref: <#text: 'int'>>]"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:16:43+00:00"
+}

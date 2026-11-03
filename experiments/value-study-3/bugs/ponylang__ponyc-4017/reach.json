@@ -1,0 +1,29 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/debug/libponyc.tests"
+ ],
+ "program": [
+  "--gtest_filter=FlattenTest.TupleConstraintInUnion"
+ ],
+ "prepare": [
+  "cmake --build build-peeky/cmake --parallel 4 --target libponyc.tests > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/libponyc/pass/flatten.c",
+   "line": 83,
+   "why": "the fix's only hunk that changes a statement (it also adds the function constraint_contains_tuple): the changed condition of flatten_typeparamref's tuple check"
+  },
+  {
+   "role": "assertion",
+   "file": "test/libponyc/flatten.cc",
+   "line": 106,
+   "why": "the test body's TEST_ERRORS_1, a DO (ASSERT_NO_FATAL_FAILURE) around test_expected_errors; it is the test's first statement after the source string"
+  }
+ ]
+}

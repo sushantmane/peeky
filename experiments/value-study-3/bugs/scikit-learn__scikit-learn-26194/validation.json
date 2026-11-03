@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate": "FAILED",
+   "sklearn/metrics/tests/test_ranking.py::test_roc_curve_with_probablity_estimates[42]": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 1.0
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate": "PASSED",
+   "sklearn/metrics/tests/test_ranking.py::test_roc_curve_with_probablity_estimates[42]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.9
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate": "PASSED",
+   "sklearn/metrics/tests/test_ranking.py::test_roc_curve_with_probablity_estimates[42]": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.9
+ }
+]

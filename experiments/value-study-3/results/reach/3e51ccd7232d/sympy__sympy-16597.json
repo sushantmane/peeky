@@ -1,0 +1,110 @@
+{
+ "bug": "sympy__sympy-16597",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sympy__sympy-16597:peeky-r3",
+ "image_id": "sha256:94fde59aab3dcb82885791b11c8ea8f5e166b028a6028870945b5eac38227b03",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:36:54+00:00",
+ "needs": [],
+ "notes": "bin/test has no .py suffix, so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, as sympy__sympy-17318's corrected run does (Peeky's --run needs a .py entry inside the root).",
+ "prepare": [
+  {
+   "command": "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "-rwxr-xr-x 1 root root 4766 Nov  3 05:36 bin/reach_test.py\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed Equivalent(transcendental | algebraic, complex) fact in get_known_facts' return expression, the first line the first code hunk removes",
+   "at": "sympy/assumptions/ask.py:1488",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/assumptions/ask.py:1488 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/core/tests/test_assumptions.py -k test_infinity",
+     "exit": 0,
+     "seconds": 1.5
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "============================= test process starts ==============================\nexecutable:         /opt/venv/bin/python  (3.12.3-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nnumpy:              None\nrandom seed:        40197292\nhash randomization: off\n\nsympy/core/tests/test_assumptions.py[1] \ntest_infinity F                                                           [FAIL]\n\n\n________________________________________________________________________________\n______________ sympy/core/tests/test_assumptions.py:test_infinity ______________\nTraceback (most recent call last):\n  File \"/testbed/sympy/core/tests/test_assumptions.py\", line 101, in test_infinity\n    assert oo.is_integer is False\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n\n============= tests finished: 0 passed, 1 failed, in 0.01 seconds ==============\nDO *NOT* COMMIT!\n"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the changed integer-bound check in Idx.__new__ (the last hunk)",
+   "at": "sympy/tensor/indexed.py:605",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/tensor/indexed.py:605 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/core/tests/test_assumptions.py -k test_infinity",
+     "exit": 0,
+     "seconds": 1.4
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "============================= test process starts ==============================\nexecutable:         /opt/venv/bin/python  (3.12.3-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nnumpy:              None\nrandom seed:        4126001\nhash randomization: off\n\nsympy/core/tests/test_assumptions.py[1] \ntest_infinity F                                                           [FAIL]\n\n\n________________________________________________________________________________\n______________ sympy/core/tests/test_assumptions.py:test_infinity ______________\nTraceback (most recent call last):\n  File \"/testbed/sympy/core/tests/test_assumptions.py\", line 101, in test_infinity\n    assert oo.is_integer is False\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n\n============= tests finished: 0 passed, 1 failed, in 0.01 seconds ==============\nDO *NOT* COMMIT!\n"
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "sympy/core/tests/test_assumptions.py:100",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/core/tests/test_assumptions.py:100 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/core/tests/test_assumptions.py -k test_infinity",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/core/tests/test_assumptions.py:100",
+    "function": "test_infinity"
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "oo",
+      "value": "oo"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:36:58+00:00"
+}

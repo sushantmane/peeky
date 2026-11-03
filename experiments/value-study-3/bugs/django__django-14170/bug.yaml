@@ -1,0 +1,43 @@
+id: django__django-14170
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: 6efc35b4fe3009666e56a60af0675d7d532bf4ff
+upstream: https://github.com/django/django/pull/14170
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the cause: YearLookup's BETWEEN optimization is also registered for __iso_year,
+  and shows the SQL with calendar-year bounds; the bounds come from two short backend methods and
+  YearLookup.year_lookup_bounds, with simple state.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows wrong data returned by an __iso_year filter, and the fix changes how the year
+  bounds are computed. The bounds are computed while the query compiles its WHERE clause, when the
+  queryset is evaluated, well over 5 calls below the test.
+root_cause: >-
+  YearLookup (django/db/models/lookups.py), which ExtractIsoYear also registers, replaces the
+  EXTRACT with a BETWEEN on the original column and takes its bounds from
+  year_lookup_bounds_for_date_field / year_lookup_bounds_for_datetime_field in
+  django/db/backends/base/operations.py, which always return 1 January to 31 December. ISO years
+  start and end on other days, so __iso_year filters return the wrong rows. The fix passes
+  iso_year=True for ExtractIsoYear and computes ISO-8601 year bounds with fromisocalendar.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-14170:control
+build_minutes: 1.6
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for Django 4.0 (the spec's Python 3.8 raised to 3.11). Dependencies are
+  tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached and a native
+  build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale as the
+  Django 3.x specs do. parse.py is round 1's Django parser (SWE-bench's, with the documented Python
+  3.11 test-name adaptation and docstring tests). eval.sh runs db_functions.datetime.test_extract_trunc,
+  the module the hidden tests change, and sends stderr to stdout because Django's runner reports on
+  stderr. Gold points: operations.py's one hunk spans both bounds methods; its first changed
+  executable line is in the date-field method (line 537), which no failing test runs (both filter a
+  DateTimeField); lookups.py's hunk's first removed line is 544.

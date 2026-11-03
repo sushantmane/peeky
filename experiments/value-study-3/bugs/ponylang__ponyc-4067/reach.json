@@ -1,0 +1,29 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "build-peeky/debug/ponyc"
+ ],
+ "program": [
+  "--path=build/debug/test_lib",
+  "--output=build-peeky/out",
+  "test/libponyc-run/regression-4059"
+ ],
+ "prepare": [
+  "mkdir -p build-peeky/out"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/libponyc/codegen/genopt.cc",
+   "line": 193,
+   "why": "the fix's only hunk, a removal: its first removed line, the call-graph lookup in HeapToStack::runOnInstruction (whose removeCallEdgeFor the report's backtrace shows crashing)"
+  },
+  {
+   "role": "assertion",
+   "not_attempted": "the test is a Pony program (test/libponyc-run/regression-4059) that the libponyc-run runner, itself a Pony program, builds with ponyc and runs, checking both; neither is the project's C code"
+  }
+ ]
+}

@@ -1,0 +1,13 @@
+stage: 3 (reach check)
+reason: not reached. Every point (gold clap_derive/src/attrs.rs:288, gold clap_derive/src/parse.rs:110,
+assertion clap_derive/tests/help.rs:49) was refused before launch:
+  [UNSUPPORTED] Peeky analyses only code the program runs: `clap_derive` is a procedural macro,
+  which runs in the compiler. Analyse the packages that use it
+The fix is all in clap_derive, a proc-macro crate: its lines run inside rustc while the test's crate
+compiles, never in the failing test's binary, so no run of the test can stop there. Analysing the
+package that uses it (clap) wouldn't put those lines in the program, and `-p clap` is ambiguous
+here anyway (#499): the image's prebuild (analyse clap, run its flags test) failed with
+"error: specification `clap` is ambiguous ... clap@2.34.0 clap@3.0.0-beta.4", as criterion 0.3
+(a dev-dependency) brings clap 2 into Cargo.lock.
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: gold solved, noop not solved.
+Record: results/reach/3e51ccd7232d/clap-rs__clap-2882.json.

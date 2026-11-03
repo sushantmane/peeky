@@ -1,0 +1,2 @@
+stage: 3 (reach check)
+reason: no gold point. The fix's only source change adds a new method (an override of findAndAddVirtualProperties in JacksonXmlAnnotationIntrospector that returns at once), plus an import and release notes; it changes no executable statement of a base file. Step 1 is complete (base FAILED, gold-1 and gold-2 PASSED); per the refill brief, no Peeky image was built and no reach run made.

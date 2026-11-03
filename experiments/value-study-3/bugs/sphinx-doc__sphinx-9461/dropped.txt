@@ -1,0 +1,10 @@
+Dropped at step 1: the Python project doesn't run on CPython 3.11 or 3.12.
+As in sphinx-doc__sphinx-9229: at the base commit (939c7bb7), sphinx/util/typing.py (line 37)
+runs `from types import Union as types_Union` when sys.version_info > (3, 10). types.Union existed
+only in Python 3.10's betas (3.10.0 renamed it types.UnionType), and sphinx/util/__init__.py
+imports sphinx.util.typing, so `import sphinx.util` raises ImportError on 3.11 and 3.12 and no
+test runs. The control image was built (Python 3.12, SWE-bench's sphinx 4.2 spec) and the base
+grading ended at pytest's plugin import ("Error importing plugin sphinx.testing.fixtures: cannot
+import name 'Union' from 'types'"; validation.json: every test missing). `from types import Union`
+fails on the images' 3.11.14 as well. Making it run would need a change to the project's source
+(or a shim in the standard library), not a package pin. The image was removed after the drop.

@@ -1,0 +1,9 @@
+{
+  "parser": "parse_log_jackson_core",
+  "fail_to_pass": [
+    "com.fasterxml.jackson.core.read.NumberParsingTest",
+    "com.fasterxml.jackson.core.util.TestDelegates"
+  ],
+  "pass_to_pass": [],
+  "timeout_s": 1200
+}

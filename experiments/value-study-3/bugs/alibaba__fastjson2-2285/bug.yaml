@@ -1,0 +1,40 @@
+id: alibaba__fastjson2-2285
+language: java
+repo: alibaba/fastjson2
+source: Multi-SWE-bench
+base_commit: 27ca2b45c33cd362fa35613416f5d62ff9567921
+upstream: https://github.com/alibaba/fastjson2/pull/2285
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows an enum's @JSONType serializer ignored for an enum-typed field and points at
+  the writer's annotation processing; the state is one flag in the enum class's bean info.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The field is written as the enum's name instead of the custom serializer's output, and the fix
+  changes a flag that decides which field writer is built. The fixed code runs while the writer
+  for the containing class is created, through the provider, the (ASM) writer creator and the
+  module's getBeanInfo, more than five calls below toJSONString.
+root_cause: >-
+  When fastjson2 creates the field writer for an enum-typed field (ObjectWriterCreator and
+  ObjectWriterCreatorASM.createFieldWriter), it reads the enum class's BeanInfo and builds the
+  plain FieldWriterEnum, which writes the constant's name, unless beanInfo.writeEnumAsJavaBean is
+  set. ObjectWriterBaseModule.getBeanInfo records a @JSONType serializer on the class
+  (beanInfo.serializer) but doesn't set that flag, so an enum's custom serializer is skipped. The
+  fix also sets writeEnumAsJavaBean when @JSONType names a serializer.
+test_hint: >-
+  fastjson2 builds with its Maven wrapper on JDK 11, offline: run tests of the core module with
+  `cd /testbed && ./mvnw -o -pl core test -Dtest=<TestClass>` (or `-Dtest=<TestClass>#<method>`).
+image: peeky-study/alibaba__fastjson2-2285:control
+build_minutes: 3.3
+grade_minutes: 0.5
+pass_to_pass_removed: []
+notes: >-
+  JDK 11, the base image's: Multi-SWE-bench's image uses Zulu 8, but Peeky launches Java programs
+  on JDK 9 or later only (refill rule); on JDK 11 grading gives the dataset's results (base: the
+  hidden test fails, gold: it passes, twice). Same image recipe as alibaba__fastjson2-82; TZ and
+  locale stand in for Multi-SWE-bench's UTF-8 and Asia/Shanghai JAVA_TOOL_OPTIONS. eval.sh runs a
+  clean `test` of the core module only, limited to the tests in the hidden test file's package
+  (com.alibaba.fastjson2.issues_2200); pass_to_pass is limited to those 16 classes. Test names are
+  classes, as in Multi-SWE-bench's parser. The hidden test file is new; eval.sh removes it before
+  applying the patch.

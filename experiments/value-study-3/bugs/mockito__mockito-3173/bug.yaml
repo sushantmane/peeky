@@ -1,0 +1,41 @@
+id: mockito__mockito-3173
+language: java
+repo: mockito/mockito
+source: Multi-SWE-bench
+base_commit: bfee15dda7acc41ef497d8f8a44c74dacce2933a
+upstream: https://github.com/mockito/mockito/pull/3173
+category: D
+categories_applicable: [D, B]
+category_rationale: >-
+  The record's fields are lost only after another type (a generic List) was spied first, and the
+  faulty state is a per-thread flag the inline mock maker consults from instrumented constructors.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  A spied record returns null for a field it was built with, and the fix changes what the mock
+  maker keeps per thread while it constructs a mock. The fixed predicate runs only from
+  constructor advice that ByteBuddy weaves into instrumented classes, many calls below spy().
+root_cause: >-
+  InlineDelegateByteBuddyMockMaker keeps a thread-local boolean (mockitoConstruction) that is true
+  while Mockito itself instantiates a mock or spy, and its isMockConstruction predicate, which the
+  constructor advice of every instrumented class consults, then answers true for any type, not
+  only for the class being mocked. Once another type's hierarchy has been instrumented (here by
+  spying a List), constructors that should run normally are intercepted while the record spy is
+  built, and its fields end up null. The fix keeps the class being mocked instead of a boolean, and
+  the predicate intercepts only types assignable from it.
+test_hint: >-
+  Mockito builds with its Gradle wrapper on JDK 21, offline: run a project's tests with
+  `cd /testbed && ./gradlew --offline :<project>:test --tests <fully.qualified.TestClass>` (the core
+  library is the root project, `:test`; `./gradlew --offline projects` lists the others).
+image: peeky-study/mockito__mockito-3173:control
+build_minutes: 7.6
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 21 as in Multi-SWE-bench's image (the base's OpenJDK instead of Zulu 21), TZ and locale for
+  its JAVA_TOOL_OPTIONS. Gradle is offline via /root/.gradle/init.d/offline.gradle; eval.sh also
+  passes --no-build-cache (a FROM-CACHE task isn't a pass in Multi-SWE-bench's parser). The java21
+  project has no test sources at base, so the image build ran a throwaway JUnit 4 + AssertJ test
+  there once (with network) to fetch its test runtime, then removed it and its build directory.
+  fail_to_pass is the dataset's java21:test (the hidden RecordTest is new, so there is no n2p
+  test). eval.sh runs only :java21:test, filtered to the hidden test class, instead of the whole
+  `test`; pass_to_pass is limited to the dataset's Gradle tasks that this run executes.

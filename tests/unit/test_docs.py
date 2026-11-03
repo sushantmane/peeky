@@ -157,13 +157,14 @@ PRIVATE_NOTE_EXCLUSIONS = {
     "tests/unit/test_docs.py",
     # An upstream bug report, kept verbatim: its stack trace names the reporter's own path.
     "experiments/value-study/bugs/tokio-rs__axum-1934/problem.md",
-    "experiments/value-study-3/bugs/matplotlib__matplotlib-23476/problem.md",
-    "experiments/value-study-3/bugs/ponylang__ponyc-3763/problem.md",
     # Copilot CLI's own folder name for a session (`session-state`), not a note.
     "experiments/value-study/harness/run_one.py",
     # A study agent's own reasoning, kept verbatim: it names the CLI's session folder.
     "experiments/value-study-2/results/runs/valkey-io__valkey-790/peeky-first-3/result.json",
 }
+# A study bug's problem statement is an upstream report, kept verbatim; its stack traces may
+# name the reporter's own paths.
+VERBATIM_REPORT = re.compile(r"experiments/value-study[^/]*/bugs/[^/]+/problem\.md")
 PRIVATE_NOTES = (
     # A personal path; "/users/42" in an example is a route, so case matters.
     re.compile(r"/Users/"),
@@ -187,7 +188,7 @@ def test_the_repository_holds_no_private_notes():
     found = []
     for name in sorted(set(listed.stdout.decode().split("\0")) - {""} - PRIVATE_NOTE_EXCLUSIONS):
         path = root / name
-        if not path.is_file():
+        if not path.is_file() or VERBATIM_REPORT.fullmatch(name):
             continue
         data = path.read_bytes()
         if b"\0" in data:

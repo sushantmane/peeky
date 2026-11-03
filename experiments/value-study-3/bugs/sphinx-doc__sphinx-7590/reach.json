@@ -1,0 +1,35 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "tests/test_domain_cpp.py::test_expressions"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sphinx/domains/c.py",
+   "line": 2079,
+   "why": "the first code hunk (c.py's first hunk only changes imports): the literal loop in the C domain's _parse_literal; no failing test runs it, so it uses the first failing test"
+  },
+  {
+   "role": "gold",
+   "file": "sphinx/util/cfamily.py",
+   "line": 72,
+   "why": "the last code hunk: the mode check in verify_description_mode"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/test_domain_cpp.py",
+   "line": 63,
+   "why": "the first assert statement the test runs: exprCheck -> check -> _check (the checks before it raise DefinitionError instead)"
+  }
+ ]
+}

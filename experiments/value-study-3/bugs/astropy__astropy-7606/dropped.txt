@@ -1,0 +1,13 @@
+Dropped at step 1: the Python project doesn't run on CPython 3.11 or 3.12.
+This astropy (3.1.dev, base 3cedd79e) can't be imported on Python 3.10 or later. `import astropy`
+sets up its logger, which reads the configuration through the bundled configobj, and
+astropy/extern/configobj/configobj.py (line 597, and 804, 2437) tests
+`isinstance(value, collections.Mapping)`; the collections ABC aliases were removed in Python 3.10,
+so it raises `AttributeError: module 'collections' has no attribute 'Mapping'`. The image build
+stopped there, at `pip install -e .` (setup.py imports astropy), on Python 3.11.14 (log in
+r-py-a's scratch, build-astropy__astropy-7606.log). 3.12 has no such alias either, and the
+project's own code has more (astropy/coordinates/sites.py `from collections import Mapping`,
+astropy/io/fits/header.py `collections.MutableMapping.register`, astropy/utils/timer.py
+`from collections import Iterable`). SWE-bench's spec for it (astropy "1.3") is Python 3.6.
+Making it run would need a change to the project's source (or a shim in the standard library),
+not a package pin. No image was produced.

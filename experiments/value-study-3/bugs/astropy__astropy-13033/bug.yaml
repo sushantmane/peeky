@@ -1,0 +1,38 @@
+id: astropy__astropy-13033
+language: python
+repo: astropy/astropy
+source: SWE-bench Verified
+base_commit: 298ccb478e6bf092953bca67a3d29dc6c35f6752
+upstream: https://github.com/astropy/astropy/pull/13033
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report gives the misleading message and a short reproduction, and the check that raises it
+  is one short method; the state is two lists of column names.
+traits: []
+traits_rationale: >-
+  The fix changes an error message's text (which columns it names), not how a value is computed.
+  The check runs from remove_column, a call or two below the test, in the same process.
+root_cause: >-
+  BaseTimeSeries._check_required_columns in astropy/timeseries/core.py, when the leading columns
+  don't match the required ones, raises a ValueError that names only the first required column and
+  the first column found. With several required columns (e.g. 'time' and 'flux') and one of them
+  removed, it says "expected 'time' as the first columns but found 'time'". The fix names the
+  full list of required columns and the leading columns found (a single name when there is one).
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with astropy installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest astropy/<subpackage>/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/astropy__astropy-13033:control
+build_minutes: 1.7
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Same recipe as astropy__astropy-13236: SWE-bench spec for astropy 4.3 (its pins, setuptools
+  68.0.0). To build on Python 3.11 the build requirements are installed first with Cython 0.29.30
+  instead of pyproject's cython==0.29.22 (whose generated C needs longintrepr.h, moved in 3.11),
+  and the checkout is built without isolation against the pinned numpy 1.25.2. Python 3.11 rather
+  than 3.12: the pinned numpy 1.25.2 has no 3.12 build. Grading runs SWE-bench's command
+  (pytest -rA) on astropy/timeseries/tests/test_sampled.py, the only file the test patch
+  touches; test_initialization_with_time_delta fails at base and with gold (the bundled
+  leap-second file has expired and the update needs the network) and isn't in PASS_TO_PASS.

@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/matplotlib/__init__.py",
+   "line": 1090,
+   "why": "the first line the only code hunk changes, in rc_context (orig = rcParams.copy())"
+  },
+  {
+   "role": "assertion",
+   "file": "lib/matplotlib/tests/test_rcparams.py",
+   "line": 500
+  }
+ ]
+}

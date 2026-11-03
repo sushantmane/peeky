@@ -1,0 +1,144 @@
+{
+ "bug": "sphinx-doc__sphinx-7590",
+ "language": "python",
+ "category": "E",
+ "image": "peeky-study/sphinx-doc__sphinx-7590:peeky-r3",
+ "image_id": "sha256:e8cce6d31bb4c3903f35c8f22e0c6b4587db3d80aeb50c076313733aedfa1c35",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:38:25+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first code hunk (c.py's first hunk only changes imports): the literal loop in the C domain's _parse_literal; no failing test runs it, so it uses the first failing test",
+   "at": "sphinx/domains/c.py:2079",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at sphinx/domains/c.py:2079 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+     "exit": 0,
+     "seconds": 1.7
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null,
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 1,
+    "output_tail": "\u2026util/docutils.py:45\n  /testbed/sphinx/util/docutils.py:45: DeprecationWarning: distutils Version classes are deprecated. Use packaging.version instead.\n    __version_info__ = tuple(LooseVersion(docutils.__version__).version)\n\nsphinx/registry.py:22\n  /testbed/sphinx/registry.py:22: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html\n    from pkg_resources import iter_entry_points\n\n../opt/venv/lib/python3.12/site-packages/pkg_resources/__init__.py:3144\n../opt/venv/lib/python3.12/site-packages/pkg_resources/__init__.py:3144\n../opt/venv/lib/python3.12/site-packages/pkg_resources/__init__.py:3144\n../opt/venv/lib/python3.12/site-packages/pkg_resources/__init__.py:3144\n  /opt/venv/lib/python3.12/site-packages/pkg_resources/__init__.py:3144: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('sphinxcontrib')`.\n  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages\n    declare_namespace(pkg)\n\nsphinx/directives/patches.py:15\n  /testbed/sphinx/directives/patches.py:15: DeprecationWarning: The `docutils.parsers.rst.directive.html` module will be removed in Docutils 2.0. Since Docutils 0.18, the \"Meta\" node is defined in `docutils.parsers.rst.directives.misc`.\n    from docutils.parsers.rst.directives import images, html, tables\n\ntests/test_domain_cpp.py: 720 warnings\n  /testbed/sphinx/domains/cpp.py:838: DeprecationWarning: nodes.Text: initialization argument \"rawsource\" is ignored and will be removed in Docutils 2.0.\n    signode.append(nodes.Text(txt, txt))\n\ntests/test_domain_cpp.py::test_expressions\ntests/test_domain_cpp.py::test_expressions\n  /testbed/sphinx/domains/cpp.py:855: DeprecationWarning: nodes.Text: initialization argument \"rawsource\" is ignored and will be removed in Docutils 2.0.\n    signode.append(nodes.Text(txt, txt))\n\ntests/test_domain_cpp.py: 100 warnings\n  /testbed/sphinx/domains/cpp.py:882: DeprecationWarning: nodes.Text: initialization argument \"rawsource\" is ignored and will be removed in Docutils 2.0.\n    signode.append(nodes.Text(txt, txt))\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_domain_cpp.py::test_expressions - sphinx.util.cfamily.Defin...\n1 failed, 829 warnings in 0.26s\n"
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "gold",
+   "why": "the last code hunk: the mode check in verify_description_mode",
+   "at": "sphinx/util/cfamily.py:72",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at sphinx/util/cfamily.py:72 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sphinx/util/cfamily.py:72",
+    "function": "verify_description_mode",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 1,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "mode",
+      "value": "'lastIsName'"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assert statement the test runs: exprCheck -> check -> _check (the checks before it raise DefinitionError instead)",
+   "at": "tests/test_domain_cpp.py:63",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at tests/test_domain_cpp.py:63 --name reach --timeout 300 --json -- -q -p no:cacheprovider tests/test_domain_cpp.py::test_expressions",
+     "exit": 0,
+     "seconds": 0.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/tests/test_domain_cpp.py:63",
+    "function": "_check",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 14,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "ast",
+      "value": "<ASTDeclaration>"
+     },
+     {
+      "name": "i",
+      "value": "2"
+     },
+     {
+      "name": "id",
+      "value": "'_CPPv2IE1CIAnullptr_1aE'"
+     },
+     {
+      "name": "idActual",
+      "value": "[None, None]"
+     },
+     {
+      "name": "idDict",
+      "value": "{2: 'IE1CIAnullptr_1aE', 3: 'IE1CIALDnE_1aE'}"
+     },
+     {
+      "name": "idExpected",
+      "value": "[None, None, 'IE1CIAnullptr_1aE', 'IE1CIALDnE_1aE', 'IE1CIALDnE_1aE']"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:38:30+00:00"
+}

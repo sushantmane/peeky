@@ -1,0 +1,43 @@
+id: nushell__nushell-13870
+language: rust
+repo: nushell/nushell
+source: Multi-SWE-bench
+base_commit: 6e1e824473e15eba246e1c43704c5d88fa237a17
+upstream: https://github.com/nushell/nushell/pull/13870
+category: D
+categories_applicable: [D, C]
+category_rationale: >-
+  The error needs a particular pipeline: an external command that exits non-zero, followed by an
+  internal command that collects its output eagerly (detect columns, or e>| / o+e>| into str
+  length), while lines streams without it. The decision is carried in the ByteStream's child
+  source, across commands.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows an error where the script should return null, and the fix changes when a
+  child's exit status is checked as its output is collected. The tests run the nu binary as a
+  child process (nu!), and the check sits in ChildProcess::into_bytes, several calls below the
+  pipeline's evaluation.
+root_cause: >-
+  In crates/nu-protocol/src/process/child.rs, ChildProcess::into_bytes always waits for the
+  external command and returns its non-zero exit status as an error (check_ok), so any command
+  that collects an external's output eagerly (ByteStream::into_bytes, as detect columns and
+  str length do) raises "exited with code 1" mid-pipeline, unlike streaming commands such as
+  lines. The fix adds a flag to ByteStreamSource::Child (and ByteStream::child), set from the
+  new config field display_errors.exit_code_on_pipeline_element (default false) by run_external,
+  do and tee, and into_bytes checks the exit status only when that flag is set.
+test_hint: >-
+  Run the integration tests with `cd /testbed && cargo test --package nu --test main -- <filter>`
+  (e.g. `-- const_::`); they run the nu binary, target/debug/nu, which cargo rebuilds with them.
+  Crate tests: `cargo test -p <crate>` (crates/*).
+image: peeky-study/nushell__nushell-13870:control
+build_minutes: 5.1
+grade_minutes: 0.3
+pass_to_pass_removed: []
+notes: >-
+  rust-toolchain.toml pins Rust 1.79.0, which the image installs (rustup, minimal profile) and
+  uses, as the first pass's nushell images used their pins; the repo's Cargo.lock (version 3).
+  Test command: Multi-SWE-bench runs `cargo test`; eval.sh runs the nu package's integration
+  test target (tests/main.rs, which runs the nu binary) filtered to
+  shell::pipeline::commands::external:: (the hidden test file), offline. pass_to_pass is limited
+  to the 58 dataset PASS_TO_PASS tests in that module. fail_to_pass is the dataset's
+  FAIL_TO_PASS (there are no n2p tests). Parser: Multi-SWE-bench's Rust parse_log.

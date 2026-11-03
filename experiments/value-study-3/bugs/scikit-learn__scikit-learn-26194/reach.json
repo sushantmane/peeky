@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "sklearn/metrics/tests/test_ranking.py::test_roc_curve_drop_intermediate"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sklearn/metrics/_ranking.py",
+   "line": 1086,
+   "why": "the only code hunk (the others change roc_curve's docstring): the extra threshold, thresholds[0] + 1"
+  },
+  {
+   "role": "assertion",
+   "file": "sklearn/metrics/tests/test_ranking.py",
+   "line": 421
+  }
+ ]
+}

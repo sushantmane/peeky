@@ -38,3 +38,24 @@ nushell__nushell-11292	refused: UNSUPPORTED, a `[patch]` table in Cargo.toml
 clap-rs__clap-2161	refused: BUILD_FAILED, `-p clap` is ambiguous (a dev-dependency brings clap 2.34)
 clap-rs__clap-2696	refused: BUILD_FAILED, `-p clap` is ambiguous (a dev-dependency brings clap 2.34)
 clap-rs__clap-3391	refused: BUILD_FAILED, `-p clap` is ambiguous (a dev-dependency brings clap 2.34)
+fasterxml__jackson-core-1016	no stop: at base both failing tests fail at a DataInput assertion, before the gold lines
+nushell__nushell-13870	refused: UNSUPPORTED, an empty `[patch]` table in Cargo.toml (#498)
+astropy__astropy-7606	step 1: doesn't run on CPython 3.10 or later (`collections.Mapping`)
+fasterxml__jackson-dataformat-xml-590	no gold point (the fix only adds an overriding method)
+tokio-rs__tracing-2001	a gold point stopped in a thread-local's initializer, which has no locals; the other is generic code only other crates compile (#502)
+facebook__zstd-1080	the failing test doesn't compile at base (calls what the fix adds)
+clap-rs__clap-2642	step 1: a failing test (`no_wrap_help`) already passes at base
+projectlombok__lombok-2792	no gold point (the fix only renames a method)
+fasterxml__jackson-core-1182	the failing test doesn't compile at base, and no gold point
+ponylang__ponyc-4067	refused: the fix is in a C++ unit with a `<stdin>` line table (#495)
+BurntSushi__ripgrep-1294	refused: a version 1 Cargo.lock (#503)
+alibaba__fastjson2-2285	refused: Kotlin test classes without line numbers in the test's package (#501); after the refill's end anyway
+facebook__zstd-3362	the failing test doesn't compile at base (uses what the fix adds)
+clap-rs__clap-2085	refused: BUILD_FAILED, `-p clap` is ambiguous (#499)
+sphinx-doc__sphinx-9461	step 1: doesn't run on CPython 3.11 or 3.12 (imports `types.Union`)
+django__django-13794	no gold point (the fix only adds `__add__` and `__radd__`)
+facebook__zstd-1008	step 1: one of its two failing tests (`test-fuzzer`) already passes at base
+clap-rs__clap-2882	refused: the fix is in a procedural macro (#504)
+sympy__sympy-16597	no stop: no failing test runs either gold line at base
+fasterxml__jackson-databind-4048	refused: INVALID_BREAKPOINT, the hunk's first changed line (`} else {`) has no code; after the refill's end anyway
+google__gson-1703	refused: ProGuard test classes without line numbers in the test's package (#501); after the refill's end anyway

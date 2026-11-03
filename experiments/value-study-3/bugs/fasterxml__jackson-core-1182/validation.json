@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.core.read.NumberParsingTest": "MISSING",
+   "com.fasterxml.jackson.core.util.TestDelegates": "MISSING"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.4
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.core.read.NumberParsingTest": "PASSED",
+   "com.fasterxml.jackson.core.util.TestDelegates": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 4.1
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.core.read.NumberParsingTest": "PASSED",
+   "com.fasterxml.jackson.core.util.TestDelegates": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.9
+ }
+]

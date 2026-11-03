@@ -1,0 +1,12 @@
+stage: 3 (reach check)
+reason: not reached: Peeky refused. Both points, Streams.java:92 (gold) and
+ReadersWritersTest.java:177 (assertion), were refused at `peeky session start` (Java attach,
+before attaching) with INVALID_REQUEST "Missing executable line debug information; compile with
+-g" (not retryable). Cause: Peeky's attach parses every class file in the package directories of
+the config's declared sources, and the hidden test's package (gson/target/test-classes/com/google/
+gson/functional) holds EnumWithObfuscatedTest.class and EnumWithObfuscatedTest$Gender.class, which
+gson's own build runs through ProGuard (its obfuscation test), leaving methods without line
+tables. The main classes' package (com.google.gson.internal, 57 classes) parses cleanly. Not
+worked around (the spec lists the gold and test sources, as round 2's Java specs do). Record:
+results/reach/3e51ccd7232d/google__gson-1703.json.
+Steps 1 and 2 passed (validation base/gold-1/gold-2 ok; Peeky image ok, gold solved, noop not).

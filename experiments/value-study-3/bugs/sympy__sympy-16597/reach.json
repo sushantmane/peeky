@@ -1,0 +1,42 @@
+{
+ "kind": "python",
+ "target": ".",
+ "notes": "bin/test has no .py suffix, so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, as sympy__sympy-17318's corrected run does (Peeky's --run needs a .py entry inside the root).",
+ "prepare": [
+  "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py"
+ ],
+ "options": [
+  "--run",
+  "bin/reach_test.py"
+ ],
+ "program": [
+  "-C",
+  "--verbose",
+  "--no-subprocess",
+  "sympy/core/tests/test_assumptions.py",
+  "-k",
+  "test_infinity"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sympy/assumptions/ask.py",
+   "line": 1488,
+   "why": "the removed Equivalent(transcendental | algebraic, complex) fact in get_known_facts' return expression, the first line the first code hunk removes",
+   "run_note": "no failing test runs this line at base (get_known_facts serves the new assumptions; the failing tests query the core assumptions), so it uses the first failing test"
+  },
+  {
+   "role": "gold",
+   "file": "sympy/tensor/indexed.py",
+   "line": 605,
+   "why": "the changed integer-bound check in Idx.__new__ (the last hunk)",
+   "run_note": "no failing test runs this line at base (none creates an Idx), so it uses the first failing test"
+  },
+  {
+   "role": "assertion",
+   "file": "sympy/core/tests/test_assumptions.py",
+   "line": 100
+  }
+ ]
+}

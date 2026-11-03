@@ -1,0 +1,44 @@
+id: sympy__sympy-16597
+language: python
+repo: sympy/sympy
+source: SWE-bench Verified
+base_commit: 6fd65310fa3167b9626c38a5487e171ca407d988
+upstream: https://github.com/sympy/sympy/pull/16597
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report shows the query (an even Symbol's is_finite is None) and the expected implication;
+  the cause, rules that never imply finite from rational or algebraic, is in the assumption rules
+  table of sympy/core/assumptions.py, which can be read directly.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a wrong value (is_finite is None for an even symbol), and the fix changes the
+  rules from which the assumption system deduces that value. The deduction runs in the test's own
+  process when the symbol is created and queried.
+root_cause: >-
+  The old assumption system's rules (_assume_rules in sympy/core/assumptions.py) say rational
+  implies real and algebraic implies complex, but nothing implies finite, so integer, even, odd,
+  rational, irrational and transcendental symbols have is_finite None, and oo and -oo can't be
+  shown not integer or rational. The fix makes rational and algebraic imply finite and requires
+  finite for transcendental and irrational, adds the same facts to the new assumptions (ask.py and
+  the generated ask_generated.py), and adjusts Pow._eval_is_rational and Idx bounds for the change.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with sympy installed in editable mode. Run tests
+  with `cd /testbed && bin/test -C --verbose sympy/<subpackage>/tests/<file>.py` (pytest isn't
+  installed; `bin/test -k <name>` selects tests by name).
+python: "3.12"
+image: peeky-study/sympy__sympy-16597:control
+build_minutes: 2.8
+grade_minutes: 0.06
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for sympy 1.5 (mpmath 1.3.0, flake8, flake8-comprehensions, editable install;
+  the spec's Python 3.9 raised to 3.12, where the tests run). Grading runs the spec's test command
+  (bin/test -C --verbose with UserWarning/SyntaxWarning ignored) on the two files the test patch
+  touches. parse.py is round 1's sympy parser (SWE-bench's). The build's 2.8 minutes are mostly the
+  git clone (2.6 min). The reach run copies bin/test to bin/reach_test.py (as sympy-17318's
+  corrected run) and passes --no-subprocess. Gold points by the rule, in the fix's file order: the
+  first code hunk is in ask.py's get_known_facts (its first removed line, 1488), the last in
+  tensor/indexed.py's Idx.__new__ (605); no failing test runs either at base (they test the core
+  assumptions of oo, -oo and symbols, which the module-level rules table in core/assumptions.py
+  decides).

@@ -1,0 +1,42 @@
+id: fasterxml__jackson-core-1016
+language: java
+repo: fasterxml/jackson-core
+source: Multi-SWE-bench
+base_commit: 315ac5ad2ad5228129a3df50623570d9bc2d7045
+upstream: https://github.com/fasterxml/jackson-core/pull/1016
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report names the cause and the remedy: some factory methods build the byte-quad symbol table
+  with makeChild instead of makeChildOrPlaceholder, and addName should check isCanonicalizing;
+  the state is simple.
+traits: [runtime-state]
+traits_rationale: >-
+  With CANONICALIZE_FIELD_NAMES disabled, the DataInput and non-blocking parsers still return the
+  same canonical String for repeated field names, a value kept across calls in the symbol table,
+  and the fix changes which table is built and when a name is added; the parsers are a call or
+  two below JsonFactory's create methods.
+root_cause: >-
+  JsonFactory's createNonBlockingByteArrayParser, createNonBlockingByteBufferParser and
+  _createParser(DataInput) build their ByteQuadsCanonicalizer with makeChild, which always makes a
+  canonicalizing child table, so JsonFactory.Feature.CANONICALIZE_FIELD_NAMES is ignored for those
+  parsers and repeated field names come back as the same String instance. The fix uses
+  makeChildOrPlaceholder there, and makes UTF8DataInputJsonParser.addName and
+  NonBlockingJsonParserBase._addName return the decoded name without adding it to the table when
+  the table isn't canonicalizing.
+test_hint: >-
+  jackson-core builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test class
+  with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite (about
+  2 minutes).
+image: peeky-study/fasterxml__jackson-core-1016:control
+build_minutes: 2.7
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base, and Peeky launches Java on JDK 9 or
+  later only); the full suite passes at base on 11 (1234 tests). The parent pom
+  jackson-base:2.16.0-SNAPSHOT is gone from every repository (Multi-SWE-bench rewrites it to
+  2.16.3-SNAPSHOT, gone too), so the image installs a stand-in in ~/.m2 (the 2.16.2 release pom
+  under the snapshot version) and leaves pom.xml unchanged. eval.sh runs `mvn -o clean test` on
+  the hidden test file's class only; pass_to_pass is empty because PASS_TO_PASS holds no class
+  from the hidden test file (JsonFactoryTest is the fail_to_pass class).

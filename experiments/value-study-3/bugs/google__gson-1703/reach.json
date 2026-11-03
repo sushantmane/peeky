@@ -1,0 +1,42 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "gson/src/main/java/com/google/gson/internal/Streams.java",
+    "gson/src/test/java/com/google/gson/functional/ReadersWritersTest.java"
+   ],
+   "class_roots": [
+    "gson/target/classes",
+    "gson/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn -B -o --no-transfer-progress -pl gson test -Dtest=ReadersWritersTest#testToJsonAppendable -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "One code hunk, so one gold point: the other hunks change CurrentWrite's class and field declarations and add methods (setChars, toString) with no base statement after them in a function. The failing test is ReadersWritersTest; its method that runs the gold line and fails is the hidden testToJsonAppendable (the class's other tests write to a Writer, which isn't wrapped).",
+ "points": [
+  {
+   "role": "gold",
+   "file": "gson/src/main/java/com/google/gson/internal/Streams.java",
+   "line": 92,
+   "why": "the changed assignment of the char array to CurrentWrite in AppendableWriter.write (the only code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "gson/src/test/java/com/google/gson/functional/ReadersWritersTest.java",
+   "line": 177,
+   "why": "the first assertion of testToJsonAppendable (toString call count)"
+  }
+ ]
+}

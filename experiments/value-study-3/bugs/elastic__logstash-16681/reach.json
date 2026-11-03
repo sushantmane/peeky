@@ -1,0 +1,42 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java",
+    "logstash-core/src/test/java/org/logstash/plugins/pipeline/PipelineBusTest.java"
+   ],
+   "class_roots": [
+    "logstash-core/build/classes/java/main",
+    "logstash-core/build/classes/java/test"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./gradlew --no-daemon --offline :logstash-core:javaTests --tests 'org.logstash.plugins.pipeline.PipelineBusTest.blockingShutdownDeadlock*' --debug-jvm & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "One code hunk (mutate), so one gold point: its first removed line is a comment (line 144), and the first statement it changes is line 146. The failing test is blockingShutdownDeadlock with the PipelineBusV2 parameter; the filter runs both parameters (V1 doesn't run PipelineBusV2's code).",
+ "points": [
+  {
+   "role": "gold",
+   "file": "logstash-core/src/main/java/org/logstash/plugins/pipeline/PipelineBusV2.java",
+   "line": 146,
+   "why": "the first statement the only code hunk changes: reading the address state's input inside mutate's compute lambda, before notifying it"
+  },
+  {
+   "role": "assertion",
+   "file": "logstash-core/src/test/java/org/logstash/plugins/pipeline/PipelineBusTest.java",
+   "line": 343,
+   "why": "the first assertion of blockingShutdownDeadlock (assertThatCode on the two futures, 1 s deadline)"
+  }
+ ]
+}

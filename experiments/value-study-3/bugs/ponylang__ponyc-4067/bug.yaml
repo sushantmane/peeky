@@ -1,0 +1,41 @@
+id: ponylang__ponyc-4067
+language: c
+repo: ponylang/ponyc
+source: Multi-SWE-bench
+base_commit: 95581106d93b1f16aad6269f12d6f02684f8dd8c
+upstream: https://github.com/ponylang/ponyc/pull/4067
+category: B
+categories_applicable: [B, C, D]
+category_rationale: >-
+  The segfault is inside LLVM's CallGraphNode::removeCallEdgeFor, called from ponyc's HeapToStack
+  pass; understanding it needs LLVM's call-graph and pass-manager behaviour. It shows only for an
+  optimised build of a program whose heap allocation HeapToStack moves.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  ponyc crashes (SIGSEGV) while optimising, and the fix changes what HeapToStack keeps up to date
+  (it no longer edits the call graph). The pass runs inside LLVM's pass manager, in a ponyc that
+  the test's runner starts as a child process.
+root_cause: >-
+  In src/libponyc/codegen/genopt.cc, HeapToStack::runOnInstruction, after replacing a heap
+  allocation call with a stack allocation, looks up the function's node in the CallGraph analysis
+  (if available) and calls removeCallEdgeFor on the erased call. In this pass setup the call graph
+  doesn't hold an edge for that call, so LLVM dereferences a null callee node and ponyc segfaults
+  (only when optimising, i.e. without --debug). The fix drops the call-graph update.
+test_hint: |-
+  The project is configured (debug) and built in /testbed: rebuild with `cd /testbed && make build config=debug` (outputs in build/debug, the compiler is build/debug/ponyc; `make configure config=debug` reconfigures).
+  Run the tests with `cd /testbed && make test config=debug`; it runs the make targets test-core (the gtest binaries, then the runner over test/libponyc-run's programs), test-stdlib-release and test-examples, each of which runs alone too.
+image: peeky-study/ponylang__ponyc-4067:control
+build_minutes: 4.5
+grade_minutes: 1.3
+pass_to_pass_removed: []
+notes: >-
+  fail_to_pass is FAIL_TO_PASS (regression-4059, a program the test patch adds under
+  test/libponyc-run); pass_to_pass is limited to the 115 libponyc-run tests of PASS_TO_PASS, the
+  part of `make test` that eval.sh runs (test-core's runner command; the rest are gtest and stdlib
+  tests). At base the runner reports "regression-4059: building failed: signal 11" (HeapToStack).
+  Build follows Multi-SWE-bench's ponyc recipe as for ponylang__ponyc-4057 (clang 18 as CC/CXX,
+  -Wno-error in the debug C flags, an empty <linux/dn.h>), on the shared
+  peeky-study/r3-ponyc-llvm:13.0.1 (Dockerfile.llvm in bugs/ponylang__ponyc-4057; same LLVM
+  submodule commit and lib/ tree). The Peeky build (peeky.sh) is ponylang__ponyc-4057's: ponyc and
+  its runtime at -O0 in build-peeky, its C++ units with libstdc++ as the prebuilt LLVM; the fix's
+  line is in a C++ unit (genopt.cc), which Peeky refused (#495).

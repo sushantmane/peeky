@@ -1,0 +1,34 @@
+{
+ "kind": "python",
+ "target": ".",
+ "notes": "bin/test has no .py suffix, so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, as sympy__sympy-17318's corrected run does (Peeky's --run needs a .py entry inside the root).",
+ "prepare": [
+  "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py"
+ ],
+ "options": [
+  "--run",
+  "bin/reach_test.py"
+ ],
+ "program": [
+  "-C",
+  "--verbose",
+  "--no-subprocess",
+  "sympy/sets/tests/test_fancysets.py",
+  "-k",
+  "test_imageset_intersect_real"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "sympy/sets/handlers/intersection.py",
+   "line": 307,
+   "why": "the removed solve_linear of the imaginary part in intersection_sets(ImageSet, Set)'s Reals branch, the first executable line the only code-changing hunk removes (the line before it is a comment)"
+  },
+  {
+   "role": "assertion",
+   "file": "sympy/sets/tests/test_fancysets.py",
+   "line": 661
+  }
+ ]
+}

@@ -1,0 +1,85 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "points": [
+  {
+   "role": "gold",
+   "file": "tracing-core/src/dispatch.rs",
+   "line": 182,
+   "why": "the changed initial value of the thread-local default dispatcher, in CURRENT_STATE's thread_local! initializer, which runs when the test's thread first reaches the dispatch state (first code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/core.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "no_collector_disables_global",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "tracing-core/src/dispatch.rs",
+   "line": 913,
+   "why": "the changed replace of the thread's default in DefaultGuard::drop (last code hunk)",
+   "options": [
+    "--config",
+    "/root/reach/core.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "no_collector_disables_global",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tracing/tests/no_collector.rs",
+   "line": 18,
+   "why": "handle.assert_finished(), the test body's first assertion (the line above it is a Result::expect)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "no_collector_disables_global",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/core.json": {
+   "workspace": ".",
+   "analyse": [
+    "tracing-core"
+   ],
+   "run": {
+    "package": "tracing",
+    "test": "no_collector"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "tracing"
+   ],
+   "run": {
+    "package": "tracing",
+    "test": "no_collector"
+   },
+   "vendor": "vendor"
+  }
+ },
+ "remedies": [
+  {
+   "when": "add `version = 3` there",
+   "run": "sed -i '1i version = 3' Cargo.lock"
+  }
+ ]
+}

@@ -1,0 +1,95 @@
+{
+ "bug": "matplotlib__matplotlib-23299",
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/matplotlib__matplotlib-23299:peeky-r3",
+ "image_id": "sha256:a37316b0f9cb3a7b4f78cfc635c1bf0c137516385ecbe699083628dfbbcdb3bc",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T04:55:49+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first line the only code hunk changes, in rc_context (orig = rcParams.copy())",
+   "at": "lib/matplotlib/__init__.py:1090",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/__init__.py:1090 --name reach --timeout 300 --json -- -q -p no:cacheprovider lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext",
+     "exit": 0,
+     "seconds": 1.5
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/matplotlib/__init__.py:1090",
+    "function": "rc_context",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "fname",
+      "value": "None"
+     },
+     {
+      "name": "rc",
+      "value": "None"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "lib/matplotlib/tests/test_rcparams.py:500",
+   "commands": [
+    {
+     "command": "peeky session start . --run-module pytest --at lib/matplotlib/tests/test_rcparams.py:500 --name reach --timeout 300 --json -- -q -p no:cacheprovider lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext",
+     "exit": 0,
+     "seconds": 1.6
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/lib/matplotlib/tests/test_rcparams.py:500",
+    "function": "test_no_backend_reset_rccontext",
+    "warnings": [
+     "pytest ran with --assert=plain, which Peeky added: pytest's assert rewriting would change the test files' code from the source Peeky reads. So a failing assert shows less detail"
+    ]
+   },
+   "moved": false,
+   "values": {
+    "shown": 0,
+    "withheld": 0,
+    "sample": [],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T04:55:54+00:00"
+}

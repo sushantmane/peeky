@@ -1,0 +1,92 @@
+{
+ "bug": "fasterxml__jackson-databind-3851",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-databind-3851:peeky-r3",
+ "image_id": "sha256:ad23aac12d134fadc5943644b34edc3caf36ce2da41d52d8dd5f57036db05cf5",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:25:37+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed `if (!p.isExpectedStartObjectToken())` check in deserialize, the only hunk that changes an executable statement (the others change an import and the _propCreator field declaration), so first and last; testEnumACreatorModeDelegating, the first failing test, runs it",
+   "at": "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:135",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:135 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.7
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java:135",
+    "function": "FactoryBasedEnumDeserializer.deserialize(JsonParser,DeserializationContext)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "p",
+      "value": "ReaderBasedJsonParser@978"
+     },
+     {
+      "name": "ctxt",
+      "value": "DefaultDeserializationContext$Impl@979"
+     },
+     {
+      "name": "this",
+      "value": "FactoryBasedEnumDeserializer@980"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testEnumACreatorModeDelegating, the first failing test in file order",
+   "at": "src/test/java/com/fasterxml/jackson/databind/deser/creators/JsonCreatorModeForEnum3566.java:148",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/com/fasterxml/jackson/databind/deser/creators/JsonCreatorModeForEnum3566.java:148 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 1.3
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 6
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:25:56+00:00"
+}

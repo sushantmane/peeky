@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "org.apache.dubbo.common.utils.PojoUtilsTest": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 5.1
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "org.apache.dubbo.common.utils.PojoUtilsTest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.0
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "org.apache.dubbo.common.utils.PojoUtilsTest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 5.3
+ }
+]

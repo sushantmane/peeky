@@ -1,0 +1,2 @@
+ZSTD_frameHeaderSize() does not document that an error can be returned
+`ZSTD_frameHeaderSize()` can return an error. However, the docstring for this function - unlike most other docstrings in `zstd.h` - does not state that it can return an error. The docstring of `ZSTD_frameHeaderSize_internal()` does say it can return an error though.

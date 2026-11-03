@@ -1,0 +1,43 @@
+id: django__django-11734
+language: python
+repo: django/django
+source: SWE-bench Verified
+base_commit: 999891bd80b3d02dd916731a7a239e1036174885
+upstream: https://github.com/django/django/pull/11734
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The crash shows only when an OuterRef is used in exclude() or ~Q() across a multi-valued
+  relation, where Query.split_exclude builds an inner subquery; the reference is resolved against
+  the wrong query several layers of query building later, far from where it was rewrapped.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows a crash (ValueError about an outer-query reference), and the fix changes how
+  split_exclude wraps the filter's right-hand side. That code runs in Query.split_exclude, reached
+  from exclude() through _filter_or_exclude, add_q, _add_q and build_filter, over 5 calls deep.
+root_cause: >-
+  Query.split_exclude in django/db/models/sql/query.py rewraps any F() right-hand side as
+  OuterRef(name) to point the inner subquery at the outer query; OuterRef is itself an F, so an
+  OuterRef is rewrapped as a plain OuterRef of its name and resolves one query level too shallow,
+  against the subquery's own model. The fix wraps an OuterRef in another OuterRef, and lets related
+  lookups and AutoField stop special-casing OuterRef values (RelatedLookupMixin.get_prep_lookup
+  skips any expression; AutoField.get_prep_value's OuterRef shortcut is removed).
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with Django installed in editable mode. Run tests
+  with `cd /testbed && ./tests/runtests.py --settings=test_sqlite --parallel 1 <test_module>`, where
+  <test_module> is a directory under tests/ (add --verbosity 2 to list each test).
+python: "3.11"
+image: peeky-study/django__django-11734:control
+build_minutes: 9.3
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for Django 3.0 (the spec's Python 3.6 raised to 3.11). Dependencies are
+  tests/requirements/py3.txt without pylibmc and pywatchman (they need libmemcached and a native
+  build); packages resolve as of 2024-08-01; the image generates the en_US.UTF-8 locale as the spec
+  does. parse.py is round 1's Django parser (SWE-bench's, with the documented Python 3.11 test-name
+  adaptation and docstring tests). eval.sh runs queries.tests, the module the hidden tests change,
+  and sends stderr to stdout because Django's runner reports on stderr. The build's 9.3 minutes are
+  almost all the git clone (8.9 min on a slow network). The first gold point is the removed return
+  line of AutoField.get_prep_value (line 2337): the hunk's first removed line is the def (a
+  signature) and the next an import.

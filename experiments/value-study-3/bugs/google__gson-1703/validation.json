@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.google.gson.functional.ReadersWritersTest": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 2.5
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.google.gson.functional.ReadersWritersTest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 2.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.google.gson.functional.ReadersWritersTest": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 2.5
+ }
+]

@@ -1,0 +1,32 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_extract_iso_year_func_boundaries (db_functions.datetime.test_extract_trunc.DateFunctionTests)": "FAILED",
+   "test_extract_iso_year_func_boundaries (db_functions.datetime.test_extract_trunc.DateFunctionWithTimeZoneTests)": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_extract_iso_year_func_boundaries (db_functions.datetime.test_extract_trunc.DateFunctionTests)": "PASSED",
+   "test_extract_iso_year_func_boundaries (db_functions.datetime.test_extract_trunc.DateFunctionWithTimeZoneTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_extract_iso_year_func_boundaries (db_functions.datetime.test_extract_trunc.DateFunctionTests)": "PASSED",
+   "test_extract_iso_year_func_boundaries (db_functions.datetime.test_extract_trunc.DateFunctionWithTimeZoneTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.4
+ }
+]

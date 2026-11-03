@@ -1,0 +1,42 @@
+id: sympy__sympy-21596
+language: python
+repo: sympy/sympy
+source: SWE-bench Verified
+base_commit: 110997fe18b9f7d5ba7d22f624d156a29bf40759
+upstream: https://github.com/sympy/sympy/pull/21596
+category: D
+categories_applicable: [D, E]
+category_rationale: >-
+  The wrong set comes from the ImageSet-with-Reals handler that Intersection reaches through
+  sympy's multiple dispatch, and depends on what solve_linear returns for each factor of the
+  lambda's imaginary part; the report names neither the handler nor that state.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The report shows a wrong result (2 is in S1.intersect(Reals) though not in S1), and the fix
+  changes how the handler computes the intersected base set. The handler runs below
+  Set.intersect, Intersection.__new__, simplify_intersection and the dispatcher, 5 calls deep.
+root_cause: >-
+  intersection_sets(ImageSet, Set) in sympy/sets/handlers/intersection.py, for an intersection
+  with the Reals, solves the imaginary part of the lambda for the variable and then subtracts the
+  solutions from the base set (base_set -= FiniteSet(...)), keeping exactly the values where the
+  image is not real; the loop that excludes zeros of denominators also solves the imaginary part
+  instead of each denominator. The fix intersects the base set with the solutions of the
+  imaginary part's numerator factors and subtracts the solutions of the denominators.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with sympy installed in editable mode. Run tests
+  with `cd /testbed && bin/test -C --verbose sympy/<subpackage>/tests/<file>.py` (pytest isn't
+  installed; `bin/test -k <name>` selects tests by name).
+python: "3.12"
+image: peeky-study/sympy__sympy-21596:control
+build_minutes: 0.6
+grade_minutes: 0.07
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for sympy 1.9 (mpmath 1.3.0, flake8, flake8-comprehensions, editable install;
+  the spec's Python 3.9 raised to 3.12, where the tests run). Grading runs the spec's test command
+  (bin/test -C --verbose with UserWarning/SyntaxWarning ignored) on
+  sympy/sets/tests/test_fancysets.py, the only file the test patch touches. parse.py is round 1's
+  sympy parser (SWE-bench's). The reach run copies bin/test to bin/reach_test.py (as sympy-17318's
+  corrected run) and passes --no-subprocess. One gold point: of the fix's three hunks, the first
+  is an import and the second only adds a nested helper function (_solution_union); the third's
+  first removed line is a comment, so its point is the next line, the removed solve_linear call.

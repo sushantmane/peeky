@@ -1,0 +1,40 @@
+id: sphinx-doc__sphinx-7462
+language: python
+repo: sphinx-doc/sphinx
+source: SWE-bench Verified
+base_commit: b3e26a6c851133b82b50f4b68b53692076574d13
+upstream: https://github.com/sphinx-doc/sphinx/pull/7462
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report's traceback names the line (result.pop() in the Python domain's unparse) and the
+  input (the empty-tuple annotation Tuple[()]); the cause, a loop over no elements followed by a
+  pop, is clear from reading that branch, with simple state.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows a crash (IndexError: pop from empty list), and the fix changes how both unparse
+  functions compute the result for an empty tuple. The code runs in the test's own process, in a
+  function the test calls directly.
+root_cause: >-
+  The nested unparse in _parse_annotation (sphinx/domains/python.py) renders an ast.Tuple by
+  appending each element and a ", " separator and then popping the last separator, so an empty
+  tuple (Tuple[()]) pops from an empty list. sphinx/pycode/ast.py's unparse likewise renders an
+  empty tuple as an empty string. The fix renders an empty tuple as "(" ")" punctuation in the
+  domain and as "()" in pycode.ast.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with Sphinx installed in editable mode. Run tests
+  with `cd /testbed && python -m pytest tests/<file>.py` (the whole suite is `python -m pytest tests`).
+python: "3.12"
+image: peeky-study/sphinx-doc__sphinx-7462:control
+build_minutes: 1.5
+grade_minutes: 0.05
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for sphinx 3.1 (the spec's Python 3.9 raised to 3.12): `pip install -e .[test]`
+  with the spec's setup.py version caps applied as pip constraints (Jinja2<3.0, markupsafe<=2.0.1,
+  alabaster<0.7.12, the sphinxcontrib caps), as sphinx-7985's image did; unpinned packages resolve
+  as of 2024-08-01. SWE-bench runs these tests through tox --current-env; eval.sh runs tox.ini's
+  command directly (`python -m pytest -rA --durations 25`, the spec adding -rA) with tox.ini's
+  PYTHONWARNINGS, on the two files the test patch touches. parse.py is SWE-bench's sphinx parser
+  (as sphinx-10435). The gold patch applies to python.py with a 9-line offset; the gold points are
+  in the base files.

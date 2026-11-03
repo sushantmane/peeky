@@ -1,0 +1,8 @@
+{
+ "parser": "Zstd.parse_log (Multi-SWE-bench)",
+ "fail_to_pass": [
+  "test-fuzzer"
+ ],
+ "pass_to_pass": [],
+ "timeout_s": 900
+}

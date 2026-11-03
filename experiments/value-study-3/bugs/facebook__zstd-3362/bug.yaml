@@ -1,0 +1,37 @@
+id: facebook__zstd-3362
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: 58508398f4121f2a84092ac771db0f2b0fbb3b1a
+upstream: https://github.com/facebook/zstd/pull/3362
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report gives the formula, the overflowing input and its result; the cause (ZSTD_COMPRESSBOUND
+  wraps for sources near the size_t limit) is plain from the macro.
+traits: [runtime-state]
+traits_rationale: >-
+  ZSTD_compressBound returns a wrong, wrapped-around bound for very large sizes, and the fix changes
+  how the bound is computed (0 from the macro, an error from the function, above a maximum input
+  size). Building and running the failing test program takes under 2 minutes; the function is
+  called directly by the test.
+root_cause: >-
+  In lib/zstd.h, ZSTD_COMPRESSBOUND(srcSize) adds srcSize/256 (and a margin) to srcSize with no
+  limit, so for sources near the top of size_t it wraps around, and ZSTD_compressBound in
+  lib/compress/zstd_compress.c returns that small value silently. The fix defines
+  ZSTD_MAX_INPUT_SIZE, makes the macro yield 0 above it, and has ZSTD_compressBound return a
+  srcSize_wrong error code then, documenting both.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (library and CLI). The test programs are in tests/: `cd /testbed && make -C tests test` builds and runs them all, or run one `test-<name>` target of tests/Makefile.
+  The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-3362:control
+build_minutes: 1.1
+grade_minutes: 1.5
+pass_to_pass_removed: []
+notes: >-
+  Multi-SWE-bench's FAIL_TO_PASS and PASS_TO_PASS are empty, and its n2p tests (the 29 cli-tests
+  scripts, such as basic/help.sh) aren't touched by the test patch, so fail_to_pass is the test the
+  test patch changes: test-fuzzer (tests/fuzzer.c), the make target eval.sh runs, its time
+  shortened (-T1mn from -T200s), as for facebook__zstd-1107. At base the test patch's fuzzer.c
+  doesn't compile ("'ZSTD_MAX_INPUT_SIZE' undeclared": the fix adds it to zstd.h), so the candidate
+  is dropped at step 3 without a Peeky image or a reach run. GCC 13 replaces Ubuntu 20.04's GCC 9.

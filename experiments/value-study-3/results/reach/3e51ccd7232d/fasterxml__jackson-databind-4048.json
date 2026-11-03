@@ -1,0 +1,87 @@
+{
+ "bug": "fasterxml__jackson-databind-4048",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/fasterxml__jackson-databind-4048:peeky-r3",
+ "image_id": "sha256:3b512bc599cab0ab716c1affa39a918c48853dc83486b77c000215eff1d429c8",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:43:19+00:00",
+ "needs": [],
+ "notes": null,
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the changed `} else {` (now `} else if (!ignored) {`) in _addFields, the first line the only code hunk changes (the other source change is a Javadoc comment in MapperFeature), so first and last; testJsonIgnoreSerialization, the first failing test, runs it for the transient field b",
+   "at": "src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java:615",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java:615 --name reach --timeout 300 --json",
+     "exit": 2,
+     "seconds": 0.4
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "INVALID_BREAKPOINT",
+    "message": "Line 615 of src/main/java/com/fasterxml/jackson/databind/introspect/POJOPropertiesCollector.java has no code to stop at; executable lines nearby: 604, 607, 610, 613, 614, 625 (see `peeky describe`)",
+    "hint": "Choose a line from `peeky describe` breakpoint_lines.",
+    "retryable": false
+   },
+   "leftover_processes": 3
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of testJsonIgnoreSerialization, the first failing test",
+   "at": "src/test/java/com/fasterxml/jackson/databind/introspect/Transient3948Test.java:59",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at src/test/java/com/fasterxml/jackson/databind/introspect/Transient3948Test.java:59 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/src/test/java/com/fasterxml/jackson/databind/introspect/Transient3948Test.java:59",
+    "function": "Transient3948Test.testJsonIgnoreSerialization()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 3,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "obj1",
+      "value": "Transient3948Test$Obj@1406"
+     },
+     {
+      "name": "json",
+      "value": "\"{\"a\":\"hello\",\"b\":\"world\",\"cat\":\"jackson\",\"dog\":\"databind\"}\""
+     },
+     {
+      "name": "this",
+      "value": "Transient3948Test@1408"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 7
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:43:38+00:00"
+}

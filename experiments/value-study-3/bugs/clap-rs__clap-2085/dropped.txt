@@ -1,0 +1,12 @@
+stage: 3 (reach check)
+reason: not reached. Both points (gold src/output/help.rs:356, the fix's only hunk; assertion
+tests/help.rs:781) were refused at the build:
+  [BUILD_FAILED] The build failed: cargo exited with code 101
+  error: specification `clap` is ambiguous
+  help: re-run this command with one of the following specifications
+    clap@2.34.0
+    clap@3.0.0-beta.1
+  (The dev-dependency criterion 0.3 brings clap 2 into Cargo.lock, so Peeky's `-p clap` is
+  ambiguous, #499, as for clap-2161, -2696 and -3391.) The image's prebuild failed the same way.
+Steps 1 and 2 passed: base unsolved, gold-1/gold-2 solved; Peeky image: gold solved, noop not solved.
+Record: results/reach/3e51ccd7232d/clap-rs__clap-2085.json.

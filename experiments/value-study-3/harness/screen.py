@@ -6,7 +6,9 @@
 
 `survivors` lists the candidates whose bug directory has no dropped.txt and whose reach record in
 <reach dir> is in round 2's "reached" group: a gold point stopped, and `session inspect` read at
-least one value there. It writes candidates/survivors.txt.
+least one value there. The pool's survivors come first. If they are fewer than 50, reserves are
+added in candidates/refill.txt's order until 50 survive or the list ends (README, "Refill"); a
+reserve reached after that doesn't count. It writes candidates/survivors.txt.
 
 `status` reads the screening's control attempts (results/screening/runs, run by
 harness/screen.sh). For each survivor: attempt 1; if it failed, attempts 2 and 3. A candidate is
@@ -37,17 +39,37 @@ import descriptive  # noqa: E402
 SEED = 20261102
 RUNS = ROUND3 / "results" / "screening" / "runs"
 MAX_BUGS, MIN_BUGS, TOTAL, MIN_K, MAX_K = 30, 12, 160, 6, 11
+TARGET = 50
+LANGUAGES = ("python", "java", "c", "cpp", "rust")
+
+
+def survivor_sets(reach_dir):
+    """(the pool's survivors, the refill's counted survivors, its survivors past the end)."""
+    groups = descriptive.reach_groups(reach_dir)
+
+    def reached(bug):
+        return groups.get(bug) == "reached" and not (ROUND3 / "bugs" / bug / "dropped.txt").exists()
+
+    candidates = ROUND3 / "candidates"
+    pool = [b for lang in LANGUAGES for b in (candidates / f"{lang}.txt").read_text().split()]
+    refill = (candidates / "refill.txt").read_text().split()
+    kept = [b for b in pool if reached(b)]
+    counted, after = [], []
+    for bug in refill:
+        if reached(bug):
+            (counted if len(kept) + len(counted) < TARGET else after).append(bug)
+    return kept, counted, after
 
 
 def survivors(reach_dir):
-    groups = descriptive.reach_groups(reach_dir)
-    keep = sorted(
-        bug
-        for bug, group in groups.items()
-        if group == "reached" and not (ROUND3 / "bugs" / bug / "dropped.txt").exists()
-    )
+    kept, counted, after = survivor_sets(reach_dir)
+    keep = sorted(kept + counted)
     (ROUND3 / "candidates" / "survivors.txt").write_text("".join(b + "\n" for b in keep))
-    print("{} survivors of {} reach records in {}".format(len(keep), len(groups), reach_dir))
+    print(
+        "{} survivors: {} of the pool, {} of the refill; {} reached after the refill's end".format(
+            len(keep), len(kept), len(counted), len(after)
+        )
+    )
     return keep
 
 

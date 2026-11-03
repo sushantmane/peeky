@@ -1,0 +1,43 @@
+id: apache__dubbo-10638
+language: java
+repo: apache/dubbo
+source: Multi-SWE-bench
+base_commit: ddd1786578438c68f1f6214bcab600a299245d7d
+upstream: https://github.com/apache/dubbo/pull/10638
+category: E
+categories_applicable: [E, B]
+category_rationale: >-
+  The report gives a unit test with the failing generalize/realize round trip of java.time values;
+  the cause is in PojoUtils and CompatibleTypeUtils, though seeing why realize fails takes
+  java.time's internals and JDK 17's module access.
+traits: [runtime-state]
+traits_rationale: >-
+  A generalize/realize round trip of LocalDateTime, LocalDate or LocalTime throws instead of
+  returning the value, and the fix changes how these values are generalized and parsed back.
+root_cause: >-
+  PojoUtils.generalize (dubbo-common) has no case for java.time's LocalDate, LocalDateTime and
+  LocalTime, so it generalizes them like JavaBeans, into a map of their private fields, which
+  PojoUtils.realize can't turn back into the type (on JDK 17 it can't make their private members
+  accessible). CompatibleTypeUtils.compatibleTypeConvert also parses a string into LocalTime only
+  through LocalDateTime.parse, so a plain time string fails. The fix generalizes the three types to
+  their ISO strings, and parses strings shorter than a date-time with LocalTime.parse.
+test_hint: >-
+  Dubbo builds with Maven on JDK 17, offline (dubbo-common and the poms it needs are installed in
+  ~/.m2): run a test of dubbo-common with
+  `cd /testbed && mvn test -o -pl dubbo-common -Dtest=<TestClass>` (or `-Dtest=<TestClass>#<method>`).
+image: peeky-study/apache__dubbo-10638:control
+build_minutes: 3.9
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  Same image recipe as apache__dubbo-7041: JDK 17 and Maven as in Multi-SWE-bench's image (the
+  base's OpenJDK 17 and Maven 3.8 instead of Ubuntu 22.04's), offline via /root/.m2/settings.xml.
+  One addition: this version's surefire (3.0.0-M5, with the TCP fork node the pom configures)
+  resolves the container's own host name, which a container with no network can't resolve from
+  /etc/hosts, so the image installs libnss-myhostname and puts `myhostname` in nsswitch.conf's
+  hosts line. Dubbo's NetUtils logs warnings with no network interface; the tests pass. eval.sh
+  runs a clean `test` of dubbo-common only, limited to the hidden test class (PojoUtilsTest),
+  instead of the whole project's `clean test`; pass_to_pass is therefore empty (the dataset's are
+  other classes). fail_to_pass is the dataset's (the n2p classes are in other modules, which
+  didn't run once dubbo-common's tests failed; the test patch changes none of them). Test names
+  are classes, as in Multi-SWE-bench's parser.

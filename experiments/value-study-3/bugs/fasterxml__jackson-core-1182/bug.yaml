@@ -1,0 +1,41 @@
+id: fasterxml__jackson-core-1182
+language: java
+repo: fasterxml/jackson-core
+source: Multi-SWE-bench
+base_commit: d14acac9536939886e432d7145670a9210f54699
+upstream: https://github.com/fasterxml/jackson-core/pull/1182
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A feature request: the report names the method and enum to add and what they mean; there is no
+  wrong behavior to trace.
+traits: []
+traits_rationale: >-
+  The fix adds an API (an enum and a method with a default answer, and its delegation), so not
+  runtime-state; nothing is hard to reach and the build is quick.
+root_cause: >-
+  JsonParser has getNumberType(), whose answer for textual formats is loose (every floating-point
+  value claims DOUBLE), and no way to ask for the exact floating-point type. The fix adds the enum
+  JsonParser.NumberTypeFP (FLOAT16, FLOAT32, DOUBLE64, BIG_DECIMAL, UNKNOWN) and a method
+  JsonParser.getNumberTypeFP() that returns UNKNOWN by default, and makes JsonParserDelegate pass
+  the call to its delegate.
+test_hint: >-
+  jackson-core builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test class
+  with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite (about
+  2 minutes).
+image: peeky-study/fasterxml__jackson-core-1182:control
+build_minutes: 2.3
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base, and Peeky launches Java on JDK 9 or
+  later only); the full suite passes at base on 11 (1368 tests). The parent pom
+  jackson-base:2.17.0-SNAPSHOT is gone from every repository (Multi-SWE-bench rewrites it to
+  2.17.4-SNAPSHOT, gone too), so the image installs a stand-in in ~/.m2 (the 2.17.3 release pom
+  under the snapshot version) and leaves pom.xml unchanged. The dataset's FAIL_TO_PASS is empty,
+  because the test patch doesn't compile at base (it uses NumberTypeFP, which the fix adds), so
+  every class is n2p; fail_to_pass is the two classes the test patch changes (NumberParsingTest,
+  TestDelegates): MISSING at base (compile error), PASSED with gold. eval.sh runs those two
+  classes only, so pass_to_pass is empty (the dataset's PASS_TO_PASS is empty too). Dropped at
+  step 3: the failing test can't build at base (and the fix has no gold point: it only adds an
+  enum and methods).

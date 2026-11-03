@@ -1,0 +1,50 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/core/lombok/eclipse/handlers/HandleStandardException.java",
+    "src/core/lombok/javac/handlers/HandleStandardException.java",
+    "test/core/src/lombok/AbstractRunTests.java"
+   ],
+   "class_roots": [
+    "build/lombok-main",
+    "build/tests"
+   ]
+  }
+ },
+ "prepare": [
+  "f=buildScripts/tests.ant.xml && { head -n -1 $f; cat <<'XML'; tail -n 1 $f; } > /root/reach/tests.ant.xml && cp /root/reach/tests.ant.xml $f\n<target name=\"test.instance\" depends=\"test.compile, test.formatter.compile\">\n  <junit printsummary=\"yes\" fork=\"true\" forkmode=\"once\" haltonfailure=\"no\">\n    <jvmarg value=\"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005\" />\n    <formatter classname=\"lombok.ant.SimpleTestFormatter\" usefile=\"false\" unless=\"tests.quiet\" />\n    <classpath location=\"build/ant\" />\n    <classpath refid=\"cp.test\" />\n    <classpath refid=\"cp.stripe\" />\n    <classpath refid=\"packing.basedirs.path\" />\n    <classpath location=\"build/tests\" />\n    <classpath location=\"build/teststubs\" />\n    <test name=\"lombok.transform.TestWithDelombok\" />\n  </junit>\n</target>\nXML"
+ ],
+ "launch": "ant -noinput test.instance",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 600,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/core/lombok/eclipse/handlers/HandleStandardException.java",
+   "line": 74,
+   "why": "first code hunk (ecj handler; the hunk before it is the copyright comment): the removed explicitCall.arguments = {null, null} in generateNoArgsConstructor. No failing test runs it at base (TestWithDelombok runs javac only), so it uses the first failing test, the TestWithDelombok suite"
+  },
+  {
+   "role": "gold",
+   "file": "src/core/lombok/javac/handlers/HandleStandardException.java",
+   "line": 94,
+   "why": "last code hunk (javac handler): the removed args = List.of(message, null) in generateMsgOnlyConstructor; the TestWithDelombok suite runs it first for StandardExceptionWithConstructor.java, the first failing case"
+  },
+  {
+   "role": "assertion",
+   "file": "test/core/src/lombok/AbstractRunTests.java",
+   "match": "assertEquals(String.format(\"Difference in %s on line %d\"",
+   "why": "the harness's comparison of the expected and generated file, which every case of the failing suite runs (as lombok-3215)"
+  }
+ ]
+}

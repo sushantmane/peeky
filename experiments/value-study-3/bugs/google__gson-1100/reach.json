@@ -1,0 +1,48 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java",
+    "gson/src/test/java/com/google/gson/DefaultDateTypeAdapterTest.java"
+   ],
+   "class_roots": [
+    "gson/target/classes",
+    "gson/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -pl gson -Dtest=com.google.gson.DefaultDateTypeAdapterTest#testNullValue -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "Gold points: the first hunk is a pure insertion at the start of write (point: the statement after it, the synchronized block); the last changes read's token check. The only failing test is testNullValue; at base its first call, fromJson(\"null\"), throws in read before toJson(null) reaches write.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java",
+   "line": 87,
+   "why": "the statement after the inserted null check in write (first hunk): the synchronized formatting block"
+  },
+  {
+   "role": "gold",
+   "file": "gson/src/main/java/com/google/gson/DefaultDateTypeAdapter.java",
+   "line": 95,
+   "why": "the changed token check in read (last hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "gson/src/test/java/com/google/gson/DefaultDateTypeAdapterTest.java",
+   "line": 166,
+   "why": "the first assertion of testNullValue (assertNull of fromJson(\"null\"))"
+  }
+ ]
+}

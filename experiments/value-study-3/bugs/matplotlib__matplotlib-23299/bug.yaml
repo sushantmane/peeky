@@ -1,0 +1,42 @@
+id: matplotlib__matplotlib-23299
+language: python
+repo: matplotlib/matplotlib
+source: SWE-bench Verified
+base_commit: 3eadeacc06c9f2ddcdac6ae39819faa9fbee9e39
+upstream: https://github.com/matplotlib/matplotlib/pull/23299
+category: D
+categories_applicable: [D]
+category_rationale: >-
+  The figures vanish only after a particular sequence: the backend is still unresolved when
+  rc_context is entered, the first figure resolves it inside the context, and get_backend() is
+  called after the context exits.
+traits: [runtime-state]
+traits_rationale: >-
+  The report shows wrong state (Gcf.figs empties after get_backend()), and the fix changes which
+  rcParams values rc_context keeps and restores across the context. rc_context runs directly
+  from the test, in the same process.
+root_cause: >-
+  rc_context in lib/matplotlib/__init__.py copies every rcParam on entry, including 'backend',
+  and restores the copy on exit. When the backend is still the automatic sentinel on entry and is
+  resolved inside the context (by creating a figure), the exit puts the sentinel back, so the next
+  get_backend() resolves the backend again as a switch and closes every figure. The fix leaves
+  'backend' out of the saved copy, so rc_context never resets it.
+test_hint: >-
+  The Python 3.11 venv at /opt/venv is on PATH, with matplotlib installed in editable mode (C
+  extensions already built). Run tests with `cd /testbed && pytest lib/matplotlib/tests/<file>.py`.
+python: "3.11"
+image: peeky-study/matplotlib__matplotlib-23299:control
+build_minutes: 10.6
+grade_minutes: 0.02
+pass_to_pass_removed: []
+notes: >-
+  Same recipe as matplotlib__matplotlib-23476: SWE-bench spec for matplotlib 3.5 (Python 3.11,
+  its pip pins), installed with uv into a venv; environment.yml's conda packages are replaced by
+  their PyPI test subset (no GUI toolkits, docs or lint tools), plus ghostscript and libcairo2
+  from apt instead of the spec's texlive/imagemagick install. The C extensions build against the
+  bundled FreeType 2.6.1, which setup.py downloads at image build. Installed with
+  --no-build-isolation against the pinned setuptools 68.1.2. The build's 10.6 minutes are mostly
+  the clone (9.3 min); pip install takes under a minute. Grading runs
+  lib/matplotlib/tests/test_rcparams.py, the only file the test patch touches;
+  test_rcparams_update and test_rcparams_init fail at base and with gold (pytest 8's
+  pytest.warns inside pytest.raises) and aren't in PASS_TO_PASS.

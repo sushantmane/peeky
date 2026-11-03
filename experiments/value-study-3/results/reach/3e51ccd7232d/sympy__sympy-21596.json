@@ -1,0 +1,121 @@
+{
+ "bug": "sympy__sympy-21596",
+ "language": "python",
+ "category": "D",
+ "image": "peeky-study/sympy__sympy-21596:peeky-r3",
+ "image_id": "sha256:8deaf8717584392649df392ea837fde91a511daea256dde0047dbe69e72ad952",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:25:10+00:00",
+ "needs": [],
+ "notes": "bin/test has no .py suffix, so prepare copies it unchanged to bin/reach_test.py, beside the get_sympy.py it imports, as sympy__sympy-17318's corrected run does (Peeky's --run needs a .py entry inside the root).",
+ "prepare": [
+  {
+   "command": "cp bin/test bin/reach_test.py && ls -l bin/reach_test.py",
+   "exit": 0,
+   "seconds": 0.0,
+   "output": "-rwxr-xr-x 1 root root 3991 Nov  3 05:25 bin/reach_test.py\n"
+  }
+ ],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the removed solve_linear of the imaginary part in intersection_sets(ImageSet, Set)'s Reals branch, the first executable line the only code-changing hunk removes (the line before it is a comment)",
+   "at": "sympy/sets/handlers/intersection.py:307",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/sets/handlers/intersection.py:307 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/sets/tests/test_fancysets.py -k test_imageset_intersect_real",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/sets/handlers/intersection.py:307",
+    "function": "intersection_sets"
+   },
+   "moved": false,
+   "values": {
+    "shown": 12,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "base_set",
+      "value": "Integers"
+     },
+     {
+      "name": "f",
+      "value": "n + I*(n - 1)*(n + 1)"
+     },
+     {
+      "name": "f_",
+      "value": "_n + I*(_n - 1)*(_n + 1)"
+     },
+     {
+      "name": "gm",
+      "value": "None"
+     },
+     {
+      "name": "ifree",
+      "value": "{n}"
+     },
+     {
+      "name": "im",
+      "value": "(n - 1)*(n + 1)"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 2
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "sympy/sets/tests/test_fancysets.py:661",
+   "commands": [
+    {
+     "command": "peeky session start . --run bin/reach_test.py --at sympy/sets/tests/test_fancysets.py:661 --name reach --timeout 300 --json -- -C --verbose --no-subprocess sympy/sets/tests/test_fancysets.py -k test_imageset_intersect_real",
+     "exit": 0,
+     "seconds": 0.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/sympy/sets/tests/test_fancysets.py:661",
+    "function": "test_imageset_intersect_real"
+   },
+   "moved": false,
+   "values": {
+    "shown": 2,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "I",
+      "value": "I"
+     },
+     {
+      "name": "n",
+      "value": "n"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 4
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:25:13+00:00"
+}

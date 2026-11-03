@@ -1,0 +1,68 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "The fix is in clap_derive, a proc-macro crate: its lines run inside rustc while the failing test's crate compiles, not in the test binary. No failing test runs them, so each gold point runs the first failing test (clap_derive's help test target), as the test runs.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "clap_derive/src/attrs.rs",
+   "line": 288,
+   "why": "`is_enum: false`, the field initializer after the inserted `help_heading: None` in Attrs::new's struct literal (first code hunk, a pure insertion; the hunk above adds a struct field, a declaration)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "app_help_heading_applied",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "clap_derive/src/parse.rs",
+   "line": 110,
+   "why": "the `_ => Ok(NameExpr(name, expr))` arm after the inserted \"help_heading\" arm in ClapAttr::parse (last code hunk, a pure insertion)",
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "app_help_heading_applied",
+    "--test-threads=1"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "clap_derive/tests/help.rs",
+   "line": 49,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "app_help_heading_applied",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "clap_derive"
+   ],
+   "run": {
+    "package": "clap_derive",
+    "test": "help"
+   },
+   "vendor": "vendor"
+  }
+ }
+}

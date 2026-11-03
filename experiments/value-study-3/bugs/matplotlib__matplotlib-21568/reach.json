@@ -1,0 +1,28 @@
+{
+ "kind": "python",
+ "target": ".",
+ "options": [
+  "--run-module",
+  "pytest"
+ ],
+ "program": [
+  "-q",
+  "-p",
+  "no:cacheprovider",
+  "lib/matplotlib/tests/test_dates.py::test_date_formatter_usetex[delta2-expected2]"
+ ],
+ "timeout": 600,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/matplotlib/dates.py",
+   "line": 599,
+   "why": "the first statement the only code hunk changes, in _wrap_in_tex (the line before it is a comment)"
+  },
+  {
+   "role": "assertion",
+   "file": "lib/matplotlib/tests/test_dates.py",
+   "line": 345
+  }
+ ]
+}

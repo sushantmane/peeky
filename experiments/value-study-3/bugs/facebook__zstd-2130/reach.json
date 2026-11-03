@@ -1,0 +1,36 @@
+{
+ "kind": "c",
+ "target": ".",
+ "options": [
+  "--binary",
+  "tests/fuzzer"
+ ],
+ "program": [
+  "-v",
+  "-T1mn"
+ ],
+ "prepare": [
+  "CFLAGS=-O0 LDFLAGS=-Wl,--build-id=sha1 make -C tests fuzzer CC=clang-18 MOREFLAGS='-g -gdwarf-5 -grecord-command-line -fdebug-macro' > /root/reach/rebuild.log 2>&1; tail -3 /root/reach/rebuild.log"
+ ],
+ "timeout": 300,
+ "points": [
+  {
+   "role": "gold",
+   "file": "lib/compress/zstd_compress.c",
+   "line": 102,
+   "why": "first hunk that changes a statement: the removed `if (cctx == NULL) {` block of ZSTD_initStaticCCtx, rewritten as one line (the hunks before it change a comment and a signature)"
+  },
+  {
+   "role": "gold",
+   "file": "lib/compress/zstd_compress.c",
+   "line": 1461,
+   "why": "last hunk that changes a statement: the call ZSTD_cwksp_bump_oversized_duration(ws, 0) in ZSTD_resetCCtx_internal, which the fix makes conditional (the hunk after it only removes trailing whitespace in ZSTD_copyCCtx_internal, and the other files' hunks are comments)"
+  },
+  {
+   "role": "assertion",
+   "file": "tests/fuzzer.c",
+   "line": 347,
+   "why": "\"all tests\" first fails in test-fuzzer (the test patch's checks are in fuzzer.c; test-zstd and test-fullbench run before it and pass); the fuzzer program's first check, in basicUnitTests, which main runs first"
+  }
+ ]
+}

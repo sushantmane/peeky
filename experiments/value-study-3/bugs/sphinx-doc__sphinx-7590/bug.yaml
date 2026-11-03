@@ -1,0 +1,41 @@
+id: sphinx-doc__sphinx-7590
+language: python
+repo: sphinx-doc/sphinx
+source: SWE-bench Verified
+base_commit: 2e506c5ab457cba743bb47eb5b8c8eb9dd51d23d
+upstream: https://github.com/sphinx-doc/sphinx/pull/7590
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report says what is missing (user-defined literals in C++ expressions) and links the parser
+  function where literals are parsed; the state is the parser's position in one string.
+traits: [hard-to-reach]
+traits_rationale: >-
+  The fix adds parsing of a missing construct rather than changing how an existing value is
+  computed. The literal parser runs at the bottom of the recursive-descent expression parser, well
+  over 5 calls below the test.
+root_cause: >-
+  The C++ domain's expression parser (DefinitionParser._parse_literal in sphinx/domains/cpp.py)
+  doesn't support user-defined literals (it ends with a TODO): it skips any 'uUlLfF' characters
+  after a number and accepts no identifier suffix after a number, string or character literal, so
+  `6.62607015e-34q_J` stops at the suffix and the definition is rejected. The fix adds integer and
+  float suffix regexes (sphinx/util/cfamily.py), parses an identifier right after a literal as a
+  user-defined literal (a new ASTUserDefinedLiteral, with its id mangling and a 'udl' description
+  mode), and uses the same suffix regexes in the C domain's parser.
+test_hint: >-
+  The Python 3.12 venv at /opt/venv is on PATH, with Sphinx installed in editable mode. Run tests
+  with `cd /testbed && python -m pytest tests/<file>.py` (the whole suite is `python -m pytest tests`).
+python: "3.12"
+image: peeky-study/sphinx-doc__sphinx-7590:control
+build_minutes: 2.0
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  SWE-bench spec for sphinx 3.1: `pip install -e .[test]` with the spec's version caps (Jinja2
+  below 3.0, markupsafe 2.0.1 or older, alabaster below 0.7.12, and the sphinxcontrib-applehelp,
+  devhelp, qthelp, htmlhelp and serializinghtml caps), applied as pip constraints instead of
+  editing setup.py, as in the first pass's sphinx images; other packages resolve as of
+  2024-08-01 (docutils 0.21.2, pytest 8.3.2). Python 3.12, on which this checkout's tests run.
+  SWE-bench runs the tests through tox --current-env; eval.sh runs tox.ini's command directly
+  (`pytest -rA --durations 25`, with tox.ini's PYTHONWARNINGS) on tests/test_domain_cpp.py, the
+  only file the test patch touches. The build's 2.0 minutes include a 1.4-minute clone.

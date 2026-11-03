@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.dataformat.xml.ser.JsonAppend578Test": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.dataformat.xml.ser.JsonAppend578Test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.0
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.dataformat.xml.ser.JsonAppend578Test": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 3.2
+ }
+]

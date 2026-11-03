@@ -1,29 +1,33 @@
-# Round 3's no-LLM filter: the first pass
+# Round 3's no-LLM filter: the first pass and the refill
 
-The [README](README.md#the-no-llm-filter) gives the steps and rules. This pass ran on 2 November,
-with Peeky at `3e51ccd7` (the `main` of that day), before ADR 0009. The deciding reach run will be on
-the final Peeky commit, before screening.
+The [README](README.md#the-no-llm-filter) gives the steps and rules. Both passes ran on 2 and 3
+November, with Peeky at `3e51ccd7` (the `main` of those days), before ADR 0009. The deciding reach
+run will be on the final Peeky commit, before screening.
 
-Eight agents built the 68 candidates by one brief, at most 3 Docker builds or containers at once.
-Each candidate's log row is in `candidates/log-<agent>.md`, and its reach record in
+Eight agents built the pool's 68 candidates, and six built the refill's 40, each by a fixed brief,
+with at most 3 Docker builds or containers at once. Each candidate's log row is in
+`candidates/log-<agent>.md` (`log-r-*.md` for the refill), and its reach record in
 `results/reach/3e51ccd7232d/`. The tables come from `harness/filter_table.py
-results/reach/3e51ccd7232d`.
+results/reach/3e51ccd7232d`, and the survivors from `harness/screen.py survivors`.
 
 ## Counts after each step
 
-| Language | Examined | Step 1: control image and grading | Step 2: Peeky image and grading | Step 3: reached |
-| --- | --- | --- | --- | --- |
-| Python | 20 | 16 | 16 | 16 |
-| Java | 16 | 16 | 16 | 10 |
-| C | 8 | 8 | 8 | 3 |
-| C++ | 8 | 8 | 8 | 0 |
-| Rust | 16 | 16 | 16 | 5 |
-| **All** | **68** | **64** | **64** | **34** |
+| Language | Pool: examined | Step 1 | Step 2 | Reached | Refill: examined | Step 1 | Step 2 | Reached | Counted | Survivors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Python | 20 | 16 | 16 | 16 | 14 | 12 | 12 | 10 | 9 | 25 |
+| Java | 16 | 16 | 16 | 10 | 14 | 14 | 14 | 7 | 5 | 15 |
+| C | 8 | 8 | 8 | 3 | 6 | 5 | 5 | 2 | 2 | 5 |
+| C++ | 8 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Rust | 16 | 16 | 16 | 5 | 6 | 5 | 5 | 0 | 0 | 5 |
+| **All** | **68** | **64** | **64** | **34** | **40** | **36** | **36** | **19** | **16** | **50** |
 
-34 survive, so the README's refill rule applies: reserves are examined until 50 survive, or 40
-are examined.
+- **50 survive:** the pool's 34, and the refill's first 16, which the 27th reserve completes.
+  Reserves 28 to 40 were examined at the same time, and 3 of them were reached (gson-1100,
+  lombok-3674, sphinx-7590), but they come after the 50th and don't count.
+- A refill candidate dropped at step 3 as soon as its failing test couldn't build at base, or its
+  fix had no gold point, skipped step 2; it counts under step 2 above.
 
-## Why candidates were dropped
+## The first pass: why candidates were dropped
 
 **Step 1 (4):**
 
@@ -54,6 +58,37 @@ are examined.
   build at base.
 - Peeky's refusals and the two empty stops are reach gaps, filed as #495 to #500, with a comment
   on #483. None was worked around.
+
+## The refill: why candidates were dropped
+
+The refill examined the 40 reserves of [candidates/refill.txt](candidates/refill.txt). Of those up
+to the 27th, where the refill ends:
+
+| Why | Candidates (refill #) |
+| --- | --- |
+| Step 1: doesn't run on CPython 3.11 or 3.12 | astropy-7606 (7) |
+| Step 1: a failing test already passes at base | clap-2642 (18) |
+| The failing test can't build at base | zstd-1080 (17), jackson-core-1182 (22) |
+| No gold point | jackson-dataformat-xml-590 (10), lombok-2792 (20) |
+| No stop: the failing tests fail before the gold lines | jackson-core-1016 (2) |
+| Refused: an empty `[patch]` table (#498) | nushell-13870 (6) |
+| Refused: a C++ unit with a `<stdin>` line table (#495) | ponyc-4067 (23) |
+| Refused: a version 1 Cargo.lock (#503) | ripgrep-1294 (24) |
+| Stopped with no locals, and generic code (#502) | tracing-2001 (12) |
+
+After the 27th: sphinx-9461 and zstd-1008 at step 1; django-13794 (no gold point), sympy-16597
+(no stop), clap-2085 (#499), clap-2882 (a procedural macro, #504), jackson-databind-4048 (the
+point's line, `} else {`, has no code), and fastjson2-2285 and gson-1703 (#501) at step 3.
+
+The refill raised no new ruling. Its agents' choices are in each bug's files:
+
+- A hunk that only adds a nested helper function, or a module-level table entry, was taken as a
+  declaration, so astropy-13033, sympy-22080 and sympy-21596 have one gold point each. Each was
+  reached there.
+- matplotlib-21568 drops 7 image tests from its pass-to-pass list. They fail at base and with the
+  fix on CPython 3.11, as the rule for pass-to-pass tests allows.
+- dubbo-10638's image installs `libnss-myhostname`, so its test runner can resolve the
+  container's own name with no network.
 
 ## Rulings after the first pass
 
@@ -97,15 +132,17 @@ Each is in the bug's bug.yaml. None touches the fix or the hidden tests.
 
 ## Survivors
 
-| Language | Candidates |
-| --- | --- |
-| Python (16) | astropy-14598, -8707, -13977, -13236, -8872; matplotlib-23476, -26208, -24870; sympy-17318; pylint-8898; django-11820, -12325, -13195, -11400; pytest-10356; sphinx-10435 |
-| Java (10) | jackson-databind-4087, -3716, -3666, -3509; lombok-3215; logstash-16579, -16094, -15928; fastjson2-82; dubbo-7041 |
-| C (3) | jq-2840; ponyc-4583, -4057 |
-| C++ (0) | |
-| Rust (5) | tokio-5179; ripgrep-2295, -2576; clap-5873, -4005 |
+| Language | The pool | The refill |
+| --- | --- | --- |
+| Python (25) | astropy-14598, -8707, -13977, -13236, -8872; matplotlib-23476, -26208, -24870; sympy-17318; pylint-8898; django-11820, -12325, -13195, -11400; pytest-10356; sphinx-10435 | matplotlib-23299, -21568; django-11734, -14170; sympy-22080, -21596; scikit-learn-26194; sphinx-7462; astropy-13033 |
+| Java (15) | jackson-databind-4087, -3716, -3666, -3509; lombok-3215; logstash-16579, -16094, -15928; fastjson2-82; dubbo-7041 | mockito-3173; logstash-16681; druid-14092; dubbo-10638; jackson-databind-3851 |
+| C (5) | jq-2840; ponyc-4583, -4057 | zstd-2130; ponyc-4017 |
+| C++ (0) | | |
+| Rust (5) | tokio-5179; ripgrep-2295, -2576; clap-5873, -4005 | |
 
 ## Every candidate
+
+### The pool
 
 | Candidate | Language | Tier | Step 1 | Step 2 | Gold points | Result | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -177,3 +214,48 @@ Each is in the bug's bug.yaml. None touches the fix or the hidden tests.
 | tokio-rs__tracing-1045 | Rust | 1 | ok | ok | refused (BUILD_FAILED); refused (INVALID_REQUEST) | dropped | the failing test doesn't compile at base (BUILD_FAILED) |
 | clap-rs__clap-4005 | Rust | 1 | ok | ok | reached, 6 values | **survives** |  |
 | BurntSushi__ripgrep-2576 | Rust | 1 | ok | ok | reached, 5 values | **survives** |  |
+
+### The refill, in its order
+
+| # | Candidate | Language | Tier | Step 1 | Step 2 | Gold points | Result | Note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | matplotlib__matplotlib-23299 | Python | 1 | ok | ok | reached, 2 values | **survives** |  |
+| 2 | fasterxml__jackson-core-1016 | Java | 1 | ok | ok | no stop; no stop | dropped |  |
+| 3 | django__django-11734 | Python | 1 | ok | ok | reached, 2 values; reached, 6 values | **survives** |  |
+| 4 | mockito__mockito-3173 | Java | 1 | ok | ok | reached, 5 values; reached, 2 values | **survives** |  |
+| 5 | facebook__zstd-2130 | C | 1 | ok | ok | reached, 4 values; reached, 16 values | **survives** |  |
+| 6 | nushell__nushell-13870 | Rust | 1 | ok | ok | refused (UNSUPPORTED); refused (UNSUPPORTED) | dropped |  |
+| 7 | astropy__astropy-7606 | Python | 1 | fail | — | — | dropped |  |
+| 8 | elastic__logstash-16681 | Java | 2 | ok | ok | reached, 4 values | **survives** |  |
+| 9 | sympy__sympy-22080 | Python | 1 | ok | ok | reached, 11 values | **survives** |  |
+| 10 | fasterxml__jackson-dataformat-xml-590 | Java | 2 | ok | skipped | — | dropped |  |
+| 11 | ponylang__ponyc-4017 | C | 1 | ok | ok | reached, 5 values | **survives** |  |
+| 12 | tokio-rs__tracing-2001 | Rust | 1 | ok | ok | reached, 0 values; refused (INVALID_BREAKPOINT) | dropped |  |
+| 13 | scikit-learn__scikit-learn-26194 | Python | 1 | ok | ok | reached, 9 values | **survives** |  |
+| 14 | apache__druid-14092 | Java | 2 | ok | ok | no stop; reached, 5 values | **survives** |  |
+| 15 | sphinx-doc__sphinx-7462 | Python | 1 | ok | ok | reached, 1 values; reached, 1 values | **survives** |  |
+| 16 | apache__dubbo-10638 | Java | 2 | ok | ok | no stop; reached, 2 values | **survives** |  |
+| 17 | facebook__zstd-1080 | C | 1 | ok | skipped | — | dropped |  |
+| 18 | clap-rs__clap-2642 | Rust | 1 | fail | — | — | dropped |  |
+| 19 | matplotlib__matplotlib-21568 | Python | 1 | ok | ok | reached, 3 values | **survives** |  |
+| 20 | projectlombok__lombok-2792 | Java | 2 | ok | skipped | — | dropped |  |
+| 21 | django__django-14170 | Python | 1 | ok | ok | no stop; reached, 4 values | **survives** |  |
+| 22 | fasterxml__jackson-core-1182 | Java | 2 | ok | skipped | — | dropped |  |
+| 23 | ponylang__ponyc-4067 | C | 1 | ok | ok | refused (UNSUPPORTED) | dropped |  |
+| 24 | BurntSushi__ripgrep-1294 | Rust | 1 | ok | ok | refused (UNSUPPORTED); refused (UNSUPPORTED) | dropped |  |
+| 25 | astropy__astropy-13033 | Python | 1 | ok | ok | reached, 3 values | **survives** |  |
+| 26 | fasterxml__jackson-databind-3851 | Java | 2 | ok | ok | reached, 3 values | **survives** |  |
+| 27 | sympy__sympy-21596 | Python | 1 | ok | ok | reached, 12 values | **survives** |  |
+| 28 | alibaba__fastjson2-2285 | Java | 2 | ok | ok | refused (INVALID_REQUEST) | dropped |  |
+| 29 | facebook__zstd-3362 | C | 1 | ok | skipped | — | dropped |  |
+| 30 | clap-rs__clap-2085 | Rust | 1 | ok | ok | refused (BUILD_FAILED) | dropped |  |
+| 31 | sphinx-doc__sphinx-9461 | Python | 1 | fail | — | — | dropped |  |
+| 32 | google__gson-1100 | Java | 2 | ok | ok | no stop; reached, 2 values | reached, after the refill's end |  |
+| 33 | django__django-13794 | Python | 1 | ok | skipped | — | dropped |  |
+| 34 | projectlombok__lombok-3674 | Java | 2 | ok | ok | no stop; reached, 5 values | reached, after the refill's end |  |
+| 35 | facebook__zstd-1008 | C | 1 | fail | — | — | dropped |  |
+| 36 | clap-rs__clap-2882 | Rust | 1 | ok | ok | refused (UNSUPPORTED); refused (UNSUPPORTED) | dropped |  |
+| 37 | sympy__sympy-16597 | Python | 1 | ok | ok | no stop; no stop | dropped |  |
+| 38 | fasterxml__jackson-databind-4048 | Java | 2 | ok | ok | refused (INVALID_BREAKPOINT) | dropped |  |
+| 39 | sphinx-doc__sphinx-7590 | Python | 1 | ok | ok | no stop; reached, 1 values | reached, after the refill's end |  |
+| 40 | google__gson-1703 | Java | 2 | ok | ok | refused (INVALID_REQUEST) | dropped |  |

@@ -1,0 +1,49 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java",
+    "dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java",
+    "dubbo-common/src/test/java/org/apache/dubbo/common/utils/PojoUtilsTest.java"
+   ],
+   "class_roots": [
+    "dubbo-common/target/classes",
+    "dubbo-common/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn -B -o --no-transfer-progress -pl dubbo-common test -Dsurefire.useFile=false -Dtest=PojoUtilsTest#testJava8Time -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "Gold points: the first code hunk is CompatibleTypeUtils' LocalTime conversion (its other hunks are an import and a constant's declaration); the last is PojoUtils.generalize's insertion (its other hunk is imports), whose point is the statement after it. The failing test is PojoUtilsTest; its method that fails is the hidden testJava8Time, which the run filters to. At base, realize throws (line 770) before the first assertion.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/CompatibleTypeUtils.java",
+   "line": 131,
+   "why": "the changed LocalTime conversion in compatibleTypeConvert (first code hunk)"
+  },
+  {
+   "role": "gold",
+   "file": "dubbo-common/src/main/java/org/apache/dubbo/common/utils/PojoUtils.java",
+   "line": 145,
+   "why": "the statement after the inserted java.time branch in generalize (last code hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "dubbo-common/src/test/java/org/apache/dubbo/common/utils/PojoUtilsTest.java",
+   "line": 771,
+   "why": "the first assertion of testJava8Time"
+  }
+ ]
+}

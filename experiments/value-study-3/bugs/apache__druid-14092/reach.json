@@ -1,0 +1,48 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java",
+    "server/src/test/java/org/apache/druid/discovery/DruidLeaderClientTest.java"
+   ],
+   "class_roots": [
+    "server/target/classes",
+    "server/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -pl server -Dtest=org.apache.druid.discovery.DruidLeaderClientTest#test503ResponseFromServerAndCacheRefresh -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 600,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "Gold points: the first two hunks change only Javadoc and go's signature, and the last only adds a new method (no base statement after it in a function). So the first code hunk is go's catch block (its first removed lines are a blank line and `try {`; the point is the first statement, line 157), and the last is the 503/504 branch inserted before `} else { return fullResponseHolder; }` (the statement after it, line 217). The only failing test is test503ResponseFromServerAndCacheRefresh; at base it gets a 503 response with no exception, so it isn't expected to run the catch block.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java",
+   "line": 157,
+   "why": "the first statement the first code hunk removes: rebuilding the request with a re-resolved leader in go's IOException/ChannelException catch block"
+  },
+  {
+   "role": "gold",
+   "file": "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java",
+   "line": 217,
+   "why": "the statement after the inserted 503/504 retry branch in go (last code hunk): returning the response to the caller"
+  },
+  {
+   "role": "assertion",
+   "file": "server/src/test/java/org/apache/druid/discovery/DruidLeaderClientTest.java",
+   "line": 253,
+   "why": "the first assertion of test503ResponseFromServerAndCacheRefresh (the response content is \"hello\")"
+  }
+ ]
+}

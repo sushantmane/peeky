@@ -1,0 +1,76 @@
+{
+ "bug": "BurntSushi__ripgrep-1294",
+ "language": "rust",
+ "category": "E",
+ "image": "peeky-study/burntsushi__ripgrep-1294:peeky-r3",
+ "image_id": "sha256:eb128e5052c0dec8e544b116c5440042efb8f88df32b4fb6a36da4aa95435754",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:21:47+00:00",
+ "needs": [],
+ "notes": "The failing test runs the rg binary (target/debug/rg) in a directory holding `sherlock` and `file.HTML`, with `--path-separator / --glob-case-insensitive --glob *.html Sherlock`; the gold points run that program on the same files under /root/reach/rg, given by its absolute path. complete/_rg (a zsh completion script) isn't program code, and app.rs's second hunk only adds a function.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "flag_heading(&mut args), the statement after the inserted flag_glob_case_insensitive call in all_args_and_flags (first code hunk, a pure insertion)",
+   "at": "src/app.rs:574",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/app.rs:574 --name reach --timeout 300 --json -- --path-separator / --glob-case-insensitive --glob '*.html' Sherlock /root/reach/rg",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky reads only Cargo.lock versions 3 and 4, and /testbed/Cargo.lock is version 1. Delete it and run `cargo generate-lockfile` with this Cargo, which resolves the versions again",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "gold",
+   "why": "the --glob loop, the statement after the inserted case-insensitivity check in ArgMatches::overrides (last code hunk, a pure insertion)",
+   "at": "src/args.rs:1271",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/bin.json --build --at src/args.rs:1271 --name reach --timeout 300 --json -- --path-separator / --glob-case-insensitive --glob '*.html' Sherlock /root/reach/rg",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky reads only Cargo.lock versions 3 and 4, and /testbed/Cargo.lock is version 1. Delete it and run `cargo generate-lockfile` with this Cargo, which resolves the versions again",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  },
+  {
+   "role": "assertion",
+   "why": null,
+   "at": "tests/misc.rs:349",
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/test.json --build --at tests/misc.rs:349 --name reach --timeout 300 --json -- --exact misc::glob_always_case_insensitive --test-threads=1",
+     "exit": 2,
+     "seconds": 0.2
+    }
+   ],
+   "outcome": "refused",
+   "detail": {
+    "code": "UNSUPPORTED",
+    "message": "Peeky reads only Cargo.lock versions 3 and 4, and /testbed/Cargo.lock is version 1. Delete it and run `cargo generate-lockfile` with this Cargo, which resolves the versions again",
+    "hint": "Nothing was built. Change what the message names in the workspace or its configuration, or analyse another package.",
+    "retryable": false
+   },
+   "leftover_processes": 0
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:21:48+00:00"
+}

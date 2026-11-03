@@ -1,0 +1,5 @@
+stage: 3 (reach check), on Peeky 3e51ccd7232d
+reason: not reached. Run: build-peeky/debug/ponyc --path=build/debug/test_lib --output=build-peeky/out test/libponyc-run/regression-4059 (the compiler on the failing test's program, as the libponyc-run runner builds it), Peeky's build.
+- gold src/libponyc/codegen/genopt.cc:193 (HeapToStack::runOnInstruction): refused UNSUPPORTED "src/libponyc/codegen/genopt.cc is a unit Peeky doesn't judge: its line table records no MD5s, and names <stdin>, which clang adds for an inheriting constructor: the likely cause is a #line naming another file, as bison and flex write (bison -l, flex -L), or libc++'s system-header pragma (-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)" (not retryable; nothing ran). The fix is C++ code that includes LLVM's headers; ponyc's C++ units are built with libstdc++, as the prebuilt LLVM requires (known limit #495).
+- assertion: not attempted (the test is a Pony program that the runner, a Pony program, builds and runs).
+steps 1 and 2 passed: base unsolved (regression-4059: building failed: signal 11), gold-1 and gold-2 solved; Peeky image gold solved, noop not solved.

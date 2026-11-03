@@ -1,0 +1,10 @@
+stage: 1 (control image and grading)
+reason: a fail_to_pass test passes at base. fail_to_pass is the two tests the test patch changes
+(Multi-SWE-bench's FAIL_TO_PASS is empty and its n2p tests, the pool tests, aren't touched):
+test-fuzzer (tests/fuzzer.c) and test-zstream (tests/zstreamtest.c). At base, test-fuzzer passes
+(its changed "compress with static CDict" test, over every level, reads past the CDict's buffer but
+doesn't crash) and test-zstream segfaults at the test patch's "dictionary source size and level"
+(validation.json: base test-fuzzer PASSED, test-zstream FAILED; gold-1 and gold-2 both PASSED).
+By the brief, a fail_to_pass test that passes at base makes the candidate ineligible; it wasn't
+edited out. No Peeky image was built and no reach run made.
+needs a decision: test-zstream alone is a real failing test at base (a segfault the fix removes).

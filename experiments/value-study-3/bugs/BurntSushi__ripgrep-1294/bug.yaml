@@ -1,0 +1,38 @@
+id: BurntSushi__ripgrep-1294
+language: rust
+repo: BurntSushi/ripgrep
+source: Multi-SWE-bench
+base_commit: 392682d35296bda5c0d0cccf43bae55be3d084df
+upstream: https://github.com/BurntSushi/ripgrep/pull/1294
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  A feature request: a way to make every -g/--glob pattern case insensitive, as --iglob is. The
+  place is clear from the existing --glob and --iglob flags and the code that builds the overrides.
+traits: []
+traits_rationale: >-
+  A missing flag, not a wrong runtime value; it builds and tests in well under 3 minutes. The
+  tests run the rg binary as a child process, but the change is a flag definition and a check
+  where the glob overrides are built.
+root_cause: >-
+  ripgrep has no option to treat -g/--glob patterns case insensitively: src/app.rs defines no such
+  flag, and ArgMatches::overrides in src/args.rs adds the --glob patterns to the OverrideBuilder
+  case sensitively, turning case_insensitive on only for the --iglob patterns after them. So
+  `--glob-case-insensitive` is rejected as an unknown argument. The fix adds the
+  --glob-case-insensitive switch (and a hidden --no-glob-case-insensitive) to the flag list, and
+  overrides() makes the builder case insensitive before adding the --glob patterns when it's set.
+test_hint: >-
+  Run the integration tests with `cd /testbed && RUSTFLAGS=-Awarnings cargo test --package
+  ripgrep --test integration -- <filter>` (e.g. `-- regression::`); the build cache was made with
+  these RUSTFLAGS. Crate tests: `cargo test -p grep-printer`. The debug binary is target/debug/rg.
+image: peeky-study/burntsushi__ripgrep-1294:control
+build_minutes: 0.3
+grade_minutes: 0.03
+pass_to_pass_removed: []
+notes: >-
+  Rust 1.96 (the base image's toolchain) builds and tests it with the repo's Cargo.lock (the
+  version 1 format, with a [metadata] checksum table). Test command: Multi-SWE-bench runs `cargo
+  test`; eval.sh runs the integration test binary filtered to misc:: (the hidden test file),
+  offline. pass_to_pass is limited to the 82 dataset PASS_TO_PASS tests under misc::. The test
+  patch adds only the FAIL_TO_PASS test (there are no n2p tests). Parser: Multi-SWE-bench's Rust
+  parse_log.

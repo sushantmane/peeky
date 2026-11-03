@@ -1,0 +1,16 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, mockito)",
+ "fail_to_pass": [
+  "java21:test"
+ ],
+ "pass_to_pass": [
+  "classes",
+  "compileJava",
+  "copyMockMethodDispatcher",
+  "jar",
+  "java21:classes",
+  "java21:compileTestJava",
+  "java21:testClasses"
+ ],
+ "timeout_s": 1200
+}

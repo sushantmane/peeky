@@ -1,0 +1,8 @@
+stage: 3 (reach check)
+reason: the failing test can't build at base. The only failing test, test-fuzzer, links tests/fuzzer.c
+with the test patch, whose new check calls ZSTD_getFrameHeader_advanced, which only the fix adds
+(it renames the static ZSTD_getFrameHeader_internal and makes it public). At base the link fails:
+"fuzzer.c:1092: undefined reference to `ZSTD_getFrameHeader_advanced'" (validation's base log).
+So the failing test can't run at base, and no Peeky image was built and no reach run made
+(refill brief, change 4).
+step 1 passed: base unsolved (fuzzer doesn't link), gold-1 and gold-2 solved.

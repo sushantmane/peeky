@@ -1,0 +1,39 @@
+id: projectlombok__lombok-3674
+language: java
+repo: projectlombok/lombok
+source: SWE-bench Multilingual
+base_commit: c61a404b410bd482fcd6a48d303fb483932214d0
+upstream: https://github.com/projectlombok/lombok/pull/3674
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The compiler's message names the two constructors that both match, and the handler's generated
+  this(null, null) call is plain in its source; it shows only when another two-argument
+  constructor takes two reference types (D).
+traits: [hard-to-reach]
+traits_rationale: >-
+  The fix changes the generated code's argument expressions (typed nulls), a code template rather
+  than a value computed or kept at run time, so not runtime-state; the handler runs inside javac's
+  annotation processing of the test input, which the test harness drives, far below the test.
+root_cause: >-
+  @StandardException's handlers (javac and Eclipse) generate the no-argument and message-only
+  constructors as calls to this(message, cause) with untyped null literals: this(null, null) and
+  this(message, null). When the class has another two-argument constructor whose parameters are
+  both reference types, such as one from @AllArgsConstructor, javac can't choose between it and
+  (String, Throwable), and the generated call is ambiguous. The fix casts the nulls to
+  java.lang.String and java.lang.Throwable in both generated calls.
+test_hint: >-
+  Lombok builds with ant on JDK 11, offline: `cd /testbed && ant test.compile` compiles lombok and
+  its tests, and `ant test.javacCurrent` runs the javac test suites.
+image: peeky-study/projectlombok__lombok-3674:control
+build_minutes: 3.9
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec (version 3674). Same recipe as round 1's and the first pass's
+  lombok bugs (lombok-3215): the image adds Ubuntu's ant-optional (the base's ant lacks the junit
+  task), and eval.sh adds SWE-bench's test.instance target (TestWithDelombok) to
+  buildScripts/tests.ant.xml at grading time, so the image's working tree is clean; it restores
+  the two changed StandardExceptions.java files and removes the four files the test patch
+  creates. pass_to_pass is the dataset's PASS_TO_PASS (1 case), which passes at base and with
+  gold; the suite's other 340 cases pass too.

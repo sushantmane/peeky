@@ -1,0 +1,8 @@
+{
+  "parser": "parse_log_jackson_dataformat_xml",
+  "fail_to_pass": [
+    "com.fasterxml.jackson.dataformat.xml.ser.JsonAppend578Test"
+  ],
+  "pass_to_pass": [],
+  "timeout_s": 1200
+}

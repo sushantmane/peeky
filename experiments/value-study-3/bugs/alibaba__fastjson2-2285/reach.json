@@ -1,0 +1,42 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "core/src/main/java/com/alibaba/fastjson2/writer/ObjectWriterBaseModule.java",
+    "core/src/test/java/com/alibaba/fastjson2/issues_2200/Issue2269.java"
+   ],
+   "class_roots": [
+    "core/target/classes",
+    "core/target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "./mvnw -B -o --no-transfer-progress -pl core test -Dsurefire.useFile=false -Dtest=Issue2269 -Dmaven.surefire.debug & g=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do grep -q '^State:[[:space:]]*[^Z]' /proc/$g/status 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 300,
+ "timeout": 900,
+ "wait": 900,
+ "notes": "One hunk, a pure insertion inside the @JSONType serializer branch of getBeanInfo; its point is the next statement in the same function (line 222; line 220 is the if block's closing brace).",
+ "points": [
+  {
+   "role": "gold",
+   "file": "core/src/main/java/com/alibaba/fastjson2/writer/ObjectWriterBaseModule.java",
+   "line": 222,
+   "why": "the statement after the inserted writeEnumAsJavaBean assignment in getBeanInfo (the only hunk)"
+  },
+  {
+   "role": "assertion",
+   "file": "core/src/test/java/com/alibaba/fastjson2/issues_2200/Issue2269.java",
+   "line": 21,
+   "why": "the first assertion of Issue2269.test (the serialized JSON)"
+  }
+ ]
+}

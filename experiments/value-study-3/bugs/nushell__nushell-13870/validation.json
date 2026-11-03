@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "shell::pipeline::commands::external::collecting_failed_command_result_dont_raise_error": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 3.3
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "shell::pipeline::commands::external::collecting_failed_command_result_dont_raise_error": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 18.3
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "shell::pipeline::commands::external::collecting_failed_command_result_dont_raise_error": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 18.5
+ }
+]

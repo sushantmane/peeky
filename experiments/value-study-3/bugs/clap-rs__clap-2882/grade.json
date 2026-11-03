@@ -1,0 +1,11 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, Rust)",
+ "fail_to_pass": [
+  "app_help_heading_applied",
+  "app_help_heading_flattened"
+ ],
+ "pass_to_pass": [
+  "arg_help_heading_applied"
+ ],
+ "timeout_s": 1200
+}

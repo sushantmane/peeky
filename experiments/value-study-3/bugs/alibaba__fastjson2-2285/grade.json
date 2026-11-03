@@ -1,0 +1,25 @@
+{
+ "parser": "parse_log (Multi-SWE-bench, fastjson2)",
+ "fail_to_pass": [
+  "com.alibaba.fastjson2.issues_2200.Issue2269"
+ ],
+ "pass_to_pass": [
+  "com.alibaba.fastjson2.issues_2200.Issue2202",
+  "com.alibaba.fastjson2.issues_2200.Issue2205",
+  "com.alibaba.fastjson2.issues_2200.Issue2206",
+  "com.alibaba.fastjson2.issues_2200.Issue2211",
+  "com.alibaba.fastjson2.issues_2200.Issue2213",
+  "com.alibaba.fastjson2.issues_2200.Issue2217",
+  "com.alibaba.fastjson2.issues_2200.Issue2222",
+  "com.alibaba.fastjson2.issues_2200.Issue2226",
+  "com.alibaba.fastjson2.issues_2200.Issue2230",
+  "com.alibaba.fastjson2.issues_2200.Issue2231",
+  "com.alibaba.fastjson2.issues_2200.Issue2233",
+  "com.alibaba.fastjson2.issues_2200.Issue2234",
+  "com.alibaba.fastjson2.issues_2200.Issue2239",
+  "com.alibaba.fastjson2.issues_2200.Issue2264",
+  "com.alibaba.fastjson2.issues_2200.Issue2276",
+  "com.alibaba.fastjson2.issues_2200.Issue2283"
+ ],
+ "timeout_s": 1200
+}

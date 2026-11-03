@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566": "FAILED"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 6.7
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 7.2
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 6.8
+ }
+]

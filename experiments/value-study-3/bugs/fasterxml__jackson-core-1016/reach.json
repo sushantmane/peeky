@@ -1,0 +1,48 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/core/JsonFactory.java",
+    "src/main/java/com/fasterxml/jackson/core/json/async/NonBlockingJsonParserBase.java",
+    "src/test/java/com/fasterxml/jackson/core/json/JsonFactoryTest.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.core.json.JsonFactoryTest#testCanonicalizationEnabled -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 600,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/core/JsonFactory.java",
+   "line": 1302,
+   "why": "first hunk: the changed makeChild(...) call in createNonBlockingByteArrayParser. No failing test runs it at base (both fail at the DataInput parser's assertNotSame first), so it uses the first failing test, testCanonicalizationEnabled"
+  },
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/core/json/async/NonBlockingJsonParserBase.java",
+   "line": 794,
+   "why": "last hunk, a pure insertion in _addName: the statement just after it (if (lastQuadBytes < 4)). No failing test runs it at base either; the first failing test, testCanonicalizationEnabled"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/core/json/JsonFactoryTest.java",
+   "line": 335,
+   "why": "the first assertion testCanonicalizationEnabled runs: assertToken in verifyCanonicalizationTestResult, which doCanonicalizationTest calls first"
+  }
+ ]
+}

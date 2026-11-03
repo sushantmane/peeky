@@ -1,0 +1,41 @@
+id: facebook__zstd-1008
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: 823a28a1f4cb89be7ec22ee5d34754b54e9f2b6e
+upstream: https://github.com/facebook/zstd/pull/1008
+category: D
+categories_applicable: [C, D]
+category_rationale: >-
+  The overflow needs a dictionary digested at one level and a context whose parameters differ
+  from it (high levels, searchLength 3), so the context's hashLog3 exceeds the dictionary's; the
+  state is the match-state tables' layout in two workspaces.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  Compression with a CDict of a high level overflows a heap buffer (a crash), and the fix changes
+  how the tables' sizes are computed and copied. The copy runs in ZSTD_resetCCtx_usingCDict,
+  several calls below the test's ZSTD_compress_generic.
+root_cause: >-
+  In lib/compress/zstd_compress.c, a CDict's match state is sized and laid out with a hashLog3
+  computed from its own parameters, while ZSTD_resetCCtx_usingCDict copies the tables into the
+  context with a size that includes the context's own hashTable3 (from its hashLog3), so it reads
+  past the end of the dictionary's tables when the context's hashLog3 is larger (high levels,
+  searchLength 3): a heap-buffer-overflow. The fix gives dictionaries no hashTable3 (hashLog3 is 0
+  unless the match state is for a context with searchLength 3), copies only the hash and chain
+  tables, and zeroes the context's hashTable3.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (library and CLI). The test programs are in tests/: `cd /testbed && make -C tests test` builds and runs them all, or run one `test-<name>` target of tests/Makefile.
+  The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-1008:control
+build_minutes: 1
+grade_minutes: 3.5
+pass_to_pass_removed: []
+notes: >-
+  Multi-SWE-bench's FAIL_TO_PASS and PASS_TO_PASS are empty, and its n2p tests (the pool tests
+  testInvalid, testOrder) aren't touched by the test patch, so fail_to_pass is the tests the test
+  patch changes: test-fuzzer (tests/fuzzer.c) and test-zstream (tests/zstreamtest.c), run in
+  `make test`'s order and stopping at the first failure, times shortened (-T1mn, -T30s), as for
+  facebook__zstd-836. At base test-fuzzer passes (its changed static-CDict test reads past the
+  buffer without crashing) and test-zstream segfaults in the test patch's "dictionary source size
+  and level"; with the fix both pass. A fail_to_pass test passes at base, so the candidate is
+  ineligible (dropped at step 1). GCC 13 replaces Ubuntu 20.04's GCC 9.

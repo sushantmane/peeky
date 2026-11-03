@@ -1,0 +1,41 @@
+{
+ "kind": "java",
+ "target": ".",
+ "options": [
+  "--config",
+  "/root/reach/attach.json"
+ ],
+ "files": {
+  "/root/reach/attach.json": {
+   "port": 5005,
+   "sources": [
+    "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java",
+    "src/test/java/com/fasterxml/jackson/databind/deser/creators/JsonCreatorModeForEnum3566.java"
+   ],
+   "class_roots": [
+    "target/classes",
+    "target/test-classes"
+   ]
+  }
+ },
+ "prepare": [],
+ "launch": "mvn test -B -o -Dtest=com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566#testEnumACreatorModeDelegating -Dmaven.surefire.debug & m=$!; until grep -qE ':138D [0-9A-F]+:0000 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null; do kill -0 $m 2>/dev/null || exit 1; sleep 1; done; echo 'Listening for transport dt_socket at address: 5005 (the test JVM listens; surefire 3 does not show its line)'; wait",
+ "ready": "Listening for transport dt_socket",
+ "launch_timeout": 600,
+ "timeout": 900,
+ "wait": 900,
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/main/java/com/fasterxml/jackson/databind/deser/std/FactoryBasedEnumDeserializer.java",
+   "line": 135,
+   "why": "the removed `if (!p.isExpectedStartObjectToken())` check in deserialize, the only hunk that changes an executable statement (the others change an import and the _propCreator field declaration), so first and last; testEnumACreatorModeDelegating, the first failing test, runs it"
+  },
+  {
+   "role": "assertion",
+   "file": "src/test/java/com/fasterxml/jackson/databind/deser/creators/JsonCreatorModeForEnum3566.java",
+   "line": 148,
+   "why": "the first assertion of testEnumACreatorModeDelegating, the first failing test in file order"
+  }
+ ]
+}

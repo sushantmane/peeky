@@ -1,0 +1,44 @@
+id: facebook__zstd-2130
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: e7d2391e9a75154657183b049b69a7a2effa9724
+upstream: https://github.com/facebook/zstd/pull/2130
+category: D
+categories_applicable: [C, D]
+category_rationale: >-
+  The error appears only after a static context, sized for larger inputs, has compressed small
+  inputs over a hundred times, so the workspace's "oversized" counter reaches its limit; the state
+  lives in the context's workspace bookkeeping across calls.
+traits: [runtime-state, slow-build, hard-to-reach]
+traits_rationale: >-
+  Compression with a reused static context starts returning a memory allocation error, and the fix
+  changes when a counter kept across calls is advanced. `make test`, the failing test, takes about
+  9 minutes; the fixed line runs in ZSTD_resetCCtx_internal, five calls below the test's
+  ZSTD_compressCCtx.
+root_cause: >-
+  In lib/compress/zstd_compress.c, ZSTD_resetCCtx_internal bumps the workspace's "oversized
+  duration" on every reset, for static contexts too. After enough compressions whose needs are
+  far below the workspace's size, the workspace is judged too large for too long and is to be
+  shrunk by reallocating it, which a static context (ZSTD_initStaticCCtx) can't do, so
+  ZSTD_compressCCtx returns a memory_allocation error. The fix bumps the counter only for
+  contexts that aren't static.
+test_hint: |-
+  Build with `cd /testbed && make -j4 HAVE_PTHREAD=1` (library and CLI; this make misreads programs/Makefile's thread check, so pass HAVE_PTHREAD=1 to every make that builds the CLI).
+  The test programs are in tests/: `cd /testbed && make test HAVE_PTHREAD=1 MOREFLAGS="-g -DDEBUGLEVEL=1 -Werror -Wno-error=strict-aliasing"` builds and runs them all, or run one `test-<name>` target of tests/Makefile. The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-2130:control
+build_minutes: 9.5
+grade_minutes: 9.2
+pass_to_pass_removed: []
+notes: >-
+  FAIL_TO_PASS as given ("all tests": Multi-SWE-bench's parser for its PRs 1831-2703 passes it
+  when the log holds make's line for leaving doc/educational_decoder once, i.e. `make test` ran
+  to its last step; the path is /testbed here, not /home/zstd); PASS_TO_PASS is empty. eval.sh
+  runs Multi-SWE-bench's `make; make test`, with the fuzzers' times shortened (-T1mn and -T30s)
+  and two environment adaptations, as for facebook__zstd-1530: -Wno-error=strict-aliasing (GCC 13
+  warns where Ubuntu 20.04's GCC 9 didn't, and `make test` builds the programs with -Werror;
+  MOREFLAGS is given on the command line, so the tests' build gets it too) and HAVE_PTHREAD=1
+  (GNU make 4.3 breaks programs/Makefile's pthread check). At base `make test` stops in
+  test-fuzzer, at the test patch's check that compresses small inputs repeatedly with a static
+  context ("Allocation error : not enough memory"). The Peeky build (peeky.sh) builds tests/fuzzer
+  in place with clang 18 at -O0, through tests/Makefile, as for facebook__zstd-1530.

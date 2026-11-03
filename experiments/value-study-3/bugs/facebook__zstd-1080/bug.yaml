@@ -1,0 +1,36 @@
+id: facebook__zstd-1080
+language: c
+repo: facebook/zstd
+source: Multi-SWE-bench
+base_commit: 99e8063d40c38355f26f97249c8ef3f30e15d5b4
+upstream: https://github.com/facebook/zstd/pull/1080
+category: E
+categories_applicable: [E]
+category_rationale: >-
+  The report is about documentation: ZSTD_frameHeaderSize's docstring doesn't say that it can
+  return an error. The fix documents it and makes the internal frame-header parser public.
+traits: []
+traits_rationale: >-
+  A documentation fix and an API addition, not a wrong computed value: not runtime-state.
+  Building and running the failing test program takes under 2 minutes; the renamed parser runs
+  directly from the test's call.
+root_cause: >-
+  In lib/zstd.h, ZSTD_frameHeaderSize's docstring doesn't say that it returns an error code when
+  srcSize is too small, though it does. The fix documents that, and renames the static
+  ZSTD_getFrameHeader_internal in lib/decompress/zstd_decompress.c to the public
+  ZSTD_getFrameHeader_advanced (declared in zstd.h's advanced decompression API), which can decode
+  a frame header in a chosen format such as ZSTD_f_zstd1_magicless; its callers use the new name.
+test_hint: |-
+  Build with `cd /testbed && make -j4` (library and CLI). The test programs are in tests/: `cd /testbed && make -C tests test` builds and runs them all, or run one `test-<name>` target of tests/Makefile.
+  The fuzzers run for a set time; shorten it with `FUZZERTEST=-T30s ZSTREAM_TESTTIME=-T30s`.
+image: peeky-study/facebook__zstd-1080:control
+build_minutes: 0.6
+grade_minutes: 1.4
+pass_to_pass_removed: []
+notes: >-
+  Multi-SWE-bench's FAIL_TO_PASS and PASS_TO_PASS are empty, and its n2p tests (the pool tests
+  testInvalid, testOrder) aren't touched by the test patch, so fail_to_pass is the test the test
+  patch changes: test-fuzzer (tests/fuzzer.c), the make target eval.sh runs, its time shortened
+  (-T1mn from -T200s), as for facebook__zstd-1107. At base the test patch's fuzzer.c doesn't link
+  (undefined reference to ZSTD_getFrameHeader_advanced, which the fix adds), so the candidate is
+  dropped at step 3 without a Peeky image or a reach run. GCC 13 replaces Ubuntu 20.04's GCC 9.

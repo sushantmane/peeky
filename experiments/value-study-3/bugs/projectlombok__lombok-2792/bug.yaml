@@ -1,0 +1,39 @@
+id: projectlombok__lombok-2792
+language: java
+repo: projectlombok/lombok
+source: SWE-bench Multilingual
+base_commit: 9b3e84717d301d7a6829420f5849cf1465e73131
+upstream: https://github.com/projectlombok/lombok/pull/2792
+category: D
+categories_applicable: [D, B]
+category_rationale: >-
+  The error needs a particular nesting, a val inside a lambda that is an argument in another
+  val's initializer, and comes from the order in which lombok's javac handler visits nested
+  locals relative to javac's attribution of the outer initializer.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The outer val's type can't be resolved because the inner vals in its lambda aren't handled yet
+  when it is, and the fix changes that order; the handler runs inside javac's annotation
+  processing of the test input, which the test harness drives, far below the test method.
+root_cause: >-
+  The javac HandleVal handler replaces `val`/`var` on a local variable by resolving its
+  initializer's type, and it did so in visitLocal, which runs before the local's children are
+  visited. When the initializer holds a lambda whose body declares its own `val`, that inner val
+  is still unresolved while the outer initializer is attributed, so the outer type can't be
+  resolved and lombok reports "Cannot use 'val' here ... Type cannot be resolved". The fix
+  handles locals in endVisitLocal instead, after their children.
+test_hint: >-
+  Lombok builds with ant on JDK 11, offline: `cd /testbed && ant test.compile` compiles lombok and
+  its tests, and `ant test.javacCurrent` runs the javac test suites.
+image: peeky-study/projectlombok__lombok-2792:control
+build_minutes: 2.5
+grade_minutes: 0.1
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 per the SWE-bench spec (version 2792). Same recipe as round 1's and the first pass's
+  lombok bugs (lombok-3215): the image adds Ubuntu's ant-optional (the base's ant lacks the junit
+  task), and eval.sh adds SWE-bench's test.instance target (TestWithDelombok) to
+  buildScripts/tests.ant.xml at grading time, so the image's working tree is clean. pass_to_pass
+  is the dataset's PASS_TO_PASS (300 TestWithDelombok cases), all of which pass at base and with
+  gold. Dropped at step 3: no gold point (the fix only renames the handler method visitLocal to
+  endVisitLocal, a signature).

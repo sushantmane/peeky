@@ -1,0 +1,29 @@
+[
+ {
+  "name": "base",
+  "f2p": {
+   "test_subquery_exclude_outerref (queries.tests.ExcludeTests)": "ERROR"
+  },
+  "p2p_failed": [],
+  "solved": false,
+  "seconds": 0.6
+ },
+ {
+  "name": "gold-1",
+  "f2p": {
+   "test_subquery_exclude_outerref (queries.tests.ExcludeTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.6
+ },
+ {
+  "name": "gold-2",
+  "f2p": {
+   "test_subquery_exclude_outerref (queries.tests.ExcludeTests)": "PASSED"
+  },
+  "p2p_failed": [],
+  "solved": true,
+  "seconds": 0.6
+ }
+]

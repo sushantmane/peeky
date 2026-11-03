@@ -1,0 +1,88 @@
+{
+ "kind": "rust",
+ "target": ".",
+ "timeout": 1500,
+ "notes": "The failing test runs the rg binary (target/debug/rg) in a directory holding `sherlock` and `file.HTML`, with `--path-separator / --glob-case-insensitive --glob *.html Sherlock`; the gold points run that program on the same files under /root/reach/rg, given by its absolute path. complete/_rg (a zsh completion script) isn't program code, and app.rs's second hunk only adds a function.",
+ "points": [
+  {
+   "role": "gold",
+   "file": "src/app.rs",
+   "line": 574,
+   "why": "flag_heading(&mut args), the statement after the inserted flag_glob_case_insensitive call in all_args_and_flags (first code hunk, a pure insertion)",
+   "options": [
+    "--config",
+    "/root/reach/bin.json",
+    "--build"
+   ],
+   "program": [
+    "--path-separator",
+    "/",
+    "--glob-case-insensitive",
+    "--glob",
+    "*.html",
+    "Sherlock",
+    "/root/reach/rg"
+   ]
+  },
+  {
+   "role": "gold",
+   "file": "src/args.rs",
+   "line": 1271,
+   "why": "the --glob loop, the statement after the inserted case-insensitivity check in ArgMatches::overrides (last code hunk, a pure insertion)",
+   "options": [
+    "--config",
+    "/root/reach/bin.json",
+    "--build"
+   ],
+   "program": [
+    "--path-separator",
+    "/",
+    "--glob-case-insensitive",
+    "--glob",
+    "*.html",
+    "Sherlock",
+    "/root/reach/rg"
+   ]
+  },
+  {
+   "role": "assertion",
+   "file": "tests/misc.rs",
+   "line": 349,
+   "options": [
+    "--config",
+    "/root/reach/test.json",
+    "--build"
+   ],
+   "program": [
+    "--exact",
+    "misc::glob_always_case_insensitive",
+    "--test-threads=1"
+   ]
+  }
+ ],
+ "files": {
+  "/root/reach/bin.json": {
+   "workspace": ".",
+   "analyse": [
+    "ripgrep"
+   ],
+   "run": {
+    "bin": "rg"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/test.json": {
+   "workspace": ".",
+   "analyse": [
+    "ripgrep"
+   ],
+   "run": {
+    "package": "ripgrep",
+    "test": "integration"
+   },
+   "vendor": "vendor"
+  },
+  "/root/reach/rg/sherlock": "For the Doctor Watsons of this world, as opposed to the Sherlock\nHolmeses, success in the province of detective work must always\nbe, to a very large extent, the result of luck. Sherlock Holmes\ncan extract a clew from a wisp of straw or a flake of cigar ash;\nbut Doctor Watson has to have it taken out for him and dusted,\nand exhibited clearly, with a label attached.\n",
+  "/root/reach/rg/file.HTML": "Sherlock"
+ }
+}

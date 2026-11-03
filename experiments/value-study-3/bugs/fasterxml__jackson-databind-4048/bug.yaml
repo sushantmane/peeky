@@ -1,0 +1,40 @@
+id: fasterxml__jackson-databind-4048
+language: java
+repo: fasterxml/jackson-databind
+source: Multi-SWE-bench
+base_commit: 5e94cb1b29a5948737d86f5fe7eaeda318b74910
+upstream: https://github.com/fasterxml/jackson-databind/pull/4048
+category: E
+categories_applicable: [E, D]
+category_rationale: >-
+  The report says it is a 2.15 regression for @JsonIgnore on a transient field and that
+  PROPAGATE_TRANSIENT_MARKER changes it, which points at the transient-field handling in property
+  collection; the ignoral is lost only for a transient field whose getter is otherwise visible (D).
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  The serialized JSON holds a property that @JsonIgnore should drop, because the field carrying
+  the ignoral is dropped before it is recorded, and the fix changes which fields are kept; property
+  collection runs in POJOPropertiesCollector, well over 5 calls below writeValueAsString.
+root_cause: >-
+  POJOPropertiesCollector._addFields drops a transient field with no explicit name early (since
+  2.15, unless PROPAGATE_TRANSIENT_MARKER is on), with a `continue` before the field is added to
+  the properties, even when the field has an explicit ignoral annotation such as @JsonIgnore. The
+  ignoral marker is therefore lost, and the property's getter still serializes the value. The fix
+  drops the transient field only when it isn't explicitly ignored, so the ignoral is kept and
+  applies to the whole property.
+test_hint: >-
+  jackson-databind builds with Maven on JDK 11, offline (dependencies are in ~/.m2): run a test
+  class with `cd /testbed && mvn -o test -Dtest=<TestClass>`; `mvn -o test` runs the whole suite
+  (about 3 minutes).
+image: peeky-study/fasterxml__jackson-databind-4048:control
+build_minutes: 4.4
+grade_minutes: 0.15
+pass_to_pass_removed: []
+notes: >-
+  JDK 11 instead of Multi-SWE-bench's JDK 8 (not in the base, and Peeky launches Java on JDK 9 or
+  later only); the full suite passes at base on 11 (3896 tests). The parent pom
+  jackson-base:2.16.0-SNAPSHOT is gone from every repository, so the image installs a stand-in in
+  ~/.m2 (the 2.16.2 release pom under the snapshot version; core and annotations 2.16.2), as
+  jackson-databind-4087, and leaves pom.xml unchanged. eval.sh runs `mvn -o clean test` on the
+  hidden test file's class only; pass_to_pass is empty because PASS_TO_PASS (622 classes) holds
+  no class from the hidden test file (Transient3948Test is the fail_to_pass class).

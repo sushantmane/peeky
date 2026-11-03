@@ -1,0 +1,2 @@
+stage: 3 (reach check)
+reason: the failing test can't build at base. With test.patch at base, NumberParsingTest and TestDelegates don't compile ("cannot find symbol NumberTypeFP", which the fix adds), so both fail_to_pass classes are MISSING at base (validation.json, base). Also no gold point: the fix only adds an enum (JsonParser.NumberTypeFP) and methods (getNumberTypeFP in JsonParser and JsonParserDelegate). Step 1 is complete (base unsolved, gold-1 and gold-2 solved); per the refill brief, no Peeky image was built and no reach run made.

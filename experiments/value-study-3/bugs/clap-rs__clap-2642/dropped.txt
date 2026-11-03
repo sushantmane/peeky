@@ -1,0 +1,12 @@
+stage: 1 (control image and grading)
+reason: a fail_to_pass test passes at base. fail_to_pass is the dataset's FAIL_TO_PASS
+(app_from_crate) plus the 121 n2p tests the test patch changes by name: tests whose body, or an
+expected-output static or helper they use, the patch changes (fixed before the first grading).
+One of them, no_wrap_help (tests/help.rs), passes at base: it uses MULTI_SC_HELP, which the patch
+changes, both as the app's override_help text and as the expected output, so its result doesn't
+depend on the fix. The other 121 fail at base; gold-1 and gold-2 solve all 122 (pass_to_pass: the
+109 library unit tests, all pass). Not edited out, as the brief says.
+Note: with the narrowest reading of "changed" (only tests whose own fn text the patch changes),
+no_wrap_help wouldn't be a fail_to_pass test. The candidate would then very likely be refused at
+step 3 anyway: its Cargo.lock holds clap 2.34.0 (criterion 0.3, a dev-dependency) and
+3.0.0-beta.2, so `-p clap` is ambiguous (#499), as for clap-2161, -2696 and -3391.

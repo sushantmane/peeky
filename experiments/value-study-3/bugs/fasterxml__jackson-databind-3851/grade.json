@@ -1,0 +1,8 @@
+{
+  "parser": "parse_log_jackson_databind",
+  "fail_to_pass": [
+    "com.fasterxml.jackson.databind.deser.creators.JsonCreatorModeForEnum3566"
+  ],
+  "pass_to_pass": [],
+  "timeout_s": 1200
+}

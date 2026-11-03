@@ -1,0 +1,47 @@
+id: ponylang__ponyc-4017
+language: c
+repo: ponylang/ponyc
+source: Multi-SWE-bench
+base_commit: 10f8a8bc0810b80e0f7ab3aa09fafba98e9f2227
+upstream: https://github.com/ponylang/ponyc/pull/4017
+category: E
+categories_applicable: [C, E]
+category_rationale: >-
+  The report names the cause and the remedy: the earlier fix's tuple check in the flatten pass
+  only looks at the constraint itself, and must also scan a union's members for tuples. The
+  data is the compiler's AST, but the fix is a small recursive check.
+traits: [runtime-state, hard-to-reach]
+traits_rationale: >-
+  ponyc crashes (an assertion in cap_from_constraint) on a union holding a tuple used as a type
+  constraint, and the fix changes the check that decides whether the constraint is an error.
+  flatten_typeparamref runs inside the compiler's pass machinery, many calls below the test.
+root_cause: >-
+  In src/libponyc/pass/flatten.c, flatten_typeparamref rejects a type parameter's constraint
+  only when the constraint itself is a tuple type. A tuple inside a union, reached through a type
+  alias (`type Blocksize is (U8 | (U8, U32))` as `class Block[T: Blocksize]`), passes the check,
+  and a later pass hits an assertion in cap_from_constraint. The fix adds a recursive
+  constraint_contains_tuple that also scans a union's members, and reports the same error for
+  them.
+test_hint: |-
+  The project is configured (debug) and built in /testbed: rebuild with `cd /testbed && make build config=debug` (outputs in build/debug, the compiler is build/debug/ponyc; `make configure config=debug` reconfigures).
+  Run the tests with `cd /testbed && make test config=debug`; it runs the make targets test-core (the gtest binaries, then the runner over test/libponyc-run's programs), test-stdlib-release and test-examples, each of which runs alone too.
+image: peeky-study/ponylang__ponyc-4017:control
+build_minutes: 3.4
+grade_minutes: 0.2
+pass_to_pass_removed: []
+notes: >-
+  FAIL_TO_PASS is empty; fail_to_pass is the n2p tests that the test patch adds or changes by
+  name (FlattenTest.TupleConstraintInUnion, whose body it changes, and
+  FlattenTest.MultipleTuplesConstraintInUnion, which it adds; the old TupleConstraintInUnion,
+  renamed TupleConstraintInAlias, is in PASS_TO_PASS). pass_to_pass is PASS_TO_PASS as given (57:
+  the libponyrt tests, BuildFlagSetTest, SuggestAltNameTest and FlattenTest.TupleConstraintInAlias,
+  which Multi-SWE-bench's shuffled run reached before the crash). eval.sh runs libponyrt.tests and
+  libponyc.tests limited to those three suites, unshuffled; at base libponyc.tests aborts at
+  TupleConstraintInUnion (typeparam.c:338: cap_from_constraint: Assertion `0` failed). Build
+  follows Multi-SWE-bench's ponyc recipe as for ponylang__ponyc-4057 (clang 18 as CC/CXX,
+  -Wno-error in the debug C flags, an empty <linux/dn.h>), on the shared
+  peeky-study/r3-ponyc-llvm:13.0.1 (Dockerfile.llvm in bugs/ponylang__ponyc-4057; same LLVM
+  submodule commit and lib/ tree). The Peeky build (peeky.sh) is ponyc and libponyc.tests at -O0
+  in build-peeky, configured as ponylang__ponyc-4057's, with the targets of
+  ponylang__ponyc-3763's (a gtest failing test); C++ units use libstdc++, as the prebuilt LLVM and
+  Google Test do.

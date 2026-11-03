@@ -1,0 +1,2 @@
+stage: 3 (reach check)
+reason: no gold point. The fix's only change is a method signature in HandleVal.java (visitLocal renamed to endVisitLocal, so the same body runs after the local's children are visited); it changes no executable statement, and signatures don't count. Step 1 is complete (base FAILED, gold-1 and gold-2 PASSED, 300 pass_to_pass all passing); per the refill brief, no Peeky image was built and no reach run made.

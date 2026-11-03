@@ -1,0 +1,160 @@
+{
+ "bug": "apache__druid-14092",
+ "language": "java",
+ "category": "E",
+ "image": "peeky-study/apache__druid-14092:peeky-r3",
+ "image_id": "sha256:c495d6191343b4c2065fa772710177879221297ebc978d2c457e0bd1683b0525",
+ "peeky_sha": "3e51ccd7232d834edcec7e8a6958504a2a071971",
+ "started": "2026-11-03T05:21:50+00:00",
+ "needs": [],
+ "notes": "Gold points: the first two hunks change only Javadoc and go's signature, and the last only adds a new method (no base statement after it in a function). So the first code hunk is go's catch block (its first removed lines are a blank line and `try {`; the point is the first statement, line 157), and the last is the 503/504 branch inserted before `} else { return fullResponseHolder; }` (the statement after it, line 217). The only failing test is test503ResponseFromServerAndCacheRefresh; at base it gets a 503 response with no exception, so it isn't expected to run the catch block.",
+ "prepare": [],
+ "points": [
+  {
+   "role": "gold",
+   "why": "the first statement the first code hunk removes: rebuilding the request with a re-resolved leader in go's IOException/ChannelException catch block",
+   "at": "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:157",
+   "launch": {
+    "ready_seconds": 15.4
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:157 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.9
+    }
+   ],
+   "outcome": "no stop",
+   "detail": {
+    "state": "terminated",
+    "reason": null,
+    "location": null,
+    "function": null
+   },
+   "program": {
+    "state": "terminated",
+    "exit_code": 0,
+    "output_tail": ""
+   },
+   "leftover_processes": 4
+  },
+  {
+   "role": "gold",
+   "why": "the statement after the inserted 503/504 retry branch in go (last code hunk): returning the response to the caller",
+   "at": "server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:217",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:217 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.9
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/server/src/main/java/org/apache/druid/discovery/DruidLeaderClient.java:217",
+    "function": "DruidLeaderClient.go(Request,HttpResponseHandler)"
+   },
+   "moved": false,
+   "values": {
+    "shown": 5,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "request",
+      "value": "Request@6825"
+     },
+     {
+      "name": "responseHandler",
+      "value": "StringFullResponseHandler@6826"
+     },
+     {
+      "name": "counter",
+      "value": "0"
+     },
+     {
+      "name": "fullResponseHolder",
+      "value": "StringFullResponseHolder@6827"
+     },
+     {
+      "name": "this",
+      "value": "DruidLeaderClient@6828"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 8
+  },
+  {
+   "role": "assertion",
+   "why": "the first assertion of test503ResponseFromServerAndCacheRefresh (the response content is \"hello\")",
+   "at": "server/src/test/java/org/apache/druid/discovery/DruidLeaderClientTest.java:253",
+   "launch": {
+    "ready_seconds": 6.2
+   },
+   "commands": [
+    {
+     "command": "peeky session start . --config /root/reach/attach.json --at server/src/test/java/org/apache/druid/discovery/DruidLeaderClientTest.java:253 --name reach --timeout 300 --json",
+     "exit": 0,
+     "seconds": 2.8
+    },
+    {
+     "command": "peeky session inspect --name reach --json",
+     "exit": 0,
+     "seconds": 0.1
+    }
+   ],
+   "outcome": "reached",
+   "detail": {
+    "state": "stopped",
+    "reason": "breakpoint",
+    "location": "/testbed/server/src/test/java/org/apache/druid/discovery/DruidLeaderClientTest.java:253",
+    "function": "DruidLeaderClientTest.test503ResponseFromServerAndCacheRefresh()"
+   },
+   "moved": false,
+   "values": {
+    "shown": 7,
+    "withheld": 0,
+    "sample": [
+     {
+      "name": "druidNodeDiscovery",
+      "value": "$Proxy97@6811"
+     },
+     {
+      "name": "druidNodeDiscoveryProvider",
+      "value": "DruidNodeDiscoveryProvider$$EnhancerByCGLIB$$8e5daa2f@6812"
+     },
+     {
+      "name": "task",
+      "value": "ListenableFutureTask$$EnhancerByCGLIB$$74292afd@6813"
+     },
+     {
+      "name": "spyHttpClient",
+      "value": "NettyHttpClient$MockitoMock$104539147@6814"
+     },
+     {
+      "name": "druidLeaderClient",
+      "value": "DruidLeaderClient@6815"
+     },
+     {
+      "name": "request",
+      "value": "Request@6816"
+     }
+    ],
+    "withheld_sample": []
+   },
+   "leftover_processes": 12
+  }
+ ],
+ "test_patch_applied": true,
+ "ended": "2026-11-03T05:22:34+00:00"
+}
