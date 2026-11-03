@@ -39,21 +39,21 @@ are examined.
 | --- | --- | --- |
 | The failing test can't build at base: it uses what the fix adds | 11 | jackson-databind-2036, -4159; logstash-15964; mockito-3133; json-2576, -1138; zstd-1107; tokio-5781, -6252, -6339; tracing-1045 |
 | No gold point: the fix only adds functions, impls or manifest lines | 5 | jackson-databind-4131, simdjson-1615, fmt-3537, tokio-4384, tokio-7124 |
-| Peeky refused: a C++ unit with a `<stdin>` line table | 3 | json-2866, fmt-1390, fmt-3260 |
-| Peeky refused: Catch2's `-ffile-prefix-map` leaves no absolute path | 1 | Catch2-2723 |
-| Peeky refused: the fix is Pony code | 1 | ponyc-3777 |
-| Peeky refused: a `[patch]` table in Cargo.toml | 2 | nushell-10629, -11292 |
-| Peeky refused: `-p clap` is ambiguous (a dev-dependency brings clap 2.34) | 3 | clap-2161, -2696, -3391 |
-| Stopped, but read no value: debug information over Peeky's 300 MiB limit | 1 | ponyc-3763 |
-| Stopped, but read no value: units compiled inside one link command (`-dumpdir`) | 1 | zstd-836 |
+| Peeky refused: a C++ unit with a `<stdin>` line table (#495) | 3 | json-2866, fmt-1390, fmt-3260 |
+| Peeky refused: Catch2's `-ffile-prefix-map` leaves no absolute path (#496) | 1 | Catch2-2723 |
+| Peeky refused: the fix is Pony code (#497) | 1 | ponyc-3777 |
+| Peeky refused: a `[patch]` table in Cargo.toml (#498; 11292's is empty) | 2 | nushell-10629, -11292 |
+| Peeky refused: `-p clap` is ambiguous (a dev-dependency brings clap 2.34; #499) | 3 | clap-2161, -2696, -3391 |
+| Stopped, but read no value: debug information over Peeky's 300 MiB limit (#483) | 1 | ponyc-3763 |
+| Stopped, but read no value: units compiled inside one link command (`-dumpdir`, #500) | 1 | zstd-836 |
 | No stop: at base, the failing test fails before the gold lines | 2 | fastjson2-1245, zstd-1530 |
 
 - Most of the first kind are Multi-SWE-bench feature requests: the hidden test calls an API the
   fix adds. Such a failing test can't run before the fix, so neither an agent nor Peeky can watch
   it fail. For the refill, a candidate like this is dropped as soon as its test patch fails to
   build at base.
-- Peeky's refusals and the two empty stops are reach gaps, listed for the Peeky work. None was
-  worked around.
+- Peeky's refusals and the two empty stops are reach gaps, filed as #495 to #500, with a comment
+  on #483. None was worked around.
 
 ## Rulings after the first pass
 

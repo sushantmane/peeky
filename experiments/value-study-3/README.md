@@ -107,7 +107,10 @@ least 15 bugs. So if fewer than 50 candidates survive on the final commit, reser
 by the same steps, before screening, until 50 survive or 40 reserves are examined. They are taken
 one at a time in this order of languages: Python, Java, Python, Java, C, Rust, and again. C++ is
 skipped while none of its 8 candidates is reached. Within a language, reserves are taken in their
-order. This rule was set after the first pass, from its yields, before any agent run.
+order. This rule was set after the first pass, from its yields, before any agent run. The order of
+examination is [candidates/refill.txt](candidates/refill.txt). Several reserves are examined at
+once, so survivors are counted in that order: the refill ends at the reserve that brings the
+total to 50, and any examined after it don't count.
 
 ## Screening
 
@@ -253,6 +256,11 @@ two arms and seed. Screening is described apart, with `harness/screen.py status`
   zero. The "solvable" rule limits this. The report lists the kept bugs that no attempt solved.
 - **Only bugs Peeky reaches.** The result says nothing of bugs it can't reach. The filter's
   results show how many that is.
+- **The languages are uneven.** The reach check, not the rule, sets the mix. After the first
+  pass, the 34 survivors are Python 16, Java 10, C 3, C++ 0 and Rust 5 ([FILTER.md](FILTER.md)),
+  and the refill favours Python and Java the same way. So the result speaks mostly to Python and
+  Java, nothing to C++, and little to C and Rust. The report gives the final split, and results
+  by language are exploration only.
 - **A floor.** If both arms solve almost none of the kept bugs, the study has little power.
 - **Weak difficulty signals.** Multi-SWE-bench's submissions are older and weaker than this
   model, so its public rates sort difficulty poorly. The runtime tag is a crude word list.
@@ -303,7 +311,11 @@ one of a few machine-wide slots (3 in the first pass), each limited to 4 CPUs an
 
 ## Deviations
 
-None yet.
+- **A round 2 bug in the reserve.** The rule leaves out rounds 1 and 2's bugs by their ids, compared
+  with case. Multi-SWE-bench writes ripgrep-2209 as `BurntSushi__ripgrep-2209`, and round 1 as
+  `burntsushi__ripgrep-2209`, so it stayed in the Rust reserve, 6th. It is skipped in the refill,
+  and the next Rust reserve takes its place. Nothing else matches a round 1 or 2 bug, with or
+  without case. The pool and the order are otherwise as committed.
 
 ## Files
 
