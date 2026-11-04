@@ -1,5 +1,5 @@
-# CI's Linux lanes on a laptop: Ubuntu 24.04 with LLVM 18 from the signed Ubuntu
-# repositories (as the hosted lanes use), pinned Rust 1.96.0 and JDK 17. LLVM 20
+# CI's Linux lanes, on GitHub Actions and on a laptop: Ubuntu 24.04 with LLVM 18 from the signed
+# Ubuntu repositories, pinned Rust 1.96.0, JDK 17, and CPython 3.11 and 3.13. LLVM 20
 # (same repositories) adds the lldb-dap with readMemory that Rust memory views need.
 # python3-lldb-18 and -20 conflict (both own /usr/lib/python3/dist-packages/lldb),
 # so lldb-20 and its own llvm-20 Python tree are unpacked instead (apt verifies the
@@ -31,3 +31,25 @@ RUN true \
     && /tmp/rustup-init -y --profile minimal --default-toolchain 1.96.0 \
     && rm /tmp/rustup-init
 ENV PATH=/root/.cargo/bin:$PATH
+# CPython 3.11.18 and 3.13.18 for the py311 and py313 lanes, beside Ubuntu's own 3.12. uv 0.13.7,
+# checked against its published SHA-256, installs them, checking each download against the
+# checksum it carries.
+RUN true \
+    && case "$(dpkg --print-architecture)" in \
+      amd64) triple=x86_64-unknown-linux-gnu \
+        sum=c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83 ;; \
+      arm64) triple=aarch64-unknown-linux-gnu \
+        sum=71279f8d3c67241e807b9d8db872d1bf541579fb9f08b7d1eb1682196d1e57dc ;; \
+      *) echo "no pinned uv for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl -sSfL -o /tmp/uv.tar.gz \
+      "https://github.com/astral-sh/uv/releases/download/0.13.7/uv-$triple.tar.gz" \
+    && echo "$sum  /tmp/uv.tar.gz" | sha256sum -c - \
+    && mkdir /tmp/uv && tar -xzf /tmp/uv.tar.gz -C /tmp/uv --strip-components=1 \
+    && export UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_PREFERENCE=only-managed \
+    && /tmp/uv/uv python install 3.11.18 3.13.18 \
+    && ln -s "$(/tmp/uv/uv python find 3.11.18)" /usr/local/bin/python3.11 \
+    && ln -s "$(/tmp/uv/uv python find 3.13.18)" /usr/local/bin/python3.13 \
+    && rm -rf /tmp/uv /tmp/uv.tar.gz \
+    && python3.11 -c 'import ssl, venv, sys; assert sys.version_info[:3] == (3, 11, 18)' \
+    && python3.13 -c 'import ssl, venv, sys; assert sys.version_info[:3] == (3, 13, 18)'

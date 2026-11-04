@@ -760,21 +760,24 @@ def session_at(tmp_path, monkeypatch, name, text):
 
 def test_session_steps_say_when_they_stop_in_another_function(tmp_path, capsys, monkeypatch):
     # A step off `rename`'s last line lands in `run`, and says so, and says why the next
-    # `get` of rename's names finds none.
+    # `get` of rename's names finds none. From Python 3.12 the step stops back on the call's
+    # line, 12; 3.11 runs on to line 13.
     program = session_at(tmp_path, monkeypatch, "calls.py", CALLS)
+    landed = 12 if sys.version_info >= (3, 12) else 13
     try:
         assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
         code, out = run(capsys, "session", "step")
         assert code == 0 and out.out.splitlines()[1:] == ["note: left `rename`; now in `run`"]
         code, out = run(capsys, "session", "get", "items")
-        place = "note: this stop is in run at calls.py:12, after a step from `rename`"
+        place = f"note: this stop is in run at calls.py:{landed}, after a step from `rename`"
         assert code == 1 and place in out.out, out.out
         code, out = run(capsys, "session", "get", "items", "--json")
         (row,) = json.loads(out.out)
         assert row["call_change"] == {"kind": "left", "from": "rename", "to": "run", "calls": 1}
-        code, out = run(capsys, "session", "step", "--json")
-        state = json.loads(out.out)
-        assert state["location"].endswith("calls.py:13") and "call_change" not in state
+        if landed == 12:
+            code, out = run(capsys, "session", "step", "--json")
+            state = json.loads(out.out)
+            assert state["location"].endswith("calls.py:13") and "call_change" not in state
         code, out = run(capsys, "session", "step", "--into", "--json")
         state = json.loads(out.out)
         assert state["call_change"] == {"kind": "deeper", "from": "run", "to": "walk", "calls": 1}
@@ -878,10 +881,13 @@ def test_a_stack_deeper_than_the_bound_gives_no_note_and_steps_on(tmp_path, caps
     # limit for a deep recursion. At most 256 frames are read, and a stack not known to be
     # whole gets no note.
     program = session_at(tmp_path, monkeypatch, "deep.py", DEEP)
+    # On 3.11 the first step, off `return 0`, also leaves the caller, whose line has run: it
+    # stops two calls up (a shallow stack's note says `calls: 2`).
+    first = 1 if sys.version_info >= (3, 12) else 2
     try:
         # 302 frames deep: each step leaves one `deep` for its caller.
         assert run(capsys, "session", "start", program, "--at", "3")[0] == 0
-        for n, args in enumerate(((), ("--into",), ("--out",)), 1):
+        for n, args in enumerate(((), ("--into",), ("--out",)), first):
             code, out = run(capsys, "session", "step", *args, "--json")
             state = json.loads(out.out)
             assert code == 0 and state["location"].endswith("deep.py:4"), (args, state)
