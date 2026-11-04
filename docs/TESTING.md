@@ -1,9 +1,11 @@
 # Testing and delivery budget
 
-## Required CI: the Linux lanes on GitHub Actions
+## Required CI on GitHub Actions
 
 The CI workflow, `.github/workflows/ci.yml`, runs on every pull request, on each push to `main`,
-and by hand. Its jobs run on GitHub's hosted Ubuntu 24.04 runners (x86_64):
+and by hand. Its Linux jobs run on GitHub's hosted Ubuntu 24.04 runners (x86_64), and, once the
+repository is public, its [macOS lanes](#the-macos-lanes-once-the-repository-is-public) on its
+Apple-silicon macOS 26 runners:
 
 - **CI image:** one job builds the image in `scripts/ci_linux` into the Actions cache. Each lane
   job loads it from there, so the image is built again only when its Dockerfile changes.
@@ -45,7 +47,44 @@ and by hand. Its jobs run on GitHub's hosted Ubuntu 24.04 runners (x86_64):
   every job is estimated at two to three runner-hours, from the lanes' local times; measure it on
   the first runs. When the allowance is spent and no budget covers more, GitHub doesn't start the
   jobs, and each says that the spending limit needs to be increased. Standard runners are free
-  for public repositories.
+  for public repositories. A private repository's macOS minutes count ten times, so the macOS
+  lanes are skipped until the repository is public.
+
+### The macOS lanes, once the repository is public
+
+The `macos` job runs five lanes in parallel on `macos-26`, GitHub's Apple-silicon runner image
+(Xcode 26.6), with Python 3.12. It runs only while the repository is public:
+
+```yaml
+if: ${{ !github.event.repository.private }}
+```
+
+On a private repository each macOS minute counts as ten against the Actions allowance; on a
+public one, standard runners are free. While the repository is private, the job shows as
+skipped: run its lanes on a Mac instead ([Local commands](#local-commands)).
+
+| Job | Runs | Timeout |
+| --- | --- | --- |
+| macOS (unit integration) | `tests/unit` and `tests/integration` | 30 min |
+| macOS (c) | the C cases of `tests/native` (`-m "not cpp"`), built by Apple clang | 30 min |
+| macOS (cpp) | every C++ case (`-m cpp tests/cpp tests/native`), built by Apple clang | 30 min |
+| macOS (rust) | `tests/rust` with the pinned Rust 1.96.0, linked by Apple clang | 60 min |
+| macOS (java) | `tests/java` on JDK 17, with the adapter `scripts/setup_java_adapter.py` builds | 20 min |
+
+- `xcrun` finds each tool: lldb-dap, clang, clang++, llvm-dwarfdump and dsymutil, and the macOS
+  SDK. The C, C++ and Rust lanes set the `PEEKY_NATIVE_*` variables to them, and the Rust lane its
+  `PEEKY_RUST_*` too, with rustup's 1.96.0 `cargo` and `rustc`.
+- `PEEKY_EXPECT_READ_MEMORY=1`: Xcode's lldb-dap reads memory, so the tests expect values read
+  whole, as in the LLVM 20 lanes.
+- The image's default JDK is 21; the Java lane uses its JDK 17, as Linux CI does.
+- Homebrew is taken off `PATH`, and the job checks that no GCC is left: the image's Homebrew g++
+  would add GCC cases, which are qualified on Linux only.
+- Not on macOS: CPython 3.11 and 3.13, GCC, LLVM 18 and 20, GDB's DAP, and remote SSH e2e, whose
+  second host is a Docker container.
+- On an Apple-silicon Mac, with the five lanes running at once, their tests took 10 minutes
+  (unit and integration), 11 (C), 12 (C++), 26 (Rust) and 4 (Java). GitHub's runners (3-core M1)
+  are slower: the timeouts are about two and a half times those. Check them against the first
+  hosted runs.
 
 ### The Docker mirror
 
@@ -130,8 +169,8 @@ python -m build
 - The unit tests need SQLite 3.35 or later: some build an older store with `ALTER TABLE … DROP
   COLUMN`, and one uses a `MATERIALIZED` CTE. Peeky itself needs SQLite 3.30 or later.
 
-C conformance on macOS uses the Command Line Tools. Without `PEEKY_NATIVE_DAP`, the native
-integration tests skip, and say so:
+C conformance on macOS uses the Command Line Tools, or Xcode's toolchain, whichever
+`xcode-select -p` names. Without `PEEKY_NATIVE_DAP`, the native integration tests skip, and say so:
 
 ```sh
 export PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)"
@@ -146,7 +185,7 @@ Peeky builds with clang at DWARF 5. `PEEKY_NATIVE_DWARF=4` builds at DWARF 4 ins
 of the native or C++ tests that checks its reading. `tests/native/test_native_dwarf_versions.py`
 compares the two in every clang lane.
 
-C++ conformance on macOS uses the Command Line Tools too:
+C++ conformance on macOS uses them too:
 
 ```sh
 PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)" \
@@ -155,6 +194,26 @@ PEEKY_NATIVE_DWARFDUMP="$(xcrun --find llvm-dwarfdump)" \
 PEEKY_NATIVE_DSYMUTIL="$(xcrun --find dsymutil)" \
 PEEKY_NATIVE_SYSROOT="$(xcrun --show-sdk-path)" \
 pytest tests/cpp --durations=10
+```
+
+The [macOS lanes](#the-macos-lanes-once-the-repository-is-public) run on a Mac with Python 3.12,
+the five variables above exported, and these:
+
+```sh
+export PEEKY_NATIVE_CC="$(xcrun --find clang)" PEEKY_NATIVE_CXX="$(xcrun --find clang++)"
+export PEEKY_EXPECT_READ_MEMORY=1
+pytest tests/unit tests/integration          # unit integration
+pytest -m "not cpp" tests/native             # c
+pytest -m cpp tests/cpp tests/native         # cpp
+# rust: Rust 1.96.0 (rustup toolchain install 1.96.0), linked by clang
+PEEKY_RUST_CARGO="$(rustup which --toolchain 1.96.0 cargo)" \
+PEEKY_RUST_RUSTC="$(rustup which --toolchain 1.96.0 rustc)" \
+PEEKY_RUST_DAP="$PEEKY_NATIVE_DAP" PEEKY_RUST_DWARFDUMP="$PEEKY_NATIVE_DWARFDUMP" \
+PEEKY_RUST_LINKER="$PEEKY_NATIVE_CC" PEEKY_RUST_DSYMUTIL="$PEEKY_NATIVE_DSYMUTIL" \
+pytest tests/rust
+# java: a JDK 17 first on PATH
+python scripts/setup_java_adapter.py --output work/java-adapter
+PEEKY_JAVA_ADAPTER="$PWD/work/java-adapter" pytest tests/java
 ```
 
 ## Live model evaluation
@@ -175,8 +234,23 @@ answers as evidence of a fresh model run.
 and sdist artifacts, which are kept for seven days.
 
 - It does not publish to PyPI, create a release, or deploy a worker.
-- Later release automation should use a release checklist, and explicit decisions about the
-  environment and registry.
+
+## Releases
+
+`Release`, `.github/workflows/release.yml`, runs when a tag `v*` is pushed. Its **build** job
+builds the wheel and sdist once, with no OIDC token, and fails before anything is published
+unless:
+
+- the tagged commit is on `main`;
+- the tag is `v` and the built version, which is `X.Y.Z`;
+- `CHANGELOG.md` has the section `## X.Y.Z (YYYY-MM-DD)`, which becomes the release notes;
+- the wheel, installed in a clean environment, says `peeky X.Y.Z` to `peeky --version`, and passes
+  `scripts/smoke_wheel.py`.
+
+Then **publish to PyPI** uploads those files by trusted publishing, in the `pypi` environment;
+it is the only job that can ask for an OIDC token. Last, **GitHub release** creates the release
+for the tag, with the files attached. It runs no test suite: release a commit whose CI is
+green. [CONTRIBUTING.md](../CONTRIBUTING.md#releasing) has the steps, and the one-time setup.
 
 ## Merge enforcement limitation
 

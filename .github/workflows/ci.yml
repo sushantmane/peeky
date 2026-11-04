@@ -3,7 +3,8 @@ name: CI
 # The Linux lanes run in the CI image (scripts/ci_linux), as scripts/ci_linux/docker_lanes.sh
 # runs them on a laptop. One job builds the image into the Actions cache; each lane job loads it
 # from there, so the image is built once per change to its Dockerfile. Remote SSH e2e runs on the
-# runner itself.
+# runner itself. The macOS lanes run on GitHub's Apple-silicon runners, with Xcode's toolchain,
+# only while the repository is public.
 on:
   pull_request:
   push:
@@ -99,6 +100,99 @@ jobs:
           path: ${{ runner.temp }}/lane-logs
           if-no-files-found: ignore
           retention-days: 7
+
+  macos:
+    name: macOS (${{ matrix.lane }})
+    # A private repository's macOS minutes count ten times against its Actions allowance; a
+    # public repository's are free. These lanes run only while the repository is public.
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-26
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: unit integration
+            tests: tests/unit tests/integration
+            timeout: 30
+          - lane: c
+            setup: xcode
+            tests: -m "not cpp" tests/native
+            timeout: 30
+          - lane: cpp
+            setup: xcode
+            tests: -m cpp tests/cpp tests/native
+            timeout: 30
+          - lane: rust
+            setup: xcode rust
+            tests: tests/rust
+            timeout: 60
+          - lane: java
+            setup: java
+            tests: tests/java
+            timeout: 20
+    env:
+      # Xcode's lldb-dap reads memory, as LLVM 20's does: the tests expect values read whole.
+      PEEKY_EXPECT_READ_MEMORY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.txt
+      - name: Hide Homebrew, whose GCC Peeky isn't qualified with on macOS
+        run: |
+          # The image's Homebrew has g++-13, g++-14 and g++-15: the C++ cases would build with
+          # one too. On macOS, Peeky is qualified with Apple clang only.
+          path=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/opt/homebrew/' | paste -sd: -)
+          echo "PATH=$path" >> "$GITHUB_ENV"
+          PATH=$path python -c 'import sys; sys.path.insert(0, "tests"); from native_compilers import gcc, gxx; assert gcc() is None and gxx() is None, (gcc(), gxx())'
+      - run: python -m pip install -e '.[dev]'
+      - name: Xcode's lldb-dap, clang, llvm-dwarfdump and dsymutil, and the macOS SDK
+        if: ${{ contains(matrix.setup, 'xcode') }}
+        run: |
+          {
+            echo "PEEKY_NATIVE_DAP=$(xcrun --find lldb-dap)"
+            echo "PEEKY_NATIVE_CC=$(xcrun --find clang)"
+            echo "PEEKY_NATIVE_CXX=$(xcrun --find clang++)"
+            echo "PEEKY_NATIVE_DWARFDUMP=$(xcrun --find llvm-dwarfdump)"
+            echo "PEEKY_NATIVE_DSYMUTIL=$(xcrun --find dsymutil)"
+            echo "PEEKY_NATIVE_SYSROOT=$(xcrun --show-sdk-path)"
+          } | tee -a "$GITHUB_ENV"
+          echo "Developer directory: $(xcode-select -p); macOS SDK $(xcrun --show-sdk-version)"
+          "$(xcrun --find clang)" --version
+          "$(xcrun --find lldb-dap)" --version
+      - name: Rust 1.96.0, with Xcode's lldb-dap, linker and dsymutil
+        if: ${{ contains(matrix.setup, 'rust') }}
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --no-self-update
+          {
+            echo "PEEKY_RUST_CARGO=$(rustup which --toolchain 1.96.0 cargo)"
+            echo "PEEKY_RUST_RUSTC=$(rustup which --toolchain 1.96.0 rustc)"
+            echo "PEEKY_RUST_DAP=$PEEKY_NATIVE_DAP"
+            echo "PEEKY_RUST_DWARFDUMP=$PEEKY_NATIVE_DWARFDUMP"
+            echo "PEEKY_RUST_LINKER=$PEEKY_NATIVE_CC"
+            echo "PEEKY_RUST_DSYMUTIL=$PEEKY_NATIVE_DSYMUTIL"
+          } | tee -a "$GITHUB_ENV"
+      - name: JDK 17, and the Java adapter built with it
+        if: ${{ contains(matrix.setup, 'java') }}
+        run: |
+          # The image's default JDK is 21; Linux CI runs JDK 17.
+          jdk=$JAVA_HOME_17_arm64
+          echo "JAVA_HOME=$jdk" >> "$GITHUB_ENV"
+          echo "$jdk/bin" >> "$GITHUB_PATH"
+          PATH="$jdk/bin:$PATH" python scripts/setup_java_adapter.py --output "$RUNNER_TEMP/peeky-java"
+          echo "PEEKY_JAVA_ADAPTER=$RUNNER_TEMP/peeky-java" >> "$GITHUB_ENV"
+      - name: Run the ${{ matrix.lane }} tests
+        run: |
+          started=$SECONDS
+          pytest ${{ matrix.tests }} --durations=10
+          echo "macOS ${{ matrix.lane }}: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
   remote:
     name: remote SSH e2e

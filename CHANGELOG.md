@@ -38,6 +38,13 @@
   `py313` lanes run the unit and integration tests on CPython 3.11 and 3.13, installed in the image
   by uv beside Ubuntu's 3.12. Remote SSH e2e stays on the runner. Runners are pinned to Ubuntu
   24.04.
+- **CI on macOS, once the repository is public:** five lanes on GitHub's Apple-silicon runners,
+  with Python 3.12: the unit and integration tests, C, C++ and Rust with Xcode's clang and
+  lldb-dap, and Java on JDK 17. A private repository's macOS minutes count ten times, so they are
+  skipped until then ([TESTING.md](docs/TESTING.md#the-macos-lanes-once-the-repository-is-public)).
+- **Releases:** pushing a tag `vX.Y.Z` on `main` builds the wheel and sdist, checks them against
+  the tag and this file's dated section, publishes them to PyPI by trusted publishing, and
+  creates the GitHub release with them ([CONTRIBUTING.md](CONTRIBUTING.md#releasing)).
 
 - **The first question on one page (ADR 0009).** `docs/FIRST.md`, 1.2 KB, gives the one
   `--test` command per language and three rules; the guide, `peeky --help`, `peeky probe --help`,
