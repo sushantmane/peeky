@@ -1216,6 +1216,20 @@ peeky describe . --binary ./prog          # each unit, judged or not, and why
 peeky probe . --binary ./prog --at src/x.c:LINE --capture a,b -- ARGS
 ```
 
+Or give the command that runs the test, from the target directory, after `--test --`
+([ADR 0009](../adr/0009-first-question.md)). A binary inside the target directory, with its
+arguments, is `--binary` with them: `peeky probe . --at src/x.c:LINE --capture a,b --test --
+./prog ARGS`. `ctest [--test-dir build] -R NAME` runs the one test `ctest --show-only=json-v1`
+lists for it. ctest's options other than those that select the test (`-R`, `-E`, `-L`, `-LE`,
+`-C`, `--test-dir`) or change only its output (`-V`, `-VV`, `-Q`, `--output-on-failure`) are
+refused: `--repeat`, `-j`, `--timeout`, `--schedule-random` and the rest change the run. So is
+a test ctest would run in another directory than the target directory (its
+`WORKING_DIRECTORY`), with its own `ENVIRONMENT` or `ENVIRONMENT_MODIFICATION`, `DISABLED`, or
+with another property that changes its run; its `TIMEOUT` gets a note. A script, `make test`,
+or a selection of several tests is refused too: give the test's binary. The binary runs in
+Peeky's environment: of yours it gets `PATH`, `TMPDIR`, `TMP`, `TEMP` and the locale, and its
+`HOME` is Peeky's. The result says so.
+
 The flags, for every compile:
 
 ```sh

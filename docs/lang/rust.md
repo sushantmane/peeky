@@ -31,6 +31,20 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - Anything else is a workspace: a crate with dependencies, a library, `build.rs`, several
   members. Vendor its dependencies, name what Peeky analyses and what runs in a JSON file, then
   run `peeky build . --config rust.json` ([Rust 7.2](rust-cookbook.md#a-rust-workspace)).
+- Or give the test's `cargo test` or `cargo run` command after `--test --`, run from the
+  workspace's directory: `peeky probe . --at crates/x/src/lib.rs:LINE --capture a --test -- cargo
+  test -p x --test it name -- --exact`. Peeky makes the config from it. It analyses the `--at`
+  file's package. It runs the test target the command names, or the one that is the `--at` file,
+  with its `--features`, in the package Cargo would pick without `-p` (the root's, or
+  `default-members`). It builds when no build of it is current; a build refused for its
+  provenance stays refused, with its "Build again". The test's filter and the words after
+  cargo's `--` go to the test. `--release`, `--doc`, `--workspace`, `--example`,
+  `--no-default-features` and a toolchain (`+nightly`) are refused, saying why, and so are a
+  runner and the variables that would change Cargo's build or run (`RUSTFLAGS` but lints,
+  `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …). So is a cargo or rustc other than Peeky's pinned
+  toolchain, by its path, `rust-toolchain.toml` or `rustup override`. The test runs in Peeky's
+  environment, not yours, and the result says so
+  ([ADR 0009](../adr/0009-first-question.md#3-rust-the-config-from-cargo-tests-words)).
 - A workspace's analysed packages may be edition 2018 too
   ([ADR 0008](../adr/0008-native-project-reach.md#verified-for-phase-2)).
 - A probe of a workspace never builds it. Without a current build it is refused with

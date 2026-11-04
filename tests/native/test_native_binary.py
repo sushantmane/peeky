@@ -1397,3 +1397,23 @@ def test_a_crash_in_a_shared_library_reads_only_the_binarys_frames(project, caps
     finally:
         main(["session", "close", "--name", "crash"])
         capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_the_test_command_names_the_binary_and_its_arguments(project, monkeypatch, capsys):
+    # `--test -- ./prog a b` is `--binary prog -- a b` (ADR 0009): argc 3, so base is 4,
+    # and scale's first call doubles it.
+    compiler = _clang()
+    _build_text(project, compiler, {})
+    monkeypatch.chdir(project)
+    code = main(
+        ["probe", ".", "--at", f"src/util.c:{SELF_STOP}", "--capture", "x", "--json"]
+        + ["--quiet", "--test", "--", "./prog", "a", "b"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    assert [r.get("value") for r in result["rows"] if r["selector"] == "x"] == ["4"], result
+    assert result["test"] == {"command": "./prog a b", "kind": "binary"}
+    assert result["output"].split() == ["4", "9", "54"]
+    # It ran in Peeky's environment, and the result says so.
+    assert any("HOME is a directory of Peeky's" in w for w in result["warnings"]), result

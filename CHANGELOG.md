@@ -39,6 +39,36 @@
   by uv beside Ubuntu's 3.12. Remote SSH e2e stays on the runner. Runners are pinned to Ubuntu
   24.04.
 
+- **`--test`: the project's own test command names what Peeky runs (ADR 0009).** `peeky probe .
+  --at FILE:LINE --capture a --test -- <command>`, and `session start` and `describe` too. Peeky
+  reads the command, runs the target it names, and says where that run differs:
+  - Python: `python -m pytest …` runs as `--run-module pytest`, and `python script.py …` as
+    `--run`, on the interpreter that command runs. A `pytest` script is refused: Peeky wouldn't
+    run its lines, and `python -m pytest` may import other code. The message gives the `python
+    -m pytest` command, on the interpreter the script's `#!` line names.
+  - Rust: `cargo test [-p P] [--test T | --lib] [--features …] [filter] [-- args]` and `cargo run`
+    make the workspace config: the `--at` file's package is analysed, and the build runs when
+    none of the config is current. A build refused for its provenance stays refused, as with
+    `--build`. The config is saved in the state directory and named in `--json`. A runner Cargo
+    would run the test through, your environment's variables that would change Cargo's build or
+    run (`RUSTFLAGS` but lints, `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …), `$CARGO_HOME`'s
+    configuration where Peeky's build doesn't read it, and a cargo or rustc other than Peeky's
+    pinned toolchain (by release, commit and host: a cargo path, `rust-toolchain.toml`, a rustup
+    override) are refused. A note says the test runs in Peeky's environment, not yours.
+  - C and C++: `./prog args` is `--binary ./prog -- args`; `ctest -R NAME` runs its one test.
+    ctest's options other than selection and output (`--repeat`, `-j`, `--timeout`, …) are
+    refused, and so is a test ctest would run in another directory, with its own `ENVIRONMENT`
+    or `ENVIRONMENT_MODIFICATION`, or another property that changes its run. A note says what of
+    your environment the binary gets.
+  - Environment assignments before the command apply to a Python run. Peeky runs Cargo and a
+    binary in an environment of its own: there, one that wouldn't reach them is refused, and a
+    `RUSTFLAGS` of lints alone gets a note. A command `--test` can't
+    name a target from (a shell line, `make`, `python -m` another module, `cargo test
+    --release`) is refused before anything runs, saying what to give instead. With `--config`,
+    `--run`, `--run-module`, `--python`, `--binary`, `--arg` or `--worker` it is refused. The
+    worker protocol is unchanged.
+  - A Rust probe in an analysed package's file its build didn't read says it may be behind a
+    `#[cfg]` left off, such as a feature (tokio-util's `delay_queue.rs` without `full`).
 - **Where round 2's `peeky-first` set-up went, and ADR 0009.**
   `experiments/value-study-2/SETUP_COST.md` sorts every tool call before each attempt's first
   stop (`harness/setup_cost.py`; a doc's example output printed in the same call isn't taken

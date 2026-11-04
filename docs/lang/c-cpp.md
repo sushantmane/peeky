@@ -1,8 +1,8 @@
 # Peeky for C and C++
 
-This page lists what is different for C and C++ targets, one rule per line. Each rule links to
-its details, in the [C and C++ cookbook](c-cpp-cookbook.md) or the [COOKBOOK](../COOKBOOK.md).
-Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: it has the steps and rules every language shares.
+What differs for C and C++, one rule per line, each linking its details in the
+[C and C++ cookbook](c-cpp-cookbook.md) or the [COOKBOOK](../COOKBOOK.md).
+[AGENT_GUIDE.md](../AGENT_GUIDE.md) has the steps and rules every language shares.
 
 Peeky builds C and C++ with clang or GCC, and debugs both with lldb-dap, LLVM's debugger. It uses
 clang unless `PEEKY_NATIVE_CC` or `PEEKY_NATIVE_CXX`, or a target's `compiler`, names another
@@ -231,8 +231,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 ## A binary your project built
 
 - Build with clang `-O0 -g -gdwarf-5 -grecord-command-line`, and on Linux a build ID. Then
-  `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`. Recipes per build system:
-  [C and C++ 7.1](c-cpp-cookbook.md#debug-a-binary-your-project-built).
+  `peeky probe . --binary ./jq --at src/execute.c:120 --capture x`, or `--test -- ./jq ARGS`
+  ([7.1](c-cpp-cookbook.md#debug-a-binary-your-project-built) has recipes and `--test`).
 - Or name it in a `--config`: `{"binary": "jq", …}`, without `sources`. Either path is relative to
   the target directory, and inside it. Peeky runs the binary there, and writes nothing beside it.
 - `peeky describe . --binary ./jq` lists each unit, judged or not and why:
