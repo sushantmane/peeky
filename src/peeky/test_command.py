@@ -3,8 +3,10 @@
 The words after `--` are the command that runs the failing test, as typed in the directory it
 runs in. Its first word decides the kind:
 
-- Python: `pytest`, `python -m pytest`, or a script, on the interpreter that command runs.
-- C and C++: a binary inside the target directory (`--binary`), or the one test `ctest` names.
+- Python: `python -m pytest`, or a script, on the interpreter that command runs. A `pytest`
+  script is refused, naming the `python -m pytest` command to give instead.
+- C and C++: a binary inside the target directory (`--binary`), or the one test `ctest` names,
+  where ctest would run it as Peeky runs a binary.
 - Rust: `cargo test` or `cargo run`, read into a workspace configuration with `cargo
   metadata`'s help (rust_workspace), which Peeky builds when no build of it is current.
 - Java: Maven, Gradle, `java` and `javac`, which java_test starts.
@@ -26,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from peeky.errors import Refused
+from peeky.textlines import split_lines
 
 ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.S)
 _PYTHON = re.compile(r"python[0-9.]*")
@@ -122,7 +125,7 @@ def plan(words, root, program=None, cwd=None):
     """The TestCommand that ``words`` names, for the target directory ``root`` and the
     `--at` file ``program`` (relative to the root, or None)."""
     test = _plan(words, root, program, cwd)
-    if test.kind in ("binary", "rust") and test.environment:
+    if test.kind in ("binary", "rust"):
         test = _own_environment(test)
     return test
 
@@ -132,8 +135,8 @@ _LINT_WORD = re.compile(r"-[AWDF]\S+|--(?:cap-lints|force-warn)=\S+")
 
 
 def _lints_only(flags):
-    """Whether rustc ``flags`` set only lints (`-Awarnings`, `--cap-lints warn`)."""
-    words = flags.split()
+    """Whether rustc ``flags`` (a list) set only lints (`-Awarnings`, `--cap-lints warn`)."""
+    words = list(flags)
     while words:
         word = words.pop(0)
         if word in _LINT_OPTIONS:
@@ -145,39 +148,43 @@ def _lints_only(flags):
     return True
 
 
+# What a binary --test runs gets of the environment: these (build.INHERITED_ENV), and a
+# HOME of Peeky's own, the debugger's. A Rust test gets none of it (rust_workspace_session).
+_REACHES_BINARY = ("PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL")
+_BINARY_ENVIRONMENT = (
+    "Peeky runs {binary} in an environment of its own: of yours it passes only PATH, TMPDIR, "
+    "TMP, TEMP, LANG and LC_ALL, and HOME is a directory of Peeky's. A test that reads another "
+    "of your variables, or HOME, may run otherwise"
+)
+_RUST_ENVIRONMENT = (
+    "Peeky builds the test with Cargo, and runs its executable itself, in environments of its "
+    "own: Cargo and build scripts get none of your variables, and the test only PATH (the "
+    "toolchain's directory, /usr/bin and /bin), LC_ALL=C, a HOME of Peeky's, "
+    "CARGO_MANIFEST_DIR and, in an integration test, CARGO_BIN_EXE_<name>. `cargo test` would "
+    "pass on your environment, and more CARGO_* variables: a test or build script that reads "
+    "one may run otherwise"
+)
+
+
 def _own_environment(test):
-    """A C, C++ or Rust test command's environment assignments: Peeky runs the binary, and
-    Cargo, in an environment of its own (build.INHERITED_ENV), so others never reach them.
-    A RUSTFLAGS of lints alone changes no code, and is noted; another assignment is refused."""
+    """A C, C++ or Rust test command's environment: Peeky runs the binary, and Cargo and the
+    test, in an environment of its own, so an assignment that wouldn't reach them is
+    refused (Cargo's own variables: _cargo_variables), and a note says what the program gets
+    of yours."""
     from dataclasses import replace
 
-    from peeky.build import INHERITED_ENV
-
-    notes = list(test.notes)
-    for name, value in test.environment:
-        if name in INHERITED_ENV:
+    rust = test.kind == "rust"
+    for name, _ in test.environment:
+        if name in (_FLAGS if rust else _REACHES_BINARY):
             continue
-        flags = test.kind == "rust" and name in ("RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS")
-        if flags and _lints_only(value):
-            notes.append(
-                f"Peeky builds with its own flags, without the command's {name}: it sets only "
-                "lints, which change no code"
-            )
-            continue
-        what = "Cargo and the test" if test.kind == "rust" else "the binary"
         raise _unsupported(
-            f"Peeky runs {what} in an environment of its own, so {name}=… in the test "
-            "command wouldn't reach "
-            + ("them" if test.kind == "rust" else "it")
+            f"Peeky runs {'Cargo and the test' if rust else 'the binary'} in an environment of "
+            f"its own, so {name}=… in the test command wouldn't reach "
+            + ("them" if rust else "it")
             + ": drop it"
-            + (
-                ". Peeky's build takes the project's --cfg flags from its Cargo configuration "
-                "(build.rustflags in .cargo/config.toml)"
-                if flags
-                else ""
-            )
         )
-    return replace(test, notes=tuple(notes))
+    note = _RUST_ENVIRONMENT if rust else _BINARY_ENVIRONMENT.format(binary=test.binary)
+    return replace(test, notes=(*test.notes, note))
 
 
 def _plan(words, root, program, cwd):
@@ -187,7 +194,7 @@ def _plan(words, root, program, cwd):
     if not words:
         raise _invalid(
             "--test takes the command that runs the failing test after `--`: "
-            "peeky probe . --at FILE:LINE --test -- pytest tests/test_x.py::test_y"
+            "peeky probe . --at FILE:LINE --test -- python -m pytest tests/test_x.py::test_y"
         )
     environment = {**os.environ, **dict(assignments)}
     first = words[0]
@@ -195,7 +202,7 @@ def _plan(words, root, program, cwd):
     if name in _SHELLS or any(word in ("&&", "||", ";", "|") for word in words):
         raise _unsupported(
             f"--test runs one command, not a shell line ({shlex.join(words)}): give the "
-            "command that runs the test itself, such as `pytest tests/test_x.py::test_y`"
+            "command that runs the test itself, such as `python -m pytest tests/test_x.py::test_y`"
         )
     if name in _JAVA_TOOLS:
         return TestCommand("java", words, assignments)
@@ -204,11 +211,11 @@ def _plan(words, root, program, cwd):
     if name == "ctest":
         return _ctest(words, assignments, root, environment, cwd)
     if name in ("pytest", "py.test") or _PYTHON.fullmatch(name):
-        return _python(words, assignments, root, environment, cwd, program)
+        return _python(words, assignments, root, environment, cwd)
     if name in _OTHER_TOOLS:
         raise _unsupported(
             f"--test can't run `{name}`: {_OTHER_TOOLS[name]}. Give the command that runs "
-            "the one failing test: its binary with its arguments (C, C++), `pytest …`, "
+            "the one failing test: its binary with its arguments (C, C++), `python -m pytest …`, "
             "`cargo test …`, or the `java` command it runs"
         )
     path = _which(first, environment, cwd)
@@ -217,7 +224,7 @@ def _plan(words, root, program, cwd):
     from peeky.cli import _script_python
 
     if _script_python(path, environment) is not None:
-        return _python(words, assignments, root, environment, cwd, program)
+        return _python(words, assignments, root, environment, cwd)
     if not _inside(path, root):
         raise _unsupported(
             f"--test's program {path} is outside the target directory {root}: Peeky debugs a "
@@ -226,13 +233,15 @@ def _plan(words, root, program, cwd):
     return _binary(words, assignments, path, root, cwd)
 
 
-def _python(words, assignments, root, environment, cwd, program=None):
+def _python(words, assignments, root, environment, cwd):
     from peeky.cli import _script_python
 
     first = words[0]
     path = _which(first, environment, cwd)
     if path is None or not path.is_file():
         raise _invalid(f"--test's command `{first}` is not a file, nor on PATH")
+    if Path(first).name in ("pytest", "py.test"):
+        raise _pytest_script(words, path, environment, cwd)
     if _PYTHON.fullmatch(path.name) and not _script_python(path, environment):
         python, rest = str(path), list(words[1:])
         options = []
@@ -281,17 +290,6 @@ def _python(words, assignments, root, environment, cwd, program=None):
                 f"give `--test -- python {first} …`"
             )
         python = str(_which(python, environment, cwd) or python)
-        if path.name in ("pytest", "py.test"):
-            _same_directory(cwd, root, "pytest")
-            return TestCommand(
-                "python",
-                words,
-                assignments,
-                python=python,
-                module="pytest",
-                arguments=tuple(words[1:]),
-                notes=_root_first(root, program),
-            )
         script, arguments = str(path), tuple(words[1:])
     script_path = Path(os.path.normpath(cwd / script))
     if not script_path.is_file():
@@ -312,19 +310,21 @@ def _python(words, assignments, root, environment, cwd, program=None):
     )
 
 
-def _root_first(root, program):
-    """A note where `pytest` and `python -m pytest` may import different code: the latter,
-    which Peeky runs, puts the root first on `sys.path`, so a package at the root (the
-    `--at` file's) is imported from there, where the `pytest` script finds an installed
-    copy, if one isn't installed editable."""
-    parts = Path(program or "").parts
-    if len(parts) > 1 and (Path(root) / parts[0] / "__init__.py").is_file():
-        return (
-            f"Peeky runs pytest as `python -m pytest`, which imports `{parts[0]}` from the "
-            "root; the `pytest` script imports an installed copy instead, unless it is "
-            "installed editable (`pip install -e .`)",
-        )
-    return ()
+def _pytest_script(words, path, environment, cwd):
+    """The refusal of a `pytest` (or `py.test`) script: Peeky runs pytest only as
+    `python -m pytest`, which neither runs the script's own lines nor imports as it does."""
+    from peeky.cli import _script_python
+
+    found = _script_python(path, environment)
+    python = str(_which(found[0], environment, cwd) or found[0]) if found else "python"
+    return _unsupported(
+        f"--test runs pytest only as `python -m pytest`, not as the `{words[0]}` script "
+        f"({path}): the script's own lines wouldn't run, and `python -m pytest` puts the "
+        "current directory first on sys.path, so it may import other code. Give the "
+        "interpreter you mean: "
+        f"`--test -- {shlex.join([python, '-m', 'pytest', *words[1:]])}`"
+        + (f", the one {path}'s `#!` line names" if found else "")
+    )
 
 
 def _same_directory(cwd, root, what):
@@ -352,11 +352,73 @@ def _binary(words, assignments, path, root, cwd):
     )
 
 
+# ctest's options --test takes: those that select the test (each takes a value), and those
+# that change only what ctest prints. Every other one changes how ctest runs tests (--repeat,
+# --schedule-random, -j, --timeout, --stop-on-failure, a preset, a dashboard …), which Peeky,
+# running the one test's command once, wouldn't do.
+_CTEST_SELECTS = frozenset(
+    {
+        "-R",
+        "--tests-regex",
+        "-E",
+        "--exclude-regex",
+        "-L",
+        "--label-regex",
+        "-LE",
+        "--label-exclude",
+        "-C",
+        "--build-config",
+        "--test-dir",
+    }
+)
+_CTEST_PRINTS = frozenset(
+    {"-V", "--verbose", "-VV", "--extra-verbose", "-Q", "--quiet", "--output-on-failure"}
+)
+# A test's properties that don't change how its command runs: how ctest orders, judges,
+# labels or schedules it. WORKING_DIRECTORY, TIMEOUT and REQUIRED_FILES are checked; any
+# other (ENVIRONMENT, ENVIRONMENT_MODIFICATION, DISABLED, RESOURCE_GROUPS, …) is refused.
+_CTEST_PROPERTIES = frozenset(
+    {
+        "ATTACHED_FILES",
+        "ATTACHED_FILES_ON_FAIL",
+        "COST",
+        "DEPENDS",
+        "FAIL_REGULAR_EXPRESSION",
+        "FIXTURES_CLEANUP",
+        "FIXTURES_REQUIRED",
+        "FIXTURES_SETUP",
+        "LABELS",
+        "MEASUREMENT",
+        "PASS_REGULAR_EXPRESSION",
+        "PROCESSORS",
+        "RESOURCE_LOCK",
+        "RUN_SERIAL",
+        "SKIP_REGULAR_EXPRESSION",
+        "SKIP_RETURN_CODE",
+        "WILL_FAIL",
+    }
+)
+
+
 def _ctest(words, assignments, root, environment, cwd):
-    """The one test `ctest`'s own words select, from `ctest --show-only=json-v1`."""
-    for word in words[1:]:
+    """The one test `ctest`'s own words select, from `ctest --show-only=json-v1`. Refused
+    where ctest would run it otherwise than Peeky runs a binary: another working directory,
+    an environment of the test's own, or an option or property that changes the run."""
+    rest = list(words[1:])
+    while rest:
+        word = rest.pop(0)
         if word in ("-N", "--show-only") or word.startswith("--show-only="):
             raise _invalid("Give --test the ctest command that runs the test, without -N")
+        if word in _CTEST_SELECTS:
+            if not rest:
+                raise _invalid(f"ctest's {word} takes a value")
+            rest.pop(0)
+        elif word not in _CTEST_PRINTS:
+            raise _unsupported(
+                f"--test can't take ctest's {word}: Peeky runs the one test's command once, as "
+                "ctest lists it, and doesn't do what that option does. Select the test with -R, "
+                "-E, -L, -LE, -C and --test-dir only"
+            )
     try:
         listed = subprocess.run(
             [*words, "--show-only=json-v1"],
@@ -378,29 +440,54 @@ def _ctest(words, assignments, root, environment, cwd):
             "runs one. Select one test with -R '^NAME$'"
         )
     test = tests[0]
+    name = test.get("name")
     command = [str(word) for word in test.get("command") or ()]
     if not command:
-        raise _unsupported(f"ctest names no command for test {test.get('name')}")
+        raise _unsupported(f"ctest names no command for test {name}")
     path = Path(command[0])
     if not path.is_file() or not _inside(path, root):
         raise _unsupported(
-            f"ctest's test {test.get('name')} runs {command[0]}, which isn't a file in the "
+            f"ctest's test {name} runs {command[0]}, which isn't a file in the "
             f"target directory {root}"
         )
     properties = {p.get("name"): p.get("value") for p in test.get("properties") or ()}
     notes = []
-    where = properties.get("WORKING_DIRECTORY")
-    if not where or os.path.realpath(where) != os.path.realpath(root):
-        notes.append(
-            f"ctest runs {test.get('name')} in {where or 'the build directory that defines it'}; "
-            "Peeky runs it in the target directory, so a relative path it reads may name "
-            "another file"
-        )
-    if environment_property := properties.get("ENVIRONMENT"):
-        notes.append(
-            f"ctest sets {environment_property} for {test.get('name')}; Peeky runs the binary "
-            "in an environment of its own, without it, so the test may run otherwise"
-        )
+    for key, value in sorted(properties.items(), key=lambda item: str(item[0])):
+        if key in _CTEST_PROPERTIES or value in (None, "", [], False):
+            continue
+        if key == "WORKING_DIRECTORY":
+            if os.path.realpath(str(value)) != os.path.realpath(root):
+                raise _unsupported(
+                    f"ctest runs {name} in {value}, and Peeky runs a binary in the target "
+                    f"directory ({root}), where a relative path the test reads may name "
+                    "another file. Give --test the test's binary and arguments, if it runs "
+                    "the same from there"
+                )
+        elif key in ("TIMEOUT", "TIMEOUT_AFTER_MATCH"):
+            notes.append(
+                f"ctest would stop {name} at its {key} ({value}); Peeky stops it only at "
+                "its own --timeout"
+            )
+        elif key == "REQUIRED_FILES":
+            where = properties.get("WORKING_DIRECTORY") or cwd
+            missing = [f for f in value if not Path(where, str(f)).exists()]
+            if missing:
+                raise _unsupported(
+                    f"ctest wouldn't run {name}: its REQUIRED_FILES {missing[0]} doesn't exist"
+                )
+        elif key == "DISABLED":
+            raise _unsupported(f"ctest doesn't run {name}: it is DISABLED")
+        else:
+            shown = value if isinstance(value, str) else json.dumps(value)
+            why = (
+                "Peeky runs a binary in an environment of its own, and doesn't set a test's"
+                if key.startswith("ENVIRONMENT")
+                else "Peeky doesn't run a binary as that property says"
+            )
+            raise _unsupported(
+                f"ctest runs {name} with its {key} {shown}: {why}. Give --test the test's "
+                "binary and arguments, if it runs the same without it"
+            )
     return TestCommand(
         "binary",
         tuple(words),
@@ -561,6 +648,10 @@ def _cargo(words, assignments, root, program, environment, cwd):
     if (root / "vendor").is_dir():
         config["vendor"] = "vendor"
     _same_directory(cwd, root, "Cargo")
+    tables = _cargo_configs(root, environment)
+    _runner(tables, environment)
+    _unread_configuration(tables)
+    notes += _cargo_variables(environment, assignments, tables)
     return TestCommand(
         "rust",
         tuple(words),
@@ -569,6 +660,201 @@ def _cargo(words, assignments, root, program, environment, cwd):
         arguments=(*filters, *harness),
         notes=tuple(notes),
     )
+
+
+# The variables that set rustc's flags for every compile. Cargo takes the first set of
+# CARGO_ENCODED_RUSTFLAGS and RUSTFLAGS in place of its configuration's `rustflags`;
+# CARGO_BUILD_RUSTFLAGS is `build.rustflags`.
+_FLAGS = ("CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS")
+# Variables that change what Cargo builds or how it runs a test: its configuration's keys
+# (CARGO_<KEY>) of the build, a target and a profile, and the compiler it runs. Those of
+# where the build goes, how many jobs, and Cargo's output and network change neither.
+_CARGO_CHANGES = ("CARGO_BUILD_", "CARGO_TARGET_", "CARGO_PROFILE_", "CARGO_UNSTABLE_", "__CARGO")
+_CARGO_SAME = frozenset(
+    {
+        "CARGO_TARGET_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_BUILD_JOBS",
+        "CARGO_BUILD_INCREMENTAL",
+        "CARGO_BUILD_RUSTDOCFLAGS",
+    }
+)
+_RUSTC = frozenset(
+    {"RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTC_BOOTSTRAP", "RUSTUP_TOOLCHAIN"}
+)
+# A Cargo configuration file's keys that change neither the build nor the run: those
+# rust_workspace accounts for in any file (but `profile`, which Peeky's build reads only
+# from the files it reads), and a source replacement, as the lockfile pins the sources.
+_HOME_SAME = frozenset(
+    {
+        "alias",
+        "cache",
+        "cargo-new",
+        "credential-alias",
+        "doc",
+        "future-incompat-report",
+        "http",
+        "install",
+        "net",
+        "registries",
+        "registry",
+        "source",
+        "term",
+    }
+)
+_HOME_BUILD_SAME = frozenset({"jobs", "target-dir", "incremental", "rustdocflags"})
+
+
+def _cargo_configs(root, environment):
+    """[(path, table, read)] of the configuration files Cargo reads for a command run in
+    ``root``: the root's and those above it, which Peeky's build reads too (``read``), and
+    $CARGO_HOME's, which it reads only where it is one of those (_unread_configuration)."""
+    from peeky.rust_workspace import config_paths
+
+    paths = [(path, True) for path in config_paths(root)]
+    home = Path(environment.get("CARGO_HOME") or Path(os.path.expanduser("~")) / ".cargo")
+    found = next(
+        (home / name for name in ("config", "config.toml") if (home / name).is_file()), None
+    )
+    if found is not None and not any(
+        os.path.realpath(found) == os.path.realpath(path) for path, _ in paths
+    ):
+        paths.append((found, False))
+    tables = []
+    for path, read in paths:
+        try:
+            tables.append((path, tomllib.loads(Path(path).read_text()), read))
+        except (OSError, ValueError) as exc:
+            raise _unsupported(f"Peeky can't read Cargo's configuration {path}: {exc}") from None
+    return tables
+
+
+def _unread_configuration(tables):
+    """Refuse a configuration file Cargo reads and Peeky's build doesn't ($CARGO_HOME's,
+    outside the workspace) where it may change the build or the run."""
+    for path, table, read in tables:
+        if read:
+            continue
+        changes = [key for key in table if key not in _HOME_SAME and key != "build"]
+        changes += [
+            f"build.{key}" for key in _section(table, "build") if key not in _HOME_BUILD_SAME
+        ]
+        if changes:
+            raise _unsupported(
+                f"Cargo reads {path} for the test command, and Peeky's build doesn't: its "
+                f"`{changes[0]}` may change what Cargo builds or how it runs the test. Take it "
+                "out, or run without --test"
+            )
+
+
+def _runner(tables, environment):
+    """Refuse a runner Cargo would run the test through (`target.<host>.runner`, a
+    `target.'cfg(…)'` one that holds here, or CARGO_TARGET_<TRIPLE>_RUNNER): Peeky runs the
+    test's executable itself."""
+    for name in sorted(environment):
+        if name.startswith("CARGO_TARGET_") and name.endswith("_RUNNER"):
+            raise _unsupported(
+                f"Cargo would run the test through {name} ({environment[name]}), and Peeky runs "
+                "the test's executable itself: unset it, or run without --test"
+            )
+    if not any("runner" in value for _, table, _ in tables for value in _targets(table)):
+        return
+    from peeky.rust_workspace import _target_tables
+
+    host, cfgs = _host()
+    for path, table, _ in tables:
+        try:
+            applying = _target_tables(table, host, cfgs, path)
+        except ValueError as exc:
+            raise _unsupported(
+                f"{exc}: it may name a runner Cargo would run the test through"
+            ) from None
+        for key, value in applying:
+            if isinstance(value, dict) and "runner" in value:
+                raise _unsupported(
+                    f"Cargo would run the test through `target.{key}.runner` "
+                    f"({value['runner']}) in {path}, and Peeky runs the test's executable "
+                    "itself: take the runner out, or run without --test"
+                )
+
+
+def _section(table, key):
+    return table.get(key) if isinstance(table.get(key), dict) else {}
+
+
+def _targets(table):
+    """A configuration's `[target.*]` tables, whether they apply here or not."""
+    return [value for value in _section(table, "target").values() if isinstance(value, dict)]
+
+
+def _host():
+    """(the host triple, its `rustc --print cfg`) of Peeky's own rustc."""
+    from peeky.cli import _env_tool, _rustup
+    from peeky.processes import without_credentials
+
+    rustc = _env_tool("PEEKY_RUST_RUSTC") or _rustup("rustc")
+    try:
+        if not rustc:
+            raise OSError("no rustc found")
+        env = without_credentials(os.environ)
+        version, cfg = (
+            subprocess.run([rustc, *arguments], capture_output=True, text=True, timeout=30, env=env)
+            for arguments in (["-vV"], ["--print", "cfg"])
+        )
+        host = re.search(r"^host: (\S+)$", version.stdout, re.M)
+        if host is None or cfg.returncode != 0:
+            raise OSError(f"{rustc} names no host")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _unsupported(
+            f"Peeky can't tell whether a runner in Cargo's configuration applies here ({exc}): "
+            "take it out, or run without --test"
+        ) from None
+    return host[1], tuple(line.strip() for line in split_lines(cfg.stdout) if line.strip())
+
+
+def _cargo_variables(environment, assignments, tables):
+    """Notes for, or the refusal of, the variables of the test command's environment
+    (``environment``: yours, with the command's ``assignments``) that change what Cargo
+    builds or how it runs the test, as Peeky's Cargo runs in an environment of its own. A
+    RUSTFLAGS of lints alone changes no code, and is noted, unless the configuration
+    (``tables``) has `rustflags`, which Cargo would leave out in its place."""
+    notes = []
+    given = dict(assignments)
+    for name in sorted(environment):
+        value = environment[name]
+        whose = "the command's" if name in given else "your environment's"
+        drop = "drop it" if name in given else "unset it"
+        if name in _FLAGS:
+            flags = value.split("\x1f") if name == "CARGO_ENCODED_RUSTFLAGS" else value.split()
+            configured = [
+                str(path)
+                for path, table, _ in tables
+                if any("rustflags" in each for each in (_section(table, "build"), *_targets(table)))
+            ]
+            if _lints_only([flag for flag in flags if flag]) and not configured:
+                notes.append(
+                    f"Peeky builds with its own flags, without {whose} {name}: it sets only "
+                    "lints, which change no code"
+                )
+                continue
+            raise _unsupported(
+                f"Cargo would build with {whose} {name} ({value!r}), and Peeky builds with its "
+                f"own flags and the project's --cfg ones: {drop}, or run without --test"
+                + (
+                    f". With it, Cargo would leave out the `rustflags` of {configured[0]}, "
+                    "which Peeky's build takes"
+                    if configured
+                    else ". Peeky's build takes the project's --cfg flags from its Cargo "
+                    "configuration (build.rustflags in .cargo/config.toml)"
+                )
+            )
+        if name in _RUSTC or (name.startswith(_CARGO_CHANGES) and name not in _CARGO_SAME):
+            raise _unsupported(
+                f"Cargo would build or run the test with {whose} {name}={value}, and Peeky "
+                f"runs Cargo in an environment of its own, with its own toolchain: {drop}, or "
+                "run without --test"
+            )
+    return notes
 
 
 def _owner_of(manifests, scope, kind, name, sub):

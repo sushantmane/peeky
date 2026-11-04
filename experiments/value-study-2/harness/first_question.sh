@@ -5,8 +5,8 @@
 #
 #   harness/first_question.sh <peeky checkout> [bug ...]
 #
-# Prints each command and its output. Round 2's transcripts took a median of 13 tool calls,
-# 2 or 3 of them Peeky runs, to their first stop (SETUP_COST.md).
+# Prints each command and its output. Round 2's transcripts that stopped (68 of 87) took a
+# median of 14 tool calls to their first stop (SETUP_COST.md).
 set -u
 checkout=$(cd "$1" && pwd)
 shift
@@ -14,11 +14,14 @@ shift
 command_for() {
   case $1 in
     psf__requests-6028)
-      echo "peeky probe . --at requests/utils.py:977 --capture scheme,netloc,path --test -- pytest -q tests/test_utils.py -k prepend_scheme" ;;
+      # The image's `pytest` is /opt/venv/bin/python3's; --test takes `python -m pytest`.
+      echo "peeky probe . --at requests/utils.py:977 --capture scheme,netloc,path --test -- python -m pytest -q tests/test_utils.py -k prepend_scheme" ;;
     jqlang__jq-2650)
       # The image's parser.c is bison's output: the reach check's gold point, found by its text.
       echo "peeky probe . --at src/parser.c:\$(grep -nF 'gen_slice_index((yyvsp[-6].blk), (yyvsp[-4].blk), (yyvsp[-2].blk), INDEX_OPT)' src/parser.c | head -1 | cut -d: -f1) --capture yyn,yylen --test -- ./jq -L tests/modules --run-tests tests/jq.test" ;;
     sharkdp__bat-3108)
+      # Its first build is refused: git-version's `git describe` refreshes .git/index while it
+      # runs (#486), and --test doesn't build again on its own. The same command again stops.
       echo "peeky probe . --at src/bin/bat/app.rs:101 --capture style_components --test -- cargo run --bin bat -- --decorations=always --plain --paging=never README.md" ;;
   esac
 }

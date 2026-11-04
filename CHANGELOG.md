@@ -32,14 +32,25 @@
 ### Other changes
 
 - **`--test`: the project's own test command names what Peeky runs (ADR 0009).** `peeky probe .
-  --at FILE:LINE --capture a --test -- <command>`, and `session start` and `describe` too:
-  - Python: `pytest …` and `python -m pytest …` run as `--run-module pytest`, and `python
-    script.py …` as `--run`, on the interpreter that command runs.
+  --at FILE:LINE --capture a --test -- <command>`, and `session start` and `describe` too. Peeky
+  reads the command, runs the target it names, and says where that run differs:
+  - Python: `python -m pytest …` runs as `--run-module pytest`, and `python script.py …` as
+    `--run`, on the interpreter that command runs. A `pytest` script is refused: Peeky wouldn't
+    run its lines, and `python -m pytest` may import other code. The message gives the `python
+    -m pytest` command, on the interpreter the script's `#!` line names.
   - Rust: `cargo test [-p P] [--test T | --lib] [--features …] [filter] [-- args]` and `cargo run`
     make the workspace config: the `--at` file's package is analysed, and the build runs when
-    none of the config is current, and once more if git refreshed its index meanwhile (bat's
-    first build). The config is saved in the state directory and named in `--json`.
+    none of the config is current. A build refused for its provenance stays refused, as with
+    `--build`. The config is saved in the state directory and named in `--json`. A runner Cargo
+    would run the test through, your environment's variables that would change Cargo's build or
+    run (`RUSTFLAGS` but lints, `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …), and `$CARGO_HOME`'s
+    configuration where Peeky's build doesn't read it are refused. A note says the test runs in
+    Peeky's environment, not yours.
   - C and C++: `./prog args` is `--binary ./prog -- args`; `ctest -R NAME` runs its one test.
+    ctest's options other than selection and output (`--repeat`, `-j`, `--timeout`, …) are
+    refused, and so is a test ctest would run in another directory, with its own `ENVIRONMENT`
+    or `ENVIRONMENT_MODIFICATION`, or another property that changes its run. A note says what of
+    your environment the binary gets.
   - Environment assignments before the command apply to a Python run. Peeky runs Cargo and a
     binary in an environment of its own: there, one that wouldn't reach them is refused, and a
     `RUSTFLAGS` of lints alone gets a note. A command `--test` can't

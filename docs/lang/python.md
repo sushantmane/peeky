@@ -8,12 +8,15 @@ Peeky debugs Python with debugpy, Python's debugger.
 
 ## Choose the target
 
-- Or give the command that runs the failing test, after `--test --`:
-  `peeky probe . --at src/pkg/mod.py:LINE --capture a --test -- pytest -q tests/test_x.py::test_y`.
-  `pytest …` and `python -m pytest …` are `--run-module pytest`, and `python script.py …` is
-  `--run`, on the interpreter that command runs: `PATH`'s, or the script's `#!` line. Run it
-  from the root. `python -m` with another module, and the interpreter's own options (`-W`), are
-  refused, saying what to give instead ([ADR 0009](../adr/0009-first-question.md)).
+- Or give the command that runs the failing test, after `--test --`: `peeky probe . --at
+  src/pkg/mod.py:LINE --capture a --test -- python -m pytest -q tests/test_x.py::test_y`.
+  `python -m pytest …` is `--run-module pytest`, and `python script.py …` is `--run`, on the
+  interpreter that command runs: `PATH`'s, or the script's `#!` line. Run it from the root.
+  The `pytest` script is refused: Peeky wouldn't run its lines, and `python -m pytest` puts the
+  root first on `sys.path`, so it may import other code. The message gives the `python -m
+  pytest` command, on the interpreter the script's `#!` line names. `python -m` with another
+  module, and the interpreter's own options (`-W`), are refused too, saying what to give
+  instead ([ADR 0009](../adr/0009-first-question.md)).
 - Give a `.py` file: `peeky probe app.py --at 12 --capture total`
   ([0](../COOKBOOK.md#0-setup)).
 - Or give a project directory, and name the file in `--at`: `--at module.py:<line>`

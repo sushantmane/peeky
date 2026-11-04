@@ -1525,23 +1525,12 @@ def _build_first(args, root, adapter):
             "targets are built by every probe"
         )
     else:
-        try:
-            result = adapter.build(
-                root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
-            )
-        except RuntimeError as exc:
-            from peeky.rust_build import _SAME_ENTRIES
-
-            # `--test` builds for you, so it takes the refusal's own next step once: a git
-            # index refreshed while the build ran (git-version's `git describe`), its entries
-            # the same, is built again from the start, as `peeky build` would be.
-            if not getattr(args, "build_needed", False) or _SAME_ENTRIES not in str(exc):
-                raise
-            if progress := _progress(args):
-                progress(f"building again: {str(exc).removeprefix('Provenance: ')}")
-            result = adapter.build(
-                root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
-            )
+        # A build refused for provenance (a git index refreshed while it ran, say) isn't
+        # built again here: a second build in the same target directory may reuse what the
+        # first one's build scripts made of the changed bytes (#486).
+        result = adapter.build(
+            root, deadline=time.monotonic() + BUILD_TIMEOUT_S, progress=_progress(args)
+        )
     # The probe's or session's own output is its result: the build's notes go beside it.
     for note in result.get("notes") or ():
         print(f"peeky: note: {note}", file=sys.stderr, flush=True)
@@ -5867,7 +5856,7 @@ def _main(argv, _job, _edits):
         and (argv[:1] in (["probe"], ["describe"]) or argv[:2] == ["session", "start"])
         and "--test" in argv[: argv.index("--")]
     ):
-        # `peeky probe . --at f.py:5 --test -- pytest t.py`: the test command's words.
+        # `peeky probe . --at f.py:5 --test -- python -m pytest t.py`: the test command's words.
         split = argv.index("--")
         argv = argv[:split] + [f"--test-word={value}" for value in argv[split + 1 :]]
     elif "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
@@ -5929,8 +5918,9 @@ def _main(argv, _job, _edits):
             "--test",
             action="store_true",
             help="The words after `--` are the command that runs the failing test, as you "
-            "would type it here (pytest …, cargo test …, mvn test …, ./prog ARGS): Peeky runs "
-            "it under the debugger, with no config",
+            "would type it here (python -m pytest …, cargo test …, ctest -R NAME, ./prog ARGS): "
+            "Peeky reads it, runs the target it names under the debugger, with no config, and "
+            "says where that run differs from the command's",
         )
         sub.add_argument("--test-word", action="append", default=[], help=argparse.SUPPRESS)
 

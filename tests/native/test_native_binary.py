@@ -1415,3 +1415,5 @@ def test_the_test_command_names_the_binary_and_its_arguments(project, monkeypatc
     assert [r.get("value") for r in result["rows"] if r["selector"] == "x"] == ["4"], result
     assert result["test"] == {"command": "./prog a b", "kind": "binary"}
     assert result["output"].split() == ["4", "9", "54"]
+    # It ran in Peeky's environment, and the result says so.
+    assert any("HOME is a directory of Peeky's" in w for w in result["warnings"]), result

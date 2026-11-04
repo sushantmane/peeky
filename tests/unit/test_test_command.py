@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,12 @@ def project(tmp_path, monkeypatch):
     python = executable(bin_ / "python3", "#!/bin/sh\nexit 0\n")
     executable(bin_ / "pytest", f"#!{python}\nimport pytest\n")
     monkeypatch.setenv("PATH", f"{bin_}{os.pathsep}{os.environ['PATH']}")
+    # Cargo's variables and configuration are the test's own, not the machine's.
+    (tmp_path / "cargo-home").mkdir()
+    monkeypatch.setenv("CARGO_HOME", str(tmp_path / "cargo-home"))
+    for name in list(os.environ):
+        if name in tc._FLAGS or name in tc._RUSTC or name.startswith(tc._CARGO_CHANGES):
+            monkeypatch.delenv(name)
     monkeypatch.chdir(root)
     return root
 
@@ -64,10 +71,16 @@ def test_python_dash_m_pytest_runs_pytest_on_that_python(project):
     assert test.arguments == ("-q", "tests/t.py::test_x")
 
 
-def test_a_pytest_console_script_runs_on_its_first_lines_python(project):
-    test = tc.plan(["pytest", "-q", "t.py"], project)
-    assert (test.module, test.arguments) == ("pytest", ("-q", "t.py"))
-    assert test.python.endswith("/bin/python3")
+def test_a_pytest_script_is_refused_naming_python_dash_m_pytest(project):
+    # `python -m pytest` runs none of the script's own lines, and imports otherwise.
+    error = refused(["pytest", "-q", "t.py"], project)
+    python = Path(os.environ["PATH"].split(os.pathsep)[0]) / "python3"
+    assert error.code == "UNSUPPORTED" and "the script's own lines wouldn't run" in str(error)
+    assert f"`--test -- {python} -m pytest -q t.py`, the one" in str(error)
+    executable(project / "py.test", '#!/bin/sh\nexport X=1\nexec python3 -m pytest "$@"\n')
+    error = refused(["./py.test", "-x"], project)
+    assert "not as the `./py.test` script" in str(error)
+    assert "`--test -- python -m pytest -x`" in str(error)
 
 
 def test_a_python_script_runs_with_run(project):
@@ -148,7 +161,8 @@ def test_cargo_test_names_the_package_to_analyse_and_the_test_to_run(workspace):
         "run": {"test": "flow", "package": "util"},
         "vendor": "vendor",
     }
-    assert test.notes == ()
+    # The test's environment is Peeky's, as the note says.
+    assert test.notes == (tc._RUST_ENVIRONMENT,)
     # Without -p, Cargo finds the package with that test; the filter and the harness's
     # words are the test's arguments. Peeky says it builds one package of several.
     test = tc.plan(
@@ -267,9 +281,10 @@ def test_without_test_the_words_after_dash_dash_stay_the_programs(project, capsy
     assert seen == {"test": True, "words": ["pytest", "--", "-k"], "arg": []}
 
 
-def test_a_rust_test_builds_when_needed_and_again_after_gits_index_refresh(monkeypatch, capsys):
+def test_a_rust_test_builds_when_needed_and_a_refused_build_stays_refused(monkeypatch, capsys):
     # bat's first build is refused when git-version's `git describe` refreshes .git/index,
-    # its entries the same: `peeky build` again builds it, so `--test` does that once.
+    # its entries the same. `--test` doesn't build again: a second build in the same target
+    # directory could reuse what the first one's build scripts made of the changed bytes.
     from argparse import Namespace
 
     from peeky import cli
@@ -282,34 +297,23 @@ def test_a_rust_test_builds_when_needed_and_again_after_gits_index_refresh(monke
 
     def build(self, root, **_):
         calls.append(root)
-        if len(calls) == 1:
-            raise RuntimeError(
-                f"Provenance: .git/index changed while Peeky built the workspace{_SAME_ENTRIES}"
-                ". Build again"
-            )
-        return {"notes": []}
+        raise RuntimeError(
+            f"Provenance: .git/index changed while Peeky built the workspace{_SAME_ENTRIES}"
+            ". Build again"
+        )
 
     monkeypatch.setattr(RustWorkspaceTarget, "current", current)
     monkeypatch.setattr(RustWorkspaceTarget, "build", build)
     target = object.__new__(RustWorkspaceTarget)
-    cli._build_first(Namespace(build_needed=True, build=False, quiet=False), ".", target)
-    assert len(calls) == 2
-    assert "peeky: building again: .git/index changed" in capsys.readouterr().err
-    # Without --test (`--build`), the refusal stands: the build is the user's to repeat.
-    calls.clear()
     with pytest.raises(RuntimeError, match="Build again"):
-        cli._build_first(Namespace(build=True, quiet=True), ".", target)
+        cli._build_first(Namespace(build_needed=True, build=False, quiet=False), ".", target)
     assert len(calls) == 1
-    # Another provenance refusal is never built again.
-    monkeypatch.setattr(
-        RustWorkspaceTarget,
-        "build",
-        lambda self, root, **_: (_ for _ in ()).throw(
-            RuntimeError("Provenance: Cargo.lock changed")
-        ),
-    )
-    with pytest.raises(RuntimeError, match="Cargo.lock"):
-        cli._build_first(Namespace(build_needed=True, build=False, quiet=True), ".", target)
+    assert "building again" not in capsys.readouterr().err
+    # A current build isn't built again either.
+    monkeypatch.setattr(RustWorkspaceTarget, "current", lambda self, root: None)
+    calls.clear()
+    assert cli._build_first(Namespace(build_needed=True, build=False), ".", target) is None
+    assert calls == []
 
 
 def test_assignments_that_wouldnt_reach_a_native_or_rust_run_are_refused(workspace):
@@ -317,19 +321,175 @@ def test_assignments_that_wouldnt_reach_a_native_or_rust_run_are_refused(workspa
     # code or the run isn't taken silently. Lints change no code (the study's RUSTFLAGS).
     at = "util/src/lib.rs"
     test = tc.plan(["RUSTFLAGS=-Awarnings", "cargo", "test", "--lib"], workspace, at)
-    assert test.notes[-1].startswith("Peeky builds with its own flags, without the command's")
+    assert test.notes[-2].startswith("Peeky builds with its own flags, without the command's")
+    assert test.notes[-1] == tc._RUST_ENVIRONMENT
     test = tc.plan(
         ["RUSTFLAGS=-D warnings --cap-lints warn", "cargo", "test", "--lib"], workspace, at
     )
-    assert "sets only lints" in test.notes[-1]
+    assert "sets only lints" in test.notes[-2]
     error = refused(["RUSTFLAGS=--cfg tokio_unstable", "cargo", "test", "--lib"], workspace, at)
-    assert "wouldn't reach them: drop it" in str(error) and "build.rustflags" in str(error)
-    assert "RUST_LOG=…" in str(refused(["RUST_LOG=debug", "cargo", "test", "--lib"], workspace, at))
+    assert "the command's RUSTFLAGS" in str(error) and "drop it" in str(error)
+    assert "build.rustflags" in str(error)
+    for words in (["RUST_LOG=debug"], ["HOME=/x"], ["LANG=C"]):
+        error = refused([*words, "cargo", "test", "--lib"], workspace, at)
+        assert f"{words[0].split('=')[0]}=… in the test command wouldn't reach them" in str(error)
     (workspace / "prog").write_bytes(b"\x7fELF")
     error = refused(["MALLOC_CHECK_=3", "./prog"], workspace)
     assert "runs the binary in an environment of its own" in str(error)
-    # PATH, HOME and the locale are the run's own: taken.
-    assert tc.plan(["LANG=C", "./prog"], workspace).environment == (("LANG", "C"),)
+    # HOME is Peeky's for a binary too.
+    assert "HOME=… in the test command wouldn't reach it" in str(
+        refused(["HOME=/x", "./prog"], workspace)
+    )
+    # PATH, TMPDIR and the locale are the run's own: taken, with a note of the rest.
+    test = tc.plan(["LANG=C", "./prog"], workspace)
+    assert test.environment == (("LANG", "C"),)
+    assert test.notes == (tc._BINARY_ENVIRONMENT.format(binary="prog"),)
+    assert "HOME is a directory of Peeky's" in test.notes[0]
+
+
+def test_cargo_variables_of_your_environment_are_noted_or_refused(workspace, monkeypatch):
+    # Peeky's Cargo runs in an environment of its own: what would change the build or the
+    # run is refused, lints are noted, and where the build goes or Cargo's output isn't.
+    at = "util/src/lib.rs"
+    run = ["cargo", "run", "-p", "app"]
+    monkeypatch.setenv("RUSTFLAGS", "--cfg peeky_repro")
+    error = refused(run, workspace, at)
+    assert "your environment's RUSTFLAGS ('--cfg peeky_repro')" in str(error)
+    assert "unset it" in str(error)
+    monkeypatch.setenv("RUSTFLAGS", "-Awarnings")
+    test = tc.plan(run, workspace, at)
+    assert "without your environment's RUSTFLAGS: it sets only lints" in test.notes[0]
+    # With RUSTFLAGS, Cargo leaves out the configuration's rustflags; Peeky's build doesn't.
+    (workspace / ".cargo").mkdir()
+    (workspace / ".cargo/config.toml").write_text('[build]\nrustflags = ["--cfg", "x"]\n')
+    assert "leave out the `rustflags` of" in str(refused(run, workspace, at))
+    (workspace / ".cargo/config.toml").unlink()
+    monkeypatch.delenv("RUSTFLAGS")
+    monkeypatch.setenv("CARGO_ENCODED_RUSTFLAGS", "-Awarnings\x1f--cfg\x1fx")
+    assert "CARGO_ENCODED_RUSTFLAGS" in str(refused(run, workspace, at))
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS")
+    for name, value in (
+        ("CARGO_PROFILE_DEV_OVERFLOW_CHECKS", "false"),
+        ("CARGO_BUILD_TARGET", "x86_64-unknown-linux-musl"),
+        ("RUSTUP_TOOLCHAIN", "nightly"),
+        ("RUSTC_WRAPPER", "sccache"),
+    ):
+        monkeypatch.setenv(name, value)
+        error = refused(run, workspace, at)
+        assert f"your environment's {name}={value}" in str(error), name
+        monkeypatch.delenv(name)
+    error = refused(["CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false", *run], workspace, at)
+    assert "the command's CARGO_PROFILE_DEV_DEBUG_ASSERTIONS" in str(error)
+    for name, value in (
+        ("CARGO_TARGET_DIR", "/elsewhere"),
+        ("CARGO_TERM_COLOR", "never"),
+        ("CARGO_NET_OFFLINE", "true"),
+        ("CARGO_BUILD_JOBS", "2"),
+    ):
+        monkeypatch.setenv(name, value)
+    assert tc.plan(run, workspace, at).notes == (tc._RUST_ENVIRONMENT,)
+
+
+def test_a_cargo_runner_is_refused(workspace, monkeypatch):
+    # `cargo test` runs the test through a runner; Peeky runs its executable itself.
+    at = "util/src/lib.rs"
+    run = ["cargo", "test", "-p", "util", "--lib"]
+    monkeypatch.setattr(tc, "_host", lambda: ("x86_64-peeky-test", ('target_os="linux"', "unix")))
+    monkeypatch.setenv("CARGO_TARGET_X86_64_PEEKY_TEST_RUNNER", "valgrind")
+    assert "through CARGO_TARGET_X86_64_PEEKY_TEST_RUNNER (valgrind)" in str(
+        refused(run, workspace, at)
+    )
+    monkeypatch.delenv("CARGO_TARGET_X86_64_PEEKY_TEST_RUNNER")
+    (workspace / ".cargo").mkdir()
+    config = workspace / ".cargo/config.toml"
+    for key in ("x86_64-peeky-test", "'cfg(unix)'"):
+        config.write_text(f'[target.{key}]\nrunner = "qemu"\n')
+        error = refused(run, workspace, at)
+        assert "runner` (qemu)" in str(error) and str(config) in str(error), key
+    # Another target's runner, or one whose cfg doesn't hold here, isn't Cargo's for this.
+    config.write_text(
+        '[target.thumbv7em-none-eabihf]\nrunner = "probe-rs run"\n'
+        "[target.'cfg(windows)']\nrunner = \"wine\"\n"
+    )
+    assert tc.plan(run, workspace, at).config["run"] == {"lib": True, "package": "util"}
+    # $CARGO_HOME's configuration counts too: Cargo reads it, and Peeky's build doesn't.
+    config.unlink()
+    home = Path(os.environ["CARGO_HOME"])
+    (home / "config.toml").write_text('[target."cfg(unix)"]\nrunner = "qemu"\n')
+    assert "runner` (qemu)" in str(refused(run, workspace, at))
+    (home / "config.toml").write_text("[profile.dev]\noverflow-checks = false\n")
+    error = refused(run, workspace, at)
+    assert "Peeky's build doesn't: its `profile`" in str(error)
+    (home / "config.toml").write_text("[net]\noffline = true\n[build]\njobs = 2\n")
+    assert tc.plan(run, workspace, at).config["run"] == {"lib": True, "package": "util"}
+
+
+@pytest.fixture
+def ctest(project, tmp_path):
+    """A `ctest` on PATH that lists ctest.json's tests (in the directory it runs in), and
+    keeps the words it was given."""
+    executable(
+        tmp_path / "bin/ctest",
+        f"#!{sys.executable}\nimport json, sys\n"
+        "open('ctest.args', 'w').write(json.dumps(sys.argv[1:]))\n"
+        "print(open('ctest.json').read())\n",
+    )
+    (project / "build").mkdir()
+    (project / "build/t").write_bytes(b"\x7fELF")
+
+    def listing(*tests):
+        (project / "ctest.json").write_text(json.dumps({"kind": "ctestInfo", "tests": tests}))
+
+    return listing
+
+
+def one(name="t1", directory=None, **properties):
+    return {
+        "name": name,
+        "command": [str(Path.cwd() / "build/t"), "--case", name],
+        "properties": [
+            {"name": "WORKING_DIRECTORY", "value": str(directory or Path.cwd())},
+            *({"name": k, "value": v} for k, v in properties.items()),
+        ],
+    }
+
+
+def test_ctest_runs_its_one_test_as_ctest_would_or_refuses(project, ctest):
+    words = ["ctest", "--test-dir", "build", "-R", "^t1$", "-V", "--output-on-failure"]
+    ctest(one(LABELS=["unit"], COST=1.5, TIMEOUT=30.0))
+    test = tc.plan(words, project)
+    assert (test.kind, test.binary, test.arguments) == ("binary", "build/t", ("--case", "t1"))
+    assert json.loads((project / "ctest.args").read_text()) == [*words[1:], "--show-only=json-v1"]
+    assert "ctest would stop t1 at its TIMEOUT (30.0)" in test.notes[0]
+    assert test.notes[-1] == tc._BINARY_ENVIRONMENT.format(binary="build/t")
+    # Where ctest would run it otherwise than Peeky runs a binary, nothing runs.
+    for listed, text in (
+        (one(directory=project / "build"), "ctest runs t1 in"),
+        (one(ENVIRONMENT=["A=1"]), 'its ENVIRONMENT ["A=1"]: Peeky runs a binary in an'),
+        (one(ENVIRONMENT_MODIFICATION=["B=set:2"]), "its ENVIRONMENT_MODIFICATION"),
+        (one(DISABLED=True), "ctest doesn't run t1: it is DISABLED"),
+        (one(RESOURCE_GROUPS=["gpus:1"]), "its RESOURCE_GROUPS"),
+        (one(REQUIRED_FILES=["missing.txt"]), "REQUIRED_FILES missing.txt doesn't exist"),
+    ):
+        ctest(listed)
+        assert text in str(refused(words, project)), text
+    ctest(one("t1"), one("t2"))
+    assert "ctest selects 2 tests (t1, t2)" in str(refused(words, project))
+    # Options that change how ctest runs a test are refused before it lists any.
+    ctest(one())
+    for option in (
+        ["--repeat", "until-fail:3"],
+        ["--schedule-random"],
+        ["-j", "4"],
+        ["-j4"],
+        ["--parallel", "2"],
+        ["--timeout", "5"],
+        ["--stop-on-failure"],
+        ["--preset", "ci"],
+        ["-I", "1,1"],
+    ):
+        error = refused([*words, *option], project)
+        assert f"can't take ctest's {option[0]}" in str(error), option
 
 
 def test_without_p_cargo_acts_on_the_root_package_or_default_members(workspace):
@@ -342,7 +502,7 @@ def test_without_p_cargo_acts_on_the_root_package_or_default_members(workspace):
     test = tc.plan(["cargo", "run", "--", "in.txt"], workspace, "util/src/lib.rs")
     assert test.config["run"] == {"bin": "root", "package": "root"}
     assert test.config["analyse"] == ["util"] and test.arguments == ("in.txt",)
-    assert test.notes == ()
+    assert test.notes == (tc._RUST_ENVIRONMENT,)
     error = refused(["cargo", "test", "name"], workspace, "util/src/lib.rs")
     assert "without -p runs root's tests" in str(error) and "add -p util" in str(error)
     # The root's package alone: Cargo looks for the target there, and the build says if
@@ -354,17 +514,8 @@ def test_without_p_cargo_acts_on_the_root_package_or_default_members(workspace):
         '[workspace]\nmembers = ["app", "util"]\ndefault-members = ["util"]\n'
     )
     test = tc.plan(["cargo", "test", "--lib"], workspace, "util/src/lib.rs")
-    assert test.config["run"] == {"lib": True, "package": "util"} and test.notes == ()
-
-
-def test_pytest_says_where_python_dash_m_pytest_imports_otherwise(project):
-    # `python -m pytest` puts the root first on sys.path; the pytest script doesn't.
-    (project / "pkg").mkdir()
-    (project / "pkg/__init__.py").write_text("")
-    test = tc.plan(["pytest", "tests"], project, "pkg/mod.py")
-    assert "imports `pkg` from the root" in test.notes[0]
-    assert tc.plan(["pytest", "tests"], project, "src/pkg/mod.py").notes == ()
-    assert tc.plan(["python3", "-m", "pytest"], project, "pkg/mod.py").notes == ()
+    assert test.config["run"] == {"lib": True, "package": "util"}
+    assert test.notes == (tc._RUST_ENVIRONMENT,)
 
 
 def test_targets_are_discovered_as_cargo_discovers_them(workspace):

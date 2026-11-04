@@ -1705,8 +1705,27 @@ def test_the_test_command_makes_the_config_and_builds_it_when_needed(
     assert code == 0, result
     assert [r["value"] for r in result["rows"] if r["selector"] == "x"] == ["3"]
     assert result["test"]["config"]["run"] == {"test": "flow", "package": "util"}
-    # Peeky says it built one package where Cargo would have built every member.
+    # Peeky says it built one package where Cargo would have built every member, and that
+    # the test ran in its environment, not this one.
     assert any("Cargo may unify more features" in w for w in result["warnings"])
+    assert any(w.startswith("Peeky builds the test with Cargo") for w in result["warnings"])
+    # What would change Cargo's build or run is refused before anything runs: a runner
+    # for this host, and a RUSTFLAGS of more than lints in the environment.
+    (workspace / ".cargo").mkdir(exist_ok=True)
+    config = workspace / ".cargo/config.toml"
+    kept = config.read_text() if config.exists() else None
+    config.write_text((kept or "") + "\n[target.'cfg(all())']\nrunner = \"env\"\n")
+    try:
+        code = main([*argv, "--", "cargo", "run", "-p", "app"])
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert code == 2 and "target.cfg(all()).runner` (env)" in error["message"], error
+    finally:
+        config.write_text(kept) if kept is not None else config.unlink()
+    monkeypatch.setenv("RUSTFLAGS", "--cfg peeky_repro")
+    code = main([*argv, "--", "cargo", "run", "-p", "app"])
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and "your environment's RUSTFLAGS ('--cfg peeky_repro')" in error["message"]
+    monkeypatch.delenv("RUSTFLAGS")
     # A session takes it too.
     code = main(
         ["session", "start", ".", "--at", "util/src/lib.rs:3", "--name", "tested", "--json"]

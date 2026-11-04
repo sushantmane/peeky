@@ -36,9 +36,13 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   test -p x --test it name -- --exact`. Peeky makes the config from it. It analyses the `--at`
   file's package. It runs the test target the command names, or the one that is the `--at` file,
   with its `--features`, in the package Cargo would pick without `-p` (the root's, or
-  `default-members`). It builds when no build of it is current, and once more if git refreshed
-  its index meanwhile. The test's filter and the words after cargo's `--` go to the test. `--release`, `--doc`, `--workspace`, `--example`,
-  `--no-default-features` and a toolchain (`+nightly`) are refused, saying why
+  `default-members`). It builds when no build of it is current; a build refused for its
+  provenance stays refused, with its "Build again". The test's filter and the words after
+  cargo's `--` go to the test. `--release`, `--doc`, `--workspace`, `--example`,
+  `--no-default-features` and a toolchain (`+nightly`) are refused, saying why, and so are a
+  runner and the variables that would change Cargo's build or run (`RUSTFLAGS` but lints,
+  `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, …). The test runs in Peeky's environment, not yours,
+  and the result says so
   ([ADR 0009](../adr/0009-first-question.md#3-rust-the-config-from-cargo-tests-words)).
 - A workspace's analysed packages may be edition 2018 too
   ([ADR 0008](../adr/0008-native-project-reach.md#verified-for-phase-2)).
