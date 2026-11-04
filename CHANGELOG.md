@@ -393,6 +393,9 @@
   the worker removes its token from the error text it builds, a probe child's too. A token must be
   32 to 512 characters. CI's checkouts keep no credentials, and
   [docs/DESIGN.md](docs/DESIGN.md#module-map) has a module map (#407).
+- **Contributions are signed off under the Developer Certificate of Origin 1.1** (`git commit -s`):
+  a `DCO` check fails a pull request from an outside contributor with a commit whose sign-off
+  isn't its author's ([CONTRIBUTING.md](CONTRIBUTING.md#sign-off-your-commits-dco)).
 
 ## 0.1.0 (2026-10-26)
 

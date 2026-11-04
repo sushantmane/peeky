@@ -33,3 +33,4 @@ review's findings, and how each was resolved. Note any changed trust assumption 
 
 - [ ] A line under **Unreleased** in `CHANGELOG.md`, if users would notice the change.
 - [ ] Docs updated, if behaviour or output changed.
+- [ ] Each commit signed off (`git commit -s`), under the DCO: see CONTRIBUTING.md.

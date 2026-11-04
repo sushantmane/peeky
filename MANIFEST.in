@@ -1,4 +1,4 @@
-include requirements-dev.txt CONTRIBUTING.md AGENTS.md SECURITY.md CHANGELOG.md CODE_OF_CONDUCT.md
+include requirements-dev.txt CONTRIBUTING.md AGENTS.md SECURITY.md CHANGELOG.md CODE_OF_CONDUCT.md DCO
 recursive-include examples *.py *.java *.json *.md
 recursive-include examples *.c *.h *.cpp *.hpp *.cu *.rs *.toml *.lock
 # ipaddress39.py's licence (PSF), which has no suffix.

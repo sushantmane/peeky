@@ -1,0 +1,53 @@
+name: DCO
+
+# Every commit of a pull request from outside contributors must be signed off under the
+# Developer Certificate of Origin (DCO, CONTRIBUTING.md): a `Signed-off-by:` trailer whose email is
+# the commit author's, as `git commit -s` writes it. The check reads the commits with git only:
+# it runs nothing from the pull request.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sign-off:
+    name: DCO sign-off
+    # The owner's pull requests, and those of the apps the owner installed (Dependabot), are
+    # skipped. A skipped job counts as passed for a required check.
+    if: ${{ github.event.pull_request.user.login != github.repository_owner && github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check that each commit is signed off by its author
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          unsigned=0
+          # The pull request's own commits: none its base branch has, now or at the event.
+          for commit in $(git rev-list --no-merges --reverse "$HEAD" --not "$BASE" "refs/remotes/origin/$BASE_REF"); do
+            author=$(git log -1 --format='%an <%ae>' "$commit")
+            email=$(git log -1 --format='%ae' "$commit" | tr '[:upper:]' '[:lower:]')
+            subject=$(git log -1 --format='%h %s' "$commit")
+            # The sign-offs' emails, one per line, from the trailers git parses.
+            signed=$(git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" |
+              sed -nE 's/.*<([^>]*)>[[:space:]]*$/\1/p' | tr '[:upper:]' '[:lower:]')
+            if printf '%s\n' "$signed" | grep -qxF -- "$email"; then
+              echo "signed off: $subject"
+            else
+              echo "::error::$subject has no 'Signed-off-by: $author'. Sign it off with 'git commit --amend --signoff' (or 'git rebase --signoff $BASE' for every commit), then force-push. CONTRIBUTING.md says what signing off certifies."
+              unsigned=1
+            fi
+          done
+          exit "$unsigned"

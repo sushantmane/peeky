@@ -20,6 +20,34 @@ Develop one small milestone at a time. Add a regression test for changed debugge
 
 Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Add a line to `CHANGELOG.md` under **Unreleased** for each change a user would notice. Include protocol or architecture changes in the design documents. When changing state, permissions, transport, or execution semantics, record the adversarial review's findings and how each was resolved in the pull request.
 
+## Sign off your commits (DCO)
+
+Peeky takes contributions under the [Developer Certificate of Origin 1.1](DCO) (DCO), as the Linux kernel and many Apache-2.0 projects do. There is no contributor licence agreement to sign. Each commit in a pull request from an outside contributor must be signed off by its author, with a line at the end of its message:
+
+```text
+Signed-off-by: Jane Doe <jane@example.com>
+```
+
+**What it means.** Signing off certifies the DCO's four statements, in [DCO](DCO): that you wrote the change, or otherwise have the right to submit it under the project's licence, Apache-2.0; and that you understand the contribution, and your sign-off with your name and email, are public and kept for good. You keep your copyright. As the Apache License's section 5 says, what you contribute is licensed under the Apache License 2.0.
+
+**How.** Commit with `-s` (`--signoff`), and git adds the line from your `user.name` and `user.email`:
+
+```sh
+git commit -s -m "Explain the change"
+```
+
+The email must be the commit's author email, so commit as the identity you sign off with. Sign off with your name, not an anonymous one. A commit made in GitHub's web editor is signed off if the repository requires sign-off for web-based commits.
+
+**A missing sign-off.** The `DCO` check fails, and names each commit without one. Add the sign-off, and force-push the branch:
+
+```sh
+git commit --amend --signoff --no-edit    # the last commit
+git rebase --signoff origin/main          # every commit since main (use your pull request's base)
+git push --force-with-lease
+```
+
+The check, `.github/workflows/dco.yml`, runs on each pull request. It checks every commit except merges, and accepts a `Signed-off-by:` line whose email is the commit author's, in any case. It skips pull requests from the maintainer, and from apps the maintainer installed, such as Dependabot: the DCO applies to outside contributions.
+
 ## Security
 
 Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't put its details in a public issue or pull request.
